@@ -85,6 +85,7 @@ pub(crate) trait AoECellPrelude {
         overlay_registry: Option<&OverlayTypeRegistry>,
         terrain: Option<&mut ResolvedTerrainGrid>,
         scenario_rng: Option<&mut SimRng>,
+        occupancy: Option<&OccupancyGrid>,
     );
 
     fn wall_navigation_step(
@@ -383,7 +384,9 @@ pub(crate) fn apply_aoe_damage_with_terrain<O: Into<AoEDamageOrigin>>(
     layer_context: AoELayerContext<'_>,
     terrain_objects: Option<TerrainCollectionView<'_>>,
 ) -> AoEDamageResult {
-    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner));
+    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(
+        rules, interner,
+    ));
     apply_aoe_damage_with_terrain_and_scenario(
         entities,
         impact_rx,
@@ -427,7 +430,8 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
     if origin.source_house.is_none() && origin.source_id != super::RAD_NO_ATTACKER {
         origin.source_house = entities.get(origin.source_id).map(|source| source.owner);
     }
-    let ground_source_admitted = handles.is_some_and(|handles| handles.is_crush(origin.warhead_ref))
+    let ground_source_admitted = handles
+        .is_some_and(|handles| handles.is_crush(origin.warhead_ref))
         || entities
             .get(origin.source_id)
             .and_then(|source| rules.object(interner.resolve(source.type_ref)))
@@ -535,6 +539,7 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
                     layer_context.overlay_registry,
                     layer_context.terrain.as_deref_mut(),
                     layer_context.scenario_rng.as_deref_mut(),
+                    layer_context.occupancy,
                 );
             }
             route_wall_before_cell_objects(
@@ -629,6 +634,7 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
                 layer_context.overlay_registry,
                 layer_context.terrain.as_deref_mut(),
                 layer_context.scenario_rng.as_deref_mut(),
+                layer_context.occupancy,
             );
         }
         route_wall_before_cell_objects(
@@ -735,7 +741,6 @@ fn route_wall_before_cell_objects(
     result
         .wall_radar_dirty_cells
         .extend(wall_result.radar_dirty_cells);
-
 }
 
 /// Broadcast one CellClass pointer-expiry notification to represented Techno
@@ -1344,7 +1349,8 @@ mod tests {
         let mut scenario_rng = SimRng::new(17);
         let before = scenario_rng.state();
 
-        let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+        let handles =
+            crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         let result = apply_aoe_damage_with_terrain_and_scenario(
             &mut entities,
             8,
@@ -1400,6 +1406,7 @@ mod tests {
                 _overlay_registry: Option<&OverlayTypeRegistry>,
                 _terrain: Option<&mut ResolvedTerrainGrid>,
                 scenario_rng: Option<&mut SimRng>,
+                _occupancy: Option<&OccupancyGrid>,
             ) {
                 if (rx, ry) == self.cell {
                     let _ = scenario_rng
@@ -1424,7 +1431,8 @@ mod tests {
         let mut scenario_rng = SimRng::new(91);
         let mut prelude = OreReseedDraw { cell: (8, 8) };
 
-        let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+        let handles =
+            crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         let _ = apply_aoe_damage_with_terrain_and_scenario(
             &mut EntityStore::new(),
             8,
@@ -2020,7 +2028,8 @@ mod tests {
             }
 
             let mut interner = test_interner();
-            let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+            let _handles =
+                crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
             let blast_ref = interner.intern("BlastWH");
             let mut scenario_rng = SimRng::new(1);
             let air_impact = Some(AoEAirImpact {
@@ -2190,7 +2199,8 @@ mod tests {
             .collect();
         let mut terrain = ResolvedTerrainGrid::from_cells(48, 48, cells);
         let mut interner = test_interner();
-        let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+        let _handles =
+            crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         let warhead_ref = interner.intern("WIDEWH");
 
         assert_eq!(
@@ -2626,7 +2636,8 @@ mod tests {
             let mut rules = RuleSet::from_ini(&ini).expect("receiver admission fixture");
             let warhead = rules.warhead(warhead_name).unwrap().clone();
             let mut interner = test_interner();
-            let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+            let _handles =
+                crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
             let warhead_ref = interner.intern(warhead_name);
             let source_house = interner.intern("SourceHouse");
             let ally_house = interner.intern("AllyHouse");

@@ -115,14 +115,23 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 /// shared-dummy overlay identity/state folds. The dedicated pre-v115 probe reproduces the
 /// prior current baseline exactly; this fixture builds a legacy `None`-count grid, so only
 /// current-schema composition moved.
+// Re-baselined 2026-09-02 for the native tiberium queue store (OQ-38, bridge transaction 3
+// slice D): every class now carries the native entry array, float min-heap, capacity, and
+// `native_rect`, rebuilds walk `CellIterator` order, and spread admission applies the
+// `FirstObject` occupier gate. This is behavior-bearing on every fixture with ore, so the
+// historical probes move as well; the RNG stream tuple and tick-for-tick record/replay
+// equality remain exact.
 // 2026-09-02 veterancy effects (GSI-08.12): `TechnoClass+0x13C` is now written by the
 // first `AI_Update` promotion sample (-1 -> GetVeterancyLevel code), so every live
 // object's hashed `veterancy_rank_cache` moved. Composition of the hash is unchanged
 // and the RNG stream pins held (FINAL_STREAM_STATES), so no cadence or draw moved.
-const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x9CB2_0815_FBC1_715E;
-const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x90E9_717E_A6F4_0626;
-const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x2885_09E3_1DC0_2908;
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x9B01_6FD8_F7BF_978E;
+// Merge 2026-09-02: main's veterancy re-baseline and this branch's queue-store
+// re-baseline both move the same constants, so the values below are the composed
+// measurement taken on the merged tree, not either side's number.
+const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x1880_D391_E620_9834;
+const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x7D9B_C414_D199_21CC;
+const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xE1C6_54FA_7B7B_9CB3;
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x1422_9DF5_DB39_C07B;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so

@@ -22,6 +22,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 
+use crate::map::authored_overlay::NativeOverlayMapShape;
 use crate::map::basic::{BasicSection, SpecialFlagsSection};
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
@@ -32,10 +33,23 @@ use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::rng::SimRng;
 use crate::sim::tiberium::{
-    NewTiberiumAdmission, PlaceTiberiumContext, TiberiumPlacementObjectContext,
-    can_place_new_tiberium, place_tiberium,
+    NativeCellObjectView, NewTiberiumAdmission, PlaceTiberiumContext,
+    TiberiumPlacementObjectContext, can_place_new_tiberium, place_tiberium,
 };
 use crate::util::fixed_math::SimFixed;
+use crate::util::native_x87::{NativeF64Bits, X87Chop53, X87Ordering};
+
+/// The `1e-05` double at `0x007E3810` every tiberium percentage gate compares
+/// against (`CanGrowTiberium @ 0x00483620`, `CanSpreadTiberium @ 0x00483690`,
+/// `GrowthProcessor @ 0x00722F00`, `SpreadProcessor @ 0x00722440`).
+const NATIVE_PERCENT_MIN_BITS: u64 = 0x3EE4_F8B5_88E3_68F1;
+/// Growth queue admission literal: `AddToGrowthQueue @ 0x007235A0` and the
+/// processor reinsert test `OverlayData < 0x0B` (not `MaxDensity - 1`).
+const GROWTH_QUEUE_DENSITY_LIMIT: u8 = 0x0B;
+/// `GrowthProcessor`: rebuild when `heap count > capacity - 2 * batch`.
+const GROWTH_PROCESSOR_REBUILD_BATCH_FACTOR: i64 = 2;
+/// `SpreadProcessor`: rebuild when `heap count > capacity - 0x14`.
+const SPREAD_PROCESSOR_REBUILD_SLACK: i64 = 0x14;
 
 /// Base ore stock per richness level — matches seed_resource_nodes_from_overlays().
 const ORE_BASE_PER_LEVEL: u16 = 120;
@@ -49,7 +63,6 @@ const SPREAD_THRESHOLD: u16 = ORE_BASE_PER_LEVEL * 6;
 const MAX_CANDIDATES: usize = 50;
 /// Native AddToGrowthQueue priority jitter span.
 const GROWTH_QUEUE_PRIORITY_WINDOW: u32 = 50;
-const PERCENT_PPM: i64 = 1_000_000;
 const GROWTH_BATCH_MIN: u32 = 5;
 const GROWTH_BATCH_MAX: u32 = 50;
 const SPREAD_BATCH_MIN: u32 = 5;
@@ -163,10 +176,241 @@ pub struct NativeTiberiumState {
 pub struct NativeTiberiumClassState {
     pub growth_timer: NativeTiberiumTimer,
     pub spread_timer: NativeTiberiumTimer,
-    pub growth_heap: Vec<NativeTiberiumQueueEntry>,
-    pub spread_heap: Vec<NativeTiberiumQueueEntry>,
+    /// `TiberiumClass+0x110/+0x114/+0x118` growth queue store.
+    pub growth: NativeTiberiumQueue,
+    /// `TiberiumClass+0xF4/+0xF8/+0xFC` spread queue store.
+    pub spread: NativeTiberiumQueue,
+    /// Growth flag-byte plane (`+0x114`), one flag per real cell.
     pub growth_bitmap: BTreeSet<(u16, u16)>,
+    /// Spread flag-byte plane (`+0xF8`).
     pub spread_bitmap: BTreeSet<(u16, u16)>,
+}
+
+/// One native `TiberiumClass` queue store: the append-only entry array with
+/// its monotonically increasing counter, the float min-heap of entry
+/// references, and the store capacity.
+///
+/// gamemd-derived: `TiberiumClass::InitGrowthQueues_All @ 0x00722D00` /
+/// `InitSpreadQueues_All @ 0x00722240` size the entry array, the flag plane,
+/// and the heap from `FUN_0042B1F0 = (MapRect.Height + 4) * MapRect.Width *
+/// 2`. Every insert site (`RebuildGrowthQueue @ 0x007233A0`,
+/// `RebuildSpreadQueue @ 0x007228B0`, `AddToGrowthQueue @ 0x007235A0`,
+/// `AddToSpreadQueue @ 0x00722AF0`, the processor reinserts at
+/// `0x00723060..0x007230D8` and `0x0072259A..0x00722614`) appends the entry
+/// at the array counter unconditionally, increments the counter, and only
+/// when `count + 1 < capacity` sifts the new reference up while the parent's
+/// priority is strictly greater (`parent <= new` breaks the loop). The
+/// processors pop slot 1, move the last slot to the root, decrement the
+/// count, and run `FloatMinHeap::SiftDown @ 0x005AD870` (a child replaces
+/// its parent only when strictly smaller, left before right). The array
+/// contents past the popped references are never reused before a rebuild.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NativeTiberiumQueue {
+    /// Entry array in insertion order (the native counter is its length).
+    entries: Vec<NativeTiberiumQueueEntry>,
+    /// 1-based heap of entry-array indices; slot 0 is unused.
+    heap: Vec<u32>,
+    /// Native store capacity.
+    capacity: u32,
+}
+
+impl Default for NativeTiberiumQueue {
+    /// An unsized store (capacity 0): every insert stays array-only until a
+    /// rebuild sizes it. Slot 0 is present so the 1-based heap invariant
+    /// holds from construction.
+    fn default() -> Self {
+        Self::with_capacity(0)
+    }
+}
+
+/// Where one native insert landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeQueueInsert {
+    /// Appended to the array and sifted into the heap.
+    Heaped,
+    /// Appended to the array only: the heap already holds `capacity - 1`
+    /// references, so the native insert skips the heap.
+    ArrayOnly,
+}
+
+impl NativeTiberiumQueue {
+    pub fn with_capacity(capacity: u32) -> Self {
+        Self {
+            entries: Vec::new(),
+            heap: vec![0],
+            capacity,
+        }
+    }
+
+    /// Heap count (`+0x110` / `+0xF4` first dword).
+    pub fn len(&self) -> usize {
+        self.heap.len().saturating_sub(1)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Entry-array counter (`+0x10C` / `+0xF0`).
+    pub fn array_len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn capacity(&self) -> u32 {
+        self.capacity
+    }
+
+    /// Entries referenced by the heap, in heap slot order (slot 1 first).
+    pub fn iter_heap(&self) -> impl Iterator<Item = &NativeTiberiumQueueEntry> + '_ {
+        self.heap
+            .iter()
+            .skip(1)
+            .map(move |&index| &self.entries[index as usize])
+    }
+
+    /// The entry at heap slot `slot + 1` (slot 0 is the root).
+    pub fn heap_entry(&self, slot: usize) -> Option<&NativeTiberiumQueueEntry> {
+        self.heap
+            .get(slot + 1)
+            .map(|&index| &self.entries[index as usize])
+    }
+
+    /// The root entry without popping it.
+    pub fn peek_root(&self) -> Option<&NativeTiberiumQueueEntry> {
+        self.heap_entry(0)
+    }
+
+    /// Native insert: append, then heap-insert while capacity allows.
+    pub fn push(&mut self, entry: NativeTiberiumQueueEntry) -> NativeQueueInsert {
+        let index = u32::try_from(self.entries.len()).expect("queue array fits u32");
+        self.entries.push(entry);
+        let slot = self.len() + 1;
+        if u32::try_from(slot).map_or(true, |slot| slot >= self.capacity) {
+            return NativeQueueInsert::ArrayOnly;
+        }
+        self.heap.push(index);
+        let priority = priority_f32(&entry);
+        let mut hole = slot;
+        while hole > 1 {
+            let parent_index = self.heap[hole >> 1];
+            if !priority_greater(self.entry_priority(parent_index), priority) {
+                break;
+            }
+            self.heap[hole] = parent_index;
+            hole >>= 1;
+        }
+        self.heap[hole] = index;
+        NativeQueueInsert::Heaped
+    }
+
+    /// Native processor pop: take slot 1, move the last slot to the root, and
+    /// sift it down.
+    pub fn pop_root(&mut self) -> Option<NativeTiberiumQueueEntry> {
+        if self.is_empty() {
+            return None;
+        }
+        let root = self.heap[1];
+        let last = self.heap.pop().expect("heap holds the root");
+        if !self.is_empty() {
+            self.heap[1] = last;
+            self.sift_down(1);
+        }
+        Some(self.entries[root as usize])
+    }
+
+    /// `FloatMinHeap::SiftDown @ 0x005AD870`.
+    fn sift_down(&mut self, mut slot: usize) {
+        let count = self.len();
+        loop {
+            let mut smallest = slot;
+            let left = slot * 2;
+            let right = left + 1;
+            if left <= count && priority_less(self.slot_priority(left), self.slot_priority(slot)) {
+                smallest = left;
+            }
+            if right <= count
+                && priority_less(self.slot_priority(right), self.slot_priority(smallest))
+            {
+                smallest = right;
+            }
+            if smallest == slot {
+                return;
+            }
+            self.heap.swap(slot, smallest);
+            slot = smallest;
+        }
+    }
+
+    fn slot_priority(&self, slot: usize) -> f32 {
+        self.entry_priority(self.heap[slot])
+    }
+
+    fn entry_priority(&self, index: u32) -> f32 {
+        priority_f32(&self.entries[index as usize])
+    }
+
+    fn hash_into(&self, hasher: &mut impl Hasher) {
+        self.capacity.hash(hasher);
+        self.entries.len().hash(hasher);
+        for entry in &self.entries {
+            entry.rx.hash(hasher);
+            entry.ry.hash(hasher);
+            entry.priority_bits.hash(hasher);
+        }
+        self.heap.hash(hasher);
+    }
+}
+
+/// Native `FCOMP` ordering of two finite float priorities.
+fn priority_less(lhs: f32, rhs: f32) -> bool {
+    lhs.partial_cmp(&rhs) == Some(std::cmp::Ordering::Less)
+}
+
+fn priority_greater(lhs: f32, rhs: f32) -> bool {
+    lhs.partial_cmp(&rhs) == Some(std::cmp::Ordering::Greater)
+}
+
+/// `FUN_0042B1F0`: `(MapRect.Height + 4) * MapRect.Width * 2`.
+pub fn native_tiberium_queue_capacity(native_rect: (u16, u16)) -> u32 {
+    (u32::from(native_rect.1) + 4) * u32::from(native_rect.0) * 2
+}
+
+/// `pct >= 1e-05` in native double arithmetic: the admission gate of
+/// `CanGrowTiberium`/`CanSpreadTiberium` (reject when `pct < 1e-05`).
+pub(crate) fn native_percentage_admits(bits: u64) -> bool {
+    let Ok(value) = X87Chop53::load_f64(NativeF64Bits::from_bits(bits)) else {
+        return false;
+    };
+    let Ok(min) = X87Chop53::load_f64(NativeF64Bits::from_bits(NATIVE_PERCENT_MIN_BITS)) else {
+        return false;
+    };
+    X87Chop53::compare(value, min) != X87Ordering::Less
+}
+
+/// `pct > 1e-05`: the processor entry gate (`FCOMP` then `TEST AH,0x41`
+/// returns on below-or-equal).
+fn native_percentage_drives(bits: u64) -> bool {
+    let Ok(value) = X87Chop53::load_f64(NativeF64Bits::from_bits(bits)) else {
+        return false;
+    };
+    let Ok(min) = X87Chop53::load_f64(NativeF64Bits::from_bits(NATIVE_PERCENT_MIN_BITS)) else {
+        return false;
+    };
+    X87Chop53::compare(value, min) == X87Ordering::Greater
+}
+
+/// Processor batch: `FILD heap_count; FMUL [pct]; call _ftol` under the
+/// process's 53-bit chop control word, then the clamp `[min, max]`
+/// (`0x00722F3C..0x00722F68` growth, `0x00722480..0x007224AC` spread).
+fn native_processor_batch(heap_count: usize, percentage_bits: u64, min: u32, max: u32) -> u32 {
+    let count = i32::try_from(heap_count).unwrap_or(i32::MAX);
+    let product = X87Chop53::load_f64(NativeF64Bits::from_bits(percentage_bits))
+        .map(|percentage| X87Chop53::mul(X87Chop53::load_i32(count), percentage))
+        .ok();
+    let scaled = product
+        .and_then(|product| X87Chop53::ftol_i64(product).ok())
+        .unwrap_or(0);
+    scaled.clamp(i64::from(min), i64::from(max)) as u32
 }
 
 /// CDTimer-shaped fields used by native tiberium drivers.
@@ -248,12 +492,12 @@ impl NativeSpreadProcessStats {
 }
 
 impl NativeTiberiumClassState {
-    pub fn new_due(current_frame: u32) -> Self {
+    pub fn new_due(current_frame: u32, queue_capacity: u32) -> Self {
         Self {
             growth_timer: NativeTiberiumTimer::due(current_frame),
             spread_timer: NativeTiberiumTimer::due(current_frame),
-            growth_heap: Vec::new(),
-            spread_heap: Vec::new(),
+            growth: NativeTiberiumQueue::with_capacity(queue_capacity),
+            spread: NativeTiberiumQueue::with_capacity(queue_capacity),
             growth_bitmap: BTreeSet::new(),
             spread_bitmap: BTreeSet::new(),
         }
@@ -305,6 +549,11 @@ pub struct OreGrowthState {
     /// Native per-`TiberiumClass` state shell for the YR queue model.
     #[serde(default)]
     native_tiberium: NativeTiberiumState,
+    /// The native `MapRect` (`[Map] Size` width/height, `0x0087F8DC` /
+    /// `0x0087F8E0`) that sizes every queue store and orders every rebuild
+    /// walk. The storage dimensions stand in until a rebuild supplies it.
+    #[serde(default)]
+    native_rect: (u16, u16),
 }
 
 impl OreGrowthState {
@@ -323,13 +572,41 @@ impl OreGrowthState {
             spread_queue: Vec::new(),
             spread_membership: BTreeSet::new(),
             native_tiberium: NativeTiberiumState::default(),
+            native_rect: (map_width, map_height),
         }
     }
 
-    /// Allocate native per-type tiberium state with due timers.
+    /// The native `MapRect` the queue stores are sized and walked from.
+    pub fn native_rect(&self) -> (u16, u16) {
+        self.native_rect
+    }
+
+    /// Mimic a snapshot written before the rect was serialized, whose
+    /// `native_rect` deserializes to the serde default.
+    #[cfg(test)]
+    pub(crate) fn set_native_rect_for_tests(&mut self, native_rect: (u16, u16)) {
+        self.native_rect = native_rect;
+    }
+
+    /// Store the native `MapRect` the caller loaded with, then allocate the
+    /// class stores from it. Used where no overlay grid exists yet, so that a
+    /// later snapshot restore still rebuilds from the `[Map] Size` rect.
+    pub fn reset_native_tiberium_classes_for_rect(
+        &mut self,
+        native_rect: (u16, u16),
+        type_count: usize,
+        current_frame: u32,
+    ) {
+        self.native_rect = native_rect;
+        self.reset_native_tiberium_classes(type_count, current_frame);
+    }
+
+    /// Allocate native per-type tiberium state with due timers and stores
+    /// sized from the current native rect.
     pub fn reset_native_tiberium_classes(&mut self, type_count: usize, current_frame: u32) {
+        let capacity = native_tiberium_queue_capacity(self.native_rect);
         self.native_tiberium.classes = (0..type_count)
-            .map(|_| NativeTiberiumClassState::new_due(current_frame))
+            .map(|_| NativeTiberiumClassState::new_due(current_frame, capacity))
             .collect();
     }
 
@@ -352,8 +629,10 @@ impl OreGrowthState {
         let cell = overlay_grid.cell(rx, ry);
         let overlay_id = cell.overlay_id?;
         let type_id = overlay_registry.tiberium_type_for_overlay(tiberium_types, overlay_id)?;
-        let ty = tiberium_types.get(type_id)?;
-        if cell.overlay_data >= ty.max_density.saturating_sub(1) {
+        // `AddToGrowthQueue @ 0x007235A0`: the literal `OverlayData < 0x0B`
+        // gate; its array-counter rebuild trigger (`counter > capacity - 10`)
+        // is recorded DRIFT (unreachable in ordinary play, see OQ-38).
+        if cell.overlay_data >= GROWTH_QUEUE_DENSITY_LIMIT {
             return None;
         }
         let class = self.native_tiberium.classes.get_mut(type_id.0 as usize)?;
@@ -362,19 +641,23 @@ impl OreGrowthState {
             ry,
             priority_bits: growth_queue_priority(native_frame, rng.next_u32()).to_bits(),
         };
-        class.growth_heap.push(entry);
+        class.growth.push(entry);
         class.growth_bitmap.insert((rx, ry));
         Some(entry)
     }
 
-    /// Native-shaped `AddToSpreadQueue`: source-gated, bitmap-deduped, one RNG on insert.
+    /// Native-shaped `AddToSpreadQueue @ 0x00722AF0`: `CanSpreadTiberium`
+    /// source gate (`source_has_object` is the cell's `FirstObject != 0`
+    /// test), bitmap-deduped, one RNG on insert. Its array-counter rebuild
+    /// trigger (`counter >= capacity - 0x14`) is recorded DRIFT (OQ-38).
+    #[allow(clippy::too_many_arguments)]
     pub fn add_native_spread_queue_cell(
         &mut self,
         overlay_grid: &OverlayGrid,
         overlay_registry: &OverlayTypeRegistry,
         tiberium_types: &TiberiumTypeRegistry,
         resolved_terrain: Option<&ResolvedTerrainGrid>,
-        source_object_cells: &BTreeSet<(u16, u16)>,
+        source_has_object: bool,
         rx: u16,
         ry: u16,
         native_frame: u32,
@@ -389,7 +672,7 @@ impl OreGrowthState {
             overlay_registry,
             tiberium_types,
             resolved_terrain,
-            source_object_cells,
+            source_has_object,
             rx,
             ry,
             native_frame,
@@ -398,34 +681,41 @@ impl OreGrowthState {
         )
     }
 
+    /// `AddToSpreadQueue @ 0x00722AF0` with an explicit receiver (`this`):
+    /// `store_type` names the store and flag plane that take the cell, while
+    /// `CanSpreadTiberium @ 0x00483690` admits the cell on its OWN class.
+    /// `Reduce_Tiberium @ 0x00480A80` calls the REMOVED class's
+    /// `AddToSpreadQueue` on every in-bounds neighbour, so a store may hold a
+    /// cell of another class (a harvested gem queues its ore neighbours).
+    #[allow(clippy::too_many_arguments)]
     fn add_native_spread_queue_cell_for_type(
         &mut self,
-        type_id: TiberiumTypeId,
+        store_type: TiberiumTypeId,
         overlay_grid: &OverlayGrid,
         overlay_registry: &OverlayTypeRegistry,
         tiberium_types: &TiberiumTypeRegistry,
         resolved_terrain: Option<&ResolvedTerrainGrid>,
-        source_object_cells: &BTreeSet<(u16, u16)>,
+        source_has_object: bool,
         rx: u16,
         ry: u16,
         native_frame: u32,
         spread_enabled: bool,
         rng: &mut SimRng,
     ) -> Option<NativeTiberiumQueueEntry> {
-        if !source_can_spread_tiberium(
-            type_id,
+        native_can_spread_tiberium(
             overlay_grid,
             overlay_registry,
             tiberium_types,
             resolved_terrain,
-            source_object_cells,
+            source_has_object,
             rx,
             ry,
             spread_enabled,
-        ) {
-            return None;
-        }
-        let class = self.native_tiberium.classes.get_mut(type_id.0 as usize)?;
+        )?;
+        let class = self
+            .native_tiberium
+            .classes
+            .get_mut(store_type.0 as usize)?;
         if class.spread_bitmap.contains(&(rx, ry)) {
             return None;
         }
@@ -434,7 +724,7 @@ impl OreGrowthState {
             ry,
             priority_bits: growth_queue_priority(native_frame, rng.next_u32()).to_bits(),
         };
-        class.spread_heap.push(entry);
+        class.spread.push(entry);
         class.spread_bitmap.insert((rx, ry));
         Some(entry)
     }
@@ -485,6 +775,7 @@ impl OreGrowthState {
                 resource_nodes,
                 rng,
                 current_frame,
+                growth_enabled,
                 spread_enabled,
                 radar_dirty_cells.as_deref_mut(),
                 radar_dirty_generation.as_deref_mut(),
@@ -528,6 +819,7 @@ impl OreGrowthState {
             _resource_nodes,
             rng,
             current_frame,
+            true,
             spread_enabled,
             None,
             None,
@@ -544,10 +836,11 @@ impl OreGrowthState {
         tiberium_types: &TiberiumTypeRegistry,
         resolved_terrain: Option<&ResolvedTerrainGrid>,
         source_object_cells: &BTreeSet<(u16, u16)>,
-        _live_objects: Option<TiberiumPlacementObjectContext<'_>>,
+        live_objects: Option<TiberiumPlacementObjectContext<'_>>,
         _resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
         rng: &mut SimRng,
         current_frame: u32,
+        growth_enabled: bool,
         spread_enabled: bool,
         mut radar_dirty_cells: Option<&mut Vec<(u16, u16)>>,
         mut radar_dirty_generation: Option<&mut u64>,
@@ -560,37 +853,58 @@ impl OreGrowthState {
         let Some(class) = self.native_tiberium.classes.get(class_idx) else {
             return NativeGrowthProcessStats::default();
         };
-        if class.growth_heap.is_empty() || ty.growth_percentage_ppm <= 0 {
+        // `GrowthProcessor @ 0x00722F00` entry gate (`0x00722F09..0x00722F36`):
+        // no heap, empty heap, or `GrowthPercentage <= 1e-05` returns.
+        if class.growth.is_empty() || !native_percentage_drives(ty.growth_percentage_bits) {
             return NativeGrowthProcessStats::default();
         }
 
-        self.native_tiberium.classes[class_idx]
-            .growth_heap
-            .sort_by(|a, b| priority_f32(a).total_cmp(&priority_f32(b)));
-        let batch = growth_batch_size(
-            self.native_tiberium.classes[class_idx].growth_heap.len(),
-            ty.growth_percentage_ppm,
+        let batch = native_processor_batch(
+            class.growth.len(),
+            ty.growth_percentage_bits,
+            GROWTH_BATCH_MIN,
+            GROWTH_BATCH_MAX,
         );
         let actual_attempts = signed_abs_mod_plus_one(rng.next_u32(), batch);
         let mut stats = NativeGrowthProcessStats {
             processor_calls: 1,
             attempt_rng_draws: 1,
-            requested_attempts: actual_attempts,
+            requested_attempts: actual_attempts.max(0) as u32,
             ..NativeGrowthProcessStats::default()
         };
+        // `0x00722F85..0x00722F9C`: `heap count > capacity - 2 * attempts`
+        // rebuilds this type's growth queue before the first pop.
+        {
+            let class = &self.native_tiberium.classes[class_idx];
+            let heap_count = class.growth.len() as i64;
+            let threshold = i64::from(class.growth.capacity())
+                - GROWTH_PROCESSOR_REBUILD_BATCH_FACTOR * i64::from(actual_attempts);
+            if threshold < heap_count {
+                let cells = native_rebuild_cells(self.native_rect, overlay_grid);
+                self.rebuild_growth_queue_for_type(
+                    type_id,
+                    overlay_grid,
+                    overlay_registry,
+                    tiberium_types,
+                    resolved_terrain,
+                    growth_enabled,
+                    &cells,
+                );
+            }
+        }
 
-        for _ in 0..actual_attempts {
-            let Some(entry) = self.native_tiberium.classes[class_idx]
-                .growth_heap
-                .first()
-                .copied()
-            else {
-                break;
-            };
-            self.native_tiberium.classes[class_idx]
-                .growth_heap
-                .remove(0);
+        // `0x00722F9C..0x00722FEA`: the first root is popped before the
+        // attempts test, so a non-positive attempts word (`0x80000000` only)
+        // drops one entry and returns.
+        let mut pending = self.native_tiberium.classes[class_idx].growth.pop_root();
+        if pending.is_some() {
             stats.popped_entries += 1;
+        }
+        if actual_attempts < 1 {
+            return stats;
+        }
+        let mut processed: i32 = 0;
+        while let Some(entry) = pending.take() {
             let current_type = current_tiberium_type(
                 overlay_grid,
                 overlay_registry,
@@ -598,65 +912,100 @@ impl OreGrowthState {
                 entry.rx,
                 entry.ry,
             );
-            if current_type != Some(type_id) {
-                stats.stale_entries += 1;
-                continue;
-            }
-
-            let spread_was_queued = self.native_tiberium.classes[class_idx]
-                .spread_bitmap
-                .contains(&(entry.rx, entry.ry));
-            let placed = {
-                let mut context = PlaceTiberiumContext {
-                    overlay_grid,
-                    ore_growth_state: self,
-                    overlay_registry,
-                    tiberium_types,
-                    resolved_terrain,
-                    source_object_cells,
-                    new_cell_admission: None,
-                    rng,
-                    binary_frame: current_frame,
-                    growth_enabled: true,
-                    spread_enabled,
-                    radar_dirty_cells: radar_dirty_cells.as_deref_mut(),
-                    radar_dirty_generation: radar_dirty_generation.as_deref_mut(),
-                    tactical_dirty_cells: tactical_dirty_cells.as_deref_mut(),
-                };
-                place_tiberium(&mut context, (entry.rx, entry.ry), type_id, 1)
-            };
-            if !placed {
-                continue;
-            }
-            stats.grown_entries += 1;
-            stats.spread_feed_calls += 1;
-            if !spread_was_queued
-                && self.native_tiberium.classes[class_idx]
+            if current_type == Some(type_id) {
+                let spread_was_queued = self.native_tiberium.classes[class_idx]
                     .spread_bitmap
-                    .contains(&(entry.rx, entry.ry))
-            {
-                stats.spread_enqueued_entries += 1;
-            }
-
-            let post_data = overlay_grid.cell(entry.rx, entry.ry).overlay_data;
-            if post_data < ty.max_density.saturating_sub(1) {
-                let replacement = NativeTiberiumQueueEntry {
-                    rx: entry.rx,
-                    ry: entry.ry,
-                    priority_bits: growth_queue_priority(current_frame, rng.next_u32()).to_bits(),
+                    .contains(&(entry.rx, entry.ry));
+                let object_view = live_objects.map(|objects| objects.object_view());
+                // `CellClass::GrowTiberium @ 0x00483710` (= `PlaceTiberium(type,
+                // 1)`, whose existing-cell branch feeds `AddToSpreadQueue`). Its
+                // result is not consulted: the processor continues on the
+                // cell's data byte.
+                let placed = {
+                    let mut context = PlaceTiberiumContext {
+                        overlay_grid,
+                        ore_growth_state: self,
+                        overlay_registry,
+                        tiberium_types,
+                        resolved_terrain,
+                        source_object_cells,
+                        new_cell_admission: None,
+                        live_objects: object_view,
+                        rng,
+                        binary_frame: current_frame,
+                        growth_enabled: true,
+                        spread_enabled,
+                        radar_dirty_cells: radar_dirty_cells.as_deref_mut(),
+                        radar_dirty_generation: radar_dirty_generation.as_deref_mut(),
+                        tactical_dirty_cells: tactical_dirty_cells.as_deref_mut(),
+                    };
+                    place_tiberium(&mut context, (entry.rx, entry.ry), type_id, 1)
                 };
-                let class = &mut self.native_tiberium.classes[class_idx];
-                class.growth_heap.push(replacement);
-                class
-                    .growth_heap
-                    .sort_by(|a, b| priority_f32(a).total_cmp(&priority_f32(b)));
-                class.growth_bitmap.insert((entry.rx, entry.ry));
-                stats.reinserted_entries += 1;
+                if placed {
+                    stats.grown_entries += 1;
+                    stats.spread_feed_calls += 1;
+                    if !spread_was_queued
+                        && self.native_tiberium.classes[class_idx]
+                            .spread_bitmap
+                            .contains(&(entry.rx, entry.ry))
+                    {
+                        stats.spread_enqueued_entries += 1;
+                    }
+                }
+
+                // `0x00723030..0x007230D8`: the literal `< 0x0B` reinsert
+                // test, one Scenario draw for the new priority
+                // (`abs(raw % 50)`), heap insert, flag set, then
+                // `AddToSpreadQueue` (a no-op when the `PlaceTiberium` feed
+                // already set the spread flag).
+                let post_data = overlay_grid.cell(entry.rx, entry.ry).overlay_data;
+                if post_data < GROWTH_QUEUE_DENSITY_LIMIT {
+                    let replacement = NativeTiberiumQueueEntry {
+                        rx: entry.rx,
+                        ry: entry.ry,
+                        priority_bits: processor_reinsert_priority(current_frame, rng.next_u32())
+                            .to_bits(),
+                    };
+                    let class = &mut self.native_tiberium.classes[class_idx];
+                    class.growth.push(replacement);
+                    class.growth_bitmap.insert((entry.rx, entry.ry));
+                    stats.reinserted_entries += 1;
+                    let source_has_object = cell_has_native_object(
+                        source_object_cells,
+                        object_view,
+                        (entry.rx, entry.ry),
+                    );
+                    self.add_native_spread_queue_cell(
+                        overlay_grid,
+                        overlay_registry,
+                        tiberium_types,
+                        resolved_terrain,
+                        source_has_object,
+                        entry.rx,
+                        entry.ry,
+                        current_frame,
+                        spread_enabled,
+                        rng,
+                    );
+                } else {
+                    self.native_tiberium.classes[class_idx]
+                        .growth_bitmap
+                        .remove(&(entry.rx, entry.ry));
+                    stats.full_clears += 1;
+                }
             } else {
-                self.native_tiberium.classes[class_idx]
-                    .growth_bitmap
-                    .remove(&(entry.rx, entry.ry));
-                stats.full_clears += 1;
+                // A type mismatch drops the entry without touching the flag.
+                stats.stale_entries += 1;
+            }
+            // `0x0072312B..0x0072313E`: every popped entry counts as one
+            // attempt; the next root is popped only while attempts remain.
+            processed += 1;
+            if actual_attempts <= processed {
+                break;
+            }
+            pending = self.native_tiberium.classes[class_idx].growth.pop_root();
+            if pending.is_some() {
+                stats.popped_entries += 1;
             }
         }
 
@@ -795,41 +1144,63 @@ impl OreGrowthState {
         if self.native_tiberium.classes.get(class_idx).is_none() {
             return NativeSpreadProcessStats::default();
         };
-        if self.native_tiberium.classes[class_idx]
-            .spread_heap
-            .is_empty()
-            || ty.spread_percentage_ppm <= 0
+        // `SpreadProcessor @ 0x00722440` entry gate: empty heap or
+        // `SpreadPercentage <= 1e-05` returns.
+        if self.native_tiberium.classes[class_idx].spread.is_empty()
+            || !native_percentage_drives(ty.spread_percentage_bits)
         {
             return NativeSpreadProcessStats::default();
         }
 
-        self.native_tiberium.classes[class_idx]
-            .spread_heap
-            .sort_by(|a, b| priority_f32(a).total_cmp(&priority_f32(b)));
-        let batch = spread_batch_size(
-            self.native_tiberium.classes[class_idx].spread_heap.len(),
-            ty.spread_percentage_ppm,
+        let batch = native_processor_batch(
+            self.native_tiberium.classes[class_idx].spread.len(),
+            ty.spread_percentage_bits,
+            SPREAD_BATCH_MIN,
+            SPREAD_BATCH_MAX,
         );
         let budget = signed_abs_mod_plus_one(rng.next_u32(), batch);
         let mut stats = NativeSpreadProcessStats {
             processor_calls: 1,
             budget_rng_draws: 1,
-            requested_budget: budget,
+            requested_budget: budget.max(0) as u32,
             ..NativeSpreadProcessStats::default()
         };
-        let mut processed_sources = 0;
-        while processed_sources < budget {
-            let Some(entry) = self.native_tiberium.classes[class_idx]
-                .spread_heap
-                .first()
-                .copied()
-            else {
-                break;
-            };
-            self.native_tiberium.classes[class_idx]
-                .spread_heap
-                .remove(0);
+        // `0x007224C9..0x007224E3`: `heap count > capacity - 0x14` rebuilds
+        // this type's spread queue before the first pop.
+        {
+            let class = &self.native_tiberium.classes[class_idx];
+            let heap_count = class.spread.len() as i64;
+            if i64::from(class.spread.capacity()) - SPREAD_PROCESSOR_REBUILD_SLACK < heap_count {
+                let cells = native_rebuild_cells(self.native_rect, overlay_grid);
+                let occupied_cells = native_occupied_cells(
+                    source_object_cells,
+                    new_cell_admission
+                        .and_then(|admission| admission.live_objects())
+                        .map(|objects| objects.object_view()),
+                );
+                self.rebuild_spread_queue_for_type(
+                    type_id,
+                    overlay_grid,
+                    overlay_registry,
+                    tiberium_types,
+                    resolved_terrain,
+                    &occupied_cells,
+                    spread_enabled,
+                    &cells,
+                );
+            }
+        }
+        // `0x007224E8..0x0072252E`: the first root is popped before the budget
+        // test (a non-positive budget word drops it and returns).
+        let mut pending = self.native_tiberium.classes[class_idx].spread.pop_root();
+        if pending.is_some() {
             stats.popped_entries += 1;
+        }
+        if budget < 1 {
+            return stats;
+        }
+        let mut processed_sources: i32 = 0;
+        while let Some(entry) = pending.take() {
             let valid_targets = count_native_spread_targets(
                 overlay_grid,
                 source_object_cells,
@@ -845,13 +1216,21 @@ impl OreGrowthState {
                     .remove(&(entry.rx, entry.ry));
                 stats.zero_target_entries += 1;
                 stats.bitmap_clears += 1;
+                // Zero targets spend no budget; the loop pops the next root.
+                pending = self.native_tiberium.classes[class_idx].spread.pop_root();
+                if pending.is_some() {
+                    stats.popped_entries += 1;
+                }
                 continue;
             }
 
             stats.spread_calls += 1;
             processed_sources += 1;
+            // `CellClass::SpreadTiberium @ 0x00483780` spreads the cell's
+            // CURRENT TiberiumClass (a stale entry of another class still
+            // spreads whatever now sits there; an empty cell fails its own
+            // `CanSpreadTiberium` re-check without a draw).
             if spread_tiberium_from_source(
-                type_id,
                 overlay_grid,
                 overlay_registry,
                 tiberium_types,
@@ -875,110 +1254,199 @@ impl OreGrowthState {
                 stats.placed_entries += 1;
             }
 
+            // `0x0072259A..0x00722614`: more than one valid target reinserts
+            // the source at priority 0 without an RNG draw.
             if valid_targets > 1 {
                 let class = &mut self.native_tiberium.classes[class_idx];
-                class.spread_heap.push(NativeTiberiumQueueEntry {
+                class.spread.push(NativeTiberiumQueueEntry {
                     rx: entry.rx,
                     ry: entry.ry,
                     priority_bits: 0.0f32.to_bits(),
                 });
-                class
-                    .spread_heap
-                    .sort_by(|a, b| priority_f32(a).total_cmp(&priority_f32(b)));
                 class.spread_bitmap.insert((entry.rx, entry.ry));
                 stats.reinserted_entries += 1;
+            }
+            // `0x00722619..0x00722630`: the budget is checked after each
+            // processed source; the next root is popped only while it remains.
+            if budget <= processed_sources {
+                break;
+            }
+            pending = self.native_tiberium.classes[class_idx].spread.pop_root();
+            if pending.is_some() {
+                stats.popped_entries += 1;
             }
         }
 
         stats
     }
 
-    /// Rebuild native growth then spread queues from current post-load cells.
+    /// Rebuild native growth then spread queues from the current cells.
+    ///
+    /// gamemd-derived: `TiberiumClass::InitGrowthQueues_All @ 0x00722D00`
+    /// then `InitSpreadQueues_All @ 0x00722240` (authored `Full_Init` between
+    /// the Terrain and Techno sections, the generator tail before
+    /// `InitCellAttributes(1)`, and `Load_Game_From_File`), each freeing and
+    /// re-sizing every TiberiumClass's store from the `MapRect` and calling
+    /// that type's `RebuildGrowthQueue @ 0x007233A0` / `RebuildSpreadQueue @
+    /// 0x007228B0`, which walk every real cell in `CellIterator` order.
+    /// `occupied_cells` is the set of cells whose `CellClass+0xE4 FirstObject`
+    /// is non-null (terrain objects and every ground-list Techno).
+    #[allow(clippy::too_many_arguments)]
     pub fn rebuild_native_tiberium_queues_from_overlays(
         &mut self,
         overlay_grid: &OverlayGrid,
         overlay_registry: &OverlayTypeRegistry,
         tiberium_types: &TiberiumTypeRegistry,
         resolved_terrain: Option<&ResolvedTerrainGrid>,
-        source_object_cells: &BTreeSet<(u16, u16)>,
+        occupied_cells: &BTreeSet<(u16, u16)>,
         basic_growth_enabled: bool,
         tiberium_spreads_enabled: bool,
         current_frame: u32,
+        native_rect: (u16, u16),
     ) -> NativeTiberiumRebuildStats {
+        self.native_rect = native_rect;
         self.reset_native_tiberium_classes(tiberium_types.len(), current_frame);
-        let zero_priority = 0.0f32.to_bits();
+        let cells = native_rebuild_cells(native_rect, overlay_grid);
         let mut stats = NativeTiberiumRebuildStats::default();
-
-        // `MapClass::InitCellAttributes` seeds the complete native growth
-        // plane first. Spread is a distinct second complete scan; interleaving
-        // both queues per occupied cell changes heap insertion chronology.
-        for (rx, ry, cell) in overlay_grid.iter_occupied() {
-            let Some(overlay_id) = cell.overlay_id else {
-                continue;
-            };
-            let Some(type_id) =
-                overlay_registry.tiberium_type_for_overlay(tiberium_types, overlay_id)
-            else {
-                continue;
-            };
-            let Some(ty) = tiberium_types.get(type_id) else {
-                continue;
-            };
-            let Some(class) = self.native_tiberium.classes.get_mut(type_id.0 as usize) else {
-                continue;
-            };
-            if !cell_is_flat(resolved_terrain, rx, ry) {
-                continue;
-            }
-
-            if basic_growth_enabled
-                && ty.growth_percentage_ppm >= 0
-                && cell.overlay_data < ty.max_density.saturating_sub(1)
-            {
-                class.growth_heap.push(NativeTiberiumQueueEntry {
-                    rx,
-                    ry,
-                    priority_bits: zero_priority,
-                });
-                class.growth_bitmap.insert((rx, ry));
-                stats.growth_entries += 1;
-            }
+        for ty in tiberium_types.types() {
+            stats.growth_entries += self.rebuild_growth_queue_for_type(
+                ty.id,
+                overlay_grid,
+                overlay_registry,
+                tiberium_types,
+                resolved_terrain,
+                basic_growth_enabled,
+                &cells,
+            );
         }
-
-        for (rx, ry, cell) in overlay_grid.iter_occupied() {
-            let Some(overlay_id) = cell.overlay_id else {
-                continue;
-            };
-            let Some(type_id) =
-                overlay_registry.tiberium_type_for_overlay(tiberium_types, overlay_id)
-            else {
-                continue;
-            };
-            let Some(ty) = tiberium_types.get(type_id) else {
-                continue;
-            };
-            let Some(class) = self.native_tiberium.classes.get_mut(type_id.0 as usize) else {
-                continue;
-            };
-            if !cell_is_flat(resolved_terrain, rx, ry) {
-                continue;
-            }
-            if tiberium_spreads_enabled
-                && ty.spread_percentage_ppm >= 0
-                && cell.overlay_data > type_id.0 / 2
-                && !source_object_cells.contains(&(rx, ry))
-            {
-                class.spread_heap.push(NativeTiberiumQueueEntry {
-                    rx,
-                    ry,
-                    priority_bits: zero_priority,
-                });
-                class.spread_bitmap.insert((rx, ry));
-                stats.spread_entries += 1;
-            }
+        for ty in tiberium_types.types() {
+            stats.spread_entries += self.rebuild_spread_queue_for_type(
+                ty.id,
+                overlay_grid,
+                overlay_registry,
+                tiberium_types,
+                resolved_terrain,
+                occupied_cells,
+                tiberium_spreads_enabled,
+                &cells,
+            );
         }
-
         stats
+    }
+
+    /// `TiberiumClass::RebuildGrowthQueue @ 0x007233A0`: reset this type's
+    /// growth store, then push every real cell of this type that
+    /// `CellClass::CanGrowTiberium @ 0x00483620` admits, priority 0, in
+    /// `CellIterator` order.
+    #[allow(clippy::too_many_arguments)]
+    fn rebuild_growth_queue_for_type(
+        &mut self,
+        type_id: TiberiumTypeId,
+        overlay_grid: &OverlayGrid,
+        overlay_registry: &OverlayTypeRegistry,
+        tiberium_types: &TiberiumTypeRegistry,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        growth_enabled: bool,
+        cells: &[(u16, u16)],
+    ) -> usize {
+        let capacity = native_tiberium_queue_capacity(self.native_rect);
+        let Some(ty) = tiberium_types.get(type_id) else {
+            return 0;
+        };
+        let Some(class) = self.native_tiberium.classes.get_mut(type_id.0 as usize) else {
+            return 0;
+        };
+        class.growth = NativeTiberiumQueue::with_capacity(capacity);
+        class.growth_bitmap.clear();
+        let mut seeded = 0;
+        for &(rx, ry) in cells {
+            if current_tiberium_type(overlay_grid, overlay_registry, tiberium_types, rx, ry)
+                != Some(type_id)
+                || !native_can_grow_tiberium(
+                    ty,
+                    overlay_grid.cell(rx, ry).overlay_data,
+                    resolved_terrain,
+                    (rx, ry),
+                    growth_enabled,
+                )
+            {
+                continue;
+            }
+            class.growth.push(NativeTiberiumQueueEntry {
+                rx,
+                ry,
+                priority_bits: 0.0f32.to_bits(),
+            });
+            class.growth_bitmap.insert((rx, ry));
+            seeded += 1;
+        }
+        seeded
+    }
+
+    /// `TiberiumClass::RebuildSpreadQueue @ 0x007228B0`: the spread twin,
+    /// admitting through `CellClass::CanSpreadTiberium @ 0x00483690`.
+    #[allow(clippy::too_many_arguments)]
+    fn rebuild_spread_queue_for_type(
+        &mut self,
+        type_id: TiberiumTypeId,
+        overlay_grid: &OverlayGrid,
+        overlay_registry: &OverlayTypeRegistry,
+        tiberium_types: &TiberiumTypeRegistry,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        occupied_cells: &BTreeSet<(u16, u16)>,
+        spread_enabled: bool,
+        cells: &[(u16, u16)],
+    ) -> usize {
+        let capacity = native_tiberium_queue_capacity(self.native_rect);
+        if tiberium_types.get(type_id).is_none() {
+            return 0;
+        }
+        if self
+            .native_tiberium
+            .classes
+            .get(type_id.0 as usize)
+            .is_none()
+        {
+            return 0;
+        }
+        {
+            let class = &mut self.native_tiberium.classes[type_id.0 as usize];
+            class.spread = NativeTiberiumQueue::with_capacity(capacity);
+            class.spread_bitmap.clear();
+        }
+        let mut seeded = 0;
+        for &(rx, ry) in cells {
+            // `RebuildSpreadQueue` alone tests `GetTiberiumType == class`
+            // before `CanSpreadTiberium`.
+            if current_tiberium_type(overlay_grid, overlay_registry, tiberium_types, rx, ry)
+                != Some(type_id)
+            {
+                continue;
+            }
+            if native_can_spread_tiberium(
+                overlay_grid,
+                overlay_registry,
+                tiberium_types,
+                resolved_terrain,
+                occupied_cells.contains(&(rx, ry)),
+                rx,
+                ry,
+                spread_enabled,
+            )
+            .is_none()
+            {
+                continue;
+            }
+            let class = &mut self.native_tiberium.classes[type_id.0 as usize];
+            class.spread.push(NativeTiberiumQueueEntry {
+                rx,
+                ry,
+                priority_bits: 0.0f32.to_bits(),
+            });
+            class.spread_bitmap.insert((rx, ry));
+            seeded += 1;
+        }
+        seeded
     }
 
     /// Enqueue a newly placed ore cell with native AddToGrowthQueue priority.
@@ -1067,11 +1535,13 @@ impl OreGrowthState {
         }
     }
 
-    /// Native `Reduce_Tiberium` full-removal spread reseed.
+    /// Native `Reduce_Tiberium @ 0x00480A80` full-removal spread reseed.
     ///
-    /// Clears this removed cell's spread bitmap bit for every tiberium class,
-    /// then calls the removed cell's type `AddToSpreadQueue` for each eligible
-    /// neighboring source. Existing heap entries are intentionally left stale.
+    /// Clears this removed cell's spread bitmap bit for every tiberium class
+    /// (`ClearSpreadBitmaps_AllTypes @ 0x00722AB0`), then calls the REMOVED
+    /// class's `AddToSpreadQueue` for each in-bounds neighbour, which admits
+    /// the neighbour on its own class. Existing heap entries are
+    /// intentionally left stale.
     #[allow(clippy::too_many_arguments)]
     pub fn reseed_native_spread_neighbors_after_reduction(
         &mut self,
@@ -1081,6 +1551,7 @@ impl OreGrowthState {
         tiberium_types: &TiberiumTypeRegistry,
         resolved_terrain: Option<&ResolvedTerrainGrid>,
         source_object_cells: &BTreeSet<(u16, u16)>,
+        live_objects: Option<NativeCellObjectView<'_>>,
         removed_cell: (u16, u16),
         native_frame: u32,
         spread_enabled: bool,
@@ -1090,6 +1561,15 @@ impl OreGrowthState {
         self.clear_native_spread_bitmap_cell(removed_cell.0, removed_cell.1);
 
         let map_height = self.effective_map_height();
+        // `Reduce_Tiberium @ 0x00480A80` offers each direction to
+        // `Cell_in_bounds_check @ 0x00568300`, the MapRect diamond, not a
+        // rectangle. The storage bounds stay because Rust indexes a
+        // rectangular grid; a zero rect means no rebuild has supplied the
+        // MapRect yet (headless fixtures only), where the storage extent is
+        // the only bound available.
+        let shape = (self.native_rect != (0, 0)).then(|| {
+            NativeOverlayMapShape::new(i32::from(self.native_rect.0), i32::from(self.native_rect.1))
+        });
         let mut inserted = 0usize;
         for &(dx, dy) in &ADJACENT_OFFSETS {
             let nx = removed_cell.0 as i32 + dx;
@@ -1097,6 +1577,12 @@ impl OreGrowthState {
             if nx < 0 || ny < 0 || nx >= self.map_width as i32 || ny >= map_height as i32 {
                 continue;
             }
+            if let (Some(shape), Ok(sx), Ok(sy)) = (shape, i16::try_from(nx), i16::try_from(ny))
+                && !shape.admits(sx, sy)
+            {
+                continue;
+            }
+            let neighbor = (nx as u16, ny as u16);
             if self
                 .add_native_spread_queue_cell_for_type(
                     removed_type,
@@ -1104,9 +1590,9 @@ impl OreGrowthState {
                     overlay_registry,
                     tiberium_types,
                     resolved_terrain,
-                    source_object_cells,
-                    nx as u16,
-                    ny as u16,
+                    cell_has_native_object(source_object_cells, live_objects, neighbor),
+                    neighbor.0,
+                    neighbor.1,
                     native_frame,
                     spread_enabled,
                     rng,
@@ -1151,26 +1637,72 @@ impl OreGrowthState {
             rx.hash(hasher);
             ry.hash(hasher);
         }
+        self.native_rect.hash(hasher);
         self.native_tiberium.classes.len().hash(hasher);
         for class in &self.native_tiberium.classes {
             class.growth_timer.start_frame.hash(hasher);
             class.growth_timer.interval.hash(hasher);
             class.spread_timer.start_frame.hash(hasher);
             class.spread_timer.interval.hash(hasher);
-            for entry in &class.growth_heap {
-                entry.rx.hash(hasher);
-                entry.ry.hash(hasher);
-                entry.priority_bits.hash(hasher);
-            }
-            for entry in &class.spread_heap {
-                entry.rx.hash(hasher);
-                entry.ry.hash(hasher);
-                entry.priority_bits.hash(hasher);
-            }
+            class.growth.hash_into(hasher);
+            class.spread.hash_into(hasher);
             class.growth_bitmap.hash(hasher);
             class.spread_bitmap.hash(hasher);
         }
     }
+}
+
+/// Real cells of the native `MapRect` in `CellIterator_Init/Next @
+/// 0x00578350/0x00578290` order, restricted to the rectangular overlay
+/// storage.
+fn native_rebuild_cells(native_rect: (u16, u16), overlay_grid: &OverlayGrid) -> Vec<(u16, u16)> {
+    NativeOverlayMapShape::new(i32::from(native_rect.0), i32::from(native_rect.1))
+        .recalc_cells()
+        .into_iter()
+        .filter_map(|(x, y)| {
+            let (rx, ry) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
+            (rx < overlay_grid.width() && ry < overlay_grid.height()).then_some((rx, ry))
+        })
+        .collect()
+}
+
+/// `CellClass+0xE4 FirstObject != 0` for one cell: a terrain object or any
+/// ground-list Techno stands there.
+pub(crate) fn cell_has_native_object(
+    source_object_cells: &BTreeSet<(u16, u16)>,
+    live_objects: Option<NativeCellObjectView<'_>>,
+    cell: (u16, u16),
+) -> bool {
+    source_object_cells.contains(&cell)
+        || live_objects.is_some_and(|objects| objects.ground_object_present(cell))
+}
+
+/// The complete `FirstObject != 0` cell set for a rebuild.
+fn native_occupied_cells(
+    source_object_cells: &BTreeSet<(u16, u16)>,
+    live_objects: Option<NativeCellObjectView<'_>>,
+) -> BTreeSet<(u16, u16)> {
+    let mut cells = source_object_cells.clone();
+    if let Some(objects) = live_objects {
+        cells.extend(objects.occupied_ground_cells());
+    }
+    cells
+}
+
+/// `CellClass::CanGrowTiberium @ 0x00483620` after the type match: the
+/// scenario growth flag (`+0x34A6`), flat slope (`+0x11C == 0`),
+/// `OverlayData < MaxDensity - 1`, and `GrowthPercentage >= 1e-05`.
+fn native_can_grow_tiberium(
+    ty: &crate::rules::tiberium_type::TiberiumType,
+    overlay_data: u8,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    cell: (u16, u16),
+    growth_enabled: bool,
+) -> bool {
+    growth_enabled
+        && cell_is_flat(resolved_terrain, cell.0, cell.1)
+        && overlay_data < ty.max_density.saturating_sub(1)
+        && native_percentage_admits(ty.growth_percentage_bits)
 }
 
 fn cell_is_flat(resolved_terrain: Option<&ResolvedTerrainGrid>, rx: u16, ry: u16) -> bool {
@@ -1192,27 +1724,26 @@ fn priority_f32(entry: &NativeTiberiumQueueEntry) -> f32 {
     f32::from_bits(entry.priority_bits)
 }
 
-fn growth_batch_size(heap_count: usize, growth_percentage_ppm: i32) -> u32 {
-    let scaled =
-        ((heap_count as i64 * i64::from(growth_percentage_ppm)) + (PERCENT_PPM / 2)) / PERCENT_PPM;
-    scaled.clamp(i64::from(GROWTH_BATCH_MIN), i64::from(GROWTH_BATCH_MAX)) as u32
-}
-
-fn spread_batch_size(heap_count: usize, spread_percentage_ppm: i32) -> u32 {
-    let scaled =
-        ((heap_count as i64 * i64::from(spread_percentage_ppm)) + (PERCENT_PPM / 2)) / PERCENT_PPM;
-    scaled.clamp(i64::from(SPREAD_BATCH_MIN), i64::from(SPREAD_BATCH_MAX)) as u32
-}
-
-fn signed_abs_mod_plus_one(raw: u32, modulus: u32) -> u32 {
+/// Processor attempts/budget: `CDQ; XOR; SUB` (signed `abs`, which keeps
+/// `0x80000000` as `i32::MIN`), `CDQ; IDIV modulus` (signed remainder), `+1`
+/// (`0x00722F7A..0x00722F8C`, `0x007224BE..0x007224D0`). The result is at
+/// most zero only for the one word `0x80000000`; the caller then returns after
+/// its first pop (`0x00722FEA JLE`).
+fn signed_abs_mod_plus_one(raw: u32, modulus: u32) -> i32 {
     debug_assert!(modulus > 0);
     let signed = raw as i32;
-    let abs = if signed < 0 {
-        signed.wrapping_neg() as u32
-    } else {
-        signed as u32
-    };
-    abs % modulus + 1
+    signed
+        .wrapping_abs()
+        .wrapping_rem(modulus as i32)
+        .wrapping_add(1)
+}
+
+/// `GrowthProcessor` reinsert priority (`0x0072303F..0x00723064`):
+/// `abs(raw % 50) + frame` as a float, versus `AddToGrowthQueue`'s
+/// `abs(raw) % 50 + frame`; the two differ only for the word `0x80000000`.
+fn processor_reinsert_priority(native_frame: u32, raw: u32) -> f32 {
+    let remainder = (raw as i32).wrapping_rem(GROWTH_QUEUE_PRIORITY_WINDOW as i32);
+    (native_frame as i32).wrapping_add(remainder.wrapping_abs()) as f32
 }
 
 fn current_tiberium_type(
@@ -1226,39 +1757,38 @@ fn current_tiberium_type(
     overlay_registry.tiberium_type_for_overlay(tiberium_types, overlay_id)
 }
 
-fn source_can_spread_tiberium(
-    type_id: TiberiumTypeId,
+/// `CellClass::CanSpreadTiberium @ 0x00483690`: the scenario spread flag,
+/// the cell's OWN TiberiumClass (`OverlayToTiberiumIndex != -1`),
+/// `OverlayData > that index / 2` (the index, not `MaxDensity`, is native),
+/// flat slope, that class's `SpreadPercentage >= 1e-05`, and `CellClass+0xE4
+/// FirstObject == 0` (`source_has_object`). The predicate takes no class:
+/// `AddToSpreadQueue @ 0x00722AF0` admits a cell of any class into its
+/// receiver's store, and `SpreadTiberium @ 0x00483780` spreads the admitted
+/// cell's own class. Returns that class.
+#[allow(clippy::too_many_arguments)]
+fn native_can_spread_tiberium(
     overlay_grid: &OverlayGrid,
     overlay_registry: &OverlayTypeRegistry,
     tiberium_types: &TiberiumTypeRegistry,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
-    source_object_cells: &BTreeSet<(u16, u16)>,
+    source_has_object: bool,
     rx: u16,
     ry: u16,
     spread_enabled: bool,
-) -> bool {
-    if !spread_enabled || source_object_cells.contains(&(rx, ry)) {
-        return false;
+) -> Option<TiberiumTypeId> {
+    if !spread_enabled || source_has_object {
+        return None;
+    }
+    let own_type = current_tiberium_type(overlay_grid, overlay_registry, tiberium_types, rx, ry)?;
+    let cell = overlay_grid.cell(rx, ry);
+    if cell.overlay_data <= own_type.0 / 2 {
+        return None;
     }
     if !cell_is_flat(resolved_terrain, rx, ry) {
-        return false;
+        return None;
     }
-    if current_tiberium_type(overlay_grid, overlay_registry, tiberium_types, rx, ry)
-        != Some(type_id)
-    {
-        return false;
-    }
-    let Some(ty) = tiberium_types.get(type_id) else {
-        return false;
-    };
-    let cell = overlay_grid.cell(rx, ry);
-    if cell.overlay_data <= type_id.0 / 2 {
-        return false;
-    }
-    if ty.spread_percentage_ppm < 0 {
-        return false;
-    }
-    true
+    let ty = tiberium_types.get(own_type)?;
+    native_percentage_admits(ty.spread_percentage_bits).then_some(own_type)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1292,9 +1822,11 @@ fn count_native_spread_targets(
     count
 }
 
+/// `CellClass::SpreadTiberium(0) @ 0x00483780`: re-run `CanSpreadTiberium`
+/// on the source, draw `RandomRanged(0,7)`, and germinate the source's OWN
+/// class into the first admitted neighbour.
 #[allow(clippy::too_many_arguments)]
 fn spread_tiberium_from_source(
-    type_id: TiberiumTypeId,
     overlay_grid: &mut OverlayGrid,
     overlay_registry: &OverlayTypeRegistry,
     tiberium_types: &TiberiumTypeRegistry,
@@ -1314,19 +1846,22 @@ fn spread_tiberium_from_source(
     mut tactical_dirty_cells: Option<&mut Vec<(u16, u16)>>,
 ) -> Option<(u16, u16)> {
     let admission = new_cell_admission?;
-    if !source_can_spread_tiberium(
-        type_id,
+    let source_type = native_can_spread_tiberium(
         overlay_grid,
         overlay_registry,
         tiberium_types,
         resolved_terrain,
-        source_object_cells,
+        cell_has_native_object(
+            source_object_cells,
+            admission
+                .live_objects()
+                .map(|objects| objects.object_view()),
+            (rx, ry),
+        ),
         rx,
         ry,
         spread_enabled,
-    ) {
-        return None;
-    }
+    )?;
     let start_dir = rng.next_range_u32(8) as usize;
     for i in 0..8 {
         let dir = (start_dir + i) % 8;
@@ -1348,6 +1883,9 @@ fn spread_tiberium_from_source(
             resolved_terrain,
             source_object_cells,
             new_cell_admission: Some(admission),
+            live_objects: admission
+                .live_objects()
+                .map(|objects| objects.object_view()),
             rng,
             binary_frame,
             growth_enabled: true,
@@ -1356,7 +1894,12 @@ fn spread_tiberium_from_source(
             radar_dirty_generation: radar_dirty_generation.as_deref_mut(),
             tactical_dirty_cells: tactical_dirty_cells.as_deref_mut(),
         };
-        if !place_tiberium(&mut context, target, type_id, SPREAD_GERMINATION_DENSITY) {
+        if !place_tiberium(
+            &mut context,
+            target,
+            source_type,
+            SPREAD_GERMINATION_DENSITY,
+        ) {
             return None;
         }
         return Some(target);
@@ -1509,18 +2052,18 @@ fn reservoir_sample(
 }
 
 /// Native-shaped AddToGrowthQueue priority from one raw RNG word.
+/// `AddToGrowthQueue @ 0x007235F9..0x00723612` / `AddToSpreadQueue @
+/// 0x00722B5B..0x00722B74`: `abs(raw) % 50 + frame` in signed 32-bit
+/// arithmetic, stored as a float. `abs(0x80000000)` stays `i32::MIN`, whose
+/// remainder is `-48`.
 fn growth_queue_priority(native_frame: u32, raw: u32) -> f32 {
-    native_frame.wrapping_add(growth_queue_priority_delay(raw)) as f32
+    (native_frame as i32).wrapping_add(growth_queue_priority_delay(raw)) as f32
 }
 
-fn growth_queue_priority_delay(raw: u32) -> u32 {
-    let signed = raw as i32;
-    let abs = if signed < 0 {
-        signed.wrapping_neg() as u32
-    } else {
-        signed as u32
-    };
-    abs % GROWTH_QUEUE_PRIORITY_WINDOW
+fn growth_queue_priority_delay(raw: u32) -> i32 {
+    (raw as i32)
+        .wrapping_abs()
+        .wrapping_rem(GROWTH_QUEUE_PRIORITY_WINDOW as i32)
 }
 
 /// Try to spread ore from (rx, ry) to a random adjacent cell.
@@ -1918,7 +2461,16 @@ SpreadPercentage=.06
         assert_eq!(growth_queue_priority_delay(0), 0);
         assert_eq!(growth_queue_priority_delay(0xFFFF_FFFF), 1);
         assert_eq!(growth_queue_priority_delay(51), 1);
-        assert_eq!(growth_queue_priority_delay(0x8000_0000), 48);
+        // `abs(0x80000000)` stays `i32::MIN` (`CDQ; XOR; SUB`), whose signed
+        // remainder by 50 is -48; the processor's `abs(raw % 50)` form yields
+        // +48 for the same word, and both are the native results.
+        assert_eq!(growth_queue_priority_delay(0x8000_0000), -48);
+        assert_eq!(growth_queue_priority(100, 0x8000_0000), 52.0);
+        assert_eq!(processor_reinsert_priority(100, 0x8000_0000), 148.0);
+        assert_eq!(processor_reinsert_priority(100, 51), 101.0);
+        assert_eq!(signed_abs_mod_plus_one(0x8000_0000, 5), -2);
+        assert_eq!(signed_abs_mod_plus_one(0xFFFF_FFFB, 5), 1);
+        assert_eq!(signed_abs_mod_plus_one(7, 5), 3);
     }
 
     #[test]
@@ -1951,8 +2503,8 @@ SpreadPercentage=.06
         for class in &native.classes {
             assert_eq!(class.growth_timer, NativeTiberiumTimer::due(1234));
             assert_eq!(class.spread_timer, NativeTiberiumTimer::due(1234));
-            assert!(class.growth_heap.is_empty());
-            assert!(class.spread_heap.is_empty());
+            assert!(class.growth.is_empty());
+            assert!(class.spread.is_empty());
             assert!(class.growth_bitmap.is_empty());
             assert!(class.spread_bitmap.is_empty());
         }
@@ -1969,7 +2521,7 @@ SpreadPercentage=.06
         let mut changed = base.clone();
         let class = &mut changed.native_tiberium.classes[0];
         class.growth_timer.interval = 2200;
-        class.growth_heap.push(NativeTiberiumQueueEntry {
+        class.growth.push(NativeTiberiumQueueEntry {
             rx: 4,
             ry: 7,
             priority_bits: 0.0f32.to_bits(),
@@ -1994,26 +2546,26 @@ SpreadPercentage=.06
         let overlay_grid = OverlayGrid::from_overlay_entries(
             &[
                 OverlayEntry {
-                    rx: 1,
-                    ry: 1,
+                    rx: 5,
+                    ry: 5,
                     overlay_id: tib01,
                     frame: 10,
                 },
                 OverlayEntry {
-                    rx: 2,
-                    ry: 1,
+                    rx: 6,
+                    ry: 5,
                     overlay_id: tib02,
                     frame: 11,
                 },
                 OverlayEntry {
-                    rx: 1,
-                    ry: 2,
+                    rx: 5,
+                    ry: 6,
                     overlay_id: gem01,
                     frame: 0,
                 },
                 OverlayEntry {
-                    rx: 2,
-                    ry: 2,
+                    rx: 6,
+                    ry: 6,
                     overlay_id: gem02,
                     frame: 1,
                 },
@@ -2032,34 +2584,39 @@ SpreadPercentage=.06
             true,
             true,
             77,
+            (8, 8),
         );
 
         assert_eq!(
             stats,
             NativeTiberiumRebuildStats {
-                growth_entries: 3,
-                spread_entries: 3,
+                growth_entries: 1,
+                spread_entries: 2,
             }
         );
         let native = state.native_tiberium_state();
         let riparius = &native.classes[TiberiumTypeId(0).0 as usize];
         let cruentus = &native.classes[TiberiumTypeId(1).0 as usize];
-        assert_eq!(riparius.growth_heap.len(), 1, "data 11 does not grow");
-        assert_eq!(riparius.spread_heap.len(), 2, "data 10 and 11 spread");
+        assert_eq!(riparius.growth.len(), 1, "data 11 does not grow");
+        assert_eq!(riparius.spread.len(), 2, "data 10 and 11 spread");
         assert_eq!(
-            cruentus.growth_heap.len(),
-            2,
-            "zero percentage still seeds rebuild membership"
+            cruentus.growth.len(),
+            0,
+            "a zero GrowthPercentage fails the CanGrowTiberium 1e-05 gate"
         );
-        assert_eq!(cruentus.spread_heap.len(), 1, "type 1 needs data > 0");
+        assert_eq!(
+            cruentus.spread.len(),
+            0,
+            "a zero SpreadPercentage fails the CanSpreadTiberium 1e-05 gate"
+        );
         assert!(
             riparius
-                .growth_heap
-                .iter()
+                .growth
+                .iter_heap()
                 .all(|entry| entry.priority_bits == 0.0f32.to_bits())
         );
-        assert_eq!(riparius.growth_bitmap.len(), riparius.growth_heap.len());
-        assert_eq!(cruentus.spread_bitmap.len(), cruentus.spread_heap.len());
+        assert_eq!(riparius.growth_bitmap.len(), riparius.growth.len());
+        assert_eq!(cruentus.spread_bitmap.len(), cruentus.spread.len());
     }
 
     #[test]
@@ -2069,8 +2626,8 @@ SpreadPercentage=.06
         assert_eq!(tib2_20, 146);
         let overlay_grid = OverlayGrid::from_overlay_entries(
             &[OverlayEntry {
-                rx: 3,
-                ry: 4,
+                rx: 7,
+                ry: 7,
                 overlay_id: tib2_20,
                 frame: 3,
             }],
@@ -2088,6 +2645,7 @@ SpreadPercentage=.06
             true,
             false,
             77,
+            (8, 8),
         );
 
         assert_eq!(
@@ -2099,15 +2657,24 @@ SpreadPercentage=.06
         );
         for (class_index, class) in state.native_tiberium_state().classes.iter().enumerate() {
             if class_index == 2 {
-                assert_eq!(class.growth_heap.len(), 1);
-                assert_eq!((class.growth_heap[0].rx, class.growth_heap[0].ry), (3, 4));
-                assert_eq!(class.growth_heap[0].priority_bits, 0.0f32.to_bits());
-                assert_eq!(class.growth_bitmap, BTreeSet::from([(3, 4)]));
+                assert_eq!(class.growth.len(), 1);
+                assert_eq!(
+                    (
+                        class.growth.heap_entry(0).unwrap().rx,
+                        class.growth.heap_entry(0).unwrap().ry
+                    ),
+                    (7, 7)
+                );
+                assert_eq!(
+                    class.growth.heap_entry(0).unwrap().priority_bits,
+                    0.0f32.to_bits()
+                );
+                assert_eq!(class.growth_bitmap, BTreeSet::from([(7, 7)]));
             } else {
-                assert!(class.growth_heap.is_empty(), "wrong class {class_index}");
+                assert!(class.growth.is_empty(), "wrong class {class_index}");
                 assert!(class.growth_bitmap.is_empty(), "wrong class {class_index}");
             }
-            assert!(class.spread_heap.is_empty());
+            assert!(class.spread.is_empty());
             assert!(class.spread_bitmap.is_empty());
         }
     }
@@ -2120,14 +2687,14 @@ SpreadPercentage=.06
         let overlay_grid = OverlayGrid::from_overlay_entries(
             &[
                 OverlayEntry {
-                    rx: 1,
-                    ry: 1,
+                    rx: 5,
+                    ry: 5,
                     overlay_id: tib01,
                     frame: 10,
                 },
                 OverlayEntry {
-                    rx: 2,
-                    ry: 1,
+                    rx: 6,
+                    ry: 5,
                     overlay_id: tib02,
                     frame: 10,
                 },
@@ -2136,7 +2703,7 @@ SpreadPercentage=.06
             8,
         );
         let mut source_object_cells = BTreeSet::new();
-        source_object_cells.insert((1, 1));
+        source_object_cells.insert((5, 5));
         let mut state = make_state(8, 8);
 
         let stats = state.rebuild_native_tiberium_queues_from_overlays(
@@ -2148,6 +2715,7 @@ SpreadPercentage=.06
             false,
             true,
             99,
+            (8, 8),
         );
 
         assert_eq!(
@@ -2158,11 +2726,14 @@ SpreadPercentage=.06
             }
         );
         let riparius = &state.native_tiberium_state().classes[0];
-        assert!(riparius.growth_heap.is_empty());
-        assert_eq!(riparius.spread_heap.len(), 1);
+        assert!(riparius.growth.is_empty());
+        assert_eq!(riparius.spread.len(), 1);
         assert_eq!(
-            (riparius.spread_heap[0].rx, riparius.spread_heap[0].ry),
-            (2, 1)
+            (
+                riparius.spread.heap_entry(0).unwrap().rx,
+                riparius.spread.heap_entry(0).unwrap().ry
+            ),
+            (6, 5)
         );
     }
 
@@ -2172,8 +2743,8 @@ SpreadPercentage=.06
         let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
         let populated = OverlayGrid::from_overlay_entries(
             &[OverlayEntry {
-                rx: 1,
-                ry: 1,
+                rx: 5,
+                ry: 5,
                 overlay_id: tib01,
                 frame: 10,
             }],
@@ -2191,12 +2762,9 @@ SpreadPercentage=.06
             true,
             true,
             1,
+            (8, 8),
         );
-        assert!(
-            !state.native_tiberium_state().classes[0]
-                .growth_heap
-                .is_empty()
-        );
+        assert!(!state.native_tiberium_state().classes[0].growth.is_empty());
 
         let stats = state.rebuild_native_tiberium_queues_from_overlays(
             &empty,
@@ -2207,12 +2775,13 @@ SpreadPercentage=.06
             true,
             true,
             2,
+            (8, 8),
         );
 
         assert_eq!(stats, NativeTiberiumRebuildStats::default());
         for class in &state.native_tiberium_state().classes {
-            assert!(class.growth_heap.is_empty());
-            assert!(class.spread_heap.is_empty());
+            assert!(class.growth.is_empty());
+            assert!(class.spread.is_empty());
             assert!(class.growth_bitmap.is_empty());
             assert!(class.spread_bitmap.is_empty());
             assert_eq!(class.growth_timer, NativeTiberiumTimer::due(2));
@@ -2272,7 +2841,7 @@ SpreadPercentage=.06
         assert!(first.is_some());
         assert!(second.is_some());
         assert_eq!(
-            state.native_tiberium_state().classes[0].growth_heap.len(),
+            state.native_tiberium_state().classes[0].growth.len(),
             2,
             "growth inserts are not deduped by bitmap"
         );
@@ -2302,7 +2871,7 @@ SpreadPercentage=.06
         let mut state = make_state(8, 8);
         state.reset_native_tiberium_classes(tiberium_types.len(), 10);
         state.native_tiberium.classes[1]
-            .growth_heap
+            .growth
             .push(NativeTiberiumQueueEntry {
                 rx: 1,
                 ry: 1,
@@ -2327,9 +2896,61 @@ SpreadPercentage=.06
 
         assert_eq!(stats, NativeGrowthProcessStats::default());
         assert_eq!(rng.state(), before);
+        assert_eq!(state.native_tiberium_state().classes[1].growth.len(), 1);
+    }
+
+    /// `GrowthProcessor @ 0x00722F00` (`0x00723021..0x0072312B`): a popped
+    /// entry whose `GrowTiberium` fails (here an entry popping at the clamp
+    /// density 11) still takes the `OverlayData < 0x0B` test, so its growth
+    /// flag is cleared without a priority draw and without a reinsert.
+    #[test]
+    fn native_growth_processor_failed_growth_pop_still_clears_the_full_cell_flag() {
+        let (_ini, overlay_registry, tiberium_types) = tiberium_rebuild_fixture();
+        let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
+        let mut overlay_grid = OverlayGrid::new(8, 8);
+        overlay_grid.place_overlay(5, 5, tib01, 11);
+        let mut state = make_state(8, 8);
+        state.reset_native_tiberium_classes(tiberium_types.len(), 10);
+        state.native_tiberium.classes[0]
+            .growth
+            .push(NativeTiberiumQueueEntry {
+                rx: 5,
+                ry: 5,
+                priority_bits: 0.0f32.to_bits(),
+            });
+        state.native_tiberium.classes[0]
+            .growth_bitmap
+            .insert((5, 5));
+        let mut nodes = BTreeMap::new();
+        let mut rng = SimRng::new(9);
+        let mut expected_rng = rng.clone();
+        expected_rng.next_u32();
+
+        let stats = state.process_native_growth_for_type(
+            TiberiumTypeId(0),
+            &mut overlay_grid,
+            &overlay_registry,
+            &tiberium_types,
+            None,
+            &BTreeSet::new(),
+            &mut nodes,
+            &mut rng,
+            100,
+            true,
+        );
+
+        assert_eq!(overlay_grid.cell(5, 5).overlay_data, 11);
+        assert_eq!(stats.popped_entries, 1);
+        assert_eq!(stats.grown_entries, 0);
+        assert_eq!(stats.reinserted_entries, 0);
+        assert_eq!(stats.full_clears, 1);
+        let class = &state.native_tiberium_state().classes[0];
+        assert!(class.growth.is_empty());
+        assert!(!class.growth_bitmap.contains(&(5, 5)));
         assert_eq!(
-            state.native_tiberium_state().classes[1].growth_heap.len(),
-            1
+            rng.logical_state(),
+            expected_rng.logical_state(),
+            "only the attempts draw"
         );
     }
 
@@ -2340,7 +2961,7 @@ SpreadPercentage=.06
         let mut state = make_state(8, 8);
         state.reset_native_tiberium_classes(tiberium_types.len(), 10);
         state.native_tiberium.classes[0]
-            .growth_heap
+            .growth
             .push(NativeTiberiumQueueEntry {
                 rx: 1,
                 ry: 1,
@@ -2369,11 +2990,7 @@ SpreadPercentage=.06
         assert_eq!(stats.attempt_rng_draws, 1);
         assert_eq!(stats.popped_entries, 1);
         assert_eq!(stats.stale_entries, 1);
-        assert!(
-            state.native_tiberium_state().classes[0]
-                .growth_heap
-                .is_empty()
-        );
+        assert!(state.native_tiberium_state().classes[0].growth.is_empty());
         assert!(
             state.native_tiberium_state().classes[0]
                 .growth_bitmap
@@ -2391,7 +3008,7 @@ SpreadPercentage=.06
         let mut state = make_state(8, 8);
         state.reset_native_tiberium_classes(tiberium_types.len(), 10);
         state.native_tiberium.classes[0]
-            .growth_heap
+            .growth
             .push(NativeTiberiumQueueEntry {
                 rx: 1,
                 ry: 1,
@@ -2432,21 +3049,17 @@ SpreadPercentage=.06
         assert_eq!(stats.full_clears, 1);
         assert_eq!(stats.spread_feed_calls, 1);
         assert_eq!(stats.spread_enqueued_entries, 1);
-        assert!(
-            state.native_tiberium_state().classes[0]
-                .growth_heap
-                .is_empty()
-        );
+        assert!(state.native_tiberium_state().classes[0].growth.is_empty());
         assert!(
             !state.native_tiberium_state().classes[0]
                 .growth_bitmap
                 .contains(&(1, 1))
         );
         let spread_class = &state.native_tiberium_state().classes[0];
-        assert_eq!(spread_class.spread_heap.len(), 1);
+        assert_eq!(spread_class.spread.len(), 1);
         assert!(spread_class.spread_bitmap.contains(&(1, 1)));
         assert_eq!(
-            spread_class.spread_heap[0].priority_bits,
+            spread_class.spread.heap_entry(0).unwrap().priority_bits,
             growth_queue_priority(100, spread_priority_raw).to_bits()
         );
         assert_eq!(tactical_dirty, vec![(1, 1)]);
@@ -2463,8 +3076,11 @@ SpreadPercentage=.06
         assert_eq!(rng.logical_state(), expected_rng.logical_state());
     }
 
+    /// `GrowthProcessor @ 0x00722F00`: seed 9 draws five attempts, and with
+    /// a single heap entry every reinsert is popped straight back
+    /// (`0x00723030..0x007230D8` then the `attempts <= processed` test), so
+    /// one cell grows once per attempt while `AddToSpreadQueue` dedupes.
     #[test]
-    #[ignore = "WIP: ore growth processor counts not yet landed"]
     fn native_growth_processor_reinserts_submax_cell_and_counts_spread_feed() {
         let (_ini, overlay_registry, tiberium_types) = tiberium_rebuild_fixture();
         let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
@@ -2473,7 +3089,7 @@ SpreadPercentage=.06
         let mut state = make_state(8, 8);
         state.reset_native_tiberium_classes(tiberium_types.len(), 10);
         state.native_tiberium.classes[0]
-            .growth_heap
+            .growth
             .push(NativeTiberiumQueueEntry {
                 rx: 1,
                 ry: 1,
@@ -2496,19 +3112,108 @@ SpreadPercentage=.06
             true,
         );
 
-        assert_eq!(overlay_grid.cell(1, 1).overlay_data, 4);
-        assert_eq!(stats.grown_entries, 1);
-        assert_eq!(stats.reinserted_entries, 1);
-        assert_eq!(stats.spread_feed_calls, 1);
-        assert_eq!(
-            state.native_tiberium_state().classes[0].growth_heap.len(),
-            1
-        );
+        assert_eq!(overlay_grid.cell(1, 1).overlay_data, 8);
+        assert_eq!(stats.requested_attempts, 5);
+        assert_eq!(stats.grown_entries, 5);
+        assert_eq!(stats.reinserted_entries, 5);
+        assert_eq!(stats.spread_feed_calls, 5);
+        assert_eq!(stats.spread_enqueued_entries, 1);
+        assert_eq!(state.native_tiberium_state().classes[0].growth.len(), 1);
+        assert_eq!(state.native_tiberium_state().classes[0].spread.len(), 1);
         assert!(
             state.native_tiberium_state().classes[0]
                 .growth_bitmap
                 .contains(&(1, 1))
         );
+    }
+
+    /// `PlaceTiberium @ 0x00487190`'s existing-cell branch feeds
+    /// `AddToSpreadQueue @ 0x00722AF0`, whose `CanSpreadTiberium @ 0x00483690`
+    /// returns `Cell+0xE4 FirstObject == 0`. `TerrainClass::Mark @ 0x0071BFF8`
+    /// links every terrain object into `FirstObject`, spawning or not, so ore
+    /// under a plain tree still grows and re-queues for growth but never
+    /// becomes a spread source. The production view joins the terrain cell
+    /// index with the ground occupancy list.
+    #[test]
+    fn native_growth_processor_skips_spread_feed_under_a_plain_terrain_object() {
+        let (_ini, overlay_registry, tiberium_types) = tiberium_rebuild_fixture();
+        let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
+        let rules_ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n",
+        );
+        let rules = RuleSet::from_ini(&rules_ini).expect("rules");
+        let interner = StringInterner::default();
+        let entities = EntityStore::new();
+        let occupancy = OccupancyGrid::new();
+
+        let run = |terrain_object_cells: &BTreeMap<(u16, u16), u64>| {
+            let mut overlay_grid = OverlayGrid::new(8, 8);
+            overlay_grid.place_overlay(5, 5, tib01, 3);
+            let mut state = make_state(8, 8);
+            state.reset_native_tiberium_classes(tiberium_types.len(), 10);
+            state.native_tiberium.classes[0]
+                .growth
+                .push(NativeTiberiumQueueEntry {
+                    rx: 5,
+                    ry: 5,
+                    priority_bits: 0.0f32.to_bits(),
+                });
+            let live_objects = TiberiumPlacementObjectContext::new(
+                &entities,
+                &occupancy,
+                &rules,
+                &interner,
+                terrain_object_cells,
+            );
+            let mut nodes = BTreeMap::new();
+            nodes.insert((5, 5), ore_node(3 * ORE_BASE_PER_LEVEL));
+            let mut rng = SimRng::new(9);
+            let stats = state.process_native_growth_for_type_with_placement(
+                TiberiumTypeId(0),
+                &mut overlay_grid,
+                &overlay_registry,
+                &tiberium_types,
+                None,
+                &BTreeSet::new(),
+                Some(live_objects),
+                &mut nodes,
+                &mut rng,
+                100,
+                true,
+                true,
+                None,
+                None,
+                None,
+            );
+            (overlay_grid.cell(5, 5).overlay_data, stats, state)
+        };
+
+        // Seed 9 draws five attempts; a one-entry heap re-pops the
+        // reinserted cell each time, exactly as the native loop does.
+        let (open_data, open_stats, open_state) = run(&BTreeMap::new());
+        let open_class = &open_state.native_tiberium_state().classes[0];
+        assert_eq!(open_data, 8);
+        assert_eq!(open_stats.grown_entries, 5);
+        assert_eq!(open_stats.reinserted_entries, 5);
+        assert_eq!(open_stats.spread_feed_calls, 5);
+        assert_eq!(open_stats.spread_enqueued_entries, 1);
+        assert!(open_class.spread_bitmap.contains(&(5, 5)));
+        assert_eq!(open_class.spread.len(), 1);
+
+        let tree_cells = BTreeMap::from([((5u16, 5u16), 77u64)]);
+        let (tree_data, tree_stats, tree_state) = run(&tree_cells);
+        let tree_class = &tree_state.native_tiberium_state().classes[0];
+        assert_eq!(tree_data, 8, "the tree does not stop growth");
+        assert_eq!(tree_stats.grown_entries, 5);
+        assert_eq!(tree_stats.reinserted_entries, 5);
+        assert_eq!(
+            tree_stats.spread_feed_calls, 5,
+            "AddToSpreadQueue is still called and rejects inside"
+        );
+        assert_eq!(tree_stats.spread_enqueued_entries, 0);
+        assert!(tree_class.growth_bitmap.contains(&(5, 5)));
+        assert!(tree_class.spread.is_empty());
+        assert!(!tree_class.spread_bitmap.contains(&(5, 5)));
     }
 
     #[test]
@@ -2526,7 +3231,7 @@ SpreadPercentage=.06
             &overlay_registry,
             &tiberium_types,
             None,
-            &BTreeSet::new(),
+            false,
             1,
             1,
             100,
@@ -2539,7 +3244,7 @@ SpreadPercentage=.06
             &overlay_registry,
             &tiberium_types,
             None,
-            &BTreeSet::new(),
+            false,
             1,
             1,
             100,
@@ -2551,7 +3256,7 @@ SpreadPercentage=.06
             &overlay_registry,
             &tiberium_types,
             None,
-            &BTreeSet::new(),
+            false,
             1,
             1,
             100,
@@ -2563,10 +3268,7 @@ SpreadPercentage=.06
         assert_eq!(second, None);
         assert_eq!(disabled, None);
         assert_eq!(rng.state(), before_dedupe);
-        assert_eq!(
-            state.native_tiberium_state().classes[0].spread_heap.len(),
-            1
-        );
+        assert_eq!(state.native_tiberium_state().classes[0].spread.len(), 1);
         assert!(
             state.native_tiberium_state().classes[0]
                 .spread_bitmap
@@ -2601,14 +3303,14 @@ SpreadPercentage=.06
         let mut state = make_state(10, 10);
         state.reset_native_tiberium_classes(tiberium_types.len(), 10);
         state.native_tiberium.classes[0]
-            .spread_heap
+            .spread
             .push(NativeTiberiumQueueEntry {
                 rx: 2,
                 ry: 2,
                 priority_bits: 0.0f32.to_bits(),
             });
         state.native_tiberium.classes[0]
-            .spread_heap
+            .spread
             .push(NativeTiberiumQueueEntry {
                 rx: 7,
                 ry: 7,
@@ -2648,6 +3350,79 @@ SpreadPercentage=.06
         );
     }
 
+    /// `SpreadProcessor @ 0x00722440` never re-checks the popped entry's
+    /// class, and `CellClass::SpreadTiberium @ 0x00483780` spreads whatever
+    /// TiberiumClass the cell holds NOW. A Riparius entry left stale by a full
+    /// removal and a Vinifera re-germination therefore spreads Vinifera from
+    /// the Riparius processor, spending its budget and its `RandomRanged(0,7)`
+    /// draw.
+    #[test]
+    fn native_spread_processor_spreads_the_cells_current_type_for_a_stale_entry() {
+        let (_ini, overlay_registry, tiberium_types) = tiberium_rebuild_fixture();
+        let vinifera = TiberiumTypeId(2);
+        let tib2_01 = overlay_registry.id_for_name("TIB2_01").expect("TIB2_01");
+        let blocker = overlay_registry.id_for_name("GEM01").expect("GEM01");
+        let vinifera_variants = overlay_registry
+            .flat_tiberium_variant_ids(tiberium_types.get(vinifera).expect("Vinifera"))
+            .expect("Vinifera variants");
+        let mut overlay_grid = OverlayGrid::new(10, 10);
+        overlay_grid.place_overlay(5, 5, tib2_01, 3);
+        block_all_neighbors_except(&mut overlay_grid, blocker, (5, 5), Some((6, 5)));
+        let mut state = make_state(10, 10);
+        state.reset_native_tiberium_classes(tiberium_types.len(), 10);
+        state.native_tiberium.classes[0]
+            .spread
+            .push(NativeTiberiumQueueEntry {
+                rx: 5,
+                ry: 5,
+                priority_bits: 0.0f32.to_bits(),
+            });
+        state.native_tiberium.classes[0]
+            .spread_bitmap
+            .insert((5, 5));
+        let mut nodes = BTreeMap::new();
+        let mut rng = SimRng::new(12);
+        let before = rng.state();
+
+        let stats = state.process_native_spread_for_type_without_native_context(
+            TiberiumTypeId(0),
+            &mut overlay_grid,
+            &overlay_registry,
+            &tiberium_types,
+            &mut nodes,
+            None,
+            None,
+            &BTreeSet::new(),
+            &mut rng,
+            200,
+            true,
+        );
+
+        assert_eq!(stats.popped_entries, 1);
+        assert_eq!(stats.zero_target_entries, 0);
+        assert_eq!(stats.spread_calls, 1);
+        assert_ne!(rng.state(), before, "the spread drew its start direction");
+        let placed = overlay_grid
+            .cell(6, 5)
+            .overlay_id
+            .expect("spread landed on the open cell");
+        assert!(
+            vinifera_variants.contains(&placed),
+            "the stale Riparius entry spread the cell's current Vinifera"
+        );
+        assert!(
+            state.native_tiberium_state().classes[2]
+                .growth_bitmap
+                .contains(&(6, 5)),
+            "the new cell joins Vinifera's growth queue"
+        );
+        assert!(
+            !state.native_tiberium_state().classes[0]
+                .growth_bitmap
+                .contains(&(6, 5))
+        );
+    }
+
     #[test]
     fn gsi_04_09_scheduled_spread_uses_shared_new_placement_contract() {
         let (_ini, overlay_registry, tiberium_types) = tiberium_rebuild_fixture();
@@ -2667,12 +3442,18 @@ SpreadPercentage=.06
         let interner = StringInterner::default();
         let entities = EntityStore::new();
         let occupancy = OccupancyGrid::new();
-        let live_objects =
-            TiberiumPlacementObjectContext::new(&entities, &occupancy, &rules, &interner);
+        let terrain_object_cells = BTreeMap::new();
+        let live_objects = TiberiumPlacementObjectContext::new(
+            &entities,
+            &occupancy,
+            &rules,
+            &interner,
+            &terrain_object_cells,
+        );
         let mut state = make_state(8, 8);
         state.reset_native_tiberium_classes(tiberium_types.len(), 10);
         state.native_tiberium.classes[0]
-            .spread_heap
+            .spread
             .push(NativeTiberiumQueueEntry {
                 rx: 3,
                 ry: 3,
@@ -2712,11 +3493,7 @@ SpreadPercentage=.06
 
         assert_eq!(stats.spread_calls, 1);
         assert_eq!(stats.reinserted_entries, 0);
-        assert!(
-            state.native_tiberium_state().classes[0]
-                .spread_heap
-                .is_empty()
-        );
+        assert!(state.native_tiberium_state().classes[0].spread.is_empty());
         assert!(
             state.native_tiberium_state().classes[0]
                 .spread_bitmap
@@ -2732,10 +3509,16 @@ SpreadPercentage=.06
             "native spread writes only the authoritative overlay cell"
         );
         let class = &state.native_tiberium_state().classes[0];
-        assert_eq!(class.growth_heap.len(), 1);
-        assert_eq!((class.growth_heap[0].rx, class.growth_heap[0].ry), (4, 3));
+        assert_eq!(class.growth.len(), 1);
         assert_eq!(
-            class.growth_heap[0].priority_bits,
+            (
+                class.growth.heap_entry(0).unwrap().rx,
+                class.growth.heap_entry(0).unwrap().ry
+            ),
+            (4, 3)
+        );
+        assert_eq!(
+            class.growth.heap_entry(0).unwrap().priority_bits,
             growth_queue_priority(200, growth_priority_raw).to_bits(),
             "AddToGrowthQueue runs immediately after the zero-data overlay stamp"
         );
@@ -2776,13 +3559,19 @@ SpreadPercentage=.06
             None,
             CellListInsertion::AppendBuilding,
         );
-        let live_objects =
-            TiberiumPlacementObjectContext::new(&entities, &occupancy, &rules, &interner);
+        let terrain_object_cells = BTreeMap::new();
+        let live_objects = TiberiumPlacementObjectContext::new(
+            &entities,
+            &occupancy,
+            &rules,
+            &interner,
+            &terrain_object_cells,
+        );
 
         let mut state = make_state(8, 8);
         state.reset_native_tiberium_classes(tiberium_types.len(), 10);
         state.native_tiberium.classes[0]
-            .spread_heap
+            .spread
             .push(NativeTiberiumQueueEntry {
                 rx: 3,
                 ry: 3,
@@ -2821,11 +3610,7 @@ SpreadPercentage=.06
         assert_eq!(stats.zero_target_entries, 1);
         assert_eq!(stats.spread_calls, 0);
         assert_eq!(overlay_grid.cell(4, 3).overlay_id, None);
-        assert!(
-            state.native_tiberium_state().classes[0]
-                .growth_heap
-                .is_empty()
-        );
+        assert!(state.native_tiberium_state().classes[0].growth.is_empty());
         assert!(nodes.is_empty());
         assert!(radar_dirty.is_empty());
         assert_eq!(radar_generation, 0);
@@ -2851,13 +3636,19 @@ SpreadPercentage=.06
         let interner = StringInterner::default();
         let entities = EntityStore::new();
         let occupancy = OccupancyGrid::new();
-        let live_objects =
-            TiberiumPlacementObjectContext::new(&entities, &occupancy, &rules, &interner);
+        let terrain_object_cells = BTreeMap::new();
+        let live_objects = TiberiumPlacementObjectContext::new(
+            &entities,
+            &occupancy,
+            &rules,
+            &interner,
+            &terrain_object_cells,
+        );
 
         let mut state = make_state(8, 8);
         state.reset_native_tiberium_classes(tiberium_types.len(), 10);
         state.native_tiberium.classes[0]
-            .spread_heap
+            .spread
             .push(NativeTiberiumQueueEntry {
                 rx: 3,
                 ry: 3,
@@ -2896,11 +3687,7 @@ SpreadPercentage=.06
         assert_eq!(stats.zero_target_entries, 1);
         assert_eq!(stats.spread_calls, 0);
         assert_eq!(overlay_grid.cell(4, 3).overlay_id, None);
-        assert!(
-            state.native_tiberium_state().classes[0]
-                .growth_heap
-                .is_empty()
-        );
+        assert!(state.native_tiberium_state().classes[0].growth.is_empty());
         assert!(nodes.is_empty());
         assert!(radar_dirty.is_empty());
         assert_eq!(radar_generation, 0);
@@ -3023,5 +3810,204 @@ SpreadPercentage=.06
                 "Neighbors should be unchanged gems"
             );
         }
+    }
+
+    fn entry(rx: u16, ry: u16, priority: f32) -> NativeTiberiumQueueEntry {
+        NativeTiberiumQueueEntry {
+            rx,
+            ry,
+            priority_bits: priority.to_bits(),
+        }
+    }
+
+    /// `RebuildGrowthQueue @ 0x007233A0` sift-up stops on `parent <= new`, and
+    /// the processors pop slot 1 then move the last slot to the root through
+    /// `FloatMinHeap::SiftDown @ 0x005AD870`, which swaps only on a strictly
+    /// smaller child: four equal-priority entries pop as first, last, third,
+    /// second.
+    #[test]
+    fn native_queue_equal_priorities_pop_root_then_last_slot() {
+        let mut queue = NativeTiberiumQueue::with_capacity(16);
+        for (index, cell) in [(1u16, 1u16), (2, 1), (3, 1), (4, 1)]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                queue.push(entry(cell.0, cell.1, 0.0)),
+                NativeQueueInsert::Heaped
+            );
+            assert_eq!(queue.len(), index + 1);
+        }
+        let popped: Vec<(u16, u16)> = std::iter::from_fn(|| queue.pop_root())
+            .map(|entry| (entry.rx, entry.ry))
+            .collect();
+        assert_eq!(popped, vec![(1, 1), (4, 1), (3, 1), (2, 1)]);
+        assert_eq!(queue.array_len(), 4, "the entry array is never compacted");
+    }
+
+    /// Distinct priorities pop ascending. Equal priorities resolve by heap
+    /// position, not insertion order: pushing (1,1)@30, (2,1)@10, (3,1)@20,
+    /// (4,1)@10, (5,1)@5 in that order leaves the heap
+    /// `[(5,1)@5, (2,1)@10, (3,1)@20, (1,1)@30, (4,1)@10]`; popping (5,1)
+    /// moves the last slot (4,1)@10 to the root, where the strict `<`
+    /// sift-down keeps it above the equal (2,1)@10, so the later-pushed 10
+    /// pops first.
+    #[test]
+    fn native_queue_orders_by_priority_with_heap_position_tie_breaks() {
+        let mut queue = NativeTiberiumQueue::with_capacity(16);
+        queue.push(entry(1, 1, 30.0));
+        queue.push(entry(2, 1, 10.0));
+        queue.push(entry(3, 1, 20.0));
+        queue.push(entry(4, 1, 10.0));
+        queue.push(entry(5, 1, 5.0));
+        let heap_order: Vec<(u16, u16)> = queue.iter_heap().map(|e| (e.rx, e.ry)).collect();
+        assert_eq!(heap_order, vec![(5, 1), (2, 1), (3, 1), (1, 1), (4, 1)]);
+        let popped: Vec<(u16, u16)> = std::iter::from_fn(|| queue.pop_root())
+            .map(|entry| (entry.rx, entry.ry))
+            .collect();
+        assert_eq!(popped, vec![(5, 1), (4, 1), (2, 1), (3, 1), (1, 1)]);
+    }
+
+    /// `count + 1 < capacity` guards the heap insert only: the entry still
+    /// lands in the array and the counter still advances.
+    #[test]
+    fn native_queue_over_capacity_insert_appends_to_the_array_only() {
+        let mut queue = NativeTiberiumQueue::with_capacity(3);
+        assert_eq!(queue.push(entry(1, 1, 0.0)), NativeQueueInsert::Heaped);
+        assert_eq!(queue.push(entry(2, 1, 0.0)), NativeQueueInsert::Heaped);
+        assert_eq!(queue.push(entry(3, 1, 0.0)), NativeQueueInsert::ArrayOnly);
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.array_len(), 3);
+        assert_eq!(
+            native_tiberium_queue_capacity((100, 100)),
+            20_800,
+            "FUN_0042B1F0: (H + 4) * W * 2"
+        );
+    }
+
+    /// `RebuildGrowthQueue` walks `CellIterator_Next @ 0x00578290` order:
+    /// increasing `x + y`, and increasing `x` within one anti-diagonal.
+    #[test]
+    fn native_rebuild_seeds_in_cell_iterator_order() {
+        let (_ini, overlay_registry, tiberium_types) = tiberium_rebuild_fixture();
+        let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
+        let mut overlay_grid = OverlayGrid::new(8, 8);
+        // Listed out of native order on purpose.
+        for cell in [(7u16, 7u16), (5, 5), (6, 5), (5, 6), (4, 6)] {
+            overlay_grid.place_overlay(cell.0, cell.1, tib01, 3);
+        }
+        let mut state = make_state(8, 8);
+        state.rebuild_native_tiberium_queues_from_overlays(
+            &overlay_grid,
+            &overlay_registry,
+            &tiberium_types,
+            None,
+            &BTreeSet::new(),
+            true,
+            true,
+            77,
+            (8, 8),
+        );
+        let class = &state.native_tiberium_state().classes[0];
+        let heap_order: Vec<(u16, u16)> = class
+            .growth
+            .iter_heap()
+            .map(|entry| (entry.rx, entry.ry))
+            .collect();
+        assert_eq!(
+            heap_order,
+            vec![(4, 6), (5, 5), (5, 6), (6, 5), (7, 7)],
+            "equal priorities keep the CellIterator insertion order"
+        );
+        assert_eq!(
+            class.growth.capacity(),
+            native_tiberium_queue_capacity((8, 8))
+        );
+        assert_eq!(state.native_rect(), (8, 8));
+    }
+
+    /// `GrowthProcessor @ 0x00722F3C..0x00722F68`: `FILD count; FMUL [pct];
+    /// _ftol` under the 53-bit chop control word. `50 * 0.06` chops to 2
+    /// (clamped up to 5) where round-to-nearest would give 3; `150 * 0.06`
+    /// chops to 8.
+    #[test]
+    fn native_processor_batch_chops_the_x87_product() {
+        let pct = 0.06f64.to_bits();
+        assert_eq!(native_processor_batch(50, pct, 5, 50), 5);
+        assert_eq!(native_processor_batch(100, pct, 5, 50), 5);
+        assert_eq!(native_processor_batch(150, pct, 5, 50), 8);
+        assert_eq!(native_processor_batch(175, pct, 5, 50), 10);
+        assert_eq!(native_processor_batch(1000, pct, 5, 50), 50);
+        assert_eq!(native_processor_batch(1000, pct, 5, 25), 25);
+        assert_eq!(native_processor_batch(0, pct, 5, 50), 5);
+    }
+
+    /// `CanGrow/CanSpreadTiberium` reject `pct < 1e-05`; the processors
+    /// return on `pct <= 1e-05`.
+    #[test]
+    fn native_percentage_gates_compare_against_the_1e_minus_5_double() {
+        let min = 0.00001f64.to_bits();
+        assert_eq!(min, NATIVE_PERCENT_MIN_BITS);
+        assert!(native_percentage_admits(min));
+        assert!(!native_percentage_drives(min));
+        assert!(!native_percentage_admits(0.000009f64.to_bits()));
+        assert!(!native_percentage_admits(0.0f64.to_bits()));
+        assert!(native_percentage_drives(0.00001001f64.to_bits()));
+        assert!(native_percentage_drives(0.06f64.to_bits()));
+    }
+
+    /// `CanSpreadTiberium @ 0x00483690` returns `CellClass+0xE4 == 0`: a cell
+    /// with a linked object never seeds or joins the spread queue, while the
+    /// growth queue has no such gate.
+    #[test]
+    fn native_spread_admission_rejects_occupied_source_cells() {
+        let (_ini, overlay_registry, tiberium_types) = tiberium_rebuild_fixture();
+        let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
+        let mut overlay_grid = OverlayGrid::new(8, 8);
+        overlay_grid.place_overlay(5, 5, tib01, 4);
+        overlay_grid.place_overlay(6, 5, tib01, 4);
+        let occupied = BTreeSet::from([(5u16, 5u16)]);
+        let mut state = make_state(8, 8);
+        let stats = state.rebuild_native_tiberium_queues_from_overlays(
+            &overlay_grid,
+            &overlay_registry,
+            &tiberium_types,
+            None,
+            &occupied,
+            true,
+            true,
+            77,
+            (8, 8),
+        );
+        assert_eq!(
+            stats,
+            NativeTiberiumRebuildStats {
+                growth_entries: 2,
+                spread_entries: 1,
+            }
+        );
+        let class = &state.native_tiberium_state().classes[0];
+        assert_eq!(class.spread_bitmap, BTreeSet::from([(6, 5)]));
+        assert_eq!(class.growth_bitmap, BTreeSet::from([(5, 5), (6, 5)]));
+
+        let mut rng = SimRng::new(4);
+        let before = rng.state();
+        assert_eq!(
+            state.add_native_spread_queue_cell(
+                &overlay_grid,
+                &overlay_registry,
+                &tiberium_types,
+                None,
+                true,
+                5,
+                5,
+                100,
+                true,
+                &mut rng,
+            ),
+            None,
+            "an occupied source is rejected before the priority draw"
+        );
+        assert_eq!(rng.state(), before);
     }
 }

@@ -32,10 +32,16 @@ pub struct TiberiumType {
     pub growth: u32,
     /// `GrowthPercentage=` scaled by 1,000,000 at parse time.
     pub growth_percentage_ppm: i32,
+    /// `GrowthPercentage=` as the native `TiberiumClass+0xB0` double (IEEE
+    /// bits of the correctly rounded decimal); the growth processor multiplies
+    /// the heap count by it in x87 arithmetic and compares it against 1e-05.
+    pub growth_percentage_bits: u64,
     /// Spread timer reload value.
     pub spread: u32,
     /// `SpreadPercentage=` scaled by 1,000,000 at parse time.
     pub spread_percentage_ppm: i32,
+    /// `SpreadPercentage=` as the native `TiberiumClass+0xA0` double.
+    pub spread_percentage_bits: u64,
     /// Number of valid overlay data density levels.
     pub max_density: u8,
 }
@@ -112,6 +118,10 @@ impl TiberiumType {
                 .get("GrowthPercentage")
                 .and_then(parse_percent_ppm)
                 .unwrap_or(0),
+            growth_percentage_bits: section
+                .get("GrowthPercentage")
+                .and_then(parse_percent_bits)
+                .unwrap_or(0),
             spread: section
                 .get_i32("Spread")
                 .and_then(|v| u32::try_from(v).ok())
@@ -120,9 +130,21 @@ impl TiberiumType {
                 .get("SpreadPercentage")
                 .and_then(parse_percent_ppm)
                 .unwrap_or(0),
+            spread_percentage_bits: section
+                .get("SpreadPercentage")
+                .and_then(parse_percent_bits)
+                .unwrap_or(0),
             max_density: TIBERIUM_DENSITY_LEVELS,
         }
     }
+}
+
+/// The native percentage double as stored by `TiberiumClass::ReadINI`: a
+/// correctly rounded decimal parse (the native CRT `atof` rounding of longer
+/// decimals is UNCHECKED; retail values are short). An absent key keeps the
+/// constructor's zero.
+fn parse_percent_bits(raw: &str) -> Option<u64> {
+    raw.trim().parse::<f64>().ok().map(f64::to_bits)
 }
 
 fn parse_percent_ppm(raw: &str) -> Option<i32> {

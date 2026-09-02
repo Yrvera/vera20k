@@ -79,12 +79,19 @@ impl Simulation {
             );
             self.production.ore_growth_state =
                 crate::sim::ore_growth::OreGrowthState::new(input.map_width, input.map_height);
-            let source_object_cells: BTreeSet<(u16, u16)> = self
+            // `CellClass+0xE4 FirstObject != 0`: terrain objects plus every
+            // ground-list Techno already constructed.
+            let mut source_object_cells: BTreeSet<(u16, u16)> = self
                 .production
                 .terrain_object_cells
                 .keys()
                 .copied()
                 .collect();
+            source_object_cells.extend(
+                self.substrate.occupancy.occupied_cells_on_layer(
+                    crate::sim::movement::locomotor::MovementLayer::Ground,
+                ),
+            );
             Some(
                 self.production
                     .ore_growth_state
@@ -98,6 +105,7 @@ impl Simulation {
                         input.rules.general.tiberium_spreads
                             && input.special_flags.tiberium_spreads.unwrap_or(true),
                         self.session.binary_frame,
+                        (input.map_width, input.map_height),
                     ),
             )
         } else {
@@ -711,7 +719,7 @@ mod tests {
         sim.overlay_grid
             .as_mut()
             .expect("overlay grid")
-            .place_overlay(0, 0, tiberium, 10);
+            .place_overlay(5, 5, tiberium, 10);
 
         let player = sim.interner.intern("Player");
         let computer = sim.interner.intern("Computer1");
@@ -759,8 +767,8 @@ mod tests {
         );
         let native = sim.production.ore_growth_state.native_tiberium_state();
         assert_eq!(native.classes.len(), 1);
-        assert_eq!(native.classes[0].growth_bitmap, BTreeSet::from([(0, 0)]));
-        assert_eq!(native.classes[0].spread_bitmap, BTreeSet::from([(0, 0)]));
+        assert_eq!(native.classes[0].growth_bitmap, BTreeSet::from([(5, 5)]));
+        assert_eq!(native.classes[0].spread_bitmap, BTreeSet::from([(5, 5)]));
         assert!(output.navigation_published);
         assert!(sim.path_grid().is_some());
         assert_eq!(sim.houses[&player].credits, 5_000);
@@ -815,7 +823,7 @@ mod tests {
         sim.overlay_grid
             .as_mut()
             .unwrap()
-            .place_overlay(0, 0, tiberium, 10);
+            .place_overlay(5, 5, tiberium, 10);
         sim.production.ore_growth_state =
             crate::sim::ore_growth::OreGrowthState::new(MAP_SIZE, MAP_SIZE);
         let seeded = sim
@@ -830,6 +838,7 @@ mod tests {
                 true,
                 true,
                 sim.session.binary_frame,
+                (MAP_SIZE, MAP_SIZE),
             );
         assert_eq!(seeded.growth_entries, 1);
         assert_eq!(seeded.spread_entries, 1);
@@ -849,8 +858,8 @@ mod tests {
 
         assert_eq!(output.tiberium_queues, None);
         let native = sim.production.ore_growth_state.native_tiberium_state();
-        assert_eq!(native.classes[0].growth_bitmap, BTreeSet::from([(0, 0)]));
-        assert_eq!(native.classes[0].spread_bitmap, BTreeSet::from([(0, 0)]));
+        assert_eq!(native.classes[0].growth_bitmap, BTreeSet::from([(5, 5)]));
+        assert_eq!(native.classes[0].spread_bitmap, BTreeSet::from([(5, 5)]));
     }
 
     #[test]
