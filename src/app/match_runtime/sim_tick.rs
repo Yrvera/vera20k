@@ -515,6 +515,33 @@ pub(crate) fn monotonic_frame_pacer_ms(state: &AppState, now: Instant) -> u64 {
     crate::app::match_runtime::frame_pacer::wall_clock_ms(state.platform.frame_pacer_epoch, now)
 }
 
+/// One `AudioSystem::Pump @ 0x00406F70` service pass, run every frame whether
+/// or not the simulation stepped.
+///
+/// Native reaches the pump from `Network_ServiceLoop @ 0x0048D080`, not from
+/// the game frame, so `SoundSystem::UpdateTick @ 0x004041D0` keeps reaping
+/// finished events, enforcing `Limit=`, ranking and servicing the EVA queue
+/// during a pause, an open menu, a modal dialog and a loading screen. The
+/// `> 33 ms` gate lives inside `SfxPlayer::pump`, as it does in native.
+///
+/// Pause is the explicit `GamePause::Enter @ 0x00406F00` path: suspend every
+/// event and stop the playing channels. VERA's separate "in-game menu open"
+/// state is deliberately NOT treated as a pause — gamemd reaches
+/// `GamePause::Enter` only through `ScenarioPause::Enter @ 0x00684060` and
+/// `StateMachine::EnterPause @ 0x00683EB0`, and whether the YR options dialog
+/// routes through either of those is UNCHECKED.
+pub(crate) fn pump_audio_service(state: &mut AppState, now_ms: u64) {
+    let paused = state.match_state.paused;
+    let registry = &state.audio.sound_registry;
+    let audio_indices = &state.audio.audio_indices;
+    let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager())
+    else {
+        return;
+    };
+    sfx.set_paused(paused, now_ms);
+    sfx.pump(now_ms, registry, assets, audio_indices);
+}
+
 /// Front-end session mode, as the modal pump reads it to decide whether the
 /// simulation advances behind an open modal dialog. Mirrors gamemd's `g_GameMode`
 /// discriminator; the values are writer-proofed — the active engine only ever
@@ -853,7 +880,6 @@ fn advance_in_game_runtime_mode(
             .map(|rt| &rt.simulation)
             .map(|sim| sim.session.tick.saturating_sub(garrison_flash_start_tick))
             .unwrap_or(0);
-        crate::app::presentation::building_anim::drain_sound_events(state);
         // Building one-shots, refinery particles, and their logic-frame clocks
         // were finalized inside the authoritative sim transaction. Only the
         // independent wall-clock terrain-overlay timer remains app-owned.
@@ -880,7 +906,16 @@ fn advance_in_game_runtime_mode(
     crate::app::presentation::sidebar_gadgets::update_sidebar_gadget_state(state);
     // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
     crate::app::input::gadget_input::idle_tick(state);
+    // The audio service is NOT gated on the simulation. gamemd's
+    // `AudioSystem::Pump @ 0x00406F70` hangs off `Network_ServiceLoop @
+    // 0x0048D080`, whose callers include `Main::ThrottleFrame @ 0x0055E160`,
+    // `ProcessModalServicePump @ 0x00623120` and `ShellDialog::RunUntilResult
+    // @ 0x0060D380`, so the sound arbiter, the EVA queue and `ThemeClass::AI`
+    // keep running behind a pause, an open menu and a loading screen alike.
+    // Pause is expressed separately, by suspending the events and stopping the
+    // playing channels (`GamePause::Enter @ 0x00406F00`).
     let music_now_ms = monotonic_frame_pacer_ms(state, Instant::now());
+    crate::app::presentation::building_anim::drain_sound_events(state);
     if let Some(assets) = state.process_assets.manager() {
         state.audio.update_theme(assets, music_now_ms);
     }

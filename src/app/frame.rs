@@ -114,6 +114,16 @@ impl App {
             }
         }
 
+        // The audio service pass. gamemd drives `AudioSystem::Pump @
+        // 0x00406F70` from `Network_ServiceLoop @ 0x0048D080`, which the main
+        // tick, the frame throttler, the modal dialog pump, the shell dialog
+        // loop and the loading screens all reach — so the sound arbiter, the
+        // EVA queue and `ThemeClass::AI` keep being serviced on the main menu,
+        // behind a pause or an open menu, and while the window is not the
+        // foreground. It therefore sits here, outside every screen and
+        // simulation gate, and carries its own `> 33 ms` rate limit.
+        crate::app::match_runtime::sim_tick::pump_audio_service(state, scenario_now_ms);
+
         Self::sync_in_game_menu_with_options_overlay(state);
 
         // Deactivated windows do not simulate. gamemd parks its main tick in a
