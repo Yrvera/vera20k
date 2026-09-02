@@ -432,6 +432,10 @@ fn techno_ai_shell(
         // path instead.
         // The supported Foot mission cadence branches run here as well.
         EntityCategory::Infantry => {
+            if let Some(rules) = rules {
+                veterancy_promotion_step(sim, id, rules);
+                self_heal_step(sim, id, rules);
+            }
             clear_passive_target_off_mission(sim, id);
             mission_common_step(sim, id, rules);
             if let Some(rules) = rules {
@@ -441,6 +445,8 @@ fn techno_ai_shell(
         }
         EntityCategory::Structure => {
             if let Some(rules) = rules {
+                veterancy_promotion_step(sim, id, rules);
+                self_heal_step(sim, id, rules);
                 sim.update_building_damage_fire(id, rules);
             }
             // Buildings run the SAME common Techno AI body units do — it is the
@@ -492,8 +498,97 @@ fn techno_ai_shell(
         // properly means choosing which aircraft states may acquire and routing
         // the pick through that machine, which is its own slice.
         EntityCategory::Aircraft => {
+            if let Some(rules) = rules {
+                veterancy_promotion_step(sim, id, rules);
+                self_heal_step(sim, id, rules);
+            }
             mission_counter_step(sim, id);
         }
+    }
+}
+
+/// The promotion detector of `TechnoClass::AI_Update @ 0x006FA054..0x006FA145`,
+/// run once per live-object visit for every category (the common body is
+/// reached from each leaf `AI`).
+///
+/// gamemd-derived: the rank cache (`+0x13C`) is compared with
+/// `GetVeterancyLevel`; a crossing to elite seeds the flash timer (`+0xF0`,
+/// `EliteFlashTimer`) for any owner and — for the local human's object — plays
+/// `UpgradeEliteSound` positionally plus `EVA_UnitPromoted`; a crossing to
+/// veteran plays `UpgradeVeteranSound` plus the EVA. The local-player gate is
+/// the app layer's (`HouseClass::IsHumanPlayer @ 0x0050B6F0` is
+/// `owner == g_PlayerPtr` in a skirmish). The flash countdown itself is ticked
+/// here too; native decrements it through a timer virtual later in the same
+/// update (`vtable+0x124`, UNCHECKED position) and only the presentation reads
+/// it, so the one-frame placement difference is invisible.
+fn veterancy_promotion_step(sim: &mut Simulation, id: u64, rules: &RuleSet) {
+    let Some(entity) = sim.substrate.entities.get_mut(id) else {
+        return;
+    };
+    entity.elite_flash_frames = entity.elite_flash_frames.saturating_sub(1);
+    let Some(promotion) = crate::sim::combat::veterancy::sample_promotion(
+        entity,
+        rules.general.elite_flash_timer,
+    ) else {
+        return;
+    };
+    let owner = entity.owner;
+    let (rx, ry) = (entity.position.rx, entity.position.ry);
+    let (sound, elite) = match promotion {
+        crate::sim::combat::veterancy::Promotion::Elite => {
+            (rules.general.upgrade_elite_sound.as_deref(), true)
+        }
+        crate::sim::combat::veterancy::Promotion::Veteran => {
+            (rules.general.upgrade_veteran_sound.as_deref(), false)
+        }
+    };
+    let sound_id = sound.map(|name| sim.interner.intern(name));
+    sim.sound_events
+        .push(super::SimSoundEvent::UnitPromoted {
+            owner,
+            sound_id,
+            elite,
+            rx,
+            ry,
+        });
+}
+
+/// The self-heal pulse of `TechnoClass::AI_Update @ 0x006FA743..0x006FA757`:
+/// when the eligibility virtual (`vtable+0x294` → `FUN_0070BE80`) holds,
+/// `Health += 1` — a raw `INC` on `+0x6C`, no amount key.
+///
+/// RESIDUAL — the tail after the increment (`0x006FA75A..0x006FA78D`:
+/// health-ratio compare against `Rules+0x1700`, the `vtable+0x1C8` special
+/// state test, and a `vtable+0xF8` call on the object at `+0x310`) is the
+/// damaged-smoke/anim teardown once the ratio climbs back over the yellow
+/// line. UNCHECKED here; VERA's damage-state presentation derives from
+/// health each frame, so the visible smoke follows the heal on its own.
+/// Trigger: any self-healing object crossing ConditionYellow upward.
+/// Frequency: every elite infantryman that heals from red. Downstream risk:
+/// none in `sim/` — the tail writes no gameplay state.
+fn self_heal_step(sim: &mut Simulation, id: u64, rules: &RuleSet) {
+    let Some(entity) = sim.substrate.entities.get(id) else {
+        return;
+    };
+    let Some(object) = sim
+        .interner
+        .try_resolve(entity.type_ref)
+        .and_then(|type_id| rules.object(type_id))
+    else {
+        return;
+    };
+    let interval =
+        crate::sim::combat::veterancy::self_heal_interval_frames(rules.general.repair_rate_minutes);
+    if !crate::sim::combat::veterancy::self_heal_eligible(
+        entity,
+        object,
+        sim.session.binary_frame,
+        interval,
+    ) {
+        return;
+    }
+    if let Some(entity) = sim.substrate.entities.get_mut(id) {
+        entity.health.current = entity.health.current.saturating_add(1);
     }
 }
 
@@ -532,6 +627,12 @@ fn mission_common_step(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
 #[allow(unused_variables)]
 fn techno_common_pre(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
     let Some(rules) = rules else { return };
+    // `AI_Update` order: the promotion sample (`0x006FA054`) and the self-heal
+    // pulse (`0x006FA735`) both precede the cloak tick (`vtable+0x410` at
+    // `0x006FA946`), so a same-frame heal is visible to the cloak's health
+    // branch.
+    veterancy_promotion_step(sim, id, rules);
+    self_heal_step(sim, id, rules);
     super::techno_ai_cloak::tick_stock_cloak_producer(sim, id, rules);
     let Some(entity) = sim.substrate.entities.get(id) else {
         return;
@@ -5912,3 +6013,7 @@ ConditionRedSparkingProbability=1.0\nConditionYellowSparkingProbability=1.0\n\n\
         );
     }
 }
+
+#[cfg(test)]
+#[path = "techno_ai_veterancy_tests.rs"]
+mod veterancy_tests;

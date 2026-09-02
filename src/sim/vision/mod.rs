@@ -1145,9 +1145,10 @@ pub struct VisionConfig {
     /// TechnoClass+0x3D5 membership byte. Headless fixtures without live
     /// MapClass authority leave this false.
     pub require_playfield_membership: bool,
-    /// Additive sight bonus for veteran+ units (from [General] VeteranSight=).
-    /// Default 0 (vanilla RA2 gives no sight bonus from veterancy).
-    pub veteran_sight_bonus: i32,
+    /// `[General] VeteranSight=` (`RulesClass+0x680`), the multiplier a
+    /// `SIGHT`-ability holder applies to its elevation-scaled sight. Stock
+    /// `0.0` disables it (see `veterancy::veteran_sight_cells`).
+    pub veteran_sight: f64,
     /// Leptons of elevation per +1 sight cell (from [General] LeptonsPerSightIncrease=).
     /// 256 leptons = 1 z-level. 0 disables the elevation bonus.
     pub leptons_per_sight_increase: i32,
@@ -1164,7 +1165,7 @@ impl Default for VisionConfig {
     fn default() -> Self {
         Self {
             require_playfield_membership: false,
-            veteran_sight_bonus: 0,
+            veteran_sight: 0.0,
             leptons_per_sight_increase: 0,
             reveal_by_height: true,
             fog_of_war: false,
@@ -1183,11 +1184,44 @@ pub fn recompute_owner_visibility(
     config: &VisionConfig,
     interner: &crate::sim::intern::StringInterner,
 ) -> FogState {
+    recompute_owner_visibility_with_rules(entities, path_grid, alliances, config, interner, None)
+}
+
+/// [`recompute_owner_visibility`] with the rules the `SIGHT` ability gate
+/// needs; the rules-less form reads every object as having no ability list.
+pub fn recompute_owner_visibility_with_rules(
+    entities: &EntityStore,
+    path_grid: Option<&PathGrid>,
+    alliances: &HouseAllianceMap,
+    config: &VisionConfig,
+    interner: &crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> FogState {
     let mut fog = FogState::default();
     recompute_owner_visibility_in_place(
-        &mut fog, entities, path_grid, alliances, config, None, interner,
+        &mut fog, entities, path_grid, alliances, config, None, interner, rules,
     );
     fog
+}
+
+/// The `SIGHT`-ability half of `TechnoClass::UpdateReveal @ 0x0070AF50`'s
+/// veteran gate (`0x0070B01E..0x0070B07A`), resolved off the type's ability
+/// arrays through the shared `HasWeaponAbility` predicate. No rules — as in
+/// headless fixtures — reads as no ability.
+pub(crate) fn entity_has_sight_ability(
+    entity: &crate::sim::game_entity::GameEntity,
+    interner: &crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> bool {
+    rules
+        .and_then(|rules| rules.object(interner.resolve(entity.type_ref)))
+        .is_some_and(|object| {
+            crate::sim::combat::veterancy::has_weapon_ability(
+                crate::sim::combat::veterancy::rank_of(entity.veterancy_raw),
+                object,
+                crate::rules::object_type::Ability::Sight,
+            )
+        })
 }
 
 /// Recompute deterministic fog/shroud visibility in-place, reusing existing grids.
@@ -1205,7 +1239,8 @@ pub fn recompute_owner_visibility_in_place(
     alliances: &HouseAllianceMap,
     config: &VisionConfig,
     height_grid: Option<&[u8]>,
-    _interner: &crate::sim::intern::StringInterner,
+    interner: &crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
 ) {
     // Construction-seeded session bounds are authoritative; the lazy
     // derivation stays only as the fallback for fixture sims built without a
@@ -1259,7 +1294,8 @@ pub fn recompute_owner_visibility_in_place(
             continue;
         }
 
-        reveal_entity_vision(fog, entity, config, height_grid);
+        let sight_ability = entity_has_sight_ability(entity, interner, rules);
+        reveal_entity_vision(fog, entity, config, height_grid, sight_ability);
     }
 }
 
@@ -1275,6 +1311,7 @@ pub(crate) fn reveal_entity_vision(
     entity: &crate::sim::game_entity::GameEntity,
     config: &VisionConfig,
     height_grid: Option<&[u8]>,
+    sight_ability: bool,
 ) {
     let width = fog.width;
     let height = fog.height;
@@ -1298,15 +1335,15 @@ pub(crate) fn reveal_entity_vision(
     };
     let with_elevation: i32 =
         (base_range * (100 + ELEVATION_SIGHT_PERCENT_PER_STEP * elev_steps)) / 100;
-    // Veterancy is multiplicative in the engine and gated on the type owning
-    // the sight promotion ability; VERA carries the existing additive stand-in
-    // because the parsed rules value is an integer.
-    let vet_bonus: i32 = if entity.veterancy >= 100 {
-        config.veteran_sight_bonus
-    } else {
-        0
-    };
-    let effective: u16 = ((with_elevation + vet_bonus).max(0) as u16).min(MAX_SIGHT_RANGE);
+    // `TechnoClass::UpdateReveal @ 0x0070AF50`: the elevation-scaled integer
+    // is then `ftol(sight * Rules.VeteranSight)` for a `SIGHT` holder, gated
+    // on the double not being exactly 0.0 (`0x0070B082..0x0070B0A4`).
+    let with_veterancy: i32 = crate::sim::combat::veterancy::veteran_sight_cells(
+        with_elevation,
+        sight_ability,
+        config.veteran_sight,
+    );
+    let effective: u16 = (with_veterancy.max(0) as u16).min(MAX_SIGHT_RANGE);
     reveal_radius_into(
         vis,
         entity.position.rx,

@@ -748,8 +748,20 @@ fn process_pending_drive_arrivals(
         // Drive-kind movers ride drive-track curve tables below — hover (and
         // any other straight-line mover) must not pick one up on repath.
         let loco_kind = loco.kind;
+        // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: the FASTER multiply sits
+        // on the truncated per-frame type speed, before the locomotor's own
+        // fraction — see `veterancy::veteran_speed_leptons_per_second`.
+        let rank = crate::sim::combat::veterancy::rank_of(entity.veterancy_raw);
+        let veteran_speed = rules.map_or(1.0, |r| r.general.veteran_speed);
         let speed = (obj
-            .map(|o| ra2_speed_to_leptons_per_second(o.speed))
+            .map(|o| {
+                crate::sim::combat::veterancy::veteran_speed_leptons_per_second(
+                    ra2_speed_to_leptons_per_second(o.speed),
+                    rank,
+                    o,
+                    veteran_speed,
+                )
+            })
             .unwrap_or(ra2_speed_to_leptons_per_second(4))
             * speed_multiplier)
             .max(SimFixed::lit("25"));
@@ -1602,11 +1614,7 @@ fn tick_movement_with_grids_scoped(
             if let Some(sampled_slope) = sampled_slope
                 && let Some(entity) = entities.get_mut(entity_id)
             {
-                super::slope_transition::sample_process_entry(
-                    entity,
-                    sampled_slope,
-                    native_frame,
-                );
+                super::slope_transition::sample_process_entry(entity, sampled_slope, native_frame);
             }
         }
     }

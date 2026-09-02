@@ -1,16 +1,22 @@
-//! Veterancy accumulation and rank crossing.
+//! Veterancy accumulation, rank crossing, and the rank-gated ability effects.
 //!
 //! gamemd keeps a single running `float` per object and derives every rank from
 //! it. `TechnoClass::Record_The_Kill @ 0x00702D40` computes the award and hands
 //! it to the accumulator `VeterancyClass::Add @ 0x0074FF50`; the readers
 //! (`IsRookie @ 0x0074FFF0`, `IsVeteran @ 0x0074FF90`, `IsElite @ 0x00750010`)
-//! only sample it.
+//! only sample it. Every rank EFFECT goes through one predicate,
+//! `TechnoClass::HasWeaponAbility @ 0x0070D0D0`, and one arithmetic shape —
+//! `FILD int; FMUL double [Rules+off]; ftol` — which this module owns so the
+//! ROF, damage, speed and sight consumers reproduce the same truncation.
 //!
-//! Dependencies: `rules` for the two `[General]` constants, `util::native_x87`
-//! for the native float substrate. No `sim` state is stored as a float — the
-//! accumulator lives as its `f32` bit pattern, so hashing, snapshots and replay
-//! stay integer-exact.
+//! Dependencies: `rules` for the `[General]` constants and the type ability
+//! arrays, `util::native_x87` for the native float substrate. No `sim` state is
+//! stored as a float — the accumulator lives as its `f32` bit pattern, so
+//! hashing, snapshots and replay stay integer-exact.
 
+use crate::rules::object_type::{Ability, ObjectType};
+use crate::sim::game_entity::GameEntity;
+use crate::util::fixed_math::SimFixed;
 use crate::util::native_x87::NativeF32Bits;
 
 /// Rank ids, in the order the native tests run.
@@ -32,6 +38,13 @@ pub const RANK_ELITE_U16: u16 = 200;
 const VETERAN_THRESHOLD_BITS: u32 = 0x3F80_0000;
 /// `VeterancyClass::IsElite @ 0x00750010` compares against 2.0f.
 const ELITE_THRESHOLD_BITS: u32 = 0x4000_0000;
+
+/// `GetVeterancyLevel @ 0x00750030` codes, as cached at `TechnoClass+0x13C`.
+pub const LEVEL_ELITE: i8 = 0;
+pub const LEVEL_VETERAN: i8 = 1;
+pub const LEVEL_ROOKIE: i8 = 2;
+/// The constructor's "never sampled" cache value.
+pub const LEVEL_UNSAMPLED: i8 = -1;
 
 /// Sample the rank from a raw accumulator.
 ///
@@ -58,6 +71,27 @@ pub fn rank_u16(raw: NativeF32Bits) -> u16 {
     }
 }
 
+/// The `Veterancy(u16)` projection read back as a rank.
+pub fn rank_from_u16(rank_u16: u16) -> VeterancyRank {
+    if rank_u16 >= RANK_ELITE_U16 {
+        VeterancyRank::Elite
+    } else if rank_u16 >= RANK_VETERAN_U16 {
+        VeterancyRank::Veteran
+    } else {
+        VeterancyRank::Rookie
+    }
+}
+
+/// `VeterancyClass::GetVeterancyLevel @ 0x00750030`, literally: `>= 2.0` is
+/// `0`, `< 1.0` is `2`, anything between is `1`.
+pub fn veterancy_level(raw: NativeF32Bits) -> i8 {
+    match rank_of(raw) {
+        VeterancyRank::Elite => LEVEL_ELITE,
+        VeterancyRank::Veteran => LEVEL_VETERAN,
+        VeterancyRank::Rookie => LEVEL_ROOKIE,
+    }
+}
+
 /// The raw accumulator a scenario-authored rank starts at.
 ///
 /// A map or scenario can place an already-veteran or already-elite object;
@@ -72,6 +106,198 @@ pub fn raw_for_rank(rank_u16: u16) -> NativeF32Bits {
     } else {
         NativeF32Bits::POSITIVE_ZERO
     }
+}
+
+/// `VeterancyStruct::SetElite(1) @ 0x007500B0`: store 2.0f, refresh the
+/// projection. The rank cache is deliberately left alone — native does not
+/// touch `+0x13C` here, so the next `AI_Update` sample announces the crossing
+/// (or, for a never-sampled object, caches silently).
+pub fn set_elite(entity: &mut GameEntity) {
+    entity.veterancy_raw = NativeF32Bits::from_bits(ELITE_THRESHOLD_BITS);
+    entity.veterancy = RANK_ELITE_U16;
+}
+
+/// `VeterancyStruct::SetVeteran(1) @ 0x00750090`: store 1.0f.
+pub fn set_veteran(entity: &mut GameEntity) {
+    entity.veterancy_raw = NativeF32Bits::from_bits(VETERAN_THRESHOLD_BITS);
+    entity.veterancy = RANK_VETERAN_U16;
+}
+
+/// `TechnoClass::HasWeaponAbility @ 0x0070D0D0`, literally.
+///
+/// ```text
+/// if (!IsVeteran && !IsElite) return false;
+/// if (IsVeteran && Type->VeteranAbilities[idx]) return true;
+/// if (IsElite && (Type->VeteranAbilities[idx] || Type->EliteAbilities[idx])) return true;
+/// return false;
+/// ```
+///
+/// An elite inherits the veteran list; a veteran never reads the elite list.
+/// The four inline copies of this predicate in `GetROF`
+/// (`0x006FD0E2..0x006FD134`), `Fire_At` (`0x006FE35E..0x006FE3C6`),
+/// `ReceiveDamage` (`0x00701970..0x007019C2`) and `UpdateReveal`
+/// (`0x0070B01E..0x0070B07A`) read the same two bytes in the same order.
+pub fn has_weapon_ability(rank: VeterancyRank, object: &ObjectType, ability: Ability) -> bool {
+    match rank {
+        VeterancyRank::Rookie => false,
+        VeterancyRank::Veteran => object.veteran_abilities.has(ability),
+        VeterancyRank::Elite => {
+            object.veteran_abilities.has(ability) || object.elite_abilities.has(ability)
+        }
+    }
+}
+
+/// The one arithmetic shape every rank multiplier uses:
+/// `FILD dword; FMUL double [Rules+off]; CALL ftol`.
+///
+/// The product is formed at the process's 53-bit precision (see
+/// `util::native_x87`), so an `f64` multiply reproduces it bit-exactly; the
+/// truncating `ftol` is the `as i32` cast. The multiplier is what
+/// `CCINIClass::ReadDouble` stored — a `%f` single widened to a double
+/// (`rules::ini_value::read_double`) — so stock `VeteranROF=0.6` is
+/// `0.6000000238…` and `50 * 0.6` lands at `30.0000012`, clear of the
+/// integer boundary at every x87 precision.
+pub fn ftol_scale(value: i32, multiplier: f64) -> i32 {
+    (f64::from(value) * multiplier) as i32
+}
+
+/// `ftol_scale` gated on `HasWeaponAbility`; the caller passes the rules
+/// multiplier that belongs to `ability`.
+pub fn scale_if_ability(
+    value: i32,
+    rank: VeterancyRank,
+    object: &ObjectType,
+    ability: Ability,
+    multiplier: f64,
+) -> i32 {
+    if has_weapon_ability(rank, object, ability) {
+        ftol_scale(value, multiplier)
+    } else {
+        value
+    }
+}
+
+/// `FootClass::GetCurrentSpeed @ 0x004DB1A0`, the FASTER arm.
+///
+/// gamemd-derived: the type speed is truncated to an integer lepton-per-frame
+/// value first (`0x004DB1CD..0x004DB1DB`), then — for a `FASTER` holder —
+/// `ftol(speed * Rules.VeteranSpeed)` at `0x004DB1F1..0x004DB200`, and only
+/// then multiplied by the locomotor's current-speed fraction. VERA carries
+/// the per-frame integer as leptons per second (`* 15`), so the multiply runs
+/// on the recovered integer and the result is re-widened the same way.
+pub fn veteran_speed_leptons_per_second(
+    base_leptons_per_second: SimFixed,
+    rank: VeterancyRank,
+    object: &ObjectType,
+    veteran_speed: f64,
+) -> SimFixed {
+    if !has_weapon_ability(rank, object, Ability::Faster) {
+        return base_leptons_per_second;
+    }
+    const FRAMES_PER_SECOND: i32 = 15;
+    let per_frame =
+        (base_leptons_per_second / SimFixed::from_num(FRAMES_PER_SECOND)).to_num::<i32>();
+    SimFixed::from_num(ftol_scale(per_frame, veteran_speed) * FRAMES_PER_SECOND)
+}
+
+/// `TechnoClass::UpdateReveal @ 0x0070AF50`, the SIGHT arm.
+///
+/// gamemd-derived: after the elevation scaling, a `SIGHT` holder multiplies
+/// the integer sight by `Rules.VeteranSight` — but only when that double is
+/// not exactly `0.0` (`FCOMP` gate at `0x0070B088`, which is how stock
+/// `VeteranSight=0.0` disables the bonus instead of blinding the unit).
+pub fn veteran_sight_cells(sight: i32, sight_ability: bool, veteran_sight: f64) -> i32 {
+    if sight_ability && veteran_sight != 0.0 {
+        ftol_scale(sight, veteran_sight)
+    } else {
+        sight
+    }
+}
+
+/// One promotion announced by `TechnoClass::AI_Update`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Promotion {
+    Veteran,
+    Elite,
+}
+
+/// The promotion detector at `TechnoClass::AI_Update @ 0x006FA054..0x006FA145`.
+///
+/// gamemd-derived:
+/// ```text
+/// prev = this->+0x13C; curr = GetVeterancyLevel(&this->Veterancy);
+/// if (prev != curr) {
+///     if (prev != -1) {
+///         if (curr == ELITE) { [sound+EVA if local human]; this->+0xF0 = Rules.EliteFlashTimer; }
+///         else if (curr == VETERAN) { [sound+EVA if local human]; }
+///     }
+///     this->+0x13C = curr;
+/// }
+/// ```
+/// The first sample after construction caches silently. A demotion (a
+/// crate's negative push) caches without announcing. The flash timer is
+/// seeded for EVERY house's elite (`0x006FA0D0` is reached from the
+/// non-human branch too); only the sound and EVA are gated, and that gate
+/// belongs to the app layer, which knows the local player.
+pub fn sample_promotion(entity: &mut GameEntity, elite_flash_timer: i32) -> Option<Promotion> {
+    let prev = entity.veterancy_rank_cache;
+    let curr = veterancy_level(entity.veterancy_raw);
+    if prev == curr {
+        return None;
+    }
+    entity.veterancy_rank_cache = curr;
+    if prev == LEVEL_UNSAMPLED {
+        return None;
+    }
+    match curr {
+        LEVEL_ELITE => {
+            entity.elite_flash_frames = elite_flash_timer.clamp(0, i32::from(u16::MAX)) as u16;
+            Some(Promotion::Elite)
+        }
+        LEVEL_VETERAN => Some(Promotion::Veteran),
+        _ => None,
+    }
+}
+
+/// `ftol(Rules.RepairRate * 900.0)` — the self-heal pulse period
+/// (`FUN_0070BE80` at `0x0070BEFE..0x0070BF0A`; the 900.0 constant lives at
+/// `0x007E27F8`).
+pub fn self_heal_interval_frames(repair_rate_minutes: f64) -> i32 {
+    (repair_rate_minutes * 900.0) as i32
+}
+
+/// The self-heal eligibility virtual, `TechnoClass` vtable slot `0x294` →
+/// `FUN_0070BE80` (slot verified by `read_memory 0x007F4BF4`).
+///
+/// gamemd-derived, in this order:
+/// 1. `Type->SelfHealing` (`+0xD14`) bypasses the ability gate; otherwise the
+///    object must be veteran or elite AND hold `SELF_HEAL` (index 9) through
+///    the same inheritance `HasWeaponAbility` uses.
+/// 2. `Frame % ftol(RepairRate * 900) == 0` — a shared global cadence, not a
+///    per-object timer, so every eligible object pulses on the same frame.
+/// 3. `Health != Type->Strength` and `Health != 0`.
+///
+/// A non-positive period is a VERA-internal guard (native would `IDIV` by
+/// zero; no stock or sane INI reaches it) and reads as never-eligible.
+pub fn self_heal_eligible(
+    entity: &GameEntity,
+    object: &ObjectType,
+    frame: u32,
+    interval_frames: i32,
+) -> bool {
+    if !object.self_healing {
+        let rank = rank_of(entity.veterancy_raw);
+        if !has_weapon_ability(rank, object, Ability::SelfHeal) {
+            return false;
+        }
+    }
+    if interval_frames <= 0 || frame % (interval_frames as u32) != 0 {
+        return false;
+    }
+    // Native compares against `Type->Strength` (`+0xA0`); VERA's `health.max`
+    // is that value at spawn, and it is the ceiling the +1 must respect.
+    let health = entity.health.current;
+    health != entity.health.max && health != 0
 }
 
 /// The award a kill is worth, before the recipient's own cost divides it.
@@ -146,45 +372,43 @@ pub fn accumulate(
     NativeF32Bits::from_bits((clamped as f32).to_bits())
 }
 
-/// Award one kill's experience to its killer, if the killer can hold it.
+/// Award one kill's experience to its recipient, if the recipient can hold it.
 ///
-/// gamemd-derived: the recipient arm of `TechnoClass::Record_The_Kill @
-/// 0x00702D40`. `cost` is the RECIPIENT's own cost — an expensive unit needs a
-/// proportionally larger haul to promote — and the award is the victim's cost
-/// after the ally gate and the victim's own rank multiplier.
-///
-/// RESIDUAL (GSI-08.12) — only the killer itself receives experience here.
-/// Native redirects the award through three earlier paths: a garrisoned
-/// occupant, a spawner's owner and a transport's owner all take the experience
-/// their platform earned, and the platform itself gets nothing. Those fields'
-/// identities are UNCHECKED. Trigger: any kill by a garrisoned infantryman, an
-/// Aircraft Carrier's Hornets or an IFV. Player effect: the occupants and
-/// spawns never promote, and the platform promotes where retail does not.
-/// Frequency: routine in ordinary play wherever garrisons and carriers appear.
+/// gamemd-derived: the accumulator call at the tail of every recipient arm of
+/// `TechnoClass::Record_The_Kill @ 0x00702D40` (`0x00702FF0`). `cost` is the
+/// RECIPIENT's own cost — an expensive unit needs a proportionally larger
+/// haul to promote — and the award is the victim's cost after the ally gate
+/// and the victim's own rank multiplier. Which object is the recipient is
+/// decided by the caller (`combat::award_kill_experience`), which walks the
+/// native redirection chain.
 pub fn award_kill(
-    killer: &mut crate::sim::game_entity::GameEntity,
-    killer_cost: i32,
+    recipient: &mut GameEntity,
+    recipient_cost: i32,
     points: i32,
     trainable: bool,
     veteran_ratio: f64,
     veteran_cap: f64,
 ) {
-    if !trainable || points <= 0 || killer_cost <= 0 {
+    if !trainable || points <= 0 || recipient_cost <= 0 {
         return;
     }
-    killer.veterancy_raw = accumulate(
-        killer.veterancy_raw,
-        killer_cost,
+    recipient.veterancy_raw = accumulate(
+        recipient.veterancy_raw,
+        recipient_cost,
         points,
         veteran_ratio,
         veteran_cap,
     );
-    killer.veterancy = rank_u16(killer.veterancy_raw);
+    recipient.veterancy = rank_u16(recipient.veterancy_raw);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::entities::EntityCategory;
+    use crate::rules::object_type::AbilityFlags;
+    use crate::sim::components::Health;
+    use crate::sim::intern;
 
     /// Stock `[General] VeteranRatio=` and `VeteranCap=`.
     const RATIO: f64 = 3.0;
@@ -198,6 +422,38 @@ mod tests {
                 raw
             })
             .collect()
+    }
+
+    fn object_with(veteran: &[Ability], elite: &[Ability]) -> ObjectType {
+        let ini = crate::rules::ini_parser::IniFile::from_str("[X]\nStrength=300\n");
+        let mut object = ObjectType::from_ini_section(
+            "X",
+            ini.section("X").expect("section"),
+            crate::rules::object_type::ObjectCategory::Vehicle,
+        );
+        object.veteran_abilities = AbilityFlags::from_abilities(veteran);
+        object.elite_abilities = AbilityFlags::from_abilities(elite);
+        object
+    }
+
+    fn entity(veterancy: u16, health: u16, max: u16) -> GameEntity {
+        GameEntity::new_at_frame_zero_for_test(
+            1,
+            5,
+            5,
+            0,
+            0,
+            intern::test_intern("Americans"),
+            Health {
+                current: health,
+                max,
+            },
+            intern::test_intern("MTNK"),
+            EntityCategory::Unit,
+            veterancy,
+            5,
+            true,
+        )
     }
 
     /// A Grizzly (Cost=700) killing rookie Rhinos (Cost=900) earns 3/7 per kill:
@@ -257,5 +513,174 @@ mod tests {
         let out = accumulate(NativeF32Bits::POSITIVE_ZERO, 0, 900, RATIO, CAP);
         assert_eq!(out.bits(), ELITE_THRESHOLD_BITS);
         assert_eq!(rank_u16(out), 200);
+    }
+
+    /// `HasWeaponAbility @ 0x0070D0D0`: an elite inherits the veteran list,
+    /// a veteran never reads the elite list, a rookie has nothing.
+    #[test]
+    fn gsi_08_12_has_weapon_ability_inherits_the_veteran_list_at_elite() {
+        let object = object_with(&[Ability::Rof], &[Ability::Firepower]);
+        assert!(!has_weapon_ability(
+            VeterancyRank::Rookie,
+            &object,
+            Ability::Rof
+        ));
+        assert!(has_weapon_ability(
+            VeterancyRank::Veteran,
+            &object,
+            Ability::Rof
+        ));
+        assert!(!has_weapon_ability(
+            VeterancyRank::Veteran,
+            &object,
+            Ability::Firepower
+        ));
+        assert!(has_weapon_ability(
+            VeterancyRank::Elite,
+            &object,
+            Ability::Rof
+        ));
+        assert!(has_weapon_ability(
+            VeterancyRank::Elite,
+            &object,
+            Ability::Firepower
+        ));
+        assert!(!has_weapon_ability(
+            VeterancyRank::Elite,
+            &object,
+            Ability::Sight
+        ));
+    }
+
+    /// The elite Grizzly's `105mmE` (`ROF=50`) reloads in 50..=52 frames before
+    /// `VeteranROF=0.6`; `ftol` of the binary64 products is 30, 30, 31 — never
+    /// 29, which a 64-bit-mantissa product of `50 * 0.6` would truncate to.
+    #[test]
+    fn gsi_08_05_veteran_rof_truncates_the_jittered_reload() {
+        assert_eq!(ftol_scale(50, 0.6), 30);
+        assert_eq!(ftol_scale(51, 0.6), 30);
+        assert_eq!(ftol_scale(52, 0.6), 31);
+        let object = object_with(&[Ability::Rof], &[]);
+        assert_eq!(
+            scale_if_ability(50, VeterancyRank::Rookie, &object, Ability::Rof, 0.6),
+            50
+        );
+        assert_eq!(
+            scale_if_ability(50, VeterancyRank::Veteran, &object, Ability::Rof, 0.6),
+            30
+        );
+    }
+
+    /// `VeteranCombat=1.1` on the Grizzly's 65 damage: `ftol(71.5) = 71`.
+    #[test]
+    fn gsi_08_12_veteran_combat_truncates_the_scaled_damage() {
+        assert_eq!(ftol_scale(65, 1.1), 71);
+        assert_eq!(ftol_scale(100, 1.1), 110);
+        assert_eq!(ftol_scale(25, 1.1), 27);
+    }
+
+    /// `VeteranSpeed=1.2` on stock Rhino/Grizzly per-frame speeds: 15 -> 18
+    /// (the binary64 product of `15 * 1.2` rounds UP to 18.0 before `ftol`;
+    /// an extended-precision product would have given 17), 17 -> 20.
+    #[test]
+    fn gsi_08_12_veteran_speed_scales_the_per_frame_integer() {
+        use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
+        let object = object_with(&[Ability::Faster], &[]);
+        let rhino = ra2_speed_to_leptons_per_second(6);
+        assert_eq!(rhino, SimFixed::from_num(15 * 15));
+        assert_eq!(
+            veteran_speed_leptons_per_second(rhino, VeterancyRank::Rookie, &object, 1.2),
+            rhino
+        );
+        assert_eq!(
+            veteran_speed_leptons_per_second(rhino, VeterancyRank::Veteran, &object, 1.2),
+            SimFixed::from_num(18 * 15)
+        );
+        let grizzly = ra2_speed_to_leptons_per_second(7);
+        assert_eq!(
+            veteran_speed_leptons_per_second(grizzly, VeterancyRank::Elite, &object, 1.2),
+            SimFixed::from_num(20 * 15)
+        );
+    }
+
+    /// `VeteranSight`: multiplicative, gated on the ability AND on the value
+    /// not being exactly `0.0` — stock `0.0` leaves the sight alone.
+    #[test]
+    fn gsi_08_12_veteran_sight_is_multiplicative_and_zero_gated() {
+        assert_eq!(veteran_sight_cells(8, true, 0.0), 8);
+        assert_eq!(veteran_sight_cells(8, false, 1.5), 8);
+        assert_eq!(veteran_sight_cells(8, true, 1.5), 12);
+        assert_eq!(veteran_sight_cells(7, true, 1.5), 10);
+    }
+
+    /// `AI_Update @ 0x006FA054`: the first sample caches silently, each later
+    /// crossing announces once, and only the elite crossing arms the flash.
+    #[test]
+    fn gsi_08_12_promotion_is_announced_once_per_crossing() {
+        let mut e = entity(0, 300, 300);
+        assert_eq!(e.veterancy_rank_cache, LEVEL_UNSAMPLED);
+        assert_eq!(sample_promotion(&mut e, 150), None);
+        assert_eq!(e.veterancy_rank_cache, LEVEL_ROOKIE);
+        assert_eq!(sample_promotion(&mut e, 150), None);
+
+        set_veteran(&mut e);
+        assert_eq!(sample_promotion(&mut e, 150), Some(Promotion::Veteran));
+        assert_eq!(e.elite_flash_frames, 0);
+        assert_eq!(sample_promotion(&mut e, 150), None);
+
+        set_elite(&mut e);
+        assert_eq!(sample_promotion(&mut e, 150), Some(Promotion::Elite));
+        assert_eq!(e.elite_flash_frames, 150);
+        assert_eq!(e.veterancy_rank_cache, LEVEL_ELITE);
+    }
+
+    /// A never-sampled object placed already elite (InitialVeteran, a map
+    /// veteran) caches without a sound; a rookie that jumps straight to elite
+    /// (zero-cost recipient) takes the elite branch.
+    #[test]
+    fn gsi_08_12_first_sample_is_silent_and_direct_elite_announces_elite() {
+        let mut placed = entity(200, 300, 300);
+        assert_eq!(sample_promotion(&mut placed, 150), None);
+        assert_eq!(placed.elite_flash_frames, 0);
+
+        let mut rookie = entity(0, 300, 300);
+        sample_promotion(&mut rookie, 150);
+        set_elite(&mut rookie);
+        assert_eq!(sample_promotion(&mut rookie, 150), Some(Promotion::Elite));
+    }
+
+    /// `FUN_0070BE80`: SelfHealing bypasses the rank gate; SELF_HEAL needs a
+    /// rank; the pulse is a global `frame % ftol(RepairRate * 900)`; full or
+    /// dead objects never pulse.
+    #[test]
+    fn gsi_08_12_self_heal_eligibility_matches_the_native_gates() {
+        let interval = self_heal_interval_frames(0.016);
+        assert_eq!(interval, 14);
+        let ability = object_with(&[], &[Ability::SelfHeal]);
+        let rookie = entity(0, 100, 300);
+        assert!(!self_heal_eligible(&rookie, &ability, 14, interval));
+        let veteran = entity(100, 100, 300);
+        assert!(!self_heal_eligible(&veteran, &ability, 14, interval));
+        let elite = entity(200, 100, 300);
+        assert!(self_heal_eligible(&elite, &ability, 14, interval));
+        assert!(self_heal_eligible(&elite, &ability, 0, interval));
+        assert!(!self_heal_eligible(&elite, &ability, 15, interval));
+        assert!(!self_heal_eligible(
+            &entity(200, 300, 300),
+            &ability,
+            14,
+            interval
+        ));
+        assert!(!self_heal_eligible(
+            &entity(200, 0, 300),
+            &ability,
+            14,
+            interval
+        ));
+
+        let mut per_type = object_with(&[], &[]);
+        per_type.self_healing = true;
+        assert!(self_heal_eligible(&rookie, &per_type, 28, interval));
+        assert!(!self_heal_eligible(&rookie, &per_type, 28, 0));
     }
 }

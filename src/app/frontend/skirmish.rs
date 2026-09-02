@@ -415,8 +415,7 @@ mod tests {
             iso_map_pack_lookups: Vec::new(),
             entities: Vec::new(),
             overlays: Vec::new(),
-            authored_overlay_packs:
-                crate::map::map_file::AuthoredOverlayPackSlot::empty(),
+            authored_overlay_packs: crate::map::map_file::AuthoredOverlayPackSlot::empty(),
             smudges: Vec::new(),
             terrain_objects: Vec::new(),
             waypoints,
@@ -1425,11 +1424,10 @@ mod tests {
         )
         .expect("complete stock-offline Scenario prefix");
 
-        let loading_assignments =
-            crate::app::loading::pump::selected_map_start_assignments(
-                &session,
-                Some(plan.projection()),
-            );
+        let loading_assignments = crate::app::loading::pump::selected_map_start_assignments(
+            &session,
+            Some(plan.projection()),
+        );
         assert_eq!(
             loading_assignments,
             vec![
@@ -1881,11 +1879,12 @@ mod tests {
         assert_eq!(sim.entities().len(), 4);
         assert_eq!(entity_position_for_owner(&sim, "Player"), Some((45, 45)));
         assert_eq!(entity_position_for_owner(&sim, "Computer1"), Some((35, 35)));
-        assert!(
-            sim.entities()
-                .values()
-                .all(|entity| entity.veterancy == 200)
-        );
+        // `0x005D73FD..0x005D740A`: SpecialFlags bit 9 → `SetElite(1)`, which
+        // is the 2.0f accumulator, not just the rank projection — a unit
+        // seeded only in the projection would demote on its first kill.
+        assert!(sim.entities().values().all(|entity| {
+            entity.veterancy == 200 && entity.veterancy_raw.bits() == 0x4000_0000
+        }));
         assert!(sim.entities().values().all(|entity| {
             let expected = if sim.interner.resolve(entity.owner) == "Player" {
                 MissionType::Guard
@@ -2445,12 +2444,11 @@ mod tests {
         let registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(&text), None);
         let mut names = BTreeMap::new();
 
-        let (wall_count, low_bridge_count, crate_count) =
-            preregister_runtime_overlay_names(
-                &registry,
-                &crate::rules::crate_rules::CrateRules::default(),
-                &mut names,
-            );
+        let (wall_count, low_bridge_count, crate_count) = preregister_runtime_overlay_names(
+            &registry,
+            &crate::rules::crate_rules::CrateRules::default(),
+            &mut names,
+        );
 
         assert_eq!(wall_count, 0);
         assert_eq!(low_bridge_count, 64);

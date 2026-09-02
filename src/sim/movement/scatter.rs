@@ -203,7 +203,7 @@ pub fn tick_idle_scatter(
             None,  // entity_block_map
             false, // mover_is_crusher — scatter doesn't need crusher logic
             None,  // no resolved world substrate for exact blocker counts
-            None, // no MapClass authority reaches this isolated helper
+            None,  // no MapClass authority reaches this isolated helper
             None,  // caller does not own the world occupation grid
         );
     }
@@ -312,7 +312,7 @@ pub fn scatter_units_from_cell(
             None,  // entity_block_map
             false, // mover_is_crusher
             None,  // no resolved world substrate for exact blocker counts
-            None, // no MapClass authority reaches this isolated helper
+            None,  // no MapClass authority reaches this isolated helper
             None,  // caller does not own the world occupation grid
         );
 
@@ -385,9 +385,20 @@ fn resolve_entity_speed(
     let Some(entity) = entities.get(entity_id) else {
         return SimFixed::from_num(0);
     };
+    // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: FASTER scales the truncated
+    // per-frame type speed ahead of the locomotor fraction.
+    let rank = crate::sim::combat::veterancy::rank_of(entity.veterancy_raw);
     let base_speed = rules
-        .and_then(|r| r.object(interner.resolve(entity.type_ref)))
-        .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
+        .and_then(|r| {
+            r.object(interner.resolve(entity.type_ref)).map(|obj| {
+                crate::sim::combat::veterancy::veteran_speed_leptons_per_second(
+                    ra2_speed_to_leptons_per_second(obj.speed),
+                    rank,
+                    obj,
+                    r.general.veteran_speed,
+                )
+            })
+        })
         .unwrap_or_else(|| ra2_speed_to_leptons_per_second(4));
     let loco_mult = entity
         .locomotor
@@ -404,10 +415,7 @@ fn resolve_entity_speed(
 fn build_entity_block_set(entities: &EntityStore, exclude_id: u64) -> BTreeSet<(u16, u16)> {
     let mut blocks = BTreeSet::new();
     for entity in entities.values() {
-        if entity.stable_id == exclude_id
-            || entity.dying
-            || !entity.lifecycle.cell_marked
-        {
+        if entity.stable_id == exclude_id || entity.dying || !entity.lifecycle.cell_marked {
             continue;
         }
         // Only block cells occupied by vehicles/structures — infantry share cells.

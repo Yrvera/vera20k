@@ -93,6 +93,13 @@ impl StringInterner {
         &self.to_str[id.0 as usize]
     }
 
+    /// `resolve` without the panic: `None` for an id this interner never
+    /// produced (fixtures that build entities against a different interner).
+    #[inline]
+    pub fn try_resolve(&self, id: InternedId) -> Option<&str> {
+        self.to_str.get(id.0 as usize).map(String::as_str)
+    }
+
     /// Number of unique strings interned.
     pub fn len(&self) -> usize {
         self.to_str.len()

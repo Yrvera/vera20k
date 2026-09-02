@@ -194,8 +194,12 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // Re-baselined 2026-08-30 for GSI-04.03 Drive slope payload ownership. The
 // common locomotor fold reaches both historical probes; the scripted retasks
 // and record/replay equality remain exact, so this is composition-only.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x368E_E20F_77C7_0725;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9856_E7DA_D9F1_676A;
+// 2026-09-02 veterancy effects (GSI-08.12): `TechnoClass+0x13C` is now written by the
+// first `AI_Update` promotion sample (-1 -> GetVeterancyLevel code), so every live
+// object's hashed `veterancy_rank_cache` moved. Composition of the hash is unchanged
+// and the RNG stream pins held (FINAL_STREAM_STATES), so no cadence or draw moved.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x296B_7B60_806C_DD7C;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xFD4C_A003_501F_6E9A;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -330,10 +334,10 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9856_E7DA_D9F1_676A;
 // shared-dummy overlay identity/state folds. The dedicated pre-v115 probe reproduces the
 // prior current baseline exactly; this fixture builds a legacy `None`-count grid, so only
 // current-schema composition moved.
-const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0x214E_DE3E_7939_F143;
-const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x4397_FA88_D95E_5208;
-const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xE61A_9D19_669A_1B9C;
-const SLICE6_BASELINE_HASH: u64 = 0x7E57_DD5F_060A_C42E;
+const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0x3121_66BC_2676_DC70;
+const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xBBF9_DD64_0E8E_D757;
+const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x24AC_EAAA_04AA_3948;
+const SLICE6_BASELINE_HASH: u64 = 0x9014_EAA7_735D_2827;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

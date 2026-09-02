@@ -271,12 +271,37 @@ pub struct GeneralRules {
     /// [AudioVisual], value 6; the engine's code default is 3). Native stores a
     /// signed integer and converts to f32 at the behavior-3 tick boundary.
     pub gravity: i32,
-    /// Additive sight bonus for veteran+ units (VeteranSight=).
-    /// Default 0 in vanilla RA2 (no sight bonus from veterancy).
-    pub veteran_sight: i32,
+    /// `[General] VeteranSight=` — `RulesClass+0x680`, a double.
+    ///
+    /// gamemd-derived: `TechnoClass::UpdateReveal @ 0x0070AF50` MULTIPLIES the
+    /// elevation-scaled sight by it (`0x0070B095..0x0070B09F`, `FILD; FMUL;
+    /// ftol`), only for a `SIGHT`-ability holder, and only when the value is
+    /// not exactly `0.0` (`FCOMP` gate at `0x0070B088`). Stock `0.0` therefore
+    /// disables the bonus. The constructor default is UNCHECKED.
+    pub veteran_sight: f64,
+    /// `[General] VeteranCombat=` — `RulesClass+0x670`. `TechnoClass::Fire_At`
+    /// multiplies the folded firepower damage by it at `0x006FE3C8..0x006FE3D8`
+    /// for a `FIREPOWER`-ability holder. Constructor default UNCHECKED.
+    pub veteran_combat: f64,
+    /// `[General] VeteranSpeed=` — `RulesClass+0x678`.
+    /// `FootClass::GetCurrentSpeed @ 0x004DB1A0` multiplies the truncated type
+    /// speed by it at `0x004DB1F1..0x004DB200` for a `FASTER`-ability holder.
+    /// Constructor default UNCHECKED.
+    pub veteran_speed: f64,
+    /// `[General] VeteranROF=` — `RulesClass+0x690`, read at `0x0066EF61`.
+    /// `TechnoClass::GetROF @ 0x006FCFA0` multiplies the jittered reload by it
+    /// at `0x006FD136..0x006FD145` for a `ROF`-ability holder. Constructor
+    /// default UNCHECKED.
+    pub veteran_rof: f64,
     /// Receiver-side divisor selected by the rank-specific `STRONGER`
     /// ability (`VeteranArmor=` in `[General]`).
     pub veteran_armor: f64,
+    /// `[General] RepairRate=` in minutes — `RulesClass+0x16E0`.
+    ///
+    /// The self-heal pulse (`FUN_0070BE80`) divides the frame counter by
+    /// `ftol(RepairRate * 900)` (`0x0070BEFE..0x0070BF0A`, constant 900.0 at
+    /// `0x007E27F8`); stock `.016` gives a 14-frame pulse.
+    pub repair_rate_minutes: f64,
     /// `[General] VeteranRatio=` — how many times its own cost an object must
     /// destroy to gain one rank. `RulesClass+0x668`, read at `0x0066EEB0`.
     pub veteran_ratio: f64,
@@ -451,6 +476,20 @@ pub struct GeneralRules {
     /// `NavalUnitEmerge`; the native constructor's invalid Voc index is silence
     /// when the key is absent or cannot resolve.
     pub cloak_sound: Option<String>,
+    /// `[AudioVisual] UpgradeVeteranSound=` — `RulesClass::ReadAudioVisual @
+    /// 0x006691E0` resolves it to a Voc index at `RulesClass+0x228`
+    /// (`0x00669CFD..0x00669D27`); `TechnoClass::AI_Update` plays that index
+    /// positionally on a veteran promotion (`0x006FA124..0x006FA12A`). The
+    /// name is retained at the data boundary; absent or empty is silence.
+    pub upgrade_veteran_sound: Option<String>,
+    /// `[AudioVisual] UpgradeEliteSound=` — `RulesClass+0x22C`
+    /// (`0x00669D3E..0x00669D27`), played on an elite promotion
+    /// (`0x006FA0B6..0x006FA0BC`).
+    pub upgrade_elite_sound: Option<String>,
+    /// `[AudioVisual] EliteFlashTimer=` — `RulesClass+0xBE8`. Seeded into
+    /// `TechnoClass+0xF0` on an elite promotion (`0x006FA0D6..0x006FA0DC`),
+    /// whatever house owns the object. Constructor default UNCHECKED.
+    pub elite_flash_timer: i32,
     /// `IdleActionFrequency=` from `[AudioVisual]`, pre-scaled to integer ×1000.
     ///
     /// Scales how long an idle infantryman waits between fidgets: the wait is
@@ -941,8 +980,12 @@ impl Default for GeneralRules {
             // 0x3F9EB851EB851EB8 to +0x14C8.
             savour_delay_minutes: 0.03,
             gravity: 3,
-            veteran_sight: 0,
+            veteran_sight: 0.0,
+            veteran_combat: 1.0,
+            veteran_speed: 1.0,
+            veteran_rof: 1.0,
             veteran_armor: 1.0,
+            repair_rate_minutes: 0.016,
             veteran_ratio: VETERAN_RATIO_DEFAULT,
             veteran_cap: VETERAN_CAP_DEFAULT,
             difficulty_armor: [1.0; 3],
@@ -1028,6 +1071,9 @@ impl Default for GeneralRules {
             cloaking_stages: 9,
             cloak_delay_frames: 18,
             cloak_sound: None,
+            upgrade_veteran_sound: None,
+            upgrade_elite_sound: None,
+            elite_flash_timer: 0,
             idle_action_frequency_x1000: STOCK_IDLE_ACTION_FREQUENCY_X1000,
             damage_fire_ordinary_ratio: DamageFireHealthRatio {
                 numerator: 1,
@@ -1533,8 +1579,22 @@ impl GeneralRules {
             gravity: audio_visual
                 .and_then(|s| s.get_i32("Gravity"))
                 .unwrap_or(defaults.gravity),
-            veteran_sight: general.get_i32("VeteranSight").unwrap_or(0),
+            veteran_sight: general
+                .get_f64("VeteranSight")
+                .unwrap_or(defaults.veteran_sight),
+            veteran_combat: general
+                .get_f64("VeteranCombat")
+                .unwrap_or(defaults.veteran_combat),
+            veteran_speed: general
+                .get_f64("VeteranSpeed")
+                .unwrap_or(defaults.veteran_speed),
+            veteran_rof: general
+                .get_f64("VeteranROF")
+                .unwrap_or(defaults.veteran_rof),
             veteran_armor: general.get_f64("VeteranArmor").unwrap_or(1.0),
+            repair_rate_minutes: general
+                .get_f64("RepairRate")
+                .unwrap_or(defaults.repair_rate_minutes),
             veteran_ratio: general
                 .get_f64("VeteranRatio")
                 .unwrap_or(VETERAN_RATIO_DEFAULT),
@@ -1695,6 +1755,19 @@ impl GeneralRules {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            upgrade_veteran_sound: audio_visual
+                .and_then(|s| s.get("UpgradeVeteranSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            upgrade_elite_sound: audio_visual
+                .and_then(|s| s.get("UpgradeEliteSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            elite_flash_timer: audio_visual
+                .and_then(|s| s.get_i32("EliteFlashTimer"))
+                .unwrap_or(defaults.elite_flash_timer),
             idle_action_frequency_x1000: (audio_visual
                 .map(|s| {
                     s.read_double(
@@ -5097,6 +5170,53 @@ MutateWarhead=MyMutate\n\
         );
         let rules = RuleSet::from_ini(&ini).expect("Should parse");
         assert!(rules.bridge_rules.destroyable_by_default);
+    }
+
+    /// `RulesClass::ReadGeneral @ 0x0066D530` reads the four rank multipliers
+    /// as doubles (`+0x670`, `+0x678`, `+0x680`, `+0x690`) and `RepairRate`
+    /// (`+0x16E0`); `ReadAudioVisual @ 0x006691E0` resolves the two upgrade
+    /// sounds and `EliteFlashTimer` (`+0xBE8`).
+    #[test]
+    fn gsi_08_12_veterancy_multipliers_and_promotion_cues_parse() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [General]\nVeteranCombat=1.1\nVeteranSpeed=1.2\nVeteranSight=0.0\nVeteranROF=0.6\nRepairRate=.016\n\
+             [AudioVisual]\nUpgradeVeteranSound=UpgradeVeteran\nUpgradeEliteSound=UpgradeElite\nEliteFlashTimer=150\n",
+        ))
+        .unwrap();
+        // `ReadDouble` is a `%f` single widened to a double, so the stored
+        // multipliers are the f32-widened values, not the decimal literals.
+        assert_eq!(rules.general.veteran_combat, f64::from(1.1f32));
+        assert_eq!(rules.general.veteran_speed, f64::from(1.2f32));
+        assert_eq!(rules.general.veteran_sight, 0.0);
+        assert_eq!(rules.general.veteran_rof, f64::from(0.6f32));
+        assert_eq!(rules.general.repair_rate_minutes, f64::from(0.016f32));
+        // The widened singles sit clear of every integer boundary the stock
+        // consumers reach: the products below truncate the same way at any
+        // x87 precision.
+        use crate::sim::combat::veterancy::{ftol_scale, self_heal_interval_frames};
+        assert_eq!(ftol_scale(50, rules.general.veteran_rof), 30);
+        assert_eq!(ftol_scale(51, rules.general.veteran_rof), 30);
+        assert_eq!(ftol_scale(52, rules.general.veteran_rof), 31);
+        assert_eq!(ftol_scale(65, rules.general.veteran_combat), 71);
+        assert_eq!(ftol_scale(15, rules.general.veteran_speed), 18);
+        assert_eq!(self_heal_interval_frames(rules.general.repair_rate_minutes), 14);
+        assert_eq!(
+            rules.general.upgrade_veteran_sound.as_deref(),
+            Some("UpgradeVeteran")
+        );
+        assert_eq!(
+            rules.general.upgrade_elite_sound.as_deref(),
+            Some("UpgradeElite")
+        );
+        assert_eq!(rules.general.elite_flash_timer, 150);
+
+        let bare = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n[General]\nFixtureOnly=1\n",
+        ))
+        .unwrap();
+        assert_eq!(bare.general.veteran_rof, 1.0);
+        assert_eq!(bare.general.upgrade_veteran_sound, None);
     }
 
     #[test]
