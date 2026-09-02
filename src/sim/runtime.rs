@@ -741,7 +741,24 @@ where
         log::warn!("No rules loaded — skipping terrain object construction");
     }
     if let (Some(rules), Some(overlay_registry)) = (rules, authored_overlay_registry) {
-        initialize_authored_tiberium_queues(sim, map_data, rules, overlay_registry);
+        // The live grid is read through a temporary view and handed back.
+        let live_grid = sim.overlay_grid.take();
+        let stats = initialize_native_tiberium_queues(
+            sim,
+            &map_data.basic,
+            &map_data.special_flags,
+            rules,
+            overlay_registry,
+            live_grid.as_ref(),
+        );
+        sim.overlay_grid = live_grid;
+        if let Some(stats) = stats {
+            log::info!(
+                "Initialized authored native tiberium queues before Technos: {} growth, {} spread",
+                stats.growth_entries,
+                stats.spread_entries,
+            );
+        }
     }
     let authored_entity_terrain =
         authored_overlay_registry.and_then(|_| sim.resolved_terrain.as_ref().cloned());
@@ -774,20 +791,27 @@ where
     Ok(())
 }
 
-fn initialize_authored_tiberium_queues(
+/// Native growth-then-spread queue initialization from a read-only view of
+/// the then-current cells. Authored `Full_Init` runs it between the Terrain
+/// and Techno sections; a generated launch runs it in the
+/// `RandomMapGenerator::Generate @ 0x00598960` tail after the generator
+/// constructors and before `InitCellAttributes(1)` germinates the densities.
+///
+/// gamemd-derived: `TiberiumClass::InitGrowthQueues_All @ 0x00722D00` then
+/// `TiberiumClass::InitSpreadQueues_All @ 0x00722240`, each freeing and
+/// rebuilding every TiberiumClass's queue from the current cell state.
+/// Returns `None` when no overlay grid exists (queues reset empty).
+pub(crate) fn initialize_native_tiberium_queues(
     sim: &mut Simulation,
-    map_data: &crate::map::map_file::MapFile,
+    basic: &crate::map::basic::BasicSection,
+    special_flags: &crate::map::basic::SpecialFlagsSection,
     rules: &RuleSet,
     overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
-) {
-    sim.production.ore_growth_config = crate::sim::ore_growth::OreGrowthConfig::from_ini(
-        &rules.general,
-        &map_data.basic,
-        &map_data.special_flags,
-    );
-    let (width, height) = sim
-        .overlay_grid
-        .as_ref()
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+) -> Option<crate::sim::ore_growth::NativeTiberiumRebuildStats> {
+    sim.production.ore_growth_config =
+        crate::sim::ore_growth::OreGrowthConfig::from_ini(&rules.general, basic, special_flags);
+    let (width, height) = overlay_grid
         .map(|grid| (grid.width(), grid.height()))
         .or_else(|| {
             sim.resolved_terrain
@@ -802,31 +826,26 @@ fn initialize_authored_tiberium_queues(
         .keys()
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
-    let Some(overlay_grid) = sim.overlay_grid.as_ref() else {
+    let Some(overlay_grid) = overlay_grid else {
         sim.production
             .ore_growth_state
             .reset_native_tiberium_classes(0, sim.session.binary_frame);
-        return;
+        return None;
     };
-    let stats = sim
-        .production
-        .ore_growth_state
-        .rebuild_native_tiberium_queues_from_overlays(
-            overlay_grid,
-            overlay_registry,
-            &rules.tiberium_types,
-            sim.resolved_terrain.as_ref(),
-            &source_object_cells,
-            map_data.basic.tiberium_growth_enabled.unwrap_or(true),
-            rules.general.tiberium_spreads
-                && map_data.special_flags.tiberium_spreads.unwrap_or(true),
-            sim.session.binary_frame,
-        );
-    log::info!(
-        "Initialized authored native tiberium queues before Technos: {} growth, {} spread",
-        stats.growth_entries,
-        stats.spread_entries,
-    );
+    Some(
+        sim.production
+            .ore_growth_state
+            .rebuild_native_tiberium_queues_from_overlays(
+                overlay_grid,
+                overlay_registry,
+                &rules.tiberium_types,
+                sim.resolved_terrain.as_ref(),
+                &source_object_cells,
+                basic.tiberium_growth_enabled.unwrap_or(true),
+                rules.general.tiberium_spreads && special_flags.tiberium_spreads.unwrap_or(true),
+                sim.session.binary_frame,
+            ),
+    )
 }
 
 #[derive(Debug)]

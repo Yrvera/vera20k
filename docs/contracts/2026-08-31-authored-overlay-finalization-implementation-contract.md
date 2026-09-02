@@ -674,6 +674,81 @@ campaign-only view setup, `FUN_004F42F0`/sidebar presentation, `MapClass::Parano
 map-INI empty-value `OreTwinkle=` shadowing, and `FUN_00586BF0` bridge-record gap restamping (routed
 to transaction 4/13).
 
+## Continuation slice C: generated final `InitCellAttributes(1)` germination and queue order (2026-09-02)
+
+Scope: the generator-tail part of G10 that changes retail gameplay on every random map — the final
+`InitCellAttributes(1)` ore-density rewrite, its value-only caller-local sum, and the growth-then-spread
+queue initialization that precedes it. The phase journal (anim chronology across the generator Recalc
+boundaries, synthetic `Full_Init` state) stays open as the rest of G10.
+
+Native evidence (decompiled live 2026-09-01):
+- `RandomMapGenerator::Generate @ 0x00598960` tail `0x00599370..0x0059945B`: final whole-map
+  `RecalcAttributes(-1)` loop (`0x0059937D`) -> optional callback -> `TiberiumClass::InitGrowthQueues_All
+  @ 0x00722D00` -> `TiberiumClass::InitSpreadQueues_All @ 0x00722240` -> scratch free ->
+  `MapClass::InitCellAttributes(1)` (`push 1` at `0x0059943F`, call at `0x0059944C`); the return is
+  caller-local.
+- `MapClass::InitCellAttributes @ 0x00568BB0 (arg)`: scalar-delete terrain-attached Anims; clear
+  `Flags & 0xFFCFFFFF`; per real cell in `CellIterator` order: `+0x30 = 0`, `FUN_00483E30` light
+  routing, clear `0x20000`, AttachedTag `0x19`/`0x1A` restamp, `arg == 0 ? Get_Tiberium_Value() :
+  SpreadCellGerminate(0)`, `local += return`, `RecalcAttributes(-1)`, wall-owner reconstruction for a
+  current `Wall=yes` overlay; returns the sum.
+- `CellClass::SpreadCellGerminate @ 0x004818E0 (randomize = 0)`: requires `Cell+0x44 != -1` and
+  `OverlayToTiberiumIndex @ 0x005FDD20 != -1`; captures `TiberiumClass+0xB8 (Value)`; resolves the
+  eight `g_DirectionOffsets @ 0x0089F688` neighbours (`EDI & 7` at `0x00481968`; runtime-initialized
+  table, order N, NE, E, SE, S, SW, W, NW) through the stamping `MapClass::Get_CellClass @ 0x005657A0`
+  (`0x004819A6`; a miss stamps the shared dummy and the read continues on it); counts those whose
+  `OverlayToTiberiumIndex` equals the receiver's; `OverlayData = g_OreDensityByNeighborCount @
+  0x0081CD28[count % TiberiumClass+0xE4]` (`IDIV` at `0x004819CA`; table `[0,1,3,4,6,7,8,10,11,7,0,1]`);
+  returns `(OverlayData + 1) * Value`. No RNG for argument 0.
+- `CellClass::RecalcAttributes @ 0x0047D2B0` reads `OverlayTypeIndex` and writes `bOverlayData = 0`
+  on its steep-slope/NoUseTileLandType branches but never reads `+0x11E`; after the generator's
+  whole-map Recalc the identities are final, so the per-cell Recalc after germination changes no
+  attribute.
+- `TiberiumClass::InitGrowthQueues_All @ 0x00722D00` / `InitSpreadQueues_All @ 0x00722240`: free and
+  rebuild every TiberiumClass's queue storage from the current cell state, growth for all types first,
+  then spread for all types.
+- Third `InitCellAttributes` caller: `MapClass::Resize @ 0x00567092/0x005670E2` -> `MapClass::InitZoneMap
+  @ 0x00567110` -> `InitCellAttributes(0)` on the freshly constructed (pre-Fill) cells: no Anim, ID,
+  RNG, wall, or stored-total effect.
+
+Player effect and frequency: the generator paints densities with `density_draw` and increments; native
+then rewrites every ore cell's density from its same-class neighbour count, so field interiors become 11
+and edges thin. Before this slice Rust kept the painted densities -> different ore value and harvester
+income on every random map.
+
+Landed Rust:
+- `src/sim/tiberium_germinate.rs`: shared `spread_cell_germinate_without_randomization` (caller-owned
+  neighbour lookup and receiver write; returns the new density and native value) and
+  `run_generated_final_cell_attributes` (real cells in `CellIterator` order through
+  `native_fixed_cell_index`; misses stamp the terrain's shared dummy and read its overlay fields;
+  direct density write, no runtime dirtiness; caller-local wrapping total in the receipt).
+- `src/sim/runtime.rs::initialize_native_tiberium_queues` (generalized from the authored-only
+  initializer; takes the grid as a read-only view and the map `basic`/`special_flags` sections).
+- `src/app/loading/init.rs` generated arm: queue initialization then the germination pass after
+  `populate_staged_app_scenario`; `finalize_constructed_scenario` receives
+  `tiberium_queues_preinitialized = true` for both arms; `refresh_generated_tiberium_presentation_frames`
+  rewrites only resource-identity presentation frames from the germinated grid.
+- `src/sim/crates.rs`: the crate Mark seam routes through the shared helper; its neighbour visit order
+  moves from NW-first to the native N-first order (affects only the dummy's retained coordinate).
+
+Acceptance tests: `sim::tiberium_germinate::tests::{generated_pass_rewrites_every_resource_density_from_same_class_neighbours,
+generated_pass_counts_the_shared_dummy_for_missing_neighbours_in_native_order,
+generated_queues_are_seeded_before_germination_and_left_alone}`,
+`app::loading::init::startup_crate_presentation_tests::generated_presentation_frames_follow_germinated_ore_densities_only`,
+and the retained `sim::crates::tests::road_tiberium_crate_mark_germinates_from_same_type_neighbors`.
+
+Residuals: the per-cell Recalc / terrain-Anim scalar-delete-recreate chronology and native-ID order of
+the generated pass (G10 phase journal); the ancillary slots (`+0x30`, light routing, tag restamp) shared
+with the ancillary seam; OQ-38, native queue rebuild parity (`TiberiumClass::RebuildGrowthQueue @
+0x007233A0`, `RebuildSpreadQueue @ 0x007228B0`, `CellClass::CanGrowTiberium @ 0x00483620`,
+`CellClass::CanSpreadTiberium @ 0x00483690`, decompiled live 2026-09-02): the Rust admission predicates
+(`OverlayData > TiberiumClass index / 2` for spread — native, not a mis-port — flat slope, growth
+`OverlayData < MaxDensity - 1`) are verified; DRIFT recorded for the next slice: native inserts in
+`CellIterator` order into a binary heap and pops its root, Rust inserts row-major and pops a stably sorted
+front (equal-priority order differs on every map); native requires the percentage doubles `>= 1e-05`
+where Rust accepts `ppm >= 0`; native spread requires `CellClass+0xE4 FirstObject == 0` where Rust
+excludes only terrain-object cells; the Scenario flag gates are read from the map/rules booleans.
+
 ## Known Non-Requirements
 
 - Do not construct Tube topology or use `explicit_tubes` as native-ID accounting input.

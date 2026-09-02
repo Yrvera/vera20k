@@ -989,49 +989,34 @@ fn execute_low_bridge_crate_mark(
         .is_some_and(|grid| grid.cell(origin_real.0, origin_real.1).overlay_id.is_some())
 }
 
+/// Crate Mark seam of `CellClass::SpreadCellGerminate @ 0x004818E0` (argument
+/// 0), called synchronously by `OverlayClass::Mark @ 0x005FD0EC` for a Land-5
+/// overlay. The receiver and every neighbour resolve through the crate Mark
+/// real-or-dummy lookup; the shared helper in `sim::tiberium_germinate` owns
+/// the native neighbour order, table, and modulo.
 fn spread_cell_germinate_without_randomization(
     sim: &mut Simulation,
     rules: &RuleSet,
     registry: &OverlayTypeRegistry,
     cell: (i16, i16),
 ) {
-    const DENSITY_BY_NEIGHBOR_COUNT: [u8; 12] = [0, 1, 3, 4, 6, 7, 8, 10, 11, 7, 0, 1];
-    const ADJACENT: [(i16, i16); 8] = [
-        (-1, -1),
-        (0, -1),
-        (1, -1),
-        (1, 0),
-        (1, 1),
-        (0, 1),
-        (-1, 1),
-        (-1, 0),
-    ];
-    let (Some(overlay_id), _) = read_crate_mark_fields(sim, cell) else {
+    let (receiver_id, _) = read_crate_mark_fields(sim, cell);
+    let germinated = {
+        let view: &Simulation = sim;
+        crate::sim::tiberium_germinate::spread_cell_germinate_without_randomization(
+            &rules.tiberium_types,
+            registry,
+            receiver_id,
+            cell,
+            |neighbor| read_crate_mark_fields(view, neighbor),
+        )
+    };
+    let Some(germinated) = germinated else {
         return;
     };
-    let Some(tiberium_type) = registry
-        .tiberium_type_for_overlay(&rules.tiberium_types, overlay_id)
-        .and_then(|id| rules.tiberium_types.get(id))
-    else {
-        return;
-    };
-    if tiberium_type.max_density == 0 {
-        return;
-    }
-    let mut matching = 0u8;
-    for offset in ADJACENT {
-        let (neighbor_id, _) = read_crate_mark_fields(sim, packed_offset(cell, offset));
-        if neighbor_id.and_then(|id| registry.tiberium_type_for_overlay(&rules.tiberium_types, id))
-            == Some(tiberium_type.id)
-        {
-            matching = matching.wrapping_add(1);
-        }
-    }
-    let density = DENSITY_BY_NEIGHBOR_COUNT[usize::from(matching % tiberium_type.max_density)
-        .min(DENSITY_BY_NEIGHBOR_COUNT.len() - 1)];
     match resolve_crate_mark_cell(sim, cell) {
-        CrateMarkCellRef::Real(rx, ry) => set_crate_mark_data(sim, (rx, ry), density),
-        CrateMarkCellRef::Dummy(dummy) => dummy.set_overlay_fields(Some(overlay_id), density),
+        CrateMarkCellRef::Real(rx, ry) => set_crate_mark_data(sim, (rx, ry), germinated.density),
+        CrateMarkCellRef::Dummy(dummy) => dummy.set_overlay_fields(receiver_id, germinated.density),
     }
 }
 

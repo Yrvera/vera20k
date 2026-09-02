@@ -117,6 +117,7 @@ mod spawn_manager_tests;
 pub mod ore_growth;
 pub(crate) mod ore_twinkle;
 pub mod radar;
+pub(crate) mod tiberium_germinate;
 pub mod rocking;
 pub mod terrain_object;
 pub mod terrain_spawn;
