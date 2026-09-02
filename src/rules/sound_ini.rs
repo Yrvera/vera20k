@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 
 use crate::rules::ini_parser::{IniFile, IniSection};
-use crate::rules::ini_value::parse_read_double;
+use crate::rules::ini_value::{parse_read_double, strtrim_ascii, truncate_bytes};
 
 /// `Control=` flag words. gamemd-derived: the `(char*, u32)` table at
 /// `0x008160C0` walked by `AudioEventClass::ParseControlFlag @ 0x00406820`
@@ -107,6 +107,17 @@ pub const VOLUME_SCALE: i32 = 0x4000;
 /// Sample slots per event: `VocClass::AddSample @ 0x004064A0` refuses the
 /// 33rd (`+0x134 == 0x20`).
 pub const MAX_SAMPLES: usize = 0x20;
+
+/// Usable bytes in a sound id. `0x007512CA PUSH 0x20` hands
+/// `CCINIClass::ReadString @ 0x00528A10` a 32-byte stack buffer, and its tail
+/// is `strncpy(dst, value, 0x20); dst[0x1f] = 0; strtrim()`, so a `[SoundList]`
+/// value survives as at most 31 bytes. `AudioEventClass::FindOrCreate @
+/// 0x004063B0` cuts to the same ceiling again — `0x00406460 PUSH 0x1f` into the
+/// zero-filled name field at `+0x6c` — and `VocClass::ReadINI @ 0x00750440`
+/// then looks the section up by that **stored** name (`0x00750462 CALL
+/// 0x00405170` GetName -> `0x0075046A FindSectionByName`), never by the raw
+/// list value.
+const MAX_ID_BYTES: usize = 0x1f;
 
 /// `[Defaults]` values. gamemd-derived: `VocClass::ReadSoundListINI @
 /// 0x007510D0` — Volume -> `0x008464B4` (static 80.0f), MinVolume ->
@@ -245,12 +256,22 @@ impl SoundEntry {
     /// name (`0x0075046A INIClass::FindSectionByName`) and returns at
     /// `0x00750476` without reading a single key when it is missing, so the
     /// object keeps what `AudioEventClass::FindOrCreate @ 0x004063B0` built:
-    /// a zero-filled `0x148` allocation plus `+0xC = 1`, `+0x10 = 0` (Control),
-    /// `+0x14 = 0x20` (Type SCREEN), `+0x40 = 2` (Priority NORMAL),
+    /// a zero-filled `0x148` allocation (`0x00406401..0x00406415` runs
+    /// `REP STOSD` over all `0x52` dwords of it, twice) plus `+0xC = 1`,
+    /// `+0x10 = 0` (Control), `+0x14 = 0x20` (SCREEN), `+0x40 = 2` (NORMAL),
     /// `+0x48 = 3` (Limit), `+0x50 = 10` (Range), `+0x54 = 0.2f` (MinVolume),
     /// and the name `strncpy`d to 31 chars. Those are the **constructor's**
     /// values, not `[Defaults]`' — the `Limit` differs (3 against the static
     /// 5) precisely because `[Defaults]` was never applied here.
+    ///
+    /// The **volume is full, not zero**: `0x0040641F MOV EDX,0x4000;
+    /// 0x00406424 LEA ECX,[ESI+0x18]; 0x00406458 CALL 0x00407100` seeds the
+    /// interpolator at `+0x18` — the same subobject `SetVolumeRamp @
+    /// 0x00406550` writes (`LEA ESI,[ECX+0x18]`) when `Volume=` is read — and
+    /// `0x00407100` is `MOV EDI,EDX; SHL EDI,0x10; MOV [ESI+0x8],EDI`, i.e. the
+    /// 16.16 current value becomes `0x4000 << 16` = [`VOLUME_SCALE`]. The
+    /// zero-fill is overwritten one instruction later, so an unread entry is at
+    /// full volume, not silent-by-volume.
     ///
     /// The sample count `+0x134` stays 0, and `SoundEvent::UpdateState @
     /// 0x004055C0` state 0 abandons the event when it is
@@ -262,8 +283,9 @@ impl SoundEntry {
         Self {
             id: name.to_string(),
             sounds: Vec::new(),
-            volume: 0,
-            volume_linear: 0,
+            // `+0x18` interp seeded to `0x4000` (`0x0040641F`/`0x00406458`).
+            volume: 100,
+            volume_linear: VOLUME_SCALE,
             priority: SOUND_PRIORITY_DEFAULT,
             range: 10,
             min_volume: 0.2,
@@ -314,8 +336,9 @@ impl SoundRegistry {
     /// and no rules/art key references it), and a listed id whose section is
     /// missing still registers — see [`SoundEntry::unread`].
     ///
-    /// `merge_fallback` handles the base-RA2 `sound.ini` layer; native reads
-    /// one file per pass the same way.
+    /// One file per pass; see [`SoundRegistry::merge_fallback`] for the
+    /// base-RA2 `sound.ini` layer VERA stacks under it, which gamemd has no
+    /// equivalent of.
     pub fn from_ini(ini: &IniFile) -> Self {
         let mut entries: HashMap<String, SoundEntry> = HashMap::new();
         let defaults = SoundDefaults::read(ini.section("Defaults"));
@@ -330,7 +353,8 @@ impl SoundRegistry {
         // Values in source order, which is native's entry-index order. The INI
         // parser has already dropped entries with an empty value, matching the
         // `ReadString` length gate.
-        for value in list.get_values() {
+        for raw_value in list.get_values() {
+            let value = cut_list_value(raw_value);
             let key = value.to_ascii_uppercase();
             // `0x007512F4..0x0075133D` compares the id against the names of the
             // events already created (`FUN_007C8D20`, case-insensitive) and,
@@ -354,8 +378,25 @@ impl SoundRegistry {
         Self { entries, defaults }
     }
 
-    /// Merge another sound.ini (base RA2) into this registry.
-    /// Only adds entries that don't already exist (YR-first precedence).
+    /// Merge another sound.ini (base RA2) into this registry, adding only ids
+    /// this registry does not already carry (YR-first precedence).
+    ///
+    /// **VERA-internal, gamemd has no equivalent.** YR registers sounds from
+    /// `SOUNDMD.INI` and nothing else: `get_xrefs_to 0x007510D0` returns the
+    /// single caller `Init_Game @ 0x0052C796`, and the INI it is handed comes
+    /// from the load at `0x0052C763` guarded by
+    /// `"Failed to load SOUNDMD.INI!"` (`0x00825E10`). The base `sound.ini` is
+    /// never opened, so this layer is a VERA convenience for running against a
+    /// base-RA2 asset set.
+    ///
+    /// Retail reachability: it adds exactly one id, `SUBMOVE` — the only
+    /// `[SoundList]` value in `sound.ini` absent from `soundmd.ini`. Only
+    /// `rules.ini` references it (`VoiceMove=SubMove`); YR loads `rulesmd.ini`
+    /// standalone and asks for `TyphoonSubMove`/`SubMoveStart`, both of which
+    /// `soundmd.ini` defines. Trigger: a lookup of an id present only in
+    /// `sound.ini`. Player effect: none observed on retail data (the one extra
+    /// id is unreachable). Frequency: load time only. Downstream risk: an
+    /// id-count difference against a native-side count.
     pub fn merge_fallback(&mut self, ini: &IniFile) {
         let fallback: SoundRegistry = SoundRegistry::from_ini(ini);
         let mut added: usize = 0;
@@ -393,6 +434,25 @@ impl SoundRegistry {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+}
+
+/// The sound id a `[SoundList]` value actually becomes.
+///
+/// gamemd-derived: the value never reaches `FindOrCreate` whole. It is read
+/// into a 32-byte buffer ([`MAX_ID_BYTES`] + the forced NUL) by
+/// `CCINIClass::ReadString @ 0x00528A10`, whose tail is `strncpy(dst, value,
+/// capacity); dst[capacity - 1] = 0; strtrim()` — so the cut happens **before**
+/// the trim and is by byte, not by character. Everything downstream (the dedupe
+/// scan at `0x007512F4`, `FindOrCreate`'s own `strncpy` at `0x00406460`, and the
+/// section lookup `ReadINI` does by the stored name at `0x00750462`) sees only
+/// the cut form.
+///
+/// Retail is unaffected: exactly one of the 820 `soundmd.ini` and 500
+/// `sound.ini` list values exceeds 31 bytes — the decorative
+/// `============ Mission Disk sounds ============` — and it has no section at
+/// either length.
+fn cut_list_value(value: &str) -> &str {
+    strtrim_ascii(truncate_bytes(value, MAX_ID_BYTES))
 }
 
 /// One `VocClass::ReadINI @ 0x00750440` pass for `name`: read the fourteen keys
@@ -1157,8 +1217,10 @@ mod tests {
     /// A `[SoundList]` name with no section at all. `ReadINI` returns at
     /// `0x00750476` without reading a key, so the entry keeps what
     /// `AudioEventClass::FindOrCreate @ 0x004063B0` wrote: Priority 2, Limit 3
-    /// (not `[Defaults]`' 5), Range 10, MinVolume 0.2f, Type SCREEN, and no
-    /// samples. Stock hits this through the decorative
+    /// (not `[Defaults]`' 5), Range 10, MinVolume 0.2f, Type SCREEN, volume
+    /// `0x4000` (`0x0040641F MOV EDX,0x4000` -> `0x00406458 CALL 0x00407100`,
+    /// which stores `EDX << 16` into the `+0x18` interp the `Volume=` key
+    /// writes), and no samples. Stock hits this through the decorative
     /// `============ Mission Disk sounds ============` list entry.
     #[test]
     fn listed_name_without_a_section_keeps_the_constructor_state() {
@@ -1173,9 +1235,46 @@ mod tests {
         assert_eq!(ghost.range, 10);
         assert_eq!(ghost.min_volume, 0.2);
         assert_eq!(ghost.type_flags, sound_type::SCREEN);
-        assert_eq!(ghost.volume_linear, 0);
+        // Full, not silent: the zero-fill at `0x00406401` is overwritten by
+        // `0x00406458`'s seed of the `+0x18` volume interp.
+        assert_eq!(ghost.volume_linear, VOLUME_SCALE);
         // `[Defaults]` still applies to entries that do have a section.
         assert_eq!(reg.defaults().limit, 5);
+    }
+
+    /// `[SoundList]` values are cut to 31 bytes on the way in: `0x007512CA
+    /// PUSH 0x20` gives `CCINIClass::ReadString @ 0x00528A10` a 32-byte buffer
+    /// and its tail is `strncpy(dst, value, 0x20); dst[0x1f] = 0; strtrim()`.
+    /// The cut precedes the trim, and the section lookup uses the cut name
+    /// (`0x00750462` GetName -> `0x0075046A FindSectionByName`), so a section
+    /// spelled with the full name is unreachable.
+    #[test]
+    fn a_list_value_is_cut_to_the_native_thirty_one_bytes() {
+        // 31 + 4 characters. Native keeps "AAAA…A" (31) and drops "Tail".
+        let long = format!("{}Tail", "A".repeat(MAX_ID_BYTES));
+        let cut = "A".repeat(MAX_ID_BYTES);
+        let ini = IniFile::from_str(&format!(
+            "[SoundList]\n1={long}\n[{long}]\nSounds=$never\n[{cut}]\nSounds=$cut\n"
+        ));
+        let reg = SoundRegistry::from_ini(&ini);
+        assert_eq!(reg.len(), 1);
+        assert!(
+            reg.get(&long).is_none(),
+            "the full-length id must not exist"
+        );
+        assert_eq!(reg.get(&cut).expect("the cut id registers").sounds, ["cut"]);
+
+        // The cut is by byte and lands before the trim, so a space that ends up
+        // at the boundary is stripped: `strtrim` runs on the copied 31 bytes.
+        let padded = format!("{} Tail", "B".repeat(MAX_ID_BYTES - 1));
+        let ini = IniFile::from_str(&format!("[SoundList]\n1={padded}\n"));
+        let reg = SoundRegistry::from_ini(&ini);
+        assert_eq!(reg.len(), 1);
+        assert!(reg.get(&"B".repeat(MAX_ID_BYTES - 1)).is_some());
+
+        // A value at or under the ceiling is untouched.
+        assert_eq!(cut_list_value("KirovVoiceDie"), "KirovVoiceDie");
+        assert_eq!(cut_list_value(&cut), cut);
     }
 
     /// A twice-listed id: the dedupe scan at `0x007512F4` hands the existing
