@@ -120,10 +120,14 @@ fn stock_cloak_tick_facts(
     // - Trigger: a unit picking up a Cloak crate.
     // - Player effect: in gamemd every unit within three cells is permanently
     //   cloakable afterwards; in VERA nothing happens.
-    // - Frequency: ZERO in stock. `[Powerups]` in `rulesmd.ini` does not spell
-    //   `Cloak=` at all, and an absent row takes `ReadPowerups`' `"0,NONE"`
-    //   default, so the Cloak crate's selection weight is 0 and it never
-    //   spawns. Only a mod that authors a nonzero `Cloak=` weight reaches it.
+    // - Frequency: ZERO in stock, by an AUTHORED zero rather than an absent
+    //   row: `ini/rulesmd.ini` `[Powerups]` spells `Cloak=0,CLOAK,yes`. The
+    //   weights are the selection authority (`CrateClass::PickupDispatch` sums
+    //   the nineteen and draws `RandomRanged(1, total)`), so a 0-weight slot is
+    //   never picked — `src/rules/powerups.rs`
+    //   `stock_section_parses_the_verified_weight_vector` pins that row's 0 in
+    //   the parsed vector (total 110). Only a mod that authors a nonzero
+    //   `Cloak=` weight reaches it.
     // - Downstream risk: none; it lands as one extra per-entity flag OR-ed into
     //   `is_cloakable` here and in `should_uncloak` below.
     //

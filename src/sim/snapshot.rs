@@ -336,10 +336,15 @@ use crate::sim::world::Simulation;
 // reconstruct counts left behind by a later authored low-body overwrite. The
 // v115 hash schema also folds the live shared-dummy overlay identity/state;
 // that process-global pair is intentionally not Scenario-serialized.
-/// v116: `NativeTiberiumClassState` carries the native queue stores
-/// (`NativeTiberiumQueue`: entry array, heap of references, capacity) and
-/// `OreGrowthState::native_rect`; the serialized queue shape changed.
-const SNAPSHOT_VERSION: u32 = 116;
+// Bumped 115 -> 116: `NativeTiberiumClassState` carries the native queue stores
+// (`NativeTiberiumQueue`: entry array, heap of references, capacity) and
+// `OreGrowthState::native_rect`; the serialized queue shape changed.
+// Bumped 116 -> 117: the v117 hash schema folds the disguise-detect plane —
+// FogState's `CellClass+0xAC[house]` counters and the cached
+// `DetectDisguiseRange=` radius on each SensorDeposit. Both fields already
+// round-trip (they are `#[serde(default)]` additive), so this bump exists to
+// keep the hash-schema probes and the serialized version aligned.
+const SNAPSHOT_VERSION: u32 = 117;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3054,10 +3059,12 @@ mod tests {
     /// live shared-dummy overlay pair in the current hash schema; 115 -> 116
     /// replaces the per-class tiberium heap vectors with the native queue
     /// stores (entry array, heap of references, capacity) and adds the
-    /// `MapRect` the stores are sized from.
+    /// `MapRect` the stores are sized from; 116 -> 117 folds the
+    /// disguise-detect counter plane and the cached `DetectDisguiseRange=`
+    /// deposit radius into the hash schema.
     #[test]
-    fn native_tiberium_queue_store_snapshot_version_is_116() {
-        assert_eq!(super::SNAPSHOT_VERSION, 116);
+    fn disguise_detect_plane_snapshot_version_is_117() {
+        assert_eq!(super::SNAPSHOT_VERSION, 117);
     }
 
     #[test]

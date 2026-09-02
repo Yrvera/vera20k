@@ -1,17 +1,24 @@
 //! The `ReceiveDamage` decloak and the damage outcomes that never reach it.
 //!
 //! `TechnoClass::ReceiveDamage @ 0x00701900` calls virtual `+0xFC`
-//! (`StartUncloaking(0) @ 0x00703850`) at `0x0070281D`. The `CMP EDI,4 / JZ`
-//! at `0x007027EE` is the only guard immediately in front of that call, but it
-//! is not the only way native misses it: every defensive gate returns ABOVE the
-//! `uVar7 = ObjectClass__ReceiveDamage(this)` join — the `TypeImmune`
-//! (`type+0xC8C`) same-type/same-owner arm, `vt+0x160` (IronCurtain /
-//! ForceShield), `vt+0x1D4` (warping in), the `AffectsAllies=no`
-//! (`warhead+0x179`) allied arm, and the accepted Psychedelic arm.
+//! (`StartUncloaking(0) @ 0x00703850`) at `0x0070281D`. Two native conditions
+//! keep receivers away from it, and these tests pin both negative halves:
 //!
-//! These pin the negative half. `[DLPH] TypeImmune=yes` in `rulesmd.ini` and
-//! DLPH is one of the four stock `Cloakable=yes` types, so a player's own
-//! Dolphins splashing each other is the ordinary trigger.
+//! 1. Every defensive gate returns ABOVE the `uVar7 =
+//!    ObjectClass__ReceiveDamage(this)` join — the `TypeImmune`
+//!    (`type+0xC8C`) same-type/same-owner arm, `vt+0x160` (IronCurtain /
+//!    ForceShield), `vt+0x1D4` (warping in), the `AffectsAllies=no`
+//!    (`warhead+0x179`) allied arm, and the accepted Psychedelic arm.
+//! 2. After the join, `Health == 0` overwrites the switch selector with 4
+//!    (`0x00702035`) and the jump table at `0x00702D24` sends case 4 to the
+//!    death handler at `0x00702050`, which returns without reaching
+//!    `0x0070281D` — so a corpse never surfaces, whatever ObjectClass
+//!    returned.
+//!
+//! `[DLPH] TypeImmune=yes` in `rulesmd.ini` and DLPH is one of the four stock
+//! `Cloakable=yes` types, so a player's own Dolphins splashing each other is
+//! the ordinary trigger for (1); a multi-record blast on an already-killed
+//! Dolphin is the trigger for (2).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -82,6 +89,20 @@ fn hit(
     warhead: &str,
     alliances: &HouseAllianceMap,
 ) -> Landed {
+    hit_records(entities, rules, warhead, alliances, &[40])
+}
+
+/// One `commit_damage_events` transaction carrying `damages.len()` ordered
+/// records against entity 2 — the same shape Apply_area_damage produces for a
+/// multi-record blast, and the shape a `DeathWeapon` cascade produces when a
+/// later record lands on a receiver an earlier one already drove to zero.
+fn hit_records(
+    entities: &mut EntityStore,
+    rules: &RuleSet,
+    warhead: &str,
+    alliances: &HouseAllianceMap,
+    damages: &[i32],
+) -> Landed {
     let mut interner = test_interner();
     let soviet = interner.intern("Soviet");
     let allies = interner.intern("Americans");
@@ -102,15 +123,13 @@ fn hit(
     let mut collected: Vec<SimSoundEvent> = Vec::new();
     let mut sound_sink: Option<&mut Vec<SimSoundEvent>> = Some(&mut collected);
 
+    let records: Vec<EntityDamageEvent> = damages
+        .iter()
+        .map(|damage| EntityDamageEvent::area(2, *damage, 0, 1, attacker_owner, warhead_ref))
+        .collect();
+
     let _ = commit_damage_events(
-        &[EntityDamageEvent::area(
-            2,
-            40,
-            0,
-            1,
-            attacker_owner,
-            warhead_ref,
-        )],
+        &records,
         entities,
         &mut occupancy,
         rules,
@@ -254,4 +273,83 @@ fn an_affects_allies_no_warhead_leaves_an_allied_cloaked_dolphin_submerged() {
     );
     assert_eq!(landed.victim_hp, 60, "the warhead resolves and does damage");
     assert_eq!(landed.cloak_state, 3);
+}
+
+fn cloak_sounds(sounds: &[SimSoundEvent]) -> Vec<&SimSoundEvent> {
+    sounds
+        .iter()
+        .filter(|sound| matches!(sound, SimSoundEvent::CloakSound { .. }))
+        .collect()
+}
+
+/// A receiver already at zero health takes native's DEATH branch, not the
+/// surviving tail, so `+0xFC` is never reached for it.
+///
+/// Read from the disassembly — the decompiler's `switch (uVar7)` rendering of
+/// this dispatch is the cross-assignment trap and says the opposite:
+///
+/// ```text
+/// 0070202e MOV  EAX,[ESI+0x6C]   ; this->Health, AFTER the ObjectClass join
+/// 00702031 TEST EAX,EAX
+/// 00702033 JNZ  0x00702040
+/// 00702035 MOV  EDI,0x4          ; overwrites the ObjectClass result code
+/// 00702049 JMP  [EDI*4 + 0x702D24]
+/// ```
+///
+/// The table at `0x00702D24` is `[0x007027F7, 0x00702713, 0x00702695,
+/// 0x007027F7, 0x00702050]`; case 4 (`0x00702050`) returns at `0x00702692`
+/// (`RET 0x1C`) without passing `0x0070281D`. `ObjectClass::ReceiveDamage @
+/// 0x005F5390` does return 0 (case 0) for a corpse, but the health test above
+/// discards that.
+///
+/// The production trigger is an ordinary multi-record blast: a `DeathWeapon`
+/// cascade, a Demo Truck or an Ivan cluster whose earlier record already drove
+/// the receiver to zero inside the SAME `commit_damage_events` transaction.
+#[test]
+fn a_second_record_of_the_same_blast_leaves_a_dead_cloaked_dolphin_submerged() {
+    let rules = dolphin_rules();
+    let mut entities = store("DEST", "Americans");
+    // The 400 kills the 100-HP Dolphin; the 40 then lands on the corpse.
+    let landed = hit_records(
+        &mut entities,
+        &rules,
+        "SonicWH",
+        &HouseAllianceMap::new(),
+        &[400, 40],
+    );
+
+    assert_eq!(landed.victim_hp, 0, "the first record kills the Dolphin");
+    assert_eq!(
+        landed.cloak_state, 2,
+        "Health == 0 forces case 4 at 0x00702035; neither record reaches vt+0xFC"
+    );
+    assert!(
+        cloak_sounds(&landed.sounds).is_empty(),
+        "a corpse emits no CloakSound: {:?}",
+        landed.sounds
+    );
+}
+
+/// The same rule with the death machinery out of the way: a receiver that is
+/// already a corpse when the transaction opens. `receive_damage` returns
+/// `reached_survivor_postlude: true` with `Unaffected` here (native does reach
+/// the join — `ObjectClass::ReceiveDamage` returns 0), so only the post-join
+/// health test at `0x00702031` keeps `+0xFC` away from it.
+#[test]
+fn a_hit_on_an_already_dead_cloaked_dolphin_never_reaches_the_uncloak() {
+    let rules = dolphin_rules();
+    let mut entities = store("DEST", "Americans");
+    entities.get_mut(2).expect("victim present").health.current = 0;
+    let landed = hit(&mut entities, &rules, "SonicWH", &HouseAllianceMap::new());
+
+    assert_eq!(landed.victim_hp, 0, "the kernel is skipped for a corpse");
+    assert_eq!(
+        landed.cloak_state, 2,
+        "native takes the death branch, not the surviving tail"
+    );
+    assert!(
+        cloak_sounds(&landed.sounds).is_empty(),
+        "no CloakSound: {:?}",
+        landed.sounds
+    );
 }

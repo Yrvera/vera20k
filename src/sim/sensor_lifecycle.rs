@@ -181,10 +181,14 @@ impl Simulation {
             .get_mut(stable_id)
             .and_then(|entity| entity.sensor_deposit.take())?;
         if deposit.detect_disguise_radius > 0 {
-            // `BuildingClass::RemoveDetectDisguiseAt @ 0x00455980`, reached from
-            // `BuildingClass::Limbo @ 0x00445A58` through vtable `+0x500`. It
-            // walks the same circle it stamped and decrements
-            // `CellClass+0xAC[house]`; no resident callback is issued.
+            // `BuildingClass::RemoveDetectDisguiseAt @ 0x00455980`, reached
+            // ONLY from `BuildingClass::Limbo` — `0x00445A58` reads
+            // `TechnoTypeClass+0xD31` (`DetectDisguise=`) and `0x00445A6C`
+            // dispatches vtable `+0x500`. It walks the same circle it stamped
+            // and decrements `CellClass+0xAC[house]`; no resident callback is
+            // issued. `search_instructions "call [..+0x500]"` returns that one
+            // BuildingClass site program-wide, which is why the owner-change
+            // path below must not come through here.
             self.fog.disguise_detect_remove_at(
                 deposit.owner,
                 deposit.center,
@@ -248,8 +252,14 @@ impl Simulation {
     /// initialization or construction completion and only while powered — both
     /// open with the same `vt+0x350` powered test, and
     /// `BuildingClass::OnConstructionComplete` dispatches them from adjacent
-    /// slots (`+0x4F8` and `+0x4FC`, the latter reached from `0x004467AD` after
-    /// reading `TechnoTypeClass+0xD31` `DetectDisguise=`).
+    /// slots: `+0x4F4` at `0x004467A1` (sensor array) and `+0x4FC` at
+    /// `0x004467C3` (disguise circle), the latter reached only after
+    /// `0x004467AD` reads `TechnoTypeClass+0xD31` (`DetectDisguise=`). The
+    /// BuildingClass vtable block at `0x007E43B0` is
+    /// `[+0x4F4]=0x00455820` add, `[+0x4F8]=0x004556D0` remove,
+    /// `[+0x4FC]=0x00455A80` disguise add, `[+0x500]=0x00455980` disguise
+    /// remove — `+0x4F8` is the sensor REMOVE, dispatched from
+    /// `BuildingClass::Limbo @ 0x00445A4C`.
     ///
     /// Stock authors: NAPSIS is the only building that stamps a disguise-detect
     /// circle, because `DetectDisguiseRange=` defaults to zero
@@ -357,20 +367,53 @@ impl Simulation {
         self.add_unit_sensor_after_unlimbo(stable_id, rules);
     }
 
-    /// FootClass::ChangeOwner old-remove/new-add pair.
+    /// `FootClass::ChangeOwner @ 0x004DBED0` old-remove/new-add pair — both
+    /// arms gated on `TechnoTypeClass+0x5F0` (`SensorsSight=`), removing for
+    /// the old house through vtable `+0x4EC` at `0x004DBEFB` and adding for the
+    /// new one through `+0x4E8` at `0x004DBF81`.
+    ///
+    /// A BUILDING deposit is deliberately left untouched. Neither
+    /// `BuildingClass::ChangeOwner @ 0x00448260` nor the
+    /// `TechnoClass::ChangeOwner @ 0x007014A0` it calls at `0x00448BE8`
+    /// dispatches any of the four BuildingClass sensor slots, and the
+    /// program-wide `search_instructions` for `call [..+0x4f4/0x4f8/0x4fc/
+    /// 0x500]` finds no BuildingClass dispatcher outside
+    /// `OnConstructionComplete` and `Limbo`. So gamemd leaves BOTH the sensor
+    /// array and the disguise-detect circle stamped for the CONSTRUCTING house
+    /// until the building is limboed: capturing a Psychic Sensor transfers
+    /// neither, and the eventual sell decrements exactly what construction
+    /// incremented.
+    fn transfer_sensor_before_owner_change_inner(
+        &mut self,
+        stable_id: u64,
+        new_owner: InternedId,
+        rules: Option<&RuleSet>,
+    ) {
+        let building_deposit = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .and_then(|entity| entity.sensor_deposit)
+            .is_some_and(|deposit| deposit.building_array);
+        if building_deposit {
+            return;
+        }
+        let Some(mut deposit) = self.remove_cached_sensor_deposit(stable_id, rules) else {
+            return;
+        };
+        deposit.owner = new_owner;
+        self.apply_sensor_add(new_owner, deposit.center, deposit.add_radius, rules);
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.sensor_deposit = Some(deposit);
+        }
+    }
+
     pub(crate) fn transfer_sensor_before_owner_change(
         &mut self,
         stable_id: u64,
         new_owner: InternedId,
     ) {
-        let Some(mut deposit) = self.remove_cached_sensor_deposit(stable_id, None) else {
-            return;
-        };
-        deposit.owner = new_owner;
-        self.apply_sensor_add(new_owner, deposit.center, deposit.add_radius, None);
-        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
-            entity.sensor_deposit = Some(deposit);
-        }
+        self.transfer_sensor_before_owner_change_inner(stable_id, new_owner, None);
     }
 
     pub(crate) fn transfer_sensor_before_owner_change_with_rules(
@@ -379,14 +422,7 @@ impl Simulation {
         new_owner: InternedId,
         rules: &RuleSet,
     ) {
-        let Some(mut deposit) = self.remove_cached_sensor_deposit(stable_id, Some(rules)) else {
-            return;
-        };
-        deposit.owner = new_owner;
-        self.apply_sensor_add(new_owner, deposit.center, deposit.add_radius, Some(rules));
-        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
-            entity.sensor_deposit = Some(deposit);
-        }
+        self.transfer_sensor_before_owner_change_inner(stable_id, new_owner, Some(rules));
     }
 }
 
@@ -409,6 +445,7 @@ mod tests {
              [SQD]\nStrength=600\nSpeed=4\nCloakable=yes\nCloakingSpeed=5\nSensorsSight=8\n\
              [TGT]\nStrength=600\nSpeed=4\nCloakable=yes\nCloakingSpeed=1\n\
              [NAPSIS]\nStrength=750\nSensorArray=yes\nSensorsSight=15\nPower=-100\nPowered=yes\n\
+             DetectDisguise=yes\nDetectDisguiseRange=15\nCapturable=true\n\
              [NAPOWR]\nStrength=750\nPower=200\n",
         ))
         .expect("cloak/sensor rules")
@@ -511,6 +548,84 @@ mod tests {
         sim.techno_limbo_with_rules(id, &rules);
         let index = 40 * usize::from(sim.fog.width) + 55;
         assert_eq!(sim.fog.sensors_by_house[&owner][index], -1);
+    }
+
+    /// Engineer capture of a Psychic Sensor moves NEITHER stamped circle.
+    ///
+    /// `BuildingClass::ChangeOwner @ 0x00448260` and the
+    /// `TechnoClass::ChangeOwner @ 0x007014A0` it calls at `0x00448BE8`
+    /// dispatch none of the four BuildingClass sensor slots; program-wide,
+    /// `+0x4F4`/`+0x4FC` are dispatched only by `OnConstructionComplete`
+    /// (`0x004467A1` / `0x004467C3`) and `+0x4F8`/`+0x500` only by `Limbo`
+    /// (`0x00445A4C` / `0x00445A6C`). So the counters stay attached to the
+    /// CONSTRUCTING house until the building is limboed, and the eventual sell
+    /// decrements exactly the house that construction incremented — no
+    /// negative residue on the capturing house.
+    #[test]
+    fn capturing_a_psychic_sensor_leaves_both_circles_with_the_constructing_house() {
+        let rules = rules();
+        let mut sim = sim_with_map_authority();
+        sim.spawn_object_at_height("NAPOWR", "Soviet", 30, 40, 0, 0, &rules)
+            .unwrap();
+        let id = sim
+            .spawn_object_at_height("NAPSIS", "Soviet", 40, 40, 0, 0, &rules)
+            .unwrap();
+        let soviet = sim.substrate.entities.get(id).unwrap().owner;
+        sim.substrate.entities.get_mut(id).unwrap().building_up = Some(BuildingUp {
+            elapsed_ticks: 0,
+            total_ticks: 1,
+        });
+        sim.advance_tick(
+            &[],
+            Some(&rules),
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            67,
+        );
+        assert!(sim.fog.has_sensor_for_house(soviet, 54, 40));
+        assert!(sim.fog.detects_disguise_for_house(soviet, 54, 40));
+
+        let americans = sim.interner.intern("Americans");
+        sim.change_owner(id, americans);
+
+        assert!(
+            sim.fog.detects_disguise_for_house(soviet, 54, 40),
+            "ChangeOwner dispatches no +0x500, so the builder keeps detection"
+        );
+        assert!(
+            !sim.fog.detects_disguise_for_house(americans, 54, 40),
+            "ChangeOwner dispatches no +0x4FC, so the captor is granted none"
+        );
+        assert!(
+            sim.fog.has_sensor_for_house(soviet, 54, 40),
+            "the sensor array is on the same two slots and moves no more"
+        );
+        assert!(!sim.fog.has_sensor_for_house(americans, 54, 40));
+        let deposit = sim
+            .substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .sensor_deposit
+            .expect("the construction deposit survives the capture");
+        assert_eq!(deposit.owner, soviet);
+        assert_eq!(deposit.detect_disguise_radius, 15);
+
+        // Selling under the NEW owner still unwinds the OLD owner's counters,
+        // symmetrically for the disguise circle (same `+0x5F4` radius both
+        // ways) and with the asymmetric `CloakRadiusInCells=` fringe for the
+        // sensor array.
+        sim.techno_limbo_with_rules(id, &rules);
+        let index = 40 * usize::from(sim.fog.width) + 54;
+        assert_eq!(
+            sim.fog.disguise_detect_by_house[&soviet][index], 0,
+            "add and remove walk the same circle"
+        );
+        assert!(
+            !sim.fog.disguise_detect_by_house.contains_key(&americans),
+            "the captor's plane was never touched, so no negative residue"
+        );
     }
 
     #[test]

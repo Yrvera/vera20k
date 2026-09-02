@@ -3466,27 +3466,51 @@ fn commit_damage_events_with_isolation(
                 receive_outcome.is_some_and(|outcome| outcome.reached_survivor_postlude);
             let receive_state = receive_outcome.map(|outcome| outcome.state);
             // `TechnoClass::ReceiveDamage @ 0x0070281D` calls vtable `+0xFC`
-            // (`StartUncloaking(0) @ 0x00703850`) once the `CMP EDI,4 / JZ`
-            // death branch at `0x007027EE` has been passed — so for results
-            // Unaffected/Damaged/Yellow/Red, and NOT for NowDead. It sits
-            // after the ObjectClass HP commit and after the `ToProtect`
-            // response, and before the `if (damage < 0) return` heal
-            // early-out, which is why a HEAL surfaces a diving submarine just
-            // as reliably as a shell does.
+            // (`StartUncloaking(0) @ 0x00703850`). It sits after the
+            // ObjectClass HP commit and after the `ToProtect` response, and
+            // before the `if (damage < 0) return` heal early-out, which is why
+            // a HEAL surfaces a diving submarine just as reliably as a shell
+            // does.
             //
-            // The death branch is the only guard IMMEDIATELY before the call,
-            // but it is not the only way native misses it: every defensive
-            // gate in `TechnoClass::ReceiveDamage @ 0x00701900` returns above
-            // the `uVar7 = ObjectClass__ReceiveDamage(this)` join — the
-            // `TypeImmune` (`type+0xC8C`) same-type/same-owner arm, `vt+0x160`
-            // (IronCurtain/ForceShield), `vt+0x1D4` (warping in), the
-            // `AffectsAllies=no` (`warhead+0x179`) allied arm, and the
-            // accepted Psychedelic arm (`return 1`). None of those reaches
-            // `+0xFC`, so an Iron-Curtained, type-immune or ally-shielded
-            // cloaked object stays submerged. `reached_survivor_postlude` is
-            // exactly "the receiver delegated to ObjectClass and came back
-            // through the surviving-object tail", i.e. that join.
+            // Two native conditions guard it, and BOTH are read from the
+            // disassembly, not the decompiler — the decompiler renders this
+            // dispatch as `switch (uVar7)` after assigning `uStack_a4 = 4`,
+            // which hides the selector overwrite below:
+            //
+            // 1. Every defensive gate in `TechnoClass::ReceiveDamage @
+            //    0x00701900` returns ABOVE the `uVar7 =
+            //    ObjectClass__ReceiveDamage(this)` join — the `TypeImmune`
+            //    (`type+0xC8C`) same-type/same-owner arm, `vt+0x160`
+            //    (IronCurtain/ForceShield), `vt+0x1D4` (warping in), the
+            //    `AffectsAllies=no` (`warhead+0x179`) allied arm, and the
+            //    accepted Psychedelic arm (`return 1`). None of those reaches
+            //    `+0xFC`, so an Iron-Curtained, type-immune or ally-shielded
+            //    cloaked object stays submerged. `reached_survivor_postlude`
+            //    is exactly "the receiver delegated to ObjectClass and came
+            //    back through the surviving-object tail", i.e. that join.
+            // 2. Post-join HEALTH, not the ObjectClass result code:
+            //      0070202e MOV  EAX,[ESI+0x6C]   ; this->Health
+            //      00702031 TEST EAX,EAX
+            //      00702033 JNZ  0x00702040
+            //      00702035 MOV  EDI,0x4          ; overwrites the selector
+            //      00702049 JMP  [EDI*4 + 0x702D24]
+            //    The table at `0x00702D24` is `[0x007027F7, 0x00702713,
+            //    0x00702695, 0x007027F7, 0x00702050]`; case 4 is the death
+            //    handler, which returns at `0x00702692` (`RET 0x1C`) without
+            //    ever reaching `0x0070281D`. So `Health == 0` after the join
+            //    takes the death branch WHATEVER ObjectClass returned — which
+            //    covers both "this record killed it" and "it was already a
+            //    corpse" (`ObjectClass::ReceiveDamage @ 0x005F5390` opens
+            //    `if (Health < 1) return 0`, and 0 is case 0, but the health
+            //    test overrides it). The hostile-hit latch six bytes below at
+            //    `0x00702812` sits in the same basic block and is guarded
+            //    identically.
+            //
+            // `target.health.current` here is still the PRE-record value, so
+            // "post-join health nonzero" is `pre > 0 && state != Dead`:
+            // `classify` returns `Dead` exactly when `prev - delta <= 0`.
             uncloak_after_damage = reached_survivor_postlude
+                && target.health.current > 0
                 && receive_state.is_some_and(|state| state != damage::DamageState::Dead);
             // TechnoClass's persistent hostile-hit byte is written in the
             // shared surviving post-Object tail. The source object must be
