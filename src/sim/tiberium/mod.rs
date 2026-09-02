@@ -372,7 +372,7 @@ pub fn place_tiberium(
         || !flat
         || view.tiberium_type != type_id
         || view.overlay_data >= 11
-        || ty.growth_percentage_ppm < 10
+        || !crate::sim::ore_growth::native_percentage_admits(ty.growth_percentage_bits)
     {
         return false;
     }
@@ -1608,8 +1608,76 @@ SpreadPercentage=.06
         );
     }
 
+    /// `Reduce_Tiberium @ 0x00480A80` full removal calls the REMOVED class's
+    /// `AddToSpreadQueue @ 0x00722AF0` on every in-bounds neighbour whose
+    /// removed-class flag byte is clear, and `CanSpreadTiberium @ 0x00483690`
+    /// takes no class: it admits the neighbour on its OWN index,
+    /// `data > index / 2`, slope, that class's `SpreadPercentage`, and
+    /// `FirstObject`. A fully harvested gem (Cruentus, retail
+    /// `SpreadPercentage=0`) next to ore therefore queues the ore cell into the
+    /// gem store with one Scenario draw, although the gem processor itself
+    /// never runs.
     #[test]
-    fn gsi_04_09_full_reduction_clears_all_bitmaps_and_reseeds_only_same_type_neighbors() {
+    fn gsi_04_09_full_gem_removal_queues_an_ore_neighbor_into_the_gem_store() {
+        let (overlay_registry, tiberium_types) = native_tiberium_fixture();
+        let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
+        let gem01 = overlay_registry.id_for_name("GEM01").expect("GEM01");
+        let mut nodes = BTreeMap::new();
+        nodes.insert((5, 5), gem_node(1));
+        nodes.insert((6, 5), ore_node(4));
+        let mut overlay = OverlayGrid::new(10, 10);
+        overlay.place_overlay(5, 5, gem01, 1);
+        overlay.place_overlay(6, 5, tib01, 4);
+        let mut growth = OreGrowthState::new(10, 10);
+        growth.reset_native_tiberium_classes(tiberium_types.len(), 100);
+        let mut rng = SimRng::new(5);
+        let mut expected_rng = rng.clone();
+        expected_rng.next_u32();
+        let source_object_cells = BTreeSet::new();
+
+        let mut ctx = ReduceTiberiumContext {
+            resource_nodes: &mut nodes,
+            overlay_grid: Some(&mut overlay),
+            ore_growth_state: &mut growth,
+            overlay_registry: Some(&overlay_registry),
+            tiberium_types: Some(&tiberium_types),
+            resolved_terrain: None,
+            source_object_cells: Some(&source_object_cells),
+            live_objects: None,
+            rng: Some(&mut rng),
+            binary_frame: 200,
+            spread_enabled: true,
+            radar_dirty_cells: None,
+            radar_dirty_generation: None,
+            tactical_dirty_cells: None,
+        };
+
+        let outcome = reduce_tiberium(&mut ctx, (5, 5), 2);
+
+        assert!(outcome.fully_removed);
+        let gem_class = &growth.native_tiberium_state().classes[1];
+        assert_eq!(
+            gem_class
+                .spread
+                .iter_heap()
+                .map(|entry| (entry.rx, entry.ry))
+                .collect::<Vec<_>>(),
+            vec![(6, 5)],
+            "the ore neighbour enters the removed gem class's store"
+        );
+        assert!(gem_class.spread_bitmap.contains(&(6, 5)));
+        let ore_class = &growth.native_tiberium_state().classes[0];
+        assert!(ore_class.spread.is_empty());
+        assert!(ore_class.spread_bitmap.is_empty());
+        assert_eq!(
+            rng.logical_state(),
+            expected_rng.logical_state(),
+            "one draw for the one admitted neighbour"
+        );
+    }
+
+    #[test]
+    fn gsi_04_09_full_reduction_clears_all_bitmaps_and_reseeds_neighbors_into_the_removed_class() {
         let (overlay_registry, tiberium_types) = native_tiberium_fixture();
         let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
         let gem01 = overlay_registry.id_for_name("GEM01").expect("GEM01");

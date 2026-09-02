@@ -876,9 +876,11 @@ pub(crate) fn initialize_native_tiberium_queues(
             .occupied_cells_on_layer(crate::sim::movement::locomotor::MovementLayer::Ground),
     );
     let Some(overlay_grid) = overlay_grid else {
+        // No overlay grid: no stores to seed, but keep the `[Map] Size` rect
+        // so a later snapshot restore rebuilds from it, not the storage dims.
         sim.production
             .ore_growth_state
-            .reset_native_tiberium_classes(0, sim.session.binary_frame);
+            .reset_native_tiberium_classes_for_rect(native_rect, 0, sim.session.binary_frame);
         return None;
     };
     Some(

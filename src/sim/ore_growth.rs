@@ -377,7 +377,7 @@ pub fn native_tiberium_queue_capacity(native_rect: (u16, u16)) -> u32 {
 
 /// `pct >= 1e-05` in native double arithmetic: the admission gate of
 /// `CanGrowTiberium`/`CanSpreadTiberium` (reject when `pct < 1e-05`).
-fn native_percentage_admits(bits: u64) -> bool {
+pub(crate) fn native_percentage_admits(bits: u64) -> bool {
     let Ok(value) = X87Chop53::load_f64(NativeF64Bits::from_bits(bits)) else {
         return false;
     };
@@ -588,6 +588,19 @@ impl OreGrowthState {
         self.native_rect = native_rect;
     }
 
+    /// Store the native `MapRect` the caller loaded with, then allocate the
+    /// class stores from it. Used where no overlay grid exists yet, so that a
+    /// later snapshot restore still rebuilds from the `[Map] Size` rect.
+    pub fn reset_native_tiberium_classes_for_rect(
+        &mut self,
+        native_rect: (u16, u16),
+        type_count: usize,
+        current_frame: u32,
+    ) {
+        self.native_rect = native_rect;
+        self.reset_native_tiberium_classes(type_count, current_frame);
+    }
+
     /// Allocate native per-type tiberium state with due timers and stores
     /// sized from the current native rect.
     pub fn reset_native_tiberium_classes(&mut self, type_count: usize, current_frame: u32) {
@@ -668,10 +681,16 @@ impl OreGrowthState {
         )
     }
 
+    /// `AddToSpreadQueue @ 0x00722AF0` with an explicit receiver (`this`):
+    /// `store_type` names the store and flag plane that take the cell, while
+    /// `CanSpreadTiberium @ 0x00483690` admits the cell on its OWN class.
+    /// `Reduce_Tiberium @ 0x00480A80` calls the REMOVED class's
+    /// `AddToSpreadQueue` on every in-bounds neighbour, so a store may hold a
+    /// cell of another class (a harvested gem queues its ore neighbours).
     #[allow(clippy::too_many_arguments)]
     fn add_native_spread_queue_cell_for_type(
         &mut self,
-        type_id: TiberiumTypeId,
+        store_type: TiberiumTypeId,
         overlay_grid: &OverlayGrid,
         overlay_registry: &OverlayTypeRegistry,
         tiberium_types: &TiberiumTypeRegistry,
@@ -683,8 +702,7 @@ impl OreGrowthState {
         spread_enabled: bool,
         rng: &mut SimRng,
     ) -> Option<NativeTiberiumQueueEntry> {
-        if !source_can_spread_tiberium(
-            type_id,
+        native_can_spread_tiberium(
             overlay_grid,
             overlay_registry,
             tiberium_types,
@@ -693,10 +711,8 @@ impl OreGrowthState {
             rx,
             ry,
             spread_enabled,
-        ) {
-            return None;
-        }
-        let class = self.native_tiberium.classes.get_mut(type_id.0 as usize)?;
+        )?;
+        let class = self.native_tiberium.classes.get_mut(store_type.0 as usize)?;
         if class.spread_bitmap.contains(&(rx, ry)) {
             return None;
         }
@@ -1211,16 +1227,7 @@ impl OreGrowthState {
             // CURRENT TiberiumClass (a stale entry of another class still
             // spreads whatever now sits there; an empty cell fails its own
             // `CanSpreadTiberium` re-check without a draw).
-            let source_type = current_tiberium_type(
-                overlay_grid,
-                overlay_registry,
-                tiberium_types,
-                entry.rx,
-                entry.ry,
-            )
-            .unwrap_or(type_id);
             if spread_tiberium_from_source(
-                source_type,
                 overlay_grid,
                 overlay_registry,
                 tiberium_types,
@@ -1406,8 +1413,14 @@ impl OreGrowthState {
         }
         let mut seeded = 0;
         for &(rx, ry) in cells {
-            if !source_can_spread_tiberium(
-                type_id,
+            // `RebuildSpreadQueue` alone tests `GetTiberiumType == class`
+            // before `CanSpreadTiberium`.
+            if current_tiberium_type(overlay_grid, overlay_registry, tiberium_types, rx, ry)
+                != Some(type_id)
+            {
+                continue;
+            }
+            if native_can_spread_tiberium(
                 overlay_grid,
                 overlay_registry,
                 tiberium_types,
@@ -1416,7 +1429,9 @@ impl OreGrowthState {
                 rx,
                 ry,
                 spread_enabled,
-            ) {
+            )
+            .is_none()
+            {
                 continue;
             }
             let class = &mut self.native_tiberium.classes[type_id.0 as usize];
@@ -1517,11 +1532,13 @@ impl OreGrowthState {
         }
     }
 
-    /// Native `Reduce_Tiberium` full-removal spread reseed.
+    /// Native `Reduce_Tiberium @ 0x00480A80` full-removal spread reseed.
     ///
-    /// Clears this removed cell's spread bitmap bit for every tiberium class,
-    /// then calls the removed cell's type `AddToSpreadQueue` for each eligible
-    /// neighboring source. Existing heap entries are intentionally left stale.
+    /// Clears this removed cell's spread bitmap bit for every tiberium class
+    /// (`ClearSpreadBitmaps_AllTypes @ 0x00722AB0`), then calls the REMOVED
+    /// class's `AddToSpreadQueue` for each in-bounds neighbour, which admits
+    /// the neighbour on its own class. Existing heap entries are
+    /// intentionally left stale.
     #[allow(clippy::too_many_arguments)]
     pub fn reseed_native_spread_neighbors_after_reduction(
         &mut self,
@@ -1724,12 +1741,15 @@ fn current_tiberium_type(
 }
 
 /// `CellClass::CanSpreadTiberium @ 0x00483690`: the scenario spread flag,
-/// a matching TiberiumClass, `OverlayData > TiberiumClass index / 2` (the
-/// index, not `MaxDensity`, is native), flat slope, `SpreadPercentage >=
-/// 1e-05`, and `CellClass+0xE4 FirstObject == 0` (`source_has_object`).
+/// the cell's OWN TiberiumClass (`OverlayToTiberiumIndex != -1`),
+/// `OverlayData > that index / 2` (the index, not `MaxDensity`, is native),
+/// flat slope, that class's `SpreadPercentage >= 1e-05`, and `CellClass+0xE4
+/// FirstObject == 0` (`source_has_object`). The predicate takes no class:
+/// `AddToSpreadQueue @ 0x00722AF0` admits a cell of any class into its
+/// receiver's store, and `SpreadTiberium @ 0x00483780` spreads the admitted
+/// cell's own class. Returns that class.
 #[allow(clippy::too_many_arguments)]
-fn source_can_spread_tiberium(
-    type_id: TiberiumTypeId,
+fn native_can_spread_tiberium(
     overlay_grid: &OverlayGrid,
     overlay_registry: &OverlayTypeRegistry,
     tiberium_types: &TiberiumTypeRegistry,
@@ -1738,26 +1758,20 @@ fn source_can_spread_tiberium(
     rx: u16,
     ry: u16,
     spread_enabled: bool,
-) -> bool {
+) -> Option<TiberiumTypeId> {
     if !spread_enabled || source_has_object {
-        return false;
+        return None;
+    }
+    let own_type = current_tiberium_type(overlay_grid, overlay_registry, tiberium_types, rx, ry)?;
+    let cell = overlay_grid.cell(rx, ry);
+    if cell.overlay_data <= own_type.0 / 2 {
+        return None;
     }
     if !cell_is_flat(resolved_terrain, rx, ry) {
-        return false;
+        return None;
     }
-    if current_tiberium_type(overlay_grid, overlay_registry, tiberium_types, rx, ry)
-        != Some(type_id)
-    {
-        return false;
-    }
-    let Some(ty) = tiberium_types.get(type_id) else {
-        return false;
-    };
-    let cell = overlay_grid.cell(rx, ry);
-    if cell.overlay_data <= type_id.0 / 2 {
-        return false;
-    }
-    native_percentage_admits(ty.spread_percentage_bits)
+    let ty = tiberium_types.get(own_type)?;
+    native_percentage_admits(ty.spread_percentage_bits).then_some(own_type)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1791,9 +1805,11 @@ fn count_native_spread_targets(
     count
 }
 
+/// `CellClass::SpreadTiberium(0) @ 0x00483780`: re-run `CanSpreadTiberium`
+/// on the source, draw `RandomRanged(0,7)`, and germinate the source's OWN
+/// class into the first admitted neighbour.
 #[allow(clippy::too_many_arguments)]
 fn spread_tiberium_from_source(
-    type_id: TiberiumTypeId,
     overlay_grid: &mut OverlayGrid,
     overlay_registry: &OverlayTypeRegistry,
     tiberium_types: &TiberiumTypeRegistry,
@@ -1813,8 +1829,7 @@ fn spread_tiberium_from_source(
     mut tactical_dirty_cells: Option<&mut Vec<(u16, u16)>>,
 ) -> Option<(u16, u16)> {
     let admission = new_cell_admission?;
-    if !source_can_spread_tiberium(
-        type_id,
+    let source_type = native_can_spread_tiberium(
         overlay_grid,
         overlay_registry,
         tiberium_types,
@@ -1829,9 +1844,7 @@ fn spread_tiberium_from_source(
         rx,
         ry,
         spread_enabled,
-    ) {
-        return None;
-    }
+    )?;
     let start_dir = rng.next_range_u32(8) as usize;
     for i in 0..8 {
         let dir = (start_dir + i) % 8;
@@ -1864,7 +1877,7 @@ fn spread_tiberium_from_source(
             radar_dirty_generation: radar_dirty_generation.as_deref_mut(),
             tactical_dirty_cells: tactical_dirty_cells.as_deref_mut(),
         };
-        if !place_tiberium(&mut context, target, type_id, SPREAD_GERMINATION_DENSITY) {
+        if !place_tiberium(&mut context, target, source_type, SPREAD_GERMINATION_DENSITY) {
             return None;
         }
         return Some(target);
@@ -2862,6 +2875,61 @@ SpreadPercentage=.06
         assert_eq!(stats, NativeGrowthProcessStats::default());
         assert_eq!(rng.state(), before);
         assert_eq!(state.native_tiberium_state().classes[1].growth.len(), 1);
+    }
+
+    /// `GrowthProcessor @ 0x00722F00` (`0x00723021..0x0072312B`): a popped
+    /// entry whose `GrowTiberium` fails (here an entry popping at the clamp
+    /// density 11) still takes the `OverlayData < 0x0B` test, so its growth
+    /// flag is cleared without a priority draw and without a reinsert.
+    #[test]
+    fn native_growth_processor_failed_growth_pop_still_clears_the_full_cell_flag() {
+        let (_ini, overlay_registry, tiberium_types) = tiberium_rebuild_fixture();
+        let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
+        let mut overlay_grid = OverlayGrid::new(8, 8);
+        overlay_grid.place_overlay(5, 5, tib01, 11);
+        let mut state = make_state(8, 8);
+        state.reset_native_tiberium_classes(tiberium_types.len(), 10);
+        state.native_tiberium.classes[0]
+            .growth
+            .push(NativeTiberiumQueueEntry {
+                rx: 5,
+                ry: 5,
+                priority_bits: 0.0f32.to_bits(),
+            });
+        state.native_tiberium.classes[0]
+            .growth_bitmap
+            .insert((5, 5));
+        let mut nodes = BTreeMap::new();
+        let mut rng = SimRng::new(9);
+        let mut expected_rng = rng.clone();
+        expected_rng.next_u32();
+
+        let stats = state.process_native_growth_for_type(
+            TiberiumTypeId(0),
+            &mut overlay_grid,
+            &overlay_registry,
+            &tiberium_types,
+            None,
+            &BTreeSet::new(),
+            &mut nodes,
+            &mut rng,
+            100,
+            true,
+        );
+
+        assert_eq!(overlay_grid.cell(5, 5).overlay_data, 11);
+        assert_eq!(stats.popped_entries, 1);
+        assert_eq!(stats.grown_entries, 0);
+        assert_eq!(stats.reinserted_entries, 0);
+        assert_eq!(stats.full_clears, 1);
+        let class = &state.native_tiberium_state().classes[0];
+        assert!(class.growth.is_empty());
+        assert!(!class.growth_bitmap.contains(&(5, 5)));
+        assert_eq!(
+            rng.logical_state(),
+            expected_rng.logical_state(),
+            "only the attempts draw"
+        );
     }
 
     #[test]
