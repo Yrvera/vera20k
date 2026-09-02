@@ -62,13 +62,17 @@ impl IniSection {
     /// ReadString (P5, P18): copy at most `capacity - 1` bytes, force the final
     /// NUL, then trim bytes ≤0x20 at both ends. Capacities are caller-specific
     /// in retail, so they are explicit here too.
+    ///
+    /// `CCINIClass__ReadString @ 0x00528A10` is `strncpy(dst, src, capacity)`
+    /// followed by `dst[capacity - 1] = 0`, so the cut is by BYTE, not by
+    /// character. Truncating by `char` would keep text native discards on any
+    /// value whose first `capacity - 1` characters span more bytes than that.
     pub fn read_string(&self, key: &str, default: &str, capacity: usize) -> String {
         if capacity == 0 {
             return String::new();
         }
         let raw = self.get(key).unwrap_or(default);
-        let copied: String = raw.chars().take(capacity - 1).collect();
-        strtrim_ascii(&copied).to_string()
+        strtrim_ascii(truncate_bytes(raw, capacity - 1)).to_string()
     }
 
     /// Read3Int (P8): comma "%d,%d,%d". All-defaults on ABSENT key. Each field
@@ -151,17 +155,44 @@ impl IniSection {
         })
     }
 
-    /// ReadRange (P20): `read_double(-1.0)` sentinel; ==-1.0 -> default; else ftol
-    /// TRUNCATE-TOWARD-ZERO. NOT `util::sim_to_i32` (that floors toward −∞ — DRIFT
-    /// on negatives, ledger #18). `f64 as i32` truncates toward zero (saturating,
-    /// NaN->0), matching gamemd ftol RC=11. `5.9→5`.
+    /// `CCINIClass__ReadRange @ 0x00474620`: read the key through
+    /// `ReadDouble` with a hardcoded `-1.0` default (`0x00474628`), compare
+    /// against `0x007E4900` (= `-1.0`) and return the CALLER's default
+    /// unconverted on a match — covering both an absent key and a literal `-1`.
+    ///
+    /// Otherwise the value is a CELL count that the reader converts to leptons:
+    /// `FMUL double ptr [0x007E1710]` at `0x0047464C`, where that address holds
+    /// `0x4070000000000000` = `256.0`, then `Math__ftol @ 0x007C5F00`, whose
+    /// control word `0x0E7F` selects chop. `f64 as i32` truncates toward zero
+    /// like it does, and NOT `util::sim_to_i32`, which floors toward −∞ (DRIFT
+    /// on negatives, ledger #18).
+    ///
+    /// Two residuals at the extremes, both out of reach of retail data:
+    ///
+    /// * `Math__ftol` executes `FISTP qword` and the caller keeps only the low
+    ///   dword, so a magnitude past `i32` WRAPS while `f64 as i32` saturates.
+    ///   That band starts at |value| >= 8388608 cells and ends at 2^63, beyond
+    ///   which `FISTP` stores integer-indefinite and the low dword is zero.
+    ///   `±inf` therefore yields 0 natively against `i32::MAX` here.
+    /// * A NaN never reaches `ftol` at all: `FCOM` against `-1.0` sets C3 for
+    ///   unordered as well as equal, and the `TEST AH,0x40` at `0x0047463E`
+    ///   takes the sentinel exit, returning the caller's default. Rust returns
+    ///   `0`. Inert in practice because `parse_read_double` scans a numeric
+    ///   prefix and cannot produce NaN.
+    ///
+    /// The lepton scale is load-bearing and was missing here until it was
+    /// re-derived from the disassembly on 2026-09-02 — the Ghidra decompiler
+    /// elides the `FMUL` because it is folded into the x87 argument chain that
+    /// `Math__ftol` consumes, so the pseudocode shows a bare `ftol`. Stock
+    /// `[CrateRules] CrateRadius=3.0` is 768 leptons, consistent with the
+    /// RulesClass constructor default of `0x280` (2.5 cells).
     pub fn read_range(&self, key: &str, default: i32) -> i32 {
         self.fold_rules_values(key, default, |current, raw| {
             let parsed = parse_read_double(raw);
             if parsed == -1.0 {
                 current
             } else {
-                parsed as i32
+                (parsed * 256.0) as i32
             }
         })
     }
@@ -204,9 +235,24 @@ pub(crate) fn parse_read_double(raw: &str) -> f64 {
     }
 }
 
+/// Byte-wise `strncpy` truncation. A cut that would land inside a multi-byte
+/// sequence backs up to the preceding boundary: native writes the partial bytes
+/// and the forced NUL, which is not representable as a Rust `str`, and no INI
+/// value in retail data is non-ASCII.
+pub(crate) fn truncate_bytes(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
 /// strtrim equivalent (P5): strip bytes <= 0x20 from BOTH ends. ASCII-only by
 /// design (RA2 INI is ASCII); does NOT use `str::trim` (Unicode whitespace).
-fn strtrim_ascii(s: &str) -> &str {
+pub(crate) fn strtrim_ascii(s: &str) -> &str {
     let b = s.as_bytes();
     let mut start = 0usize;
     while start < b.len() && b[start] <= STRTRIM_MAX {
@@ -484,9 +530,11 @@ mod tests {
     fn test_read_range_truncates() {
         let ini = sec("[S]\nA=5.9\nB=5\nC=0.4\n");
         let s = ini.section("S").unwrap();
-        assert_eq!(s.read_range("A", -1), 5); // 5.9 -> 5 (never rounds to 6)
-        assert_eq!(s.read_range("B", -1), 5);
-        assert_eq!(s.read_range("C", -1), 0);
+        // Values are cells; the reader scales to leptons and truncates toward
+        // zero. 5.9 cells is 1510.4 leptons -> 1510, never 1511.
+        assert_eq!(s.read_range("A", -1), 1510);
+        assert_eq!(s.read_range("B", -1), 1280, "5 cells");
+        assert_eq!(s.read_range("C", -1), 102, "0.4 cells is 102.4 leptons");
         assert_eq!(s.read_range("MISSING", 7), 7); // absent -> default (sentinel -1.0)
     }
 }
