@@ -125,13 +125,19 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 // first `AI_Update` promotion sample (-1 -> GetVeterancyLevel code), so every live
 // object's hashed `veterancy_rank_cache` moved. Composition of the hash is unchanged
 // and the RNG stream pins held (FINAL_STREAM_STATES), so no cadence or draw moved.
-// Merge 2026-09-02: main's veterancy re-baseline and this branch's queue-store
-// re-baseline both move the same constants, so the values below are the composed
-// measurement taken on the merged tree, not either side's number.
+// Merge 2026-09-02: main's veterancy re-baseline and its queue-store re-baseline
+// both moved these constants, so the three historical probes below are main's
+// composed measurement, unchanged by this branch.
 const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x1880_D391_E620_9834;
 const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x7D9B_C414_D199_21CC;
 const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xE1C6_54FA_7B7B_9CB3;
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x1422_9DF5_DB39_C07B;
+// Re-baselined 2026-09-02 for v117's disguise-detect folds (FogState's
+// `CellClass+0xAC[house]` counter plane and the cached `DetectDisguiseRange=`
+// deposit radius). The dedicated pre-v117 probe reproduces main's committed
+// current baseline exactly; this fixture stamps no disguise circle, so only
+// current-schema composition moved.
+const BRIDGE_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x1422_9DF5_DB39_C07B;
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x7D6C_E7BF_2564_FD19;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
@@ -527,8 +533,9 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
     let pre_base_plan_hash = rep.state_hash_without_base_plan_v110();
     let pre_crate_authority_hash = rep.state_hash_without_crate_authority_v114();
     let pre_wall_runtime_hash = rep.state_hash_without_wall_runtime_v115();
+    let pre_disguise_detect_hash = rep.state_hash_without_disguise_detect_v117();
     println!(
-        "[bridge parity] final_hash={final_hash:016X} pre-v110:{pre_base_plan_hash:016X} pre-v114:{pre_crate_authority_hash:016X} pre-v115:{pre_wall_runtime_hash:016X} streams={:016X},{:016X},{:016X}",
+        "[bridge parity] final_hash={final_hash:016X} pre-v110:{pre_base_plan_hash:016X} pre-v114:{pre_crate_authority_hash:016X} pre-v115:{pre_wall_runtime_hash:016X} pre-v117:{pre_disguise_detect_hash:016X} streams={:016X},{:016X},{:016X}",
         rep.scenario_rng.state(),
         rep.main_rng.state(),
         rep.mapgen_rng.state(),
@@ -544,6 +551,10 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
     assert_eq!(
         pre_wall_runtime_hash, BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH,
         "the dedicated pre-v115 probe must reproduce the prior bridge current baseline"
+    );
+    assert_eq!(
+        pre_disguise_detect_hash, BRIDGE_HARNESS_PRE_DISGUISE_DETECT_V117_HASH,
+        "the dedicated pre-v117 probe must reproduce the prior bridge current baseline"
     );
     assert_eq!(
         final_hash, BRIDGE_HARNESS_FINAL_HASH,

@@ -538,13 +538,19 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x3F5A_9EED_EC0A_9204;
 // shared-dummy overlay identity/state folds. The dedicated pre-v115 probe reproduces the
 // prior current baseline exactly; this fixture builds a legacy `None`-count grid, so only
 // current-schema composition moved.
-// Merge 2026-09-02: main's veterancy re-baseline and this branch's queue-store
-// re-baseline both move the same constants, so the values below are the composed
-// measurement taken on the merged tree, not either side's number.
+// Merge 2026-09-02: main's veterancy re-baseline and its queue-store re-baseline
+// both moved these constants, so the three historical probes below are main's
+// composed measurement, unchanged by this branch.
 const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x8637_8672_B2C7_DC94;
 const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xB534_6D3F_8096_2143;
 const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x036C_3475_4BE1_F73E;
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x743D_0C0C_8931_EF37;
+// Re-baselined 2026-09-02 for v117's disguise-detect folds (FogState's
+// `CellClass+0xAC[house]` counter plane and the cached `DetectDisguiseRange=`
+// deposit radius). The dedicated pre-v117 probe reproduces main's committed
+// current baseline exactly; this fixture stamps no disguise circle, so only
+// current-schema composition moved. The three RNG stream pins are unchanged.
+const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x743D_0C0C_8931_EF37;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x8CAB_A20B_EBDA_C994;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -841,8 +847,9 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     let pre_base_plan_hash = rep.state_hash_without_base_plan_v110();
     let pre_crate_authority_hash = rep.state_hash_without_crate_authority_v114();
     let pre_wall_runtime_hash = rep.state_hash_without_wall_runtime_v115();
+    let pre_disguise_detect_hash = rep.state_hash_without_disguise_detect_v117();
     println!(
-        "[global parity] probes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},pre-v115:{pre_wall_runtime_hash:016X}"
+        "[global parity] probes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},pre-v115:{pre_wall_runtime_hash:016X},pre-v117:{pre_disguise_detect_hash:016X}"
     );
     assert_eq!(
         pre_lifecycle_hash, GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH,
@@ -863,6 +870,10 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     assert_eq!(
         pre_wall_runtime_hash, GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH,
         "the dedicated pre-v115 probe must reproduce the prior global-harness current baseline"
+    );
+    assert_eq!(
+        pre_disguise_detect_hash, GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH,
+        "the dedicated pre-v117 probe must reproduce the prior global-harness current baseline"
     );
     assert_eq!(
         final_hash, GLOBAL_HARNESS_FINAL_HASH,

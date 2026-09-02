@@ -1178,6 +1178,23 @@ pub struct ObjectType {
     pub sensors: bool,
     /// `SensorsSight=` — fallback sensor/cloak-generator ring radius.
     pub sensors_sight: u8,
+    /// `DetectDisguise=` — `TechnoTypeClass+0xD31`, written by
+    /// `TechnoTypeClass::ReadINI @ 0x0071444C` (key string `0x00843C78`).
+    /// Two distinct consumers, both verified:
+    /// * as an ATTACKER type it bypasses the disguise rejection in
+    ///   `TechnoClass::Evaluate_Candidate @ 0x006F84D4` — dogs, Yuri and the
+    ///   Psi Corps Trooper auto-acquire Spies and Mirage Tanks;
+    /// * as a BUILDING type it drives the per-cell detect counter through
+    ///   `BuildingClass::OnConstructionComplete @ 0x004467AD` /
+    ///   `BuildingClass::Limbo @ 0x00445A58`.
+    pub detect_disguise: bool,
+    /// `DetectDisguiseRange=` — `TechnoTypeClass+0x5F4`
+    /// (`TechnoTypeClass::ReadINI @ 0x0071430F`, key string `0x00843D3C`),
+    /// the circular radius `BuildingClass::AddDetectDisguiseAt @ 0x00455A80`
+    /// stamps. `TechnoTypeClass::Constructor @ 0x0071100E` seeds it to zero,
+    /// so a `DetectDisguise=yes` building without this key stamps no cells —
+    /// stock YAPSYT and NAPSYB are exactly that case; only NAPSIS (15) deposits.
+    pub detect_disguise_range: u8,
     /// `Cloakable=` — copied into Unit/Infantry runtime cloak ability.
     pub cloakable: bool,
     /// `CloakingSpeed=` — signed frame duration between cloak progress steps.
@@ -1877,6 +1894,11 @@ impl ObjectType {
             sensors: section.get_bool("Sensors").unwrap_or(false),
             sensors_sight: section
                 .get_i32("SensorsSight")
+                .map(|n| n.clamp(0, u8::MAX as i32) as u8)
+                .unwrap_or(0),
+            detect_disguise: section.get_bool("DetectDisguise").unwrap_or(false),
+            detect_disguise_range: section
+                .get_i32("DetectDisguiseRange")
                 .map(|n| n.clamp(0, u8::MAX as i32) as u8)
                 .unwrap_or(0),
             cloakable: section.get_bool("Cloakable").unwrap_or(false),

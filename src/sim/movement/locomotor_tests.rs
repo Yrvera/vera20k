@@ -120,6 +120,8 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         sensor_array: false,
         sensors: false,
         sensors_sight: 0,
+        detect_disguise: false,
+        detect_disguise_range: 0,
         cloakable: false,
         cloaking_speed: 1,
         cloak_stop: false,

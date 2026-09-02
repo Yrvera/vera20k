@@ -52,6 +52,14 @@ mod combat_turret_facing_tests;
 mod combat_cloak_fire_tests;
 
 #[cfg(test)]
+#[path = "combat_cloak_legality_tests.rs"]
+mod combat_cloak_legality_tests;
+
+#[cfg(test)]
+#[path = "combat_cloak_damage_tests.rs"]
+mod combat_cloak_damage_tests;
+
+#[cfg(test)]
 #[path = "delayed_building_fire_tests.rs"]
 mod delayed_building_fire_tests;
 
@@ -3418,6 +3426,7 @@ fn commit_damage_events_with_isolation(
         let mut smoke_maintenance: Option<(EntityCategory, damage::DamageState)> = None;
         let mut healing_only = false;
         let mut latch_hostile_hit = false;
+        let mut uncloak_after_damage = false;
         let mut threat_feedback: Option<(InternedId, InternedId, i32, i32, i32)> = None;
         if let Some(target) = entities.get_mut(target_id) {
             if event.distance_leptons.is_none()
@@ -3456,6 +3465,53 @@ fn commit_damage_events_with_isolation(
             let reached_survivor_postlude =
                 receive_outcome.is_some_and(|outcome| outcome.reached_survivor_postlude);
             let receive_state = receive_outcome.map(|outcome| outcome.state);
+            // `TechnoClass::ReceiveDamage @ 0x0070281D` calls vtable `+0xFC`
+            // (`StartUncloaking(0) @ 0x00703850`). It sits after the
+            // ObjectClass HP commit and after the `ToProtect` response, and
+            // before the `if (damage < 0) return` heal early-out, which is why
+            // a HEAL surfaces a diving submarine just as reliably as a shell
+            // does.
+            //
+            // Two native conditions guard it, and BOTH are read from the
+            // disassembly, not the decompiler — the decompiler renders this
+            // dispatch as `switch (uVar7)` after assigning `uStack_a4 = 4`,
+            // which hides the selector overwrite below:
+            //
+            // 1. Every defensive gate in `TechnoClass::ReceiveDamage @
+            //    0x00701900` returns ABOVE the `uVar7 =
+            //    ObjectClass__ReceiveDamage(this)` join — the `TypeImmune`
+            //    (`type+0xC8C`) same-type/same-owner arm, `vt+0x160`
+            //    (IronCurtain/ForceShield), `vt+0x1D4` (warping in), the
+            //    `AffectsAllies=no` (`warhead+0x179`) allied arm, and the
+            //    accepted Psychedelic arm (`return 1`). None of those reaches
+            //    `+0xFC`, so an Iron-Curtained, type-immune or ally-shielded
+            //    cloaked object stays submerged. `reached_survivor_postlude`
+            //    is exactly "the receiver delegated to ObjectClass and came
+            //    back through the surviving-object tail", i.e. that join.
+            // 2. Post-join HEALTH, not the ObjectClass result code:
+            //      0070202e MOV  EAX,[ESI+0x6C]   ; this->Health
+            //      00702031 TEST EAX,EAX
+            //      00702033 JNZ  0x00702040
+            //      00702035 MOV  EDI,0x4          ; overwrites the selector
+            //      00702049 JMP  [EDI*4 + 0x702D24]
+            //    The table at `0x00702D24` is `[0x007027F7, 0x00702713,
+            //    0x00702695, 0x007027F7, 0x00702050]`; case 4 is the death
+            //    handler, which returns at `0x00702692` (`RET 0x1C`) without
+            //    ever reaching `0x0070281D`. So `Health == 0` after the join
+            //    takes the death branch WHATEVER ObjectClass returned — which
+            //    covers both "this record killed it" and "it was already a
+            //    corpse" (`ObjectClass::ReceiveDamage @ 0x005F5390` opens
+            //    `if (Health < 1) return 0`, and 0 is case 0, but the health
+            //    test overrides it). The hostile-hit latch six bytes below at
+            //    `0x00702812` sits in the same basic block and is guarded
+            //    identically.
+            //
+            // `target.health.current` here is still the PRE-record value, so
+            // "post-join health nonzero" is `pre > 0 && state != Dead`:
+            // `classify` returns `Dead` exactly when `prev - delta <= 0`.
+            uncloak_after_damage = reached_survivor_postlude
+                && target.health.current > 0
+                && receive_state.is_some_and(|state| state != damage::DamageState::Dead);
             // TechnoClass's persistent hostile-hit byte is written in the
             // shared surviving post-Object tail. The source object must be
             // non-null, and alliance direction is target owner -> captured
@@ -3573,6 +3629,35 @@ fn commit_damage_events_with_isolation(
                 scenario_rng,
                 terrain.as_deref(),
             );
+        }
+
+        // `0x0070281D`, in its native slot: after the `ToProtect` response
+        // (`0x007027E9`) and before the death branch's kill callbacks. The
+        // `StartUncloaking(0)` argument is zero, so it owns one positional
+        // `[AudioVisual] CloakSound`.
+        if uncloak_after_damage {
+            // Production combat callers derive `current_tick` from
+            // `ScenarioSession::binary_frame`, which is the clock the cloak step
+            // timer is compared against in `CloakingTick`.
+            let now = current_tick as i32;
+            let cloaking_speed = entities
+                .get(target_id)
+                .and_then(|target| rules.object(interner.resolve(target.type_ref)))
+                .map_or(1, |object| object.cloaking_speed);
+            let surfaced = entities
+                .get_mut(target_id)
+                .and_then(|target| target.cloak.as_mut())
+                .map(|cloak| cloak.start_uncloaking_from_damage(now, cloaking_speed));
+            if surfaced.is_some_and(|result| result.play_sound)
+                && let Some(sound_name) = rules.general.cloak_sound.as_deref()
+                && let Some(sink) = sound_sink.as_deref_mut()
+                && let Some(target) = entities.get(target_id)
+            {
+                sink.push(SimSoundEvent::cloak_sound(
+                    sound_name.to_owned(),
+                    &target.position,
+                ));
+            }
         }
 
         if reached_exact_zero && let Some(target) = entities.get_mut(target_id) {
@@ -5838,6 +5923,29 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
                 attack.burst_delay_ticks = burst_delay;
                 attack.cooldown_ticks = rof_cd;
             }
+            // `TechnoClass::Fire_At @ 0x006FDD50` writes the SAME rearm
+            // countdown into `TechnoClass+0x2EC/+0x2F4` (stores at 0x006FE4B0
+            // and 0x006FF2AA), and `CanAutoCloak @ 0x006FBDC0` reads that timer
+            // as its first gate after the `CloakState == 2` early-out
+            // (`param_1[0xbb]`/`[0xbd]`). VERA keeps the rearm counter on the
+            // attack record instead of the object, so the cloak runtime carries
+            // its own copy of the same value; without it a Typhoon that
+            // surfaced to fire could re-dive on the very next tick.
+            //
+            // The duration native stores is `CALL [EDX+0x318]` at 0x006FE49E
+            // — `TechnoClass::GetROF @ 0x006FCFA0` (vtable slot read at
+            // 0x007F4C78) — whose MID-BURST branch returns the inter-shot gap,
+            // not zero. Native keeps one timer; VERA splits it into
+            // `cooldown_ticks` (armed on the burst's last shot) and
+            // `burst_delay_ticks` (armed between burst shots). The two
+            // decrement together and the fire gate is their union, so the
+            // native `+0x2F4` value is whichever of the two this shot armed.
+            // With `[BoomerTorpedo] Burst=2` on a `Cloakable=yes` BSUB, taking
+            // the union is what stops a re-dive between the two torpedoes.
+            let rearm_gate_frames = i32::from(rof_cd).max(i32::from(burst_delay));
+            if let Some(cloak) = entity.cloak.as_mut() {
+                cloak.arm_rearm_gate(binary_frame as i32, rearm_gate_frames);
+            }
         }
     }
 
@@ -6593,6 +6701,56 @@ pub(crate) fn resolve_attacker_fire(
             } else {
                 out.remove_attack.push(snap.stable_id);
             }
+            return;
+        }
+    }
+
+    // `TechnoClass::GetFireError @ 0x006FC24D..0x006FC29D` — the target-side
+    // cloak exit, ahead of ammo and the `DecloakToFire` self-check:
+    //
+    //   vs = target->GetVisualState(1, this->pOwner);          // vt+0x68
+    //   if (vs == 5 && !SensorCountForHouse(targetCell, myHouse->ArrayIndex)) {
+    //       if (GetWeaponRange(this, -1) > 0)            return 6;   // 0x006FCD29
+    //       if (!IsAlliedWith(target->pOwner, myOwner))  return 6;
+    //   }
+    //
+    // `GetVisualState(1, house) @ 0x00703860` returns 5 for a `CloakState == 2`
+    // object exactly when that house has no sensor on its cell, so for cloak
+    // this is "fully cloaked and unsensed by me". Error 6 suppresses the shot
+    // only — no retarget and no clear, like the bridge-mismatch arm above.
+    //
+    // Acquisition already refuses such a candidate; this is the case
+    // acquisition cannot cover — a target held from before the dive (the
+    // attacker's house was sensing the cell, so `PointerExpired` let it keep
+    // the pointer) that later falls out of sensor coverage.
+    //
+    // The range-zero/allied fall-through is modelled: a range-0 weapon against
+    // an ALLIED invisible target is allowed through, everything else is not.
+    //
+    // RESIDUAL (SUBSTITUTION) — the range term is the SELECTED weapon's range;
+    // native's `GetWeaponRange(this, -1)` at `0x006FC27C` asks the object for
+    // its range across weapons, so the two differ only when the selected weapon
+    // has range 0 while another slot does not.
+    // - Trigger: a zero-range weapon aimed at an allied, fully cloaked,
+    //   unsensed target.
+    // - Player effect: VERA lets the shot through where native returns 6.
+    // - Frequency: none observed in stock — no stock weapon pairs range 0 with
+    //   a second armed slot on a unit that can hold an allied cloaked target.
+    // - Downstream risk: low; it is one range lookup.
+    if let TargetKind::Entity(target_sid) = snap.target
+        && entities
+            .get(target_sid)
+            .and_then(|target| target.cloak.as_ref())
+            .is_some_and(|cloak| cloak.is_fully_cloaked())
+        && fog.is_some_and(|fog_state| {
+            !fog_state.has_sensor_for_house(snap.owner, target_rx, target_ry)
+        })
+    {
+        let attacker_owner_str = interner.resolve(snap.owner);
+        let target_owner_str = interner.resolve(target_owner);
+        let allied = fog
+            .is_some_and(|fog_state| fog_state.is_friendly(attacker_owner_str, target_owner_str));
+        if weapon.range > SimFixed::ZERO || !allied {
             return;
         }
     }

@@ -502,6 +502,7 @@ fn techno_ai_shell(
                 veterancy_promotion_step(sim, id, rules);
                 self_heal_step(sim, id, rules);
             }
+            drop_unsensed_cloaked_target_step(sim, id);
             mission_counter_step(sim, id);
         }
     }
@@ -643,6 +644,61 @@ fn self_heal_step(sim: &mut Simulation, id: u64, rules: &RuleSet) {
     }
     if let Some(entity) = sim.substrate.entities.get_mut(id) {
         entity.health.current = entity.health.current.saturating_add(1);
+    }
+}
+
+/// `AircraftClass::AI @ 0x00414D4D..0x00414DA1`, read from the disassembly:
+///
+/// ```text
+/// T = Target(+0x2B4);
+/// if (T && (T->flags & 1) && !IsAlliedWith(myOwner, T)
+///       && T->CloakState(+0x220) == 2
+///       && !T->vt+0x32C(myOwner))                 // IsSensedByHouse
+///     Assign_Target(NULL);
+/// ```
+///
+/// Aircraft alone re-test this every tick, so a Harrier loses its lock the
+/// moment its house's sensor coverage of a submerged target lapses — the ground
+/// units around it keep theirs until their own scan cadence comes round.
+/// (`vt+0x32C` at `0x0070D460` has no function boundary in the database; the
+/// body reads the sensor count for the passed house at the object's own cell,
+/// and returns false for a null house.)
+fn drop_unsensed_cloaked_target_step(sim: &mut Simulation, id: u64) {
+    let Some(entity) = sim.substrate.entities.get(id) else {
+        return;
+    };
+    let Some(crate::sim::combat::TargetKind::Entity(target_id)) =
+        entity.attack_target.as_ref().map(|target| target.target)
+    else {
+        return;
+    };
+    let owner = entity.owner;
+    let owner_str = sim.interner.resolve(owner).to_owned();
+    let Some(target) = sim.substrate.entities.get(target_id) else {
+        return;
+    };
+    if !target
+        .cloak
+        .as_ref()
+        .is_some_and(|cloak| cloak.is_fully_cloaked())
+    {
+        return;
+    }
+    let target_cell = (target.position.rx, target.position.ry);
+    if sim
+        .fog
+        .is_friendly(&owner_str, sim.interner.resolve(target.owner))
+    {
+        return;
+    }
+    if sim
+        .fog
+        .has_sensor_for_house(owner, target_cell.0, target_cell.1)
+    {
+        return;
+    }
+    if let Some(entity) = sim.substrate.entities.get_mut(id) {
+        crate::sim::mission::concrete_effects::represented_assign_target(entity, None);
     }
 }
 

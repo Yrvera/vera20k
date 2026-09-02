@@ -1182,6 +1182,31 @@ pub(crate) fn pick_entity_at_point(
         {
             continue;
         }
+        // `Tactical::PickObjectAtScreenPoint @ 0x006DA380` admits a
+        // render-tracked object only when
+        //   `InLimbo == 0 && (+0x41A != 0 || CloakState != 2
+        //                     || SensorCountForHouse(itsCell, PlayerPtr->ArrayIndex))`.
+        // `+0x41A` is the owned-by-the-local-player byte — `TechnoClass::
+        // PointerExpired @ 0x007077C0` clears it together with `pOwner` — so
+        // being merely allied does NOT exempt a cloaked object. The same filter
+        // guards `DisplayClass::DetermineAction @ 0x00692610` and the
+        // object-name-under-cursor helper, which is why an unsensed submerged
+        // submarine cannot be moused over at all and no explicit attack order
+        // against it can be issued.
+        if let (Some(fog_state), Some(owner_id)) = (fog, local_owner_id)
+            && entity.owner != owner_id
+            && entity
+                .cloak
+                .as_ref()
+                .is_some_and(|cloak| cloak.is_fully_cloaked())
+            && !fog_state.has_sensor_for_house(
+                owner_id,
+                entity.position.rx,
+                entity.position.ry,
+            )
+        {
+            continue;
+        }
         let (sx, sy) = crate::app::presentation::instances::interpolated_screen_position_entity(entity);
         let distance = pick_distance_sq(sx - world_x, sy - world_y) as i32;
         if distance < PICK_DISTANCE_THRESHOLD as i32

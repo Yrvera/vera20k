@@ -537,6 +537,14 @@ pub struct FogState {
     /// Native signed-word SensorsOfHouses counters, row-major per house.
     #[serde(default)]
     pub sensors_by_house: BTreeMap<InternedId, Vec<i16>>,
+    /// Native `CellClass+0xAC[house]` signed-word disguise-detect counters,
+    /// row-major per house. Only `BuildingClass::AddDetectDisguiseAt @
+    /// 0x00455A80` / `RemoveDetectDisguiseAt @ 0x00455980` write them, and
+    /// `FUN_004870F0` (`+0xAC[house] > 0`) is the only reader — consumed by
+    /// `UnitClass::IsDisguisedTo @ 0x00746750` and
+    /// `InfantryClass::IsDisguisedTo @ 0x005227F0`.
+    #[serde(default)]
+    pub disguise_detect_by_house: BTreeMap<InternedId, Vec<i16>>,
     /// Native CellClass::CloakedByHouses words, row-major by cell. House
     /// selection uses the original x86-masked bit index (`h & 31`).
     #[serde(default)]
@@ -629,6 +637,7 @@ impl FogState {
     /// map-storage recreation edge.
     pub fn reset_sensor_counts(&mut self) {
         self.sensors_by_house.clear();
+        self.disguise_detect_by_house.clear();
     }
 
     /// Recreate the serialized CellClass cloak-owner words for current map
@@ -661,19 +670,28 @@ impl FogState {
         changed
     }
 
-    /// Tests bit `house` of `CellClass+0x78`, the same word
-    /// `CellClass::IsVisibleToHouse` @ `0x004870B0` reads — its body is exactly
-    /// `return (this->dwVisibleToHouses & 1 << (house & 0x1F)) != 0;`. That
-    /// pinned label stands; the earlier claim here that it was stale, and that
-    /// the word means cloak-generator ownership rather than visibility, was
-    /// unfounded. What VERA stores in this plane is its own reading of the bit —
-    /// **VERA-internal, gamemd equivalent UNCHECKED**.
-    /// **Write-dead, and hashed.** `set_cloaked_by_house` and
-    /// `clear_cloaked_by_house` have no production caller, so this can never
-    /// return true — yet `cloaked_by_houses` is folded into the world hash, so
-    /// the first producer to land shifts every golden. Trigger: none today.
-    /// Player effect: none. Frequency: zero. Downstream risk: a guaranteed
-    /// golden re-baseline whenever the plane is wired.
+    /// Tests bit `house` of `CellClass+0x78` — the word
+    /// `CellClass::IsVisibleToHouse @ 0x004870B0` reads, whose body is exactly
+    /// `return (this->dwVisibleToHouses & 1 << (house & 0x1F)) != 0;`.
+    ///
+    /// **The Ghidra label is drift and the field is NOT shroud visibility.**
+    /// `get_xrefs_to 0x00487110 / 0x00487130` (the only OR/AND-NOT writers of
+    /// `+0x78`) returns exactly two callsites, both inside
+    /// `BuildingClass::UpdateGapGenerator_Tick @ 0x004551B9 / 0x004553B3`, and
+    /// that write branch is gated on `BuildingType+0x16C7`
+    /// (`BuildingTypeClass::ReadINI @ 0x00460C06`, key string `0x0081A998` =
+    /// `CloakGenerator`). This is YRpp's `CloakedByHouses` — the cloak-field
+    /// footprint of a `CloakGenerator=yes` building. **No stock YR building
+    /// sets `CloakGenerator=`** (`grep -c '^CloakGenerator' ini/rulesmd.ini`
+    /// is zero), so gamemd itself never sets the bit in an ordinary skirmish.
+    ///
+    /// VERA therefore keeps this plane write-dead ON PURPOSE — that is parity,
+    /// not a gap. Its three consumers (`TechnoClass::ShouldUncloak @
+    /// 0x006FBDA2`, `CanAutoCloak @ 0x006FBE90`, and the vt+0x420 cloak-field
+    /// entry hook at `0x006F4F46`) all read a constantly-false bit in stock,
+    /// and VERA's counterparts must read this and not cell visibility.
+    /// `cloaked_by_houses` is folded into the world hash, so wiring a producer
+    /// (a mod with a cloak generator) would shift every golden.
     pub fn is_cloaked_by_house(&self, house_index: u8, rx: u16, ry: u16) -> bool {
         let Some(word) = self.cloak_word(rx, ry) else {
             return false;
@@ -842,6 +860,69 @@ impl FogState {
         }
         let index = usize::from(ry) * usize::from(self.width) + usize::from(rx);
         self.sensors_by_house
+            .get(&house)
+            .and_then(|counters| counters.get(index))
+            .is_some_and(|count| *count > 0)
+    }
+
+    fn disguise_detect_counter_mut(&mut self, house: InternedId, rx: u16, ry: u16) -> &mut i16 {
+        let cell_count = usize::from(self.width) * usize::from(self.height);
+        let counters = self
+            .disguise_detect_by_house
+            .entry(house)
+            .or_insert_with(|| vec![0; cell_count]);
+        if counters.len() != cell_count {
+            counters.clear();
+            counters.resize(cell_count, 0);
+        }
+        let index = usize::from(ry) * usize::from(self.width) + usize::from(rx);
+        &mut counters[index]
+    }
+
+    /// `BuildingClass::AddDetectDisguiseAt @ 0x00455A80` — the same strict
+    /// outer-Y/inner-X circle the sensor deposit walks, incrementing
+    /// `CellClass+0xAC[house]` (`CellClass::IncrementDisguiseDetectCount`).
+    /// The caller owns the powered gate (native vt+0x350).
+    pub fn disguise_detect_add_at(
+        &mut self,
+        house: InternedId,
+        center: (u16, u16),
+        radius: u16,
+    ) -> Vec<(u16, u16)> {
+        let touched = self.sensor_circle_cells(center, radius);
+        for &(rx, ry) in &touched {
+            let counter = self.disguise_detect_counter_mut(house, rx, ry);
+            *counter = counter.wrapping_add(1);
+        }
+        touched
+    }
+
+    /// `BuildingClass::RemoveDetectDisguiseAt @ 0x00455980`. Unlike the sensor
+    /// array's remove, this one reads the SAME `DetectDisguiseRange=` field
+    /// (`0x00455991` loads `+0x5F4`) that the add used, so the walk is
+    /// symmetric and leaves no fringe residue.
+    pub fn disguise_detect_remove_at(
+        &mut self,
+        house: InternedId,
+        center: (u16, u16),
+        radius: u16,
+    ) -> Vec<(u16, u16)> {
+        let touched = self.sensor_circle_cells(center, radius);
+        for &(rx, ry) in &touched {
+            let counter = self.disguise_detect_counter_mut(house, rx, ry);
+            *counter = counter.wrapping_sub(1);
+        }
+        touched
+    }
+
+    /// `FUN_004870F0` — `CellClass+0xAC[house] > 0`. The observer-side half of
+    /// `IsDisguisedTo`: a house covering the cell sees through the disguise.
+    pub fn detects_disguise_for_house(&self, house: InternedId, rx: u16, ry: u16) -> bool {
+        if rx >= self.width || ry >= self.height {
+            return false;
+        }
+        let index = usize::from(ry) * usize::from(self.width) + usize::from(rx);
+        self.disguise_detect_by_house
             .get(&house)
             .and_then(|counters| counters.get(index))
             .is_some_and(|count| *count > 0)

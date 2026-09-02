@@ -25,6 +25,32 @@ use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
 use super::Simulation;
 use super::substrate::ObjectKind;
 
+/// The control value `DispatchPointerExpiredCleanup @ 0x007258D0` forwards to
+/// every listener's `PointerExpired` slot (`vt+0x28`), i.e. the third argument
+/// of `TechnoClass::PointerExpired @ 0x007077C0`.
+///
+/// Two production callers, and they disagree on the value:
+/// * `ObjectClass__UnInit @ 0x005F65F0` dispatches with **1** at `0x005F6616` —
+///   the object is going away, so every reference is dropped unconditionally.
+/// * `ObjectClass::Detach_All(bool)` (vtable `+0xDC`, `0x005F5280`; the
+///   `FootClass` override is `0x004D9720`) forwards its own argument, and both
+///   cloak callers pass **0**: `TechnoClass::StartCloaking @ 0x00703770` and
+///   the `CloakState 1 -> 2` arm of `TechnoClass::CloakingTick @ 0x006FB740`.
+///
+/// A control of 0 changes three things inside the receiver body: it runs the
+/// `allowClear` sensor test (`0x00707994 CALL 0x004870D0`,
+/// `CellClass::SensorCountForHouse`), it exempts a receiver whose own house
+/// owns the expiring object from the Target clear (`0x007079B7..0x007079CB`),
+/// and it skips the `+0x500` / `+0x218` / CaptureManager block opened at
+/// `0x00707AE7`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointerExpiryControl {
+    /// `Detach_All(false)` — the expiring object survives.
+    DetachAll,
+    /// `ObjectClass::UnInit` — the expiring object is being removed.
+    Uninit,
+}
+
 /// Borrowed map authority carried through one synchronous ObjectClass UnInit
 /// tree. Ordinary entry points use the Simulation-owned terrain; combat uses
 /// this context while that same terrain is staged outside `Simulation`.
@@ -2269,18 +2295,23 @@ impl Simulation {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn notify_entity_pointer_expired(
         &mut self,
         listener_id: u64,
         expired_id: u64,
         // The expiring object's `ObjectClass::GetCoords` cell — the single
         // derivation `BulletClass::PointerExpired @ 0x004684E0` uses for both
-        // the entity-hosted and store-hosted missile arms.
+        // the entity-hosted and store-hosted missile arms. It is also the cell
+        // `TechnoClass::PointerExpired` hands to `SensorCountForHouse` when it
+        // computes `allowClear` on the `Detach_All` control.
         expired_get_coords_cell: Option<(u16, u16)>,
         expired_is_high_flying: bool,
         expired_object_alive: bool,
         expired_health: u16,
         expired_is_selling: bool,
+        expired_owner: Option<InternedId>,
+        control: PointerExpiryControl,
     ) {
         let Some(listener) = self.substrate.entities.get(listener_id) else {
             return;
@@ -2288,13 +2319,42 @@ impl Simulation {
         let current_target_matches = listener.attack_target.as_ref().is_some_and(
             |target| matches!(target.target, TargetKind::Entity(id) if id == expired_id),
         );
+        let listener_owner = listener.owner;
         let passive_scan_remaining = listener
             .passive_scan_timer
             .remaining(self.session.binary_frame);
         let mission_is_suspended =
             listener.mission.suspended() != crate::sim::mission::MissionId::NONE;
 
-        let passive_scan_delay = (current_target_matches && passive_scan_remaining > 10)
+        // `TechnoClass::PointerExpired @ 0x007077C0`, the `allowClear` local
+        // (`[ESP+0x24]`): it starts true and is cancelled only on the
+        // `Detach_All` control, when the expiring object is a Techno and the
+        // RECEIVER's own house already holds a sensor count on that object's
+        // cell — `0x00707994 CALL 0x004870D0`. The Techno half of that guard is
+        // `AbstractFlags +0x14` bit 0, ORed in for every object by
+        // `TechnoClass__Constructor @ 0x006F3228` and therefore true of every
+        // `GameEntity`, so it needs no test here. `allowClear` gates both the
+        // Target (`+0x2B4`) clear at `0x007079AD` and the `+0x2B8` clear at
+        // `0x00707A7A`.
+        let allow_clear = match control {
+            PointerExpiryControl::Uninit => true,
+            PointerExpiryControl::DetachAll => !expired_get_coords_cell
+                .is_some_and(|(rx, ry)| self.fog.has_sensor_for_house(listener_owner, rx, ry)),
+        };
+        // `0x007079B7..0x007079CB`: on the same control the Target clear is
+        // additionally skipped when the expiring object's `GetOwner` (vslot
+        // `+0x3C`) equals the receiver's `+0x21C`, so a diving submarine never
+        // drops its own house's shooters.
+        let same_owner_exempt =
+            control == PointerExpiryControl::DetachAll && expired_owner == Some(listener_owner);
+        let clears_current_target = current_target_matches && allow_clear && !same_owner_exempt;
+
+        // `0x007079D1..0x00707A0D`: the re-arm sits INSIDE the guarded arm,
+        // ahead of `Assign_Target(NULL)`, so a receiver that keeps its target
+        // spends no Scenario draw. An already-expired timer (`elapsed >=
+        // duration`) skips the block entirely, which `remaining()`'s clamp to 0
+        // reproduces.
+        let passive_scan_delay = (clears_current_target && passive_scan_remaining > 10)
             .then(|| self.scenario_rng.next_range_u32_inclusive(4, 8));
         if let Some(listener) = self.substrate.entities.get_mut(listener_id) {
             if let Some(delay) = passive_scan_delay {
@@ -2303,8 +2363,25 @@ impl Simulation {
                     .arm(self.session.binary_frame, delay);
             }
 
-            // RadioClass::PointerExpired nulls matching sparse slots in place.
-            listener.clear_live_contact_with(expired_id);
+            // `RadioClass::PointerExpired @ 0x0065AAC0` nulls matching sparse
+            // slots in place, but ONLY on a nonzero control:
+            //
+            // ```
+            // 0065aac1 MOV EBX,[ESP+0xc]      ; EBX = the control argument
+            // 0065aae6 MOV EDX,[EAX + ECX*4]  ; slot
+            // 0065aaec CMP EDX,EDI            ; slot == expired ?
+            // 0065aaee JNZ 0065aafa
+            // 0065aaf0 TEST BL,BL             ; control
+            // 0065aaf2 JZ   0065aafa          ; control 0 skips the clear
+            // 0065aaf4 MOV dword ptr [EAX],0x0
+            // ```
+            //
+            // So `Detach_All(false)` — the dive — leaves radio contacts intact,
+            // and only UnInit breaks them. A diving submarine therefore keeps
+            // its naval-yard repair link and its transport link.
+            if control == PointerExpiryControl::Uninit {
+                listener.clear_live_contact_with(expired_id);
+            }
 
             // TechnoClass removes an expiring passenger from its CargoClass before
             // clearing its target/archive/manager reference family.
@@ -2313,7 +2390,7 @@ impl Simulation {
             }
         }
 
-        if current_target_matches {
+        if clears_current_target {
             self.set_archive_target_represented(listener_id, None)
                 .expect("expiry listener remains present");
             if mission_is_suspended {
@@ -2325,15 +2402,29 @@ impl Simulation {
         let Some(listener) = self.substrate.entities.get_mut(listener_id) else {
             return;
         };
-        if matches!(
-            listener.suspended_attack_target,
-            Some(TargetKind::Entity(id)) if id == expired_id
-        ) {
+        // `+0x2B8` is cleared on an exact match under `allowClear` alone — the
+        // same-owner exemption applies only to `+0x2B4`.
+        if allow_clear
+            && matches!(
+                listener.suspended_attack_target,
+                Some(TargetKind::Entity(id)) if id == expired_id
+            )
+        {
             listener.suspended_attack_target = None;
         }
 
         // FootClass clears SuspendedNavCom first, then its current/aux target,
         // and removes every matching queue entry. Cell targets are unaffected.
+        //
+        // `FootClass::PointerExpired @ 0x004D9960` carries its OWN copy of the
+        // `allowClear` Boolean, computed by a SECOND `SensorCountForHouse`
+        // call — `0x004D9A57 CALL 0x004870D0`, at the expiring object's
+        // `GetCoords` cell (`0x004D9A3D` vslot `+0x48`) for the RECEIVER's house
+        // (`param_1[0x87] + 0x30`) — under the same control-0 / nonnull /
+        // `+0x14` bit-0 guard as the Techno body. It gates the `+0x5A0`/`+0x5A4`
+        // PAIR clear below; the `+0x5A8` clear above it is unguarded. The two
+        // Booleans are equal in value because both read the receiver's house at
+        // the same cell, so the single `allow_clear` local models both.
         if listener
             .navigation
             .suspended_nav_com
@@ -2355,7 +2446,7 @@ impl Simulation {
             && expired_object_alive
             && expired_health > 0
             && !expired_is_selling;
-        if !retain_capture_nav {
+        if !retain_capture_nav && allow_clear {
             if listener
                 .navigation
                 .nav_com_aux
@@ -2454,12 +2545,63 @@ impl Simulation {
     /// listener arms still read the object's liveness, health and mission from
     /// the same destructure.
     fn notify_pointer_expired(&mut self, expired_id: u64, _context: UninitContext<'_>) {
+        if !self.substrate.entities.contains(expired_id) {
+            return;
+        }
+
+        // gamemd-derived: the House pointer-expiry handler reached by this
+        // synchronous broadcast stable-removes a BuildConst Building while it
+        // is still alive, marked, and resolvable. Keeping the House mutation
+        // at this callback boundary also covers direct UnInit/destruction;
+        // Conceal's already-limbo return never reaches it.
+        self.remove_build_const_from_owner(expired_id);
+        self.broadcast_pointer_expired(expired_id, PointerExpiryControl::Uninit);
+    }
+
+    /// `ObjectClass::Detach_All(false)` — the vtable `+0xDC` call
+    /// `TechnoClass::StartCloaking @ 0x00703770` makes before it writes any
+    /// cloak state, and again from the `CloakState 1 -> 2` completion arm of
+    /// `TechnoClass::CloakingTick @ 0x006FB740` (`0x006FBA98`). Both reach
+    /// `DispatchPointerExpiredCleanup @ 0x007258D0` with control **0**, which
+    /// runs the same `TechnoClass::PointerExpired` body as the UnInit path over
+    /// the same registered-object roster. The detaching object survives, so no
+    /// House-side BuildConst removal happens here.
+    ///
+    /// **The non-Techno listeners on that roster are control-INSENSITIVE**, read
+    /// this session and no longer a residual:
+    ///
+    /// * `WaveClass::PointerExpired @ 0x0075F610` (vtable `0x007F6BF4 + 0x28`)
+    ///   and `ParticleSystemClass::PointerExpired @ 0x0062FE90` branch on the
+    ///   control only inside the inherited `ObjectClass` call.
+    /// * `AnimClass`'s `+0x28` override is `0x00425150` (vtable
+    ///   `0x007E3354 + 0x28`; its only xref is that slot). It too forwards the
+    ///   control to `ObjectClass::PointerExpired` and takes no further branch on
+    ///   it.
+    /// * `BulletClass::PointerExpired @ 0x004684E0` branches on the control only
+    ///   for its trailing global-vector erase; the `+0x10C` target repair that
+    ///   substitutes `Get_CellClass` at the expired object's last cell — the arm
+    ///   VERA models in `HomingState::expire_object_target` — is unguarded.
+    /// * `ObjectClass::PointerExpired @ 0x005F5230` itself gates only the
+    ///   `+0x30` chain relink on a nonzero control; VERA models no `+0x30`
+    ///   chain, so it is correct by omission.
+    ///
+    /// So a torpedo already in flight at a diving submarine falling to the sub's
+    /// last cell instead of tracking it is native behavior, not an approximation.
+    pub(crate) fn detach_all_pointer_expired(&mut self, expired_id: u64) {
+        if !self.substrate.entities.contains(expired_id) {
+            return;
+        }
+        self.broadcast_pointer_expired(expired_id, PointerExpiryControl::DetachAll);
+    }
+
+    fn broadcast_pointer_expired(&mut self, expired_id: u64, control: PointerExpiryControl) {
         let Some((
             expired_target_cell,
             expired_is_high_flying,
             expired_object_alive,
             expired_health,
             expired_is_selling,
+            expired_owner,
         )) = self.substrate.entities.get(expired_id).map(|expired| {
             let high_flying = expired.locomotor.as_ref().is_some_and(|locomotor| {
                 // High-flying objects expire to null; lower objects preserve
@@ -2473,18 +2615,12 @@ impl Simulation {
                 expired.health.current,
                 expired.mission.current().known()
                     == Some(crate::sim::mission::MissionType::Selling),
+                Some(expired.owner),
             )
         })
         else {
             return;
         };
-
-        // gamemd-derived: the House pointer-expiry handler reached by this
-        // synchronous broadcast stable-removes a BuildConst Building while it
-        // is still alive, marked, and resolvable. Keeping the House mutation
-        // at this callback boundary also covers direct UnInit/destruction;
-        // Conceal's already-limbo return never reaches it.
-        self.remove_build_const_from_owner(expired_id);
 
         // `BulletClass::PointerExpired @ 0x004684E0` performs the packed
         // `MapClass::Get_CellClass @ 0x005657A0` lookup only for a matching
@@ -2504,7 +2640,7 @@ impl Simulation {
             }
 
             #[cfg(test)]
-            {
+            if control == PointerExpiryControl::Uninit {
                 let (target_alive, target_in_limbo) = self
                     .substrate
                     .entities
@@ -2528,17 +2664,26 @@ impl Simulation {
                     expired_object_alive,
                     expired_health,
                     expired_is_selling,
+                    expired_owner,
+                    control,
                 );
                 // `TechnoClass::PointerExpired` forwards to the listener's
-                // SpawnManager (`0x00707A6F`). This is the only mechanism that
-                // drops a destroyed wing target, so without it a Carrier keeps
-                // sending its Hornets at a corpse.
+                // SpawnManager: `0x00707B24 CALL 0x006B7C60`, gated only on
+                // `+0x2D0 != 0`. This is the only mechanism that drops a
+                // destroyed wing target, so without it a Carrier keeps sending
+                // its Hornets at a corpse. The forward sits OUTSIDE the control
+                // test, so it runs on a cloak dive as well as on UnInit.
                 crate::sim::spawn_manager::notify_pointer_expired(self, listener_id, expired_id);
-                if let Some(manager) = self
-                    .substrate
-                    .entities
-                    .get_mut(listener_id)
-                    .and_then(|entity| entity.capture_manager.as_mut())
+                // The CaptureManager forward — `0x00707B14 CALL 0x00471F90` —
+                // sits inside the `if (control != 0)` block opened at
+                // `0x00707AE7`, so a dive leaves mind-control links alone while
+                // a death drops them.
+                if control == PointerExpiryControl::Uninit
+                    && let Some(manager) = self
+                        .substrate
+                        .entities
+                        .get_mut(listener_id)
+                        .and_then(|entity| entity.capture_manager.as_mut())
                 {
                     manager.pointer_expired(expired_id);
                 }
