@@ -1189,16 +1189,19 @@ Recorded open items, each with its native reading and owner. None is closed by P
   identity rescan, so the blocker-count owner's legacy scan is now reachable only from test-only
   legacy constructors. The retail random-map generator emits only tiberium (`GEM01`-`GEM12` ids
   27-38, `TIB01`-`TIB12` ids 102-113), low-bridge deck (74-77 and 83-86 for the run cells, 92, 94,
-  96 and 98 for the four end cells) and `SROCK`/`TROCK` (168-177)
+  96 and 98 for the two ends of each axis) and `SROCK`/`TROCK` (168-177)
   indices; the `Wall=yes` ids in `rulesmd.ini` are `GASAND` 0, `GAWALL` 2, `NAWALL` 26, `CAFNCB` 203,
   `CAFNCW` 204, `CAKRMW` 240, `CAFNCP` 241 and `GAFWLL` 243 (registry ids in declaration order, not
   INI keys; `CYCL` has no section and so is not a wall), none of which the generator can emit — note
   `NAWALL` 26 sits one index below `GEM_BASE` 27, so an off-by-one there would start stamping walls.
-  A generated launch therefore keeps an all-zero plane and nothing changes until a wall is built;
-  from then on the count source is the Mark history rather than a final-identity rescan, and the two
-  differ only for a wall whose neighbour set touches an unallocated cell at the playfield boundary.
-  The row closes the authority hole: a runtime-destroyed wall no longer silently drops its Mark
-  history from the count.
+  A generated launch therefore keeps an all-zero plane and nothing changes until a wall is built.
+  From then on the count source is the Mark history, which `CellClass::DestroyOverlay @ 0x00480CB0`
+  reverses only through an explicit removal and which nothing rebuilds from final wall identities —
+  that is the authority hole the row closes, since a runtime-destroyed wall no longer silently drops
+  its Mark history. Being a history counter, the plane can therefore diverge from what a
+  final-identity rescan would produce wherever a removal skips its decrement; the known case is the
+  cleanup fan-out below. At placement time the two agree except when a neighbour is unallocated,
+  where the rescan's rectangular fan-out counts a cell the allocation-aware plane does not.
   The per-miss shared-dummy coordinate restamp IS modelled: `MapClass::Get_CellClass` writes the
   requested packed coordinate to the dummy's `+0x24` on every miss (`0x005657C8`), and the
   allocation-aware lookup does the same, so after a wall stamp the dummy carries the last missed
@@ -1211,12 +1214,21 @@ Recorded open items, each with its native reading and owner. None is closed by P
   at this boundary and unreachable while the generator emits no wall id; (b) the wrapping byte
   cannot overflow from wall Marks alone (at most eight increments per cell), but the
   `BuildingClass::Unlimbo` contribution to the same byte was not re-derived, so overflow overall is
-  UNCHECKED; (c) `SNAPSHOT_VERSION` stays 116, so a v116 state saved by an earlier build of this
+  UNCHECKED; (e) the cleanup fan-out decrements the plane only when the recompute both destroyed the
+  wall and changed the zone (`src/sim/overlay_grid.rs` cleanup sites), while the identity clear on
+  that path is unconditional, so identity and plane can desynchronize; direct destruction decrements
+  unconditionally. `DestroyOverlay @ 0x00480CB0`'s eight `DEC DL` steps carry no zone predicate, but
+  whether `PostDestructionWallCleanup @ 0x00480630` can clear a wall identity without routing
+  through `DestroyOverlay` is UNCHECKED. Pre-existing machinery; this row is what puts generated maps
+  onto that authority; (f) the plane increments only for an entry the Rust acceptance filter
+  accepts, and whether that filter is a superset, subset or neither of the native reader-side filter
+  is UNCHECKED; (c) `SNAPSHOT_VERSION` stays 116, so a v116 state saved by an earlier build of this
   repo on a generated map is now rejected at load, and `Simulation::state_hash` folds the plane in
   (`retained-wall-neighbor-counts-v1`), so a generated launch's hash differs from `origin/main`'s
   from frame zero — intended, since the plane is authoritative state, and nothing was re-baselined
-  because no committed hash golden reaches this constructor (the harness fixtures build their grids
-  through `OverlayGrid::new`); (d) the Rust runs the eight increments before
+  because no committed hash golden reaches this constructor (the global harness builds its grid
+  through `OverlayGrid::new`, and the bridge and slice6 harnesses install none at all, so the hash
+  takes its no-grid early-out); (d) the Rust runs the eight increments before
   each stamp's `recalc_overlay_passability` where Mark runs its tail last — the counts are
   unaffected (they accumulate in a local plane and recalc never reads them), but the shared-dummy
   coordinate both paths stamp can end on a different value once a wall can reach this boundary.
