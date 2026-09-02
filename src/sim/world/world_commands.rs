@@ -501,6 +501,13 @@ impl Simulation {
                     },
                 );
             }
+            // gamemd-derived: `CellClass::PostDestructionWallCleanup @
+            // 0x00480630` runs its own eight-step `+0x122` decrement
+            // (`0x00480999..0x004809EF`) only when this cell's hardcoded
+            // isolated removal fired (`TEST BL,BL` at `0x0048097D`) AND
+            // `RecalcAttributes` changed its zone type (compare at
+            // `0x00480972`). A removed wall whose zone is unchanged keeps its
+            // eight contributions, natively.
             if result == RecomputeResult::Destroyed && cleanup_zone_changed {
                 let terrain = self
                     .resolved_terrain
