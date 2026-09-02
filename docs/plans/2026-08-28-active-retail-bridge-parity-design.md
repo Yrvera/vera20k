@@ -1130,18 +1130,24 @@ Recorded open items, each with its native reading and owner. None is closed by P
   feed inside `PlaceTiberium`, the terrain-spawner placement, and the harvester, crater-smudge, and
   area-damage reduction reseeds (the `AoECellPrelude`/`commit_tiberium_reduction` traits carry the
   AoE transaction's occupancy). Snapshot restore rebuilds from the serialized
-  `OreGrowthState::native_rect` (the `[Map] Size` rect; a pre-v116 snapshot falls back to the
-  retained MapClass `Size`), never the cell-array extent. Rules keep the native percentage doubles
+  `OreGrowthState::native_rect` (the `[Map] Size` rect; a state whose rect was never written falls
+  back to the retained MapClass `Size`), never the cell-array extent. Rules keep the native percentage doubles
   (`growth_percentage_bits` / `spread_percentage_bits`). Critic chain: critic 1 NEEDS_FIX on
   `80e41172` (B1 restore rect, B2 terrain objects in `FirstObject`, R1/R2/N1/N3 edges), then critic 2
   NEEDS_FIX on `3142c09f` (B3: the full-removal reseed kept a Rust-only same-class test that native
   `CanSpreadTiberium` lacks, so a harvested gem beside ore skipped the native draw and flag write and
   diverged the Scenario stream; plus N1/N4/N5), all fixed with named regression tests in the
-  contract's slice-D section. Deferred DRIFT, recorded in the
+  contract's slice-D section, then critic 3 PASS on `51b51a3a` (both rounds rechecked against the
+  native bodies; the `0x00722AF0` xref set proves `Reduce_Tiberium` is the only cross-class
+  receiver), whose four follow-ups are applied. Deferred DRIFT, recorded in the
   OQ-38 row: the enqueue-side array-counter rebuild triggers (on the order of 260k frames on a 60x60
   map, hours of play but not unreachable), `MaxDensity` pinned to 12, native `atof` rounding of long
   decimals UNCHECKED. Open
-  residuals, recorded: the post-restore CDTimer reset (Rust runs both processors on the first tick
+  residuals, recorded: the PRE-EXISTING growth-driver timer multiplier DRIFT
+  (`GrowthDriver_AllTypes @ 0x00722C40` reloads `Growth` scaled by `[0x007E5138]` = 0.3 when the
+  Scenario flag byte's bit `0x40` is set and `[0x007E1718]` = 1.0 when clear; Rust always uses 1.0,
+  so native growth can fire ~3.3x more often; bit `0x40`'s INI binding UNCHECKED, so the frequency
+  cannot be named and the drivers are outside this slice's scope), the post-restore CDTimer reset (Rust runs both processors on the first tick
   after a restore; native `Load_Game_From_File`'s TiberiumClass timer handling UNCHECKED), the
   `AddContent` wrapper's fourth caller `AircraftClass::Mission_Hunt @ 0x00415565` and
   `VoxelAnimClass::AI`'s `AddToGrowthQueue` calls (neither claimed here), landed air-layer objects

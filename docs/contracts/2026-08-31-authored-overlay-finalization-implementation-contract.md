@@ -846,9 +846,9 @@ Landed Rust:
   subset `tiberium_spawning_terrain_cells` gates only `CanPlaceTiberium` targets.
 - Callers: `initialize_native_tiberium_queues` (authored and generated arms) and the post-map
   rebuild pass the `[Map] Size` rect and the occupied set (terrain objects plus ground-list Technos);
-  snapshot restore rebuilds from the serialized `OreGrowthState::native_rect` (fallback for a
-  pre-v116 snapshot: the retained MapClass `Size` width/height), never the cell-array extent in
-  `session.map_*`; the tick processors, the area-damage prelude/commit traits, the crater smudge
+  snapshot restore rebuilds from the serialized `OreGrowthState::native_rect` (fallback when the rect
+  was never written, i.e. a state saved before any map load: the retained MapClass `Size`
+  width/height), never the cell-array extent in `session.map_*`; the tick processors, the area-damage prelude/commit traits, the crater smudge
   path, the harvester reduction, and the terrain-spawner placement all build the view from the live
   occupancy grid and the live terrain cell index.
 - Processor edges: attempts `abs(raw) % batch + 1` in signed i32, so the word `0x80000000` yields a
@@ -896,6 +896,22 @@ Recorded residuals (open, named):
 - Landed air-layer objects UNCHECKED: the object view counts only the `Ground` layer, while native
   links any object whose layer reports 2. A landed fly-locomotor unit parked on ore is not modelled as
   a `FirstObject` occupant. Rare (deliberate landing on an ore field).
+- Growth-driver timer multiplier DRIFT, owner unassigned, PRE-EXISTING (not introduced here; the
+  drivers are unchanged since `c6343d95` and the slice does not claim them):
+  `GrowthDriver_AllTypes @ 0x00722C40` reloads the growth CDTimer as
+  `ftol(FILD Growth (+0xA8) * multiplier)` where the multiplier is `[0x007E5138]` = `0.3` when the
+  Scenario flag byte's bit `0x40` is set and `[0x007E1718]` = `1.0` when it is clear (disassembly
+  `0x00722CA4..0x00722CCE`; both doubles read live). Rust always uses `1.0`
+  (`TIMER_MULTIPLIER_PPM`), so with the bit set native growth fires about 3.3x more often
+  (`Growth=2200` -> 660 frames), with the extra processor draws that implies.
+  `SpreadDriver_AllTypes @ 0x007221B0` has no multiplier and stores `+0x9C` directly. Bit `0x40`'s
+  INI binding is UNCHECKED (bit `0x80` of the same byte is `[SpecialFlags] TiberiumSpreads`), so the
+  trigger frequency cannot be named until a reader is found: if any stock mode or map sets it, this
+  fires every growth period of every match.
+- The removal reseed's neighbour bounds are the MapRect diamond
+  (`Cell_in_bounds_check @ 0x00568300`) once a rebuild has supplied the rect; headless fixtures with
+  a zero rect fall back to the storage extent. Inert on production data either way, because nothing
+  writes tiberium outside the diamond.
 
 Critic chain: critic 1 NEEDS_FIX on `80e41172` (live decompiles through the plugin's HTTP
 endpoints). B1 (snapshot restore rebuilt from `session.map_*`, the cell-array extent, so after a
@@ -921,7 +937,19 @@ Regression tests: `gsi_17_04_postload_rebuild_walks_the_serialized_native_rect`,
 `native_growth_processor_skips_spread_feed_under_a_plain_terrain_object`,
 `native_growth_processor_reinserts_submax_cell_and_counts_spread_feed` (un-ignored, native loop),
 `native_spread_processor_spreads_the_cells_current_type_for_a_stale_entry`,
-`growth_queue_priority_uses_signed_abs_raw_modulo`.
+`growth_queue_priority_uses_signed_abs_raw_modulo`,
+`gsi_04_09_full_gem_removal_queues_an_ore_neighbor_into_the_gem_store`,
+`native_growth_processor_failed_growth_pop_still_clears_the_full_cell_flag`,
+`gsi_04_09_full_reduction_clears_all_bitmaps_and_reseeds_neighbors_into_the_removed_class`.
+
+Critic 3 PASS on `51b51a3a` (both prior rounds rechecked against the native bodies, with the
+`0x00722AF0` xref set proving `Reduce_Tiberium` is the only cross-class receiver). Its four
+follow-ups are applied: the growth-driver multiplier DRIFT and the reseed bounds are recorded above,
+the three test names are listed here, the pre-v116 fallback wording is corrected below, and
+`TerrainTypeClass+0x2B1` is confirmed as the spawner flag by `TerrainClass::AI @ 0x0071C730` gating
+its midpoint `SpreadTiberium(1)` on `+0x2B1 && +0x2B3` — which is exactly the split this slice
+implements between the spawner subset (`CanPlaceTiberium` targets) and the full terrain index
+(`FirstObject` sources).
 
 ## Known Non-Requirements
 

@@ -1561,11 +1561,25 @@ impl OreGrowthState {
         self.clear_native_spread_bitmap_cell(removed_cell.0, removed_cell.1);
 
         let map_height = self.effective_map_height();
+        // `Reduce_Tiberium @ 0x00480A80` offers each direction to
+        // `Cell_in_bounds_check @ 0x00568300`, the MapRect diamond, not a
+        // rectangle. The storage bounds stay because Rust indexes a
+        // rectangular grid; a zero rect means no rebuild has supplied the
+        // MapRect yet (headless fixtures only), where the storage extent is
+        // the only bound available.
+        let shape = (self.native_rect != (0, 0)).then(|| {
+            NativeOverlayMapShape::new(i32::from(self.native_rect.0), i32::from(self.native_rect.1))
+        });
         let mut inserted = 0usize;
         for &(dx, dy) in &ADJACENT_OFFSETS {
             let nx = removed_cell.0 as i32 + dx;
             let ny = removed_cell.1 as i32 + dy;
             if nx < 0 || ny < 0 || nx >= self.map_width as i32 || ny >= map_height as i32 {
+                continue;
+            }
+            if let (Some(shape), Ok(sx), Ok(sy)) = (shape, i16::try_from(nx), i16::try_from(ny))
+                && !shape.admits(sx, sy)
+            {
                 continue;
             }
             let neighbor = (nx as u16, ny as u16);
