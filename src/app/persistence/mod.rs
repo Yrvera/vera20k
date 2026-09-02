@@ -701,7 +701,7 @@ mod tests {
     fn load_fixture_simulation(with_overlay_grid: bool) -> Simulation {
         let mut simulation = Simulation::with_seed(u64::from(LOAD_FIXTURE_SEED));
         simulation.session.map_name = LOAD_FIXTURE_MAP_NAME.to_string();
-        simulation.overlay_grid = with_overlay_grid.then(|| OverlayGrid::new(0, 0));
+        simulation.overlay_grid = with_overlay_grid.then(|| OverlayGrid::new_with_retained_wall_plane(0, 0));
         simulation
     }
 
@@ -1107,7 +1107,7 @@ mod tests {
         runtime_actual.radar_left = [31, 32, 33];
 
         let mut saved = load_fixture_simulation(false);
-        saved.overlay_grid = Some(OverlayGrid::new(1, 1));
+        saved.overlay_grid = Some(OverlayGrid::new_with_retained_wall_plane(1, 1));
         saved.install_resolved_terrain_for_new_map(translated_template.clone());
         saved
             .dynamic_terrain_cells
@@ -1115,7 +1115,7 @@ mod tests {
         let bytes = snapshot_bytes(&saved, &rules);
 
         let mut current = load_fixture_simulation(false);
-        current.overlay_grid = Some(OverlayGrid::new(1, 1));
+        current.overlay_grid = Some(OverlayGrid::new_with_retained_wall_plane(1, 1));
         let (restored, _) = PreparedLoad::prepare_candidate(
             &bytes,
             Some(&current),

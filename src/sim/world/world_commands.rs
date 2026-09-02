@@ -410,6 +410,14 @@ impl Simulation {
             .cloned()
             .or_else(|| self.path_grid.as_deref().cloned());
         let sold_navigation_changed = if let Some(grid) = self.overlay_grid.as_mut() {
+            // gamemd-derived: `HouseClass::Sell_Building_At_Cell @ 0x004FCE80`
+            // clears the wall identity itself (`+0x44 = -1` at `0x004FCFBC`,
+            // `+0x11E = 0` at `0x004FCFCA`, `+0x50 = -1` at `0x004FCFDD`) and
+            // never touches `CellClass+0x122` anywhere in its body; the
+            // `PostDestructionWallCleanup(0)` it runs at `0x004FCFFB` then skips
+            // the just-cleared cell at `0x004807CA`. The absent plane decrement
+            // here is that behaviour, not an oversight: a sold wall keeps its
+            // eight neighbour contributions permanently.
             grid.clear_overlay(rx, ry);
             if let Some(terrain) = self.resolved_terrain.as_mut() {
                 let changed = recalc_overlay_passability(grid, terrain, overlays, rx, ry);
@@ -487,9 +495,7 @@ impl Simulation {
                         .map(|cell| cell.zone_type),
                 )
                 .is_some_and(|(old, new)| old != new);
-            if cleanup_zone_changed
-                && let Some(prefix_grid) = tail_grid.as_ref()
-            {
+            if cleanup_zone_changed && let Some(prefix_grid) = tail_grid.as_ref() {
                 self.repair_wall_sale_zone_prefix(
                     prefix_grid,
                     (rx, ry),
@@ -501,6 +507,13 @@ impl Simulation {
                     },
                 );
             }
+            // gamemd-derived: `CellClass::PostDestructionWallCleanup @
+            // 0x00480630` runs its own eight-step `+0x122` decrement
+            // (`0x00480999..0x004809EF`) only when this cell's hardcoded
+            // isolated removal fired (`TEST BL,BL` at `0x0048097D`) AND
+            // `RecalcAttributes` changed its zone type (load at
+            // `0x00480972`, compare at `0x00480975`). A removed wall whose zone is unchanged keeps its
+            // eight contributions, natively.
             if result == RecomputeResult::Destroyed && cleanup_zone_changed {
                 let terrain = self
                     .resolved_terrain

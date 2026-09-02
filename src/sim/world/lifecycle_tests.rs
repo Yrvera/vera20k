@@ -5924,6 +5924,7 @@ fn wave_cliff_collapse_consumes_exact_body_rng_and_spawns_row_major_anims() {
     let decal = overlay_registry.id_for_name("DECAL").expect("test decal");
     overlay.place_overlay(0, 0, decal, 11);
     overlay.place_overlay(1, 0, decal, 12);
+    overlay.retain_zero_wall_plane_for_tests();
     sim.overlay_grid = Some(overlay);
     let mut smudge = crate::sim::smudge_grid::SmudgeGrid::new(6, 4);
     for (rx, frame_offset) in [(0, 0), (1, 1)] {

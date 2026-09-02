@@ -283,6 +283,7 @@ fn snapshot_restored_collapsed_high_runtime(
 
     let mut stale_overlay_grid = OverlayGrid::new(SIDE, SIDE);
     stale_overlay_grid.place_overlay(cell.0, cell.1, 0xCD, 0);
+    stale_overlay_grid.retain_zero_wall_plane_for_tests();
     sim.overlay_grid = Some(stale_overlay_grid);
     let saved_dynamic_cell = {
         let live_terrain = sim.resolved_terrain.as_mut().expect("installed terrain");
