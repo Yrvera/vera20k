@@ -29,7 +29,7 @@ use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::zone_map::{ZONE_INVALID, ZoneGrid};
 use crate::sim::world::{SimSoundEvent, Simulation};
-use crate::util::fixed_math::{SimFixed, ra2_speed_to_leptons_per_second};
+use crate::util::fixed_math::SimFixed;
 
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::intern::InternedId;
@@ -436,11 +436,15 @@ pub(super) fn build_miner_snapshot(
         return None;
     }
     // Use the authentic RA2 speed formula: Speed=4 → ~0.586 cells/sec.
-    let raw_speed: i32 = sim
-        .object_type(entity.type_ref, rules)
-        .map(|obj| obj.speed.max(1))
-        .unwrap_or(4);
-    let speed: SimFixed = ra2_speed_to_leptons_per_second(raw_speed);
+    // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: the miner's drive loop asks the
+    // same getter every mover does, so a `FASTER` miner takes the multiply here.
+    let obj = sim.object_type(entity.type_ref, rules);
+    let speed: SimFixed = crate::sim::combat::veterancy::entity_mover_speed_leptons_per_second(
+        entity,
+        obj,
+        obj.map_or(4, |o| o.speed.max(1)),
+        rules.general.veteran_speed,
+    );
     let cursor = MinerState::from_cursor(entity.mission.handler_state());
     debug_assert!(
         cursor.is_some(),

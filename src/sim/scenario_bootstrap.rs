@@ -505,7 +505,6 @@ impl StockOfflinePrefixProjection {
     pub(crate) fn assignment(&self) -> &NativeStartAssignment {
         &self.assignment
     }
-
 }
 
 /// Prepare the complete active-stock offline prefix exactly once.
@@ -1903,9 +1902,15 @@ fn seed_starting_extra_units_with_overlay_registry(
                 continue;
             };
 
+            // gamemd-derived: the starting-unit generator tests SpecialFlags
+            // bit 9 (`InitialVeteran`, `TEST AH,0x2` on `[g_Scenario]` at
+            // `0x005D73FD`) and calls `VeterancyStruct::SetElite(1) @
+            // 0x007500B0` on the unit — 2.0f, ELITE, with no `Trainable=`
+            // gate. Seeding the raw accumulator too is what keeps the unit
+            // elite through its first kill instead of demoting it.
             if initial_veteran {
                 if let Some(entity) = sim.entities_mut().get_mut(stable_id) {
-                    entity.veterancy = 200;
+                    crate::sim::combat::veterancy::set_elite(entity);
                 }
             }
             let mission = if slot.is_human {
@@ -2280,10 +2285,8 @@ impl ScenarioBootstrapRng {
 fn replay_generated_construction_trace_with_rng(
     scenario: &mut SimRng,
     trace: &crate::map::construction_trace::RmgConstructionTrace,
-) -> Result<
-    crate::sim::world::GeneratedTechnoInitTable,
-    crate::sim::world::GeneratedTechnoInitError,
-> {
+) -> Result<crate::sim::world::GeneratedTechnoInitTable, crate::sim::world::GeneratedTechnoInitError>
+{
     let mut emitted = Vec::new();
     for (expected_ordinal, event) in trace.events.iter().enumerate() {
         if event.ordinal != expected_ordinal {
@@ -3130,7 +3133,8 @@ mod tests {
             .unwrap();
 
         let native_plan =
-            prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed).unwrap();
+            prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed)
+                .unwrap();
         let mut native_rules =
             crate::rules::process_owner::NativeRulesProcessOwner::from_cold_start_sources(
                 IniFile::from_bytes(b"").unwrap(),
@@ -3173,7 +3177,9 @@ mod tests {
         );
         assert_eq!(
             native_checkpoints.after_rebuilt_types,
-            native_checkpoints.after_first_resize.wrapping_add(rebuilt_count)
+            native_checkpoints
+                .after_first_resize
+                .wrapping_add(rebuilt_count)
         );
         assert_eq!(
             native_checkpoints.after_final_house_generation,
@@ -3458,9 +3464,7 @@ mod tests {
         let plan = prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed)
             .unwrap();
         let mut owner = ScenarioBootstrapRng::new(seed);
-        let projection = owner
-            .install_pre_fill_scenario_prefix_plan(plan)
-            .unwrap();
+        let projection = owner.install_pre_fill_scenario_prefix_plan(plan).unwrap();
         let mut sim = owner.into_simulation(&descriptor(seed));
         let rules = techno_constructor_start_rules();
         initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &launch);
@@ -3591,13 +3595,8 @@ mod tests {
         };
         let map = one_start_prefix_map(start);
         let launch = one_player_battle_launch("mp01t4.map");
-        let plan = prepare_stock_offline_scenario_prefix_plan(
-            &launch,
-            &map,
-            &map.waypoints,
-            seed,
-        )
-        .expect("stock Battle prefix");
+        let plan = prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed)
+            .expect("stock Battle prefix");
         let mut owner = ScenarioBootstrapRng::new(seed);
         {
             let (mut scenario_fill, main) = owner.terrain_draws();

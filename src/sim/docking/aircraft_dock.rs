@@ -620,6 +620,8 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
         .filter_map(|m| m.air_move_to.map(|(rx, ry)| (m.id, rx, ry)))
         .collect();
     for (id, rx, ry) in air_moves {
+        // No FASTER stage: the fly locomotor never calls the
+        // `FootClass::GetCurrentSpeed` slot (`veterancy::locomotor_consults_current_speed`).
         let speed = sim
             .substrate
             .entities

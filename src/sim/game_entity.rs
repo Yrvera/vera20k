@@ -420,9 +420,15 @@ pub struct GameEntity {
     ///
     /// gamemd-derived: `TechnoClass+0x13C`, initialised to `-1` by the
     /// constructor so the first sample after spawn caches without announcing.
-    /// `-1` uninitialised, `0` rookie, `1` veteran, `2` elite.
+    /// Holds the native `GetVeterancyLevel @ 0x00750030` code: `-1`
+    /// uninitialised, `0` ELITE, `1` veteran, `2` rookie.
     #[serde(default = "veterancy_rank_cache_default")]
     pub veterancy_rank_cache: i8,
+    /// Frames left on the newly-elite flash — `TechnoClass+0xF0`, seeded with
+    /// `[AudioVisual] EliteFlashTimer=` at `0x006FA0DC` on the elite crossing.
+    /// Presentation-only state; nothing in `sim/` reads it back.
+    #[serde(default)]
+    pub elite_flash_frames: u16,
     /// Mutable Techno instance armor multiplier. Native construction seeds
     /// this double to 1.0; armor powerups are its active non-neutral writer.
     #[serde(default = "default_armor_multiplier")]
@@ -1104,6 +1110,7 @@ impl GameEntity {
             veterancy,
             veterancy_raw: crate::sim::combat::veterancy::raw_for_rank(veterancy),
             veterancy_rank_cache: veterancy_rank_cache_default(),
+            elite_flash_frames: 0,
             armor_multiplier: NativeF64Bits::ONE,
             vision_range,
             is_voxel,

@@ -188,6 +188,8 @@ fn spawn_pdplane(
     // AircraftClass::Unlimbo. This mutates only the retained carrier's
     // MovementTarget/Fly locomotor target; passenger constructors remain
     // strictly after successful Unlimbo.
+    // No FASTER stage: the carrier flies, and the fly locomotor never calls the
+    // `FootClass::GetCurrentSpeed` slot (`veterancy::locomotor_consults_current_speed`).
     let speed = rules
         .object(&pdplane_type)
         .map(|o| ra2_speed_to_leptons_per_second(o.speed.max(1)))

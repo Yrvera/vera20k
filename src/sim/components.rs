@@ -123,25 +123,17 @@ pub struct SubCell(pub u8);
 /// tests are `>= 1.0` for veteran and `>= 2.0` for elite. A Grizzly promotes on
 /// its third rookie Rhino and goes elite on its fifth.
 ///
-/// RESIDUAL (GSI-08.12) — three parts of the native row are still open.
-/// - **The promotion event.** Crossing a rank plays `UpgradeVeteranSound=` or
-///   `UpgradeEliteSound=` and, for elite, arms a 150-frame flash
-///   (`TechnoClass::AI @ 0x006FA050`..`0x006FA14B`, cached rank at
-///   `TechnoClass+0x13C`). `veterancy_rank_cache` is carried and persisted for
-///   exactly this, and nothing announces yet. Trigger: every promotion. Player
-///   effect: a unit gains its chevron silently. Frequency: continuous.
-/// - **Award redirection.** Only the killer itself is paid. Native routes the
-///   experience to a garrisoned occupant, a spawner's owner or a transport's
-///   owner ahead of the platform, whose field identities are UNCHECKED. Trigger:
-///   kills by garrisoned infantry, Aircraft Carrier Hornets, an IFV. Frequency:
-///   routine wherever those appear.
-/// - **Ability tokens.** Only four of the roughly fifteen
-///   `VeteranAbilities=`/`EliteAbilities=` tokens are parsed (`EXPLODES`,
-///   `STRONGER`, `SCATTER`, `FEARLESS`) against 70 and 69 stock entries, and
-///   `ROF` — which gates `VeteranROF=` in `GetROF` — is one of the missing ones
-///   (see the GSI-08.05 residual on `rof_to_cooldown_frames`). Trigger: any
-///   promoted unit whose type grants an unparsed ability. Frequency: continuous
-///   now that promotion exists.
+/// The rank effects live in `sim::combat::veterancy`: the full 18-token
+/// ability arrays, `HasWeaponAbility`, the ROF/FIREPOWER/FASTER/SIGHT
+/// multipliers, self-heal, the promotion announcement and the elite flash
+/// timer, and the `Record_The_Kill` recipient chain.
+///
+/// RESIDUAL (GSI-08.12) — the elite flash is not DRAWN. `elite_flash_frames`
+/// counts down as native's `+0xF0` does, but VERA draws no rank chevrons or
+/// flash at all (`DrawVeterancyPips @ 0x0070A990` has no presentation
+/// counterpart). Trigger: every promotion. Player effect: a promoted unit
+/// shows no chevron and a new elite does not blink. Frequency: continuous.
+/// Downstream risk: none — presentation only.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Veterancy(pub u16);
 

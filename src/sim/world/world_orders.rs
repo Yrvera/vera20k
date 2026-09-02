@@ -155,10 +155,17 @@ impl Simulation {
                 .entities
                 .get(stable_id)
                 .map(|e| {
-                    let bs: SimFixed = rules
-                        .and_then(|r| self.object_type(e.type_ref, r))
-                        .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
-                        .unwrap_or(ra2_speed_to_leptons_per_second(4));
+                    // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: a resumed order
+                    // re-queries the getter like any other, so the FASTER stage
+                    // runs here too.
+                    let obj = rules.and_then(|r| self.object_type(e.type_ref, r));
+                    let bs: SimFixed =
+                        crate::sim::combat::veterancy::entity_mover_speed_leptons_per_second(
+                            e,
+                            obj,
+                            obj.map_or(4, |o| o.speed),
+                            rules.map_or(1.0, |r| r.general.veteran_speed),
+                        );
                     let lm: SimFixed = e
                         .locomotor
                         .as_ref()

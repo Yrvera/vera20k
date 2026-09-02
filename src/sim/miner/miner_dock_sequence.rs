@@ -562,13 +562,19 @@ fn start_refinery_exit_force_track(
     movement::install_forced_drive_track(entity, cell_occupation, forced)
 }
 
+/// `FootClass::GetCurrentSpeed @ 0x004DB1A0`: the dock/exit drive tracks run on
+/// the same per-frame getter as an ordered move, so the `FASTER` stage applies.
 fn entity_full_speed(sim: &Simulation, rules: &RuleSet, entity_id: u64) -> SimFixed {
-    sim.substrate
-        .entities
-        .get(entity_id)
-        .and_then(|entity| sim.object_type(entity.type_ref, rules))
-        .map(|obj| ra2_speed_to_leptons_per_second(obj.speed.max(1)))
-        .unwrap_or_else(|| ra2_speed_to_leptons_per_second(4))
+    let Some(entity) = sim.substrate.entities.get(entity_id) else {
+        return ra2_speed_to_leptons_per_second(4);
+    };
+    let obj = sim.object_type(entity.type_ref, rules);
+    crate::sim::combat::veterancy::entity_mover_speed_leptons_per_second(
+        entity,
+        obj,
+        obj.map_or(4, |o| o.speed.max(1)),
+        rules.general.veteran_speed,
+    )
 }
 
 /// Apply gamemd's interrupt `BuildingClass::UndockUnit` shape for miners that

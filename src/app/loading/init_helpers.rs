@@ -1460,11 +1460,9 @@ mod tests {
     /// ctor default is behaviour-neutral in real play and faithful to gamemd's
     /// key-absent path.
     ///
-    /// EXCLUDED: `VeteranSight` (an `i32` field reading a `double` INI key —
-    /// retail "0.0" fails the i32 parse, so its fallback already fires in
-    /// normal play; that is a pre-existing representation bug, not a
-    /// fallback-only default) and `GapRadius` (no RulesClass ctor field in the
-    /// verified offset map to flip to).
+    /// EXCLUDED: `VeteranSight` (its constructor default is UNCHECKED; the
+    /// field now reads the `double` retail authors) and `GapRadius` (no
+    /// RulesClass ctor field in the verified offset map to flip to).
     #[test]
     fn ported_defaults_match_ctor_csv() {
         // Sections contain only an inert fixture key: every recognized key
