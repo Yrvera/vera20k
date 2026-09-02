@@ -276,8 +276,7 @@ impl PreparedLoad {
         // CellClass here, including its split `+0xDC` reservation state; doing
         // it during candidate preparation would leak mutation from a rejected
         // transactional load into the running match.
-        self.simulation
-            .reconstruct_cellclass_dummy_for_map_resize();
+        self.simulation.reconstruct_cellclass_dummy_for_map_resize();
         (
             self.simulation,
             self.map_restore.occupied_overlays,
@@ -701,7 +700,8 @@ mod tests {
     fn load_fixture_simulation(with_overlay_grid: bool) -> Simulation {
         let mut simulation = Simulation::with_seed(u64::from(LOAD_FIXTURE_SEED));
         simulation.session.map_name = LOAD_FIXTURE_MAP_NAME.to_string();
-        simulation.overlay_grid = with_overlay_grid.then(|| OverlayGrid::new(0, 0));
+        simulation.overlay_grid =
+            with_overlay_grid.then(|| OverlayGrid::new_with_retained_wall_plane(0, 0));
         simulation
     }
 
@@ -969,19 +969,10 @@ mod tests {
         let directory = isolated_directory("load-transaction-startup");
         let repository = SaveRepository::at(&directory);
         let mut saved = load_fixture_simulation(true);
-        saved
-            .substrate
-            .base_reservations
-            .reserve(None, 3, 4, 2);
-        saved
-            .substrate
-            .base_reservations
-            .reserve(None, -1, 0, 5);
+        saved.substrate.base_reservations.reserve(None, 3, 4, 2);
+        saved.substrate.base_reservations.reserve(None, -1, 0, 5);
         let path = repository
-            .write_named(
-                "same-content.bin",
-                &snapshot_bytes(&saved, &rules),
-            )
+            .write_named("same-content.bin", &snapshot_bytes(&saved, &rules))
             .expect("write same-content transaction fixture");
 
         let startup_before = (
@@ -1021,11 +1012,7 @@ mod tests {
             "candidate preparation restores real reservation authority verbatim"
         );
         assert_eq!(
-            prepared
-                .simulation
-                .substrate
-                .base_reservations
-                .dummy_mask(),
+            prepared.simulation.substrate.base_reservations.dummy_mask(),
             0,
             "raw snapshot decode reconstructs the process-global dummy cleared"
         );
@@ -1043,10 +1030,7 @@ mod tests {
             "successful in-scenario load reconstructs the fixed dummy at the commit seam"
         );
         assert_eq!(
-            simulation
-                .substrate
-                .base_reservations
-                .raw_mask(None, 3, 4),
+            simulation.substrate.base_reservations.raw_mask(None, 3, 4),
             1 << 2,
             "the narrow dummy reconstruction leaves real reservation state untouched"
         );
@@ -1107,7 +1091,7 @@ mod tests {
         runtime_actual.radar_left = [31, 32, 33];
 
         let mut saved = load_fixture_simulation(false);
-        saved.overlay_grid = Some(OverlayGrid::new(1, 1));
+        saved.overlay_grid = Some(OverlayGrid::new_with_retained_wall_plane(1, 1));
         saved.install_resolved_terrain_for_new_map(translated_template.clone());
         saved
             .dynamic_terrain_cells
@@ -1115,7 +1099,7 @@ mod tests {
         let bytes = snapshot_bytes(&saved, &rules);
 
         let mut current = load_fixture_simulation(false);
-        current.overlay_grid = Some(OverlayGrid::new(1, 1));
+        current.overlay_grid = Some(OverlayGrid::new_with_retained_wall_plane(1, 1));
         let (restored, _) = PreparedLoad::prepare_candidate(
             &bytes,
             Some(&current),

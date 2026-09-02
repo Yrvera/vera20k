@@ -245,10 +245,7 @@ pub(crate) fn format_timestamp_parts(_unix_secs: u64) -> Option<(String, String)
 /// Draw the save/load panel. Returns an action for the caller to execute.
 ///
 /// The caller passes the persistence domain's current save-list view.
-pub(crate) fn draw_save_load_panel(
-    ctx: &egui::Context,
-    entries: &[SaveEntry],
-) -> SaveLoadAction {
+pub(crate) fn draw_save_load_panel(ctx: &egui::Context, entries: &[SaveEntry]) -> SaveLoadAction {
     let palette = client_theme::apply_client_theme(ctx);
     let mut action = SaveLoadAction::None;
 
