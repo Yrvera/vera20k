@@ -541,7 +541,14 @@ fn slice6_retaliation_still_suppressed_for_guarding_unit() {
         assert!(guard.attack_target.is_none());
     }
 
-    crate::sim::combat::tick_retaliation(&mut sim.substrate.entities, &rules, &sim.interner, &[1]);
+    crate::sim::combat::tick_retaliation(
+        &mut sim.substrate.entities,
+        &rules,
+        &sim.interner,
+        &[1],
+        sim.resolved_terrain.as_ref(),
+        Some(&sim.house_alliances),
+    );
     assert!(
         sim.substrate
             .entities
@@ -561,7 +568,14 @@ fn slice6_retaliation_still_suppressed_for_guarding_unit() {
     // Positive control: drop the order intent and the SAME unit now retaliates,
     // confirming the suppression above was due to `order_intent`, not the matchup.
     sim.substrate.entities.get_mut(1).unwrap().order_intent = None;
-    crate::sim::combat::tick_retaliation(&mut sim.substrate.entities, &rules, &sim.interner, &[1]);
+    crate::sim::combat::tick_retaliation(
+        &mut sim.substrate.entities,
+        &rules,
+        &sim.interner,
+        &[1],
+        sim.resolved_terrain.as_ref(),
+        Some(&sim.house_alliances),
+    );
     assert!(
         sim.substrate
             .entities

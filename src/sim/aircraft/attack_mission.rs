@@ -97,15 +97,61 @@ pub fn tick_attack_state(
     let entity_rx = entity.position.rx;
     let entity_ry = entity.position.ry;
     let entity_facing = entity.facing;
+    let entity_veterancy = entity.veterancy;
     let type_ref = entity.type_ref;
 
     // Look up type info.
     let type_str = interner.resolve(type_ref);
     let obj = rules.object(type_str);
-    // Get weapon range in cells.
+    // Weapon range for the state-3 in-range test, in cells.
+    //
+    // gamemd-derived: `AircraftClass::Mission_Attack @ 0x00417FE0` case 3 zeroes
+    // EBX at `0x004180A7` and pushes it as the argument at `0x004180F6`, then
+    // calls the object's own vtable `+0x3F8` at `0x004180F9`. In the
+    // `AircraftClass` vtable (base `0x007E22A4`; `read_memory 0x007E2698` gives
+    // `+0x3F4` = `GetCurrentWeapon 0x0070E1A0` and `+0x3F8` =
+    // `TechnoClass::GetWeapon 0x0070E140`) aircraft do not override the slot, so
+    // this is `GetWeapon(0)` — which swaps in `EliteWeapon[0]` whenever
+    // `VeterancyClass::IsElite` and that slot names a weapon. The comparison is
+    // then `Distance_To(target) (0x005F6440)` against
+    // `WeaponType->Range (+0xB4)` at `0x0041810F`, `JGE` → keep approaching,
+    // otherwise `sub_state = 4` (fire) at `0x00418117`.
+    //
+    // So the elite tier belongs here: it is the only gate on the 3 → 4
+    // transition, and it decides both the tick an elite aircraft fires and the
+    // cells it flies over getting there. Stock: `[ORCA]` `Maverick` Range 6 →
+    // `MaverickE` 9, `[BEAG]` `Maverick2` 6 → `Maverick2E` 9.
+    //
+    // `weapon_for_index` reads native array slot 0 (`TechnoTypeClass+0x898` /
+    // elite `+0xA94`), which `Primary=`/`ElitePrimary=` alias — see
+    // `ObjectType::read_weapon_arrays`.
+    //
+    // RESIDUAL (DRIFT, pre-existing, not introduced here): the native side is
+    // established, so this is a confirmed difference rather than an UNCHECKED
+    // one. `ObjectClass::Distance_To @ 0x005F6440` is a 2-D *Euclidean* lepton
+    // distance (`Sqrt_Approx` then `Math__ftol`) and the `JGE` at `0x0041810F`
+    // is a signed strict compare, so firing needs `dist < Range`. This compares
+    // a cell-Chebyshev distance with `<=`.
+    //
+    // Two terms diverge, and the elite fix above *enlarges* the first because
+    // the gap scales with Range:
+    // - Chebyshev underestimates Euclidean by up to √2, so an elite `[ORCA]`
+    //   (Range 9) against a target at cell offset (9, 9) fires here while gamemd
+    //   is still approaching — about 3.7 cells, not one.
+    // - `Distance_To` subtracts `(FoundationH + FoundationW) * 0x40` leptons for
+    //   a building target — 2 cells against a 4×4 structure. This subtracts
+    //   nothing.
+    //
+    // Trigger: any attack run; the building term on every run against a base.
+    // Player effect: the approach ends early, so an aircraft opens fire from
+    // outside the range gamemd would use. Frequency: every aircraft attack.
+    // Downstream: the firing tick and the cells flown over. Not fixed here
+    // because replacing the distance model is a whole-function change outside
+    // this mechanism's scope.
     let weapon_range_cells: SimFixed = obj
         .and_then(|o| {
-            let wpn_name = o.primary.as_ref()?;
+            let wpn_name =
+                crate::sim::combat::combat_weapon::primary_for_tier(o, entity_veterancy)?;
             let wpn = rules.weapon(wpn_name)?;
             Some(wpn.range)
         })
@@ -492,5 +538,62 @@ mod tests {
             other => panic!("Expected state 3 (approach), got {:?}", other),
         }
         assert!(result.move_to.is_some());
+    }
+
+    /// Stock `[ORCA]` weapon data, so the expectation is the retail one:
+    /// `Primary=Maverick` (`Range=6`), `ElitePrimary=MaverickE` (`Range=9`).
+    fn elite_range_rules() -> RuleSet {
+        let ini_str = "\
+[AircraftTypes]\n0=ORCA\n\n\
+[VehicleTypes]\n0=RHINO\n\n\
+[InfantryTypes]\n\n\
+[BuildingTypes]\n\n\
+[ORCA]\nStrength=150\nArmor=light\nSpeed=14\nPrimary=Maverick\nElitePrimary=MaverickE\nAmmo=2\nFlyBy=yes\n\n\
+[RHINO]\nStrength=400\nArmor=heavy\nSpeed=6\n\n\
+[Maverick]\nDamage=100\nROF=20\nRange=6\nWarhead=HE\n\n\
+[MaverickE]\nDamage=100\nROF=20\nRange=9\nWarhead=HE\n\n\
+[HE]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n";
+        let ini = IniFile::from_str(ini_str);
+        RuleSet::from_ini(&ini).expect("test rules")
+    }
+
+    /// `AircraftClass::Mission_Attack @ 0x00417FE0` case 3 takes its range from
+    /// `GetWeapon(0)` (`CALL [vtable+0x3F8]` at `0x004180F9`, argument `EBX = 0`
+    /// from `0x004180A7`), and `TechnoClass::GetWeapon @ 0x0070E140` swaps in
+    /// `EliteWeapon[0]` for an elite object. So the elite tier decides the
+    /// `sub_state` 3 → 4 transition at `0x00418115`/`0x00418117`.
+    ///
+    /// A target 8 cells east: out of the base weapon's 6, inside `MaverickE`'s 9.
+    #[test]
+    fn elite_aircraft_fires_at_the_elite_weapon_range() {
+        fn run_at(veterancy: u16) -> AttackTickResult {
+            let mut store = EntityStore::new();
+            let mut attacker = GameEntity::test_default(1, "ORCA", "Americans", 10, 10);
+            attacker.veterancy = veterancy;
+            attacker.attack_target = Some(AttackTarget::new(2));
+            attacker.aircraft_ammo = Some(AircraftAmmo::new(2));
+            store.insert(attacker);
+            store.insert(GameEntity::test_default(2, "RHINO", "Soviet", 18, 10));
+            tick_attack_state(
+                &store,
+                &elite_range_rules(),
+                &test_interner(),
+                1,
+                3,
+                false,
+                false,
+            )
+        }
+
+        // Rookie: 8 > Maverick Range 6 → keep approaching.
+        match run_at(0).new_mission {
+            AircraftMission::Attack { sub_state: 3, .. } => {}
+            other => panic!("rookie ORCA at 8 cells should still approach, got {other:?}"),
+        }
+        // Elite: 8 <= MaverickE Range 9 → fire.
+        match run_at(200).new_mission {
+            AircraftMission::Attack { sub_state: 4, .. } => {}
+            other => panic!("elite ORCA at 8 cells should fire, got {other:?}"),
+        }
     }
 }

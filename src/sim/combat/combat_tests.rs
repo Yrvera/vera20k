@@ -1189,59 +1189,95 @@ fn cell_center_coords_remains_ground_z_for_cell_targets() {
 }
 
 #[test]
-fn considered_aircraft_infantry_is_air_for_projectile_legality() {
-    let rules = considered_aircraft_weapon_rules();
-    let mut sim = crate::sim::world::Simulation::new();
-    let heights = BTreeMap::new();
-    let attacker = sim
-        .spawn_object("IFV", "Americans", 5, 5, 0, &rules, &heights)
-        .expect("IFV should spawn");
-    let target = sim
-        .spawn_object("ROCK", "Soviet", 8, 5, 0, &rules, &heights)
-        .expect("Rocketeer should spawn");
+/// Re-baselined for GSI-08.02 (row 122). Weapon selection is altitude-driven,
+/// not category-driven: `TechnoClass::What_Weapon_Should_I_Use @ 0x006F3330`
+/// arm V and the `GetFireError` AA gate both call `ObjectClass::IsHighFlying`
+/// (`0x005F6B90`, vtable `+0x54`) = marked on the map and
+/// `GetHeight() >= 2 * LeptonsPerLevel`. `ConsideredAircraft=` is not read
+/// anywhere in that path. A Rocketeer standing on the ground is therefore an
+/// ordinary ground target and draws the ground gun; it becomes an air target
+/// only once it climbs past two levels.
+#[allow(clippy::items_after_statements)]
+fn considered_aircraft_infantry_is_air_only_while_high_flying() {
+    // One fresh engagement per altitude — the attacker's ROF cooldown makes a
+    // second shot in the same sim unobservable.
+    fn fire_at_rocketeer(altitude_leptons: i64) -> (String, WeaponSlot) {
+        let rules = considered_aircraft_weapon_rules();
+        let mut sim = crate::sim::world::Simulation::new();
+        let heights = BTreeMap::new();
+        let attacker = sim
+            .spawn_object("IFV", "Americans", 5, 5, 0, &rules, &heights)
+            .expect("IFV should spawn");
+        let target = sim
+            .spawn_object("ROCK", "Soviet", 8, 5, 0, &rules, &heights)
+            .expect("Rocketeer should spawn");
 
-    let target_entity = sim
-        .substrate
-        .entities
-        .get(target)
-        .expect("target should exist");
-    assert_eq!(target_entity.category, EntityCategory::Infantry);
-    assert!(
-        rules
-            .object(sim.interner.resolve(target_entity.type_ref))
-            .is_some_and(|obj| obj.considered_aircraft)
-    );
+        let target_entity = sim
+            .substrate
+            .entities
+            .get(target)
+            .expect("target should exist");
+        assert_eq!(target_entity.category, EntityCategory::Infantry);
+        assert!(
+            rules
+                .object(sim.interner.resolve(target_entity.type_ref))
+                .is_some_and(|obj| obj.considered_aircraft)
+        );
+        // `ConsideredAircraft` still drives the legacy category helper; the
+        // selector no longer consults it.
+        assert_eq!(
+            combat_target_category(target_entity, &rules, &sim.interner),
+            EntityCategory::Aircraft
+        );
+
+        if altitude_leptons > 0 {
+            sim.substrate
+                .entities
+                .get_mut(target)
+                .and_then(|entity| entity.locomotor.as_mut())
+                .expect("Rocketeer carries a locomotor")
+                .altitude = crate::util::fixed_math::SimFixed::from_num(altitude_leptons);
+        }
+
+        issue_attack_command(
+            &mut sim.substrate.entities,
+            attacker,
+            target,
+            None,
+            &sim.interner,
+        );
+        let mut main_rng = SimRng::new(1);
+        let result = tick_combat(
+            &mut sim.substrate.entities,
+            &mut sim.substrate.occupancy,
+            &rules,
+            &mut sim.interner,
+            &mut BTreeMap::new(),
+            0,
+            100,
+            0,
+            &mut main_rng,
+        );
+        assert_eq!(result.fire_events.len(), 1);
+        (
+            sim.interner
+                .resolve(result.fire_events[0].weapon_id)
+                .to_string(),
+            result.fire_events[0].weapon_slot,
+        )
+    }
+
+    // Grounded: not high-flying, so the ladder falls through arm V to slot 0
+    // and the AG-only GroundProj is legal.
     assert_eq!(
-        combat_target_category(target_entity, &rules, &sim.interner),
-        EntityCategory::Aircraft
+        fire_at_rocketeer(0),
+        ("GroundGun".to_string(), WeaponSlot::Primary)
     );
-
-    issue_attack_command(
-        &mut sim.substrate.entities,
-        attacker,
-        target,
-        None,
-        &sim.interner,
-    );
-    let mut main_rng = SimRng::new(1);
-    let result = tick_combat(
-        &mut sim.substrate.entities,
-        &mut sim.substrate.occupancy,
-        &rules,
-        &mut sim.interner,
-        &mut BTreeMap::new(),
-        0,
-        100,
-        0,
-        &mut main_rng,
-    );
-
-    assert_eq!(result.fire_events.len(), 1);
+    // Airborne past two levels: arm V picks the AA secondary.
     assert_eq!(
-        sim.interner.resolve(result.fire_events[0].weapon_id),
-        "AirGun"
+        fire_at_rocketeer(crate::util::lepton::HIGH_FLIGHT_THRESHOLD_LEPTONS),
+        ("AirGun".to_string(), WeaponSlot::Secondary)
     );
-    assert_eq!(result.fire_events[0].weapon_slot, WeaponSlot::Secondary);
 }
 
 #[test]
@@ -2697,7 +2733,7 @@ fn gsi_04_07_damage_ai_retaliation_keeps_higher_scored_current_target() {
         entities.insert(gi);
 
         let current_score = crate::sim::combat::combat_targeting::calculate_ai_threat_score(
-            &entities, 10, current_id, &rules, &interner, None,
+            &entities, 10, current_id, &rules, &interner, None, None,
         )
         .and_then(|score| crate::util::native_x87::X87Chop53::ftol_i64(score).ok())
         .expect("current target score");
@@ -2707,6 +2743,7 @@ fn gsi_04_07_damage_ai_retaliation_keeps_higher_scored_current_target() {
             attacker_id,
             &rules,
             &interner,
+            None,
             None,
         )
         .and_then(|score| crate::util::native_x87::X87Chop53::ftol_i64(score).ok())
@@ -5684,7 +5721,15 @@ fn pursuit_weapon_range_for_entity_target() {
     let interner = test_interner();
 
     let attacker = store.get(1).unwrap();
-    let range = pursuit_weapon_range(attacker, &TargetKind::Entity(2), &store, &rules, &interner);
+    let range = pursuit_weapon_range(
+        attacker,
+        &TargetKind::Entity(2),
+        &store,
+        &rules,
+        &interner,
+        None,
+        None,
+    );
     // 105mm Range=6.
     assert_eq!(range, Some(crate::util::fixed_math::SimFixed::from_num(6)));
 }
@@ -5704,9 +5749,12 @@ fn pursuit_weapon_range_for_cell_target() {
         &store,
         &rules,
         &interner,
+        None,
+        None,
     );
-    // Cell target uses synthetic Structure category. MTNK 105mm Cannon is AG=true
-    // (default), AP Verses[heavy] = 75% > 0. Range = 6.
+    // Cell target: the ladder returns slot 0 and the GetFireError cell subset
+    // clears it — the 105mm Cannon projectile is AG, and MTNK is not
+    // LandTargeting=1. Range = 6.
     assert_eq!(range, Some(crate::util::fixed_math::SimFixed::from_num(6)));
 }
 
@@ -5729,6 +5777,8 @@ fn pursuit_weapon_range_none_for_unarmed_attacker() {
         &store,
         &rules,
         &interner,
+        None,
+        None,
     );
     assert_eq!(range, None);
 }
@@ -6582,7 +6632,14 @@ fn dying_attacker_retaliation_matches_absent_attacker() {
     // Branch A: attacker absent (already freed) — get(2) == None.
     let mut store_absent = EntityStore::new();
     store_absent.insert(victim());
-    tick_retaliation(&mut store_absent, &rules, &interner, &live_order);
+    tick_retaliation(
+        &mut store_absent,
+        &rules,
+        &interner,
+        &live_order,
+        None,
+        None,
+    );
 
     // Branch B: attacker present but Dying (health 0) — the deferred-delete window.
     let mut store_dying = EntityStore::new();
@@ -6594,7 +6651,7 @@ fn dying_attacker_retaliation_matches_absent_attacker() {
     };
     dead.dying = true;
     store_dying.insert(dead);
-    tick_retaliation(&mut store_dying, &rules, &interner, &live_order);
+    tick_retaliation(&mut store_dying, &rules, &interner, &live_order, None, None);
 
     // Parity: identical victim outcome — no retaliation issued in either case.
     let va = store_absent.get(1).unwrap();
@@ -6618,7 +6675,7 @@ fn dying_attacker_retaliation_matches_absent_attacker() {
         max: 200,
     };
     store_live.insert(live);
-    tick_retaliation(&mut store_live, &rules, &interner, &live_order);
+    tick_retaliation(&mut store_live, &rules, &interner, &live_order, None, None);
     let vc = store_live.get(1).unwrap();
     assert!(
         matches!(

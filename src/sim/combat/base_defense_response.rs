@@ -279,9 +279,10 @@ pub(crate) fn add_assigned_cost(accumulated: i32, cost: i32, budget: i32) -> (i3
 
 mod admission;
 
+use super::combat_weapon::is_armed;
 use admission::{
     candidate_admitted, current_target_disposition, destination_cell, entity_coord,
-    object_has_weapon, primary_range_leptons, should_be_on_bridge_for_response,
+    primary_range_leptons, should_be_on_bridge_for_response,
 };
 
 /// Execute one complete native response transaction after the receiver owner
@@ -326,7 +327,10 @@ pub(crate) fn respond_to_base_attack(
         .get(&victim_owner)
         .is_some_and(|house| house.is_human)
         || attacker.lifecycle.in_limbo
-        || (!context.game_mode_nonzero && object_has_weapon(victim_object))
+        // `0x00708114`: `[g_GameMode 0x00A8B238] == 0 && this->Is_Armed
+        // (vt+0x2AC)` — an armed victim in that game mode defends itself
+        // instead of calling for help.
+        || (!context.game_mode_nonzero && is_armed(victim, victim_object))
         || !matches!(
             attacker.category,
             EntityCategory::Unit | EntityCategory::Infantry

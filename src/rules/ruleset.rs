@@ -4077,7 +4077,8 @@ fn collect_weapon_refs(objects: &[ObjectType]) -> (HashSet<String>, HashSet<Stri
         if let Some(ref w) = obj.death_weapon {
             weapon_ids.insert(w.clone());
         }
-        weapon_ids.extend(obj.weapon_list.iter().cloned());
+        weapon_ids.extend(obj.weapon_list.iter().flatten().cloned());
+        weapon_ids.extend(obj.elite_weapon_list.iter().flatten().cloned());
     }
 
     (weapon_ids, warhead_ids)

@@ -178,6 +178,12 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     // Ctrl+Alt is guard area — neither force-fires — so this reads the resolved
     // modifier verb rather than raw Ctrl. The armed test runs on the one
     // resolved object, matching gamemd's single-object dispatch.
+    //
+    // The armed predicate is the native one: `TechnoClass::What_Action_OnCell
+    // @ 0x00700600` inlines `TechnoClass::Is_Armed` at `0x007008BD` and skips
+    // every ACTION_ATTACK arm when it fails. It consults ONE weapon slot, so
+    // `Primary=`/`Secondary=` is the wrong test for a `TurretCount>0` type —
+    // it hid the force-fire cursor for the Prism Tank and the Gattling Cannon.
     if modifier == crate::app::input::context_order::OrderModifier::ForceFire {
         let best_is_armed = best_id.is_some_and(|id| {
             sim.entities().get(id).is_some_and(|e| {
@@ -185,7 +191,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
                 state
                     .rules()
                     .and_then(|r| r.object(type_str))
-                    .is_some_and(|obj| obj.primary.is_some() || obj.secondary.is_some())
+                    .is_some_and(|obj| crate::sim::combat::combat_weapon::is_armed(e, obj))
             })
         });
         if best_is_armed {
@@ -670,6 +676,13 @@ fn capability_cursor_for_hover(
 /// property of that object alone, not of any unit in the selection. Both weapon
 /// slots count, matching the all-slots weapon-range query the object resolver
 /// itself uses.
+///
+/// `primary`/`secondary` here are the native weapon-array slots 0 and 1
+/// (`TechnoTypeClass+0x898`/`+0x8B4`, filled by `Weapon1=`/`Weapon2=` for a
+/// `TurretCount>0` type — see `ObjectType::read_weapon_arrays`), not the raw
+/// `Primary=`/`Secondary=` INI keys. Reading the keys made this return `false`
+/// unconditionally for `[SREF]` and `[YAGGUN]`, showing the out-of-range attack
+/// cursor over every enemy at any distance.
 fn resolved_unit_in_range(
     sim: &crate::sim::world::Simulation,
     actor_id: u64,
@@ -840,6 +853,17 @@ fn select_best_for_action(
         } else {
             // The engine's weapon test queries *all* weapon slots, so a
             // secondary-only unit scores 5 just like a primary-armed one.
+            //
+            // `primary`/`secondary` are native weapon-array slots 0/1
+            // (`TechnoTypeClass+0x898`/`+0x8B4`), so a `TurretCount>0` type
+            // reads through here correctly: `[SREF]` scores 5 on `Weapon1`.
+            //
+            // RESIDUAL (UNCHECKED, deferred): "all slots" is modelled as slots
+            // 0 and 1 only, so a type whose sole weapon sits at slot >= 2 would
+            // score 4. No stock section is shaped that way — `[FV]`, `[YTNK]`
+            // and `[YAGGUN]` all author slot 0 — so the frequency is zero on
+            // retail data. Downstream: cursor/order dispatch only, no sim
+            // state.
             let obj = rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
             let has_weapon = obj.is_some_and(|o| {
                 [o.primary.as_ref(), o.secondary.as_ref()]

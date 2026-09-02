@@ -988,9 +988,19 @@ fn passive_acquire_gate(mission: MissionType, can_acquire: bool, opportunity_fir
 
 /// The base can-acquire check every passive path sits behind.
 ///
+/// gamemd-derived: `TechnoClass::CanAcquireTarget @ 0x007091D0`, consumed by
+/// `TechnoClass::PassiveAcquireGate @ 0x00709290`.
+///
 /// VERIFIED and modelled: the type-level `CanPassiveAquire` opt-out (the INI
 /// key and its default were read out of the binary's key table), and the
-/// equipped-weapon requirement.
+/// equipped-weapon requirement — which the native performs as its **last**
+/// test, `cVar2 = (**(code **)(*param_1 + 0x2ac))()`, i.e.
+/// `TechnoClass::Is_Armed` through vtable `+0x2AC`. Reading `Primary=`/
+/// `Secondary=` here instead answered "unarmed" for every `TurretCount>0` type
+/// that keeps its weapons in `Weapon1..N` — `[SREF]` and `[YAGGUN]` on stock
+/// data — so the Prism Tank and the Gattling Cannon never scanned at all. All
+/// the terms here are pure predicates ANDed together, so VERA's ordering does
+/// not change the answer.
 ///
 /// SUBSTITUTED, not verified: the building arm. The original tests a building-
 /// type flag whose INI key was NOT resolved, combined with a virtual whose slot
@@ -1009,6 +1019,20 @@ fn passive_acquire_gate(mission: MissionType, can_acquire: bool, opportunity_fir
 /// UNCHECKED. Leaving the last one out makes VERA *more* permissive than the
 /// original for some player-controlled objects; inventing a predicate for it
 /// would be worse.
+///
+/// NEWLY ADMITTED by the `Is_Armed` correction, and deliberate: an **occupied**
+/// building. `BuildingClass::Is_Armed @ 0x00458DB0` returns 1 unconditionally
+/// once `IsOccupied (vt+0x400)` holds, so a garrisoned civilian building passes
+/// this gate natively; the old `Primary=` reading blocked it, because no stock
+/// `CanBeOccupied=yes` section authors a weapon. It now reaches
+/// `passive_target_scan` and takes that routine's scenario-RNG cadence draw,
+/// which is what native does. It still installs no target from there: VERA does
+/// not model `BuildingClass::GetWeapon @ 0x004526F0`'s occupant substitution in
+/// the generic path, so every candidate fails weapon selection and the pick is
+/// `None`. The target is installed by the dedicated garrison auto-acquire scan
+/// in `combat/mod.rs` instead, which does model the substitution — so there is
+/// exactly one install and exactly one draw, but the install happens in the
+/// combat phase rather than here. Recorded, not approximated.
 fn can_acquire_target(sim: &Simulation, id: u64, rules: &RuleSet) -> bool {
     let Some(entity) = sim.substrate.entities.get(id) else {
         return false;
@@ -1032,7 +1056,8 @@ fn can_acquire_target(sim: &Simulation, id: u64, rules: &RuleSet) -> bool {
     if entity.mind_controlled {
         return false;
     }
-    obj.primary.is_some() || obj.secondary.is_some()
+    // `TechnoClass::CanAcquireTarget 0x007091D0`'s final term: `vt+0x2AC`.
+    crate::sim::combat::combat_weapon::is_armed(entity, obj)
 }
 
 /// The shared passive target scanner — the same routine every Techno class
