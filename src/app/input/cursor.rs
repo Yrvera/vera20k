@@ -718,18 +718,20 @@ fn resolved_unit_in_range(
             continue;
         }
         let in_range = if let Some(t) = terrain {
-            let Some(source_z) = combat::in_range::effective_z_leptons(entity, t) else {
+            let entity_target = combat::TargetKind::Entity(target_id);
+            let Some(src) = combat::in_range::fire_source_coords(
+                entity,
+                &entity_target,
+                weapon,
+                sim.entities(),
+                t,
+            ) else {
                 continue;
             };
-            let src = (
-                entity.position.rx as i64 * 256 + entity.position.sub_x.to_num::<i64>(),
-                entity.position.ry as i64 * 256 + entity.position.sub_y.to_num::<i64>(),
-                source_z,
-            );
             combat::in_range::compute_in_range(
                 entity,
                 src,
-                &combat::TargetKind::Entity(target_id),
+                &entity_target,
                 weapon,
                 rules,
                 &sim.interner,

@@ -1,14 +1,21 @@
-//! 3D weapon range check matching the original engine's TechnoClass::InRange.
+//! The fire-range gate: `TechnoClass::CanFireAt` 0x006F77B0 builds the world
+//! point a shot is measured FROM, `TechnoClass::InRange` 0x006F7220 decides
+//! whether the target sits inside the weapon's reach from there.
 //!
 //! Replaces the 2D `lepton_distance_sq_raw` + `is_within_range_leptons` pair
-//! at the four targeting/cursor sites. Stage 1 implements 3D distance,
-//! IsLowFlying ground-snap, AirRange bonus, arcing-weapon 2D fallthrough,
-//! foundation bonus, the InRange bridge gate (0x006F75FB), and the verified
-//! boundary semantics
-//! (<= max inclusive, < min strict, -512 lep sentinel).
+//! at the four targeting/cursor sites. Implements 3D distance, IsLowFlying
+//! ground-snap, AirRange bonus, arcing-weapon 2D fallthrough, foundation
+//! bonus, the InRange bridge gate (0x006F75FB), the verified boundary
+//! semantics (<= max inclusive, < min strict, -512 lep sentinel), and the two
+//! caller-side source substitutions — `CellRangefinding=` and the high-flying
+//! attacker's target-Z swap — that let a Kirov reach the ground below it.
 //!
-//! Stages 2-N add the remaining range-VALUE chain (Bunker / OpenTopped /
-//! Veteran). Stage Arcing adds the full Branch B slope-arc check.
+//! Ranges are compared in LEPTONS throughout: `CCINIClass::ReadRange`
+//! 0x00474620 scales `Range=` by 256 before truncating, so the fraction on 60
+//! of the 256 stock `Range=` weapons is real reach, not rounding noise.
+//!
+//! Stages 2-N add the remaining range-VALUE chain (Garrison / Bunker /
+//! OpenTopped / Veteran). Stage Arcing adds the full Branch B slope-arc check.
 //!
 //! Depends on: rules (ObjectType, Weapon, ProjectileType), map (terrain
 //! height + bridge), util/lepton (constants), util/fixed_math (isqrt_i64).
@@ -24,7 +31,7 @@ use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::StringInterner;
 use crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
 use crate::sim::production::foundation_dimensions;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed, isqrt_i64};
+use crate::util::fixed_math::{SimFixed, isqrt_i64};
 use crate::util::lepton::{
     BRIDGE_HEIGHT_DELTA_LEPTONS, HIGH_FLIGHT_THRESHOLD_LEPTONS,
     WEAPON_RANGE_ALWAYS_IN_RANGE_LEPTONS, ground_height_leptons,
@@ -92,38 +99,59 @@ pub(crate) fn effective_z_leptons(
     )
 }
 
-/// Entity is currently airborne and below the high-flight threshold.
+/// Current altitude above the object's own ground, in leptons — the VERA
+/// stand-in for the height `ObjectClass::IsLowFlying` 0x005F6B60 and
+/// `ObjectClass::IsHighFlying` 0x004DE620 fetch through `vtable+0x1C8`.
+fn airborne_height_leptons(entity: &GameEntity) -> i64 {
+    entity
+        .locomotor
+        .as_ref()
+        .map(|l| l.altitude.to_num::<i64>())
+        .unwrap_or(0)
+}
+
+/// `ObjectClass::IsLowFlying` 0x005F6B60 — `this->+0x74 != 0 &&
+/// this->vtable+0x1C8() < 2 * g_nFootLevelHeightLeptons`.
 ///
 /// Used by the InRange caller to decide whether to ground-snap the target's
 /// Z before the distance computation: low-flying targets are ranged at the
 /// ground beneath them, not at their actual altitude.
+///
+/// **Not scoped to aircraft.** The native predicate lives on `ObjectClass`, so
+/// it answers for a `UnitClass` too — and the stock Kirov `[ZEP]` is listed in
+/// `[VehicleTypes]`, not `[AircraftTypes]`, so a category gate here silently
+/// grounded every Jumpjet vehicle. The `+0x74` byte's INI identity is
+/// UNCHECKED; VERA reads a positive locomotor altitude as its analogue, which
+/// differs from the native only for an in-air object at height exactly 0.
 pub(crate) fn is_low_flying(entity: &GameEntity) -> bool {
-    if entity.category != EntityCategory::Aircraft {
-        return false;
-    }
-    let alt = entity
-        .locomotor
-        .as_ref()
-        .map(|l| l.altitude.to_num::<i64>())
-        .unwrap_or(0);
+    let alt = airborne_height_leptons(entity);
     alt > 0 && alt < HIGH_FLIGHT_THRESHOLD_LEPTONS
 }
 
-/// Entity is currently airborne and at or above the high-flight threshold.
-/// Mutually exclusive with `is_low_flying` for airborne units.
+/// `ObjectClass::IsHighFlying` 0x004DE620 — `this->+0x74 != 0 &&
+/// this->vtable+0x1C8() >= 2 * g_nFootLevelHeightLeptons`. Mutually exclusive
+/// with `is_low_flying`; see that function for the scope note.
 ///
-/// Used by the InRange caller to enable the AirRange bonus on the attacker's
-/// weapon when the target is high-flying.
+/// Read on the TARGET at 0x006F7263 to enable the AirRange bonus, and on the
+/// ATTACKER at 0x006F7895 (in `TechnoClass::CanFireAt`) to decide whether the
+/// shot is measured from the target's own Z.
 pub(crate) fn is_high_flying(entity: &GameEntity) -> bool {
-    if entity.category != EntityCategory::Aircraft {
-        return false;
-    }
-    let alt = entity
-        .locomotor
-        .as_ref()
-        .map(|l| l.altitude.to_num::<i64>())
-        .unwrap_or(0);
-    alt >= HIGH_FLIGHT_THRESHOLD_LEPTONS
+    airborne_height_leptons(entity) >= HIGH_FLIGHT_THRESHOLD_LEPTONS
+}
+
+/// `AirRangeBonus=` reaches `TechnoTypeClass+0x68C` through
+/// `CCINIClass::ReadRange` 0x00474620 (the call at 0x007147A9), so the native
+/// field already holds LEPTONS and `TechnoClass::InRange` adds it raw at
+/// 0x006F7274 with no cell scaling. VERA keeps the key as cells, so the scale
+/// happens here, on the fixed-point bits rather than through a truncating
+/// `to_num` — `AirRangeBonus=1.5` is 384 leptons, not 256.
+///
+/// RESIDUAL: VERA parses the key through `f32`, so a fractional value picks up
+/// an I16F16 rounding the native `ReadRange` double does not have, and this
+/// floors where `Math__ftol` chops. Both are inert on stock data — the one
+/// stock `AirRangeBonus=4` is an exact non-negative integer.
+fn cells_fixed_to_leptons(cells: SimFixed) -> i64 {
+    (i64::from(cells.to_bits()) * 256) >> 16
 }
 
 /// Effective max range in leptons for an attacker firing at a target with
@@ -141,7 +169,7 @@ pub(crate) fn compute_effective_max_range_leptons(
     interner: &StringInterner,
     entities: &EntityStore,
 ) -> i64 {
-    let mut range_lep: i64 = weapon.range.to_num::<i64>() * 256;
+    let mut range_lep: i64 = i64::from(weapon.range_leptons);
 
     if let TargetKind::Entity(target_id) = *target {
         if let Some(target_entity) = entities.get(target_id) {
@@ -149,7 +177,7 @@ pub(crate) fn compute_effective_max_range_leptons(
             if is_high_flying(target_entity) {
                 if let Some(attacker_obj) = rules.object(interner.resolve(attacker.type_ref)) {
                     if let Some(air_bonus) = attacker_obj.air_range_bonus {
-                        range_lep += air_bonus.to_num::<i64>() * 256;
+                        range_lep += cells_fixed_to_leptons(air_bonus);
                     }
                 }
             }
@@ -206,11 +234,31 @@ pub(crate) fn compute_in_range(
     entities: &EntityStore,
     terrain: &ResolvedTerrainGrid,
 ) -> bool {
-    let weapon_range_lep: i64 = weapon.range.to_num::<i64>() * 256;
+    let weapon_range_lep: i64 = i64::from(weapon.range_leptons);
 
-    // Sentinel — always-in-range short-circuit.
+    // Sentinel — always-in-range short-circuit (`CMP EDI,0xFFFFFE00` at
+    // 0x006F724E, before every other read).
     if weapon_range_lep == WEAPON_RANGE_ALWAYS_IN_RANGE_LEPTONS {
         return true;
+    }
+
+    let Some((tx, ty, tz)) = resolve_target_coords_3d(target, entities, rules, interner, terrain)
+    else {
+        return false;
+    };
+
+    let (sx, sy, sz) = src;
+
+    // MinimumRange, 0x006F737F–0x006F73E8. Native runs it BEFORE the arcing
+    // split, always in 3-D, and gates on `!= 0` rather than `> 0`; a strict
+    // `JL` at 0x006F73E8 makes the boundary itself legal.
+    if weapon.minimum_range_leptons != 0 {
+        let dx = sx - tx;
+        let dy = sy - ty;
+        let dz = sz - tz;
+        if isqrt_i64(dx * dx + dy * dy + dz * dz) < i64::from(weapon.minimum_range_leptons) {
+            return false;
+        }
     }
 
     // Arcing-weapon 2D fallthrough — preserves V3/Prism/etc. current behavior.
@@ -221,30 +269,17 @@ pub(crate) fn compute_in_range(
         .map(|p| p.arcing)
         .unwrap_or(false);
     if arcing {
-        return compute_in_range_arcing_2d(src, target, weapon, rules, interner, entities);
+        return compute_in_range_arcing_2d(src, (tx, ty), weapon_range_lep);
     }
 
     let max_range_lep =
         compute_effective_max_range_leptons(attacker, target, weapon, rules, interner, entities);
 
-    let Some((tx, ty, tz)) = resolve_target_coords_3d(target, entities, rules, interner, terrain)
-    else {
-        return false;
-    };
-
-    let (sx, sy, sz) = src;
     let dx = sx - tx;
     let dy = sy - ty;
     let dz = sz - tz;
     let dist_sq: i64 = dx * dx + dy * dy + dz * dz;
     let dist_lep = isqrt_i64(dist_sq);
-
-    if weapon.minimum_range > SIM_ZERO {
-        let min_range_lep = weapon.minimum_range.to_num::<i64>() * 256;
-        if dist_lep < min_range_lep {
-            return false;
-        }
-    }
 
     if dist_lep > max_range_lep {
         return false;
@@ -257,38 +292,51 @@ pub(crate) fn compute_in_range(
     true
 }
 
-/// Stage 1 arcing-weapon path: 2D distance only, base weapon range only
-/// (no AirRange / Foundation / height-fire bonuses), preserving the current
-/// 2D behavior for V3 / Prism / Dreadnought / Apocalypse Rocket / etc.
+/// Stage 1 arcing-weapon path: 2-D distance against the base weapon range.
 /// Stage Arcing replaces this with the full slope-arc check.
+///
+/// **Who is actually on this path.** Not the siege units this comment used to
+/// name: `V3Launcher`, `DredLauncher` and `CruiseLauncher` all fire
+/// `InvisibleHigh`, which carries no `Arcing=` key at all. The stock arcing
+/// projectiles are `Cannon`, `Ballistic`, `FlakTProj`, `GrandCannonBall`,
+/// `Lobbed`, `Lobbed2` and `DogShard`, whose weapons are every cannon tank in
+/// the game — `105mm` (MTNK Grizzly), `120mm` (HTNK Rhino), `120mmx` (APOC),
+/// `ATGUN` (LTNK Lasher), `SABOT`/`SABOTE` (TNKD Tank Destroyer), `Robogun`
+/// (ROBO), `STALGREN` (STLN), `20mmRapidE` (elite HARV/SMIN) — plus
+/// `FlakTrackGun` (HTK/HYD), `155mm` (DEST/CDEST Destroyer), `HowitzerGun`
+/// (HOWI) and `GrandCannonWeapon` (GTGCAN). Ordinary tank fire runs through
+/// this stub, and it is the path that delivers the `Range=5.75` reach the
+/// lepton scaling recovers for the Rhino and the Apocalypse.
+///
+/// Missing here, therefore, on everyday shots: the slope-clearance solver
+/// (0x0048AB90 / 0x0048ABC0) and the bridge height ceiling (0x006F74D7).
+/// The bonus terms are NOT missing — native's arcing arm does not apply the
+/// foundation bonus either (it is computed at 0x006F751E, inside the
+/// non-arcing arm), and the one term it does keep, `AirRangeBonus`
+/// (`EBX = EDI` at 0x006F7457), cannot reach a stock arcing shot. `[FV]` is
+/// the only `AirRangeBonus=` unit, and one of its weapons IS arcing —
+/// `Weapon4=CRFlakGuyGun` fires `FlakTProj`, which carries `Arcing=true`. The
+/// bonus still never applies, on a stronger fact than "no arcing user":
+/// native adds it only against a high-flying target, and `[FlakTProj] AA=no`
+/// refuses one outright. So the stub drops a term that is unreachable rather
+/// than one that is unused.
+///
+/// The MinimumRange test that used to live here has moved to the caller: the
+/// native runs it once, in 3-D, before the `MOV CL,[EDX+0x29B]` arcing split
+/// at 0x006F73F6. That move is LIVE on stock data, not a formality —
+/// `GrandCannonWeapon` (`MinimumRange=3`), `HowitzerGun` (2) and `RPGTower`
+/// (2) are all arcing, so the Grand Cannon's three-cell dead zone is now
+/// measured in 3-D as 0x006F737F does.
 fn compute_in_range_arcing_2d(
     src: (i64, i64, i64),
-    target: &TargetKind,
-    weapon: &WeaponType,
-    rules: &RuleSet,
-    interner: &StringInterner,
-    entities: &EntityStore,
+    target_xy: (i64, i64),
+    weapon_range_lep: i64,
 ) -> bool {
-    let weapon_range_lep: i64 = weapon.range.to_num::<i64>() * 256;
-    if weapon_range_lep == WEAPON_RANGE_ALWAYS_IN_RANGE_LEPTONS {
-        return true;
-    }
-
-    let (tx, ty) = resolve_target_xy_2d(target, entities, rules, interner);
-
     let (sx, sy, _sz) = src;
-    let dx = sx - tx;
-    let dy = sy - ty;
+    let dx = sx - target_xy.0;
+    let dy = sy - target_xy.1;
     let dist_sq: i64 = dx * dx + dy * dy;
-    let dist_lep = isqrt_i64(dist_sq);
-
-    if weapon.minimum_range > SIM_ZERO {
-        let min_range_lep = weapon.minimum_range.to_num::<i64>() * 256;
-        if dist_lep < min_range_lep {
-            return false;
-        }
-    }
-    dist_lep <= weapon_range_lep
+    isqrt_i64(dist_sq) <= weapon_range_lep
 }
 
 /// Resolve target coords for the 3D path. Applies LowFlying ground-snap on
@@ -339,27 +387,100 @@ fn resolve_target_coords_3d(
     }
 }
 
-/// 2D-only target XY for arcing weapons (no LowFlying snap, no terrain).
-/// Mirrors the foundation-center adjustment for buildings.
-fn resolve_target_xy_2d(
+/// `CellClass::GetCoords` 0x00486840 — a cell's own world point is its centre
+/// (`MapCoord * 0x100 + 0x80` on both axes) with Z from
+/// `CellClass::ComputeGroundHeightAtCoord` 0x0047B3A0. **No bridge-deck term:**
+/// the deck offset belongs to whoever is standing on the deck, and
+/// `TechnoClass::CanFireAt` adds it separately from the object's own OnBridge
+/// byte at 0x006F7887.
+fn cell_own_coords(rx: u16, ry: u16, terrain: &ResolvedTerrainGrid) -> Option<(i64, i64, i64)> {
+    let world_x = i32::from(rx).wrapping_mul(256).wrapping_add(128);
+    let world_y = i32::from(ry).wrapping_mul(256).wrapping_add(128);
+    let z = terrain_ground_z_at(terrain, rx, ry, world_x, world_y)?;
+    Some((i64::from(world_x), i64::from(world_y), z))
+}
+
+/// The target's own `GetCoords` Z (`vtable+0x48`), with NO low-flying snap —
+/// the snap belongs to `InRange` 0x006F7332, not to this read.
+fn target_own_z_leptons(
     target: &TargetKind,
     entities: &EntityStore,
-    rules: &RuleSet,
-    interner: &StringInterner,
-) -> (i64, i64) {
+    terrain: &ResolvedTerrainGrid,
+) -> Option<i64> {
     match *target {
-        TargetKind::Entity(id) => {
-            let Some(t) = entities.get(id) else {
-                return (i64::MAX / 4, i64::MAX / 4);
-            };
-            let (rx, ry, sub_x, sub_y) = resolve_entity_target_coords(t, rules, interner);
-            (
-                rx as i64 * 256 + sub_x.to_num::<i64>(),
-                ry as i64 * 256 + sub_y.to_num::<i64>(),
-            )
-        }
-        TargetKind::Cell(rx, ry) => (rx as i64 * 256 + 128, ry as i64 * 256 + 128),
+        TargetKind::Entity(id) => effective_z_leptons(entities.get(id)?, terrain),
+        TargetKind::Cell(rx, ry) => cell_own_coords(rx, ry, terrain).map(|(_, _, z)| z),
     }
+}
+
+/// `TechnoClass::CanFireAt` 0x006F77B0 — the world point the range gate
+/// measures FROM. Native builds it in three steps and hands the result to
+/// `TechnoClass::InRange` 0x006F7220 at 0x006F78B8:
+///
+/// 1. `this->GetCoords()` at 0x006F77D3 — the attacker's own world point,
+///    altitude included.
+/// 2. `CellRangefinding=` (`WeaponType+0x134`, read at 0x006F7803): the point
+///    is replaced by the attacker's OWN CELL — cell index from
+///    `(coord + (coord < 0 ? 0xFF : 0)) >> 8` at 0x006F7821–0x006F7845, then
+///    `CellClass::GetCoords` at 0x006F7866, so X/Y become the cell centre and Z
+///    the ground under it. `+0x8C` (OnBridge) adds the deck offset at
+///    0x006F7887. This is the key `[BlimpBomb]` carries and the reason the
+///    Kirov's `Range=1.5` is measured from the ground, not from 750 leptons up.
+/// 3. `this->IsHighFlying()` at 0x006F7895: the source Z is replaced by the
+///    TARGET's own `GetCoords` Z, which cancels the height term for a
+///    high-flying attacker. This is why a Kirov, a MiG or a Jumpjet never pays
+///    its own altitude in the range check.
+///
+/// Both steps write the same Z slot, so a high-flying attacker with
+/// `CellRangefinding=` ends on the target's Z — step 3 runs last.
+///
+/// RESIDUAL (VERA-internal, gamemd equivalent UNCHECKED) — this returns
+/// `Option` where native cannot fail: `GetCoords` and `CellClass::GetCoords`
+/// always answer, so 0x006F77B0 has no "could not build a source" path. Two of
+/// the three `None` arms are new with this function — a `CellRangefinding=`
+/// attacker whose own cell has no resolved terrain, and a high-flying attacker
+/// whose entity target has already left the store. Callers treat `None` as
+/// "no shot" and return BEFORE the range-failure bookkeeping they would
+/// otherwise run (`resolve_attacker_fire`'s `pending_infantry_updates` and idle
+/// switch), so such a shot is dropped one step earlier than a native refusal.
+/// Trigger: an unresolved/off-map cell under a `CellRangefinding=` attacker, or
+/// a target removed between the attacker snapshot and the fire step in the same
+/// tick. Frequency: rare — the entity arm needs a same-tick removal, and the
+/// cell arm an attacker standing where terrain did not resolve. Downstream
+/// risk: bounded to that one tick's bookkeeping; the third arm
+/// (`effective_z_leptons` on the attacker) is pre-existing and every call site
+/// already had it.
+pub(crate) fn fire_source_coords(
+    attacker: &GameEntity,
+    target: &TargetKind,
+    weapon: &WeaponType,
+    entities: &EntityStore,
+    terrain: &ResolvedTerrainGrid,
+) -> Option<(i64, i64, i64)> {
+    let mut x = i64::from(attacker.position.rx) * 256 + attacker.position.sub_x.to_num::<i64>();
+    let mut y = i64::from(attacker.position.ry) * 256 + attacker.position.sub_y.to_num::<i64>();
+    let mut z = effective_z_leptons(attacker, terrain)?;
+
+    if weapon.cell_rangefinding {
+        // `SAR` after the sign-bias add is a truncate-toward-zero cell index;
+        // VERA cell coordinates are unsigned, so the bias term is always 0.
+        let (cx, cy) = ((x >> 8) as u16, (y >> 8) as u16);
+        let (cell_x, cell_y, cell_z) = cell_own_coords(cx, cy, terrain)?;
+        x = cell_x;
+        y = cell_y;
+        z = cell_z
+            + if attacker.on_bridge {
+                BRIDGE_HEIGHT_DELTA_LEPTONS
+            } else {
+                0
+            };
+    }
+
+    if is_high_flying(attacker) {
+        z = target_own_z_leptons(target, entities, terrain)?;
+    }
+
+    Some((x, y, z))
 }
 
 /// Resolve an entity's target coords (rx, ry, sub_x, sub_y) — buildings shift
@@ -446,10 +567,14 @@ fn cell_is_bridge(terrain: &ResolvedTerrainGrid, rx: u16, ry: u16) -> bool {
 /// that are airborne whenever they are alive, so the branch cannot decide this
 /// gate for anything a player commands.
 ///
-/// `is_high_flying` is scoped to aircraft where the native predicate is
-/// universal. They agree on every input this gate can reach: a ground object's
-/// height is 0, which fails the native's `>= 208` just as VERA's category test
-/// fails. Recorded rather than glossed.
+/// `is_high_flying` is the universal `ObjectClass` predicate — the same body
+/// this slot resolves to — so the exemption now answers for any high-flying
+/// object, not only for the aircraft category. That is a behaviour change AT
+/// THIS SITE: a Jumpjet vehicle or a Rocketeer above 208 leptons used to eat
+/// FireError 5 for a bridge mismatch and now does not, which is what
+/// `vtable+0x54` does at 0x006FCBE6. Do NOT re-scope the predicate to
+/// `EntityCategory::Aircraft` to "tighten" this gate: the stock Kirov `[ZEP]`
+/// is a `[VehicleTypes]` Jumpjet, and a category test grounds it.
 ///
 /// This is deliberately NOT folded into `compute_in_range`. The native
 /// `InRange` 0x006F7220 has no such clause; putting it there would be a gate
@@ -651,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn is_low_flying_only_for_airborne_aircraft() {
+    fn is_low_flying_only_for_airborne_objects() {
         let ground = ground_entity_at_level(5);
         assert!(!is_low_flying(&ground));
 
@@ -678,6 +803,26 @@ mod tests {
 
         let ground = ground_entity_at_level(5);
         assert!(!is_high_flying(&ground));
+    }
+
+    /// `ObjectClass::IsHighFlying` 0x004DE620 and `ObjectClass::IsLowFlying`
+    /// 0x005F6B60 live on `ObjectClass`, so they answer for a `UnitClass` too.
+    /// The stock Kirov `[ZEP]` is a `[VehicleTypes]` entry, so an aircraft-only
+    /// gate here would have called a Jumpjet at 750 leptons "grounded".
+    #[test]
+    fn flight_predicates_are_not_scoped_to_the_aircraft_category() {
+        let cruising = jumpjet_unit_at_altitude(KIROV_JUMPJET_HEIGHT_LEPTONS);
+        assert_eq!(cruising.category, EntityCategory::Unit);
+        assert!(is_high_flying(&cruising));
+        assert!(!is_low_flying(&cruising));
+
+        let climbing = jumpjet_unit_at_altitude(HIGH_FLIGHT_THRESHOLD_LEPTONS - 1);
+        assert!(is_low_flying(&climbing));
+        assert!(!is_high_flying(&climbing));
+
+        let landed = jumpjet_unit_at_altitude(0);
+        assert!(!is_low_flying(&landed));
+        assert!(!is_high_flying(&landed));
     }
 
     // ─── Fixtures for compute_in_range tests ────────────────────────────
@@ -796,6 +941,17 @@ mod tests {
         e.position.ry = ry;
         e.position.z = level;
         e.type_ref = crate::sim::intern::test_intern(type_ref);
+        e
+    }
+
+    /// Stock `[ZEP] JumpjetHeight=750`.
+    const KIROV_JUMPJET_HEIGHT_LEPTONS: i64 = 750;
+
+    /// A Jumpjet VEHICLE — the shape the stock Kirov actually has. `[ZEP]` is
+    /// listed under `[VehicleTypes]`, so it is a `UnitClass` that flies.
+    fn jumpjet_unit_at_altitude(altitude_lep: i64) -> GameEntity {
+        let mut e = aircraft_at_altitude(altitude_lep);
+        e.category = EntityCategory::Unit;
         e
     }
 
@@ -1256,6 +1412,273 @@ mod tests {
         );
     }
 
+    // ─── `TechnoClass::CanFireAt` 0x006F77B0 source-coordinate construction ──
+
+    /// Stock `[ZEP]` / `[BlimpBomb]` as `ini/rulesmd.ini` carries them, with
+    /// the two keys this group exercises left exactly as authored.
+    fn kirov_rules(weapon_extra: &str) -> RuleSet {
+        let ini_str = format!(
+            "[InfantryTypes]\n\n\
+             [VehicleTypes]\n0=ZEP\n1=TGT\n\n\
+             [AircraftTypes]\n\n\
+             [BuildingTypes]\n\n\
+             [ZEP]\nStrength=2000\nArmor=medium\nSpeed=5\nPrimary=BlimpBomb\n\
+             JumpjetHeight=750\nBalloonHover=yes\n\n\
+             [TGT]\nStrength=300\nArmor=heavy\nSpeed=6\n\n\
+             [BlimpBomb]\nDamage=250\nBurst=1\nROF=50\nRange=1.5\n{weapon_extra}\n\
+             Speed=20\nWarhead=BlimpHE\nOmniFire=yes\n\n\
+             [BlimpHE]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        );
+        let ini = IniFile::from_str(&ini_str);
+        RuleSet::from_ini(&ini).expect("rules parse")
+    }
+
+    fn kirov_at(rx: u16, ry: u16, altitude_lep: i64) -> GameEntity {
+        let mut e = jumpjet_unit_at_altitude(altitude_lep);
+        e.stable_id = 100;
+        e.position.rx = rx;
+        e.position.ry = ry;
+        e.type_ref = crate::sim::intern::test_intern("ZEP");
+        e
+    }
+
+    fn kirov_can_engage(rules: &RuleSet, kirov: &GameEntity, target: GameEntity) -> bool {
+        let interner = test_interner();
+        let terrain = flat_terrain(64, 64);
+        let mut entities = EntityStore::new();
+        entities.insert(target);
+        let weapon = rules.weapon("BlimpBomb").expect("weapon");
+        let target = TargetKind::Entity(200);
+        let src =
+            fire_source_coords(kirov, &target, weapon, &entities, &terrain).expect("source coords");
+        compute_in_range(
+            kirov, src, &target, weapon, rules, &interner, &entities, &terrain,
+        )
+    }
+
+    /// The headline symptom this mechanism exists to remove: a stock Kirov
+    /// could not drop its bomb on anything. `Range=1.5` was truncated to one
+    /// cell and the airship's own 750-lepton altitude was charged to the
+    /// distance, so 0x006F75F2's `CMP EAX,EBX` could never pass.
+    #[test]
+    fn stock_kirov_engages_a_ground_target_at_its_authored_range() {
+        let rules = kirov_rules("CellRangefinding=yes");
+        assert_eq!(
+            rules.weapon("BlimpBomb").unwrap().range_leptons,
+            384,
+            "Range=1.5 is 384 leptons"
+        );
+
+        let kirov = kirov_at(5, 5, KIROV_JUMPJET_HEIGHT_LEPTONS);
+        assert!(
+            kirov_can_engage(&rules, &kirov, ground_target(6, 5, 0, "TGT")),
+            "a cruising Kirov must be able to bomb the cell next to it"
+        );
+
+        // The fraction itself, pinned at the boundary: the Kirov fires from the
+        // centre of (5,5) = 1408 leptons, so a target at x = 1792 is exactly
+        // 384 away and one lepton further is out. Truncating `Range=1.5` to a
+        // whole cell refuses both.
+        let mut at_reach = ground_target(7, 5, 0, "TGT");
+        at_reach.position.sub_x = SIM_ZERO;
+        assert!(
+            kirov_can_engage(&rules, &kirov, at_reach),
+            "384 leptons of separation is inside 384 leptons of reach"
+        );
+
+        let mut past_reach = ground_target(7, 5, 0, "TGT");
+        past_reach.position.sub_x = SimFixed::from_num(1);
+        assert!(
+            !kirov_can_engage(&rules, &kirov, past_reach),
+            "385 leptons is out — Range=1.5 must not become an unbounded reach"
+        );
+    }
+
+    /// `MOV AL,byte ptr [EDI + 0x134]` at 0x006F7803, then
+    /// `CellClass::GetCoords` at 0x006F7866: the attacker fires from its own
+    /// cell CENTRE at the ground under it, whatever its sub-cell offset and
+    /// altitude. Isolated from the high-flying substitution by keeping the
+    /// attacker under the 208-lepton split.
+    #[test]
+    fn cell_rangefinding_moves_the_shot_to_the_attackers_cell_centre() {
+        let terrain = flat_terrain(64, 64);
+        let entities = EntityStore::new();
+        let target = TargetKind::Cell(9, 9);
+
+        let mut low = jumpjet_unit_at_altitude(HIGH_FLIGHT_THRESHOLD_LEPTONS - 8);
+        low.position.rx = 5;
+        low.position.ry = 5;
+        low.position.sub_x = SimFixed::from_num(3);
+        low.position.sub_y = SimFixed::from_num(250);
+
+        let without = kirov_rules("");
+        assert_eq!(
+            fire_source_coords(
+                &low,
+                &target,
+                without.weapon("BlimpBomb").unwrap(),
+                &entities,
+                &terrain,
+            ),
+            Some((
+                5 * 256 + 3,
+                5 * 256 + 250,
+                HIGH_FLIGHT_THRESHOLD_LEPTONS - 8
+            )),
+            "without the key the attacker's own world point is used"
+        );
+
+        let with = kirov_rules("CellRangefinding=yes");
+        assert_eq!(
+            fire_source_coords(
+                &low,
+                &target,
+                with.weapon("BlimpBomb").unwrap(),
+                &entities,
+                &terrain,
+            ),
+            Some((5 * 256 + 128, 5 * 256 + 128, 0)),
+            "the key replaces X/Y with the cell centre and Z with the ground"
+        );
+    }
+
+    /// `MOV CL,byte ptr [ESI + 0x8C]` at 0x006F7876 — the deck offset the
+    /// CellRangefinding branch adds comes from the ATTACKER's OnBridge byte,
+    /// not from the cell (`CellClass::GetCoords` carries no deck term).
+    #[test]
+    fn cell_rangefinding_adds_the_deck_offset_from_the_attackers_own_flag() {
+        let rules = kirov_rules("CellRangefinding=yes");
+        let weapon = rules.weapon("BlimpBomb").unwrap();
+        let entities = EntityStore::new();
+        let terrain = terrain_with_bridge_cells(&[(5, 5)]);
+        let target = TargetKind::Cell(9, 9);
+
+        let mut ground = jumpjet_unit_at_altitude(0);
+        ground.position.rx = 5;
+        ground.position.ry = 5;
+        assert_eq!(
+            fire_source_coords(&ground, &target, weapon, &entities, &terrain).map(|(_, _, z)| z),
+            Some(0),
+            "standing under the deck keeps ground Z"
+        );
+
+        ground.on_bridge = true;
+        assert_eq!(
+            fire_source_coords(&ground, &target, weapon, &entities, &terrain).map(|(_, _, z)| z),
+            Some(BRIDGE_HEIGHT_DELTA_LEPTONS)
+        );
+    }
+
+    /// `CALL dword ptr [EDX + 0x54]` at 0x006F7895: a high-flying attacker
+    /// measures from the TARGET's own Z, so its altitude never enters the
+    /// distance. Isolated from CellRangefinding — no `CellRangefinding=` here.
+    #[test]
+    fn a_high_flying_attacker_measures_from_the_targets_own_z() {
+        let rules = kirov_rules("");
+        let weapon = rules.weapon("BlimpBomb").unwrap();
+        let interner = test_interner();
+        // The airship hovers over a level-5 plateau and the target stands on
+        // level-0 ground one cell away, so the height term is what decides.
+        let mut terrain = flat_terrain(64, 64);
+        terrain.cells[5 * 64 + 5].level = 5;
+        let mut entities = EntityStore::new();
+        entities.insert(ground_target(6, 5, 0, "TGT"));
+        let target = TargetKind::Entity(200);
+
+        let cruising = kirov_at(5, 5, KIROV_JUMPJET_HEIGHT_LEPTONS);
+        let src = fire_source_coords(&cruising, &target, weapon, &entities, &terrain).unwrap();
+        assert_eq!(
+            src,
+            (5 * 256 + 128, 5 * 256 + 128, 0),
+            "Z becomes the target's own coordinate, not the 520 + 750 it stands at"
+        );
+        assert!(compute_in_range(
+            &cruising, src, &target, weapon, &rules, &interner, &entities, &terrain,
+        ));
+
+        // The same airship one lepton below the split is NOT high-flying, so
+        // native charges its altitude and the shot is refused.
+        let climbing = kirov_at(5, 5, HIGH_FLIGHT_THRESHOLD_LEPTONS - 1);
+        let climbing_src =
+            fire_source_coords(&climbing, &target, weapon, &entities, &terrain).unwrap();
+        assert_eq!(climbing_src.2, 5 * 104 + HIGH_FLIGHT_THRESHOLD_LEPTONS - 1);
+        assert!(
+            !compute_in_range(
+                &climbing,
+                climbing_src,
+                &target,
+                weapon,
+                &rules,
+                &interner,
+                &entities,
+                &terrain,
+            ),
+            "below the split the attacker's own height is still charged"
+        );
+    }
+
+    /// `MOV ECX,[EDX+0xB8]` at 0x006F737F runs the MinimumRange test in 3-D and
+    /// BEFORE the `MOV CL,[EDX+0x29B]` arcing split at 0x006F73F6, so an arcing
+    /// weapon's minimum reach counts the height difference too.
+    #[test]
+    fn min_range_is_3d_and_runs_before_the_arcing_split() {
+        let ini_str = "[InfantryTypes]\n\n\
+                       [VehicleTypes]\n0=ATKR\n1=TGT\n\n\
+                       [AircraftTypes]\n\n\
+                       [BuildingTypes]\n\n\
+                       [ATKR]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=GUN\n\n\
+                       [TGT]\nStrength=300\nArmor=heavy\nSpeed=6\n\n\
+                       [GUN]\nDamage=1\nROF=20\nRange=10\nMinimumRange=2.34\n\
+                       Warhead=WH\nProjectile=ARC\n\n\
+                       [ARC]\nArcing=yes\n\n\
+                       [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n";
+        let ini = IniFile::from_str(ini_str);
+        let rules = RuleSet::from_ini(&ini).expect("rules parse");
+        let weapon = rules.weapon("GUN").expect("weapon");
+        assert_eq!(weapon.minimum_range_leptons, 599, "2.34 cells chopped");
+
+        let attacker = ground_attacker(0, 0, 0, "ATKR");
+        let interner = test_interner();
+        let mut terrain = flat_terrain(64, 64);
+        terrain.cells[5].level = 5;
+        let mut entities = EntityStore::new();
+        entities.insert(ground_target(5, 0, 5, "TGT"));
+
+        // Flat distance is 5 cells; that alone clears the minimum. The point of
+        // the test is the pairing: the 3-D leg is the one native measures, and
+        // it is measured for an arcing weapon too.
+        assert!(compute_in_range(
+            &attacker,
+            src_at_cell(0, 0, 0),
+            &TargetKind::Entity(200),
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &terrain,
+        ));
+
+        // Two cells out (512 leptons flat) is inside a 599-lepton minimum, but
+        // five terrain levels of climb push the 3-D distance to 730 — legal.
+        let mut close = flat_terrain(64, 64);
+        close.cells[2].level = 5;
+        let mut close_entities = EntityStore::new();
+        close_entities.insert(ground_target(2, 0, 5, "TGT"));
+        assert!(
+            compute_in_range(
+                &attacker,
+                src_at_cell(0, 0, 0),
+                &TargetKind::Entity(200),
+                weapon,
+                &rules,
+                &interner,
+                &close_entities,
+                &close,
+            ),
+            "a 2-D minimum-range test would have refused this arcing shot"
+        );
+    }
+
     // Test 11: the `TechnoClass::InRange` 0x006F7220 bridge gate (block at
     // 0x006F75FB), plus recorded residuals for the separate bridge gates that
     // live in `TechnoClass::GetFireError` 0x006FC0B0 and are not ported.
@@ -1611,20 +2034,121 @@ mod tests {
     /// opposite of the gate at 0x006F75FB in the same function, which reads the
     /// source's.
     ///
-    /// Trigger: arcing weapons (V3, Dreadnought, artillery, Apocalypse rocket)
-    /// firing at something standing on a bridge deck.
+    /// Trigger: an arcing weapon firing at something standing on a bridge
+    /// deck. The arcing population is every cannon tank — `Cannon`,
+    /// `Ballistic`, `FlakTProj`, `GrandCannonBall`, `Lobbed`, `Lobbed2` and
+    /// `DogShard` — NOT the V3/Dreadnought/Cruise launchers, which fire
+    /// `InvisibleHigh` and carry no `Arcing=` key. See
+    /// `compute_in_range_arcing_2d` for the full weapon list.
     ///
     /// Effect: `compute_in_range_arcing_2d` is a documented 2D fallthrough stub
     /// with neither the slope test nor this ceiling, so VERA allows arcing
     /// shots at deck targets that gamemd refuses.
     ///
-    /// Frequency: every arcing shot at a unit on a bridge. Bounded by the fact
-    /// that the whole arc check is stubbed, so this clause is downstream of a
-    /// larger unported mechanism and cannot be fixed on its own.
+    /// Frequency: every arcing shot at a unit on a bridge — i.e. Grizzly,
+    /// Rhino, Apocalypse, Lasher, Tank Destroyer, Flak Track and Destroyer
+    /// fire, not a siege-unit footnote. Bounded by the fact that the whole arc
+    /// check is stubbed, so this clause is downstream of a larger unported
+    /// mechanism and cannot be fixed on its own.
     #[test]
     #[ignore = "gamemd 0x006F74D7 adds a height ceiling for arcing shots at bridge-cell targets; VERA's arcing path is a 2D stub"]
     fn inrange_arcing_branch_bridge_ceiling_is_unported() {
         panic!("unimplemented: InRange 0x006F74D7 arcing bridge height ceiling");
+    }
+
+    /// RESIDUAL — gamemd address 0x006F7642, the `CALL 0x004CC310` whose
+    /// result decides `InRange`'s final `return`.
+    ///
+    /// Mechanism: after the distance test passes, `InRange` calls
+    /// `FUN_004CC310(weapon, this->+0x21C)` with the source and target
+    /// coordinates and returns `result == 0`. That function delegates to
+    /// `FUN_004CC100`, which — only when the projectile at `WeaponType+0xA0`
+    /// sets `SubjectToCliffs` (`BulletType+0x296`, key string 0x0081B118) or
+    /// `SubjectToWalls` (`+0x298`, key string 0x0081B0F4) — walks the line
+    /// source→target one cell at a time (Chebyshev step count, per-axis
+    /// integer division for the increments) and asks `FUN_004CC360` whether
+    /// each cell blocks. A nonzero answer means blocked, and
+    /// `CellClass::IsWallConnectableInDirection` 0x00480510 combined with the
+    /// warhead byte at `WeaponType+0xAC` `+0x144` re-admits the shot when the
+    /// warhead may break the wall itself.
+    ///
+    /// Trigger: any shot whose projectile is `SubjectToWalls=` or
+    /// `SubjectToCliffs=` and that has a wall or cliff on the line.
+    ///
+    /// Effect: gamemd reports "not in range" and the attacker never fires;
+    /// VERA passes the gate, fires, and leaves the outcome to the projectile's
+    /// own in-flight wall handling in `sim/projectile.rs`. Target selection and
+    /// pursuit also disagree, since both run through this same predicate.
+    ///
+    /// Frequency: 30 stock projectile sections declare either key; 10 set
+    /// `SubjectToWalls=yes` and 9 `SubjectToCliffs=yes`. Both land on
+    /// `InvisibleLow` — the small-arms projectile behind `M60` (`[E1]` GI,
+    /// `[GGI]`), `M1Carbine` (`[E2]` Conscript), `Vulcan` (`[NALASR]` Sentry
+    /// Gun), `AKM` (`[BORIS]`), `Sniper`, `MirageGun` and the rest — and on
+    /// `Cannon`, i.e. every cannon tank. That is most of the units in the game
+    /// shooting past a wall or a cliff.
+    ///
+    /// **This residual is NON-DEFERRABLE by ENGINE.md's own test** — it fires
+    /// in ordinary skirmish and it breaks a loop (pursuit walks a unit toward a
+    /// target it can never legally shoot). It is not ported HERE because the
+    /// per-cell blocking predicate `FUN_004CC360`, the wall-overlay topology,
+    /// `CellClass::IsWallConnectableInDirection` 0x00480510 and the
+    /// warhead wall-breaking re-admission are one coherent mechanism, and
+    /// half-porting it would mean a VERA-only blocking heuristic in `sim/`.
+    /// It is scheduled as its own mechanism, not filed as an accepted gap.
+    #[test]
+    #[ignore = "gamemd 0x006F7642 refuses the shot when a wall or cliff blocks the line; VERA's range gate has no line walk"]
+    fn inrange_line_of_fire_block_is_unported() {
+        panic!("unimplemented: InRange 0x006F7642 SubjectToWalls/SubjectToCliffs line walk");
+    }
+
+    /// RESIDUAL — gamemd address 0x006F7314, `CALL dword ptr [EDX + 0x48]` on
+    /// the target.
+    ///
+    /// Mechanism: `InRange` reads the target's coordinate through
+    /// `AbstractClass::GetCoords` (`vtable+0x48`). For a force-fire cell
+    /// target that resolves to `CellClass::GetCoords` 0x00486840, which
+    /// carries NO bridge-deck term — the bridge-aware aim point is a separate
+    /// slot, `CellClass::GetTargetCoords` 0x00486890 at `vtable+0x58`, and
+    /// this callsite does not use it.
+    ///
+    /// `resolve_target_coords_3d` adds `BRIDGE_HEIGHT_DELTA_LEPTONS` for a
+    /// `TargetKind::Cell` whose terrain carries a deck.
+    ///
+    /// Trigger: force-firing (Ctrl-click) at a cell that has a bridge deck.
+    ///
+    /// Effect: VERA measures to the deck top where gamemd measures to the
+    /// ground under it, so the range verdict differs by up to 416 leptons of
+    /// height — about 1.6 cells of reach on a shot straight up or down.
+    ///
+    /// Frequency: uncommon — needs a deliberate force-fire on a bridge cell.
+    /// Left recorded rather than changed because it belongs to the cell-target
+    /// aim-point question (which slot each consumer reads), not to this
+    /// mechanism.
+    #[test]
+    #[ignore = "gamemd 0x006F7314 reads CellClass::GetCoords (no deck term) for a cell target; VERA adds the deck offset"]
+    fn inrange_cell_target_deck_offset_is_drift() {
+        panic!("unimplemented: InRange 0x006F7314 cell-target coordinate has no bridge deck term");
+    }
+
+    /// RESIDUAL — gamemd address 0x006F724E, `CMP EDI,0xFFFFFE00`, the first
+    /// thing `TechnoClass::InRange` tests.
+    ///
+    /// `compute_in_range` honours the `-512` always-in-range sentinel;
+    /// `combat::is_within_range_leptons`, the 2-D twin the other range call
+    /// sites still use, does not — `Range=-2` squares to a positive `262144`
+    /// there and reads as a two-cell reach. Full trigger / effect / frequency /
+    /// downstream note sits on that function in `sim/combat/mod.rs`; the short
+    /// of it is that a Destroyer's `ASWLauncher` closes to two cells where
+    /// gamemd is always in range.
+    ///
+    /// Pre-existing, and recorded here rather than fixed because the cure is
+    /// migrating those call sites onto `compute_in_range`, not adding a second
+    /// sentinel test to the twin.
+    #[test]
+    #[ignore = "gamemd 0x006F724E -512 always-in-range sentinel is unhandled in combat::is_within_range_leptons"]
+    fn is_within_range_leptons_ignores_the_always_in_range_sentinel() {
+        panic!("unimplemented: is_within_range_leptons has no InRange 0x006F724E -512 sentinel");
     }
 
     /// Guards the INCLUSIVE half of the gate's boundary pair (`JGE` at

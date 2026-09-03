@@ -932,11 +932,20 @@ fn push_airborne_aoe_damage(
     // record, then halves that captured signed integer only for a true
     // AircraftClass whose IsHighFlying vslot is true. Rust i32 division has
     // the same toward-zero behavior as the native signed IDIV.
-    let distance_leptons = if super::in_range::is_high_flying(entity) {
-        raw_distance_leptons / 2
-    } else {
-        raw_distance_leptons
-    };
+    //
+    // Both halves of that conjunction are explicit here on purpose:
+    // `Apply_area_damage` 0x00489280 calls `What_Am_I` at 0x00489A5D and
+    // compares against 2 (`AircraftClass::What_Am_I` 0x0041C180 returns 2),
+    // and only then calls `IsHighFlying` (`vtable+0x54`) at 0x00489A69. The
+    // category test belongs to THIS site, not to `is_high_flying` — the native
+    // predicate itself is universal over `ObjectClass`, so a Jumpjet
+    // `UnitClass` like the stock Kirov is high-flying but is not halved here.
+    let distance_leptons =
+        if entity.category == EntityCategory::Aircraft && super::in_range::is_high_flying(entity) {
+            raw_distance_leptons / 2
+        } else {
+            raw_distance_leptons
+        };
     if i64::from(distance_leptons) > spread_leptons {
         return;
     }
