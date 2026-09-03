@@ -179,12 +179,31 @@ In version 1 idx files, this field does not exist on disk and is zeroed in memor
 In version 2 idx files, it is read from disk.
 
 In `FUN_00401640`, it is stored into the audio format struct at offset +0x18
-(`param_3[6]`). In the WAV file parser (`FUN_00408610` at `0x00408610`), the equivalent
-field is `wSamplesPerBlock` from the WAV fmt chunk header (bytes 12-13 of the fmt chunk
-data, for IMA ADPCM format 0x11). This is the number of decoded PCM samples per ADPCM
-block.
+(`param_3[6]`). In the WAV file parser (`WAV__ParseHeader` at `0x00408610`), the same
+descriptor field is filled for IMA ADPCM (`wFormatTag == 0x11`) from `psVar6[6]` — fmt
+chunk bytes 12-13, which is **`nBlockAlign`**, not `wSamplesPerBlock`.
 
-When this field is 0 (version 1 or uncompressed PCM), the engine does not use it.
+**CORRECTION (2026-09-03):** an earlier revision of this section named the field
+`wSamplesPerBlock` and called it "the number of decoded PCM samples per ADPCM block".
+That is wrong. It is a **byte** stride — the compressed bytes per block. Verified from
+`FUN_00409C40` at `0x00409C40`, which reads descriptor `+0x18` and uses it as
+- `param_1[0x23]` / `param_1[0x2b]` (stream `+0x8C` / `+0xAC`): the number of bytes read
+  into the decoder's input buffer per block (`Audio__DecodeCompressedBlock` case 3 sets
+  `+0x80 = +0x84 = +0xAC`), and
+- `param_1[0x28] = chunk_size * 4 + 0x80` (stream `+0xA0`): the output buffer size, i.e.
+  4 output bytes (2 samples x 2 bytes) per input byte plus 128 bytes of slack.
+
+A samples-per-block reading is also arithmetically impossible for the retail data: the
+2,192 mono IMA entries in AUDIOMD carry 512, and mono IMA samples-per-block is always
+odd (`2*(blockAlign-4)+1`).
+
+Retail values (machine-read from the shipped `audio.idx` in `langmd.mix -> audiomd.mix`,
+2,285 entries): 512 for the 2,192 mono IMA entries, 1,024 for the 5 stereo IMA entries,
+and 0 for the 88 raw-PCM entries (84 mono flags 6, 4 stereo flags 7).
+
+When this field is 0 the engine has no block stride to fill its input buffer with, so a
+compressed entry with `chunk_size == 0` decodes to nothing. No retail entry hits that:
+both shipped `audio.idx` files are version 2.
 
 
 ## 5. Sorting and Binary Search
@@ -331,12 +350,17 @@ The .bag file contains raw audio sample data at the offsets specified by the .id
   at the given offset for the given size.
 
 - **IMA ADPCM compressed (flags bit 3 = 1):** Standard IMA ADPCM encoded data. The engine
-  contains a standard IMA ADPCM decoder at `FUN_0040acd0` (`0x0040acd0`) with:
+  contains **exactly one** IMA ADPCM nibble decoder, `IMA_ADPCM__DecodeSample` at
+  `0x0040acd0` — verified 2026-09-03 by `get_xrefs_to` on both coefficient tables (one
+  DATA reference each, both from `0x0040acd0`) plus a `search_byte_patterns` sweep for the
+  step table's head, which found no second copy in the image:
   - Step size table at `0x00816558` (89 entries: 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19,
     21, 23, 25, 28, 31, ... 32767)
   - Index adjustment table at `0x00816518` (16 entries: -1,-1,-1,-1, 2,4,6,8 repeated)
   - Decodes 4-bit nibbles to 16-bit signed PCM samples
-  - `chunk_size` field (entry +0x20) specifies samples per ADPCM block
+  - Reached only from the single block decoder `IMA_ADPCM__DecodeBlock @ 0x0040aa70`,
+    installed as the stream's `+0xB0` callback by `FUN_00409C40` for compression id 1
+  - `chunk_size` field (entry +0x20) is the block stride in **bytes** (see §4)
 
 
 ## 8. VocClass::ReadINI — Sound Tokenizer (FUN_00750440)

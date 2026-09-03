@@ -33,6 +33,7 @@ pub mod error;
 pub mod fnt_file;
 pub mod format_sniff;
 pub mod hva_file;
+pub mod ima_adpcm;
 pub mod mix_archive;
 pub mod mix_crypto;
 #[cfg(test)]

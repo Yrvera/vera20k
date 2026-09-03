@@ -2235,143 +2235,19 @@ pub(crate) fn decode_wav(data: &[u8], filename: &str) -> Option<DecodedAudio> {
     None
 }
 
-/// IMA ADPCM step size table — standard IMA/DVI specification.
-const IMA_STEP_TABLE: [i32; 89] = [
-    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66,
-    73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449,
-    494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272,
-    2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493,
-    10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767,
-];
-
-/// IMA ADPCM index adjustment table for each nibble value.
-const IMA_INDEX_TABLE: [i32; 16] = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
-
 /// Decode IMA ADPCM WAV data into interleaved f32 samples.
 ///
-/// Each block starts with a 4-byte header per channel: i16 predictor + u8 step index + u8 pad.
-/// Remaining bytes contain packed 4-bit nibbles decoded with the standard IMA algorithm.
+/// `WAV__ParseHeader @ 0x00408610` maps `wFormatTag == 0x11` onto the same audio
+/// format descriptor the bag index fills, taking the block stride from the fmt
+/// chunk's `nBlockAlign` (`psVar6[6]`). `FUN_00409C40 @ 0x00409C40` then installs
+/// the one block decoder in the image, `IMA_ADPCM__DecodeBlock @ 0x0040AA70`, so
+/// WAV and bag IMA share a decoder natively and share `ima_adpcm::decode_blocks`
+/// here.
 fn decode_ima_adpcm(data: &[u8], channels: u16, block_align: u16) -> Vec<f32> {
-    let ch = channels as usize;
-    let block_size = block_align as usize;
-    if block_size == 0 || ch == 0 {
-        return Vec::new();
-    }
-    let header_size = 4 * ch;
-    if block_size < header_size {
-        return Vec::new();
-    }
-
-    // Samples per block: header gives 1 sample per channel, then 2 nibbles per byte.
-    let data_bytes_per_block = block_size - header_size;
-    let samples_per_block = 1 + data_bytes_per_block * 2 / ch;
-    let num_blocks = (data.len() + block_size - 1) / block_size;
-    let mut output: Vec<f32> = Vec::with_capacity(num_blocks * samples_per_block * ch);
-
-    for block in data.chunks(block_size) {
-        if block.len() < header_size {
-            break;
-        }
-
-        // Read per-channel header: initial predictor and step index.
-        let mut predictor = [0i32; 2];
-        let mut step_index = [0i32; 2];
-        for c in 0..ch {
-            let base = c * 4;
-            predictor[c] = i16::from_le_bytes([block[base], block[base + 1]]) as i32;
-            step_index[c] = block[base + 2] as i32;
-            step_index[c] = step_index[c].clamp(0, 88);
-            // First sample from header.
-            if ch == 1 {
-                output.push(predictor[c] as f32 / 32768.0);
-            }
-        }
-        // For stereo, interleave the initial samples.
-        if ch == 2 {
-            output.push(predictor[0] as f32 / 32768.0);
-            output.push(predictor[1] as f32 / 32768.0);
-        }
-
-        // Decode nibbles from the data portion.
-        let payload = &block[header_size..];
-        if ch == 1 {
-            // Mono: straightforward sequential nibbles.
-            for &byte in payload {
-                for shift in [0u8, 4] {
-                    let nibble = ((byte >> shift) & 0x0F) as usize;
-                    let step = IMA_STEP_TABLE[step_index[0] as usize];
-                    let mut diff = step >> 3;
-                    if nibble & 4 != 0 {
-                        diff += step;
-                    }
-                    if nibble & 2 != 0 {
-                        diff += step >> 1;
-                    }
-                    if nibble & 1 != 0 {
-                        diff += step >> 2;
-                    }
-                    if nibble & 8 != 0 {
-                        predictor[0] -= diff;
-                    } else {
-                        predictor[0] += diff;
-                    }
-                    predictor[0] = predictor[0].clamp(-32768, 32767);
-                    step_index[0] += IMA_INDEX_TABLE[nibble];
-                    step_index[0] = step_index[0].clamp(0, 88);
-                    output.push(predictor[0] as f32 / 32768.0);
-                }
-            }
-        } else {
-            // Stereo: nibbles are interleaved in 8-nibble (4-byte) chunks per channel.
-            // Layout: 4 bytes for ch0 (8 nibbles), 4 bytes for ch1 (8 nibbles), repeat.
-            let mut samples_buf: Vec<[f32; 2]> = Vec::new();
-            let mut pos = 0;
-            while pos + 8 <= payload.len() {
-                for c in 0..2 {
-                    for b in 0..4 {
-                        let byte = payload[pos + c * 4 + b];
-                        for shift in [0u8, 4] {
-                            let nibble = ((byte >> shift) & 0x0F) as usize;
-                            let step = IMA_STEP_TABLE[step_index[c] as usize];
-                            let mut diff = step >> 3;
-                            if nibble & 4 != 0 {
-                                diff += step;
-                            }
-                            if nibble & 2 != 0 {
-                                diff += step >> 1;
-                            }
-                            if nibble & 1 != 0 {
-                                diff += step >> 2;
-                            }
-                            if nibble & 8 != 0 {
-                                predictor[c] -= diff;
-                            } else {
-                                predictor[c] += diff;
-                            }
-                            predictor[c] = predictor[c].clamp(-32768, 32767);
-                            step_index[c] += IMA_INDEX_TABLE[nibble];
-                            step_index[c] = step_index[c].clamp(0, 88);
-                            let sample = predictor[c] as f32 / 32768.0;
-                            let sample_idx = b * 2 + shift as usize / 4;
-                            if c == 0 {
-                                samples_buf.push([sample, 0.0]);
-                            } else if sample_idx < samples_buf.len() {
-                                let last = samples_buf.len();
-                                samples_buf[last - 8 + sample_idx][1] = sample;
-                            }
-                        }
-                    }
-                }
-                pos += 8;
-                for pair in samples_buf.drain(..) {
-                    output.push(pair[0]);
-                    output.push(pair[1]);
-                }
-            }
-        }
-    }
-
-    output
+    crate::assets::ima_adpcm::decode_blocks(data, channels, block_align as u32)
+        .into_iter()
+        .map(|s| s as f32 / 32768.0)
+        .collect()
 }
 
 /// Convert raw PCM bytes to f32 samples. Output channel count matches input.
@@ -3076,6 +2952,85 @@ mod tests {
         let wav = build_test_wav(44100, 16, 2, &pcm);
         let decoded = decode_wav(&wav, "test.wav").expect("should decode");
         assert_eq!(decoded.samples.len(), 4); // 2 stereo frames, already 2ch
+    }
+
+    /// Build a `wFormatTag == 0x11` (IMA ADPCM) WAV around a raw block payload.
+    fn build_test_ima_wav(
+        sample_rate: u32,
+        channels: u16,
+        block_align: u16,
+        blocks: &[u8],
+    ) -> Vec<u8> {
+        let data_size: u32 = blocks.len() as u32;
+        let fmt_size: u32 = 20; // WAVEFORMATEX + cbSize(2) + wSamplesPerBlock(2)
+        let riff_size: u32 = 4 + (8 + fmt_size) + (8 + data_size);
+        let samples_per_block: u16 = 1 + (block_align - 4 * channels) * 2 / channels;
+
+        let mut wav: Vec<u8> = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&riff_size.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&fmt_size.to_le_bytes());
+        wav.extend_from_slice(&0x0011u16.to_le_bytes()); // wFormatTag
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate / 2).to_le_bytes()); // nAvgBytesPerSec
+        wav.extend_from_slice(&block_align.to_le_bytes()); // psVar6[6] @ 0x00408610
+        wav.extend_from_slice(&4u16.to_le_bytes()); // wBitsPerSample
+        wav.extend_from_slice(&2u16.to_le_bytes()); // cbSize
+        wav.extend_from_slice(&samples_per_block.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_size.to_le_bytes());
+        wav.extend_from_slice(blocks);
+        wav
+    }
+
+    /// The retail final block of AUDIOMD `ABIRJ01A` (bag offset 11,770,646 +
+    /// 28 x 512): the same bytes the bag path decodes, run through the WAV path.
+    const ABIRJ01A_TAIL_BLOCK: &[u8] = &[
+        0xf8, 0xff, 0x01, 0x00, 0x17, 0xbc, 0x33, 0xa1, 0x1b, 0x00, 0x90, 0x3a, 0xb5, 0x2c, 0x92,
+        0x10, 0xb2, 0x9c, 0x32, 0xb3, 0x2d, 0x21, 0xcb, 0x79, 0xa1, 0x0a, 0x31, 0xc0, 0x1a, 0x23,
+        0xbb, 0x4b, 0xb2, 0x1b, 0x13, 0x11, 0xd9, 0x39, 0x92, 0xa9, 0x30, 0x90, 0x0a, 0x11, 0x11,
+        0x1a, 0x91, 0x09, 0x11, 0x09, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn decode_wav_ima_adpcm_mono_matches_the_shared_block_decoder() {
+        let wav = build_test_ima_wav(22050, 1, 52, ABIRJ01A_TAIL_BLOCK);
+        let decoded = decode_wav(&wav, "ima.wav").expect("format tag 0x11 must decode");
+        assert_eq!(decoded.sample_rate, 22050);
+        assert_eq!(decoded.channels, 2, "mono is upmixed for playback");
+        // 97 mono samples duplicated into stereo pairs.
+        assert_eq!(decoded.samples.len(), 97 * 2);
+        let want = crate::assets::ima_adpcm::decode_blocks(ABIRJ01A_TAIL_BLOCK, 1, 52);
+        for (i, &s) in want.iter().enumerate() {
+            let f = s as f32 / 32768.0;
+            assert_eq!(decoded.samples[i * 2], f, "left at {i}");
+            assert_eq!(decoded.samples[i * 2 + 1], f, "right at {i}");
+        }
+    }
+
+    #[test]
+    fn decode_wav_ima_adpcm_stereo_keeps_the_channels_apart() {
+        // Two channels whose preambles differ, so a collapsed or swapped
+        // interleave cannot pass. 8-byte preamble pair + one 8-byte L/R group.
+        let mut block: Vec<u8> = vec![0x00, 0x10, 0x00, 0x00, 0x00, 0xF0, 0x00, 0x00];
+        block.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x00]);
+        let wav = build_test_ima_wav(22050, 2, 16, &block);
+        let decoded = decode_wav(&wav, "ima2.wav").expect("stereo IMA must decode");
+        assert_eq!(decoded.channels, 2);
+        // 1 preamble frame + 8 group frames = 9 frames.
+        assert_eq!(decoded.samples.len(), 18);
+        assert_eq!(decoded.samples[0], 0x1000 as f32 / 32768.0);
+        assert_eq!(decoded.samples[1], -4096.0 / 32768.0);
+        let want = crate::assets::ima_adpcm::decode_blocks(&block, 2, 16);
+        let got: Vec<i16> = decoded
+            .samples
+            .iter()
+            .map(|&f| (f * 32768.0) as i16)
+            .collect();
+        assert_eq!(got, want);
     }
 
     #[test]

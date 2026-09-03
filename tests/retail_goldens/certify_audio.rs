@@ -137,20 +137,23 @@ fn certify_bag_adpcm_block_invariants() {
     // Value-parity certification for bag IMA-ADPCM decode, block level.
     // The original engine's block decoder (see docs/research/
     // ADPCM_NIBBLE_VALUE_CERTIFICATION_GHIDRA_REPORT.md):
-    // - REJECTS a block whose per-channel preamble has step_index > 88 or a
-    //   nonzero reserved byte (our decoder clamps/continues instead) — so
-    //   equivalence needs: no retail preamble is invalid;
-    // - for MONO blocks rounds the nibble payload up to 4-byte groups,
-    //   reading past an unaligned block end (ours decodes exact bytes) — so
-    //   equivalence needs: every mono block payload is 4-byte aligned;
-    // - for STEREO blocks truncates the payload to whole 8-byte L/R groups —
-    //   identical to ours by construction.
+    // - REJECTS a block whose per-channel preamble has step_index > 0x58 or a
+    //   nonzero reserved byte (0x0040AAEE / 0x0040AAF9) — so equivalence needs:
+    //   no retail preamble is invalid;
+    // - REJECTS a block whose payload is not a whole number of 4*channels-byte
+    //   groups: mono rounds the group count up and reads past the block end
+    //   (0x0040AB4E), stereo runs one group too many (0x0040ACB3), and both then
+    //   return false, which makes the buffer pump drop the block. We drop it
+    //   without the over-read, so equivalence on VALUES needs: no retail block
+    //   has a ragged payload — with one known, recorded exception below.
+    const KNOWN_RAGGED: &[&str] = &["GREXSELB"];
     let Some(root) = ra2_dir() else {
         println!("SKIP: set RA2_DIR to the retail install");
         return;
     };
     let am = load_corpus(&root);
     let mut failures: Vec<String> = Vec::new();
+    let mut ragged_known: Vec<String> = Vec::new();
     let mut ima_entries = 0usize;
     let mut stereo_entries = 0usize;
     for mix_name in ["AUDIOMD.MIX", "AUDIO.MIX"] {
@@ -203,11 +206,18 @@ fn certify_bag_adpcm_block_invariants() {
                     }
                 }
                 let payload = block_end - pos - preamble;
-                if channels == 1 && payload % 4 != 0 {
-                    failures.push(format!(
-                        "{mix_name} '{name}': mono block at {pos} payload {payload} \
-                         not 4-aligned — native reads past block end"
-                    ));
+                let group = 4 * channels;
+                if payload % group != 0 {
+                    let line = format!(
+                        "{mix_name} '{name}': {channels}ch block at {pos} payload \
+                         {payload} not a multiple of {group} — native over-reads \
+                         and drops the block"
+                    );
+                    if KNOWN_RAGGED.contains(&name.as_str()) {
+                        ragged_known.push(line);
+                    } else {
+                        failures.push(line);
+                    }
                 }
                 if block_size == 0 {
                     break;
@@ -217,6 +227,14 @@ fn certify_bag_adpcm_block_invariants() {
         }
     }
     println!("RECORD: IMA-ADPCM bag entries: {ima_entries} ({stereo_entries} stereo)");
+    for line in &ragged_known {
+        println!("RECORD: known ragged tail (native drops it, so do we): {line}");
+    }
+    assert!(
+        !ragged_known.is_empty(),
+        "GREXSELB's ragged tail block is the recorded exception; if it is gone the \
+         corpus changed and the exception list should shrink"
+    );
     assert!(
         failures.is_empty(),
         "bag ADPCM block invariants: {} violations:\n{}",
