@@ -342,7 +342,7 @@ pub fn voxel_anim_ai(
     Ok(VoxelAnimAiOutcome::Alive)
 }
 
-//// Which list the SHP half of the death block draws its anim from.
+/// Which list the SHP half of the death block draws its anim from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShpDebrisSource {
     /// `TechnoType+0x5C4` — the section's own `DebrisAnims=`.
