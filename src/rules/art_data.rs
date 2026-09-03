@@ -1306,17 +1306,45 @@ impl ArtRegistry {
     ///   `AnimTypeClass::ReadINI @ 0x00427D00` calls `ObjectTypeClass::ReadINI
     ///   @ 0x005F92D0`, which calls `AbstractTypeClass::ReadINI @ 0x00410A60`;
     ///   that one does `INIClass::FindSectionByName` and **returns 0 when the
-    ///   section is absent**, so `0x00427D22 JZ 0x004287E9` bails out of
-    ///   `ReadINI` before the vtable `+0xA0` image-loader dispatch at
-    ///   `0x0042894F`. `AnimTypeClass::LoadImageAndResolveFrameBounds @
-    ///   0x00427B50` — the only thing that ever fills `End` (`+0x2C0`) from the
-    ///   SHP header — therefore never runs, `End` keeps its constructor `0`, and
-    ///   the anim dies on its first `AnimClass::AI` visit having drawn nothing.
-    ///   The two SHPs really are in `conquer.mix`, but they are orphaned art:
-    ///   nothing loads them, because the art section that would trigger the load
-    ///   does not exist. **Do not "fix" this by minting a default config from
-    ///   the SHP header** — that would make VERA draw an explosion gamemd does
-    ///   not.
+    ///   section is absent**, so `0x00427D22 JZ 0x004287E9` bails to the
+    ///   `XOR AL,AL` epilogue before the vtable `+0xA0` image-loader dispatch
+    ///   at `0x00427DDD`, which is itself behind a non-empty art-name test on
+    ///   `+0x1F8`. On an `AnimTypeClass` that `+0xA0` slot *is*
+    ///   `LoadImageAndResolveFrameBounds @ 0x00427B50` (vtable `0x007E3608`,
+    ///   slot `0x007E36A8` holds `0x00427B50`), so the dispatch and the loader
+    ///   are one thing and neither runs.
+    ///
+    ///   `End` (`+0x2C0`) therefore keeps its constructor `0`:
+    ///   `AnimTypeClass::Constructor 0x0042758A` stores `EBX`, and
+    ///   `0x00427542 XOR EBX,EBX` is that function's only write to `EBX`.
+    ///   **Three bodies fill `End` from the SHP header, not one.** Over all 34
+    ///   `+0x2C0` stores in the binary, the writers with an `AnimTypeClass`
+    ///   receiver are exactly: that constructor; `ReadINI` itself
+    ///   (`0x00427D5D`/`0x00427D6D`/`0x00427FE8`, never reached here);
+    ///   `LoadImageAndResolveFrameBounds` (`0x00427C37`/`0x00427C46`); and the
+    ///   lazy fills in `AnimClass::AnimClass @ 0x00422143` and `AnimClass::AI
+    ///   @ 0x00424434` (repeated at `0x00424823`) — the mechanism `anim_class`
+    ///   already models in `effective_bounds`. The lazy fills cannot rescue a
+    ///   sectionless type, and that is *why* they are gated the way they are:
+    ///   the gate wants `End == -1`, the constructor left `0`, and only an
+    ///   `End=` line could put `-1` there — which needs the missing section.
+    ///
+    ///   The other `+0xA0` call sites cannot reach these types either. All five
+    ///   in the binary: `0x00427DDD` above; `0x00427A1E`, `0x00427B3A` and
+    ///   `0x0042894F`, each gated on `NewTheater` (`+0x237`), which defaults
+    ///   false — its only three writers are `ObjectTypeClass::Constructor
+    ///   0x005F71A0` (`BL`, zeroed at `0x005F70A1`) and the two `ReadINI`s that
+    ///   never run; and `0x00428D9C`, inside the lazy art loader at
+    ///   `0x00428C30`, which bails at `0x00428C4F` unless `+0x35E` is set, and
+    ///   `AnimTypeClass::Constructor 0x004276B6` is the *only* instruction in
+    ///   the binary writing `+0x35E`, storing the same zero.
+    ///
+    ///   So the anim dies on its first `AnimClass::AI` visit having drawn
+    ///   nothing. The two SHPs really are in `conquer.mix`, but they are
+    ///   orphaned art: nothing loads them, because the art section that would
+    ///   trigger the load does not exist. **Do not "fix" this by minting a
+    ///   default config from the SHP header** — that would make VERA draw an
+    ///   explosion gamemd does not.
     /// - *Frequency:* the `[CRNuke]` path is effectively never. The power-plant
     ///   path is latent for a different reason: the object
     ///   `Explosion=`/`DestroyAnim=` pick is still gated to
@@ -1324,8 +1352,14 @@ impl ArtRegistry {
     ///   `src/sim/combat/mod.rs`, so no building reaches it yet. Whoever lands
     ///   GSI-08.11 makes it continuous — every power plant death, every match.
     /// - *Downstream risk:* the divergence that survives is object identity, not
-    ///   pixels. Native still constructs the `AnimClass`, consuming an ID and a
-    ///   hash slot, then discards it; VERA constructs none. Closing it means
+    ///   pixels. The unbindable name really does enter native's list:
+    ///   `TechnoTypeClass::ReadINI @ 0x00712170` reads `Explosion`
+    ///   (`0x0081DA00`) at `0x0071399A`, `strtok`s it, and calls
+    ///   `AnimTypeClass::FindOrAllocate @ 0x00428B80` per token at `0x007139E1`,
+    ///   which `operator_new`s a type on a name miss — so the list is six long
+    ///   and the dud is picked one time in six. Native still constructs the
+    ///   `AnimClass`, consuming an ID and a hash slot, then discards it; VERA
+    ///   constructs none. Closing it means
     ///   minting default-`End` AnimType entries for unresolvable names so the
     ///   object exists and dies, which belongs with the AnimType registry.
     ///
