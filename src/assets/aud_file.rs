@@ -12,7 +12,9 @@
 //!
 //! The DEAF-chunk container this file walks has **no decoder in `gamemd.exe`**:
 //! the only `.aud` filenames the binary references are TEXT1–3.AUD (score-screen
-//! narration), no code compares the `0x0000DEAF` chunk magic, and the image's
+//! narration), no code in the audio path compares the `0x0000DEAF` chunk magic
+//! (the image's one `CMP word ptr [...+0x4],0xDEAF` is at `0x005F1D2F`, inside
+//! the serial/null-modem packet framer `FUN_005F1C60`), and the image's
 //! single IMA decoder (`IMA_ADPCM__DecodeSample @ 0x0040ACD0`, reached only via
 //! the block decoder `IMA_ADPCM__DecodeBlock @ 0x0040AA70`) is block-framed, not
 //! chunk-framed. See `docs/research/AUD_TRAILING_SAMPLE_UNREACHABLE_GHIDRA_REPORT.md`.

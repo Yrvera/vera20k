@@ -143,9 +143,9 @@ const GROUP_BYTES_PER_CHANNEL: usize = 4;
 
 /// Decode block-framed IMA ADPCM into interleaved 16-bit PCM.
 ///
-/// This is `IMA_ADPCM__DecodeBlock @ 0x0040AA70` driven by the streaming pump
-/// `Audio__DecodeCompressedBlock @ 0x00409DE0`, which hands it one
-/// `block_align`-byte buffer at a time.
+/// This is `IMA_ADPCM__DecodeBlock @ 0x0040AA70` driven the way the native
+/// streaming pump drives it, because the pump — not the file — decides how many
+/// bytes each block decode sees.
 ///
 /// Per block the native:
 /// 1. requires at least `4 * channels` bytes, else fails (`0x0040AAAD`);
@@ -164,13 +164,41 @@ const GROUP_BYTES_PER_CHANNEL: usize = 4;
 /// abandon the sound, so the block's samples never reach the mixer. We stop and
 /// return what earlier blocks produced, which is what the player hears.
 ///
-/// The same "return false" happens when a block's payload is not a whole number
-/// of groups: mono rounds the group count up and reads past the block
-/// (`0x0040AB4E: LEA EAX,[ECX+3] / SHR EAX,2`), stereo runs one group too many
-/// (`0x0040ACB3: TEST ECX,ECX / JG`), and both then report failure. We do not
-/// reproduce the over-read — its inputs are stale buffer bytes — so we drop the
-/// block, which is the audible outcome either way.
+/// ## The native feed: every block is exactly `block_align` bytes
+///
+/// The decoder's available-byte count is `+0x80 - +0x84`
+/// (`0x0040AA70` prologue), and in `Audio__DecodeCompressedBlock @ 0x00409DE0`
+/// those two fields have exactly four writes between them:
+/// - case 3 sets both to `+0xAC` = `block_align` (`0x00409F8A`, `0x00409F90`);
+/// - case 0 fills the `malloc(block_align)` input buffer at `+0x7C`, writing at
+///   offset `+0x80 - +0x84` and subtracting what it copied (`0x00409EBE`);
+/// - case 0 forces `+0x84 = 0` (`0x00409EA4`) when the source is exhausted or
+///   the source pointer is NULL, then hands over to the block decoder.
+///
+/// `FUN_00409880 @ 0x00409880` writes neither field. Case 0 only ever leaves the
+/// fill state with `+0x84 == 0`, so **`avail` is always exactly `block_align`**.
+/// Two consequences, both of which this function reproduces:
+///
+/// - At end of stream the pump calls the decode callback with a NULL source and
+///   a NULL count (`0x00409B41`, taken while the stream's "decoder still holds
+///   data" flag `+0xA8` is set), so a final short tail is still decoded as a
+///   **full `block_align` block**. The bytes past the tail are whatever the
+///   previous cycle left in the input buffer at those same offsets — i.e. the
+///   previous block's bytes — because every cycle refills the buffer from
+///   offset 0. We rebuild exactly that buffer.
+/// - The "payload is not a whole number of groups" failure (mono
+///   `0x0040AB4E: LEA EAX,[ECX+3] / SHR EAX,2` then `0x0040ABD4 SETZ`; stereo
+///   `0x0040ACB3: TEST ECX,ECX / JG`) is therefore decided by `block_align`
+///   alone, never by where the data ends. Both retail strides are whole
+///   (`(512-4) % 4 == 0`, `(1024-8) % 8 == 0`), so it is unreachable on retail
+///   data; we keep the rule gated on the stride so a synthetic stride behaves
+///   natively. We do not reproduce the over-read values, which the rejected
+///   block discards anyway.
 pub fn decode_blocks(data: &[u8], channels: u16, block_align: u32) -> Vec<i16> {
+    // VERA-internal, gamemd equivalent UNCHECKED: with `+0xA4 == 0` the native's
+    // stereo loop at `0x0040ABED` subtracts 0 per pass and spins forever, so
+    // there is no native behavior to match. No retail entry declares 0 channels
+    // (`AudioIndex__GetFormat @ 0x00401640` derives it from a flag bit).
     let channels = channels.max(1) as usize;
     let preamble = PREAMBLE_BYTES_PER_CHANNEL * channels;
     let group = GROUP_BYTES_PER_CHANNEL * channels;
@@ -189,15 +217,38 @@ pub fn decode_blocks(data: &[u8], channels: u16, block_align: u32) -> Vec<i16> {
     let mut states: Vec<ImaAdpcmState> = (0..channels).map(|_| ImaAdpcmState::new()).collect();
     let mut pos = 0usize;
 
-    while pos + preamble <= data.len() {
-        let block_end = (pos + block_align).min(data.len());
-        let block = &data[pos..block_end];
+    while pos < data.len() {
+        let real = &data[pos..(pos + block_align).min(data.len())];
+        let stale_padded;
+        let block: &[u8] = if real.len() == block_align {
+            real
+        } else if pos >= block_align {
+            // End-of-stream flush: the input buffer still holds the previous
+            // block's bytes past the short tail (see the module comment above).
+            let mut buffer = Vec::with_capacity(block_align);
+            buffer.extend_from_slice(real);
+            buffer.extend_from_slice(&data[pos - block_align + real.len()..pos]);
+            stale_padded = buffer;
+            &stale_padded
+        } else {
+            // VERA-internal, gamemd equivalent UNCHECKED: a sound shorter than
+            // one stride is flushed against a buffer that was never filled by
+            // this sound — `malloc`ed on first use, otherwise the previous
+            // sound's bytes, since `FUN_00409C40` only reallocates when the
+            // stride grows. Neither is reproducible from the file, so we decode
+            // the whole groups this sound actually carries.
+            if real.len() < preamble {
+                break;
+            }
+            &real[..preamble + (real.len() - preamble) / group * group]
+        };
+
         // A rejected block is discarded whole by the caller, so everything this
         // iteration appends has to go with it.
         let block_out_start = out.len();
 
         // Preambles: predictor, step index, reserved — per channel, in order.
-        let mut rejected = block[preamble..].len() % group != 0;
+        let mut rejected = (block.len() - preamble) % group != 0;
         for (ch, state) in states.iter_mut().enumerate() {
             if rejected {
                 break;
@@ -402,6 +453,9 @@ mod tests {
 
     #[test]
     fn retail_mono_tail_block_matches_native_block_decode() {
+        // Fed alone these are the 52 bytes the native's flush block starts
+        // with, so these 97 samples are the leading 97 the native emits for it
+        // (the rest come from the stale buffer tail, covered separately).
         let out = decode_blocks(ABIRJ01A_TAIL_BLOCK, 1, 512);
         // 1 preamble sample + 48 payload bytes x 2 nibbles.
         assert_eq!(out.len(), 97);
@@ -430,15 +484,83 @@ mod tests {
     }
 
     #[test]
-    fn unaligned_payload_drops_the_block_like_the_native() {
-        // 44 bytes: 8 preamble + 36 payload, and 36 is not a whole number of
-        // 8-byte groups. `0x0040ACB3` runs one group past the end and then
-        // `SETZ AL` reports failure, so the block never reaches the mixer.
+    fn ragged_stride_drops_the_block_like_the_native() {
+        // The over-read failure is decided by the STRIDE, not by where the data
+        // ends: the pump always presents exactly `block_align` bytes, so
+        // `0x0040AB4E`'s rounded-up group count only overshoots when
+        // `(block_align - 4*channels) % (4*channels) != 0`. Stride 13 mono
+        // leaves a 9-byte payload — two whole groups plus one byte — so the
+        // native reads a third group past the block and `0x0040ABD4 SETZ`
+        // reports failure, dropping it.
+        let ragged = vec![0u8; 26];
+        assert!(decode_blocks(&ragged, 1, 13).is_empty());
+        // Neither retail stride is ragged, so this is unreachable on retail
+        // data: (512-4) % 4 == 0 and (1024-8) % 8 == 0.
+        assert_eq!((512 - 4) % 4, 0);
+        assert_eq!((1024 - 8) % 8, 0);
+    }
+
+    #[test]
+    fn end_of_stream_flush_pads_from_the_previous_block_like_the_native() {
+        // `FUN_00409880`'s NULL-source call at `0x00409B41` makes
+        // `Audio__DecodeCompressedBlock` force `+0x84 = 0` (`0x00409EA4`), so
+        // the block decoder still sees a full stride. Every fill cycle writes
+        // the input buffer from offset 0, so the bytes past a short tail are
+        // the previous block's bytes at those same offsets.
+        let block0: Vec<u8> = vec![
+            0x64, 0x00, 0x05, 0x00, 0x3c, 0x91, 0x27, 0x08, 0xa5, 0x1f, 0x60, 0xd3,
+        ];
+        let tail: Vec<u8> = vec![0x10, 0x00, 0x02, 0x00, 0x8f, 0x41];
+
+        let mut data = block0.clone();
+        data.extend_from_slice(&tail);
+        let out = decode_blocks(&data, 1, 12);
+
+        // Two whole blocks' worth of output, not one and a fragment.
+        assert_eq!(out.len(), 34, "the short tail still decodes a full stride");
+
+        // The flush block is byte-for-byte `tail ++ block0[6..12]`.
+        let mut expected_buffer = tail.clone();
+        expected_buffer.extend_from_slice(&block0[6..]);
+        assert_eq!(expected_buffer.len(), 12);
+        assert_eq!(
+            &out[17..],
+            decode_blocks(&expected_buffer, 1, 12).as_slice()
+        );
+    }
+
+    #[test]
+    fn retail_sound_shapes_decode_the_native_block_count() {
+        // Sample counts measured against gamemd's pipeline: every sound decodes
+        // ceil(size / stride) blocks of 1 + (stride - 4*ch)/(4*ch) * 8 frames,
+        // because the end-of-stream flush presents a full stride.
+        //
+        // ABIRJ01A: 14,388 bytes, mono, stride 512 -> 29 blocks x 1017 samples.
+        let mut mono = vec![0x11u8; 14_388];
+        for start in (0..mono.len()).step_by(512) {
+            mono[start..start + 4].fill(0);
+        }
+        assert_eq!(decode_blocks(&mono, 1, 512).len(), 29 * 1017);
+
+        // GREXSELB: 41,212 bytes, stereo, stride 1024 -> 41 blocks x 1017
+        // frames = 83,394 samples. Its 252-byte tail is the corpus's only block
+        // whose *real* payload is ragged; padded to the stride it is not.
+        let mut stereo = vec![0x11u8; 41_212];
+        for start in (0..stereo.len()).step_by(1024) {
+            stereo[start..start + 8].fill(0);
+        }
+        assert_eq!(decode_blocks(&stereo, 2, 1024).len(), 41 * 1017 * 2);
+    }
+
+    #[test]
+    fn lone_short_block_decodes_whole_groups_only() {
+        // VERA-internal: a sound shorter than one stride is flushed against a
+        // buffer this sound never filled, so there is nothing to reproduce. We
+        // decode the whole groups it carries. 44 bytes stereo = 8 preamble + 36
+        // payload -> 4 whole 8-byte groups, the spare 4 bytes dropped.
         let out = decode_blocks(GTIMESHI_STEREO_BYTES, 2, 1024);
-        assert!(out.is_empty(), "a rejected first block yields nothing");
-        // Retail hits this exactly once: AUDIOMD `grexselb` (offset 7,063,684,
-        // size 41,212, chunk 1024) ends in a 252-byte block whose 244-byte
-        // payload is 30 whole groups plus 4 bytes.
+        assert_eq!(out.len(), 66);
+        assert_eq!(out.as_slice(), GTIMESHI_STEREO_SAMPLES);
     }
 
     #[test]

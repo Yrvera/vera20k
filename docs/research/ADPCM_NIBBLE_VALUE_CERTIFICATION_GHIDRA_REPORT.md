@@ -18,8 +18,8 @@ is value-identical to the original's (`IMA_ADPCM__DecodeBlock @ 0x0040AA70`) on
 all retail data.** Evidence:
 algorithm identity from decompiles, table identity from raw memory reads,
 15 machine-derived emulation vectors (including both saturation clamps), and
-corpus proofs that the two behavioral divergence classes (invalid-preamble
-handling; unaligned mono payloads) never occur in retail data.
+corpus proofs that the divergence classes in §2 never occur in retail data —
+with one residual, a sound shorter than one stride, recorded in §2.1.
 
 ## 1. Nibble decoder identity
 
@@ -79,25 +79,26 @@ table identity above — the vectors guard the restatement.
 `FUN_00409C40` (format tag 1). Grammar: per block, one 4-byte preamble per
 channel `{i16 predictor, u8 step_index, u8 reserved}`, predictor emitted as
 the first sample, then nibble payload (mono: 4-byte groups; stereo: 8-byte
-L/R groups, remainder truncated). Matches src/assets/audio_bag.rs
-`decode_ima_adpcm_blocks` with two behavioral differences:
+L/R groups). The pump hands it exactly `block_align` bytes every time — see
+§2.1 — so the block grammar is stride-determined. Matches
+src/assets/ima_adpcm.rs `decode_blocks` with these behavioral differences:
 
 | Divergence class | Native | Ours | Corpus status |
 |---|---|---|---|
 | Preamble step_index > 0x58 or reserved ≠ 0 | rejects the block, stopping the sound | rejects the block, stopping the sound | **never occurs** (0 of 3,325 IMA entries, all blocks) |
-| Mono payload not a multiple of 4 | rounds the group count UP, reads past the block end, then reports failure | drops the block | **never occurs** (all mono blocks 4-aligned) |
-| Stereo payload not a multiple of 8 | runs one group past the end, then reports failure | drops the block | AUDIOMD `grexselb` only (§2.1) |
+| Stride payload not a multiple of `4*channels` | rounds the group count UP (mono) / runs one group long (stereo), reads past the block end, then reports failure | drops the block | **unreachable**: the pump always presents exactly `block_align` bytes, and `(512-4)%4 == 0`, `(1024-8)%8 == 0` (§2.1) |
+| Last block shorter than the stride | decodes a full stride; the bytes past the tail are the previous block's, still in the input buffer | reproduces that buffer, except for a sound shorter than one stride (§2.1) | 2,049 of 2,197 AUDIOMD IMA entries |
 
 Proven by `certify_bag_adpcm_block_invariants`
 (tests/retail_goldens/certify_audio.rs): 3,325 IMA entries across
 AUDIOMD/AUDIO.MIX.
 
-### 2.1 CORRECTION (2026-09-03) — the stereo remainder row was wrong
+### 2.1 CORRECTION (2026-09-03) — the remainder rows were wrong twice
 
-An earlier revision of this table claimed the native "truncates" a short stereo
-remainder and was therefore "identical by construction". The disassembly says
-otherwise. `0x0040ACB3: TEST ECX,ECX / JG 0x0040abf5` continues the group loop
-while any bytes remain, so a remainder of 1..7 bytes runs one **more** full
+**First error (the original table).** It claimed the native "truncates" a short
+stereo remainder and was therefore "identical by construction". The disassembly
+says otherwise. `0x0040ACB3: TEST ECX,ECX / JG 0x0040abf5` continues the group
+loop while any bytes remain, so a remainder of 1..7 bytes runs one **more** full
 8-byte group — over-reading the block — and the closing `SETZ AL` then returns
 false. `Audio__DecodeCompressedBlock` case 2 turns that false into a `return 0`
 (`0x00409F4E`) and the buffer pump abandons the sound, so the block's samples
@@ -105,22 +106,69 @@ never reach the mixer. Mono is the same shape: `0x0040AB4E: LEA EAX,[ECX+3] /
 SHR EAX,0x2` rounds the group count up, and `0x0040ABD4` reports failure unless
 the payload was an exact multiple of 4.
 
-The corpus claim was also incomplete. The check only tested mono alignment, so a
-stereo violation could not be seen, and the entry count was understated: AUDIOMD
-alone holds **9** stereo entries (5 IMA with `chunk_size` 1024, 4 raw PCM), not 7
-across both bags. Sweeping the shipped AUDIOMD `audio.idx` (2,285 entries) finds
-exactly one misaligned block in the whole file:
+**Second error (the first correction, same day).** All of the above is true of
+the *function*, and none of it applies to the *pipeline*. An earlier revision of
+this section then claimed "native drops that tail block … VERA now does the
+same" and that the over-read values "are discarded with the block". Both are
+false, because the block decoder never sees a short payload.
 
-- `grexselb` — offset 7,063,684, size 41,212, stereo IMA, `chunk_size` 1024.
-  40 whole blocks plus a 252-byte tail whose 244-byte payload is 30 whole groups
-  plus 4 bytes. Native drops that tail block (241 frames, ~11 ms at 22,050 Hz)
-  and stops the sound there; VERA now does the same.
+The decoder's available-byte count is `+0x80 - +0x84`, read in the `0x0040AA70`
+prologue. Between them those fields have exactly four writes, all in
+`Audio__DecodeCompressedBlock @ 0x00409DE0`; `FUN_00409880 @ 0x00409880` writes
+neither (`search_instructions` over both functions, 2026-09-03):
 
-Since 2026-09-03 VERA's `assets::ima_adpcm::decode_blocks` drops a block whose
-payload is not a whole number of `4 * channels`-byte groups, and drops a block
-with an invalid preamble, instead of clamping and truncating. The residual
-difference is only the *values* the native computes from bytes past the block
-end, which are stale decoder-buffer contents and are discarded with the block.
+| Address | Write |
+|---|---|
+| `0x00409F8A` | case 3: `+0x80 = +0xAC` = `block_align` |
+| `0x00409F90` | case 3: `+0x84 = +0xAC` = `block_align` |
+| `0x00409EBE` | case 0: `+0x84 -= bytes copied into the input buffer` |
+| `0x00409EA4` | case 0: `+0x84 = 0`, forced when the source is exhausted or NULL |
+
+Case 0 leaves the fill state only with `+0x84 == 0`, so **`avail` is always
+exactly `block_align`**. Every retail block therefore has a whole payload
+(`(512-4) % 4 == 0`, `(1024-8) % 8 == 0`) and the two failure branches above are
+unreachable on retail data — they are reachable only through a stride that is
+itself ragged.
+
+**What actually happens at end of stream.** `FUN_00409880` calls the decode
+callback with a NULL source pointer and a NULL count at `0x00409B41` (the
+`PUSH EDI/PUSH EDI` pair with `EDI == 0`), taken while the stream's
+"decoder still holds data" flag `+0xA8` is set. `+0x84` is forced to 0 and the
+block decoder runs over a full stride. The input buffer at `+0x7C` is
+`malloc(block_align)` (`FUN_00409C40`) and every fill cycle writes it from
+offset 0 (`puVar6 = (+0x80 - +0x84) + +0x7C`), so the bytes past a short tail
+are **the previous block's bytes at those same offsets** — real audio from
+one block earlier, not decay or silence. `Audio__DecodeCompressedBlock` case 1
+then copies the whole `+0x94` decoded byte count out to the DirectSound buffer;
+there is no length cap. So the native emits `ceil(size / block_align)` blocks
+for every sound, each `1 + (block_align - 4*ch)/(4*ch) * 8` frames.
+
+Measured consequences of the two retail shapes:
+
+- `ABIRJ01A` — 14,388 bytes, mono, stride 512 → 29 × 1017 = **29,493 samples**.
+  VERA emitted 28,573 before 2026-09-03 (~41.7 ms short).
+- `grexselb` — offset 7,063,684, size 41,212, stereo IMA, stride 1024 → 41 ×
+  1017 frames = **83,394 samples**. Its 252-byte tail is the corpus's only block
+  whose *real* payload is ragged (30 whole groups plus 4 bytes), which is why
+  the earlier "native drops it" reading picked this entry — but padded to the
+  stride it is not ragged and the native decodes it in full.
+
+Since 2026-09-03 `assets::ima_adpcm::decode_blocks` reproduces that feed: it
+rebuilds the flush buffer as `tail ++ previous_block[tail.len()..]`, keeps the
+preamble rejection, and gates the ragged-payload rejection on the stride rather
+than on where the data ends. Pinned by
+`retail_sound_shapes_decode_the_native_block_count` and
+`end_of_stream_flush_pads_from_the_previous_block_like_the_native`.
+
+**Residual.** A sound shorter than one stride is flushed against a buffer this
+sound never filled — `malloc`ed on first use, otherwise the previous sound's
+bytes, since `FUN_00409C40` reallocates only when the stride grows. Not
+reproducible from the file; VERA decodes the whole groups such a sound carries.
+
+The corpus claim in the original table was also incomplete: the check only
+tested mono alignment, so a stereo violation could not be seen, and the entry
+count was understated — AUDIOMD alone holds **9** stereo entries (5 IMA with
+`chunk_size` 1024, 4 raw PCM), not 7 across both bags.
 
 ## 3. The .aud chunk path
 
