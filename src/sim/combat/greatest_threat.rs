@@ -42,11 +42,11 @@
 //! a `100000.0` base, truncated to an integer by the caller. Five coefficients
 //! select between two sets on the scorer house's `HouseClass+0x1FB` byte
 //! (`0x0070CD4E`): clear takes the `[General] Dumb*Coefficient` set, set takes
-//! the scorer TYPE's own `MyEffectivenessCoefficient=` family. That byte is
-//! latched to 1 by `0x00509130`, whose only callers are `BuildingClass::Limbo`
-//! and `BuildingClass::Unlimbo`, and nothing ever clears it — so the per-type
-//! set is live for any house that has put a building on the map, which in an
-//! ordinary skirmish means from the moment the MCV deploys.
+//! the scorer TYPE's own `MyEffectivenessCoefficient=` family. The byte is set
+//! by `HouseClass::Constructor @ 0x004F644E` for any house built from a
+//! `HouseTypeClass`, which is every house `ScenarioClass::Create_Houses @
+//! 0x00687F10` makes, and nothing ever clears it — so the per-type set is live
+//! from the first frame of the match. See [`HOUSE_SELECTS_OWN_COEFFICIENTS`].
 //!
 //! ## Shroud
 //!
@@ -62,22 +62,30 @@
 //!
 //! RESIDUAL — VERA has the acquire half of that and not the drop half.
 //! - Trigger: an enemy inside weapon range but in a cell this house has not
-//!   explored.
-//! - Player effect: the unit holds a target it cannot fire on until something
-//!   else clears it, instead of dropping it a cadence later.
-//! - Frequency: uncommon in ordinary play — `Sight=` is at or above weapon
-//!   range for nearly every stock combat type, so a candidate inside weapon
-//!   range is almost always in explored ground already.
+//!   explored. Common for the long-range artillery, whose `Sight=` is far
+//!   *below* its weapon range: `[V3]` sees 7 and shoots 18, `[DRED]` sees 7 and
+//!   shoots 25, and `HowitzerGun` reaches 12. Those types scan well past their
+//!   own sight on every cadence.
+//! - Player effect: small even so. Native drops the target on
+//!   `GetFireError == 6` and then re-runs this same scan **inside the same
+//!   call**, so it re-picks the same shrouded candidate; the end state is a
+//!   unit holding a target it cannot fire on in both engines. What VERA loses
+//!   is the one-cadence flicker, not the choice.
+//! - Frequency: every artillery scan whose radius crosses unexplored ground.
 //! - Downstream risk: closing it belongs with the passive driver's stale-target
 //!   check, which needs VERA's fire-error query to report the shrouded case.
 //!
 //! ## Other residuals
 //!
 //! - The garrisoned-building auto-acquire scan in `combat/mod.rs` still uses
-//!   the retired nearest-first key. It is a separate caller with its own
+//!   the retired nearest-first key, and still carries the invented
+//!   `FogState::is_cell_visible` gate (`combat/mod.rs:5388`) that this scan no
+//!   longer has — so "the fog gate is gone" is true of passive acquisition and
+//!   not of the garrison path. It is a separate caller with its own
 //!   `OccupyWeapon` selection ladder; folding it into this walk is follow-up
 //!   work. Trigger: an occupied civilian building choosing among several
-//!   enemies. Frequency: garrison maps only.
+//!   enemies, or one standing in unexplored ground. Frequency: garrison maps
+//!   only.
 //! - The `DistributedFire=` spread-fire assignment (`FUN_00709550`) and the
 //!   AI-only ore-cell fallback (`TechnoClass::Cell_Threat_Fallback @
 //!   0x006F8C10`, which returns 0 for every human-controlled house) are not
@@ -96,8 +104,8 @@ use std::collections::BTreeMap;
 
 use super::combat_targeting::AttackerSnapshot;
 use super::combat_weapon::{
-    attacker_facts, attacker_facts_from_snapshot, is_ally_by_object, select_weapon_for_target,
-    techno_target_facts,
+    attacker_facts, attacker_facts_from_snapshot, is_ally_by_object, is_armed,
+    select_weapon_for_target, techno_target_facts,
 };
 use super::threat_range::{ScanRange, max_weapon_range, scan_range};
 use super::{armor_index, is_within_range_leptons, lepton_distance_sq_raw};
@@ -108,7 +116,7 @@ use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
-use crate::sim::intern::{InternedId, StringInterner};
+use crate::sim::intern::StringInterner;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid, cell_list_layer_for_entity};
 use crate::sim::vision::FogState;
@@ -145,20 +153,19 @@ pub(crate) struct ThreatCoefficients {
 }
 
 impl ThreatCoefficients {
-    /// The `HouseClass+0x1FB` branch at `0x0070CD4E`.
+    /// The `HouseClass+0x1FB` branch at `0x0070CD4E`, which reads the byte on
+    /// the SCORER's owner (`0x0070CD48: EAX = [EDI+0x21C]`, EDI = `this` = the
+    /// attacker) and takes the scorer TYPE's own coefficients when it is set.
     ///
-    /// `scorer_house_has_buildings` stands in for that latched byte. Native
-    /// latches it on the first `BuildingClass::Limbo`/`Unlimbo` of the house and
-    /// never clears it; VERA derives it from live ownership instead, so the two
-    /// diverge only for a house whose last building has been destroyed — see the
-    /// residual on [`house_has_buildings`].
+    /// Pass [`HOUSE_SELECTS_OWN_COEFFICIENTS`] for it; the clear branch is kept
+    /// because it is the native alternative, not because VERA can reach it.
     pub(crate) fn resolve(
         rules: &RuleSet,
         scorer_type: &ObjectType,
-        scorer_house_has_buildings: bool,
+        scorer_house_byte_set: bool,
     ) -> Self {
         let general = &rules.general;
-        if scorer_house_has_buildings {
+        if scorer_house_byte_set {
             Self {
                 my_effectiveness: scorer_type
                     .my_effectiveness_coefficient
@@ -188,27 +195,32 @@ impl ThreatCoefficients {
     }
 }
 
-/// Stand-in for `HouseClass+0x1FB`.
+/// `HouseClass+0x1FB` for every house VERA can create: **set**.
 ///
-/// RESIDUAL — native latches the byte on the FIRST building Limbo/Unlimbo of
-/// that house and never clears it; this asks whether the house owns a live
-/// building right now.
-/// - Trigger: a house whose last structure is destroyed while it still has
-///   units alive.
-/// - Player effect: those survivors flip to the `Dumb*` coefficient set, which
-///   differs by two sign flips and a 10x on the distance weight, so they start
-///   preferring different targets.
-/// - Frequency: once per eliminated player, at the end of a match.
-/// - Downstream risk: closing it needs a latched per-house bit, which is new
-///   persisted state and therefore a `SNAPSHOT_VERSION` bump.
-pub(crate) fn house_has_buildings(entities: &EntityStore, owner: InternedId) -> bool {
-    entities.values().any(|entity| {
-        entity.category == EntityCategory::Structure
-            && entity.owner == owner
-            && !entity.lifecycle.in_limbo
-            && entity.health.current > 0
-    })
-}
+/// The byte has three writers in the whole image and none of them clears it
+/// after construction:
+/// - `HouseClass::Constructor @ 0x004F54A0` zeroes it at `0x004F5740`
+///   (`MOV [EBP+0x1FB], BL` with `EBX == 0`) and then sets it at `0x004F644E`
+///   (`MOV byte [EBP+0x1FB], 1`) behind `0x004F6448 CMP ESI,EBX / JZ` — ESI is
+///   the constructor's `HouseTypeClass*` argument, the same pointer stored to
+///   `HouseClass+0x34` and used for the country name copy a few lines later.
+/// - `HouseClass::Mark_Has_Buildings @ 0x00509130` (`*(byte*)(this+0x1FB) = 1`
+///   and nothing else), called only from `BuildingClass::Limbo @ 0x00445DEF`
+///   and `BuildingClass::Unlimbo @ 0x00440A17`.
+///
+/// All four `HouseClass` constructions in `ScenarioClass::Create_Houses @
+/// 0x00687F10` (`0x00687FC3`, `0x006881A0`, `0x006882FE`, `0x00688351`) push a
+/// `HouseTypeClass*` taken from the type array at `0x00A83C9C` — by country
+/// index for the player houses, by name lookup (`0x005117D0`) for the fixed
+/// special houses. So the byte is 1 from the frame a house is created, the
+/// Limbo/Unlimbo marker only re-sets an already-set byte, and the scorer TYPE's
+/// own `MyEffectivenessCoefficient=` family is the live set for the whole
+/// match — including the opening minute before the MCV deploys.
+///
+/// This replaces an earlier "does the house own a live building right now?"
+/// derivation, which took the `[General] Dumb*Coefficient` branch at match
+/// start and again after a house lost its last structure. Native takes neither.
+pub(crate) const HOUSE_SELECTS_OWN_COEFFICIENTS: bool = true;
 
 fn load_threat_double(value: f64) -> Option<X87Value> {
     X87Chop53::load_f64(NativeF64Bits::from_bits(value.to_bits())).ok()
@@ -463,6 +475,27 @@ fn scan_radius_cells(rules: &RuleSet, obj: &ObjectType, veterancy: u16, range: S
 /// mechanism from changing the walk order, so the order is reused and the
 /// membership is not. Using the maintained grid directly (and dropping the
 /// rebuild) is the follow-up once acquisition and `Mark` agree.
+///
+/// RESIDUAL — cost at charter scale. Native reaches a candidate through
+/// `CellClass+0xE4`, a list the map maintains, so one scan touches only the
+/// cells its rings walk. [`ScanIndex::build`] instead makes one pass over
+/// **every** live entity to find the ones inside the scan's bounding box, then
+/// sorts that box subset and allocates a fresh [`OccupancyGrid`] for it. So per
+/// scan the honest shape is `O(N)` over all entities plus `O(K log K)` and one
+/// allocation over the `K` inside the box — the same `O(N)` order as the
+/// `EntityStore::values()` walk this replaced, with an added sort and
+/// allocation on the small `K`, and no longer doubled now that the coefficient
+/// set is a constant instead of a second full pass.
+/// - Trigger: every passive acquisition, i.e. every object on Guard/Move/
+///   Harvest reaching its scan cadence.
+/// - Player effect: none — this is frame time, not a behavioural difference.
+/// - Frequency: at the charter's 20,000 objects and the stock scan cadence,
+///   roughly 700 scans per frame, each walking all 20,000 entities — about
+///   1.4e7 entity visits per frame, against native's near-zero.
+/// - Downstream risk: the fix is a per-tick shared index, and it cannot simply
+///   be cached across scans within a tick because objects die, spawn and move
+///   between scans in the same tick; it needs the membership question settled
+///   with `Mark` first, which is why it is deferred rather than patched here.
 struct ScanIndex {
     cells: OccupancyGrid,
     /// Objects with no cell-list layer at all — airborne aircraft and anything
@@ -622,7 +655,7 @@ pub(crate) fn greatest_threat(
         coefficients: ThreatCoefficients::resolve(
             rules,
             attacker_obj,
-            house_has_buildings(entities, attacker.owner),
+            HOUSE_SELECTS_OWN_COEFFICIENTS,
         ),
     };
 
@@ -940,21 +973,54 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
     //
     // For a human-controlled attacker that is not an AI team member, an enemy
     // BUILDING is a legal passive target only if it is 1x1-with-undeploy, or it
-    // has a primary weapon AND its live `ThreatPosed` is non-zero. Everything
-    // else — walls, power plants, refineries, war factories, and the SAM Site,
-    // Flak Cannon and Grand Cannon, all of which author `ThreatPosed=0` or omit
-    // the key — is invisible to auto-acquire and must be attacked by order.
-    // Pillbox, Sentry Gun, Tesla Coil, Prism Tower, Gattling Cannon and Psychic
-    // Tower author 30-40 and are auto-acquired.
+    // is armed AND its live `ThreatPosed` is non-zero. Both halves are needed:
+    // the native reject at `0x006F85DB`/`0x006F85E0`/`0x006F85EE` fires on
+    // **(no current weapon) OR (`ThreatPosed` == 0)**.
+    //
+    //   006f85d3  CALL [candidate vtable+0x3f4]   ; GetCurrentWeapon 0x0070E1A0
+    //   006f85d9  TEST EAX,EAX      JZ 006f85f0   ; no weapon      -> reject
+    //   006f85dd  CMP  [EAX],0x0    JZ 006f85f0   ; null WeaponType-> reject
+    //   006f85e6  CALL [candidate vtable+0x2c0]   ; Get_ThreatPosed 0x00708B40
+    //   006f85ee  TEST EAX,EAX      JNZ 006f8604  ; non-zero       -> pass
+    //
+    // Dropping the weapon half would make seven stock buildings that author a
+    // non-zero `ThreatPosed=` with no weapon key of any kind auto-targets that
+    // gamemd refuses: `GACSPH` Chronosphere, `GAWEAT` Weather Control, `NAIRON`
+    // Iron Curtain, `YAGNTC` Genetic Mutator, `YAPPET`, `GADUMY` (all 1) and
+    // `AMMOCRAT` (10). Dropping the `ThreatPosed` half would put every wall,
+    // power plant, refinery and war factory back on the auto-target list, along
+    // with the SAM Site, Flak Cannon and Grand Cannon, which are armed but
+    // author `ThreatPosed=0` or omit the key. Pillbox, Sentry Gun, Tesla Coil,
+    // Prism Tower, Gattling Cannon and Psychic Tower are armed and author 30-40,
+    // so they stay auto-acquired.
+    //
+    // The weapon test is `combat_weapon::is_armed`, which models
+    // `GetCurrentWeapon @ 0x0070E1A0` — the turret slot when `TurretCount > 0`,
+    // else slot 0, plus `BuildingClass::GetWeapon @ 0x004526F0`'s occupied-
+    // building arm. Reading `Primary=` directly would disarm `[YAGGUN]`
+    // (`WeaponCount=6`, no `Primary=`) and every garrisoned civilian building.
+    // `0x0070E1A0` is not overridden: `get_xrefs_to` shows it in all six Techno
+    // vtable `+0x3F4` slots.
     //
     // Every VERA house is human-controlled, and `IsControlledByHuman @
     // 0x0050B730` is true for any human in a multiplayer game, so this arm is
     // always taken. The AI-team bypass (`TechnoClass+0x14 & 4` and a non-null
     // `FootClass+0x5D4` Team) has no VERA counterpart and is unreachable until
     // AI teams ship.
+    //
+    // RESIDUAL — the reject is unconditional here, where native falls through to
+    // `0x006F860C` when the attacker's `vtable+0x330` byte (stored at
+    // `0x006F7CBA`) is set. That byte also lets an ALLIED candidate past the
+    // ally gate at `0x006F7F43`, and `0x006F860C` only accepts a damaged allied
+    // Building — i.e. it is the medic/repair scan, which VERA does not run from
+    // this site at all. Trigger: an attacker whose weapon heals or repairs.
+    // Player effect: none today, since VERA never asks this scan for a repair
+    // target. Frequency: n/a. Downstream risk: wiring service units in must
+    // carry the whole `0x006F860C` arm, not just this fall-through.
     if candidate.category == EntityCategory::Structure
         && !is_one_by_one_undeployable(candidate_obj)
-        && live_threat_posed(ctx.rules, candidate, candidate_obj) == 0
+        && (!is_armed(candidate, candidate_obj)
+            || live_threat_posed(ctx.rules, candidate, candidate_obj) == 0)
     {
         return None;
     }
@@ -1044,7 +1110,7 @@ mod tests {
              ThreatPerOccupant=10\n\
              [VehicleTypes]\n0=GRIZZLY\n1=SCOUT\n2=PRIZE\n3=CAR\n\
              [InfantryTypes]\n0=ENGINEER\n\
-             [BuildingTypes]\n0=WALL\n1=PILLBOX\n2=POWER\n\
+             [BuildingTypes]\n0=WALL\n1=PILLBOX\n2=POWER\n3=CHRONO\n4=GATTLING\n\
              [WeaponTypes]\n0=105mm\n1=Vulcan\n\
              [GRIZZLY]\nStrength=300\nArmor=heavy\nPrimary=105mm\n\
              [SCOUT]\nStrength=300\nArmor=heavy\n\
@@ -1054,6 +1120,9 @@ mod tests {
              [WALL]\nStrength=100\nArmor=wood\nFoundation=1x1\nInsignificant=yes\nThreatPosed=0\n\
              [POWER]\nStrength=750\nArmor=wood\nFoundation=1x1\nThreatPosed=0\n\
              [PILLBOX]\nStrength=400\nArmor=wood\nFoundation=1x1\nPrimary=Vulcan\nThreatPosed=30\n\
+             [CHRONO]\nStrength=1000\nArmor=wood\nFoundation=1x1\nThreatPosed=1\n\
+             [GATTLING]\nStrength=400\nArmor=wood\nFoundation=1x1\nTurret=yes\nTurretCount=1\n\
+             WeaponCount=2\nWeapon1=Vulcan\nWeapon2=Vulcan\nWeaponStages=1\nThreatPosed=30\n\
              [105mm]\nDamage=100\nROF=110\nRange=5\nWarhead=AP\n\
              [Vulcan]\nDamage=15\nROF=10\nRange=5\nWarhead=AP\n\
              [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
@@ -1175,6 +1244,99 @@ mod tests {
             Some(3),
             "a defence with ThreatPosed=30 is acquired even though it is further away"
         );
+    }
+
+    /// The conjunct the gate would be missing without the weapon test: an
+    /// UNARMED building that authors a non-zero `ThreatPosed=` is still refused.
+    ///
+    /// Native rejects on **(no current weapon) OR (`ThreatPosed` == 0)** —
+    /// `0x006F85D3` calls `GetCurrentWeapon` and both misses jump to the reject
+    /// at `0x006F85F0` before `ThreatPosed` is ever asked for. Seven stock
+    /// buildings sit in exactly this shape: the Chronosphere `GACSPH`, Weather
+    /// Control `GAWEAT`, Iron Curtain `NAIRON` and Genetic Mutator `YAGNTC`
+    /// (`ThreatPosed=1`, no weapon key), plus `YAPPET`, `GADUMY` and
+    /// `AMMOCRAT`. A player's units must never spontaneously open fire on an
+    /// enemy superweapon.
+    #[test]
+    fn gsi_08_01_an_unarmed_building_with_threat_posed_is_still_refused() {
+        let rules = scan_rules();
+        let mut entities = EntityStore::new();
+        place(
+            &mut entities,
+            1,
+            "GRIZZLY",
+            "Americans",
+            10,
+            10,
+            EntityCategory::Unit,
+        );
+        place(
+            &mut entities,
+            2,
+            "CHRONO",
+            "Russians",
+            11,
+            10,
+            EntityCategory::Structure,
+        );
+        assert_eq!(
+            pick(&entities, &rules, 1),
+            None,
+            "ThreatPosed=1 with no weapon is not a legal passive target"
+        );
+
+        place(
+            &mut entities,
+            3,
+            "PILLBOX",
+            "Russians",
+            12,
+            10,
+            EntityCategory::Structure,
+        );
+        assert_eq!(
+            pick(&entities, &rules, 1),
+            Some(3),
+            "the armed defence further out is taken over the nearer superweapon"
+        );
+    }
+
+    /// The trap in the other direction: the weapon test is
+    /// `GetCurrentWeapon @ 0x0070E1A0`, not `Primary=`. `[YAGGUN]` the Gattling
+    /// Cannon authors `TurretCount=1`, `WeaponCount=6` and `Weapon1..6=` with no
+    /// `Primary=` key at all, so a naive `primary.is_some()` would disarm it and
+    /// hand the player a base defence their units silently ignore.
+    #[test]
+    fn gsi_08_01_a_weapon_array_defence_with_no_primary_key_stays_a_target() {
+        let rules = scan_rules();
+        let gattling = rules.object("GATTLING").expect("GATTLING");
+        let mut building = GameEntity::test_default(2, "GATTLING", "Russians", 11, 10);
+        building.category = EntityCategory::Structure;
+        assert!(
+            is_armed(&building, gattling),
+            "a WeaponCount= defence resolves slot 0 through GetCurrentWeapon"
+        );
+
+        let mut entities = EntityStore::new();
+        place(
+            &mut entities,
+            1,
+            "GRIZZLY",
+            "Americans",
+            10,
+            10,
+            EntityCategory::Unit,
+        );
+        place(
+            &mut entities,
+            2,
+            "GATTLING",
+            "Russians",
+            11,
+            10,
+            EntityCategory::Structure,
+        );
+        assert_eq!(pick(&entities, &rules, 1), Some(2));
     }
 
     /// `Insignificant=` at `0x006F8451`: civilian traffic is not a target.
@@ -1316,18 +1478,22 @@ mod tests {
     /// `+0x1FB` byte. The sets are not variations on a theme: two of the five
     /// weights change sign and the distance weight changes by 10x, so a scorer
     /// on the wrong set can rank the same two candidates in the opposite order.
+    ///
+    /// Every house in a skirmish carries the byte SET from construction
+    /// (`HouseClass::Constructor @ 0x004F644E`), so the per-type branch is the
+    /// live one for the whole match — see [`HOUSE_SELECTS_OWN_COEFFICIENTS`].
     #[test]
-    fn gsi_08_01_house_with_buildings_takes_the_per_type_coefficient_set() {
+    fn gsi_08_01_every_house_takes_the_per_type_coefficient_set() {
         let rules = scan_rules();
         let obj = rules.object("GRIZZLY").expect("GRIZZLY");
-        let with_buildings = ThreatCoefficients::resolve(&rules, obj, true);
-        let without = ThreatCoefficients::resolve(&rules, obj, false);
-        assert_eq!(with_buildings.target_effectiveness, -200.0);
-        assert_eq!(with_buildings.target_strength, -200.0);
-        assert_eq!(with_buildings.target_distance, -10.0);
-        assert_eq!(without.target_effectiveness, 200.0);
-        assert_eq!(without.target_strength, 200.0);
-        assert_eq!(without.target_distance, -1.0);
+        let live = ThreatCoefficients::resolve(&rules, obj, HOUSE_SELECTS_OWN_COEFFICIENTS);
+        let byte_clear = ThreatCoefficients::resolve(&rules, obj, false);
+        assert_eq!(live.target_effectiveness, -200.0);
+        assert_eq!(live.target_strength, -200.0);
+        assert_eq!(live.target_distance, -10.0);
+        assert_eq!(byte_clear.target_effectiveness, 200.0);
+        assert_eq!(byte_clear.target_strength, 200.0);
+        assert_eq!(byte_clear.target_distance, -1.0);
     }
 
     /// `TechnoClass::Get_ThreatPosed @ 0x00708B40`: a garrisoned building's

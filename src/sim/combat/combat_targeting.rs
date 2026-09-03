@@ -276,12 +276,13 @@ fn can_retaliate(
 /// consumes it, on the native `&NullCoord` branch.
 ///
 /// The five coefficients are the ones the scorer's own house selects — see
-/// [`super::greatest_threat::ThreatCoefficients`]. This used to read the
-/// `[General] Dumb*Coefficient` set unconditionally, which is the branch native
-/// takes only while the scoring house has never put a building on the map; the
-/// two sets differ by two sign flips and a 10x on the distance weight, so a
-/// defender picking between its current target and whatever just shot it could
-/// come to the opposite conclusion.
+/// [`super::greatest_threat::ThreatCoefficients`] and
+/// [`super::greatest_threat::HOUSE_SELECTS_OWN_COEFFICIENTS`]. This used to read
+/// the `[General] Dumb*Coefficient` set unconditionally, which is the branch
+/// native takes only for a house constructed without a country type — no house
+/// in a skirmish. The two sets differ by two sign flips and a 10x on the
+/// distance weight, so a defender picking between its current target and
+/// whatever just shot it could come to the opposite conclusion.
 pub(crate) fn calculate_ai_threat_score(
     entities: &EntityStore,
     scorer_id: u64,
@@ -296,7 +297,7 @@ pub(crate) fn calculate_ai_threat_score(
     let coefficients = super::greatest_threat::ThreatCoefficients::resolve(
         rules,
         scorer_type,
-        super::greatest_threat::house_has_buildings(entities, scorer.owner),
+        super::greatest_threat::HOUSE_SELECTS_OWN_COEFFICIENTS,
     );
     super::greatest_threat::calculate_threat_score(
         entities,

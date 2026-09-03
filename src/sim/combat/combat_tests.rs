@@ -2745,7 +2745,7 @@ fn gsi_04_07_damage_ai_retaliation_keeps_higher_scored_current_target() {
              [AircraftTypes]\n\
              [BuildingTypes]\n\
              [Warheads]\n0=HitWH\n1=AP\n2=HollowPoint2\n3=SA\n\
-             [General]\nDumbMyEffectivenessCoefficient=200\nDumbTargetEffectivenessCoefficient=200\nDumbTargetSpecialThreatCoefficient=200\nDumbTargetStrengthCoefficient=200\nDumbTargetDistanceCoefficient=-1\n\
+             [General]\nMyEffectivenessCoefficientDefault=200\nTargetEffectivenessCoefficientDefault=-200\nTargetSpecialThreatCoefficientDefault=200\nTargetStrengthCoefficientDefault=-200\nTargetDistanceCoefficientDefault=-10\n\
              [HTNK]\nStrength=400\nArmor=heavy\nSpeed=6\nPrimary=120mm\nCanRetaliate=yes\n\
              [TANY]\nStrength=200\nArmor=flak\nPrimary=DoublePistols\nSpecialThreatValue=1\n\
              [E1]\nStrength=125\nArmor=none\nPrimary=M60\n\
@@ -2867,10 +2867,17 @@ fn gsi_04_07_damage_ai_retaliation_keeps_higher_scored_current_target() {
         }
     }
 
+    // Scored on the per-type coefficient set (200 / -200 / 200 / -200 / -10),
+    // which `HouseClass+0x1FB` selects for every skirmish house from creation.
+    // Tanya: base 100000, C = 200*SpecialThreatValue 1 = +200, A = 200 * AP-vs-
+    // flak 25% = +50, D = -200 * (200/200) = -200, B absent (HollowPoint2 is 0%
+    // against heavy, so no weapon selects), E = 0 (2 cells, range 5) → 100050.
+    // GI: B = -200 * SA-vs-heavy 25% = -50, C = 0, A = 200 * AP-vs-none 25% =
+    // +50, D = -200, E = 0 → 99800.
     let keep_tanya = run(20, 30);
     assert_eq!(
         (keep_tanya.current_score, keep_tanya.attacker_score),
-        (100_450, 100_300)
+        (100_050, 99_800)
     );
     assert_eq!(
         keep_tanya.mission,
@@ -2890,7 +2897,7 @@ fn gsi_04_07_damage_ai_retaliation_keeps_higher_scored_current_target() {
             switch_to_tanya.current_score,
             switch_to_tanya.attacker_score
         ),
-        (100_300, 100_450)
+        (99_800, 100_050)
     );
     assert_eq!(
         switch_to_tanya.mission,
@@ -4924,7 +4931,12 @@ fn test_tick_combat_visibility_blocks_fire() {
     // and the shroud is enforced where native enforces it, at fire time.
     assert!(
         matches!(
-            store.get(1).unwrap().attack_target.as_ref().map(|t| t.target),
+            store
+                .get(1)
+                .unwrap()
+                .attack_target
+                .as_ref()
+                .map(|t| t.target),
             Some(crate::sim::combat::TargetKind::Entity(2))
         ),
         "the scan re-picks the hidden enemy; only firing is blocked"
