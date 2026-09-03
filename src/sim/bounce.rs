@@ -82,12 +82,13 @@ pub struct BounceState {
     ///   `0x00439E7F`..`0x00439E87` and before the integrate.
     /// - Trigger: drawing any live piece of debris.
     /// - Player effect: debris would fly the right arc but not tumble.
-    /// - Frequency: zero today — no producer creates a `VoxelAnimObject` at
-    ///   all, so nothing bounces. Continuous the moment the producer lands,
-    ///   since stock `Duration=` runs 70-150 ticks per piece.
+    /// - Frequency: continuous while debris is airborne. The death-side
+    ///   producer now throws pieces on every vehicle death that authors
+    ///   `DebrisTypes=` (36 stock sections, all naming `[TIRE]`), and `[TIRE]`
+    ///   lives 150 ticks.
     /// - Downstream risk: none to the simulation. The spin is display-only and
-    ///   consumes no RNG beyond the axis draws already taken here, so it lands
-    ///   with the producer/draw slice and moves no hash.
+    ///   consumes no RNG beyond the axis draws already taken here, so it moves
+    ///   no hash.
     pub spin_axis: [NativeF32Bits; 3],
     /// The per-tick rotation angle — `Init`'s trailing argument, the one
     /// Ghidra's recovered signature omits.
@@ -299,6 +300,81 @@ impl BounceState {
 /// see [`reflect_off_ground`].
 const FLAT_RAMP: u8 = 0;
 
+/// `DAT_0089C76C`, the offset added to the ground height to get the bridge deck
+/// plane `BounceClass::Update` snaps to (`0x00439BF8`) and the stop test
+/// subtracts (`0x00439A7A`).
+///
+/// RESIDUAL (GSI-05.14) — the image bytes at `0x0089C76C` are zero, and the
+/// only writer, `FUN_00439610 @ 0x00439610`, has no direct caller: its single
+/// xref is a data reference from `0x00812738`, a vtable slot, so it is reached
+/// (if at all) only through a virtual dispatch this session did not resolve.
+/// The load-image value is therefore what is modelled.
+/// - Trigger: debris crossing a bridge deck plane.
+/// - Player effect: with a non-zero runtime offset the deck snap would land the
+///   debris that many leptons above or below the bridge surface.
+/// - Frequency: bounded by bridge cells only; a vehicle has to die on or
+///   directly under a bridge and throw voxel debris (36 stock types).
+/// - Downstream risk: none to the stream — the offset is arithmetic on the
+///   position, it consumes no draws and gates no branch count.
+const DECK_PLANE_OFFSET_LEPTONS: i32 = 0;
+
+/// The drop applied when the body rises back through the deck plane
+/// (`0x00439D5D`, `local_118 + -0x14`).
+const DECK_RISE_DROP_LEPTONS: i32 = 20;
+
+/// The window below the ground height inside which the non-deck arm clamps the
+/// position up to the surface (`0x00439D71`, `local_114 + -100`).
+const GROUND_CLAMP_WINDOW_LEPTONS: i32 = 100;
+
+/// The proximity gate on the building/wall lookup alone (`0x007E3DA8`).
+const BUILDING_LOOKUP_PROXIMITY_LEPTONS: f32 = 150.0;
+
+/// The stop threshold. `FCOMP double [0x007E3D80]` at `0x0043A08C` compares the
+/// magnitude against the double at that address, whose bytes are `2.5`, and the
+/// `TEST AH,1 / JNZ` pair below it returns 2 (`Stopped`) only when the compare
+/// set C0 — i.e. strictly BELOW the threshold. `FUN_00439A10` returns an
+/// `ftol`-truncated integer, so that is `< 3`.
+const STOP_MAGNITUDE_THRESHOLD: f32 = 2.5;
+
+/// The map facts one `BounceClass::Update` reads.
+///
+/// `BounceClass` itself calls `CellClass::GetGroundHeight`,
+/// `MapClass::Get_CellClass_At_Coord`, `Look_up_building_in_cell` and
+/// `CellClass::IsWallConnectableInDirection` directly. Those live in the world,
+/// so the integrator takes them through this port rather than reaching for a
+/// map grid — `sim/` keeps the physics pure and the caller supplies terrain.
+pub trait BounceTerrain {
+    /// `CellClass::GetGroundHeight` at the given world coordinate, in leptons.
+    fn ground_height_leptons(&self, coord: IVec3) -> i32;
+    /// `CellClass+0x140 & 0x100` — the cell carries a bridge deck.
+    fn is_bridge_cell(&self, coord: IVec3) -> bool;
+    /// `CellClass+0x11B`, the cell's height level. Only the difference between
+    /// the pre- and post-move cells is read.
+    fn cell_height_level(&self, coord: IVec3) -> i32;
+    /// The cell's ramp index, which selects the reflection matrix.
+    fn ramp(&self, coord: IVec3) -> u8;
+    /// `Look_up_building_in_cell` non-null, or
+    /// `CellClass::IsWallConnectableInDirection(-1, -1)`.
+    fn has_bounce_surface(&self, coord: IVec3) -> bool;
+    /// `CellClass+0xEC == 2` — LandType WATER. `BounceClass::Update` itself
+    /// never reads it; the hosts do, both at the death gate and on a landing.
+    fn is_water(&self, coord: IVec3) -> bool;
+}
+
+/// `ftol` each float position component into the `CoordStruct` native builds
+/// with `FUN_00437090` before and after the move.
+fn ftol_coord(position: [NativeF32Bits; 3]) -> Result<IVec3, NativeX87Error> {
+    Ok(IVec3::new(
+        X87Chop53::ftol_i64(X87Chop53::load_f32(position[0])?)? as i32,
+        X87Chop53::ftol_i64(X87Chop53::load_f32(position[1])?)? as i32,
+        X87Chop53::ftol_i64(X87Chop53::load_f32(position[2])?)? as i32,
+    ))
+}
+
+fn f32_of(bits: NativeF32Bits) -> f32 {
+    f32::from_bits(bits.bits())
+}
+
 impl BounceState {
     /// `BounceClass::Update`'s reflection block, `0x00439D91`..`0x00439E89`.
     ///
@@ -331,13 +407,12 @@ impl BounceState {
     /// - Player effect: it would rebound along the slope's normal in retail and
     ///   rebounds vertically here, so a chunk landing on a hillside runs
     ///   downhill in retail and hops in place here.
-    /// - Frequency: corrected upward. `[TIRE]` is indeed the only stock
-    ///   `[VoxelAnims]` entry with a non-zero `Elasticity` (0.8), and
-    ///   `Elasticity = 0` zeroes the velocity whatever the matrix — but all 36
-    ///   stock `DebrisTypes=` lines name `TIRE`, so every debris-throwing stock
-    ///   vehicle throws exactly the bouncing type. The remaining bound is
-    ///   terrain alone: debris lands on flat ground far more often than on a
-    ///   ramp. Zero today, because no producer creates debris at all.
+    /// - Frequency: `[TIRE]` is the only stock `[VoxelAnims]` entry with a
+    ///   non-zero `Elasticity` (0.8), and `Elasticity = 0` zeroes the velocity
+    ///   whatever the matrix — but all 36 stock `DebrisTypes=` lines name
+    ///   `TIRE`, so every debris-throwing stock vehicle throws exactly the
+    ///   bouncing type. The remaining bound is terrain alone: debris lands on
+    ///   flat ground far more often than on a ramp.
     /// - Downstream risk: closing it needs the runtime contents of
     ///   `MATRIX_TABLE_0x00B45188`, which `VXL_MasterLighting_Init` builds from
     ///   `Matrix3x4_BuildFromRotateXAndFacing` — the eight facings and two
@@ -372,6 +447,229 @@ impl BounceState {
             })?;
         }
         Ok(Some(out))
+    }
+
+    /// [`Self::reflect_off_ground`] with the flat collapse standing in for the
+    /// ramps whose matrices are unread.
+    ///
+    /// RESIDUAL (GSI-05.14) — see [`Self::reflect_off_ground`] for why the
+    /// sloped entries of `MATRIX_TABLE_0x00B45188` cannot be derived here: the
+    /// table is built at runtime by `VXL_MasterLighting_Init @ 0x00755400`, its
+    /// image bytes are zero, and `emulate_function` reports registers only, so
+    /// a matrix a helper writes to memory is not observable through the
+    /// instrument. This wrapper exists because the alternative — refusing the
+    /// reflection inside `update` — would leave the body's downward velocity
+    /// intact on a hillside and drive it through the terrain, which is a larger
+    /// divergence than reflecting vertically.
+    /// - Trigger: debris contacting a sloped cell.
+    /// - Player effect: the piece rebounds straight up instead of along the
+    ///   slope normal, so it hops in place where retail sends it downhill.
+    /// - Frequency: every bounce that lands on a ramp cell. Only `[TIRE]`
+    ///   (`Elasticity=0.8`) bounces at all in stock — but all 36 stock
+    ///   `DebrisTypes=` lines name `TIRE`, so it is every voxel-debris death
+    ///   whose scatter reaches a ramp.
+    /// - Downstream risk: none to the stream. The reflection consumes no draws;
+    ///   it only changes where a display object travels. The `Stopped` decision
+    ///   reads the reflected velocity, so a piece can rest one tick earlier or
+    ///   later than retail on a slope.
+    fn reflect_off_ground_or_flat(
+        velocity: [NativeF32Bits; 3],
+        elasticity: NativeF64Bits,
+        ramp: u8,
+    ) -> Result<[NativeF32Bits; 3], NativeX87Error> {
+        if let Some(reflected) = Self::reflect_off_ground(velocity, elasticity, ramp)? {
+            return Ok(reflected);
+        }
+        Ok(Self::reflect_off_ground(velocity, elasticity, FLAT_RAMP)?
+            .expect("the flat ramp is always modelled"))
+    }
+
+    /// `FUN_00439A10 @ 0x00439A10` — the magnitude the stop test compares
+    /// against `2.5`.
+    ///
+    /// Every term is `ftol`-truncated to an integer before the sum, so the
+    /// result is an integer and the threshold is effectively `>= 3`. The Z term
+    /// is PREDICTIVE: `heightAboveGround * Gravity + Velocity.Z`
+    /// (`0x00439A9D`..`0x00439AAB`), not the stored Z velocity, so a body still
+    /// high above the ground reads far from rest whatever it is doing. The sum
+    /// associates `(vz*vz + vx*vx) + vy*vy` — read from the `FLD ST(n)/FMUL
+    /// ST(n)/FADDP` ladder at `0x00439AC3`..`0x00439AD1`, because the
+    /// decompiler canonicalises the commutative sum.
+    fn stop_magnitude(&self, terrain: &dyn BounceTerrain) -> Result<i32, NativeX87Error> {
+        let coord = ftol_coord(self.position)?;
+        let ground = terrain.ground_height_leptons(coord);
+        // `FILD ground` then `FSUBR float [pos.Z]` — the reverse subtract makes
+        // this `pos.Z - ground`, not `ground - pos.Z`.
+        let mut height_above = X87Chop53::ftol_i64(X87Chop53::sub(
+            X87Chop53::load_f32(self.position[2])?,
+            X87Chop53::load_i32(ground),
+        ))? as i32;
+        if terrain.is_bridge_cell(coord) && height_above >= DECK_PLANE_OFFSET_LEPTONS {
+            height_above -= DECK_PLANE_OFFSET_LEPTONS;
+        }
+        let vx = X87Chop53::ftol_i64(X87Chop53::load_f32(self.velocity[0])?)? as i32;
+        let vy = X87Chop53::ftol_i64(X87Chop53::load_f32(self.velocity[1])?)? as i32;
+        let predictive_z = X87Chop53::ftol_i64(X87Chop53::add(
+            X87Chop53::mul(
+                X87Chop53::load_i32(height_above),
+                X87Chop53::load_f64(self.gravity)?,
+            ),
+            X87Chop53::load_f32(self.velocity[2])?,
+        ))? as i32;
+
+        let pz = X87Chop53::load_i32(predictive_z);
+        let fx = X87Chop53::load_i32(vx);
+        let fy = X87Chop53::load_i32(vy);
+        let root = sqrt_approx_f32(X87Chop53::add(
+            X87Chop53::add(X87Chop53::mul(pz, pz), X87Chop53::mul(fx, fx)),
+            X87Chop53::mul(fy, fy),
+        ))?;
+        Ok(X87Chop53::ftol_i64(X87Chop53::load_f32(root)?)? as i32)
+    }
+
+    /// `BounceClass::Update @ 0x00439B00` — one tick of the physics body.
+    ///
+    /// The verified order, from the body and the disassembly cited per step:
+    /// 1. `Velocity.Z -= Gravity` (`0x00439B4A`).
+    /// 2. The angular clamp at `0x00439B7A` is DEAD and is deliberately not
+    ///    ported: the raw bytes show `FLD ST(0)` / `FDIVRP` on an empty-above
+    ///    stack, so the scale is `|V| / |V|` = 1.0, and every `Init` caller
+    ///    passes `angVelMagnitude` as two literal zeros anyway, which makes the
+    ///    `0.0 < AVM` gate false everywhere in the image.
+    /// 3. `Position += Velocity` (`FUN_0043A100`), between the pre- and
+    ///    post-move `ftol` coordinate captures.
+    /// 4. Ground height at the POST-move coordinate, then the deck plane
+    ///    `ground + DAT_0089C76C`.
+    /// 5. Deck crossing, gated on either cell carrying the bridge flag: `fell`
+    ///    = new below the deck and old at or above it; `rose` = the reverse.
+    /// 6. Building/wall lookup, gated by the `150.0` proximity window ALONE —
+    ///    that gate does not apply to ordinary ground contact.
+    /// 7. Snap ladder. Below the ground surface the body always reflects; at or
+    ///    above it, only a deck crossing or a building/wall surface does, and
+    ///    otherwise the tick returns `Falling` with no reflection at all.
+    /// 8. The reflection round trip, then the stop test.
+    ///
+    /// Two arms are NOT modelled, each recorded where it is skipped: the slope
+    /// re-bounce (step 8 of the module spec) and the quaternion integration.
+    pub fn update(&mut self, terrain: &dyn BounceTerrain) -> Result<BounceOutcome, NativeX87Error> {
+        self.velocity[2] = X87Chop53::store_f32(X87Chop53::sub(
+            X87Chop53::load_f32(self.velocity[2])?,
+            X87Chop53::load_f64(self.gravity)?,
+        ))?;
+
+        let old_coord = ftol_coord(self.position)?;
+        for axis in 0..3 {
+            self.position[axis] = X87Chop53::store_f32(X87Chop53::add(
+                X87Chop53::load_f32(self.position[axis])?,
+                X87Chop53::load_f32(self.velocity[axis])?,
+            ))?;
+        }
+        let new_coord = ftol_coord(self.position)?;
+
+        let ground = terrain.ground_height_leptons(new_coord);
+        let deck = ground + DECK_PLANE_OFFSET_LEPTONS;
+
+        let mut fell_through_deck = false;
+        let mut rose_through_deck = false;
+        if terrain.is_bridge_cell(new_coord) || terrain.is_bridge_cell(old_coord) {
+            if new_coord.z < deck {
+                fell_through_deck = deck <= old_coord.z;
+            } else {
+                rose_through_deck = old_coord.z < deck;
+            }
+        }
+
+        let position_z = f32_of(self.position[2]);
+        let ground_f = ground as f32;
+        // The `150.0` window gates the building/wall LOOKUP only.
+        let building_surface = !fell_through_deck
+            && !rose_through_deck
+            && ground_f <= position_z
+            && position_z - BUILDING_LOOKUP_PROXIMITY_LEPTONS < ground_f
+            && terrain.has_bounce_surface(new_coord);
+
+        // The `LaserFence=` rejection inside native's building arm
+        // (`type+0x16BF` with `building+0x618 >= 8`) is Tiberian Sun legacy —
+        // no stock RA2/YR building authors the key — and is not ported.
+        let clamp_to_surface = |state: &mut Self| {
+            let clamp_floor = (ground - GROUND_CLAMP_WINDOW_LEPTONS) as f32;
+            if clamp_floor < f32_of(state.position[2]) {
+                state.position[2] = NativeF32Bits::from_bits(ground_f.to_bits());
+            }
+        };
+        if position_z < ground_f {
+            if fell_through_deck {
+                self.position[2] = NativeF32Bits::from_bits((deck as f32).to_bits());
+            } else if rose_through_deck {
+                self.position[2] =
+                    NativeF32Bits::from_bits(((deck - DECK_RISE_DROP_LEPTONS) as f32).to_bits());
+            } else {
+                clamp_to_surface(self);
+            }
+        } else if fell_through_deck {
+            self.position[2] = NativeF32Bits::from_bits((deck as f32).to_bits());
+        } else if rose_through_deck {
+            self.position[2] =
+                NativeF32Bits::from_bits(((deck - DECK_RISE_DROP_LEPTONS) as f32).to_bits());
+        } else if !building_surface {
+            // `uVar8 = 0; goto LAB_0043A066` — no reflection this tick, but the
+            // stop test still runs.
+            return self.finish_tick(terrain, BounceOutcome::Falling);
+        } else {
+            clamp_to_surface(self);
+        }
+
+        self.velocity = Self::reflect_off_ground_or_flat(
+            self.velocity,
+            self.elasticity,
+            terrain.ramp(new_coord),
+        )?;
+
+        // RESIDUAL (GSI-05.14) — the slope re-bounce at `0x00439F2C` is not
+        // modelled. When `cell(new).level - cell(old).level >= 2` and the
+        // entry-tick velocity conditions against `-0.0002` / `-0.0003` hold,
+        // native rolls the body back to the pre-tick snapshot and REPLACES the
+        // reflection above with one of four planar mirror matrices from
+        // `FUN_00755C60 @ 0x00755C60`, scaling by `Elasticity` as a double
+        // rather than the f32 narrowing. Those matrices are built at runtime
+        // and are unreadable through this instrument for the same reason as the
+        // ramp table.
+        // - Trigger: a piece crossing two or more height levels in one tick and
+        //   still rising at the cell boundary — a cliff face, not a ramp.
+        // - Player effect: the piece reflects off the flat plane and can end up
+        //   on top of the cliff where retail bounces it off the face.
+        // - Frequency: rare. It needs a two-level step inside one tick's travel.
+        // - Downstream risk: none to the stream; no draws are involved.
+        let _ = (
+            terrain.cell_height_level(new_coord),
+            terrain.cell_height_level(old_coord),
+        );
+
+        self.finish_tick(terrain, BounceOutcome::Bounced)
+    }
+
+    /// `LAB_0043A066` — the tail both the contact and the no-contact arms reach.
+    ///
+    /// RESIDUAL (GSI-05.14) — the unconditional quaternion integration
+    /// (`orientation = product(orientation, rotation)` at `0x0043A066`, and the
+    /// bounce arm's negation of the rotation quaternion's components 0..=2) is
+    /// not built: `Quaternion_FromAxisAngle @ 0x00646480` needs
+    /// `Math__SinFromTable`/`Math__CosFromTable`, whose table contents are
+    /// UNCHECKED. Trigger: drawing any live piece of debris. Player effect: the
+    /// piece flies the right arc but does not tumble. Frequency: continuous
+    /// while debris is airborne. Downstream risk: none — the spin is
+    /// display-only, consumes no draws beyond the axis draws `Init` already
+    /// takes, and nothing in the physics reads the orientation.
+    fn finish_tick(
+        &self,
+        terrain: &dyn BounceTerrain,
+        contact: BounceOutcome,
+    ) -> Result<BounceOutcome, NativeX87Error> {
+        let magnitude = self.stop_magnitude(terrain)?;
+        if (magnitude as f32) < STOP_MAGNITUDE_THRESHOLD {
+            return Ok(BounceOutcome::Stopped);
+        }
+        Ok(contact)
     }
 }
 

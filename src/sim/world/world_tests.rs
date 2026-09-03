@@ -9626,3 +9626,111 @@ fn debug_toggle_updates_existing_and_future_entities() {
         "disabling clears every entity's log"
     );
 }
+
+/// The `VoxelAnimClass` store is a live scheduler citizen, not a side table.
+///
+/// gamemd-derived: `VoxelAnimClass::Constructor @ 0x007493B0` assigns the
+/// shared unique id, appends to the VoxelAnim registry, and `ObjectClass::
+/// Unlimbo` reveals the piece into the LogicClass vector; `LogicClass::AI`
+/// then visits it in that order every frame until `VoxelAnimClass::AI @
+/// 0x00749F30` reaches `vtable+0xF8`. This pins the four wiring facts a
+/// desync would ride in on: the id comes from the shared allocator, the piece
+/// enters the live order, the state hash folds it, and a snapshot restores
+/// both the store and its logic membership.
+#[test]
+fn gsi_05_14_death_debris_joins_the_live_order_the_hash_and_the_snapshot() {
+    let voxel_type = crate::rules::voxel_anim_type::VoxelAnimType::from_ini_section(
+        "TIRE",
+        IniFile::from_str(
+            "[TIRE]\nElasticity=0.8\nMinAngularVelocity=12.0\nMaxAngularVelocity=24.0\n\
+             MinZVel=28.0\nMaxZVel=32.0\nMaxXYVel=10.0\nDuration=150\n",
+        )
+        .section("TIRE")
+        .unwrap(),
+    );
+
+    let mut sim = Simulation::new();
+    let empty_hash = sim.state_hash();
+    let mut rng = crate::sim::rng::SimRng::new(17);
+    let pieces: Vec<_> = (0..3)
+        .map(|_| crate::sim::voxel_anim::VoxelDebrisSpawn {
+            type_id: crate::rules::voxel_anim_type::VoxelAnimTypeId(0),
+            object: crate::sim::voxel_anim::spawn_debris_piece(
+                0,
+                crate::rules::voxel_anim_type::VoxelAnimTypeId(0),
+                &voxel_type,
+                None,
+                glam::IVec3::new(1280, 2560, 0),
+                &mut rng,
+            )
+            .expect("in domain"),
+        })
+        .collect();
+    sim.admit_death_debris(pieces);
+
+    assert_eq!(sim.substrate.voxel_anims.len(), 3);
+    let ids: Vec<u64> = sim.substrate.voxel_anims.ids();
+    assert_eq!(
+        sim.live_object_order_snapshot(),
+        ids,
+        "each piece is revealed into the live order in spawn order"
+    );
+    assert_ne!(
+        sim.state_hash(),
+        empty_hash,
+        "the store folds into the state hash"
+    );
+
+    // The fold reads the physics body, not just the identity: a single tick of
+    // the duration has to move the hash.
+    let before_tick = sim.state_hash();
+    let first_id = ids[0];
+    sim.substrate
+        .voxel_anims
+        .get_mut(first_id)
+        .unwrap()
+        .duration -= 1;
+    assert_ne!(sim.state_hash(), before_tick);
+    sim.substrate
+        .voxel_anims
+        .get_mut(first_id)
+        .unwrap()
+        .duration += 1;
+    assert_eq!(sim.state_hash(), before_tick);
+
+    let expected_order = sim.live_object_order_snapshot();
+    let expected_store = sim.substrate.voxel_anims.clone();
+    let bytes = bincode::serialize(&sim).expect("serialize sim with VoxelAnimStore");
+    let mut restored: Simulation =
+        bincode::deserialize(&bytes).expect("deserialize VoxelAnimStore");
+    restored.rebuild_logic_membership();
+    assert_eq!(restored.live_object_order_snapshot(), expected_order);
+    assert_eq!(
+        restored.substrate.voxel_anims, expected_store,
+        "every piece and its physics body survive the snapshot"
+    );
+    restored.debug_assert_logic_membership_consistent();
+
+    // The scheduler slot advances the physics body, and a piece leaves the live
+    // order once its AI reaches Delete.
+    let first = first_id;
+    let before = sim.substrate.voxel_anims.get(first).unwrap().world_coord();
+    sim.visit_voxel_anim(first);
+    let after = sim.substrate.voxel_anims.get(first).unwrap().world_coord();
+    assert_ne!(before, after, "one AI visit moves the body");
+    for _ in 0..200 {
+        if !sim.substrate.voxel_anims.contains_key(first) {
+            break;
+        }
+        sim.visit_voxel_anim(first);
+    }
+    assert!(
+        !sim.substrate.voxel_anims.contains_key(first),
+        "the piece expires inside its Duration"
+    );
+    assert!(
+        !sim.live_object_order_snapshot().contains(&first),
+        "Delete leaves the LogicVector"
+    );
+    sim.debug_assert_logic_membership_consistent();
+}

@@ -717,6 +717,7 @@ impl Simulation {
             include_disguise_detect_v117,
         );
         self.hash_anims(&mut hasher);
+        self.hash_voxel_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
         self.session.fold_identity(&mut hasher);
 
@@ -1889,6 +1890,46 @@ impl Simulation {
         for (id, anim) in self.substrate.anims.iter() {
             id.hash(hasher);
             anim.hash(hasher);
+        }
+    }
+
+    /// `VoxelAnimClass` debris in stable-ID order.
+    ///
+    /// The physics body is authoritative simulation state, not a render cache:
+    /// `VoxelAnimClass::AI @ 0x00749F30` refreshes the object coordinate from it
+    /// every tick and reads its `Bounced`/`Stopped` verdict to decide when the
+    /// piece dies. The spin axis and angle fold too — they are drawn from the
+    /// shared stream by `BounceClass::Init`, so a divergence there is a
+    /// divergence in the stream itself, even though nothing in the physics
+    /// reads them back.
+    fn hash_voxel_anims(&self, hasher: &mut impl Hasher) {
+        // An empty store contributes NO bytes, the same convention
+        // `fold_raw_cell_occupation` uses. Debris exists only between a death
+        // and the moment the last piece expires, so hashing a length of zero on
+        // every other frame would move every established golden and every
+        // historical schema probe for a plumbing reason rather than a
+        // behavioural one — and would keep doing so at each future store.
+        if self.substrate.voxel_anims.is_empty() {
+            return;
+        }
+        b"voxel-anim-debris-v1".hash(hasher);
+        self.substrate.voxel_anims.len().hash(hasher);
+        for (id, debris) in self.substrate.voxel_anims.iter() {
+            id.hash(hasher);
+            debris.type_id.0.hash(hasher);
+            debris.duration.hash(hasher);
+            debris.marked_for_deletion.hash(hasher);
+            debris.owner_house.hash(hasher);
+            let bounce = &debris.bounce;
+            bounce.elasticity.bits().hash(hasher);
+            bounce.gravity.bits().hash(hasher);
+            bounce.angular_velocity_magnitude.bits().hash(hasher);
+            for axis in 0..3 {
+                bounce.position[axis].bits().hash(hasher);
+                bounce.velocity[axis].bits().hash(hasher);
+                bounce.spin_axis[axis].bits().hash(hasher);
+            }
+            bounce.spin_angle.bits().hash(hasher);
         }
     }
 }

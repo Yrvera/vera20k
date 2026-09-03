@@ -1528,6 +1528,8 @@ impl Simulation {
     pub(crate) fn classify_object(&self, stable_id: u64) -> Option<ObjectKind> {
         if self.substrate.anims.contains_key(stable_id) {
             Some(ObjectKind::Anim)
+        } else if self.substrate.voxel_anims.contains_key(stable_id) {
+            Some(ObjectKind::VoxelAnim)
         } else if self.substrate.particle_systems.contains_key(stable_id) {
             Some(ObjectKind::ParticleSystem)
         } else if self.production.terrain_objects.contains_key(&stable_id) {
@@ -1553,6 +1555,11 @@ impl Simulation {
                 .anims
                 .get(stable_id)
                 .is_some_and(|anim| anim.in_logic_vector),
+            ObjectKind::VoxelAnim => self
+                .substrate
+                .voxel_anims
+                .get(stable_id)
+                .is_some_and(|debris| debris.in_logic_vector),
             ObjectKind::ParticleSystem => self
                 .substrate
                 .particle_systems
@@ -1587,6 +1594,11 @@ impl Simulation {
             ObjectKind::Anim => {
                 if let Some(anim) = self.substrate.anims.get_mut(stable_id) {
                     anim.in_logic_vector = member;
+                }
+            }
+            ObjectKind::VoxelAnim => {
+                if let Some(debris) = self.substrate.voxel_anims.get_mut(stable_id) {
+                    debris.in_logic_vector = member;
                 }
             }
             ObjectKind::ParticleSystem => {
@@ -1684,6 +1696,15 @@ impl Simulation {
 
     pub(crate) fn conceal_anim(&mut self, stable_id: u64) -> bool {
         self.unregister_logic_object(stable_id)
+    }
+
+    /// `ObjectClass::Unlimbo` inside `VoxelAnimClass::Constructor @ 0x007493B0`
+    /// reveals the piece, which is what puts it in the LogicClass vector.
+    pub(crate) fn reveal_voxel_anim(&mut self, stable_id: u64) -> bool {
+        if !self.substrate.voxel_anims.contains_key(stable_id) {
+            return false;
+        }
+        self.register_logic_object(stable_id)
     }
 
     pub(crate) fn reveal_particle_system(&mut self, stable_id: u64) -> bool {

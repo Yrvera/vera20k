@@ -1511,6 +1511,10 @@ pub struct CombatTickResult {
     pub destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
     /// Explosion animations to spawn at death/impact locations.
     pub explosion_effects: Vec<ExplosionEffect>,
+    /// `VoxelAnimClass` debris a death threw. Built inside the combat
+    /// transaction, which does not hold the shared object-id allocator, so the
+    /// world stamps ids and reveals in this order.
+    pub voxel_debris: Vec<crate::sim::voxel_anim::VoxelDebrisSpawn>,
     /// Receiver-ordered IC/ForceShield transient combat-light requests.
     pub invulnerability_impact_effects: Vec<InvulnerabilityImpactEffect>,
     /// Hookless-test adapter for smudge requests. Empty on the production world
@@ -1834,6 +1838,11 @@ pub(crate) struct DeathEffects {
     pub(crate) destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding>,
     pub(crate) destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
     pub(crate) explosion_effects: Vec<ExplosionEffect>,
+    /// `VoxelAnimClass` debris the death block built but could not admit: the
+    /// combat transaction borrows the entity store out of the world, so it does
+    /// not hold the shared object-id allocator. The world stamps ids and
+    /// reveals in this order.
+    pub(crate) voxel_debris: Vec<crate::sim::voxel_anim::VoxelDebrisSpawn>,
     pub(crate) invulnerability_impact_effects: Vec<InvulnerabilityImpactEffect>,
     pub(crate) bridge_damage_events: Vec<BridgeDamageEvent>,
     pub(crate) wall_mutations: Vec<WallMutation>,
@@ -2179,6 +2188,7 @@ impl DeathEffects {
         self.destroyed_garrison_buildings
             .append(&mut other.destroyed_garrison_buildings);
         self.explosion_effects.append(&mut other.explosion_effects);
+        self.voxel_debris.append(&mut other.voxel_debris);
         self.invulnerability_impact_effects
             .append(&mut other.invulnerability_impact_effects);
         self.bridge_damage_events
@@ -2220,6 +2230,152 @@ impl DeathEffects {
 /// retail data, because the branch that reaches it requires an empty
 /// `DieSound=` list and no stock building pairs `VoiceDie=` with an empty
 /// `DieSound=`.
+/// `CellClass+0xEC` LandType WATER, the value the death-side debris gate
+/// compares against at `0x00702274`.
+const WATER_YR_CELL_LAND_TYPE: u8 = 2;
+
+/// The height above ground below which the water gate applies, from
+/// `CMP EAX, 0xa / JG 0x00702281` at `0x00702238`.
+const DEBRIS_WATER_GATE_MAX_HEIGHT_LEPTONS: i32 = 10;
+
+/// The debris block of `TechnoClass::ReceiveDamage @ 0x00701900`, wired to the
+/// dying object.
+///
+/// The entry gate is `0x00702232`..`0x0070227B`: the object's height virtual
+/// (`vtable+0x1C8`) must be at most 10 AND its `+0x8F` byte must be set before
+/// the cell is even looked up; only then does `LandType == Water` skip the
+/// whole block, RNG included. A high-flying object dying over water therefore
+/// still throws debris.
+///
+/// RESIDUAL (GSI-05.14) — `ObjectClass+0x8F` is read as one byte at
+/// `0x0070223D` and this session did not identify it; Ghidra's imported struct
+/// name for the slot is YRpp-derived and not evidence. It is modelled as always
+/// set, which is the suppressing direction: if the flag is ever clear on a
+/// ground-level object, VERA withholds debris where retail throws it and the
+/// shared stream diverges by the whole block's draws.
+/// - Trigger: any Techno death at height <= 10 on a water cell.
+/// - Player effect: a wreck sinking at a shoreline scatters nothing.
+/// - Frequency: naval deaths and shoreline vehicle deaths only; the same
+///   `+0x8F`-and-height pair guards the water-splash arm of
+///   `UnitClass::ReceiveDamage @ 0x00737C90`, which does fire in ordinary play,
+///   so the flag is at least commonly set.
+/// - Downstream risk: it gates draws, so a wrong reading shifts the cursor for
+///   every consumer after that death in the same tick.
+///
+/// RESIDUAL (GSI-05.14) — the SHP half spawns through the existing
+/// `ExplosionEffect` -> `WorldEffect` path, which plays the sprite at a fixed
+/// point. Native builds a real `AnimClass` (`0x00421EA0`), and every stock
+/// debris AnimType is `Bouncer=yes` (`AnimTypeClass+0x35A`, read at
+/// `0x004286A7`), so native's constructor enters its own `BounceClass::Init`
+/// arm and the chunk flies an arc before landing.
+/// - Trigger: every death that reaches either SHP arm — 420 of the 456 stock
+///   sections that author `MaxDebris=`.
+/// - Player effect: the debris sprite plays where the wreck stood instead of
+///   tumbling outward, and its `Damage=`/`Warhead=` on landing is not applied.
+/// - Frequency: continuous — every building death and most vehicle deaths.
+/// - Downstream risk: the constructor's own draws are not consumed either —
+///   one `RandomRanged` for `RandomRate=`, three `Random__Next()` for the
+///   launch velocity and three `RandomRanged(-0xFFFF, 0xFFFF)` inside
+///   `BounceClass::Init`, so seven per anim. Every `WorldEffect` anim in the
+///   engine shares that gap today; closing it belongs with the AnimClass
+///   bouncer owner, not here, because the same seven draws are missing from
+///   the `Explosion=`/`DestroyAnim=` producer beside this one.
+#[allow(clippy::too_many_arguments)]
+fn throw_debris_for_death(
+    object_type: &ObjectType,
+    rules: &RuleSet,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    interner: &mut StringInterner,
+    owner: InternedId,
+    rx: u16,
+    ry: u16,
+    sub_x: SimFixed,
+    sub_y: SimFixed,
+    z: u8,
+    world_z_leptons: i32,
+    main_rng: &mut SimRng,
+    voxel_debris: &mut Vec<crate::sim::voxel_anim::VoxelDebrisSpawn>,
+    explosion_effects: &mut Vec<ExplosionEffect>,
+) {
+    use crate::sim::voxel_anim::{DebrisTypeData, ShpDebrisSource, throw_death_debris};
+
+    if object_type.max_debris <= 0 {
+        return;
+    }
+    let world_x = i32::from(rx)
+        .wrapping_mul(256)
+        .wrapping_add(sub_x.to_num::<i32>());
+    let world_y = i32::from(ry)
+        .wrapping_mul(256)
+        .wrapping_add(sub_y.to_num::<i32>());
+    if let Some(cell) = terrain.and_then(|grid| grid.cell(rx, ry))
+        && cell.yr_cell_land_type == WATER_YR_CELL_LAND_TYPE
+    {
+        let ground = crate::util::lepton::ground_height_leptons(
+            cell.level,
+            cell.slope_type,
+            world_x,
+            world_y,
+        )
+        .unwrap_or(0);
+        if world_z_leptons - ground <= DEBRIS_WATER_GATE_MAX_HEIGHT_LEPTONS {
+            return;
+        }
+    }
+
+    let debris_types: Vec<Option<(crate::rules::voxel_anim_type::VoxelAnimTypeId, _)>> =
+        object_type
+            .debris_types
+            .iter()
+            .map(|name| {
+                rules
+                    .voxel_anim_type_id_by_name(name)
+                    .map(|id| (id, rules.voxel_anim_type(id)))
+            })
+            .collect();
+    let data = DebrisTypeData {
+        max_debris: object_type.max_debris,
+        min_debris: object_type.min_debris,
+        debris_types: &debris_types,
+        debris_maximums: &object_type.debris_maximums,
+        debris_anim_count: object_type.debris_anims.len(),
+        metallic_debris_count: rules.general.metallic_debris.len(),
+    };
+    let Ok(thrown) = throw_death_debris(
+        &data,
+        Some(owner),
+        glam::IVec3::new(world_x, world_y, world_z_leptons),
+        main_rng,
+    ) else {
+        // A launch velocity outside the verified x87 domain needs a modded
+        // `[VoxelAnims]` value far past any stock one; the draws are already
+        // consumed, so the death simply throws nothing.
+        return;
+    };
+    voxel_debris.extend(thrown.voxels);
+    for row in thrown.anims {
+        let name = match row.source {
+            ShpDebrisSource::TypeDebrisAnims => object_type.debris_anims.get(row.index),
+            ShpDebrisSource::RulesMetallicDebris => rules.general.metallic_debris.get(row.index),
+        };
+        // Native lifts the anim coordinate by 20 leptons (`ADD EAX, 0x14` at
+        // `0x00702443`). `ExplosionEffect` carries Z as a height LEVEL, and 20
+        // leptons is under a sixth of one, so the lift is below this row's
+        // resolution and is not represented.
+        if let Some(name) = name {
+            let shp_name = interner.intern(name);
+            explosion_effects.push(ExplosionEffect {
+                shp_name,
+                rx,
+                ry,
+                sub_x,
+                sub_y,
+                z,
+            });
+        }
+    }
+}
+
 fn append_selected_death_sounds(
     object_type: &ObjectType,
     category: EntityCategory,
@@ -2330,6 +2486,7 @@ fn handle_entity_deaths(
     let mut destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding> = Vec::new();
     let mut destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding> = Vec::new();
     let mut explosion_effects: Vec<ExplosionEffect> = Vec::new();
+    let mut voxel_debris: Vec<crate::sim::voxel_anim::VoxelDebrisSpawn> = Vec::new();
     let mut invulnerability_impact_effects: Vec<InvulnerabilityImpactEffect> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
     let mut wall_mutations: Vec<WallMutation> = Vec::new();
@@ -2401,6 +2558,30 @@ fn handle_entity_deaths(
                     rx,
                     ry,
                     &mut death_sounds,
+                );
+                // gamemd-derived: the debris block of
+                // `TechnoClass::ReceiveDamage @ 0x00701900`
+                // (`0x00702281`..`0x0070256C`). It sits BELOW the two death
+                // sound draws in the same destruction arm and ABOVE
+                // `UnitClass::Death_Explosion`, which `UnitClass::ReceiveDamage
+                // @ 0x00737C90` only calls after this function has returned 4 —
+                // so it lands here, between the sounds and the `Explosion=` /
+                // `DestroyAnim=` draws below.
+                throw_debris_for_death(
+                    obj,
+                    rules,
+                    terrain.as_deref(),
+                    interner,
+                    owner,
+                    rx,
+                    ry,
+                    sub_x,
+                    sub_y,
+                    z,
+                    world_z_leptons,
+                    main_rng,
+                    &mut voxel_debris,
+                    &mut explosion_effects,
                 );
                 if let Some((dmg, wh_id, weapon_id)) = death_weapon_aoe(
                     rules,
@@ -2728,6 +2909,7 @@ fn handle_entity_deaths(
             destroyed_crewed_buildings.append(&mut nested.destroyed_crewed_buildings);
             destroyed_garrison_buildings.append(&mut nested.destroyed_garrison_buildings);
             explosion_effects.append(&mut nested.explosion_effects);
+            voxel_debris.append(&mut nested.voxel_debris);
             invulnerability_impact_effects.append(&mut nested.invulnerability_impact_effects);
             bridge_damage_events.append(&mut nested.bridge_damage_events);
             wall_mutations.append(&mut nested.wall_mutations);
@@ -2829,6 +3011,7 @@ fn handle_entity_deaths(
         destroyed_crewed_buildings,
         destroyed_garrison_buildings,
         explosion_effects,
+        voxel_debris,
         invulnerability_impact_effects,
         bridge_damage_events,
         wall_mutations,
@@ -4334,6 +4517,7 @@ fn absorb_inline_death_effects(
     out.tiberium_reduction_requests
         .append(&mut death.tiberium_reduction_requests);
     out.explosion_effects.append(&mut death.explosion_effects);
+    out.voxel_debris.append(&mut death.voxel_debris);
     out.smudge_spawn_requests
         .append(&mut death.smudge_spawn_requests);
     out.rad_detonations.append(&mut death.rad_detonations);
@@ -4365,6 +4549,8 @@ pub(crate) struct CombatEmit {
     pub(crate) cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
     pub(crate) tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
     pub(crate) explosion_effects: Vec<ExplosionEffect>,
+    /// Death-thrown `VoxelAnimClass` debris awaiting an object id.
+    pub(crate) voxel_debris: Vec<crate::sim::voxel_anim::VoxelDebrisSpawn>,
     pub(crate) smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
     /// (id, burst_rem, burst_delay, rof_cd)
     pub(crate) burst_updates: Vec<(u64, u8, u8, u16)>,
@@ -5289,6 +5475,7 @@ pub(crate) fn commit_logic_projectile_detonations(
     effects
         .explosion_effects
         .append(&mut emit.explosion_effects);
+    effects.voxel_debris.append(&mut emit.voxel_debris);
     effects
         .smudge_spawn_requests
         .append(&mut emit.smudge_spawn_requests);
@@ -5471,6 +5658,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             destroyed_crewed_buildings: Vec::new(),
             destroyed_garrison_buildings: Vec::new(),
             explosion_effects: Vec::new(),
+            voxel_debris: Vec::new(),
             invulnerability_impact_effects: Vec::new(),
             smudge_spawn_requests: Vec::new(),
             unit_facing: Vec::new(),
@@ -6234,6 +6422,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
         mut cell_target_detaches,
         mut tiberium_reduction_requests,
         mut explosion_effects,
+        mut voxel_debris,
         mut smudge_spawn_requests,
         burst_updates,
         ammo_deduct,
@@ -6451,6 +6640,8 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     cell_target_detaches.append(&mut late_death.cell_target_detaches);
     tiberium_reduction_requests.append(&mut late_death.tiberium_reduction_requests);
     explosion_effects.append(&mut late_death.explosion_effects);
+    voxel_debris.append(&mut late_death.voxel_debris);
+    voxel_debris.append(&mut death.voxel_debris);
     smudge_spawn_requests.append(&mut late_death.smudge_spawn_requests);
     death.append(late_death);
     under_attack_events.append(&mut late_pings);
@@ -6505,6 +6696,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
         destroyed_crewed_buildings: death.destroyed_crewed_buildings,
         destroyed_garrison_buildings: death.destroyed_garrison_buildings,
         explosion_effects,
+        voxel_debris,
         invulnerability_impact_effects: death.invulnerability_impact_effects,
         smudge_spawn_requests,
         unit_facing,

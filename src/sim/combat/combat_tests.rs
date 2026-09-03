@@ -8818,3 +8818,224 @@ fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
     }
     panic!("the Kirov bomb never detonated");
 }
+
+/// A destroyed vehicle with `MaxDebris=` alone scatters SHP chunks from
+/// `[General] MetallicDebris=`.
+///
+/// gamemd-derived: `TechnoClass::ReceiveDamage @ 0x00701900`. With
+/// `DebrisAnims.Count == 0` (`0x007023FC`) and `DebrisTypes.Count == 0`
+/// (`0x007024D2`) the whole budget goes to the arm at `0x007024E0`, one
+/// `RandomRanged(0, RulesClass+0x14C - 1)` per chunk at `0x0070253A`. 254 stock
+/// sections take exactly this path — MTNK, Rhino, the Battle Fortress, every
+/// aircraft — so before this landed, most vehicle deaths in the game threw
+/// nothing at all.
+#[test]
+fn gsi_05_14_a_dying_vehicle_scatters_metallic_debris() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[General]\nMetallicDebris=DBRIS1LG,DBRIS2LG,DBRIS3LG\n\
+         [VehicleTypes]\n0=MTNK\n1=HTNK\n\
+         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=105mm\n\
+         [HTNK]\nStrength=1\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=105mm\nMaxDebris=4\n\
+         [105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\
+         [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("metallic-debris fixture parses");
+
+    let mut store = EntityStore::new();
+    store.insert(make_entity_owned(1, "MTNK", 5, 5, 300, "Soviet"));
+    let _ = test_intern("HTNK");
+    store.insert(make_entity_owned(2, "HTNK", 8, 5, 1, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+    align_attackers_to_targets(&mut store, &rules, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut SimRng::new(9),
+    );
+
+    let names: Vec<&str> = result
+        .explosion_effects
+        .iter()
+        .map(|effect| interner.resolve(effect.shp_name))
+        .collect();
+    assert!(
+        names.iter().any(|name| name.starts_with("DBRIS")),
+        "the death should scatter MetallicDebris chunks, got {names:?}"
+    );
+    assert!(
+        result.voxel_debris.is_empty(),
+        "a type with no DebrisTypes= throws no VoxelAnims"
+    );
+}
+
+/// `DebrisAnims=` on the section wins over `[General] MetallicDebris=`.
+///
+/// gamemd-derived: `0x007023EF` reads `TechnoType+0x5D4` first and only a zero
+/// count falls through to the Rules list at `0x007024BB`. All 166 stock
+/// `DebrisAnims=` lines sit on `[BuildingTypes]` sections, so this is the arm
+/// every structure death takes.
+#[test]
+fn gsi_05_14_a_dying_building_uses_its_own_debris_anims() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[General]\nMetallicDebris=DBRIS1LG,DBRIS2LG,DBRIS3LG\n\
+         [VehicleTypes]\n0=MTNK\n1=HTNK\n\
+         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=105mm\n\
+         [HTNK]\nStrength=1\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=105mm\n\
+         MinDebris=3\nMaxDebris=4\nDebrisAnims=DBRI-WM1,DBRI-WM2\n\
+         [105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\
+         [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("debris-anims fixture parses");
+
+    let mut store = EntityStore::new();
+    store.insert(make_entity_owned(1, "MTNK", 5, 5, 300, "Soviet"));
+    let _ = test_intern("HTNK");
+    store.insert(make_entity_owned(2, "HTNK", 8, 5, 1, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+    align_attackers_to_targets(&mut store, &rules, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut SimRng::new(21),
+    );
+
+    let names: Vec<&str> = result
+        .explosion_effects
+        .iter()
+        .map(|effect| interner.resolve(effect.shp_name))
+        .collect();
+    let own: usize = names.iter().filter(|n| n.starts_with("DBRI-WM")).count();
+    // `MinDebris=3`, `MaxDebris=4` pins the budget at 3 with no draw.
+    assert_eq!(own, 3, "the whole budget comes from DebrisAnims=: {names:?}");
+    assert!(
+        !names.iter().any(|n| n.starts_with("DBRIS")),
+        "the Rules MetallicDebris arm must not also fire: {names:?}"
+    );
+}
+
+/// A destroyed harvester throws `[VoxelAnims]` tyres, and its budget never
+/// reaches the SHP arms.
+///
+/// gamemd-derived: with `DebrisTypes.Count > 0` the loop at `0x007022FE`
+/// drains the budget to zero before either SHP arm is tested, so a type that
+/// names `DebrisTypes=` throws VXL debris and nothing else. All 36 stock
+/// `DebrisTypes=` lines name `TIRE`; `[HARV]` is `MaxDebris=6`,
+/// `DebrisMaximums=4`.
+#[test]
+fn gsi_05_14_a_dying_harvester_throws_voxel_tires_and_no_shp_debris() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[General]\nMetallicDebris=DBRIS1LG,DBRIS2LG,DBRIS3LG\n\
+         [VoxelAnims]\n1=TIRE\n\
+         [TIRE]\nElasticity=0.8\nMinAngularVelocity=12.0\nMaxAngularVelocity=24.0\n\
+         MinZVel=28.0\nMaxZVel=32.0\nMaxXYVel=10.0\nDuration=150\n\
+         [VehicleTypes]\n0=MTNK\n1=HTNK\n\
+         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=105mm\n\
+         [HTNK]\nStrength=1\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=105mm\n\
+         MinDebris=5\nMaxDebris=6\nDebrisTypes=TIRE\nDebrisMaximums=4\n\
+         [105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\
+         [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("voxel-debris fixture parses");
+
+    let mut store = EntityStore::new();
+    store.insert(make_entity_owned(1, "MTNK", 5, 5, 300, "Soviet"));
+    let _ = test_intern("HTNK");
+    store.insert(make_entity_owned(2, "HTNK", 8, 5, 1, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+    align_attackers_to_targets(&mut store, &rules, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut SimRng::new(5),
+    );
+
+    // MinDebris == MaxDebris - 1 pins the budget at 5 with no draw, and the
+    // loop drains exactly that many.
+    assert_eq!(result.voxel_debris.len(), 5);
+    let names: Vec<&str> = result
+        .explosion_effects
+        .iter()
+        .map(|effect| interner.resolve(effect.shp_name))
+        .collect();
+    assert!(
+        !names.iter().any(|n| n.starts_with("DBRI")),
+        "the voxel loop spends the whole budget: {names:?}"
+    );
+    // Every piece launches from the wreck's own coordinate, lifted 10 leptons.
+    for piece in &result.voxel_debris {
+        assert_eq!(piece.object.duration, 150);
+        assert_eq!(piece.object.world_coord().z, 10);
+    }
+}
+
+/// A type with `MaxDebris=0` costs the shared stream nothing.
+///
+/// `TEST ECX,ECX / JLE 0x00702572` at `0x00702291` skips the whole block above
+/// the budget draw. Most `[InfantryTypes]` sections author no `MaxDebris=` at
+/// all, so this is the common case, and consuming a draw here would shift the
+/// cursor for every later consumer in the tick.
+#[test]
+fn gsi_05_14_a_type_without_maxdebris_takes_no_draw() {
+    let ini = "[General]\nMetallicDebris=DBRIS1LG,DBRIS2LG,DBRIS3LG\n\
+         [VehicleTypes]\n0=MTNK\n1=HTNK\n\
+         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=105mm\n\
+         [HTNK]\nStrength=1\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=105mm\n\
+         [105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\
+         [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n";
+    let rules = RuleSet::from_ini(&IniFile::from_str(ini)).expect("no-debris fixture parses");
+
+    let mut store = EntityStore::new();
+    store.insert(make_entity_owned(1, "MTNK", 5, 5, 300, "Soviet"));
+    let _ = test_intern("HTNK");
+    store.insert(make_entity_owned(2, "HTNK", 8, 5, 1, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+    align_attackers_to_targets(&mut store, &rules, &interner);
+
+    let mut rng = SimRng::new(64);
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut rng,
+    );
+    assert!(result.voxel_debris.is_empty());
+    let names: Vec<&str> = result
+        .explosion_effects
+        .iter()
+        .map(|effect| interner.resolve(effect.shp_name))
+        .collect();
+    assert!(
+        !names.iter().any(|n| n.starts_with("DBRI")),
+        "no MaxDebris= means no debris at all: {names:?}"
+    );
+}

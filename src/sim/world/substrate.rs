@@ -22,6 +22,7 @@ use crate::sim::occupancy::{
     CellOccupationGrid, HiddenOccupationGrid, OccupancyGrid, RawCellOccupationGrid,
 };
 use crate::sim::particles::ParticleSystemStore;
+use crate::sim::voxel_anim::VoxelAnimStore;
 
 const FIRST_MULTIPLAYER_FEEDBACK_ANIM_ID: u64 = 1 << 63;
 
@@ -62,13 +63,15 @@ impl EnterOrderCounter {
 
 /// The object kinds the LogicVector registration/removal dispatch
 /// distinguishes (F13). Classification probes the stores in this fixed order:
-/// anims → particle systems → terrain objects → projectiles → waves →
-/// entities — the exact probe order the pre-consolidation dispatch used at
-/// every site. Object IDs are unique across stores (one monotonic
+/// anims → voxel anims → particle systems → terrain objects → projectiles →
+/// waves → entities — the pre-consolidation dispatch order with the
+/// `VoxelAnimClass` registry inserted next to the other ObjectClass registry it
+/// shares a death with. Object IDs are unique across stores (one monotonic
 /// `next_stable_object_id` namespace), so at most one store can match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ObjectKind {
     Anim,
+    VoxelAnim,
     ParticleSystem,
     Terrain,
     Projectile,
@@ -122,6 +125,12 @@ pub(crate) struct ObjectSubstrate {
     /// LogicVector with entities.
     #[serde(default)]
     pub(crate) anims: AnimStore,
+    /// `VoxelAnimClass` registry — the flying VXL debris a death throws. Shares
+    /// the global object-ID namespace and the LogicVector with entities and
+    /// anims, exactly as native's `VoxelAnimClass::Constructor` does through
+    /// `AbstractClass::AssignUniqueID` and `ObjectClass::Unlimbo`.
+    #[serde(default)]
+    pub(crate) voxel_anims: VoxelAnimStore,
     /// Multiplayer click-feedback animations use a separate, sync-exempt
     /// registry and never enter the ordinary LogicVector.
     #[serde(skip)]
@@ -160,6 +169,7 @@ impl ObjectSubstrate {
             base_reservations: CellReservationGrid::new(),
             entities: EntityStore::new(),
             anims: AnimStore::default(),
+            voxel_anims: VoxelAnimStore::default(),
             multiplayer_feedback_anims: AnimStore::default(),
             next_multiplayer_feedback_anim_id: FIRST_MULTIPLAYER_FEEDBACK_ANIM_ID,
             multiplayer_feedback_pending_delete: Vec::new(),
