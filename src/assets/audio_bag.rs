@@ -28,7 +28,8 @@
 //!
 //! ## Dependency rules
 //! - Part of assets/ — standalone parser, no game dependencies.
-//! - Uses IMA ADPCM decoder from `aud_file.rs`.
+//! - Compressed entries decode through `assets::ima_adpcm`, the crate's single
+//!   IMA ADPCM implementation, mirroring the single decoder in `gamemd.exe`.
 
 const IDX_HEADER_SIZE: usize = 12;
 /// V1 entries are 32 bytes, V2 entries are 36 bytes (extra chunk_size field).
@@ -258,7 +259,11 @@ pub fn decode_bag_audio(entry: &AudioBagEntry, data: &[u8]) -> Option<BagAudio> 
     }
 
     let samples_i16 = if entry.is_ima_adpcm() {
-        decode_ima_adpcm_blocks(data, entry.channels(), entry.chunk_size)
+        // `AudioIndex__GetFormat @ 0x00401640` turns flags bit 3 into compression
+        // id 1 and passes `chunk_size` (entry +0x20) through as the block stride;
+        // `FUN_00409C40 @ 0x00409C40` then wires the one block decoder,
+        // `IMA_ADPCM__DecodeBlock @ 0x0040AA70`.
+        super::ima_adpcm::decode_blocks(data, entry.channels(), entry.chunk_size)
     } else if entry.is_16bit() {
         // Raw 16-bit signed PCM (little-endian).
         data.chunks_exact(2)
@@ -274,124 +279,6 @@ pub fn decode_bag_audio(entry: &AudioBagEntry, data: &[u8]) -> Option<BagAudio> 
         sample_rate: entry.sample_rate,
         channels: entry.channels(),
     })
-}
-
-/// Decode IMA ADPCM data with per-block preambles.
-///
-/// Each block starts with a 4-byte preamble per channel:
-///   int16 predictor (LE), u8 step_index (0-88), u8 reserved (must be 0)
-/// Followed by nibble data for the remaining block bytes.
-///
-/// If `block_size` is 0 (v1 IDX or unknown), treats the entire data as one block.
-/// RESIDUAL (GSI-02.15) — the multi-block preamble is unexercised, and pass 2
-/// established that it is the LIVE path, not a hypothetical one. Retail
-/// `audio(md).idx` is v2 and every one of its 2292 entries carries
-/// `chunk_size = 512`, so the 36-byte stride runs for every retail sound.
-/// `chunk_size` is a BYTE stride, proved by 8 of 8 sampled entries satisfying
-/// `(size mod 512) - 4 == 0 (mod 4)`, which `IMA_ADPCM::DecodeBlock @
-/// 0x0040AA70` requires. The preamble, the predictor-as-first-sample and the
-/// left/right interleave all match; only coverage is missing. `ABIRJ01A` is a
-/// concrete retail fixture — 28 full blocks plus a 52-byte tail.
-/// - Trigger: decoding any retail sound.
-/// - Player effect: none observed; the risk is a silent decode regression.
-/// - Frequency: continuous.
-/// - Downstream risk: none — this is test coverage over a path that already
-///   matches, so it is a cheap slice whenever assets are in reach.
-fn decode_ima_adpcm_blocks(data: &[u8], channels: u16, block_size: u32) -> Vec<i16> {
-    use super::aud_file::ImaAdpcmState;
-
-    let ch = channels.max(1) as usize;
-    let preamble_size = ch * 4; // 4 bytes per channel preamble
-
-    // If no block size specified, try treating entire data as one block.
-    let bs = if block_size > 0 {
-        block_size as usize
-    } else {
-        data.len()
-    };
-
-    if bs < preamble_size {
-        // Block too small for even the preamble — fall back to raw nibble decode.
-        let mut state = ImaAdpcmState::new();
-        let mut out = Vec::with_capacity(data.len() * 2);
-        super::aud_file::decode_ima_adpcm_chunk(data, &mut state, &mut out);
-        return out;
-    }
-
-    let mut out = Vec::with_capacity(data.len() * 4);
-    let mut pos = 0;
-
-    while pos + preamble_size <= data.len() {
-        let block_end = (pos + bs).min(data.len());
-        let block = &data[pos..block_end];
-
-        if block.len() < preamble_size {
-            break;
-        }
-
-        if ch == 1 {
-            // Mono: single preamble + nibble data.
-            let predictor = i16::from_le_bytes([block[0], block[1]]) as i32;
-            let step_index = block[2] as i32;
-            let _reserved = block[3];
-
-            let mut state = ImaAdpcmState::new();
-            state.set_state(predictor, step_index.clamp(0, 88));
-
-            // First output sample is the predictor value itself.
-            out.push(predictor as i16);
-
-            // Decode remaining nibble data.
-            let nibble_data = &block[preamble_size..];
-            super::aud_file::decode_ima_adpcm_chunk(nibble_data, &mut state, &mut out);
-        } else {
-            // Stereo: two preambles, then interleaved nibble groups.
-            let pred_l = i16::from_le_bytes([block[0], block[1]]) as i32;
-            let idx_l = block[2] as i32;
-            let pred_r = i16::from_le_bytes([block[4], block[5]]) as i32;
-            let idx_r = block[6] as i32;
-
-            let mut state_l = ImaAdpcmState::new();
-            let mut state_r = ImaAdpcmState::new();
-            state_l.set_state(pred_l, idx_l.clamp(0, 88));
-            state_r.set_state(pred_r, idx_r.clamp(0, 88));
-
-            // First output frame is the predictor values.
-            out.push(pred_l as i16);
-            out.push(pred_r as i16);
-
-            // Stereo IMA ADPCM: nibbles are in 4-byte groups per channel,
-            // alternating: 4 bytes L, 4 bytes R, 4 bytes L, 4 bytes R...
-            let nibble_data = &block[preamble_size..];
-            let mut i = 0;
-            while i + 8 <= nibble_data.len() {
-                // 4 bytes for left channel (8 nibbles = 8 samples).
-                let mut l_samples = Vec::with_capacity(8);
-                super::aud_file::decode_ima_adpcm_chunk(
-                    &nibble_data[i..i + 4],
-                    &mut state_l,
-                    &mut l_samples,
-                );
-                // 4 bytes for right channel (8 nibbles = 8 samples).
-                let mut r_samples = Vec::with_capacity(8);
-                super::aud_file::decode_ima_adpcm_chunk(
-                    &nibble_data[i + 4..i + 8],
-                    &mut state_r,
-                    &mut r_samples,
-                );
-                // Interleave L/R output.
-                for j in 0..l_samples.len().min(r_samples.len()) {
-                    out.push(l_samples[j]);
-                    out.push(r_samples[j]);
-                }
-                i += 8;
-            }
-        }
-
-        pos += bs;
-    }
-
-    out
 }
 
 /// Read a little-endian u32 from a byte slice at the given offset.
@@ -524,6 +411,139 @@ mod tests {
             chunk_size: 0,
         };
         assert!(decode_bag_audio(&entry, &[]).is_none());
+    }
+
+    // ---------------------------------------------------------------------
+    // Retail v2 index bytes.
+    //
+    // Every retail sound is looked up through a version-2 `audio.idx` with the
+    // 36-byte stride, yet nothing here exercised that stride: the builder above
+    // emits version 1. The bytes below are copied verbatim from the retail
+    // `audio.idx` inside `langmd.mix -> audiomd.mix` (2,285 entries), so the
+    // stride, field offsets, flag bits and `chunk_size` are pinned against the
+    // shipped file rather than against our own writer.
+    // ---------------------------------------------------------------------
+
+    /// The retail 12-byte header: magic `GABA`, version 2, 2,285 entries.
+    const RETAIL_IDX_HEADER: [u8; 12] = [
+        0x47, 0x41, 0x42, 0x41, 0x02, 0x00, 0x00, 0x00, 0xed, 0x08, 0x00, 0x00,
+    ];
+
+    /// Four retail entries, one per (flags, chunk_size) shape that occurs in
+    /// AUDIOMD: mono IMA (2,192 entries), stereo IMA (5), mono raw PCM (84),
+    /// stereo raw PCM (4).
+    const RETAIL_ENTRIES: [[u8; 36]; 4] = [
+        // "abirj01a": off 11770646, size 14388, 22050 Hz, flags 12, chunk 512
+        [
+            0x61, 0x62, 0x69, 0x72, 0x6a, 0x30, 0x31, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x16, 0x9b, 0xb3, 0x00, 0x34, 0x38, 0x00, 0x00, 0x22, 0x56, 0x00, 0x00,
+            0x0c, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00,
+        ],
+        // "grexselb": off 7063684, size 41212, flags 13 (stereo IMA), chunk 1024
+        [
+            0x67, 0x72, 0x65, 0x78, 0x73, 0x65, 0x6c, 0x62, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x84, 0xc8, 0x6b, 0x00, 0xfc, 0xa0, 0x00, 0x00, 0x22, 0x56, 0x00, 0x00,
+            0x0d, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00,
+        ],
+        // "icraloop": off 285960, size 16606, flags 6 (mono raw 16-bit), chunk 0
+        [
+            0x69, 0x63, 0x72, 0x61, 0x6c, 0x6f, 0x6f, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x08, 0x5d, 0x04, 0x00, 0xde, 0x40, 0x00, 0x00, 0x22, 0x56, 0x00, 0x00,
+            0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ],
+        // "uscolo1": off 8107566, size 309980, flags 7 (stereo raw 16-bit), chunk 0
+        [
+            0x75, 0x73, 0x63, 0x6f, 0x6c, 0x6f, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x2e, 0xb6, 0x7b, 0x00, 0xdc, 0xba, 0x04, 0x00, 0x22, 0x56, 0x00, 0x00,
+            0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ],
+    ];
+
+    /// Retail header + entries, with only the entry count rewritten to the
+    /// number of entries actually embedded.
+    fn retail_idx_slice() -> Vec<u8> {
+        let mut idx = RETAIL_IDX_HEADER.to_vec();
+        idx[8..12].copy_from_slice(&(RETAIL_ENTRIES.len() as u32).to_le_bytes());
+        for entry in &RETAIL_ENTRIES {
+            idx.extend_from_slice(entry);
+        }
+        idx
+    }
+
+    #[test]
+    fn retail_v2_index_parses_with_the_36_byte_stride() {
+        let index = AudioIndex::from_idx_bag(&retail_idx_slice(), Vec::new())
+            .expect("retail v2 header must parse");
+        assert_eq!(index.len(), RETAIL_ENTRIES.len());
+
+        let by_name = |n: &str| {
+            index
+                .entries()
+                .iter()
+                .find(|e| e.name == n)
+                .unwrap_or_else(|| panic!("missing {n}"))
+        };
+
+        // Names are uppercased on load; the shipped index stores them lowercase.
+        let abirj = by_name("ABIRJ01A");
+        assert_eq!((abirj.offset, abirj.size), (11_770_646, 14_388));
+        assert_eq!(abirj.sample_rate, 22_050);
+        assert_eq!(abirj.chunk_size, 512);
+        assert!(abirj.is_ima_adpcm() && abirj.is_16bit() && !abirj.is_stereo());
+        // 28 whole 512-byte blocks and a 52-byte tail — the shape the block
+        // decoder actually sees.
+        assert_eq!(abirj.size % abirj.chunk_size, 52);
+
+        let grex = by_name("GREXSELB");
+        assert_eq!(grex.chunk_size, 1024, "stereo IMA doubles the stride");
+        assert!(grex.is_ima_adpcm() && grex.is_stereo());
+        assert_eq!(grex.channels(), 2);
+
+        let icra = by_name("ICRALOOP");
+        assert!(!icra.is_ima_adpcm() && icra.is_16bit() && !icra.is_stereo());
+        assert_eq!(icra.chunk_size, 0, "raw PCM carries no block stride");
+
+        let usc = by_name("USCOLO1");
+        assert!(!usc.is_ima_adpcm() && usc.is_16bit() && usc.is_stereo());
+        assert_eq!(usc.chunk_size, 0);
+
+        // Sorted for the native's bsearch over `_stricmp` (0x004013AB / 0x007c8d20).
+        let names: Vec<&str> = index.entries().iter().map(|e| e.name.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
+    }
+
+    /// The retail final block of AUDIOMD `ABIRJ01A` (bag offset 11,770,646 +
+    /// 28 x 512): 4-byte preamble + 48-byte payload.
+    const ABIRJ01A_TAIL_BLOCK: &[u8] = &[
+        0xf8, 0xff, 0x01, 0x00, 0x17, 0xbc, 0x33, 0xa1, 0x1b, 0x00, 0x90, 0x3a, 0xb5, 0x2c, 0x92,
+        0x10, 0xb2, 0x9c, 0x32, 0xb3, 0x2d, 0x21, 0xcb, 0x79, 0xa1, 0x0a, 0x31, 0xc0, 0x1a, 0x23,
+        0xbb, 0x4b, 0xb2, 0x1b, 0x13, 0x11, 0xd9, 0x39, 0x92, 0xa9, 0x30, 0x90, 0x0a, 0x11, 0x11,
+        0x1a, 0x91, 0x09, 0x11, 0x09, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn retail_ima_entry_decodes_through_the_shared_block_decoder() {
+        // Entry metadata is the shipped ABIRJ01A row; the data is its real final
+        // block, so this walks idx flags -> channels/chunk_size -> block decoder.
+        let entry = AudioBagEntry {
+            name: "ABIRJ01A".into(),
+            offset: 0,
+            size: ABIRJ01A_TAIL_BLOCK.len() as u32,
+            sample_rate: 22_050,
+            flags: 12,
+            chunk_size: 512,
+        };
+        let audio = decode_bag_audio(&entry, ABIRJ01A_TAIL_BLOCK).expect("should decode");
+        assert_eq!(audio.channels, 1);
+        assert_eq!(audio.sample_rate, 22_050);
+        assert_eq!(audio.samples_i16.len(), 97);
+        assert_eq!(audio.samples_i16[0], -8, "preamble predictor is sample 0");
+        assert_eq!(
+            audio.samples_i16,
+            crate::assets::ima_adpcm::decode_blocks(ABIRJ01A_TAIL_BLOCK, 1, 512)
+        );
     }
 
     #[test]

@@ -137,22 +137,33 @@ fn certify_bag_adpcm_block_invariants() {
     // Value-parity certification for bag IMA-ADPCM decode, block level.
     // The original engine's block decoder (see docs/research/
     // ADPCM_NIBBLE_VALUE_CERTIFICATION_GHIDRA_REPORT.md):
-    // - REJECTS a block whose per-channel preamble has step_index > 88 or a
-    //   nonzero reserved byte (our decoder clamps/continues instead) — so
-    //   equivalence needs: no retail preamble is invalid;
-    // - for MONO blocks rounds the nibble payload up to 4-byte groups,
-    //   reading past an unaligned block end (ours decodes exact bytes) — so
-    //   equivalence needs: every mono block payload is 4-byte aligned;
-    // - for STEREO blocks truncates the payload to whole 8-byte L/R groups —
-    //   identical to ours by construction.
+    // - REJECTS a block whose per-channel preamble has step_index > 0x58 or a
+    //   nonzero reserved byte (0x0040AAEE / 0x0040AAF9) — so equivalence needs:
+    //   no retail preamble is invalid;
+    // - would REJECT a block whose payload is not a whole number of
+    //   4*channels-byte groups (mono 0x0040AB4E, stereo 0x0040ACB3, both then
+    //   SETZ) — but never sees one: Audio__DecodeCompressedBlock hands the
+    //   decoder exactly block_align bytes on every call (only four writes touch
+    //   +0x80/+0x84, and case 0 always leaves +0x84 at 0 — see
+    //   ADPCM_NIBBLE_VALUE_CERTIFICATION_GHIDRA_REPORT.md §2.1), and both retail
+    //   strides are whole. A short final tail is padded from the previous
+    //   block's bytes still in the input buffer, which decode_blocks now
+    //   reproduces.
+    // The ragged-tail sweep below is therefore a corpus fact, not a divergence:
+    // it records which entries carry a *real* tail that is not group-aligned,
+    // which is what the pre-2026-09-03 reading mistook for a dropped block.
+    const KNOWN_RAGGED: &[&str] = &["GREXSELB"];
     let Some(root) = ra2_dir() else {
         println!("SKIP: set RA2_DIR to the retail install");
         return;
     };
     let am = load_corpus(&root);
     let mut failures: Vec<String> = Vec::new();
+    let mut ragged_known: Vec<String> = Vec::new();
     let mut ima_entries = 0usize;
     let mut stereo_entries = 0usize;
+    let mut short_tail_entries = 0usize;
+    let mut shorter_than_stride_entries = 0usize;
     for mix_name in ["AUDIOMD.MIX", "AUDIO.MIX"] {
         let Some(mix) = am.archive(mix_name) else {
             continue;
@@ -183,6 +194,19 @@ fn certify_bag_adpcm_block_invariants() {
             if channels == 2 {
                 stereo_entries += 1;
             }
+            // Frequency evidence for the two end-of-stream classes: a short
+            // final block (reproduced from the previous block's bytes) and a
+            // sound shorter than one whole stride (not reproducible — the
+            // native flushes it against a buffer this sound never filled).
+            if entry.chunk_size > 0 {
+                let stride = entry.chunk_size as usize;
+                if data.len() % stride != 0 {
+                    short_tail_entries += 1;
+                }
+                if data.len() < stride {
+                    shorter_than_stride_entries += 1;
+                }
+            }
             let preamble = channels * 4;
             let block_size = if entry.chunk_size > 0 {
                 entry.chunk_size as usize
@@ -203,11 +227,18 @@ fn certify_bag_adpcm_block_invariants() {
                     }
                 }
                 let payload = block_end - pos - preamble;
-                if channels == 1 && payload % 4 != 0 {
-                    failures.push(format!(
-                        "{mix_name} '{name}': mono block at {pos} payload {payload} \
-                         not 4-aligned — native reads past block end"
-                    ));
+                let group = 4 * channels;
+                if payload % group != 0 {
+                    let line = format!(
+                        "{mix_name} '{name}': {channels}ch block at {pos} real payload \
+                         {payload} not a multiple of {group} — the native pads it \
+                         to the stride from the input buffer"
+                    );
+                    if KNOWN_RAGGED.contains(&name.as_str()) {
+                        ragged_known.push(line);
+                    } else {
+                        failures.push(line);
+                    }
                 }
                 if block_size == 0 {
                     break;
@@ -217,6 +248,22 @@ fn certify_bag_adpcm_block_invariants() {
         }
     }
     println!("RECORD: IMA-ADPCM bag entries: {ima_entries} ({stereo_entries} stereo)");
+    println!(
+        "RECORD: entries with a short final block (native pads from the previous \
+         block, we reproduce it): {short_tail_entries}"
+    );
+    println!(
+        "RECORD: entries shorter than one whole stride (native pads from a buffer \
+         this sound never filled — VERA-internal residual): {shorter_than_stride_entries}"
+    );
+    for line in &ragged_known {
+        println!("RECORD: known non-group-aligned real tail: {line}");
+    }
+    assert!(
+        !ragged_known.is_empty(),
+        "GREXSELB's non-group-aligned real tail is the recorded corpus fact; if it \
+         is gone the corpus changed and the exception list should shrink"
+    );
     assert!(
         failures.is_empty(),
         "bag ADPCM block invariants: {} violations:\n{}",

@@ -26,7 +26,7 @@
 //! | `certify_pcx_structural` | PCX dims match raw header bounds; pixel buffer matches plane count (271 files) |
 //! | `certify_aud_chunk_walk` | AUD chunk walk lands exactly on EOF; chunk outputs sum to header output_size; decode consumes every input nibble |
 //! | `certify_audio_bag_total` | Every audio.idx entry (3,438 across AUDIOMD/AUDIO.MIX) resolves and decodes |
-//! | `certify_bag_adpcm_block_invariants` | ADPCM decoded SAMPLE VALUES: no retail block has an invalid preamble or unaligned mono payload — the only classes where our decoder and the original's diverge (nibble math certified by emulation vectors in src/assets/aud_file.rs) |
+//! | `certify_bag_adpcm_block_invariants` | ADPCM decoded SAMPLE VALUES: no retail block has an invalid preamble; records how many entries end in a short block (the native pads it from the previous block's bytes, which we reproduce) and how many are shorter than one whole stride (the one residual). Exactly one entry (AUDIOMD `grexselb`) has a real tail that is not group-aligned — a corpus fact, not a divergence, since the native never sees a short payload. Nibble math certified by emulation vectors in src/assets/ima_adpcm.rs |
 //! | `certify_pal_roundtrip_bytes` | Both palette scale formulas recomputed from raw bytes match parsed output channel-for-channel; all retail bytes in 6-bit domain |
 //! | `certify_hva_roundtrip_bytes` | Section names and every transform f32 are bit-identical to the raw bytes |
 //! | `certify_vpl_roundtrip_bytes` | Header fields and every lighting page byte-equal the raw file |

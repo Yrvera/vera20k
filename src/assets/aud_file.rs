@@ -8,24 +8,29 @@
 //! The file is divided into chunks, each with a small header and compressed payload.
 //! Decoding produces 16-bit signed PCM samples.
 //!
+//! ## Reachability in gamemd
+//!
+//! The DEAF-chunk container this file walks has **no decoder in `gamemd.exe`**:
+//! the only `.aud` filenames the binary references are TEXT1–3.AUD (score-screen
+//! narration), no code in the audio path compares the `0x0000DEAF` chunk magic
+//! (the image's one `CMP word ptr [...+0x4],0xDEAF` is at `0x005F1D2F`, inside
+//! the serial/null-modem packet framer `FUN_005F1C60`), and the image's
+//! single IMA decoder (`IMA_ADPCM__DecodeSample @ 0x0040ACD0`, reached only via
+//! the block decoder `IMA_ADPCM__DecodeBlock @ 0x0040AA70`) is block-framed, not
+//! chunk-framed. See `docs/research/AUD_TRAILING_SAMPLE_UNREACHABLE_GHIDRA_REPORT.md`.
+//! The chunk walk below is therefore VERA-internal — a reader for files the
+//! original never decodes — while the nibble math it borrows from
+//! `ima_adpcm` is the certified native one.
+//!
 //! ## Dependency rules
 //! - Part of assets/ — standalone parser, no game dependencies.
+//! - IMA ADPCM sample math comes from `assets::ima_adpcm`, the crate's single
+//!   implementation.
+
+use super::ima_adpcm::{ImaAdpcmState, decode_nibbles};
 
 /// Magic value at the start of each audio chunk.
 const CHUNK_MAGIC: u32 = 0x0000DEAF;
-
-/// IMA ADPCM step index adjustment table.
-/// Indexed by the lower 3 bits of each encoded nibble.
-const INDEX_ADJUST: [i32; 8] = [-1, -1, -1, -1, 2, 4, 6, 8];
-
-/// IMA ADPCM step size table (89 entries).
-const STEP_TABLE: [i32; 89] = [
-    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66,
-    73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449,
-    494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272,
-    2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493,
-    10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767,
-];
 
 /// Parsed .aud file header.
 #[derive(Debug, Clone)]
@@ -103,7 +108,7 @@ pub fn decode_aud(data: &[u8]) -> Option<(AudHeader, Vec<i16>)> {
 
     while offset + CHUNK_HEADER_SIZE <= data.len() {
         let compressed_size: u16 = u16::from_le_bytes([data[offset], data[offset + 1]]);
-        let _chunk_output_size: u16 = u16::from_le_bytes([data[offset + 2], data[offset + 3]]);
+        let chunk_output_size: u16 = u16::from_le_bytes([data[offset + 2], data[offset + 3]]);
         let magic: u32 = u32::from_le_bytes([
             data[offset + 4],
             data[offset + 5],
@@ -125,82 +130,33 @@ pub fn decode_aud(data: &[u8]) -> Option<(AudHeader, Vec<i16>)> {
         let chunk_end: usize = (offset + compressed_size as usize).min(data.len());
         let chunk_data: &[u8] = &data[offset..chunk_end];
 
+        let before: usize = samples.len();
         if header.format == 99 {
-            decode_ima_adpcm_chunk(chunk_data, &mut state, &mut samples);
+            decode_nibbles(chunk_data, &mut state, &mut samples);
         } else {
             decode_ws_compressed_chunk(chunk_data, &mut samples);
+        }
+
+        // The chunk header also declares how many OUTPUT bytes the chunk should
+        // produce. Decoding stays input-driven — every nibble present is
+        // decoded and nothing is padded to the declaration — because gamemd has
+        // no AUD chunk decoder to match (see the module header), and because the
+        // only retail files where the two disagree declare exactly one 16-bit
+        // sample more than their nibbles can produce: intro.aud, wipe.aud,
+        // efficien.aud and mouseon.aud, none of which the original ever loads.
+        // A disagreement is still worth seeing when it happens.
+        let produced: usize = (samples.len() - before) * 2;
+        if produced != chunk_output_size as usize {
+            log::debug!(
+                "AUD chunk at {offset}: declared {chunk_output_size} output bytes, \
+                 {produced} produced from {compressed_size} compressed bytes"
+            );
         }
 
         offset = chunk_end;
     }
 
     Some((header, samples))
-}
-
-/// IMA ADPCM decoder state (persists across chunks for continuous decoding).
-pub(crate) struct ImaAdpcmState {
-    index: i32,
-    predicted: i32,
-}
-
-impl ImaAdpcmState {
-    pub(crate) fn new() -> Self {
-        Self {
-            index: 0,
-            predicted: 0,
-        }
-    }
-
-    /// Initialize state from a block preamble (predictor + step_index).
-    pub(crate) fn set_state(&mut self, predicted: i32, index: i32) {
-        self.predicted = predicted;
-        self.index = index.clamp(0, 88);
-    }
-
-    /// Decode a single 4-bit IMA ADPCM nibble into a 16-bit sample.
-    pub(crate) fn decode_nibble(&mut self, nibble: u8) -> i16 {
-        let step: i32 = STEP_TABLE[self.index as usize];
-        let code: u8 = nibble & 0x07;
-
-        // Delta = step * code / 4 + step / 8  (integer arithmetic).
-        let mut diff: i32 = step >> 3;
-        if code & 0x04 != 0 {
-            diff += step;
-        }
-        if code & 0x02 != 0 {
-            diff += step >> 1;
-        }
-        if code & 0x01 != 0 {
-            diff += step >> 2;
-        }
-
-        // Sign bit (bit 3 of nibble).
-        if nibble & 0x08 != 0 {
-            self.predicted -= diff;
-        } else {
-            self.predicted += diff;
-        }
-
-        // Clamp to 16-bit range.
-        self.predicted = self.predicted.clamp(-32768, 32767);
-
-        // Update step index.
-        self.index += INDEX_ADJUST[code as usize];
-        self.index = self.index.clamp(0, 88);
-
-        self.predicted as i16
-    }
-}
-
-/// Decode a chunk of IMA ADPCM data into PCM samples.
-pub(crate) fn decode_ima_adpcm_chunk(data: &[u8], state: &mut ImaAdpcmState, out: &mut Vec<i16>) {
-    for &byte in data {
-        // Each byte contains two 4-bit samples: low nibble first, then high nibble.
-        let lo: u8 = byte & 0x0F;
-        let hi: u8 = (byte >> 4) & 0x0F;
-        out.push(state.decode_nibble(lo));
-        out.push(state.decode_nibble(hi));
-    }
 }
 
 /// Decode a Westwood Compressed (format 1) chunk.
@@ -274,42 +230,6 @@ fn decode_ws_compressed_chunk(data: &[u8], out: &mut Vec<i16>) {
 mod tests {
     use super::*;
 
-    /// Golden vectors captured by emulating the original engine's IMA nibble
-    /// decoder (machine-derived; see docs/research/
-    /// ADPCM_NIBBLE_VALUE_CERTIFICATION_GHIDRA_REPORT.md for the capture
-    /// log). Each row: (predictor, step_index) state, input nibble, expected
-    /// 16-bit sample. Covers zero state, mid states, and both saturation
-    /// clamps.
-    #[test]
-    fn adpcm_nibble_matches_original_engine_emulation_vectors() {
-        const VECTORS: &[(i32, i32, u8, i16)] = &[
-            (0, 0, 0x0, 0),
-            (0, 0, 0x3, 4),
-            (0, 0, 0x5, 8),
-            (0, 0, 0x7, 11),
-            (0, 0, 0x8, 0),
-            (0, 0, 0xB, -4),
-            (0, 0, 0xF, -11),
-            (0, 4, 0x7, 19),
-            (0, 4, 0xF, -19),
-            (24, 40, 0x7, 655),
-            (24, 40, 0xA, -186),
-            (36, 64, 0x5, 4609),
-            (36, 64, 0xD, -4537),
-            (60, 84, 0x7, 32767),  // positive clamp
-            (60, 84, 0xF, -32768), // negative clamp
-        ];
-        for &(pred, idx, nibble, expected) in VECTORS {
-            let mut state = ImaAdpcmState::new();
-            state.set_state(pred, idx);
-            assert_eq!(
-                state.decode_nibble(nibble),
-                expected,
-                "state ({pred},{idx}) nibble {nibble:#x}"
-            );
-        }
-    }
-
     #[test]
     fn test_parse_header_too_short() {
         assert!(parse_header(&[0u8; 5]).is_none());
@@ -336,51 +256,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ima_adpcm_decode_nibble_zero_is_small_step() {
-        let mut state = ImaAdpcmState::new();
-        // Nibble 0 with initial state: predicted=0, index=0, step=7.
-        // diff = 7/8 = 0 (integer), predicted += 0 = 0.
-        let sample: i16 = state.decode_nibble(0);
-        assert_eq!(sample, 0);
-        // Index should decrease by 1 but clamp to 0.
-        assert_eq!(state.index, 0);
-    }
-
-    #[test]
-    fn test_ima_adpcm_decode_produces_nonzero() {
-        let mut state = ImaAdpcmState::new();
-        // Nibble 0x07 (code=7, sign=0): diff = 7/8 + 7/2 + 7/4 = 0+3+1 = 4+0 = 4.
-        // Actually: diff = step>>3 = 0, +step>>1=3, +step>>2=1 => diff=0+3+1=4?
-        // Wait: step=7, diff starts at 7>>3=0.
-        // code&4=4 => diff += 7 => diff=7
-        // code&2=2 => diff += 3 => diff=10
-        // code&1=1 => diff += 1 => diff=11
-        // sign=0 => predicted = 0+11 = 11
-        let sample: i16 = state.decode_nibble(0x07);
-        assert_eq!(sample, 11);
-        // Index += INDEX_ADJUST[7] = 8, clamped to 8.
-        assert_eq!(state.index, 8);
-    }
-
-    #[test]
-    fn test_ima_adpcm_negative_nibble() {
-        let mut state = ImaAdpcmState::new();
-        // Nibble 0x0F (code=7, sign=1): diff=11, predicted = 0-11 = -11.
-        let sample: i16 = state.decode_nibble(0x0F);
-        assert_eq!(sample, -11);
-    }
-
-    #[test]
-    fn test_decode_chunk_pairs_nibbles() {
-        let mut state = ImaAdpcmState::new();
-        let mut out: Vec<i16> = Vec::new();
-        // Single byte 0x10: lo=0, hi=1.
-        decode_ima_adpcm_chunk(&[0x10], &mut state, &mut out);
-        assert_eq!(out.len(), 2);
-        // First sample from nibble 0, second from nibble 1.
-    }
-
-    #[test]
     fn test_decode_aud_invalid_format() {
         let mut data: Vec<u8> = Vec::new();
         data.extend_from_slice(&22050u16.to_le_bytes());
@@ -402,6 +277,65 @@ mod tests {
         let (hdr, samples) = decode_aud(&data).expect("should decode");
         assert_eq!(hdr.sample_rate, 22050);
         assert!(samples.is_empty());
+    }
+
+    /// The four retail AUDs whose final chunk declares `4*compressed + 2` —
+    /// intro.aud, wipe.aud, efficien.aud, mouseon.aud — declare one 16-bit
+    /// sample more than their nibbles can produce. Decoding stays input-driven,
+    /// so we end one sample short of the declaration rather than padding.
+    /// gamemd never loads any of them (it has no AUD chunk decoder at all), so
+    /// there is no native behavior to match here; this pins the choice.
+    #[test]
+    fn decode_aud_is_input_driven_when_a_chunk_overdeclares_its_output() {
+        let mut data: Vec<u8> = Vec::new();
+        data.extend_from_slice(&22050u16.to_le_bytes());
+        data.extend_from_slice(&4u32.to_le_bytes()); // data_size
+        data.extend_from_slice(&18u32.to_le_bytes()); // output_size (declared)
+        data.push(0x02);
+        data.push(99);
+        // One chunk: 4 compressed bytes but 4*4 + 2 = 18 declared output bytes.
+        data.extend_from_slice(&4u16.to_le_bytes());
+        data.extend_from_slice(&18u16.to_le_bytes());
+        data.extend_from_slice(&CHUNK_MAGIC.to_le_bytes());
+        data.extend_from_slice(&[0x00, 0x11, 0x22, 0x33]);
+
+        let (hdr, samples) = decode_aud(&data).expect("should decode");
+        assert_eq!(hdr.output_size, 18);
+        // 4 bytes x 2 nibbles = 8 samples = 16 bytes: one sample short of 18.
+        assert_eq!(samples.len(), 8);
+    }
+
+    #[test]
+    fn decode_aud_carries_adpcm_state_across_chunks() {
+        // The decoder state is created once per file, so splitting the same
+        // nibbles across two chunks must give the same samples as one chunk.
+        let payload: [u8; 8] = [0x37, 0x59, 0x2b, 0xc4, 0x16, 0x8a, 0x71, 0x03];
+        let mut header: Vec<u8> = Vec::new();
+        header.extend_from_slice(&22050u16.to_le_bytes());
+        header.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        header.extend_from_slice(&((payload.len() as u32) * 4).to_le_bytes());
+        header.push(0x02);
+        header.push(99);
+
+        let chunk = |bytes: &[u8]| {
+            let mut c: Vec<u8> = Vec::new();
+            c.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            c.extend_from_slice(&((bytes.len() as u16) * 4).to_le_bytes());
+            c.extend_from_slice(&CHUNK_MAGIC.to_le_bytes());
+            c.extend_from_slice(bytes);
+            c
+        };
+
+        let mut one = header.clone();
+        one.extend_from_slice(&chunk(&payload));
+        let mut two = header.clone();
+        two.extend_from_slice(&chunk(&payload[..4]));
+        two.extend_from_slice(&chunk(&payload[4..]));
+
+        let (_, a) = decode_aud(&one).expect("single chunk");
+        let (_, b) = decode_aud(&two).expect("split chunks");
+        assert_eq!(a.len(), 16);
+        assert_eq!(a, b);
     }
 
     #[test]
