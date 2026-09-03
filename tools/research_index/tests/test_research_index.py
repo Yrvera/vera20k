@@ -16,7 +16,7 @@ TOOL_ROOT = Path(__file__).resolve().parents[1]
 if str(TOOL_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOL_ROOT))
 
-from research_index.chunking import chunk_file
+from research_index.chunking import chunk_file, ini_section_name
 from research_index.database import rebuild_database, search
 from research_index.brief import research_brief
 from research_index.formatting import (
@@ -69,6 +69,60 @@ class ExtractionTests(unittest.TestCase):
 
         self.assertEqual(extract_terms(text, ".ini").ini_keys, ("BridgeRepairHut", "RepairBridge"))
         self.assertEqual(extract_terms(text, ".md").ini_keys, ())
+
+
+class IniSectionHeaderTests(unittest.TestCase):
+    """Header detection must match `INIClass__LoadFromStraw @ 0x00525A60`.
+
+    The name is the text between `[` and the *first* `]`; the rest of the line
+    is discarded (`MOV byte ptr [EAX],0x0` @ 0x00525DDB). A `]` somewhere on
+    the line is required (`strchr` via `PUSH 0x5d` @ 0x00525DCC), so `[Foo`
+    alone opens nothing.
+    """
+
+    def test_plain_header(self) -> None:
+        self.assertEqual(ini_section_name("[NACLON]"), "NACLON")
+
+    def test_leading_whitespace_is_trimmed_before_the_bracket_test(self) -> None:
+        self.assertEqual(ini_section_name("\t  [NACLON]  \r"), "NACLON")
+
+    def test_trailing_semicolon_comment_is_discarded(self) -> None:
+        self.assertEqual(ini_section_name("[CAHOSP];copypasted the good one on top of it"), "CAHOSP")
+        self.assertEqual(ini_section_name("[ROCK] ; Rocketeer"), "ROCK")
+
+    def test_trailing_second_bracket_group_is_discarded(self) -> None:
+        # Retail rulesmd.ini:13561.
+        self.assertEqual(ini_section_name("[GAFWLL];temp wall for yuri[YAWALL]"), "GAFWLL")
+
+    def test_closing_bracket_inside_a_trailing_comment_does_not_extend_the_name(self) -> None:
+        self.assertEqual(ini_section_name("[DISK];gs changed to K [see the Master Name Doc]"), "DISK")
+
+    def test_open_bracket_without_a_closing_bracket_is_not_a_header(self) -> None:
+        self.assertIsNone(ini_section_name("[Foo"))
+        self.assertIsNone(ini_section_name("  [JumpjetControls ;gs no bracket"))
+
+    def test_non_header_lines_are_not_headers(self) -> None:
+        self.assertIsNone(ini_section_name(""))
+        self.assertIsNone(ini_section_name("Wall=yes"))
+        self.assertIsNone(ini_section_name(";[NotASection]"))
+        self.assertIsNone(ini_section_name("Prerequisite=YABRCK ; [not a section]"))
+
+    def test_decorated_headers_start_their_own_chunk_instead_of_merging_upward(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rules.ini"
+            path.write_text(
+                "[NACLON]\nStrength=1000\n"
+                "[GAFWLL];temp wall for yuri[YAWALL]\nWall=yes\n"
+                "[Parasite] ; special warhead\nVersus=100%%\n",
+                encoding="utf-8",
+            )
+
+            chunks = chunk_file(path)
+
+            self.assertEqual(
+                [(chunk.heading_path, chunk.start_line, chunk.end_line) for chunk in chunks],
+                [("INI [NACLON]", 1, 2), ("INI [GAFWLL]", 3, 4), ("INI [Parasite]", 5, 6)],
+            )
 
 
 class RankingTests(unittest.TestCase):
