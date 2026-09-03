@@ -911,6 +911,25 @@ pub struct ObjectType {
     /// Stock YR sets this on GI (E1), GuardianGI (GGI), and a handful of others.
     pub deploy_fire: bool,
 
+    /// `UndeployDelay=` int — `TechnoTypeClass+0x6C4`, read by
+    /// `TechnoTypeClass::ReadINI` (key string `0x008438F4` =
+    /// `"UndeployDelay"`, `ReadInt @ 0x005276D0`, store `0x00714BBA`).
+    /// Constructor default **-1** (`TechnoTypeClass::Constructor` loads
+    /// `EBP = -1` at `0x00710CED` and stores it at `0x00711187`).
+    ///
+    /// The infantry deploy shim `FUN_00521320` — the body behind
+    /// `InfantryClass::Mission_Guard @ 0x0051F620` and
+    /// `InfantryClass::Mission_AreaGuard @ 0x0051F640` — tests `-1 < this`
+    /// FIRST for an already-deployed man and makes him undeploy when it holds,
+    /// ahead of every `DeployFire=` arm. Stock: only `YURI` (150) and `YURIPR`
+    /// (75) set it, which is why a deployed Yuri leaves his stance on its own
+    /// and a deployed GI does not.
+    ///
+    /// **Frame trap:** this is the TYPE field. The `InfantryClass` *instance*
+    /// carries its DoType at the same `+0x6C4`, and a `UnitClass` instance
+    /// carries a `UnitTypeClass*` there.
+    pub undeploy_delay: i32,
+
     /// Index of the weapon (0=primary, 1=secondary) that the AI auto-deploy planner
     /// considers when deciding "should I deploy here?". Parsed from `DeployFireWeapon=N`
     /// in rules.ini. Default `None`. Not consulted in B1 (no AI auto-deploy);
@@ -928,6 +947,18 @@ pub struct ObjectType {
     /// Whether this infantry can assault enemy buildings (hostile garrison entry).
     /// Parsed from `Assaulter=yes` in rules.ini.
     pub assaulter: bool,
+
+    /// `VehicleThief=` bool — `InfantryTypeClass+0xEC6`, read by
+    /// `InfantryTypeClass::ReadINI` (key string `0x0082593C` = `"VehicleThief"`,
+    /// default loaded from the field itself at `0x005245CC`, `ReadBool @
+    /// 0x005295F0` called at `0x005245E1`).
+    ///
+    /// The last of the three type arms in `FootClass::Mission_Hunt @
+    /// 0x004D5350` (`0x004D546C`): a hunting thief walks onto its target and
+    /// queues Capture(8) instead of shooting. **No stock section sets it**, so
+    /// the arm is dead on retail data; it is parsed because the Hunt body
+    /// branches on it and a map or mod INI can set it.
+    pub vehicle_thief: bool,
 
     /// Weapon used when this infantry fires from inside a garrisoned building.
     /// Parsed from `OccupyWeapon=WeaponName` in rules.ini. Falls back to
@@ -1197,6 +1228,18 @@ pub struct ObjectType {
     /// `+0xD39` (`DefaultToGuardArea`); the research corpus has all three
     /// crossed.
     pub close_range: bool,
+    /// `StupidHunt=` bool — `TechnoTypeClass+0x6D4`, read by
+    /// `TechnoTypeClass::ReadINI` (key string `0x008438A4` = `"StupidHunt"`,
+    /// `ReadBool @ 0x005295F0`, store `0x00714C80`); constructor default
+    /// `false` (`0x007111A4` writes the zeroed `BL`).
+    ///
+    /// It is the very first test in `FootClass::Mission_Hunt @ 0x004D5350`
+    /// (`0x004D535F`): a type carrying it **never scans for a target on Hunt**
+    /// and drops straight through to the idle / return-to-base arm. The INI's
+    /// own trailing comment says it plainly — "this guy can't handle a hunt
+    /// command, so he should just run towards the player". Six stock sections:
+    /// `SPY`, `LCRF`, `CMIN`, `SAPC`, `YHVR`, `SMIN`.
+    pub stupid_hunt: bool,
     /// `Cyborg=` bool — gamemd's TechnoTypeClass `+0xC8F` "emits damage sparks"
     /// flag that `AI_Update` gates the per-tick damage-Spark prob-roll on.
     /// Verified: only `InfantryTypeClass::ReadINI` writes `+0xC8F` (from `Cyborg=`);
@@ -1417,7 +1460,6 @@ impl ObjectType {
             .collect();
 
         let btm_f32: f32 = section.get_f32("BuildTimeMultiplier").unwrap_or(1.0);
-
 
         // `TechnoTypeClass::ReadINI` reads `VeteranAbilities=` into `+0x29C`
         // (`0x007154A3`) and `EliteAbilities=` into `+0x2AE` (`0x007154E8`).
@@ -1798,10 +1840,14 @@ impl ObjectType {
             ifv_mode: section.get_i32("IFVMode").unwrap_or(0).max(0) as u32,
             open_transport_weapon: section.get_i32("OpenTransportWeapon").unwrap_or(-1),
             deploy_fire: section.get_bool("DeployFire").unwrap_or(false),
+            // `TechnoTypeClass::Constructor @ 0x00711187` seeds -1, and
+            // `ReadINI @ 0x00714BBA` only overwrites it when the key is present.
+            undeploy_delay: section.get_i32("UndeployDelay").unwrap_or(-1),
             deploy_fire_weapon: section.get_i32("DeployFireWeapon"),
             max_number_occupants: section.get_i32("MaxNumberOccupants").unwrap_or(0).max(0) as u32,
             occupier: section.get_bool("Occupier").unwrap_or(false),
             assaulter: section.get_bool("Assaulter").unwrap_or(false),
+            vehicle_thief: section.get_bool("VehicleThief").unwrap_or(false),
             occupy_weapon: section.get("OccupyWeapon").map(|s| s.to_string()),
             elite_occupy_weapon: section.get("EliteOccupyWeapon").map(|s| s.to_string()),
             occupy_pip: section
@@ -1914,6 +1960,7 @@ impl ObjectType {
                 .collect(),
             debris_anims: parse_csv_string_list(section.get_ignoring_case("DebrisAnims")),
             close_range: section.get_bool("CloseRange").unwrap_or(false),
+            stupid_hunt: section.get_bool("StupidHunt").unwrap_or(false),
             cyborg: section.get_bool("Cyborg").unwrap_or(false),
             destroy_particle_systems: parse_csv_string_list(section.get("DestroyParticleSystems")),
             damage_smoke_offset: section

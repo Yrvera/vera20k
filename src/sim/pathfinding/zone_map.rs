@@ -349,7 +349,8 @@ impl ZoneGrid {
         raw_row.get(cluster as usize).copied()
     }
 
-    /// Exact response-owned `MapClass::Can_Reach_Zone @ 0x0056D100` surface.
+    /// Exact `MapClass::Can_Reach_Zone @ 0x0056D100` surface as the
+    /// base-defence response consumes it.
     ///
     /// `None` is native MovementZone `-1`. The response passes the candidate
     /// destination as source A, the protected victim destination as B, the
@@ -380,17 +381,29 @@ impl ZoneGrid {
             return true;
         }
 
-        let source_zone = self.get_zone_id_response_native(
-            source,
-            movement_zone,
-            source_should_be_on_bridge,
-        );
-        let destination_zone =
-            self.get_zone_id_response_native(destination, movement_zone, false);
+        let source_zone =
+            self.get_zone_id_native(source, movement_zone, source_should_be_on_bridge);
+        let destination_zone = self.get_zone_id_native(destination, movement_zone, false);
         source_zone.is_some() && source_zone == destination_zone
     }
 
-    fn get_zone_id_response_native(
+    /// `MapClass::GetZoneID @ 0x0056D230` with its third argument, the
+    /// bridge-resolution flag, honoured.
+    ///
+    /// Native takes `(CellStruct *cell, int movementZone, char checkBridge)`.
+    /// With `checkBridge` set and the cell carrying the bridge flag `0x100`, it
+    /// resolves the matching `BridgeRecord` and answers with the ground
+    /// endpoint's zone; otherwise it projects the cell's own base cluster
+    /// through the requested movement row. `checkBridge` clear skips the
+    /// record lookup entirely.
+    ///
+    /// Two consumers so far, both passing exactly what native passes:
+    /// - `Can_Reach_Zone @ 0x0056D100` (base-defence response), the candidate's
+    ///   `ShouldBeOnBridge` for source A and `false` for B;
+    /// - `TechnoClass::Greatest_Threat @ 0x006F8EBF`, a literal `1` for the
+    ///   scanner's own cell, and `TechnoClass::Evaluate_Candidate @
+    ///   0x006F7E95`, the candidate's `Object+0x8C` on-bridge byte.
+    pub(crate) fn get_zone_id_native(
         &self,
         coord: (i32, i32),
         movement_zone: MovementZone,

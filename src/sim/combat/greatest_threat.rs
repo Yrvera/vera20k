@@ -119,6 +119,7 @@ use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::StringInterner;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid, cell_list_layer_for_entity};
+use crate::sim::pathfinding::zone_map::{ZoneGrid, ZoneId};
 use crate::sim::vision::FogState;
 use crate::util::fixed_math::SimFixed;
 use crate::util::native_x87::{NativeF64Bits, X87Chop53, X87Value, sqrt_approx_f32};
@@ -134,7 +135,6 @@ const THREAT_SCORE_BASE: f64 = 100_000.0;
 /// `0.019999999552965164` and an authored `Verses=2%` (exactly `0.02` as a
 /// double) is *above* it and passes.
 const VERSES_FLOOR: f64 = 0.02f32 as f64;
-
 /// The five weights of `TechnoClass::Calculate_Threat_Score @ 0x0070CD10`, in
 /// the order the native body loads them.
 #[derive(Debug, Clone, Copy)]
@@ -148,7 +148,9 @@ pub(crate) struct ThreatCoefficients {
     pub target_special_threat: f64,
     /// `D` — the candidate's live health ratio.
     pub target_strength: f64,
-    /// `E` — whole cells beyond the scorer's weapon range.
+    /// `E` — distance beyond the scorer's weapon range, in whole cells on the
+    /// `NullCoord` branch and in LEPTONS on the supplied-coordinate one; see
+    /// [`ThreatReference`].
     pub target_distance: f64,
 }
 
@@ -250,10 +252,55 @@ fn threat_coord(entity: &GameEntity, terrain: Option<&ResolvedTerrainGrid>) -> (
     (x, y, z)
 }
 
-/// `TechnoClass::Calculate_Threat_Score @ 0x0070CD10`, on the `&NullCoord`
-/// branch every acquisition caller takes (`0x0070D023`) — the distance term is
-/// therefore whole CELLS, `ftol(Sqrt_Approx(3-D lepton delta)) >> 8`, not
-/// leptons.
+/// `TechnoClass::Calculate_Threat_Score`'s third parameter, in the only two
+/// shapes its three callsites pass (`get_xrefs_to 0x0070CD10`).
+///
+/// The parameter is a `CoordStruct*`, and the first thing the distance term
+/// does with it is compare all three words against the `NullCoord` globals
+/// `0x00B0EA90/94/98` (`CMP EAX,ECX` / `CMP ECX,[0x00b0ea94] @ 0x0070CFA9` /
+/// `CMP EDX,[0x00b0ea98] @ 0x0070CFB5`, then `JZ 0x0070D023 @ 0x0070CFBC`).
+/// **The two branches are not the same computation at a different starting
+/// point — they are the same geometry at a 256x different SCALE**, so which one
+/// runs decides whether distance barely matters or dominates the whole score.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ThreatReference {
+    /// `PUSH 0xb0ea90` — the sentinel, taken by `TechnoClass::ShouldRetaliate`
+    /// at both its callsites (`0x00708A81`, `0x00708A92`) and by every
+    /// `Evaluate_Candidate` callsite except the mask-0 flat walk
+    /// (`PUSH 0xb0ea90 @ 0x006F929A` on the ring walk, `@ 0x006F9C18` on the
+    /// aircraft pre-walk).
+    ///
+    /// Native then measures scorer-to-candidate through both objects' own
+    /// `vt+0x48` (`ObjectClass::GetCoords @ 0x005F65A0`, a verbatim copy of
+    /// `ObjectClass+0x9C/+0xA0/+0xA4`) and converts to **whole CELLS**:
+    /// `CDQ ; AND EDX,0xff ; ADD EAX,EDX ; SAR EAX,0x8` at
+    /// `0x0070D094`-`0x0070D09D`.
+    NullCoord,
+    /// A real coordinate supplied by the caller, which in the whole reachable
+    /// set is the **scanner's own `ObjectClass+0x9C` Coords**:
+    /// `FootClass::Mission_Hunt` copies its three words to a local and passes
+    /// the pointer (`LEA ECX,[ESI+0x9c] @ 0x004D536D`, three dwords to
+    /// `[ESP+0x14..0x1C]`, `LEA EAX,[ESP+0x14]` / `PUSH EAX @ 0x004D538B`),
+    /// `Retaliate_And_Scan` forwards it as `Greatest_Threat`'s arg2, and the
+    /// flat walk alone pushes it as `Evaluate_Candidate`'s arg7
+    /// (`MOV EBP,[ESP+0x74] @ 0x006F9C76`, `PUSH EBP @ 0x006F9D64`), which
+    /// becomes this parameter at `0x006F86FE`-`0x006F8706`.
+    ///
+    /// This branch measures the supplied point to the candidate's `vt+0x48`
+    /// and then **jumps straight to the join** — `JMP 0x0070D0A0 @ 0x0070D021`,
+    /// with no `SAR EAX,0x8` anywhere on the path — so its distance stays in
+    /// **LEPTONS** while the range it is compared against was shifted to cells
+    /// at `0x0070CF99`.
+    ///
+    /// Because `Mission_Hunt`'s copy and `GetCoords` read the same three
+    /// fields, the reference *point* is identical to the `NullCoord` branch's;
+    /// only the scale differs. Modelled as the scorer's own coordinate here for
+    /// that reason, and no other caller can reach this branch.
+    ScannerCoords,
+}
+
+/// `TechnoClass::Calculate_Threat_Score @ 0x0070CD10`. The distance term's
+/// scale is chosen by `reference`; see [`ThreatReference`].
 ///
 /// Term order and the per-term 64-bit store are the native ones: every
 /// intermediate is written back to the `[ESP+0x10]` double between terms, and
@@ -274,6 +321,7 @@ pub(crate) fn calculate_threat_score(
     terrain: Option<&ResolvedTerrainGrid>,
     alliances: Option<&HouseAllianceMap>,
     coefficients: ThreatCoefficients,
+    reference: ThreatReference,
 ) -> Option<X87Value> {
     let scorer = entities.get(scorer_id)?;
     let candidate = entities.get(candidate_id)?;
@@ -355,9 +403,19 @@ pub(crate) fn calculate_threat_score(
     };
     score = X87Chop53::add(score, X87Chop53::mul(coeff_d, health_ratio));
 
-    // E: whole cells beyond the scorer's selected weapon range. With no weapon
+    // E: distance beyond the scorer's selected weapon range. With no weapon
     // selected native falls back to the scorer type's `GuardRange`
     // (`TechnoTypeClass+0x5B8`, `0x0070CF81`) — NOT `Sight`.
+    //
+    // The RANGE is always shifted to whole cells (`SAR EAX,0x8 @ 0x0070CF99`,
+    // stored to `[ESP+0xC]` and reloaded as EDI at `0x0070D0A0`). The DISTANCE
+    // is shifted only on the `NullCoord` branch, so the subtraction at
+    // `SUB EAX,EDI @ 0x0070D0A9` mixes leptons with cells whenever a caller
+    // supplies a coordinate. That is not a bug being reproduced blind: it is
+    // what makes a hunting unit overwhelmingly nearest-first, because with
+    // stock `[General] TargetDistanceCoefficientDefault=-10` against the
+    // `100000` base at `0x0070D0C4`, anything past roughly 39 cells drives the
+    // score negative and `Evaluate_Candidate`'s tail clamps it to 1.
     let scorer_coord = threat_coord(scorer, terrain);
     let candidate_coord = threat_coord(candidate, terrain);
     let dx = X87Chop53::load_i32(scorer_coord.0.wrapping_sub(candidate_coord.0));
@@ -369,7 +427,14 @@ pub(crate) fn calculate_threat_score(
     );
     let distance_root = X87Chop53::load_f32(sqrt_approx_f32(distance_sq).ok()?).ok()?;
     let distance_leptons = i32::try_from(X87Chop53::ftol_i64(distance_root).ok()?).ok()?;
-    let distance_cells = crate::util::direction_tables::lepton_to_cell(distance_leptons);
+    let distance = match reference {
+        // `CDQ ; AND EDX,0xff ; ADD EAX,EDX ; SAR EAX,0x8` at `0x0070D094`.
+        ThreatReference::NullCoord => {
+            crate::util::direction_tables::lepton_to_cell(distance_leptons)
+        }
+        // `JMP 0x0070D0A0 @ 0x0070D021` — the shift is on the other branch.
+        ThreatReference::ScannerCoords => distance_leptons,
+    };
     let range_cells = selected_scorer_weapon.as_ref().map_or_else(
         || {
             scorer_type
@@ -378,7 +443,7 @@ pub(crate) fn calculate_threat_score(
         },
         |selected| selected.weapon.range.to_num::<i32>(),
     );
-    let beyond_range = distance_cells.wrapping_sub(range_cells).max(0);
+    let beyond_range = distance.wrapping_sub(range_cells).max(0);
     score = X87Chop53::add(
         X87Chop53::mul(X87Chop53::load_i32(beyond_range), coeff_e),
         score,
@@ -457,6 +522,12 @@ fn scan_radius_cells(rules: &RuleSet, obj: &ObjectType, veterancy: u16, range: S
             let air_bonus_cells = obj.air_range_bonus.map_or(0, |bonus| bonus.to_num::<i32>());
             weapon_cells + 1 + air_bonus_cells
         }
+        // Mask 0 computes no walk bound because it runs no walk — the jump at
+        // `0x006F8FE2` skips `iStack_34` along with the rings.
+        // [`greatest_threat`] takes the flat-list branch before it reaches
+        // here; zero is returned so that any future caller which does ask
+        // walks nothing rather than walking the map.
+        ScanRange::NoCutoff => 0,
     }
 }
 
@@ -589,6 +660,36 @@ struct ScanContext<'a> {
     require_playfield_membership: bool,
     range: ScanRange,
     coefficients: ThreatCoefficients,
+    zone_grid: Option<&'a ZoneGrid>,
+    /// `[ESP+0x3C]` in `Greatest_Threat` — the scanner's own movement-zone
+    /// component id, or `None` for native's `-1` "gate off".
+    ///
+    /// Native seeds the slot with `-1` (`OR EBP,0xffffffff @ 0x006F8DFF`,
+    /// `MOV [ESP+0x3c],EBP @ 0x006F8E15`) and overwrites it at `0x006F8EC4`
+    /// with `MapClass::GetZoneID(my cell, myType->MovementZone, 1)` when the
+    /// mask has bit0 CLEAR (`TEST BL,0x1 ; JNZ 0x006F8EC8` at
+    /// `0x006F8E48`) and `What_Am_I()` is neither `6` (Building) nor `2`
+    /// (Aircraft) — the two classes with no movement zone (`CMP EAX,0x6 ; JZ`
+    /// at `0x006F8E54`, `CMP EAX,0x2 ; JZ` at `0x006F8E60`).
+    ///
+    /// It reaches [`evaluate_candidate`] as `Evaluate_Candidate`'s **arg6**
+    /// only on the mask-0 flat walk (`PUSH ECX @ 0x006F9D69`); every ring-walk
+    /// callsite fills the same slot with the literal `-1`
+    /// (`PUSH -0x1 @ 0x006F92A3`, `@ 0x006F9C21`), so the gate is a property of
+    /// the flat walk, not of the shared candidate ladder.
+    scanner_zone: Option<ZoneId>,
+    /// `Evaluate_Candidate`'s **arg7**, the coordinate
+    /// `Calculate_Threat_Score` measures its distance term from — and, through
+    /// the sentinel test at `0x0070CFA0`-`0x0070CFBC`, the term's SCALE.
+    ///
+    /// Like [`Self::scanner_zone`] this is a property of the walk and not of
+    /// the shared candidate ladder, and the two walks disagree in the same
+    /// direction: the flat walk forwards `Greatest_Threat`'s own arg2
+    /// (`PUSH EBP @ 0x006F9D64`, loaded `MOV EBP,[ESP+0x74] @ 0x006F9C76`),
+    /// which for `Mission_Hunt` is a copy of the hunter's Coords, while the
+    /// ring walk and the aircraft pre-walk push the `NullCoord` sentinel
+    /// (`PUSH 0xb0ea90` at `0x006F929A` and `0x006F9C18`).
+    threat_reference: ThreatReference,
 }
 
 impl ScanContext<'_> {
@@ -615,6 +716,97 @@ impl ScanContext<'_> {
 ///
 /// `scan_range_override` replaces the mission-derived radius with a hard cutoff;
 /// it exists for garrisoned buildings, whose reach is foundation-derived.
+///
+/// ## Two topologies, selected by the caller's threat mask
+///
+/// The mask is `Greatest_Threat`'s own second argument, a literal at every
+/// callsite (see [`super::threat_range::ScanMission`]), and the first thing the
+/// body does with it is
+/// `MOV AL,[ESP+0x70] ; TEST AL,0x3 ; JZ 0x006F9B6E` at `0x006F8FDC`-
+/// `0x006F8FE2`. With bit0 or bit1 set the function runs the radius block, the
+/// airborne pre-pass (`0x006F9169`) and the expanding-ring cell walk. With
+/// **neither** set — mask 0, which only `FootClass::Mission_Hunt @ 0x004D5373`
+/// pushes — the jump lands past all three, and the scan that actually runs is
+/// the flat walk over the global object array; see [`global_list_scan`].
+///
+/// Modelling that as a wider *radius* would be wrong twice over: the ring walk
+/// does not enumerate every object (one candidate per cell, and it stops at the
+/// `radius/4` and `radius/2` bands), and mask 0 does not reach the ring walk at
+/// all.
+///
+/// ## The mask is a callsite literal that two overrides may still rewrite
+///
+/// Every callsite pushes a constant, but a `FootClass` dispatch does not land
+/// here directly — it lands in the per-class `+0x3C4` overrides first, and both
+/// of them can change what arrives:
+///
+/// - `UnitClass::Greatest_Threat @ 0x00743190` ORs the attacker's own
+///   projectile class bits into the mask (`FUN_00772A90`, AA → `4`,
+///   AG → `0xB8`) whenever `mask & 0x1B978 == 0`, which mask 0 satisfies. The
+///   topology is untouched — neither `4` nor `0xB8` carries `TEST AL,0x3` — but
+///   the derived flags word `[ESP+0x14]` that becomes `Evaluate_Candidate`'s
+///   arg2 does change, and an AA-capable hunter additionally runs the aircraft
+///   list pre-walk at `0x006F9B7E`. See the class-bit residual in this module's
+///   header; it now reaches the flat walk too.
+/// - `FootClass::Greatest_Threat @ 0x004D9920` rewrites the mask to
+///   `(mask & ~2) | 1` — mask 0 becomes mask 1, so the RING walk runs — while
+///   `FootClass+0x688` is set, and clears that byte at `0x004D9955` only when
+///   the coerced scan **returned 0** (`TEST EAX,EAX ; JNZ 0x004D995B` at
+///   `0x004D9951` jumps past the store otherwise). Not modelled; residual
+///   below.
+///
+/// RESIDUAL — the `FootClass+0x688` "arrived but cannot fire" retarget latch.
+///
+/// `MOV AL,[ESI+0x688] ; TEST AL,AL ; MOV EAX,[ESP+0x8] ; JZ 0x004D9935 ;
+/// AND AL,0xfd ; OR AL,0x1` at `0x004D9923`-`0x004D9933`, then the base call at
+/// `0x004D9942` and `MOV [ESI+0x688],AL @ 0x004D9955` clearing the byte when
+/// the base returned 0. `UnitClass @ 0x00743190` (`CALL @ 0x0074325C`) and the
+/// Infantry override (`CALL @ 0x0051E39F`) both chain through it, so it covers
+/// every ground attacker.
+///
+/// The byte is written `1` in the locomotor "movement finished" tail under
+/// three conditions, read this session at
+/// `DriveLocomotionClass::Process_Movement @ 0x004B2E7B`-`0x004B2EA2` and
+/// instruction-for-instruction at the infantry twin `FUN_005164D0 @
+/// 0x00516828`-`0x0051684D`: the locomotor's `vt+0x10` says not moving,
+/// `TechnoClass+0x2B4` — the Target, written by `TechnoClass::Assign_Target @
+/// 0x006FCF3E` — is non-null, and `vt+0x3AC` = `TechnoClass::CanFireAtTarget @
+/// 0x006F7780` says the attacker cannot fire at it.
+/// `ShipLocomotionClass::Process_Movement @ 0x006A24F2`, `FUN_0069B170 @
+/// 0x0069B4D4` and `TechnoClass::Clear_Convoy_Chain @ 0x006EC3BD` write the
+/// same `1`; `FootClass::Mission_Rescue @ 0x004DE03E` clears it.
+/// - Trigger: a ground attacker finishes a move still holding a target it
+///   cannot fire on, and then scans after that target goes away.
+/// - Player effect: for one scan cadence a hunting unit looks only as far as
+///   plain Guard reaches instead of over the whole map, and an Area Guard unit
+///   uses the plain-Guard radius instead of the doubled one — so it takes a
+///   nearer target, or none, one cadence sooner than VERA does.
+/// - Frequency: the *set* is common — any unit that drives up to something it
+///   cannot shoot. The clear is narrower than "the next scan", though: it is
+///   conditional on that scan returning **nothing**. `TEST EAX,EAX ;
+///   JNZ 0x004D995B` at `0x004D9951` jumps past the store when the coerced
+///   scan found a target, so the byte survives, and nothing clears it on a
+///   mission change — the only other clears in the image are
+///   `FootClass::Mission_Rescue @ 0x004DE03E` and `FUN_0069B170 @ 0x0069B17D`,
+///   while `FootClass::ComputeChecksum @ 0x004DBCE2` reads it, so it is
+///   durable sim state. So the honest ceiling is "until the first coerced scan
+///   comes back empty", not one cadence: a latched hunter that keeps finding
+///   targets inside the coerced ring walk stays coerced for as long as it keeps
+///   finding them.
+///
+///   The load-bearing conclusion is unchanged, because the case where the flat
+///   walk matters is the case that clears the latch: with nothing inside plain
+///   Guard reach the coerced ring scan returns nothing, the byte is cleared,
+///   and the next cadence runs the flat walk. The mask-0 flat walk stays the
+///   ordinary Hunt scan, so the zone gate and the lepton-scale distance term
+///   above are both on the common path.
+/// - Downstream risk: closing it needs a persistent per-entity latch written by
+///   the locomotor arrival path, i.e. a new snapshot field plus a
+///   `SNAPSHOT_VERSION` bump and a movement-side write. Target choice only — no
+///   RNG is drawn on either path.
+///
+/// `zone_grid` supplies `MapClass`'s per-movement-zone connectivity for the
+/// mask-0 gate; see [`ScanContext::scanner_zone`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn greatest_threat(
     entities: &EntityStore,
@@ -626,6 +818,7 @@ pub(crate) fn greatest_threat(
     scan_range_override: Option<SimFixed>,
     terrain: Option<&ResolvedTerrainGrid>,
     require_playfield_membership: bool,
+    zone_grid: Option<&ZoneGrid>,
 ) -> Option<u64> {
     let range = match scan_range_override {
         Some(cells) => ScanRange::Hard(cells),
@@ -636,11 +829,41 @@ pub(crate) fn greatest_threat(
             attacker.scan_mission,
         ),
     };
-    let radius = scan_radius_cells(rules, attacker_obj, attacker.veterancy, range);
-    if radius <= 0 {
-        // `for (r = 0; r < radius; r++)` never executes.
-        return None;
-    }
+
+    // `MOV [ESP+0x3c],EAX @ 0x006F8EC4`, guarded by `TEST BL,0x1 ; JNZ` at
+    // `0x006F8E48` and the two `What_Am_I()` skips at `0x006F8E54` /
+    // `0x006F8E60`.
+    //
+    // RESIDUAL — the ring walk's own use of the same slot. Native computes it
+    // for every mask with bit0 clear, which includes Area Guard's mask 2, and
+    // the ring path threads it into `Scan_Cell_For_Target @ 0x006F8960`
+    // (`MOV ECX,[ESP+0x3c] @ 0x006F941B`, `PUSH ECX @ 0x006F9427` — arg7 of the
+    // seven pushes before `CALL @ 0x006F9440`), which is a different argument
+    // from the `Evaluate_Candidate` arg6 the flat walk fills, and one
+    // `scan_cell_for_target` below does not take. Trigger: any Guard or Area
+    // Guard ring scan whose cells span more than one movement-zone component —
+    // a defender beside water, a cliff edge, a bridge. Player effect: at most
+    // which occupant of a cell that cell offers. Frequency: UNCHECKED — the
+    // argument's role inside `0x006F8960` was not decompiled. Downstream risk:
+    // none here; it belongs with the ring walk's own port. So the slot is
+    // filled only on the branch that reads it in this module.
+    let scanner_zone = if matches!(range, ScanRange::NoCutoff)
+        && !matches!(
+            attacker.category,
+            EntityCategory::Structure | EntityCategory::Aircraft
+        ) {
+        zone_grid.and_then(|zones| {
+            zones.get_zone_id_native(
+                (i32::from(attacker.pos_rx), i32::from(attacker.pos_ry)),
+                attacker_obj.movement_zone,
+                // `PUSH 0x1 @ 0x006F8E73` — the scanner's own cell is always
+                // asked with bridge resolution on, whatever layer it stands on.
+                true,
+            )
+        })
+    } else {
+        None
+    };
 
     let ctx = ScanContext {
         entities,
@@ -657,7 +880,28 @@ pub(crate) fn greatest_threat(
             attacker_obj,
             HOUSE_SELECTS_OWN_COEFFICIENTS,
         ),
+        zone_grid,
+        scanner_zone,
+        // `PUSH EBP @ 0x006F9D64` on the flat walk against `PUSH 0xb0ea90` at
+        // `0x006F929A` / `0x006F9C18` on the two ring-shaped walks.
+        threat_reference: if matches!(range, ScanRange::NoCutoff) {
+            ThreatReference::ScannerCoords
+        } else {
+            ThreatReference::NullCoord
+        },
     };
+
+    // `TEST AL,0x3 ; JZ 0x006F9B6E`. Mask 0 takes the flat topology; every
+    // other mask falls through into the radius block below.
+    if matches!(range, ScanRange::NoCutoff) {
+        return global_list_scan(&ctx);
+    }
+
+    let radius = scan_radius_cells(rules, attacker_obj, attacker.veterancy, range);
+    if radius <= 0 {
+        // `for (r = 0; r < radius; r++)` never executes.
+        return None;
+    }
 
     let cx = i32::from(attacker.pos_rx);
     let cy = i32::from(attacker.pos_ry);
@@ -736,6 +980,104 @@ pub(crate) fn greatest_threat(
         }
         if best.is_some() && is_early_return_ring(ring, radius) {
             return best;
+        }
+    }
+    best
+}
+
+/// The mask-0 scan: `Greatest_Threat`'s flat walk over the global object array,
+/// `0x006F9C67`-`0x006F9D9B`.
+///
+/// This is where a hunting object's mask lands. Verified from the disassembly
+/// this session:
+///
+/// - `0x006F9B6E` `MOV AL,[ESP+0x14] ; TEST AL,0x4 ; JZ 0x006F9C56` — the
+///   derived flags word is built from the mask alone
+///   (`0x006F8F29`-`0x006F8F72`, seeded `XOR EDI,EDI`), so for mask 0 it is
+///   zero and the FIRST global walk (the `0x00A8E394` list) is skipped.
+/// - `0x006F9C56` `TEST byte ptr [ESP+0x70],0x10 ; JZ 0x006F9C67` — mask 0
+///   falls into the **unconditional** second walk.
+/// - `0x006F9C67` `MOV EAX,[0x00A8EC88]` (the element count),
+///   `XOR EBX,EBX ; TEST EAX,EAX ; JLE 0x006F9DA1`, then
+///   `MOV EDX,[0x00A8EC7C] ; MOV EDI,[EDX + EBX*0x4]` — a plain indexed walk of
+///   the global techno array, closed by `INC EBX ; CMP EBX,EAX ; JL 0x006F9C7A`
+///   at `0x006F9D98`. **The loop is bounded by the object count**, exactly like
+///   this one; nothing here is bounded by a radius because nothing here uses
+///   one.
+/// - `0x006F9D70` `PUSH -0x1` sits in the arg3 range slot (counting the seven
+///   pushes back from `CALL 0x006F7CA0`), the same slot the ring path fills
+///   with its computed radius (`MOV ECX,[ESP+0x2C] @ 0x006F9292`,
+///   `PUSH ECX @ 0x006F92A7`). `Evaluate_Candidate @ 0x006F7CA0` rejects on
+///   distance only under `0 < range` and falls back to `TechnoType+0x5B8` /
+///   `vt+0x3A8` only under `range == 0`, so `-1` trips neither gate.
+///
+/// Every candidate goes through the same [`evaluate_candidate`] ladder the ring
+/// walk uses, because native calls the same `Evaluate_Candidate` — the self,
+/// ally, limbo, dead and in-transport rejects all live inside that function.
+///
+/// **The two walks do not pass that function the same arguments.** The flat
+/// walk pushes the scanner's movement-zone id in arg6
+/// (`MOV ECX,[ESP+0x3c] @ 0x006F9D5C`, `PUSH ECX @ 0x006F9D69`) where every
+/// ring callsite pushes `-1` (`0x006F92A3`, `0x006F9C21`), and a non-`-1` arg6
+/// switches on a hard reject inside `Evaluate_Candidate`: the candidate's cell
+/// must resolve to the same movement-zone component
+/// (`MOV EBP,[ESP+0x54] ; CMP EBP,-0x1 ; JZ 0x006F7EA2` at
+/// `0x006F7E32`-`0x006F7E45`, then
+/// `GetZoneID(candidate cell, ATTACKER type +0x5B4, candidate +0x8C)` and
+/// `CMP EAX,EBP ; JNZ 0x006F894F` at `0x006F7E7E`-`0x006F7E9C`). So a hunting
+/// object considers only what its own movement zone can reach from where it
+/// stands — it does not walk at something across water or up a cliff. That
+/// gate is carried here by [`ScanContext::scanner_zone`].
+///
+/// arg6 is not the only argument the two walks disagree on. **arg7 differs
+/// too, and it decides the SCALE of the score's distance term.** The flat walk
+/// forwards `Greatest_Threat`'s own arg2 — for `Mission_Hunt` a copy of the
+/// hunter's Coords (`0x004D536D`-`0x004D538B`) — with
+/// `MOV EBP,[ESP+0x74] @ 0x006F9C76` and `PUSH EBP @ 0x006F9D64`, where both
+/// ring-shaped walks push the `NullCoord` sentinel (`PUSH 0xb0ea90` at
+/// `0x006F929A` and `0x006F9C18`). That argument reaches
+/// `Calculate_Threat_Score` at `0x006F86FE`-`0x006F8706`, and a non-sentinel
+/// value takes the branch that never shifts its distance to cells
+/// (`JMP 0x0070D0A0 @ 0x0070D021` against `SAR EAX,0x8 @ 0x0070D09D`). With
+/// stock `TargetDistanceCoefficientDefault=-10` that makes a hunting object
+/// overwhelmingly nearest-first where a ring scanner barely weighs distance at
+/// all. Carried here by [`ScanContext::threat_reference`].
+///
+/// There is no airborne pre-pass and no band early return on this path: both
+/// sit at `0x006F9169` and `0x006F94D0`, below the mask-0 jump target, so a
+/// hunting object simply sees every object once. Aircraft are reached here like
+/// anything else, because the global array holds them too.
+///
+/// DRIFT — enumeration order. Native walks the array in registration order;
+/// [`EntityStore`] is a `BTreeMap`, so this walks in `stable_id` order. The
+/// keep is strictly-greater in both, so the order is observable only when two
+/// candidates score *exactly* equal, where the winner can differ.
+/// - Trigger: a hunting object with two equally-scored enemies in view.
+/// - Player effect: which of two interchangeable targets it walks to.
+/// - Frequency: rare — the score folds health, distance and armour
+///   effectiveness, so exact ties need near-identical candidates.
+/// - Downstream risk: none beyond target choice; no RNG is drawn here.
+///
+/// COST — this walks every live entity once per Hunt scan, which is the shape
+/// native has (`[0x00A8EC88]` is the global object count) and is bounded by the
+/// object count rather than by the map. It is strictly cheaper than the ring
+/// path, which makes the same full pass inside [`ScanIndex::build`] and then
+/// sorts and allocates on top of it. A hunting object scans only when it holds
+/// no target and its `NormalTargetingDelay` timer has expired, so at charter
+/// scale the cost is one N-pass per hunting object per cadence — not per tick,
+/// and not per ring.
+fn global_list_scan(ctx: &ScanContext<'_>) -> Option<u64> {
+    let mut best: Option<u64> = None;
+    // `local_50 = -1` on the ring path; the same strictly-greater keep, so a
+    // score of 0 (itself a rejection) can never displace nothing.
+    let mut best_score: i32 = -1;
+    for candidate in ctx.entities.values() {
+        let Some(score) = evaluate_candidate(ctx, candidate) else {
+            continue;
+        };
+        if score > best_score {
+            best_score = score;
+            best = Some(candidate.stable_id);
         }
     }
     best
@@ -855,9 +1197,53 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
         return None;
     }
 
+    // G12 — the movement-zone gate, `0x006F7E32`-`0x006F7E9C`, in its native
+    // slot (between the in-transport reject and the distance test).
+    //
+    // `MOV EBP,[ESP+0x54]` reads arg6; `CMP EBP,-0x1 ; JZ 0x006F7EA2` skips the
+    // whole block when the caller passed `-1`, which every ring-walk callsite
+    // does. Otherwise the candidate's coords are converted to a cell
+    // (`CALL [vt+0x48] @ 0x006F7E2D`, `SAR EAX,0x8` twice) and
+    // `MapClass::GetZoneID(that cell, ATTACKER type +0x5B4, candidate +0x8C)`
+    // at `0x006F7E7E`-`0x006F7E95` must equal arg6, or `JNZ 0x006F894F` rejects.
+    // Note both zone lookups use the ATTACKER's `MovementZone=`; only the
+    // bridge-resolution flag differs — a literal `1` for the scanner's own cell
+    // (`PUSH 0x1 @ 0x006F8E73`), the candidate's own on-bridge byte here
+    // (`MOV CL,[ESI+0x8c] @ 0x006F7E5B`, `PUSH ECX @ 0x006F7E77`).
+    //
+    // The player-visible effect is that a hunting unit will not commit to a
+    // victim across water, up a cliff, or in a disconnected pocket: it picks
+    // something it can actually walk to, or nothing.
+    //
+    // VERA-internal, gamemd has no equivalent: a `None` from either lookup
+    // leaves the gate off rather than rejecting. `ZoneGrid`'s exact GetZoneID
+    // surface refuses a non-square or topology-less grid instead of performing
+    // native's unchecked read, and `zone_grid` is `None` in headless fixtures
+    // with no map. Trigger: unit tests and any map whose resolved terrain is
+    // not square. Player effect in production: none — `rebuild_zone_grid_full`
+    // always builds from resolved terrain. Frequency: nil in a real match.
+    if let Some(scanner_zone) = ctx.scanner_zone {
+        let candidate_zone = ctx.zone_grid.and_then(|zones| {
+            zones.get_zone_id_native(
+                (
+                    i32::from(candidate.position.rx),
+                    i32::from(candidate.position.ry),
+                ),
+                ctx.attacker_obj.movement_zone,
+                candidate.on_bridge,
+            )
+        });
+        if candidate_zone.is_some_and(|zone| zone != scanner_zone) {
+            return None;
+        }
+    }
+
     // G13 — distance. A non-zero `Threat_Range` is a hard cutoff; a zero one
     // defers to the attacker's own can-fire-at query, which is the range of the
-    // weapon picked against this very candidate.
+    // weapon picked against this very candidate; a NEGATIVE one — the literal
+    // `-1` the mask-0 walk pushes at `0x006F9D70` — satisfies neither
+    // `0 < range` nor `range == 0`, so both gates are skipped and the candidate
+    // is admitted at any separation.
     let dist_sq = lepton_distance_sq_raw(
         ctx.attacker.pos_rx,
         ctx.attacker.pos_ry,
@@ -870,6 +1256,7 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
     );
     let in_range = match ctx.range {
         ScanRange::Hard(cells) => is_within_range_leptons(dist_sq, cells),
+        ScanRange::NoCutoff => true,
         ScanRange::CanFireAt => match (ctx.terrain, ctx.entities.get(ctx.attacker.stable_id)) {
             (Some(terrain), Some(attacker_entity)) => {
                 let source_z = super::in_range::effective_z_leptons(attacker_entity, terrain)?;
@@ -1057,6 +1444,7 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
         ctx.terrain,
         ctx.alliances(),
         ctx.coefficients,
+        ctx.threat_reference,
     )?;
     finish_score(score)
 }
@@ -1094,7 +1482,11 @@ fn live_threat_posed(rules: &RuleSet, candidate: &GameEntity, obj: &ObjectType) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::bridge_facts::BridgeCellFacts;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, zone_class};
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::locomotor_type::MovementZone;
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::intern::test_interner;
 
     /// A skirmish-shaped fixture: one gun tank, the two civilian object classes
@@ -1117,7 +1509,7 @@ mod tests {
              [InfantryTypes]\n0=ENGINEER\n\
              [BuildingTypes]\n0=WALL\n1=PILLBOX\n2=POWER\n3=CHRONO\n4=GATTLING\n\
              [WeaponTypes]\n0=105mm\n1=Vulcan\n\
-             [GRIZZLY]\nStrength=300\nArmor=heavy\nPrimary=105mm\n\
+             [GRIZZLY]\nStrength=300\nArmor=heavy\nPrimary=105mm\nMovementZone=Normal\n\
              [SCOUT]\nStrength=300\nArmor=heavy\n\
              [PRIZE]\nStrength=300\nArmor=heavy\nSpecialThreatValue=10\n\
              [CAR]\nStrength=100\nArmor=light\nInsignificant=yes\n\
@@ -1154,10 +1546,483 @@ mod tests {
     }
 
     fn pick(entities: &EntityStore, rules: &RuleSet, attacker: u64) -> Option<u64> {
+        pick_with_mask(entities, rules, attacker, super::super::ScanMission::Guard)
+    }
+
+    /// The same acquisition entry, with the threat mask the caller would push.
+    fn pick_with_mask(
+        entities: &EntityStore,
+        rules: &RuleSet,
+        attacker: u64,
+        mask: super::super::ScanMission,
+    ) -> Option<u64> {
+        pick_with_mask_and_zones(entities, rules, attacker, mask, None)
+    }
+
+    /// The acquisition entry with `MapClass`'s zone topology supplied, which is
+    /// what the mask-0 walk needs to run its movement-zone gate.
+    fn pick_with_mask_and_zones(
+        entities: &EntityStore,
+        rules: &RuleSet,
+        attacker: u64,
+        mask: super::super::ScanMission,
+        zones: Option<&ZoneGrid>,
+    ) -> Option<u64> {
         let interner = test_interner();
         super::super::acquire_best_target_for_entity(
-            entities, rules, &interner, attacker, None, None, false,
+            entities, rules, &interner, attacker, None, None, false, mask, zones,
         )
+    }
+
+    /// One clear ground cell.
+    fn zone_test_cell(rx: u16, ry: u16, impassable: bool) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs: SpeedCostProfile::default(),
+            is_water: false,
+            is_cliff_like: impassable,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            allows_tiberium: false,
+            height_in_pixels: 0,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: impassable,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: if impassable {
+                zone_class::IMPASSABLE
+            } else {
+                zone_class::GROUND
+            },
+            base_ground_walk_blocked: impassable,
+            base_build_blocked: impassable,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: TerrainClass::Clear,
+            base_speed_costs: SpeedCostProfile::default(),
+            build_blocked: impassable,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    /// A square map cut in two by one impassable column, so that
+    /// `MovementZone::Normal` has two disconnected components.
+    fn split_zone_grid(side: u16, barrier_rx: u16) -> ZoneGrid {
+        let cells = (0..side)
+            .flat_map(|ry| (0..side).map(move |rx| zone_test_cell(rx, ry, rx == barrier_rx)))
+            .collect();
+        let terrain = ResolvedTerrainGrid::from_cells(side, side, cells);
+        let path_grid = crate::sim::pathfinding::PathGrid::from_resolved_terrain(&terrain);
+        ZoneGrid::build_with_terrain(
+            &path_grid,
+            &BTreeMap::new(),
+            Some(&terrain),
+            &[],
+            side,
+            side,
+        )
+    }
+
+    /// The mask-0 walk is movement-zone filtered, and the ring walk is not.
+    ///
+    /// `Greatest_Threat` computes the scanner's own zone id at `0x006F8EC4`
+    /// whenever the mask has bit0 clear, and the flat walk pushes it into
+    /// `Evaluate_Candidate`'s arg6 (`PUSH ECX @ 0x006F9D69`) where every ring
+    /// callsite pushes `-1` (`0x006F92A3`). A non-`-1` arg6 turns on the reject
+    /// at `0x006F7E7E`-`0x006F7E9C`: the candidate's cell must resolve to the
+    /// same component under the ATTACKER's `MovementZone=`.
+    ///
+    /// Fixture: an impassable column at `rx = 5` splits an 12x12 map. The
+    /// attacker sits at `(2, 2)`; the nearer enemy at `(8, 2)` is on the far
+    /// side and unreachable, the further one at `(1, 10)` is on its own side.
+    /// Distance carries a negative coefficient, so without the gate the nearer
+    /// one wins — which is exactly what the same fixture returns when no zone
+    /// topology is supplied.
+    #[test]
+    fn gsi_07_20_mask_zero_refuses_a_target_its_movement_zone_cannot_reach() {
+        let rules = scan_rules();
+        let zones = split_zone_grid(12, 5);
+        let near_side = zones
+            .get_zone_id_nonbridge_native((2, 2), MovementZone::Normal)
+            .expect("attacker cell resolves a Normal zone id");
+        let far_side = zones
+            .get_zone_id_nonbridge_native((8, 2), MovementZone::Normal)
+            .expect("across-the-barrier cell resolves a Normal zone id");
+        assert_ne!(
+            near_side, far_side,
+            "the fixture must actually split MovementZone=Normal into two components"
+        );
+
+        let mut entities = EntityStore::new();
+        place(
+            &mut entities,
+            1,
+            "GRIZZLY",
+            "Americans",
+            2,
+            2,
+            EntityCategory::Unit,
+        );
+        place(
+            &mut entities,
+            2,
+            "SCOUT",
+            "Soviets",
+            8,
+            2,
+            EntityCategory::Unit,
+        );
+        place(
+            &mut entities,
+            3,
+            "SCOUT",
+            "Soviets",
+            1,
+            10,
+            EntityCategory::Unit,
+        );
+
+        assert_eq!(
+            pick_with_mask_and_zones(&entities, &rules, 1, super::super::ScanMission::Hunt, None),
+            Some(2),
+            "with no zone topology the gate is off and the nearer target wins on score"
+        );
+        assert_eq!(
+            pick_with_mask_and_zones(
+                &entities,
+                &rules,
+                1,
+                super::super::ScanMission::Hunt,
+                Some(&zones)
+            ),
+            Some(3),
+            "the zone gate refuses the nearer target across the barrier and takes the reachable one"
+        );
+    }
+
+    /// The gate belongs to the flat walk alone. Same fixture, one enemy, and it
+    /// is on the far side of the barrier and inside plain Guard's ring bound:
+    /// mask 1 still takes it, because the ring callsite pushes `-1` into arg6
+    /// (`PUSH -0x1 @ 0x006F92A3`) and the reject at `0x006F7E45` is skipped.
+    #[test]
+    fn gsi_07_20_the_ring_walk_ignores_the_zone_gate_the_flat_walk_applies() {
+        let rules = scan_rules();
+        let zones = split_zone_grid(12, 5);
+
+        let mut entities = EntityStore::new();
+        place(
+            &mut entities,
+            1,
+            "GRIZZLY",
+            "Americans",
+            4,
+            2,
+            EntityCategory::Unit,
+        );
+        place(
+            &mut entities,
+            2,
+            "SCOUT",
+            "Soviets",
+            6,
+            2,
+            EntityCategory::Unit,
+        );
+
+        assert_eq!(
+            pick_with_mask_and_zones(
+                &entities,
+                &rules,
+                1,
+                super::super::ScanMission::Guard,
+                Some(&zones)
+            ),
+            Some(2),
+            "mask 1 pushes -1 in the arg6 slot, so the zone reject never runs"
+        );
+        assert_eq!(
+            pick_with_mask_and_zones(
+                &entities,
+                &rules,
+                1,
+                super::super::ScanMission::Hunt,
+                Some(&zones)
+            ),
+            None,
+            "mask 0 supplies the zone and refuses the same candidate"
+        );
+    }
+
+    /// A 20-cell-range attacker with one long weapon, a plain enemy and an
+    /// otherwise identical enemy worth `SpecialThreatValue=10`. Nothing else
+    /// separates the two candidates, so the score ordering is decided by the
+    /// special-threat term against the distance term alone.
+    fn lepton_scale_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[General]\n\
+             MyEffectivenessCoefficientDefault=200\n\
+             TargetEffectivenessCoefficientDefault=-200\n\
+             TargetSpecialThreatCoefficientDefault=200\n\
+             TargetStrengthCoefficientDefault=-200\n\
+             TargetDistanceCoefficientDefault=-10\n\
+             [VehicleTypes]\n0=LONGTANK\n1=PLAIN\n2=JUICY\n\
+             [WeaponTypes]\n0=LongGun\n\
+             [LONGTANK]\nStrength=300\nArmor=heavy\nPrimary=LongGun\nMovementZone=Normal\n\
+             [PLAIN]\nStrength=300\nArmor=heavy\n\
+             [JUICY]\nStrength=300\nArmor=heavy\nSpecialThreatValue=10\n\
+             [LongGun]\nDamage=100\nROF=110\nRange=20\nWarhead=AP\n\
+             [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ))
+        .expect("lepton-scale fixture")
+    }
+
+    /// The flat walk scores distance in LEPTONS where every ring-shaped walk
+    /// scores it in CELLS — the same geometry at 256x the scale, in the one
+    /// term that separates two candidates.
+    ///
+    /// `Mission_Hunt` copies its own `ObjectClass+0x9C` Coords to a local and
+    /// passes the pointer (`LEA ECX,[ESI+0x9c] @ 0x004D536D` … `LEA EAX,
+    /// [ESP+0x14]` / `PUSH EAX @ 0x004D538B`); `Retaliate_And_Scan` forwards it
+    /// as `Greatest_Threat`'s arg2, and the flat walk alone pushes it as
+    /// `Evaluate_Candidate`'s arg7 (`MOV EBP,[ESP+0x74] @ 0x006F9C76`,
+    /// `PUSH EBP @ 0x006F9D64`), which becomes `Calculate_Threat_Score`'s third
+    /// parameter at `0x006F86FE`-`0x006F8706`. The ring walk and the aircraft
+    /// pre-walk push the `NullCoord` sentinel instead (`PUSH 0xb0ea90` at
+    /// `0x006F929A` and `0x006F9C18`), and a sentinel takes the branch that
+    /// ends `SAR EAX,0x8 @ 0x0070D09D`; the supplied-coordinate branch has no
+    /// shift at all (`JMP 0x0070D0A0 @ 0x0070D021`).
+    ///
+    /// Fixture: the attacker at `(10, 10)`, the plain enemy 2 cells east, the
+    /// juicier one 4 cells east. Both sit well inside `Range=20`, so on the
+    /// CELL scale `max(0, dist − range)` is zero for both and the
+    /// special-threat term (`200 x 10 = 2000`) decides; on the LEPTON scale the
+    /// same pair is ~492 and ~1004 beyond range, i.e. about `-4920` against
+    /// `-8040 = -10040 + 2000`, and the nearer, cheaper target wins.
+    ///
+    /// Both bands of the ring walk's early return (`radius/4 = 5`,
+    /// `radius/2 = 10` with `radius = 21`) sit outside ring 4, so the ring walk
+    /// really does score both candidates before it can return.
+    #[test]
+    fn gsi_07_20_the_flat_walk_scores_distance_in_leptons_where_the_ring_walk_scores_cells() {
+        let rules = lepton_scale_rules();
+
+        let mut entities = EntityStore::new();
+        place(
+            &mut entities,
+            1,
+            "LONGTANK",
+            "Americans",
+            10,
+            10,
+            EntityCategory::Unit,
+        );
+        place(
+            &mut entities,
+            2,
+            "PLAIN",
+            "Soviets",
+            12,
+            10,
+            EntityCategory::Unit,
+        );
+        place(
+            &mut entities,
+            3,
+            "JUICY",
+            "Soviets",
+            14,
+            10,
+            EntityCategory::Unit,
+        );
+
+        assert_eq!(
+            pick_with_mask(&entities, &rules, 1, super::super::ScanMission::Guard),
+            Some(3),
+            "the ring walk pushes the NullCoord sentinel, so its distance term \
+             is in cells, both candidates are inside the weapon range, and \
+             SpecialThreatValue alone decides"
+        );
+        assert_eq!(
+            pick_with_mask(&entities, &rules, 1, super::super::ScanMission::Hunt),
+            Some(2),
+            "the flat walk forwards the hunter's own Coords, so its distance \
+             term is in leptons and the nearer candidate wins despite being \
+             worth 2000 less"
+        );
+
+        // The same pair through the scorer directly, so the walk-level result
+        // above cannot be explained by anything but the reference coordinate.
+        let interner = test_interner();
+        let attacker_obj = rules.object("LONGTANK").expect("attacker type");
+        let coefficients =
+            ThreatCoefficients::resolve(&rules, attacker_obj, HOUSE_SELECTS_OWN_COEFFICIENTS);
+        let score = |candidate: u64, reference: ThreatReference| {
+            finish_score(
+                calculate_threat_score(
+                    &entities,
+                    1,
+                    candidate,
+                    &rules,
+                    &interner,
+                    None,
+                    None,
+                    coefficients,
+                    reference,
+                )
+                .expect("scored"),
+            )
+            .expect("accepted")
+        };
+        assert!(
+            score(3, ThreatReference::NullCoord) > score(2, ThreatReference::NullCoord),
+            "on the cell scale the juicier candidate outscores the nearer one: {} vs {}",
+            score(3, ThreatReference::NullCoord),
+            score(2, ThreatReference::NullCoord)
+        );
+        assert!(
+            score(2, ThreatReference::ScannerCoords) > score(3, ThreatReference::ScannerCoords),
+            "on the lepton scale the ordering flips: {} vs {}",
+            score(2, ThreatReference::ScannerCoords),
+            score(3, ThreatReference::ScannerCoords)
+        );
+    }
+
+    /// Mask 0 is a different scan TOPOLOGY, not a wider radius: `TEST AL,0x3 ;
+    /// JZ 0x006F9B6E` at `0x006F8FE0` skips the radius block and the ring walk
+    /// outright, and the walk that runs instead enumerates the global object
+    /// array with a literal `-1` in the range slot (`PUSH -0x1 @ 0x006F9D70`).
+    ///
+    /// 30 cells is far outside anything the ring walk could reach for this
+    /// type: `105mm Range=5` with no `GuardRange=` bounds the Guard walk at
+    /// `5 + 1 + 0 = 6` rings, and even the Area Guard formula caps at
+    /// [`AREA_GUARD_MAX_SCAN_CELLS`] = 16. Both are asserted, so the Hunt result
+    /// cannot be explained by a radius the walk happened to compute.
+    #[test]
+    fn gsi_07_20_mask_zero_reaches_past_every_ring_the_walk_could_compute() {
+        let rules = scan_rules();
+        let mut entities = EntityStore::new();
+        place(
+            &mut entities,
+            1,
+            "GRIZZLY",
+            "Americans",
+            10,
+            10,
+            EntityCategory::Unit,
+        );
+        place(
+            &mut entities,
+            2,
+            "SCOUT",
+            "Soviets",
+            10,
+            40,
+            EntityCategory::Unit,
+        );
+
+        assert_eq!(
+            pick_with_mask(&entities, &rules, 1, super::super::ScanMission::Guard),
+            None,
+            "the mask-1 ring walk bounds at weapon range + 1 = 6 cells"
+        );
+        assert_eq!(
+            pick_with_mask(&entities, &rules, 1, super::super::ScanMission::AreaGuard),
+            None,
+            "even the doubled-and-capped mask-2 radius stops at 16 cells"
+        );
+        assert_eq!(
+            pick_with_mask(&entities, &rules, 1, super::super::ScanMission::Hunt),
+            Some(2),
+            "mask 0 enumerates the global list with range -1, so 30 cells is not a cutoff"
+        );
+    }
+
+    /// The other half of the topology difference, and the one a radius cannot
+    /// imitate at any width: the ring walk asks each cell for a single
+    /// candidate (`Scan_Cell_For_Target @ 0x006F8960` stops at the list head),
+    /// so a cell whose head the gate refuses contributes nothing at all. The
+    /// mask-0 walk has no cells — it runs `Evaluate_Candidate` on every array
+    /// element — so the second occupant of that cell is still seen.
+    ///
+    /// Fixture: a hostile `CAR` (`Insignificant=yes`, refused by G19) sharing a
+    /// cell with a hostile `SCOUT`, one cell from the attacker and well inside
+    /// every radius. Guard finds nothing; Hunt finds the scout.
+    #[test]
+    fn gsi_07_20_mask_zero_sees_past_a_refused_cell_list_head() {
+        let rules = scan_rules();
+        let mut entities = EntityStore::new();
+        place(
+            &mut entities,
+            1,
+            "GRIZZLY",
+            "Americans",
+            10,
+            10,
+            EntityCategory::Unit,
+        );
+        // The cell list prepends non-buildings, so the later-ordered entry ends
+        // up at the head; the CAR must be the one the walk stops on.
+        place(
+            &mut entities,
+            2,
+            "SCOUT",
+            "Soviets",
+            11,
+            10,
+            EntityCategory::Unit,
+        );
+        place(
+            &mut entities,
+            3,
+            "CAR",
+            "Soviets",
+            11,
+            10,
+            EntityCategory::Unit,
+        );
+
+        assert_eq!(
+            pick_with_mask(&entities, &rules, 1, super::super::ScanMission::Guard),
+            None,
+            "the ring walk takes the cell's list head, and an Insignificant civilian is refused"
+        );
+        assert_eq!(
+            pick_with_mask(&entities, &rules, 1, super::super::ScanMission::Hunt),
+            Some(2),
+            "the mask-0 walk evaluates every object, so the scout behind the car is still seen"
+        );
     }
 
     /// The headline scenario for row 121: a gun tank sitting on Guard with an

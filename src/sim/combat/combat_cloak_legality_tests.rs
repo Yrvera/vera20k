@@ -78,7 +78,17 @@ fn acquire(
     attacker: u64,
     fog: &FogState,
 ) -> Option<u64> {
-    acquire_best_target_for_entity(entities, rules, interner, attacker, Some(fog), None, false)
+    acquire_best_target_for_entity(
+        entities,
+        rules,
+        interner,
+        attacker,
+        Some(fog),
+        None,
+        false,
+        crate::sim::combat::ScanMission::Guard,
+        None,
+    )
 }
 
 #[test]

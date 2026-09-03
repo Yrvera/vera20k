@@ -1218,6 +1218,14 @@ fn passive_target_scan(sim: &mut Simulation, id: u64, rules: &RuleSet, mission: 
     // per-scan RNG cost is therefore 1 in both engines. The residual is only
     // that an instruction search cannot exclude a computed-pointer writer of
     // those two fields.
+    let Some(scan_mask) = sim
+        .substrate
+        .entities
+        .get(id)
+        .map(crate::sim::combat::scan_mission_for)
+    else {
+        return;
+    };
     let pick = crate::sim::combat::acquire_best_target_for_entity(
         &sim.substrate.entities,
         rules,
@@ -1226,6 +1234,11 @@ fn passive_target_scan(sim: &mut Simulation, id: u64, rules: &RuleSet, mission: 
         Some(&sim.fog),
         sim.resolved_terrain.as_ref(),
         sim.playfield_bounds.is_some(),
+        // The passive callsite's own literal: `1` from the common Techno AI
+        // body for Move/Guard/Harvest, `2` from `FootClass::Mission_AreaGuard`.
+        // `scan_mission_for` is that choice, and this is the site that makes it.
+        scan_mask,
+        sim.zone_grid.as_ref(),
     );
     // Install the target only — no mission, no destination, and nothing fires
     // this tick. A unit that acquires while driving keeps driving, and an idle
@@ -3360,6 +3373,7 @@ mod tests {
             unit_deploy_begin_active: false,
             unit_deploy_reverse_active: false,
             infantry_deployed_do_type: false,
+            infantry_deploy_fire_stance: false,
         };
 
         assert_eq!(
@@ -3458,6 +3472,7 @@ mod tests {
             unit_deploy_begin_active: false,
             unit_deploy_reverse_active: false,
             infantry_deployed_do_type: false,
+            infantry_deploy_fire_stance: false,
         };
 
         for frozen in [MissionType::Hunt, MissionType::Sticky] {
@@ -3579,12 +3594,22 @@ mod tests {
         let mut sim = Simulation::with_seed(0x487A);
         let rules = representative_foot_handler_rules();
         let mut infantry = entity_of(1, EntityCategory::Infantry);
+        // The Hunt body resolves the object type (for `StupidHunt=`) and runs
+        // the scanner, so the fixture has to be interned in THIS sim.
+        infantry.owner = sim.interner.intern("Americans");
+        infantry.type_ref = sim.interner.intern("TEST");
         update_mission_test_fixture(&mut infantry.mission, |fixture| {
             fixture.current = MissionId::from_known(MissionType::Hunt);
             fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
         });
         sim.substrate.entities.insert(infantry);
         let mut expected_rng = sim.clone_scenario_rng();
+        // Two draws, in this order. `TechnoClass::Retaliate_And_Scan @
+        // 0x00709820` takes the first one unconditionally, before any branch
+        // (`PUSH 0x2` / `PUSH 0x0` at `0x0070982C`/`0x0070983D`), for the scan
+        // timer's re-arm; the handler tail at `0x004D55A9` takes the second for
+        // the cadence jitter.
+        let _scan_jitter = expected_rng.next_range_u32_inclusive(0, 2);
         let expected_delay = 14 + expected_rng.next_range_u32_inclusive(0, 2) as i32;
 
         sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
@@ -3665,6 +3690,240 @@ mod tests {
         let delay = unit.mission.dispatch_timer().delay();
         assert!((14..=16).contains(&delay), "Rate + RandomRanged(0, 2)");
         assert_ne!(sim.scenario_rng.logical_state(), before_rng);
+    }
+
+    /// Rules for the Hunt body and the infantry deploy shim.
+    ///
+    /// `HUNTVEH` is an ordinary armed vehicle; `DUMBVEH` carries
+    /// `StupidHunt=yes`; `DEPINF` carries `DeployFire=yes` with neither
+    /// `ImmuneToRadiation=` nor `UndeployDelay=`, which is the GI / Guardian GI
+    /// shape the shim's live arm selects.
+    fn hunt_body_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nNormalTargetingDelay=27\nGuardAreaTargetingDelay=36\n\n\
+             [Attack]\nRate=.016\n\n[Guard]\nRate=.016\n\n[AreaGuard]\nRate=.016\n\n\
+             [Hunt]\nRate=.016\n\n[Move]\nRate=.016\n\n\
+             [VehicleTypes]\n0=HUNTVEH\n1=DUMBVEH\n\n[InfantryTypes]\n0=DEPINF\n\n\
+             [HUNTVEH]\nLocomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\n\
+             Strength=300\nArmor=heavy\nSpeed=6\nSight=10\nPrimary=SHORTGUN\n\n\
+             [DUMBVEH]\nLocomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\n\
+             Strength=300\nArmor=heavy\nSpeed=6\nSight=10\nPrimary=SHORTGUN\nStupidHunt=yes\n\n\
+             [DEPINF]\nLocomotor={4A582744-9839-11d1-B709-00A024DDAFD1}\n\
+             Strength=125\nArmor=none\nSpeed=4\nSight=10\nPrimary=SHORTGUN\nDeployFire=yes\n\n\
+             [SHORTGUN]\nDamage=10\nROF=20\nRange=4\nWarhead=WH\n\n\
+             [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ))
+        .expect("Hunt body rules parse")
+    }
+
+    /// One armed hunter of `hunter_type` at (20, 20) and one hostile at
+    /// (20 + gap, 20), both spawned through the map path so ownership, fog and
+    /// playfield membership are the production ones.
+    fn hunt_pair(seed: u64, hunter_type: &str, gap: u16, mission: MissionType) -> Simulation {
+        let rules = hunt_body_rules();
+        let heights: std::collections::BTreeMap<(u16, u16), u8> = std::collections::BTreeMap::new();
+        let mut sim = Simulation::with_seed(seed);
+        sim.spawn_from_map(
+            &[
+                passive_map_entity("Americans", hunter_type, 20, 20, EntityCategory::Unit),
+                passive_map_entity("Soviet", "HUNTVEH", 20 + gap, 20, EntityCategory::Unit),
+            ],
+            Some(&rules),
+            &heights,
+        );
+        let hunter = sim
+            .substrate
+            .entities
+            .get_mut(1)
+            .expect("hunter spawned first");
+        update_mission_test_fixture(&mut hunter.mission, |fixture| {
+            fixture.current = MissionId::from_known(mission);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        sim
+    }
+
+    /// The headline of GSI-07.20: a hunting object acquires past its own weapon
+    /// reach, and the target it installs is NOT flagged passively-acquired — so
+    /// the pursuit pass will close on it instead of skipping it. Native:
+    /// `FootClass::Mission_Hunt @ 0x004D5373` scans with threat mask `0`, and
+    /// `TechnoClass::Greatest_Threat @ 0x006F8FE0` (`TEST AL,0x3 ; JZ`) jumps
+    /// past the whole radius block for that mask; `Retaliate_And_Scan @
+    /// 0x00709820` installs the result through `Assign_Target` at `0x00709960`
+    /// and never writes the passively-acquired byte `+0x50C`.
+    #[test]
+    fn gsi_07_20_hunt_acquires_past_weapon_range_and_leaves_the_target_pursuable() {
+        let rules = hunt_body_rules();
+        // 8 cells apart against `SHORTGUN` Range=4 — comfortably outside the
+        // weapon reach that bounds a Guard-mission scan, comfortably inside
+        // Sight=10 so the candidate is not shrouded.
+        let mut sim = hunt_pair(0x40_0720, "HUNTVEH", 8, MissionType::Hunt);
+        let heights: std::collections::BTreeMap<(u16, u16), u8> = std::collections::BTreeMap::new();
+        let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
+        // Record the state at the moment of acquisition: the hunter starts
+        // closing as soon as it has a target, and the point of the test is how
+        // far away it was when it found one.
+        let mut acquired = None;
+        for _ in 0..40 {
+            let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 67);
+            let hunter = sim.substrate.entities.get(1).expect("hunter present");
+            if hunter.attack_target.is_some() {
+                acquired = Some((
+                    28u16.saturating_sub(hunter.position.rx),
+                    hunter.passively_acquired_target,
+                ));
+                break;
+            }
+        }
+        let (gap_cells, passive) = acquired.expect(
+            "a hunting object scans with no radius cutoff and must find the hostile 8 cells away",
+        );
+        assert!(
+            gap_cells > 4,
+            "acquisition must happen outside SHORTGUN's 4-cell reach: {gap_cells}"
+        );
+        assert!(
+            !passive,
+            "Retaliate_And_Scan never writes +0x50C, so the Hunt target must stay pursuable"
+        );
+    }
+
+    /// The control for the test above: the very same pair, at the very same
+    /// range, acquires nothing on Guard. Without this the Hunt result could be
+    /// explained by an over-wide scan rather than by the mask-0 arm.
+    #[test]
+    fn gsi_07_20_guard_at_the_same_range_acquires_nothing() {
+        let rules = hunt_body_rules();
+        let mut sim = hunt_pair(0x40_0721, "HUNTVEH", 8, MissionType::Guard);
+        let heights: std::collections::BTreeMap<(u16, u16), u8> = std::collections::BTreeMap::new();
+        let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
+        for _ in 0..40 {
+            let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 67);
+        }
+
+        assert!(
+            sim.substrate
+                .entities
+                .get(1)
+                .expect("guard present")
+                .attack_target
+                .is_none(),
+            "a Guard-mission scan defers to the weapon's own reach (4 cells), so 8 is out"
+        );
+    }
+
+    /// `StupidHunt=` (`TechnoTypeClass+0x6D4`, store `0x00714C80`, key
+    /// `0x008438A4`) is the FIRST test in `FootClass::Mission_Hunt`
+    /// (`0x004D535F`): such a type never reaches the scanner at all. It
+    /// therefore acquires nothing AND takes only the tail's single draw.
+    #[test]
+    fn gsi_07_20_stupid_hunt_type_never_scans_and_draws_once() {
+        let rules = hunt_body_rules();
+        let mut sim = hunt_pair(0x40_0722, "DUMBVEH", 8, MissionType::Hunt);
+        let mut expected_rng = sim.clone_scenario_rng();
+        let expected_delay = 14 + expected_rng.next_range_u32_inclusive(0, 2) as i32;
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        let hunter = sim.substrate.entities.get(1).expect("hunter present");
+        assert!(
+            hunter.attack_target.is_none(),
+            "StupidHunt skips the scan entirely"
+        );
+        assert_eq!(hunter.mission.dispatch_timer().delay(), expected_delay);
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state(),
+            "the StupidHunt path draws only the tail jitter"
+        );
+    }
+
+    /// The cadence band is `[282, 768]` on the **approximated** distance
+    /// `ftol(Sqrt_Approx(dx*dx + dy*dy))`, not on the squared one:
+    /// `disassemble_bytes 0x004D4EF0..0x004D4FB1` — `CMP EAX,0x300 ; JG skip`
+    /// after the `Sqrt_Approx`/`ftol` pair.
+    ///
+    /// This fixture sits at dx = 768, dy = 30, i.e. `d² = 590724`. The old
+    /// squared predicate `d² <= 768² = 589824` rejected it; native truncates
+    /// the root to 768 and admits it, halving the cadence.
+    #[test]
+    fn gsi_07_06_cadence_band_admits_a_distance_above_the_squared_bound() {
+        let rules = representative_foot_handler_rules();
+        let mut sim = Simulation::with_seed(0x40_0706);
+        let mut attacker = entity_of(1, EntityCategory::Unit);
+        attacker.attack_target = Some(AttackTarget::new(2));
+        update_mission_test_fixture(&mut attacker.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Attack);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        // Target sits at (5, 5); 3 cells east is exactly 768 leptons, and the
+        // 30-lepton north/south offset pushes d² past 768² without pushing the
+        // truncated root past 768.
+        attacker.position.rx = 8;
+        attacker.position.sub_y += crate::util::fixed_math::SimFixed::from_num(30);
+        attacker.owner = sim.interner.intern("Americans");
+        attacker.type_ref = sim.interner.intern("SHORTVEH");
+        sim.substrate.entities.insert(attacker);
+        register_entity(&mut sim, entity_of(2, EntityCategory::Unit));
+
+        let mut expected_rng = sim.clone_scenario_rng();
+        let jitter = expected_rng.next_range_u32_inclusive(0, 2) as i32;
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .dispatch_timer()
+                .delay(),
+            (14 + jitter) / 2,
+            "trunc(Sqrt_Approx(590724)) is 768, which the band admits"
+        );
+    }
+
+    /// GSI-07.16 — a deployed `DeployFire=` infantryman on Area Guard runs the
+    /// leaf shim `FUN_00521320`, not `FootClass::Mission_AreaGuard`. The shim
+    /// re-acquires in place and returns `Rate + RandomRanged(0, 2)`; the Foot
+    /// body would run `Retaliate_And_Scan` (one draw) and then return
+    /// `Rate + RandomRanged(1, 5)` (a second). One draw versus two is the
+    /// discriminator.
+    #[test]
+    fn gsi_07_16_deployed_deploy_fire_infantry_takes_the_shim_on_area_guard() {
+        let rules = hunt_body_rules();
+        let mut sim = Simulation::with_seed(0x40_0716);
+        let mut man = entity_of(1, EntityCategory::Infantry);
+        man.owner = sim.interner.intern("Americans");
+        man.type_ref = sim.interner.intern("DEPINF");
+        man.deploy_state = Some(crate::sim::deploy::DeployPhase::Deployed);
+        update_mission_test_fixture(&mut man.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::AreaGuard);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        sim.substrate.entities.insert(man);
+
+        let mut expected_rng = sim.clone_scenario_rng();
+        let expected_delay = 14 + expected_rng.next_range_u32_inclusive(0, 2) as i32;
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .dispatch_timer()
+                .delay(),
+            expected_delay,
+            "the shim returns [AreaGuard] Rate + RandomRanged(0, 2)"
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state(),
+            "the shim never reaches the Foot body's scan or its (1, 5) jitter"
+        );
     }
 
     // ===== The base (un-overridden) mission handler =====

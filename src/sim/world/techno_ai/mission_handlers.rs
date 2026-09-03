@@ -3,11 +3,12 @@
 //! The object-AI host and its ordering remain in the parent module; this module
 //! owns only handler inputs, results, and the single timer epilogue.
 
-use super::{Simulation, can_acquire_target, passive_target_scan};
+use super::{PASSIVE_SCAN_DELAY_JITTER_MAX, Simulation, can_acquire_target, passive_target_scan};
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::mission::authority::EntityReadyInputProvider;
 use crate::sim::mission::{MissionId, MissionType};
+use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 
 /// Re-arm the evidence-backed Foot/Unit handler subset without duplicating the
 /// legacy movement, combat, or target-selection systems.
@@ -96,6 +97,18 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
                     Some(crate::sim::deploy::DeployPhase::Deploying { .. })
                         | Some(crate::sim::deploy::DeployPhase::Deployed)
                 ),
+            // Only resolved for an already-deployed infantryman: that is the
+            // only branch of `FUN_00521320` these three flags gate, and the
+            // type lookup is not free.
+            infantry_deploy_fire_stance: category == EntityCategory::Infantry
+                && entity.deploy_state.is_some()
+                && sim
+                    .interner
+                    .try_resolve(entity.type_ref)
+                    .and_then(|name| rules.object(name))
+                    .is_some_and(|obj| {
+                        obj.deploy_fire && !obj.immune_to_radiation && obj.undeploy_delay < 0
+                    }),
         }
     };
     if !input.timer_due {
@@ -195,15 +208,32 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         //   `0x0051F6A4` — loading `[ESI+0x6C0]` first — to decide whether an
         //   AI-owned deployed unit undeploys immediately, so a port that reads
         //   the instance field there gets Yuri Clone undeploy wrong.
-        // - A spy/engineer-class infantryman (`InfType+0xEC2`, or
-        //   `HasWeaponAbility(0xE)`) holding a BuildingClass target whose type
-        //   has `+0x1577` set and `+0x1701` clear takes
-        //   `Set_Destination(target, 1)` then `Assign_Mission(0x11 Sabotage)`
-        //   and returns 1. Frequency: low-to-moderate — the ordinary
-        //   right-click resolver usually issues the enter action directly, so
-        //   this is the force-fire / retarget path.
-        // - An AI-owned engineer or medic converts to Capture. Frequency: zero
-        //   today, because this project has no AI opponent.
+        // - **This arm is FIRST in the override and is NOT AI-gated.** A
+        //   demolition infantryman — `InfantryType->C4` (`+0xEC2`, key `"C4"`
+        //   at `0x00825978`, store `0x00524559`) or `HasWeaponAbility(0xE)` —
+        //   holding a BuildingClass target takes
+        //   `Set_Destination(target, 1); Queue_Mission(0x11 Sabotage, 0);
+        //   return 1` with **no RNG draw** (`decompile_function 0x0051F3E0`,
+        //   `0x0051F400`-`0x0051F44A`). The two building-type gates are now
+        //   named: `+0x1577` is **`CanC4=`** (key `"CanC4"` at `0x0081ADFC`,
+        //   `BuildingTypeClass::ReadINI` store `0x0046005D`, constructor
+        //   default **1** at `0x0045E063`) and `+0x1701` is
+        //   **`InvisibleInGame=`** (key at `0x0081A8CC`, store `0x00460E01`) —
+        //   both already parsed here as `can_c4` and `invisible_in_game`, and
+        //   both already used by the player Sabotage order in
+        //   `world_commands.rs`. What is still missing is the *handler* arm:
+        //   VERA drives Sabotage from that order path's `c4_plant` goal state
+        //   and its own movement issue, and the Sabotage selector has no
+        //   dispatch arm, so queueing it from here would park the object on a
+        //   selector whose timer nothing re-arms. Trigger: a force-fire or
+        //   retarget onto a building by Tanya, a Navy SEAL, a Crazy Ivan or a
+        //   Psi-Corps Trooper. Player effect: VERA shoots the building where
+        //   retail walks in and plants. Frequency: low-to-moderate — the
+        //   ordinary right-click resolver issues the enter action directly.
+        // - An AI-owned `Infiltrate=`(`+0xEBE`) / `Occupier=`(`+0xEB4`) /
+        //   `Assaulter=`(`+0xEB5`) infantryman converts to
+        //   `Assign_Mission(Capture)` and returns 1. Frequency: zero today,
+        //   because this project has no AI opponent.
         //
         // RESIDUAL (GSI-07.06) — two further Foot-body steps are absent:
         // - Step 1, the `HoverAttack` re-anchor. When `TechnoType+0x390`
@@ -247,7 +277,7 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         }
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Attack)) => {
             let cadence = jittered_mission_cadence(sim, rules, MissionType::Attack);
-            let delay = if foot_attack_in_half_cadence_band(sim, rules, id) {
+            let delay = if foot_dispatch_in_cadence_band(sim, rules, id) {
                 cadence / 2
             } else {
                 cadence
@@ -283,6 +313,71 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
                     && attack_target_is_stale(sim, id),
                 clear_attack_target: false,
                 queue: idle_queue,
+            }
+        }
+        // `FUN_00521320`, the deploy shim both infantry Guard-family slots run
+        // BEFORE the Foot body. `InfantryClass::Mission_Guard @ 0x0051F620`
+        // (slot `+0x21C`, shared by Guard(5) and Sticky(6)) and
+        // `InfantryClass::Mission_AreaGuard @ 0x0051F640` (slot `+0x220`) are
+        // both nine instructions: call it, return its value unless it is `-1`,
+        // and only `-1` falls through.
+        //
+        // `decompile_function 0x00521320`, deployed branch (DoType in
+        // `{0x1B..0x1E}`), in order:
+        // 1. `if (-1 < Type->UndeployDelay) { Do_Action(Undeploy 0x1F); return
+        //    the sequence duration }` — the Yuri arm, see the residual below;
+        // 2. `if (Type->DeployFire)`:
+        //    - `!Type->ImmuneToRadiation` → `[vtable+0x428]()` (the in-place
+        //      re-acquire) then `ftol(Rate * 900) + RandomRanged(0, 2)`;
+        //    - otherwise the Desolator radiation arm, see the residual below;
+        // 3. `return -1` → the Foot body.
+        //
+        // So a deployed GI or Guardian GI holding ground **never reaches
+        // `FootClass::Mission_AreaGuard`**: it re-acquires where it stands and
+        // re-dispatches on `Rate + (0, 2)`, not on the Foot body's scan plus
+        // `Rate + (1, 5)`. That is both a cadence and an RNG-stream difference,
+        // and it is why this arm sits ahead of the three below.
+        //
+        // RESIDUAL — the two arms this predicate excludes:
+        // - **`UndeployDelay >= 0`** (`YURI` 150, `YURIPR` 75): retail makes a
+        //   deployed Yuri undeploy on his own next Guard dispatch and returns
+        //   an animation duration read through `Type[+0xE3C] -> [+0x460]`.
+        //   VERA parses no sequence-duration table, so the return value cannot
+        //   be produced. Trigger: a deployed Yuri or Yuri Prime on Guard,
+        //   Sticky or Area Guard. Player effect: retail's stands back up,
+        //   VERA's stays deployed. Frequency: every use of Yuri's mind
+        //   control in a Yuri-faction match. Downstream risk: none for RNG —
+        //   the arm draws nothing.
+        // - **`ImmuneToRadiation`** (`DESO`): the Desolator arm re-targets its
+        //   own cell, checks the rad level under it against
+        //   `GetWeapon(1)->Warhead[+0x158] / 3`, and returns either an
+        //   animation duration (`Type[+0xE3C] -> [+0x418]`, after
+        //   `Do_Action(DeployedFire 0x1D)`) or `Rate + RandomRanged(10, 20)`.
+        //   The `(10, 20)` draw is a scenario-RNG consumption VERA never
+        //   makes, but it sits behind a rad-site query and a warhead field
+        //   (`+0x158`) that are not modelled, and only one of the two exits
+        //   takes it — committing the draw alone would be wrong on the other.
+        //   Trigger: a deployed Desolator. Player effect: cadence and stream.
+        //   Frequency: continuous wherever a Soviet player deploys one.
+        (
+            EntityCategory::Infantry,
+            Some(MissionType::Guard | MissionType::Sticky | MissionType::AreaGuard),
+        ) if input.infantry_deployed_do_type && input.infantry_deploy_fire_stance => {
+            // Order is native's: `[vtable+0x428]` runs FIRST, then the shim's
+            // tail computes `ftol(Rate * 900)` and draws `RandomRanged(0, 2)`.
+            let queue = infantry_deployed_attack_reacquire(sim, id, rules, input);
+            // `MissionClass::GetMissionTimerEntry @ 0x005B3A00` indexes the
+            // control table on `[this+0xAC]`, the object's OWN committed
+            // selector — so the shim re-arms a Guard man at `[Guard] Rate` and
+            // an Area Guard man at `[Area Guard] Rate`.
+            let delay =
+                jittered_mission_cadence(sim, rules, input.mission.unwrap_or(MissionType::Guard));
+            MissionHandlerEvaluation {
+                delay,
+                clear_stale_attack_target: input.has_attack_target
+                    && attack_target_is_stale(sim, id),
+                clear_attack_target: false,
+                queue,
             }
         }
         (EntityCategory::Unit, Some(MissionType::Guard)) => {
@@ -328,37 +423,23 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // and nothing else, so an Area Guard object is deliberately never
         // scanned there; this arm is its single acquisition route.
         //
-        // RESIDUAL (GSI-07.16) — pass 1 left this row unmarked, and a leaf-level
-        // read finds the Foot body matches while BOTH categories are routed past
-        // a real override.
-        // - `InfantryClass::Mission_AreaGuard @ 0x0051F640` carries the same
-        //   deployed-DoType shim as its Guard slot, including a
-        //   `RandomRanged(10, 20)` draw VERA never makes. Trigger: a deployed GI
-        //   or Desolator on Area Guard — ordinary micro. Frequency: routine, and
-        //   the missing draw diverges the scenario stream on every dispatch.
-        // - `UnitClass::Mission_AreaGuard @ 0x00744100` is the slave-miner
-        //   recall and returns `RandomRanged(0, 2)` where the Foot body returns
-        //   `RandomRanged(1, 5)` — an RNG fork, not just a different delay.
-        //   Frequency: zero today (no slave miners), continuous once they land.
-        // The Foot body's own slave-recall arm is absent for the same reason.
+        // GSI-07.16 — the infantry leaf override
+        // `InfantryClass::Mission_AreaGuard @ 0x0051F640` is now taken by the
+        // deploy-shim arm above; only the arms it excludes remain recorded
+        // there.
+        //
+        // RESIDUAL (GSI-07.16) — `UnitClass::Mission_AreaGuard @ 0x00744100` is
+        // the slave-miner recall and returns `RandomRanged(0, 2)` where the Foot
+        // body returns `RandomRanged(1, 5)` — an RNG fork, not just a different
+        // delay. Frequency: zero today (no slave miners), continuous once they
+        // land. The Foot body's own slave-recall arm is absent for the same
+        // reason.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::AreaGuard)) => {
             evaluate_foot_area_guard(sim, id, rules)
         }
-        // `FootClass::Mission_Hunt`: the observed Capture/Sabotage/Move routes
-        // need an authoritative selector. Until one exists, retain its cadence
-        // and do not manufacture a target or queued mission.
-        // RESIDUAL (GSI-07.20) — Hunt has a cadence and no body. Native
-        // `FootClass::Mission_Hunt @ 0x004D5350` selects among Sabotage,
-        // Capture and a Move return-to-base; the two arms here only re-arm the
-        // dispatch timer, so an object on Hunt is assigned and then does
-        // nothing. Trigger: anything queued onto Hunt — the crate and trigger
-        // paths assign it today. Player effect: hunting units stand still.
-        // Frequency: NOT AI-only, contrary to pass 1 — VERA's own berserk path
-        // queues Hunt, so every Chaos Drone use reaches this arm. Downstream
-        // risk: the selector needs the Capture/Sabotage target scan, so it
-        // lands with the engineer and terrorist mission work, not before. The
-        // cadence half of the row is closed below.
-        //
+        (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Hunt)) => {
+            evaluate_foot_hunt(sim, id, rules)
+        }
         // SKIP/PROVE (GSI-07.09) — Mission 4 Retreat is a dead slot for foot
         // objects, and pass 1's reason was wrong. `FootClass::Mission_Retreat @
         // 0x004DA2C0` (slot `+0x230`, proven from the dispatch jump table at
@@ -373,18 +454,6 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // project lacks an AI. Keep the enum slot; the only cost of the missing
         // arm is that a Retreat-committed foot object would leave its timer
         // untouched, which nothing can produce today.
-        (EntityCategory::Infantry, Some(MissionType::Hunt)) => MissionHandlerEvaluation::cadence(
-            jittered_mission_cadence(sim, rules, MissionType::Hunt),
-        ),
-        // The `UnitClass` Hunt override retries the strict target probe, then
-        // queues Enter only if its separate approach virtual returns one.
-        // Neither producer exists here, so the body stays absent — but the
-        // cadence is jittered: pass 1 preserved a "no-jitter fallback" that does
-        // not exist. BOTH exits of `UnitClass::Mission_Hunt @ 0x0073EFC0` and
-        // `FootClass::Mission_Hunt @ 0x004D5350` draw `RandomRanged(0, 2)`.
-        (EntityCategory::Unit, Some(MissionType::Hunt)) => MissionHandlerEvaluation::cadence(
-            jittered_mission_cadence(sim, rules, MissionType::Hunt),
-        ),
         // Everything else: the object still reaches a handler and still re-arms
         // its timer. Where that handler is the un-overridden base one, the
         // return value is a verified constant and no RNG is drawn; where the
@@ -445,6 +514,19 @@ pub(super) struct MissionHandlerInput {
     /// its Attack slot takes `InfantryClass::Mission_Attack`'s own override
     /// instead of the Foot body.
     pub(super) infantry_deployed_do_type: bool,
+    /// The type half of the deploy shim `FUN_00521320`'s live arm:
+    /// `DeployFire=` set (`TechnoTypeClass+0x6AC`, key `"DeployFire"` at
+    /// `0x00843AA0`, store `0x007147FC`), `ImmuneToRadiation=` clear
+    /// (`+0xD37`, key `0x00843854`, store `0x00714D67`) and `UndeployDelay=`
+    /// negative (`+0x6C4`, key `0x008438F4`, store `0x00714BBA`, ctor default
+    /// `-1` from `0x00710CED`/`0x00711187`).
+    ///
+    /// Stock `DeployFire=yes`: `E1`, `GGI`, `DESO`, `YURI`, `YURIPR`, `CAOS`.
+    /// `DESO` is radiation-immune and `YURI`/`YURIPR` carry an
+    /// `UndeployDelay`, so this predicate selects the GI and the Guardian GI —
+    /// and `CAOS`, which is a voxel `UnitClass` and never reaches an infantry
+    /// arm.
+    pub(super) infantry_deploy_fire_stance: bool,
 }
 
 /// The handler result is evaluated before the one common MissionClass timer
@@ -640,6 +722,303 @@ pub(super) fn foot_enter_idle_mode_queue(
     Some(MissionType::Guard)
 }
 
+/// `TechnoClass::Retaliate_And_Scan @ 0x00709820`, vtable `+0x39C` — the
+/// scanner the mission handlers call directly, as opposed to the passive block
+/// in the common Techno AI body.
+///
+/// `disassemble_function 0x00709820`. Entry order, all of it load-bearing:
+/// 1. `[this+0x4FC] = frame` (`0x0070982E`);
+/// 2. **one unconditional `RandomRanged(0, 2)`** on the scenario RNG at
+///    `*(0x00A8B230)+0x218` — the `PUSH 0x2` / `PUSH 0x0` pair at `0x0070982C`
+///    and `0x0070983D` is set up before the very first branch, so the draw
+///    happens on every call whatever the routine goes on to do;
+/// 3. the scan timer re-arms to `Rules->GuardAreaTargetingDelay` (`+0xE04`)
+///    when the object's committed mission is Area Guard (`CMP EAX,0xB` at
+///    `0x0070983A`) and `Rules->NormalTargetingDelay` (`+0xE08`) otherwise,
+///    **plus that same draw**;
+/// 4. a target the object's own scanner installed may be dropped;
+/// 5. `if (Target == 0)` the threat scan runs and its result is committed
+///    through `Assign_Target` (`vt+0x3C8`, called at `0x00709960`).
+///
+/// **The one thing that separates this from [`super::passive_target_scan`]:
+/// step 5 does NOT set the passively-acquired byte `[this+0x50C]`.** The whole
+/// body only ever *reads* it (`0x007098C3`); the write lives in the passive
+/// block's caller inside `TechnoClass::AI_Update`. So a target a mission
+/// handler acquires through this routine is an ordinary target — VERA's
+/// pursuit pass will close on it, which is exactly how a hunting object gets
+/// to what it found. Installing through the shared target setter reproduces
+/// that: `RepresentedConcreteMissionEffects::apply_target` clears the byte.
+///
+/// Returns the native return value: `this->Target != 0` (`SETNZ` at
+/// `0x007099C4`).
+///
+/// RESIDUAL — step 4's drop is not modelled, exactly as
+/// [`super::passive_target_scan`] records for the same three action codes
+/// (`vt+0x3C0` returning 5, 6 or 8) whose meanings are UNCHECKED. Here it can
+/// only matter for an object that walked onto Hunt still holding a target its
+/// own scanner picked up on Guard: retail may re-evaluate it, VERA keeps it.
+/// Trigger: a passive target surviving a mission change into Hunt — Hunt is not
+/// one of the twelve missions that strip one. Frequency: uncommon; the berserk
+/// path that produces most Hunt assignments hits idle and engaged units alike.
+/// Downstream risk: none beyond target choice.
+///
+/// RESIDUAL — the post-install debit at `0x00709966`-`0x007099B5` is not
+/// modelled. After `Assign_Target` native calls
+/// `vt+0x2E4` (`0x00709971`) and `vt+0x3F8` (`0x0070998C`), then — gated on the
+/// newly acquired target's `[+0x14] & 1` (`0x0070997B`-`0x00709985`; EDI is the
+/// scan result, `MOV EDI,EAX @ 0x0070993C`) and on the selected weapon's
+/// `[[weapon+0xA0]+0x2A2] == 0` (`0x0070999C`-`0x007099AA`) — calls
+/// `0x006FDB80` and does `SUB dword ptr [EDI+0x70], EAX` (`0x007099B5`) — a
+/// **write into another object**. `TechnoClass+0x70` is the same field
+/// `Evaluate_Candidate` scores candidates on (`[ESI+0x70] < 1` at `0x006F872A`
+/// and `[ESI+0x70]` against `TechnoType->[0xA0] / 2` at `0x006F874B`-
+/// `0x006F8755`), so acquisition debits a running claim on the target that
+/// later scanners then read. What `0x006FDB80` returns is UNCHECKED — not
+/// decompiled — so the amount cannot be reproduced and none of this is
+/// implemented. Trigger: every scan through this routine that installs a
+/// target, i.e. every Hunt or Area Guard acquisition. Player effect: with the
+/// claim never debited, VERA's scanners keep seeing the full value and can
+/// over-commit several attackers onto one target instead of spreading. Player-
+/// visible only where three or more units acquire freely at once. Frequency:
+/// common once several hunting units share a battlefield; nil in a duel.
+/// Downstream risk: target distribution only — VERA has no `+0x70` analogue,
+/// so nothing else reads or writes it, and neither lifecycle nor determinism
+/// is touched.
+///
+/// RESIDUAL — ordering, inert today. Native runs the scan (`vt+0x3C4` at
+/// `0x00709932`) and only then reads `TechnoType+0x6B0` (`DistributedFire`,
+/// `0x00709944`) to decide between the spread-fire assignment and
+/// `Assign_Target`; the early return below tests the type first and so skips
+/// the scan. No stream divergence: `Evaluate_Candidate`'s only draw is the
+/// disguise-blink `RandomRanged(0,99)`, which short-circuits on
+/// `IsControlledByHuman` for every VERA house. Trigger: a `DistributedFire=`
+/// type dispatching Hunt or Area Guard with no target. Frequency: rare on stock
+/// data. Downstream risk: it would surface the moment a non-human-controlled
+/// house exists. This mirrors the shape [`super::passive_target_scan`] already
+/// has rather than introducing a new one.
+///
+/// `scan_mask` is `Greatest_Threat`'s argument 2, forwarded from whoever
+/// dispatched this routine. No callsite derives it from the object it is
+/// scanning for: `FootClass::Mission_Hunt` pushes the literal `0` at
+/// `0x004D5373`, and mask 0 is not a wider radius — it is a different scan
+/// topology (see [`crate::sim::combat::ScanMission::Hunt`]). What the `+0x3C4`
+/// overrides then do to that literal before `TechnoClass::Greatest_Threat` sees
+/// it is documented there and on
+/// [`crate::sim::combat::greatest_threat::greatest_threat`]; VERA forwards the
+/// literal unchanged.
+fn retaliate_and_scan(
+    sim: &mut Simulation,
+    id: u64,
+    rules: &RuleSet,
+    mission: MissionType,
+    scan_mask: crate::sim::combat::ScanMission,
+) -> bool {
+    let now = sim.session.binary_frame;
+    let base_delay = if mission == MissionType::AreaGuard {
+        rules.general.guard_area_targeting_delay
+    } else {
+        rules.general.normal_targeting_delay
+    };
+    let jitter = sim
+        .scenario_rng
+        .next_range_u32_inclusive(0, PASSIVE_SCAN_DELAY_JITTER_MAX);
+    if let Some(entity) = sim.substrate.entities.get_mut(id) {
+        entity.last_target_scan_frame = now;
+        entity
+            .passive_scan_timer
+            .arm(now, base_delay.saturating_add(jitter));
+    }
+
+    let Some(has_target) = sim
+        .substrate
+        .entities
+        .get(id)
+        .map(|entity| entity.attack_target.is_some())
+    else {
+        return false;
+    };
+    // Step 5 is `if (Target == 0)`: a live target ends the routine and is
+    // reported back as success.
+    if has_target {
+        return true;
+    }
+    // `if (GetTechnoType()[0x6B0]) FUN_00709550(this)` at `0x00709944` — a
+    // `DistributedFire` type takes the spread-fire assignment instead of the
+    // single-target one, which VERA does not implement (recorded on
+    // `passive_target_scan`). It installs nothing here, as there.
+    let spreads_fire = sim
+        .substrate
+        .entities
+        .get(id)
+        .and_then(|entity| sim.interner.try_resolve(entity.type_ref))
+        .and_then(|name| rules.object(name))
+        .is_some_and(|obj| obj.distributed_fire);
+    if spreads_fire {
+        return false;
+    }
+    let pick = crate::sim::combat::acquire_best_target_for_entity(
+        &sim.substrate.entities,
+        rules,
+        &sim.interner,
+        id,
+        Some(&sim.fog),
+        sim.resolved_terrain.as_ref(),
+        sim.playfield_bounds.is_some(),
+        // The mask the CALLER pushes. `FootClass::Mission_Hunt` pushes the
+        // literal `0` at `0x004D5373` and this routine forwards whatever it was
+        // handed; mask 0 is what makes the scan enumerate the global object list
+        // with no distance cutoff instead of walking cell rings.
+        scan_mask,
+        // `MapClass` itself in native — `MOV ECX,0x87f7e8` at `0x006F8EBA`.
+        // Mask 0 asks it for the hunter's own movement-zone component and
+        // refuses every candidate outside it.
+        sim.zone_grid.as_ref(),
+    );
+    if let Some(sid) = pick {
+        let _ = sim
+            .set_archive_target_represented(id, Some(crate::sim::combat::TargetKind::Entity(sid)));
+    }
+    sim.substrate
+        .entities
+        .get(id)
+        .is_some_and(|entity| entity.attack_target.is_some())
+}
+
+/// `FootClass::Mission_Hunt @ 0x004D5350` — "go find something and kill it".
+///
+/// Verified by `decompile_function 0x004D5350` + `disassemble_function
+/// 0x004D5350`. Boundary `0x004D5350`-`0x004D55B5`, returns the next dispatch
+/// delay in EAX.
+///
+/// Native order, and what VERA commits for each step:
+///
+/// 1. **`GetTechnoType()->StupidHunt` (`+0x6D4`, `0x004D535F`).** Set → the
+///    handler never scans and falls straight through to step 4. Six stock
+///    types carry it and the INI says why: "this guy can't handle a hunt
+///    command, so he should just run towards the player".
+/// 2. **`Retaliate_And_Scan(&this->Coords, 0)`** (`0x004D5373` pushes the
+///    literal mask `0`, `0x004D5392` makes the call). Mask 0 is the whole
+///    mechanism of the mission: `TechnoClass::Greatest_Threat @ 0x006F8FE0`
+///    opens with `TEST AL,0x3 ; JZ 0x006F9B6E` and jumps past the radius block,
+///    the airborne pre-pass and the expanding-ring cell walk alike, landing in
+///    a flat walk of the global object array that passes a literal `-1` where
+///    the ring path passes its computed radius. So **a hunting object has no
+///    distance cutoff** and can pick up an enemy anywhere on the map. It is
+///    a scan topology, not a radius, and is modelled as such — the mask travels
+///    as [`crate::sim::combat::ScanMission::Hunt`] and
+///    `combat::greatest_threat` branches on it. That same walk switches a
+///    movement-zone gate ON (`0x006F8EC4` computes the hunter's zone id and
+///    `0x006F9D69` hands it to `Evaluate_Candidate`, which rejects any
+///    candidate outside it at `0x006F7E9C`), so the hunter reaches the far side
+///    of the map but not the far side of a river.
+/// 3. **The type arms**, taken only when the scan came back with a target —
+///    recorded below rather than committed.
+/// 4. **No target**: a human-owned object runs the idle-action virtual
+///    (`vt+0x478`, `0x004D557C`); an AI-owned one walks home to its base cell.
+/// 5. **The tail** at `0x004D5582`, reached from every arm:
+///    `ftol(MissionControl[Hunt].Rate * 900.0) + RandomRanged(0, 2)`.
+///
+/// So the normal path draws the scenario RNG **twice** — once inside the
+/// scanner, once in the tail — and the `StupidHunt` path draws once. An earlier
+/// note on this arm said "BOTH exits draw `RandomRanged(0, 2)`", counting one
+/// draw; that was the tail only.
+///
+/// The approach itself is `vt+0x53C` (`FootClass::Greatest_Threat_Scan @
+/// 0x004D5690`), which the handler calls for a non-infantry object at
+/// `0x004D54E3` and for an infantryman with none of the three type flags at
+/// `0x004D54D2`. That routine is the "walk to somewhere I can shoot my target
+/// from" search and ends in `Set_Destination` (`vt+0x480`); VERA's equivalent
+/// is the pursuit pass, which runs for any object holding a target that is not
+/// flagged passively-acquired — and the scanner above deliberately leaves the
+/// flag clear, as native does.
+///
+/// RESIDUAL — **the three type arms are not committed.** All three end in a
+/// `Set_Destination(Target, 1)` plus a `Queue_Mission` that VERA cannot yet
+/// execute: `Capture` and `Sabotage` are driven here by the order path's
+/// `capture_target` / `c4_plant` goal state and its own movement issue, not by
+/// a mission handler, and neither mission has a dispatch arm — queueing one
+/// from here would park the object on a selector whose timer nothing re-arms.
+/// - `Engineer` and not `C4` and no weapon ability 14 (`0x004D53C0`) →
+///   `Queue_Mission(Capture)`. Trigger: a berserked or Hunt-ordered engineer
+///   that acquires a target. Stock carriers: `ENGINEER`, `SENGINEER`,
+///   `YENGINEER`. Frequency: rare — engineers are rarely in a Chaos Drone's
+///   splash and are never given a Hunt order by a player.
+/// - `C4` or weapon ability 14, with a **BuildingClass** target
+///   (`0x004D5416`) → `Set_Destination(target)`, `Queue_Mission(Sabotage)`.
+///   Trigger: a berserked demolition infantryman holding a building.
+///   Frequency: rare, same reason.
+/// - `VehicleThief` (`+0xEC6`, `0x004D546C`) → `Queue_Mission(Capture)`.
+///   Frequency: **zero on stock data** — no retail section sets the key.
+/// Player effect while they are absent: such a unit shoots what it found
+/// instead of walking in to capture or plant. Downstream risk: closing them
+/// means giving Capture and Sabotage real handler arms, which is the engineer /
+/// terrorist mission work, not this row.
+///
+/// RESIDUAL — **the infantry no-flags arm's `Set_Destination(NULL, 1)`**
+/// (`0x004D54C6`) is not committed: it is a movement-owned write, and the
+/// pursuit pass re-derives a destination on the next tick anyway. Effect: a
+/// berserked infantryman already walking somewhere keeps that destination for
+/// one dispatch where retail drops it first. Frequency: only while such a unit
+/// is mid-move.
+///
+/// RESIDUAL — **the AI return-to-base arm** (`0x004D54EE`-`0x004D5576`) is
+/// dead: it is gated on `!HouseClass::IsControlledByHuman(this->Owner)` and
+/// `g_GameMode (0x00A8B238) == 0`, and every house in VERA is human. The human
+/// arm's `UpdateIdleAction` is already covered — `sim::infantry::tick_idle_actions`
+/// admits Hunt and gates on "no target", the same condition — from a different
+/// position in the tick, which is that function's own recorded residual.
+///
+/// RESIDUAL — **the two leaf overrides above this body**, neither of which
+/// changes anything today:
+/// - `InfantryClass::Mission_Hunt @ 0x0051F540` (slot `+0x228`, single DATA
+///   xref `0x007EB280`; `0x007EB280 - 0x007EB058 = 0x228`). Both of its arms
+///   open with `HouseClass::IsControlledByHuman(...) == 0`, so both are dead
+///   without an AI opponent. They matter when one lands: an AI-owned
+///   `Infiltrate`/`Occupier`/`Assaulter` infantryman holding a building
+///   `Assign_Mission(Capture)`s and returns 1, and an AI-owned deployed man
+///   with no target plays `Do_Action(0x1F)` and returns 1 — **both consume no
+///   RNG at all**, so the stream forks the day an AI house ships.
+/// - `UnitClass::Mission_Hunt @ 0x0073EFC0` (verified plate comment on the
+///   function). A type with `DeploysInto` set (`UnitTypeClass+0x404`) deploys
+///   in place instead of hunting and returns `ftol(Rate*900) + RandomRanged(0, 2)`
+///   with **no scan**; a type without it tail-calls this body. Trigger: a
+///   berserked or Hunt-ordered MCV or deployable vehicle. Player effect: retail
+///   unpacks it, VERA sends it hunting. Frequency: low — it needs a Chaos Drone
+///   on an MCV. Downstream risk: the arm also consults a `RulesClass` list at
+///   `+0x8B0`/`+0x8BC` whose identity is UNCHECKED, so it cannot be closed by
+///   guessing.
+/// RESIDUAL — **a miner never reaches this body at all**, because the miner
+/// exclusion at the head of [`dispatch_supported_foot_mission_cadence`] admits
+/// only Guard. Retail's four `StupidHunt=yes` miners (`CMIN`, `SMIN`, `YHVR`,
+/// and the `SAPC` transport) would take the idle arm and re-arm on
+/// `Rate + RandomRanged(0, 2)`; VERA leaves their timer alone. Trigger: a Chaos
+/// Drone on a miner. Frequency: uncommon, and the visible effect is nil either
+/// way — a `StupidHunt` type does nothing on Hunt in retail either. Downstream
+/// risk: one missing draw per dispatch.
+fn evaluate_foot_hunt(sim: &mut Simulation, id: u64, rules: &RuleSet) -> MissionHandlerEvaluation {
+    let type_ref = sim.substrate.entities.get(id).map(|entity| entity.type_ref);
+    let stupid_hunt = type_ref
+        .and_then(|type_ref| sim.interner.try_resolve(type_ref))
+        .and_then(|name| rules.object(name))
+        .is_some_and(|obj| obj.stupid_hunt);
+    if !stupid_hunt {
+        // The return value selects between the type arms (all recorded above)
+        // and the idle / return-to-base arm (already covered elsewhere), so
+        // nothing branches on it here — but the call itself is the mission:
+        // it is what installs the target the pursuit pass then closes on.
+        let _acquired = retaliate_and_scan(
+            sim,
+            id,
+            rules,
+            MissionType::Hunt,
+            // `PUSH 0x0` at `0x004D5373` — the literal threat mask Hunt hands
+            // the scanner.
+            crate::sim::combat::ScanMission::Hunt,
+        );
+    }
+    MissionHandlerEvaluation::cadence(jittered_mission_cadence(sim, rules, MissionType::Hunt))
+}
+
 /// Smallest value of the Area Guard cadence jitter draw (`RandomRanged(1, 5)`).
 /// Every other absorbed handler draws `(0, 2)`; this one does not.
 const AREA_GUARD_CADENCE_JITTER_MIN: u32 = 1;
@@ -682,17 +1061,18 @@ const AREA_GUARD_CADENCE_JITTER_MAX: u32 = 5;
 ///   that lands the moment either of those two closes. `+0xE0E` is UNCHECKED.
 /// - **the tank-bunker adjacency scan** at 0x004D6F44, byte-for-byte the block
 ///   recorded on [`evaluate_foot_guard_cadence`].
-/// - **the infantry idle action.** With still no target the handler calls
-///   `[vtable+0x478]` at 0x004D6F25 = `InfantryClass::UpdateIdleAction`
+/// - **the infantry idle action's call POSITION.** With still no target the
+///   handler calls `[vtable+0x478]` at 0x004D6F25 = `InfantryClass::UpdateIdleAction`
 ///   0x0051CDB0, which fidgets the facing, can play an idle `VocClass` line, and
-///   draws `RandomRanged(0, 0x7FFFFFFE)` plus up to three more values. `Mission_Guard`
-///   calls it from the same no-target position. VERA has no infantry idle-action
-///   system. Trigger: any idle infantryman on Guard, Sticky or Area Guard.
-///   Player effect: retail infantry look around and shuffle while standing
-///   guard; VERA's stand still. Frequency: continuous, every idle infantryman
-///   in every match. Downstream risk: those draws are scenario-RNG consumption
-///   VERA does not make, so the streams cannot be compared frame-for-frame
-///   until an idle-action system lands.
+///   draws its wait re-arm plus up to two more values. `Mission_Guard` calls it
+///   from the same no-target position. **VERA does have that system** —
+///   `sim::infantry::tick_idle_actions`, which admits Guard, Area Guard and
+///   Hunt and gates on "no target", the same condition — but it runs as its own
+///   per-tick pass rather than from inside the handler. Trigger: any idle
+///   infantryman on Guard, Sticky or Area Guard. Player effect: none visible;
+///   the wait timer is the real gate in both. Frequency: continuous.
+///   Downstream risk: the draws land a few ticks earlier than the handler's own
+///   cadence would take them, which that function already records.
 /// - **the guard post.** The original anchors the scan on a stored guard-post
 ///   target, defaulting it to the object's own cell the first time the handler
 ///   runs with none. VERA has no such field, so the scan is always anchored on
@@ -701,10 +1081,10 @@ const AREA_GUARD_CADENCE_JITTER_MAX: u32 = 5;
 /// - **the post leash.** When the object drifts further from its post than its
 ///   own area-guard range, the original drops the target and sends it home.
 ///   Nothing in VERA moves an Area Guard object off its post today.
-/// - **the aircraft cadence doubling** (the original doubles the rate for
-///   aircraft only, and aircraft never reach this arm) and the extra
-///   short-range close-band divisor, whose second gate is an unresolved
-///   infantry type flag.
+/// - **the `What_Am_I() == 2` cadence doubling** at 0x004D7048. The RTTI id is
+///   UNCHECKED and no object of that kind reaches this arm; the doubling sits
+///   between the `ftol` and the `(1, 5)` draw, so adding it later moves the
+///   delay without moving the stream.
 /// - one further per-object predicate the original checks between can-acquire
 ///   and the scan, whose identity is UNKNOWN.
 fn evaluate_foot_area_guard(
@@ -736,25 +1116,43 @@ fn evaluate_foot_area_guard(
         .scenario_rng
         .next_range_u32_inclusive(AREA_GUARD_CADENCE_JITTER_MIN, AREA_GUARD_CADENCE_JITTER_MAX)
         as i32;
-    MissionHandlerEvaluation::cadence(base.saturating_add(jitter))
+    let jittered = base.saturating_add(jitter);
+    // The `/6` twin of `FootClass::Mission_Attack`'s `/2` band, at
+    // `0x004D70D3`-`0x004D7158`: the same type gate, the same
+    // `Sqrt_Approx`+`ftol` distance and the same `[282, 768]` window, dividing
+    // the ALREADY-JITTERED value (`IMUL 0x2AAAAAAB` plus the sign fixup at
+    // `0x004D714A` is a signed divide by 6). The draw is never skipped — the
+    // band only scales what it produced.
+    //
+    // The `if (What_Am_I() == 2) EBP += EBP` doubling at `0x004D7048` sits
+    // between the ftol and the draw and is deliberately absent: RTTI 2 is an
+    // object kind that does not reach this arm in VERA, and its identity is
+    // UNCHECKED.
+    let delay = if foot_dispatch_in_cadence_band(sim, rules, id) {
+        jittered / 6
+    } else {
+        jittered
+    };
+    MissionHandlerEvaluation::cadence(delay)
 }
 
 /// `FootClass::Mission_Guard` 0x004D5070, the body Guard(5) and Sticky(6) share.
 ///
-/// **Shared for units. Infantry reach it only through a leaf override VERA does
-/// not model, recorded here.** `InfantryClass`'s slot `+0x21C` is `0x0051F620`,
-/// nine instructions: `CALL 0x00521320; CMP EAX,-1; JNZ` returns that value
-/// directly, and only `-1` falls through to the Foot body. `0x00521320` owns
-/// infantry deploy and undeploy on Guard; its arms return an animation-table
-/// duration (`Type+0xE3C` plus `+0x460`/`+0x3D0`/`+0x418`), or `Rate +
-/// RandomRanged(0, 2)`, or — on the radiation arm gated by `Type+0xD37`,
-/// Desolator-shaped — `Rate + RandomRanged(10, 0x14)`, a draw VERA never makes.
-/// Trigger: any infantryman on Guard or Sticky whose type can deploy.
-/// Player effect: a deploying GI, Guardian GI or Desolator re-dispatches on the
-/// Foot cadence instead of its animation's own length. Frequency: continuous
-/// wherever deployed infantry hold ground, which is ordinary play for both
-/// Allied and Soviet. Downstream risk: it consumes scenario RNG on the
-/// radiation arm, so the stream diverges as well as the cadence.
+/// **Shared for units. Infantry reach it only through a leaf override.**
+/// `InfantryClass`'s slot `+0x21C` is `0x0051F620`, nine instructions:
+/// `CALL 0x00521320; CMP EAX,-1; JNZ` returns that value directly, and only
+/// `-1` falls through to the Foot body. `0x00521320` owns infantry deploy and
+/// undeploy on Guard; its live GI / Guardian GI arm is now taken by the
+/// deploy-shim arm in [`dispatch_supported_foot_mission_cadence`], and the two
+/// arms that one excludes (`UndeployDelay >= 0`, `ImmuneToRadiation`) are
+/// recorded there.
+///
+/// RESIDUAL — the shim's own **undeployed** branch is still absent. It is
+/// gated on `HouseClass::IsControlledByHuman(...) == 0` plus `Deployer=`
+/// (`InfantryTypeClass+0xEC8`), `DeployFire=`, a negative `UndeployDelay` and a
+/// `Rules[+0xE30]`-indexed frame gate, and makes an AI-owned deployer sit down
+/// on its own. Frequency: **zero today** — this project has no AI opponent.
+/// Everything else in that branch returns `-1`, which is the Foot body below.
 ///
 /// The Sticky half of the shared-slot claim is confirmed:
 /// `MissionClass::GetMissionTimerEntry` @ `0x005B3A00` is
@@ -933,14 +1331,19 @@ fn jittered_mission_cadence(sim: &mut Simulation, rules: &RuleSet, mission: Miss
     base.saturating_add(jitter)
 }
 
-/// Whether this dispatch takes `FootClass::Mission_Attack`'s halved cadence.
+/// Whether this dispatch takes the shortened cadence — `FootClass::Mission_Attack`'s
+/// `/2` or `FootClass::Mission_AreaGuard`'s `/6`.
 ///
-/// gamemd-derived: `FootClass::Mission_Attack @ 0x004D4DC0` halves its return
-/// only when a target is installed AND the attacker qualifies by TYPE AND the
-/// 2D distance falls in the close band. The type half is
-/// `(What_Am_I() == 0xF && InfantryType->CloseRange) || primaryWeapon.Range <
-/// 0x201` — an infantry type carrying `CloseRange=`, or any type whose primary
-/// reaches under 513 leptons.
+/// gamemd-derived: `FootClass::Mission_Attack @ 0x004D4DC0` and
+/// `FootClass::Mission_AreaGuard @ 0x004D6AA0` carry the **same** gate,
+/// instruction for instruction, and differ only in the divisor. Each shortens
+/// its return only when a target is installed AND the attacker qualifies by
+/// TYPE AND the 2D distance falls in the close band. The type half is
+/// `(What_Am_I() == 0xF && InfantryType->CloseRange) || primaryWeapon.Range <=
+/// 0x200` — an infantry type carrying `CloseRange=`, or any type whose primary
+/// reaches at most 512 leptons. The binary spells the second half
+/// `CMP dword ptr [ECX+0xB4], 0x200 ; JG` (`0x004D4F12`, `0x004D70C3`): it
+/// takes the shortened cadence when the range is NOT greater than `0x200`.
 ///
 /// That gate was missing, which is the whole point of this function's rewrite:
 /// without it every tank, rifle infantryman and artillery piece ran the halved
@@ -951,21 +1354,52 @@ fn jittered_mission_cadence(sim: &mut Simulation, rules: &RuleSet, mission: Miss
 /// consumes, ran at roughly double the native rate through every close-quarters
 /// engagement.
 ///
-/// UNCHECKED: the band's exact boundaries. The `282..=768` pair below is
-/// inherited from the earlier survey that wrote this function; a later reading
-/// put it at `[281.6, 769)`, which disagrees at both ends, and neither reading
-/// carries an address. Left as found rather than moved on prose.
-fn foot_attack_in_half_cadence_band(sim: &Simulation, rules: &RuleSet, id: u64) -> bool {
-    const MIN_LEPTONS: i64 = 282;
-    const MAX_LEPTONS: i64 = 768;
-    /// `CMP ..., 0x201` — the primary-weapon reach below which any type
-    /// qualifies, in leptons.
+/// The band boundaries are SETTLED, and they are integer tests on the
+/// *approximated* distance, not on the squared one. `disassemble_bytes
+/// 0x004D4EF0..0x004D4FB1`:
+///
+/// ```text
+/// FILD dy ; FILD dx ; dx*dx ; dy*dy ; FADDP        ; exact in f64
+/// CALL 0x004CAC40                                  ; Sqrt_Approx -> f32
+/// CALL 0x007C5F00                                  ; Math__ftol  -> EAX, truncating
+/// CMP  EAX,0x300 ; JG  skip                        ; require len <= 768
+/// FILD len ; FCOMP double [0x007E9228]             ; K
+/// FNSTSW AX ; TEST AH,0x1 ; JNZ skip               ; C0 set means len < K
+/// ```
+///
+/// `read_memory 0x007E9228` is `9A 99 99 99 99 99 71 40` = **281.6** exactly
+/// (1.1 cells), so with `len` integral the lower bound is `len >= 282` and the
+/// band is `282 ..= 768`.
+///
+/// The previous implementation applied those two numbers to the **squared**
+/// distance. That is wrong at the top, but only just: native admits every `len`
+/// that truncates to 768, i.e. `d2 < 769² = 591361`, where `d2 <= 768² =
+/// 589824` stopped one lepton early. The two predicates therefore disagree on
+/// exactly one shell — separations strictly between 768 and 769 leptons, under
+/// 1/256 of a cell wide — and agree everywhere else including at 768 itself.
+/// *Frequency:* an attacker inside the band re-tests this every Attack or Area
+/// Guard dispatch while closing, so a unit crossing 3 cells passes through the
+/// shell often; but it occupies the shell for at most one dispatch, and the
+/// only consequence of landing in it is which of two cadences that single
+/// dispatch returns. Player-visible effect: none observed, one dispatch of
+/// re-aim latency at most.
+///
+/// The bigger reason to reproduce the lookup rather than compare squares is
+/// that no squared predicate can be exact at all: `Sqrt_Approx @ 0x004CAC40`
+/// is a 16384-entry f32 mantissa lookup, not an IEEE root, so its truncated
+/// result is not a function of `d2` that squaring can invert.
+fn foot_dispatch_in_cadence_band(sim: &Simulation, rules: &RuleSet, id: u64) -> bool {
+    /// The primary-weapon reach below which any type qualifies, in leptons.
+    /// Native is `CMP dword ptr [ECX+0xB4], 0x200 ; JG` (`0x004D4F12`,
+    /// `0x004D70C3`) — qualify when `range <= 0x200`. Held here as the
+    /// exclusive bound `0x201` because the comparison below is `<`; the two
+    /// forms are equivalent on integers.
     const CLOSE_PRIMARY_RANGE_LEPTONS: i64 = 0x201;
 
     let Some(attacker) = sim.substrate.entities.get(id) else {
         return false;
     };
-    if !foot_attack_type_takes_half_cadence(sim, rules, attacker, CLOSE_PRIMARY_RANGE_LEPTONS) {
+    if !foot_type_takes_cadence_band(sim, rules, attacker, CLOSE_PRIMARY_RANGE_LEPTONS) {
         return false;
     };
     let Some(crate::sim::combat::AttackTarget {
@@ -978,8 +1412,55 @@ fn foot_attack_in_half_cadence_band(sim: &Simulation, rules: &RuleSet, id: u64) 
     let Some(target) = sim.substrate.entities.get(*target_id) else {
         return false;
     };
-    let distance_sq = crate::sim::combat::lepton_distance_sq(&attacker.position, &target.position);
-    distance_sq >= MIN_LEPTONS * MIN_LEPTONS && distance_sq <= MAX_LEPTONS * MAX_LEPTONS
+    native_distance_is_in_cadence_band(&attacker.position, &target.position)
+}
+
+/// Lower bound of the shared cadence band, in leptons.
+///
+/// `FCOMP double ptr [0x007E9228]` against **281.6** with an integral `len`,
+/// so the first admitted value is 282. Both consumers — Attack's `/2` at
+/// `0x004D4F8A` and Area Guard's `/6` at `0x004D7139` — read the same constant.
+const CADENCE_BAND_MIN_LEPTONS: i64 = 282;
+/// Upper bound of the shared cadence band, in leptons: `CMP EAX,0x300 ; JG`.
+const CADENCE_BAND_MAX_LEPTONS: i64 = 768;
+
+/// `len in [282, 768]` on the native approximated 2D distance.
+///
+/// gamemd-derived: the identical block in `FootClass::Mission_Attack @
+/// 0x004D4F22`-`0x004D4F9B` and `FootClass::Mission_AreaGuard @
+/// 0x004D70D3`-`0x004D7148`. The two `FILD`s take the **integer lepton**
+/// component differences, the products and their sum are exact in f64, and the
+/// only inexact step is `Sqrt_Approx`, which is reproduced bit-for-bit by
+/// [`sqrt_approx_f32`].
+fn native_distance_is_in_cadence_band(
+    from: &crate::sim::components::Position,
+    to: &crate::sim::components::Position,
+) -> bool {
+    let lepton = |cell: u16, sub: crate::util::fixed_math::SimFixed| -> i64 {
+        cell as i64 * 256 + sub.to_num::<i64>()
+    };
+    let dx = lepton(from.rx, from.sub_x) - lepton(to.rx, to.sub_x);
+    let dy = lepton(from.ry, from.sub_y) - lepton(to.ry, to.sub_y);
+    let (Ok(dx), Ok(dy)) = (i32::try_from(dx), i32::try_from(dy)) else {
+        // Native holds both differences in 32-bit registers; a map large
+        // enough to overflow one cannot exist.
+        return false;
+    };
+    let dx = X87Chop53::load_i32(dx);
+    let dy = X87Chop53::load_i32(dy);
+    // `FADDP` adds dy*dy (ST0) into dx*dx (ST1); both products are exact, so
+    // the order is immaterial, but it is written the native way.
+    let sum = X87Chop53::add(X87Chop53::mul(dx, dx), X87Chop53::mul(dy, dy));
+    let Ok(root) = sqrt_approx_f32(sum) else {
+        return false;
+    };
+    let Ok(loaded) = X87Chop53::load_f32(root) else {
+        return false;
+    };
+    let Ok(len) = X87Chop53::ftol_i64(loaded) else {
+        return false;
+    };
+    (CADENCE_BAND_MIN_LEPTONS..=CADENCE_BAND_MAX_LEPTONS).contains(&len)
 }
 
 /// The type half of the halved-cadence gate.
@@ -987,7 +1468,7 @@ fn foot_attack_in_half_cadence_band(sim: &Simulation, rules: &RuleSet, id: u64) 
 /// `What_Am_I() == 0xF` is InfantryClass, so `CloseRange=` only qualifies an
 /// infantry type — a vehicle carrying the key would NOT take the short path in
 /// native, and does not here.
-fn foot_attack_type_takes_half_cadence(
+fn foot_type_takes_cadence_band(
     sim: &Simulation,
     rules: &RuleSet,
     attacker: &crate::sim::game_entity::GameEntity,
@@ -1056,6 +1537,15 @@ fn infantry_deployed_attack_reacquire(
         Some(&sim.fog),
         sim.resolved_terrain.as_ref(),
         sim.playfield_bounds.is_some(),
+        // `vt+0x3C4(1, ...)` — `0x0051F330` pushes the literal `1`, the narrow
+        // (plain-Guard) mask, EVEN WHEN the infantryman it is re-acquiring for
+        // is committed to Area Guard. This is the callsite-vs-mission
+        // distinction in its most visible form: reading the mask off the
+        // entity's mission would hand a deployed Guardian GI on Area Guard the
+        // doubled radius that native reserves for the Area Guard handler's own
+        // literal `2`.
+        crate::sim::combat::ScanMission::Guard,
+        sim.zone_grid.as_ref(),
     );
     if had_target || pick.is_some() {
         let current = sim
@@ -1087,8 +1577,14 @@ fn infantry_deployed_attack_reacquire(
     if pick.is_some() {
         return None;
     }
-    // `0x0051F3C0`: the idle exit is skipped when the committed mission is
-    // Guard (`5`). This arm only runs on Attack, so the test passes.
+    // `decompile_function 0x0051F330`: the idle exit is `if (this->[0xAC] != 5
+    // && GetTechnoType()[0xD94] == 0) Enter_Idle_Mode(0, 1)` — skipped when the
+    // COMMITTED mission is Guard. That was vacuous while the Attack handler was
+    // the only caller; the deploy shim `FUN_00521320` also reaches this virtual
+    // from Guard, Sticky and Area Guard, so the gate is now live.
+    if input.mission == Some(MissionType::Guard) {
+        return None;
+    }
     foot_enter_idle_mode_queue(rules, input)
 }
 
