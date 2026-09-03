@@ -166,18 +166,26 @@ const GROUP_BYTES_PER_CHANNEL: usize = 4;
 ///
 /// ## The native feed: every block is exactly `block_align` bytes
 ///
-/// The decoder's available-byte count is `+0x80 - +0x84`
-/// (`0x0040AA70` prologue), and in `Audio__DecodeCompressedBlock @ 0x00409DE0`
-/// those two fields have exactly four writes between them:
+/// The decoder's available-byte count is `+0x80 - +0x84` (`0x0040AA70`
+/// prologue). Those two fields have exactly six writes in the whole image, four
+/// of them in `Audio__DecodeCompressedBlock @ 0x00409DE0`:
 /// - case 3 sets both to `+0xAC` = `block_align` (`0x00409F8A`, `0x00409F90`);
 /// - case 0 fills the `malloc(block_align)` input buffer at `+0x7C`, writing at
-///   offset `+0x80 - +0x84` and subtracting what it copied (`0x00409EBE`);
-/// - case 0 forces `+0x84 = 0` (`0x00409EA4`) when the source is exhausted or
-///   the source pointer is NULL, then hands over to the block decoder.
+///   offset `+0x80 - +0x84` and subtracting what it copied (`0x00409EA4`,
+///   preceded by `0x00409E92 MOV ECX,[EBX+0x84]` / `0x00409E9A SUB ECX,EAX`);
+/// - case 0 forces `+0x84 = 0` (`0x00409EBE MOV [EBX+0x84],ESI`, `ESI == 0`)
+///   when the source is exhausted or the source pointer is NULL, paired with
+///   the state transition at `0x00409EC4` that hands over to the block decoder.
 ///
-/// `FUN_00409880 @ 0x00409880` writes neither field. Case 0 only ever leaves the
-/// fill state with `+0x84 == 0`, so **`avail` is always exactly `block_align`**.
-/// Two consequences, both of which this function reproduces:
+/// The other two are `FUN_00409C40 @ 0x00409C40` zeroing both fields at
+/// configure time (`0x00409C6C`, `0x00409C72`). They never reach the block
+/// decoder: the same straight-line block forces the state back to 3
+/// (`0x00409C78`), so case 3 reloads both from `+0xAC` first. `FUN_00409880 @
+/// 0x00409880` writes neither field, and it calls `FUN_00409C40` only while
+/// `+0xA8 == 0` (`0x00409A83 CMP [ESI+0xa8],EDI / JNZ`), so the buffer cannot be
+/// reallocated or re-formatted while a partial block is pending. Case 0 only
+/// ever leaves the fill state with `+0x84 == 0`, so **`avail` is always exactly
+/// `block_align`**. Two consequences, both of which this function reproduces:
 ///
 /// - At end of stream the pump calls the decode callback with a NULL source and
 ///   a NULL count (`0x00409B41`, taken while the stream's "decoder still holds
@@ -185,7 +193,13 @@ const GROUP_BYTES_PER_CHANNEL: usize = 4;
 ///   **full `block_align` block**. The bytes past the tail are whatever the
 ///   previous cycle left in the input buffer at those same offsets — i.e. the
 ///   previous block's bytes — because every cycle refills the buffer from
-///   offset 0. We rebuild exactly that buffer.
+///   offset 0. We rebuild exactly that buffer. A source delivered in several
+///   segments still flushes exactly once: a new segment sets the remaining
+///   source count `+0x2C` (`0x00409ACD`) and `0x00409AE3 JG` then routes to the
+///   with-source call at `0x00409B65`, so the flush branch is unreachable until
+///   true EOF; and once case 1 has drained the flushed block it clears `+0xA8`
+///   (`0x00409ED9`), after which the pump fills silence (`0x00409AED`) rather
+///   than calling the decoder again.
 /// - The "payload is not a whole number of groups" failure (mono
 ///   `0x0040AB4E: LEA EAX,[ECX+3] / SHR EAX,2` then `0x0040ABD4 SETZ`; stereo
 ///   `0x0040ACB3: TEST ECX,ECX / JG`) is therefore decided by `block_align`
@@ -435,7 +449,8 @@ mod tests {
     /// `GTIMESHI`, AUDIOMD bag offset 33,758,996, stereo IMA, `chunk_size` 1024:
     /// the first 44 bytes of its block 10 (8-byte preamble pair + 36 payload
     /// bytes). The first 40 bytes are a whole number of 8-byte L/R groups; the
-    /// spare 4 make the same bytes usable as the unaligned-payload case.
+    /// spare 4 let the same bytes serve the sub-stride case, where VERA decodes
+    /// the whole groups only (`lone_short_block_decodes_whole_groups_only`).
     const GTIMESHI_STEREO_BYTES: &[u8] = &[
         0x3d, 0xda, 0x45, 0x00, 0x40, 0x18, 0x4a, 0x00, 0x07, 0x90, 0x09, 0x4a, 0x8d, 0x10, 0xa1,
         0xc6, 0x1c, 0x90, 0xa0, 0x5a, 0xa2, 0x90, 0x00, 0x98, 0x8f, 0xa8, 0x42, 0x90, 0xb8, 0xd3,
@@ -503,7 +518,7 @@ mod tests {
     #[test]
     fn end_of_stream_flush_pads_from_the_previous_block_like_the_native() {
         // `FUN_00409880`'s NULL-source call at `0x00409B41` makes
-        // `Audio__DecodeCompressedBlock` force `+0x84 = 0` (`0x00409EA4`), so
+        // `Audio__DecodeCompressedBlock` force `+0x84 = 0` (`0x00409EBE`), so
         // the block decoder still sees a full stride. Every fill cycle writes
         // the input buffer from offset 0, so the bytes past a short tail are
         // the previous block's bytes at those same offsets.

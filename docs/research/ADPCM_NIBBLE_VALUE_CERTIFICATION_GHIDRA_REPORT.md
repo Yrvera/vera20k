@@ -113,16 +113,31 @@ same" and that the over-read values "are discarded with the block". Both are
 false, because the block decoder never sees a short payload.
 
 The decoder's available-byte count is `+0x80 - +0x84`, read in the `0x0040AA70`
-prologue. Between them those fields have exactly four writes, all in
-`Audio__DecodeCompressedBlock @ 0x00409DE0`; `FUN_00409880 @ 0x00409880` writes
-neither (`search_instructions` over both functions, 2026-09-03):
+prologue. Between them those fields have exactly six writes in the whole image —
+a program-wide `search_instructions` for `MOV [reg + 0x84],` / `MOV [reg +
+0x80],`, 2026-09-03, re-read against the disassembly rather than the decompile.
+`FUN_00409880 @ 0x00409880` writes neither:
 
-| Address | Write |
-|---|---|
-| `0x00409F8A` | case 3: `+0x80 = +0xAC` = `block_align` |
-| `0x00409F90` | case 3: `+0x84 = +0xAC` = `block_align` |
-| `0x00409EBE` | case 0: `+0x84 -= bytes copied into the input buffer` |
-| `0x00409EA4` | case 0: `+0x84 = 0`, forced when the source is exhausted or NULL |
+| Address | Function | Write |
+|---|---|---|
+| `0x00409F8A` | `Audio__DecodeCompressedBlock` | case 3: `+0x80 = +0xAC` = `block_align` |
+| `0x00409F90` | `Audio__DecodeCompressedBlock` | case 3: `+0x84 = +0xAC` = `block_align` |
+| `0x00409EA4` | `Audio__DecodeCompressedBlock` | case 0: `+0x84 -= bytes copied into the input buffer` (`0x00409E92 MOV ECX,[EBX+0x84]` / `0x00409E9A SUB ECX,EAX` / `0x00409EA4 MOV [EBX+0x84],ECX`, then `+0xA8 = 1` at `0x00409EAA`) |
+| `0x00409EBE` | `Audio__DecodeCompressedBlock` | case 0: `+0x84 = 0`, forced when the source is exhausted or NULL (`MOV [EBX+0x84],ESI` with `ESI == 0`, paired with the state transition `0x00409EC4 MOV [EBX+0x74],EAX`) |
+| `0x00409C6C` | `FUN_00409C40` | configure: `+0x84 = 0` (`MOV [ESI+0x84],EDI`, `EDI == 0`) |
+| `0x00409C72` | `FUN_00409C40` | configure: `+0x80 = 0` (`MOV [ESI+0x80],EDI`) |
+
+> **The last two rows do not disturb the conclusion.** `FUN_00409C40` forces the
+> state back to 3 two instructions later (`0x00409C78 MOV [ESI+0x74],0x3`) in the
+> same straight-line block, so case 3 reloads both fields from `+0xAC` before any
+> `IMA_ADPCM__DecodeBlock` call — the decoder is never reached with the zeros.
+> `FUN_00409880` also calls `FUN_00409C40` only while `+0xA8 == 0`
+> (`0x00409A83 CMP [ESI+0xa8],EDI / JNZ 0x00409AA2`), so it cannot reallocate or
+> re-format the input buffer while a partial block is pending.
+>
+> The `0x00409EA4` / `0x00409EBE` rows were **swapped in two earlier revisions of
+> this table** (and in the code comments that cite it). The disassembly above is
+> the authority: `0x00409EA4` is the subtraction, `0x00409EBE` is the forced zero.
 
 Case 0 leaves the fill state only with `+0x84 == 0`, so **`avail` is always
 exactly `block_align`**. Every retail block therefore has a whole payload
@@ -142,6 +157,16 @@ one block earlier, not decay or silence. `Audio__DecodeCompressedBlock` case 1
 then copies the whole `+0x94` decoded byte count out to the DirectSound buffer;
 there is no length cap. So the native emits `ceil(size / block_align)` blocks
 for every sound, each `1 + (block_align - 4*ch)/(4*ch) * 8` frames.
+
+A source delivered in several segments still yields **exactly one** flush. The
+flush branch needs the remaining-source count `+0x2C` to be `<= 0`
+(`0x00409AE3 JG 0x00409B2B`, then `0x00409B34 JG 0x00409B53`); a new segment
+sets `+0x2C` from `+0x174` at `0x00409ACD`, which routes the pump to the
+with-source call at `0x00409B65` instead, so the flush is unreachable until true
+EOF. And it produces one extra block, not a run of them: case 1 clears `+0xA8`
+once it has drained the flushed block (`0x00409ED9`), after which
+`0x00409AEB JNZ` falls through to the silence fill at `0x00409AED` rather than
+calling the decoder again.
 
 Measured consequences of the two retail shapes:
 
