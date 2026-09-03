@@ -232,6 +232,32 @@ pub struct ObjectType {
     pub dont_score: bool,
     /// `SpecialThreatValue=` candidate multiplier used by threat scoring.
     pub special_threat_value: f64,
+    /// `ThreatPosed=` (`TechnoTypeClass+0x670`, read by
+    /// `TechnoTypeClass::ReadINI @ 0x007149CE` through `ReadInteger @
+    /// 0x005276D0`). Constructor default is 0 — `TechnoTypeClass::Constructor
+    /// @ 0x007110CE` stores EBX, and `XOR EBX,EBX @ 0x00710B00` is the only
+    /// write to that register in the whole body.
+    ///
+    /// This is NOT a term of `TechnoClass::Calculate_Threat_Score @ 0x0070CD10`
+    /// (that reads `SpecialThreatValue` at `TechnoTypeClass+0x2C0`). Inside
+    /// acquisition it has exactly one consumer: the human-attacker building
+    /// gate in `TechnoClass::Evaluate_Candidate @ 0x006F85E6`, which refuses an
+    /// enemy BUILDING that has no weapon or poses no threat. A `ThreatPosed=0`
+    /// infantryman or vehicle is acquired like any other.
+    pub threat_posed: i32,
+    /// `MyEffectivenessCoefficient=` (`TechnoTypeClass+0x2C8`, read at
+    /// `0x0071556B`). `None` means the key is absent, in which case native
+    /// passes `[General] MyEffectivenessCoefficientDefault` (`RulesClass+0x1040`)
+    /// as the read default — so the resolution happens where the value is used.
+    pub my_effectiveness_coefficient: Option<f64>,
+    /// `TargetEffectivenessCoefficient=` (`TechnoTypeClass+0x2D0`, `0x007155D8`).
+    pub target_effectiveness_coefficient: Option<f64>,
+    /// `TargetSpecialThreatCoefficient=` (`TechnoTypeClass+0x2D8`, `0x0071563F`).
+    pub target_special_threat_coefficient: Option<f64>,
+    /// `TargetStrengthCoefficient=` (`TechnoTypeClass+0x2E0`, `0x007156A6`).
+    pub target_strength_coefficient: Option<f64>,
+    /// `TargetDistanceCoefficient=` (`TechnoTypeClass+0x2E8`, `0x0071570C`).
+    pub target_distance_coefficient: Option<f64>,
     /// Armor type name (e.g., "heavy", "light", "wood"). Determines damage
     /// multipliers from warhead Verses= values.
     pub armor: String,
@@ -1406,6 +1432,12 @@ impl ObjectType {
             strength: section.get_i32("Strength").unwrap_or(0),
             dont_score: section.get_bool("DontScore").unwrap_or(false),
             special_threat_value: section.get_f64("SpecialThreatValue").unwrap_or(0.0),
+            threat_posed: section.get_i32("ThreatPosed").unwrap_or(0),
+            my_effectiveness_coefficient: section.get_f64("MyEffectivenessCoefficient"),
+            target_effectiveness_coefficient: section.get_f64("TargetEffectivenessCoefficient"),
+            target_special_threat_coefficient: section.get_f64("TargetSpecialThreatCoefficient"),
+            target_strength_coefficient: section.get_f64("TargetStrengthCoefficient"),
+            target_distance_coefficient: section.get_f64("TargetDistanceCoefficient"),
             armor: section.get("Armor").unwrap_or("none").to_string(),
             speed: section.get_i32("Speed").unwrap_or(0),
             // TechnoTypeClass ctor/read contract: raw signed ints, with no

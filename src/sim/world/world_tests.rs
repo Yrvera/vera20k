@@ -2160,7 +2160,7 @@ fn gsi_04_15_active_tube_leaf_preempts_unit_and_infantry_mission_host() {
          [AircraftTypes]\n[BuildingTypes]\n0=TESTBUILD\n\
          [TESTINF]\nSpeed=4\nPrimary=TESTGUN\n\
          [TESTUNIT]\nSpeed=4\nPrimary=TESTGUN\n\
-         [TESTBUILD]\nStrength=100\nArmor=none\n\
+         [TESTBUILD]\nStrength=100\nArmor=none\nPrimary=TESTGUN\nThreatPosed=30\n\
          [TESTGUN]\nDamage=1\nROF=100\nRange=6\nWarhead=TESTWH\n\
          [TESTWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
     ))
@@ -2328,6 +2328,11 @@ fn gsi_04_15_active_tube_leaf_preempts_unit_and_infantry_mission_host() {
             }
         }
         if category == EntityCategory::Unit {
+            // `TESTBUILD` carries `Primary=`/`ThreatPosed=30` so that it stays a
+            // legal auto-acquire target: the human-attacker building gate in
+            // `TechnoClass::Evaluate_Candidate @ 0x006F85AB` refuses an enemy
+            // building with no weapon or no posed threat, which is a targeting
+            // fact this Tube-ordering test is not about.
             sim.tick_order_intents_pre_combat(&rules, &std::collections::BTreeSet::new());
             assert!(matches!(
                 sim.substrate

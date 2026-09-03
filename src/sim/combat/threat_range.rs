@@ -84,10 +84,10 @@
 //! bound, not an acceptance radius: the walk is a Chebyshev square strictly
 //! wider than the reach acceptance would allow, and it exists only on the
 //! radius-zero branch, so it never clips a candidate acceptance would have
-//! taken. VERA iterates entities rather than cells, so it has no equivalent and
-//! needs none. Reading that bound as the acquisition radius is a recurring
-//! wrong turn — it is the reason this file exists rather than a widened
-//! per-candidate range.
+//! taken. Reading that bound as the acquisition radius is a recurring wrong
+//! turn — it is the reason this file exists rather than a widened per-candidate
+//! range. [`super::greatest_threat`] owns the walk and applies that bound;
+//! this file owns the acceptance radius the walk carries into each candidate.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/ (RuleSet, ObjectType) and sim/ only.
@@ -179,7 +179,7 @@ pub(crate) fn scan_range(
 /// A slot with no weapon contributes nothing; a type with neither contributes
 /// zero, which is harmless because such a type never selects a weapon against
 /// any candidate and so never accepts one.
-fn max_weapon_range(rules: &RuleSet, obj: &ObjectType, veterancy: u16) -> SimFixed {
+pub(crate) fn max_weapon_range(rules: &RuleSet, obj: &ObjectType, veterancy: u16) -> SimFixed {
     let slot_range = |weapon_id: Option<&str>| -> Option<SimFixed> {
         weapon_id
             .and_then(|id| rules.weapon(id))

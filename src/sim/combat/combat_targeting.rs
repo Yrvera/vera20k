@@ -6,9 +6,11 @@
 //! 2. **Retaliation** — idle units automatically attack the entity that hit them.
 //!
 //! ## Target priority
-//! When multiple valid targets exist, the nearest is preferred. Ties are broken
-//! by threat class (armed units > unarmed > buildings) and stable entity ID
-//! (for deterministic replay).
+//! `TechnoClass::Greatest_Threat @ 0x006F8DF0` scores every candidate the walk
+//! reaches and keeps the maximum, ties going to whatever the walk saw first.
+//! The walk, the score and the candidate gates live in
+//! [`super::greatest_threat`]; this module owns the snapshot the scan runs on
+//! and the retaliation pass.
 //!
 //! ## Scan radius
 //! How far the scan reaches is a property of the attacker and the mission it is
@@ -30,15 +32,13 @@
 use std::collections::BTreeMap;
 
 use super::combat_weapon::{
-    VersesGate, attacker_facts, attacker_facts_from_snapshot, is_ally_by_object,
-    select_weapon_for_target, techno_target_facts, verses_gate,
+    VersesGate, attacker_facts, is_ally_by_object, select_weapon_for_target, techno_target_facts,
+    verses_gate,
 };
-use super::threat_range::{ScanMission, ScanRange, scan_mission_for, scan_range};
-use super::{armor_index, is_within_range_leptons, lepton_distance_sq_raw};
+use super::threat_range::{ScanMission, scan_mission_for};
 use crate::map::entities::EntityCategory;
 use crate::map::houses::{HouseAllianceMap, is_allied_with};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
@@ -46,8 +46,7 @@ use crate::sim::house_state::HouseState;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::vision::FogState;
 use crate::util::fixed_math::SimFixed;
-use crate::util::lepton::LEPTONS_PER_LEVEL;
-use crate::util::native_x87::{NativeF64Bits, X87Chop53, X87Ordering, X87Value, sqrt_approx_f32};
+use crate::util::native_x87::{X87Chop53, X87Ordering, X87Value};
 
 /// Snapshot of garrison state for a garrisoned building attacker.
 /// Extracted during Phase 1 to avoid borrow conflicts in Phase 2.
@@ -197,99 +196,26 @@ pub fn acquire_best_target_for_entity(
     )
 }
 
-/// VERA's own four-bucket target ordering (see the GSI-08.01 residual below).
-/// The "armed" bucket uses the native `Is_Armed` model rather than `Primary=`
-/// so that a `TurretCount>0` candidate — `[SREF]`, `[YAGGUN]` — is not ranked
-/// as an unarmed bystander; those types carry no `Primary=` at all.
-fn threat_class(rules: &RuleSet, interner: &StringInterner, candidate: &GameEntity) -> u8 {
-    match rules.object(interner.resolve(candidate.type_ref)) {
-        Some(obj) if super::combat_weapon::is_armed(candidate, obj) => 0,
-        Some(obj) => match obj.category {
-            ObjectCategory::Vehicle | ObjectCategory::Aircraft | ObjectCategory::Infantry => 1,
-            ObjectCategory::Building => 2,
-        },
-        None => 3,
-    }
-}
-
-/// Find the best hostile target within scan range for a given attacker snapshot.
+/// `TechnoClass::Greatest_Threat @ 0x006F8DF0` — pick the best hostile target
+/// for one attacker snapshot. Returns the winning candidate's stable entity id.
 ///
-/// Filters by: alive, hostile, visible (fog), weapon compatibility (projectile
-/// flags + Verses > 0%), and range. Ranks by distance, threat class, stable ID.
-/// Returns the target's stable entity ID.
-///
-/// RESIDUAL (GSI-08.01) — the ranking is VERA's own, not `Greatest_Threat`'s.
-/// `threat_class` above is a four-bucket ordering invented here (armed, unarmed
-/// mobile, building, unknown) and the key is `(distance², class, stable id)`.
-/// Native scores each candidate with a weighted distance/value/`ThreatPosed`
-/// evaluation and selects the maximum. `calculate_ai_threat_score` in this file
-/// does model that score — from
-/// `TechnoClass::Calculate_Threat_Score @ 0x0070CD10` — but it is wired only to
-/// retaliation, never to acquisition.
-/// - Trigger: any unit or defence picking among two or more legal targets.
-/// - Player effect: the wrong pick. Nearest-first ignores value, so a Grizzly
-///   that should shoot the engineer walking past shoots the closer wall
-///   segment, and a base defence spreads onto whatever is nearest instead of
-///   concentrating on the biggest threat.
-/// - Frequency: continuous. Every engagement with more than one candidate in
-///   range resolves through this key.
-/// - Downstream risk: high, and that is why it is not a drive-by change. The
-///   key decides which target every attacker holds, so switching it moves the
-///   pinned replay hash and every combat test that depends on selection order;
-///   it needs its own slice with a re-baseline. `ThreatPosed=` is also not
-///   parsed anywhere despite 232 stock entries (141 of them `0`, i.e. "never
-///   pick me" — engineers, spies and the like).
-///
-///   **Correction to an earlier draft of this note**, which said `ThreatPosed=`
-///   was "the input the native score weights most heavily". It is not an input
-///   to the score at all. `ThreatPosed` reaches `TechnoTypeClass+0x670`
-///   (`TechnoTypeClass::ReadINI @ 0x007149CE`, via `ReadInteger @ 0x005276D0`,
-///   its only xref), whereas `TechnoClass::Calculate_Threat_Score @ 0x0070CD10`
-///   reads `TechnoType+0x2C0` for its special-threat term — the field this file
-///   already models as `special_threat_value`. What `+0x670` actually feeds is
-///   UNCHECKED; it is somewhere in candidate selection or the AI's own target
-///   picking, NOT in this score. Implementing it into the C term on the
-///   strength of the old note would have put a real key in the wrong place.
-///
-///   **A second gap in the score itself, and pass 2 settles which set is live.**
-///   Native picks its five coefficients from one of two sources, branching on
-///   the scorer's owning HOUSE byte `+0x1FB` (`0x0070CD4E` reads
-///   `param_1[0x87]`, the owner pointer): clear takes `Rules+0x1068`..`+0x108C`
-///   — the `[General] Dumb*Coefficient` set this file reads — and set takes the
-///   scorer TYPE's own `+0x2C8`..`+0x2EC`, seeded from `[General]
-///   *CoefficientDefault` by `TechnoTypeClass::ReadINI @ 0x007156D8` reading
-///   `Rules+0x1060`. That byte is latched to 1 by the setter at `0x00509130`,
-///   whose only callers are `BuildingClass::Unlimbo`/`Limbo`, and it is never
-///   cleared — so EVERY house flips it the moment its MCV deploys, at frame
-///   zero of an ordinary skirmish, and the per-type set is the live one. The
-///   `Dumb*` set VERA reads is effectively dead, and the two differ by two sign
-///   flips plus a 10x on the distance term. There is also a `Rules+0x1090`
-///   bonus added when the scorer's `+0x5600` field matches a candidate field,
-///   which this file does not model. The identity of type `+0x2C8`..`+0x2EC`
-///   and the `+0x5600` pair are UNCHECKED — recorded as read, not as named.
-///
-///   **Why this row stays deferred after a second pass.** The native passive
-///   path is not a re-keyed sort over a candidate list at all:
-///   `Retaliate_And_Scan @ 0x00709820` calls vtable `+0x3C4` with `flags & 3`,
-///   so acquisition always takes the ring topology — expanding square rings,
-///   the occupant list walked per cell, the best kept only on a STRICTLY
-///   greater score, and an early return at ring `cells/4` and again at
-///   `cells/2` once anything has been found. Ties break on scan order, never on
-///   stable id. `EntityStore` has no cell index and no native-insertion
-///   occupant order, so swapping in a score-max over `values()` would trade a
-///   named DRIFT for an unnamed one: VERA would evaluate candidates native
-///   never reaches. The prerequisite is the cell index, not the scoring
-///   function.
-///   `OmniFire=`
-///   (18 stock) and `DistributedWeaponFire=` are parsed and read by nothing,
-///   and spread-fire types are explicitly refused a target by the passive scan,
-///   so an Aegis Cruiser never acquires at all. `OpportunityFire=` (14) is the
-///   exception in that list — it is read by `passive_acquire_gate` in
-///   `world/techno_ai.rs` and covered by named tests there.
+/// The walk, the per-cell single-candidate rule, the gate ladder and the
+/// weighted score all live in [`super::greatest_threat`]; this is the adapter
+/// the acquisition and retarget call sites already speak to.
 ///
 /// `scan_range_override`: when `Some`, replaces the mission-derived radius with
 /// a hard cutoff. Used by garrisoned buildings whose scan range is derived from
 /// foundation size + OccupyWeaponRange.
+///
+/// This replaces VERA's own `(distance², threat_class, stable_id)` nearest-first
+/// key, which had no native counterpart: gamemd scores each candidate and keeps
+/// the maximum, walking outward one cell ring at a time and stopping early once
+/// something has been found. The consequences a player sees are that value now
+/// beats proximity — a Grizzly on Guard shoots the engineer walking past instead
+/// of the wall segment beside it, because the wall is refused outright and the
+/// engineer scores highest — and that a base defence with several attackers in
+/// reach commits to the one in the innermost band rather than the nearest by
+/// Euclidean distance.
 pub(crate) fn acquire_best_target(
     entities: &EntityStore,
     rules: &RuleSet,
@@ -301,243 +227,17 @@ pub(crate) fn acquire_best_target(
     terrain: Option<&ResolvedTerrainGrid>,
     require_playfield_membership: bool,
 ) -> Option<u64> {
-    let mut best: Option<(i64, u8, u64)> = None;
-
-    // The radius is a property of the scanning object and its mission, not of
-    // any one candidate, so it is resolved once outside the loop.
-    let effective_scan_range = match scan_range_override {
-        Some(cells) => ScanRange::Hard(cells),
-        None => scan_range(
-            rules,
-            attacker_obj,
-            attacker.veterancy,
-            attacker.scan_mission,
-        ),
-    };
-
-    for candidate in entities.values() {
-        if candidate.stable_id == attacker.stable_id {
-            continue;
-        }
-        if candidate.health.current == 0 || candidate.dying || candidate.lifecycle.in_limbo {
-            continue;
-        }
-        // `TechnoClass::Evaluate_Candidate @ 0x006F7DB0` rejects a candidate
-        // whose stored TechnoClass+0x3D5 byte is false. A live MapClass caller
-        // enables this explicitly; headless fixtures retain their old behavior.
-        if require_playfield_membership && !candidate.in_playfield {
-            continue;
-        }
-        // `TechnoClass::Evaluate_Candidate @ 0x006F7DA9` — the cloak arm, in its
-        // native slot: after the `+0x81` InLimbo and `+0x6C` Health rejections
-        // and before the `+0x3D5` playfield byte. A fully cloaked candidate
-        // (`CloakState == 2`) is illegal unless the ATTACKER'S house holds a
-        // positive sensor count on the candidate's own cell, or the two share
-        // an owner. States 1 and 3 are never filtered, and alliance does not
-        // exempt — an allied submerged sub is just as illegal as an enemy one.
-        //
-        // This is what stops every Grizzly, Prism Tower and Aegis in range from
-        // auto-firing at a submerged Typhoon: it is continuous in any naval
-        // game, and until this landed VERA had no cloak term in acquisition at
-        // all.
-        //
-        // With `fog` absent (headless fixtures, sandbox) there is no sensor
-        // plane to consult, so the cell reads as unsensed — the same answer
-        // native gives a house with no deposit there.
-        if crate::sim::cloak_disguise::cloak_rejects_candidate(
-            candidate
-                .cloak
-                .as_ref()
-                .is_some_and(|cloak| cloak.is_fully_cloaked()),
-            fog.is_some_and(|fog_state| {
-                fog_state.has_sensor_for_house(
-                    attacker.owner,
-                    candidate.position.rx,
-                    candidate.position.ry,
-                )
-            }),
-            candidate.owner == attacker.owner,
-        ) {
-            continue;
-        }
-        // Skip entities inside a transport — they are hidden from the battlefield.
-        if candidate.passenger_role.is_inside_transport() {
-            continue;
-        }
-        let attacker_owner_str = interner.resolve(attacker.owner);
-        let candidate_owner_str = interner.resolve(candidate.owner);
-        if fog
-            .is_some_and(|fog_state| fog_state.is_friendly(attacker_owner_str, candidate_owner_str))
-            || candidate.owner == attacker.owner
-        {
-            continue;
-        }
-        if let Some(fog_state) = fog {
-            if !fog_state.is_cell_visible(
-                attacker.owner,
-                candidate.position.rx,
-                candidate.position.ry,
-            ) {
-                continue;
-            }
-        }
-
-        // Run the selection ladder and the GetFireError targeting subset for
-        // this candidate. Allies were filtered above, so the ally fact is
-        // false whenever a fog/alliance view exists.
-        let Some(candidate_obj) = rules.object(interner.resolve(candidate.type_ref)) else {
-            continue;
-        };
-        let scanner_facts = entities
-            .get(attacker.stable_id)
-            .map(|entity| attacker_facts(entity, attacker_obj))
-            .unwrap_or_else(|| attacker_facts_from_snapshot(attacker, attacker_obj));
-        let candidate_facts = techno_target_facts(
-            candidate,
-            candidate_obj,
-            terrain,
-            is_ally_by_object(
-                fog.map(|fog_state| &fog_state.alliances),
-                interner,
-                attacker.owner,
-                candidate.owner,
-            ),
-        );
-        let selected =
-            match select_weapon_for_target(rules, attacker_obj, &scanner_facts, &candidate_facts) {
-                Some(s) => s,
-                None => continue, // The selected weapon cannot engage this target.
-            };
-
-        // For passive acquisition, skip targets where Verses is Suppressed (1%).
-        if verses_gate(selected.verses_pct) == VersesGate::Suppressed {
-            continue;
-        }
-
-        // 2D dist_sq still feeds the ranking key below; the in-range boolean
-        // is computed separately via 3D when possible.
-        let dist_sq = lepton_distance_sq_raw(
-            attacker.pos_rx,
-            attacker.pos_ry,
-            attacker.sub_x,
-            attacker.sub_y,
-            candidate.position.rx,
-            candidate.position.ry,
-            candidate.position.sub_x,
-            candidate.position.sub_y,
-        );
-        let in_range = match effective_scan_range {
-            // A hard cutoff — garrison override, `GuardRange=` on plain Guard,
-            // or the doubled Area Guard radius. The retail acceptance test
-            // applies this distance test and does NOT then ask whether the
-            // weapon can reach, so neither does this. Kept 2D until later
-            // stages thread an explicit radius through `compute_in_range`.
-            ScanRange::Hard(cells) => is_within_range_leptons(dist_sq, cells),
-            // Radius zero — acceptance defers to the attacker's own
-            // can-fire-at-this-target query, which is the range of the weapon
-            // selected against this very candidate. 3D when terrain and the
-            // attacker entity are available.
-            ScanRange::CanFireAt => match (terrain, entities.get(attacker.stable_id)) {
-                (Some(t), Some(attacker_entity)) => {
-                    let Some(source_z) = super::in_range::effective_z_leptons(attacker_entity, t)
-                    else {
-                        continue;
-                    };
-                    let src = (
-                        attacker.pos_rx as i64 * 256 + attacker.sub_x.to_num::<i64>(),
-                        attacker.pos_ry as i64 * 256 + attacker.sub_y.to_num::<i64>(),
-                        source_z,
-                    );
-                    super::in_range::compute_in_range(
-                        attacker_entity,
-                        src,
-                        &super::TargetKind::Entity(candidate.stable_id),
-                        selected.weapon,
-                        rules,
-                        interner,
-                        entities,
-                        t,
-                    )
-                }
-                _ => is_within_range_leptons(dist_sq, selected.weapon.range),
-            },
-        };
-        if !in_range {
-            continue;
-        }
-
-        // `TechnoClass::Evaluate_Candidate @ 0x006F84B1..0x006F854B` — the
-        // disguise arm, in its native slot (after the distance/`CanFireAt`
-        // block, before the flag-driven score extras).
-        //
-        // `IsDisguisedTo` (`UnitClass @ 0x00746750`, `InfantryClass @
-        // 0x005227F0`, vt+0xC8) is evaluated per observer; the allied clause is
-        // already satisfied here because allied candidates were dropped above.
-        // A `DetectDisguise=` attacker TYPE skips the whole arm — that is the
-        // dogs' (ADOG/DOG/YADOG/YDOG), Yuri's and the Psi Corps Trooper's
-        // entire special role against Spies and Mirage Tanks. The building side
-        // of the key reaches this through the per-cell counter instead.
-        //
-        // RESIDUAL — the Mirage fake-blink window and the AI detection roll.
-        // Native, having rejected a DetectDisguise-less attacker, gives it a
-        // second chance while the candidate's `+0x1EC/+0x1F4` blink timer is
-        // running (armed only by `UnitClass::Fire_At @ 0x00741340` with the
-        // firing weapon's `DisguiseFakeBlinkTime=`) AND the attacking house is
-        // computer-controlled, at the cost of one `RandomRanged(0, 99)` on the
-        // Scenario stream compared against `[General]
-        // DisabledDisguiseDetectionPercent=15,5,2`. VERA stores no blink timer,
-        // so `0` is passed and the gate collapses to a plain reject.
-        // - Trigger: an AI-owned attacker evaluating a Mirage Tank within
-        //   `DisguiseFakeBlinkTime` frames of that Mirage's own shot.
-        // - Player effect: none today — every VERA house is human-controlled,
-        //   and native rejects a human attacker on the very next line, so both
-        //   engines reject identically.
-        // - Frequency: zero until an AI opponent ships.
-        // - Downstream risk: wiring it costs one Scenario draw per evaluated
-        //   disguised candidate, which moves RNG order for every later consumer
-        //   in the same tick. It must land together with the AI house, not
-        //   before it.
-        const BLINK_TIMER_NOT_MODELLED: i32 = 0;
-        let candidate_disguised_to_attacker = candidate.disguise.as_ref().is_some_and(|disguise| {
-            crate::sim::cloak_disguise::is_disguised_to(
-                disguise.disguised,
-                false,
-                fog.is_some_and(|fog_state| {
-                    fog_state.detects_disguise_for_house(
-                        attacker.owner,
-                        candidate.position.rx,
-                        candidate.position.ry,
-                    )
-                }),
-                disguise.disguised_as_house.is_some_and(|fake| {
-                    fake == attacker.owner
-                        || fog.is_some_and(|fog_state| {
-                            fog_state.is_friendly(attacker_owner_str, interner.resolve(fake))
-                        })
-                }),
-                disguise.disguised_as_house.is_some(),
-            )
-        });
-        let attacker_detects_disguise = attacker_obj.detect_disguise;
-        match crate::sim::cloak_disguise::disguise_rejects_candidate(
-            candidate_disguised_to_attacker,
-            attacker_detects_disguise,
-            BLINK_TIMER_NOT_MODELLED,
-            true,
-        ) {
-            crate::sim::cloak_disguise::DisguiseGateOutcome::Accept => {}
-            _ => continue,
-        }
-
-        let class = threat_class(rules, interner, candidate);
-        let rank = (dist_sq, class, candidate.stable_id);
-        match best {
-            Some(current) if rank >= current => {}
-            _ => best = Some(rank),
-        }
-    }
-
-    best.map(|(_, _, sid)| sid)
+    super::greatest_threat::greatest_threat(
+        entities,
+        rules,
+        interner,
+        attacker,
+        attacker_obj,
+        fog,
+        scan_range_override,
+        terrain,
+        require_playfield_membership,
+    )
 }
 
 /// Check if an entity can retaliate against an attacker (weapon + Verses gate).
@@ -572,38 +272,16 @@ fn can_retaliate(
     verses_gate(selected.verses_pct) != VersesGate::Suppressed
 }
 
-fn load_threat_double(value: f64) -> Option<X87Value> {
-    X87Chop53::load_f64(NativeF64Bits::from_bits(value.to_bits())).ok()
-}
-
-fn threat_coord(entity: &GameEntity, terrain: Option<&ResolvedTerrainGrid>) -> (i32, i32, i32) {
-    let x = i32::from(entity.position.rx)
-        .wrapping_mul(256)
-        .wrapping_add(entity.position.sub_x.to_num::<i32>());
-    let y = i32::from(entity.position.ry)
-        .wrapping_mul(256)
-        .wrapping_add(entity.position.sub_y.to_num::<i32>());
-    let z = terrain
-        .and_then(|terrain| super::in_range::effective_z_leptons(entity, terrain))
-        .and_then(|z| i32::try_from(z).ok())
-        .unwrap_or_else(|| {
-            i32::from(entity.position.z)
-                .wrapping_mul(LEPTONS_PER_LEVEL as i32)
-                .wrapping_add(
-                    entity
-                        .locomotor
-                        .as_ref()
-                        .map(|locomotor| locomotor.altitude.to_num::<i32>())
-                        .unwrap_or(0),
-                )
-        });
-    (x, y, z)
-}
-
-/// `TechnoClass::Calculate_Threat_Score @ 0x0070CD10`, narrowed to the
-/// non-human (Rules `Dumb*`) coefficient branch consumed synchronously by
-/// `ShouldRetaliate`. The caller uses the native NullCoord sentinel path, so
-/// Sqrt_Approx/ftol distance is converted from leptons to whole cells here.
+/// `TechnoClass::Calculate_Threat_Score @ 0x0070CD10` as `ShouldRetaliate`
+/// consumes it, on the native `&NullCoord` branch.
+///
+/// The five coefficients are the ones the scorer's own house selects — see
+/// [`super::greatest_threat::ThreatCoefficients`]. This used to read the
+/// `[General] Dumb*Coefficient` set unconditionally, which is the branch native
+/// takes only while the scoring house has never put a building on the map; the
+/// two sets differ by two sign flips and a 10x on the distance weight, so a
+/// defender picking between its current target and whatever just shot it could
+/// come to the opposite conclusion.
 pub(crate) fn calculate_ai_threat_score(
     entities: &EntityStore,
     scorer_id: u64,
@@ -614,111 +292,22 @@ pub(crate) fn calculate_ai_threat_score(
     alliances: Option<&HouseAllianceMap>,
 ) -> Option<X87Value> {
     let scorer = entities.get(scorer_id)?;
-    let candidate = entities.get(candidate_id)?;
     let scorer_type = rules.object(interner.resolve(scorer.type_ref))?;
-    let candidate_type = rules.object(interner.resolve(candidate.type_ref))?;
-    let general = &rules.general;
-    let coeff_a = load_threat_double(general.dumb_my_effectiveness_coefficient)?;
-    let coeff_b = load_threat_double(general.dumb_target_effectiveness_coefficient)?;
-    let coeff_c = load_threat_double(general.dumb_target_special_threat_coefficient)?;
-    let coeff_d = load_threat_double(general.dumb_target_strength_coefficient)?;
-    let coeff_e = load_threat_double(general.dumb_target_distance_coefficient)?;
-    let mut score = X87Chop53::load_i32(0);
-
-    // B: the candidate's selected weapon against the scorer. A candidate
-    // already targeting the scorer contributes the negated term.
-    let scorer_as_target = techno_target_facts(
-        scorer,
-        scorer_type,
-        terrain,
-        is_ally_by_object(alliances, interner, candidate.owner, scorer.owner),
-    );
-    if let Some(selected) = select_weapon_for_target(
-        rules,
-        candidate_type,
-        &attacker_facts(candidate, candidate_type),
-        &scorer_as_target,
-    ) {
-        let verses =
-            load_threat_double(selected.warhead.verses_f64[armor_index(&scorer_type.armor)])?;
-        let mut term = X87Chop53::mul(coeff_b, verses);
-        if candidate
-            .attack_target
-            .as_ref()
-            .is_some_and(|target| target.target == super::TargetKind::Entity(scorer.stable_id))
-        {
-            term = X87Chop53::neg(term);
-        }
-        score = X87Chop53::add(score, term);
-    }
-
-    // C: candidate type SpecialThreatValue.
-    score = X87Chop53::add(
-        score,
-        X87Chop53::mul(
-            coeff_c,
-            load_threat_double(candidate_type.special_threat_value)?,
-        ),
-    );
-
-    // A: the scorer's selected weapon against the candidate. Retain the
-    // selected weapon for the native range term below.
-    let candidate_as_target = techno_target_facts(
-        candidate,
-        candidate_type,
-        terrain,
-        is_ally_by_object(alliances, interner, scorer.owner, candidate.owner),
-    );
-    let selected_scorer_weapon = select_weapon_for_target(
+    let coefficients = super::greatest_threat::ThreatCoefficients::resolve(
         rules,
         scorer_type,
-        &attacker_facts(scorer, scorer_type),
-        &candidate_as_target,
+        super::greatest_threat::house_has_buildings(entities, scorer.owner),
     );
-    if let Some(selected) = selected_scorer_weapon.as_ref() {
-        let verses =
-            load_threat_double(selected.warhead.verses_f64[armor_index(&candidate_type.armor)])?;
-        score = X87Chop53::add(score, X87Chop53::mul(coeff_a, verses));
-    }
-
-    // D: live candidate health ratio.
-    let health_ratio = if candidate.health.max == 0 {
-        X87Chop53::load_i32(0)
-    } else {
-        X87Chop53::div(
-            X87Chop53::load_i32(i32::from(candidate.health.current)),
-            X87Chop53::load_i32(i32::from(candidate.health.max)),
-        )
-        .ok()?
-    };
-    score = X87Chop53::add(score, X87Chop53::mul(coeff_d, health_ratio));
-
-    // E: whole cells beyond the scorer's selected weapon range. Weapon Range
-    // is represented in cells in Rust, so its toward-zero conversion is the
-    // native `(range + sign_adjust) >> 8` result.
-    let scorer_coord = threat_coord(scorer, terrain);
-    let candidate_coord = threat_coord(candidate, terrain);
-    let dx = X87Chop53::load_i32(candidate_coord.0.wrapping_sub(scorer_coord.0));
-    let dy = X87Chop53::load_i32(candidate_coord.1.wrapping_sub(scorer_coord.1));
-    let dz = X87Chop53::load_i32(candidate_coord.2.wrapping_sub(scorer_coord.2));
-    let distance_sq = X87Chop53::add(
-        X87Chop53::add(X87Chop53::mul(dx, dx), X87Chop53::mul(dy, dy)),
-        X87Chop53::mul(dz, dz),
-    );
-    let distance_root = X87Chop53::load_f32(sqrt_approx_f32(distance_sq).ok()?).ok()?;
-    let distance_leptons = i32::try_from(X87Chop53::ftol_i64(distance_root).ok()?).ok()?;
-    let distance_cells = crate::util::direction_tables::lepton_to_cell(distance_leptons);
-    let range_cells = selected_scorer_weapon
-        .as_ref()
-        .map_or(scorer_type.sight, |selected| {
-            selected.weapon.range.to_num::<i32>()
-        });
-    let beyond_range = distance_cells.wrapping_sub(range_cells).max(0);
-    score = X87Chop53::add(
-        X87Chop53::mul(X87Chop53::load_i32(beyond_range), coeff_e),
-        score,
-    );
-    Some(X87Chop53::add(score, load_threat_double(100_000.0)?))
+    super::greatest_threat::calculate_threat_score(
+        entities,
+        scorer_id,
+        candidate_id,
+        rules,
+        interner,
+        terrain,
+        alliances,
+        coefficients,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

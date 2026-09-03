@@ -25,6 +25,7 @@ pub(crate) mod combat_targeting;
 pub(crate) mod combat_weapon;
 pub(crate) mod damage;
 pub(crate) mod fire_decision;
+pub(crate) mod greatest_threat;
 pub(crate) mod in_range;
 mod inviso_scatter;
 pub mod smudge_dispatch;

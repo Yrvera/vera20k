@@ -1202,25 +1202,22 @@ fn passive_target_scan(sim: &mut Simulation, id: u64, rules: &RuleSet, mission: 
     // meanings are UNCHECKED, so this drops and re-picks on every cadence,
     // which is what it does whenever it drops at all.
     //
-    // DRIFT — target choice: this ranks candidates nearest-first (with threat
-    // class and stable id as tie-breakers). The original ranks by a per-
-    // candidate threat score over an expanding-ring cell walk and keeps only
-    // strictly-greater scores, which is not a distance order. Whenever two or
-    // more enemies are in range the two engines can pick different targets, and
-    // since this is now the authoritative acquisition path that is every
-    // engagement with more than one candidate. Replacing the ranking is
-    // deliberately out of scope here; approximating the score would be worse
-    // than a recorded, honest difference.
+    // Target choice is `TechnoClass::Greatest_Threat @ 0x006F8DF0` — the
+    // expanding-ring cell walk and the weighted score, in
+    // `combat::greatest_threat`. It used to be a nearest-first key invented
+    // here; that is retired.
     //
     // RESIDUAL — scan-side RNG. This scan draws NOTHING; the whole per-scan
     // cost is the one timer-jitter draw above. The original's candidate
-    // evaluation draws `RandomRanged(0, 99)` on the SAME scenario instance, at
-    // one callsite, per evaluated candidate — so its per-scan cost is 1 + K, not
-    // 1. That draw is short-circuited by a player-control test on the
-    // candidate's owning house plus a frame-window comparison, so it is dead for
-    // human-controlled houses and VERA has no AI opponent to open it. How often
-    // the gate opens in a real match is UNCHECKED. This is an AI-parity blocker
-    // to settle before any AI house ships, not a live desync today.
+    // evaluation has one `RandomRanged(0, 99)` callsite, in the disguise arm at
+    // `0x006F8525`. The M5 mapping pass showed that draw to be unreachable in
+    // YR for every attacker, human or AI: the blink timer it depends on
+    // (`TechnoClass+0x1EC`/`+0x1F4`) is written only by
+    // `TechnoClass::Constructor @ 0x006F2CDB`, with start = creation frame and
+    // duration = 0, so the `elapsed >= duration` reject always fires first. The
+    // per-scan RNG cost is therefore 1 in both engines. The residual is only
+    // that an instruction search cannot exclude a computed-pointer writer of
+    // those two fields.
     let pick = crate::sim::combat::acquire_best_target_for_entity(
         &sim.substrate.entities,
         rules,
