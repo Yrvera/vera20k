@@ -28,6 +28,7 @@ pub fn launch(
     owner: InternedId,
     target_rx: u16,
     target_ry: u16,
+    sw_type: InternedId,
 ) -> bool {
     let duration = rules.general.force_shield_duration;
     let radius_cells = rules.general.force_shield_radius as i64;
@@ -92,6 +93,7 @@ pub fn launch(
     // 5. Sound event.
     sim.sound_events.push(SimSoundEvent::SuperWeaponLaunched {
         owner,
+        sw_type,
         rx: target_rx,
         ry: target_ry,
     });

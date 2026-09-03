@@ -493,8 +493,27 @@ pub enum SimSoundEvent {
         miner: bool,
         eva_allowed: bool,
     },
-    /// A superweapon was launched — play EVA warning.
-    SuperWeaponLaunched { owner: InternedId, rx: u16, ry: u16 },
+    /// A superweapon fired. `sw_type` is the interned `[SuperWeaponTypes]`
+    /// section name of the launched weapon — the discriminator the app layer
+    /// needs to pick the cue, and the same object gamemd switches on.
+    ///
+    /// `SuperClass::Launch @ 0x006CC390` switches on `*(param_1[10] + 0xB4)`,
+    /// the launched `SuperWeaponTypeClass`'s `Type=` index, and each case
+    /// plays its own cue: nothing at all for `ChronoSphere`, `ParaDrop`,
+    /// `AmerParaDrop` and `SpyPlane`; an EVA line only for `IronCurtain`
+    /// (`0x006CCF21`), `LightningStorm` (`0x006CCD81`) and `ChronoWarp`
+    /// (`0x006CCD03`); a positional `[AudioVisual]` cue only for `ForceShield`
+    /// (`0x006CD176`, from the *type's* own `StartSound=`) and `PsychicReveal`
+    /// (`0x006CD7BF`); and both for `MultiMissile`, `PsychicDominator` and
+    /// `GeneticConverter`. Carrying the type rather than a per-case flag is
+    /// what lets the app read both the case index and `StartSound=` off one
+    /// object, as `param_1[10]` does.
+    SuperWeaponLaunched {
+        owner: InternedId,
+        sw_type: InternedId,
+        rx: u16,
+        ry: u16,
+    },
     /// A lightning bolt struck — play thunder sound.
     SuperWeaponStrike { rx: u16, ry: u16 },
     /// First occupant entered a CanBeOccupied building (cargo 0→1).

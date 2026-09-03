@@ -62,6 +62,7 @@ pub fn start(
     owner: InternedId,
     target_rx: u16,
     target_ry: u16,
+    sw_type: InternedId,
 ) -> bool {
     if let Some(storm) = sim.lightning_storm.as_mut() {
         storm.owner = owner;
@@ -104,6 +105,7 @@ pub fn start(
     // Sound event for EVA warning.
     sim.sound_events.push(SimSoundEvent::SuperWeaponLaunched {
         owner,
+        sw_type,
         rx: target_rx,
         ry: target_ry,
     });
@@ -470,7 +472,8 @@ mod tests {
         let heights = std::collections::BTreeMap::new();
         let rng_before = sim.scenario_rng.state();
 
-        assert!(start(&mut sim, &rules, owner, 8, 9));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(start(&mut sim, &rules, owner, 8, 9, sw_test));
         assert_eq!(
             sim.session.lighting.selected_profile,
             ScenarioLightingProfile::Normal,
@@ -551,7 +554,8 @@ mod tests {
         let mut sim = Simulation::with_seed(0x421);
         let owner = sim.interner.intern("Americans");
 
-        assert!(start(&mut sim, &rules, owner, 8, 9));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(start(&mut sim, &rules, owner, 8, 9, sw_test));
         for _ in 0..4 {
             process(&mut sim, &rules, None);
             assert_eq!(
@@ -576,12 +580,21 @@ mod tests {
         let first_owner = sim.interner.intern("Americans");
         let second_owner = sim.interner.intern("Soviet");
 
-        assert!(start(&mut sim, &first_rules, first_owner, 4, 5));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(start(&mut sim, &first_rules, first_owner, 4, 5, sw_test));
         sim.lightning_storm
             .as_mut()
             .expect("deferred storm")
             .deferment_remaining = 3;
-        assert!(start(&mut sim, &second_rules, second_owner, 17, 19));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(start(
+            &mut sim,
+            &second_rules,
+            second_owner,
+            17,
+            19,
+            sw_test
+        ));
 
         let storm = sim.lightning_storm.as_ref().expect("one deferred storm");
         assert_eq!(storm.owner, second_owner);
@@ -601,14 +614,16 @@ mod tests {
         let first_owner = sim.interner.intern("Americans");
         let second_owner = sim.interner.intern("Soviet");
 
-        assert!(start(&mut sim, &rules, first_owner, 4, 5));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(start(&mut sim, &rules, first_owner, 4, 5, sw_test));
         assert_eq!(
             sim.session.lighting.selected_profile,
             ScenarioLightingProfile::Ion
         );
         let duration = sim.lightning_storm.as_ref().unwrap().duration_remaining;
 
-        assert!(start(&mut sim, &rules, second_owner, 17, 19));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(start(&mut sim, &rules, second_owner, 17, 19, sw_test));
         let storm = sim
             .lightning_storm
             .as_ref()

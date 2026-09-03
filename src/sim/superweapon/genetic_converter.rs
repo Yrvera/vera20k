@@ -37,6 +37,7 @@ pub fn launch(
     owner: InternedId,
     target_rx: u16,
     target_ry: u16,
+    sw_type: InternedId,
     overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> bool {
     // 1. Spawn invoke anim (IonBlast equivalent).
@@ -58,6 +59,7 @@ pub fn launch(
     // 4. Sound event.
     sim.sound_events.push(SimSoundEvent::SuperWeaponLaunched {
         owner,
+        sw_type,
         rx: target_rx,
         ry: target_ry,
     });

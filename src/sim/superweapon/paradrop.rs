@@ -40,6 +40,7 @@ pub fn launch(
     target_rx: u16,
     target_ry: u16,
     kind: ParaDropKind,
+    sw_type: InternedId,
     _path_grid: Option<&PathGrid>,
 ) -> bool {
     // Bridge rejection deferred — map system does not yet expose is_bridge_cell.
@@ -79,9 +80,14 @@ pub fn launch(
         }
     };
 
-    // EVA "superweapon launched" voice — same convention as IronCurtain etc.
+    // Launch notification for the app layer. `SuperClass::Launch @ 0x006CC390`
+    // cases 5 (`ParaDrop`) and 6 (`AmerParaDrop`) play **no** cue and **no**
+    // EVA line — neither case body reaches a `VocClass` or `VoxClass` call —
+    // so the app resolves this to silence. The event is still emitted so every
+    // launch reaches one mapping site.
     sim.sound_events.push(SimSoundEvent::SuperWeaponLaunched {
         owner,
+        sw_type,
         rx: target_rx,
         ry: target_ry,
     });

@@ -2126,19 +2126,34 @@ impl Simulation {
                     crate::rules::superweapon_type::SuperWeaponKind::LightningStorm => {
                         let rules = rules.unwrap();
                         crate::sim::superweapon::lightning_storm::start(
-                            self, rules, owner_iid, *target_rx, *target_ry,
+                            self,
+                            rules,
+                            owner_iid,
+                            *target_rx,
+                            *target_ry,
+                            *sw_type_id,
                         )
                     }
                     crate::rules::superweapon_type::SuperWeaponKind::IronCurtain => {
                         let rules = rules.unwrap();
                         crate::sim::superweapon::iron_curtain::launch(
-                            self, rules, owner_iid, *target_rx, *target_ry,
+                            self,
+                            rules,
+                            owner_iid,
+                            *target_rx,
+                            *target_ry,
+                            *sw_type_id,
                         )
                     }
                     crate::rules::superweapon_type::SuperWeaponKind::ForceShield => {
                         let rules = rules.unwrap();
                         crate::sim::superweapon::force_shield::launch(
-                            self, rules, owner_iid, *target_rx, *target_ry,
+                            self,
+                            rules,
+                            owner_iid,
+                            *target_rx,
+                            *target_ry,
+                            *sw_type_id,
                         )
                     }
                     crate::rules::superweapon_type::SuperWeaponKind::GeneticConverter => {
@@ -2149,13 +2164,19 @@ impl Simulation {
                             owner_iid,
                             *target_rx,
                             *target_ry,
+                            *sw_type_id,
                             overlay_registry,
                         )
                     }
                     crate::rules::superweapon_type::SuperWeaponKind::PsychicReveal => {
                         let rules = rules.unwrap();
                         crate::sim::superweapon::psychic_reveal::launch(
-                            self, rules, owner_iid, *target_rx, *target_ry,
+                            self,
+                            rules,
+                            owner_iid,
+                            *target_rx,
+                            *target_ry,
+                            *sw_type_id,
                         )
                     }
                     crate::rules::superweapon_type::SuperWeaponKind::ParaDrop => {
@@ -2167,6 +2188,7 @@ impl Simulation {
                             *target_rx,
                             *target_ry,
                             crate::sim::superweapon::paradrop::ParaDropKind::Generic,
+                            *sw_type_id,
                             path_grid,
                         )
                     }
@@ -2179,6 +2201,7 @@ impl Simulation {
                             *target_rx,
                             *target_ry,
                             crate::sim::superweapon::paradrop::ParaDropKind::American,
+                            *sw_type_id,
                             path_grid,
                         )
                     }
