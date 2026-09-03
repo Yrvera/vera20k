@@ -9059,3 +9059,219 @@ fn gsi_05_14_a_type_without_maxdebris_takes_no_draw() {
         "no MaxDebris= means no debris at all: {names:?}"
     );
 }
+
+/// GSI-08.08 — a special detonation arm suppresses shrapnel and area damage,
+/// but NOT the shared tail.
+///
+/// `BulletClass::DetonateAtCoord @ 0x004690b0`: only the final else at
+/// `0x00469a3f` runs `BulletClass::SpawnShrapnel @ 0x0046a310` and
+/// `Apply_area_damage @ 0x00489280`, so any arm shadows both. Every arm then
+/// leaves through `JMP LAB_00469AA4`, which is the explosion-anim /
+/// scorch-crater / debris / `Airburst` tail — `Warhead::SelectExplosionAnim`
+/// is called from inside it at `0x00469bcf`. Stock `[Controller]` carries
+/// `AnimList=YURICNTL`, so a Yuri beam impact must still draw.
+#[test]
+fn gsi_08_08_special_arm_suppresses_damage_but_keeps_the_detonation_tail() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n0=TARGET\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         [TARGET]\nStrength=200\nArmor=heavy\n\
+         [Warheads]\n0=Controller\n1=Plain\n\
+         [Controller]\nMindControl=yes\nAnimList=YURICNTL\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+         [Plain]\nAnimList=YURICNTL\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("Controller/Plain warhead rules");
+
+    struct TailOutcome {
+        damage_events: usize,
+        anims: Vec<(String, u16, u16, u8)>,
+        smudges: usize,
+    }
+
+    fn run(rules: &RuleSet, warhead_name: &str) -> TailOutcome {
+        let mut interner = test_interner();
+        let mut entities = EntityStore::new();
+        entities.insert(make_entity(10, "TARGET", 8, 5, 200));
+        let occupancy = OccupancyGrid::new();
+        let warhead_ref = interner.intern(warhead_name);
+        let detonation = ProjectileDetonation {
+            projectile_id: 1,
+            source_id: 77,
+            target: ProjectileTarget::Entity(10),
+            impact: ProjectileCoord::new(8 * 256 + 128, 5 * 256 + 128, 0),
+            payload: ProjectilePayload {
+                base_damage: 50,
+                warhead: warhead_ref,
+                weapon: interner.intern("MissingWeapon"),
+                owner: interner.intern("Test"),
+            },
+            reason: ProjectileDetonationReason::ReachedTarget,
+        };
+        let mut scenario_rng = SimRng::new(9);
+        let mut emitted = CombatEmit::default();
+        let mut resources = BTreeMap::new();
+        let mut inline_hooks = None;
+        let handles =
+            crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, &mut interner);
+        emit_projectile_detonations(
+            &[detonation],
+            &mut entities,
+            &occupancy,
+            rules,
+            &mut interner,
+            Some(handles),
+            &mut resources,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            &HouseAllianceMap::new(),
+            &mut scenario_rng,
+            &mut inline_hooks,
+            &mut emitted,
+        );
+        let anims: Vec<(String, u16, u16, u8)> = emitted
+            .explosion_effects
+            .iter()
+            .map(|effect| {
+                (
+                    interner.resolve(effect.shp_name).to_string(),
+                    effect.rx,
+                    effect.ry,
+                    effect.z,
+                )
+            })
+            .collect();
+        TailOutcome {
+            damage_events: emitted.damage_events.len(),
+            anims,
+            smudges: emitted.smudge_spawn_requests.len(),
+        }
+    }
+
+    let mind_control = run(&rules, "Controller");
+    assert_eq!(
+        mind_control.damage_events, 0,
+        "the MindControl arm at 0x00469211 shadows Apply_area_damage"
+    );
+    assert_eq!(
+        mind_control.anims,
+        vec![("YURICNTL".to_string(), 8, 5, 0)],
+        "LAB_00469AA4 still selects and starts the AnimList explosion"
+    );
+    assert_eq!(
+        mind_control.smudges, 1,
+        "the anim's smudge/scorch half runs from the same tail"
+    );
+
+    let plain = run(&rules, "Plain");
+    assert_eq!(
+        plain.damage_events, 1,
+        "the ordinary arm at 0x00469a3f is unchanged"
+    );
+    assert_eq!(
+        plain.anims, mind_control.anims,
+        "the tail selects the same anim at the same place whichever arm reached it"
+    );
+    assert_eq!(plain.smudges, mind_control.smudges);
+}
+
+/// GSI-08.33 — `DirectRocker` is the chain's only conditional arm.
+///
+/// `BulletClass::DetonateAtCoord @ 0x0046978e` tests the flag, then
+/// `Target != 0` (`0x004697a4`) and `Target->What_Am_I() == 1`
+/// (`0x004697b2`, `UnitClass`). All three failures jump to `0x004699c4`, the
+/// *next* test, so a `DirectRocker=yes` warhead that hits infantry still runs
+/// ordinary damage. Dead in stock — `rulesmd.ini` carries no live
+/// `DirectRocker=` line — but kept correct.
+#[test]
+fn gsi_08_33_direct_rocker_only_claims_a_vehicle_target() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=FOOT\n\
+         [VehicleTypes]\n0=TARGET\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         [TARGET]\nStrength=200\nArmor=heavy\n\
+         [FOOT]\nStrength=200\nArmor=none\n\
+         [Warheads]\n0=Rocker\n\
+         [Rocker]\nDirectRocker=yes\nAnimList=YURICNTL\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("DirectRocker warhead rules");
+    assert!(
+        rules.warhead("Rocker").expect("Rocker").direct_rocker,
+        "DirectRocker= must reach the parsed field, not a dead raw byte"
+    );
+
+    fn run(rules: &RuleSet, category: EntityCategory, type_ref: &str) -> usize {
+        let mut interner = test_interner();
+        let mut entities = EntityStore::new();
+        let mut target = make_entity(10, type_ref, 8, 5, 200);
+        target.category = category;
+        entities.insert(target);
+        let occupancy = OccupancyGrid::new();
+        let detonation = ProjectileDetonation {
+            projectile_id: 1,
+            source_id: 77,
+            target: ProjectileTarget::Entity(10),
+            impact: ProjectileCoord::new(8 * 256 + 128, 5 * 256 + 128, 0),
+            payload: ProjectilePayload {
+                base_damage: 50,
+                warhead: interner.intern("Rocker"),
+                weapon: interner.intern("MissingWeapon"),
+                owner: interner.intern("Test"),
+            },
+            reason: ProjectileDetonationReason::ReachedTarget,
+        };
+        let mut scenario_rng = SimRng::new(9);
+        let mut emitted = CombatEmit::default();
+        let mut resources = BTreeMap::new();
+        let mut inline_hooks = None;
+        let handles =
+            crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, &mut interner);
+        emit_projectile_detonations(
+            &[detonation],
+            &mut entities,
+            &occupancy,
+            rules,
+            &mut interner,
+            Some(handles),
+            &mut resources,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            &HouseAllianceMap::new(),
+            &mut scenario_rng,
+            &mut inline_hooks,
+            &mut emitted,
+        );
+        assert_eq!(
+            emitted.explosion_effects.len(),
+            1,
+            "both branches reach LAB_00469AA4"
+        );
+        emitted.damage_events.len()
+    }
+
+    assert_eq!(
+        run(&rules, EntityCategory::Unit, "TARGET"),
+        0,
+        "a vehicle target enters the arm and shadows Apply_area_damage"
+    );
+    assert_eq!(
+        run(&rules, EntityCategory::Infantry, "FOOT"),
+        1,
+        "infantry falls through 0x004697b2 to the next test, so damage runs"
+    );
+}

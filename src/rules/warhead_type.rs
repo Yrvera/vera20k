@@ -44,10 +44,16 @@ pub struct WarheadType {
     /// the authoritative cutover retires it.
     pub verses_f64: [f64; 11],
     /// Splash damage radius in cells (SIM_ZERO = direct hit only).
+    /// Native `CellSpread=` is a **float** at `WarheadTypeClass+0x124`
+    /// (ReadDouble `0x005283d0` called at `0x0075d3e6`, `FSTP float ptr` at
+    /// `0x0075d3eb`, key string `0x00847ea0`).
     pub cell_spread: SimFixed,
     /// Native `CellSpread` float widened to f64 for ApplyWarheadDamage.
     pub cell_spread_f64: f64,
     /// Damage percentage at maximum spread distance (0–100).
+    /// Native `PercentAtMax=` is a **float** at `WarheadTypeClass+0x12C`
+    /// (ReadDouble at `0x0075d424`, `FSTP float ptr` at `0x0075d429`, key
+    /// string `0x00847e84`).
     pub percent_at_max: u8,
     /// Native `PercentAtMax` float widened to f64 for the receiver damage
     /// kernel. The byte percentage above remains for legacy presentation and
@@ -59,6 +65,8 @@ pub struct WarheadType {
     /// Native signed PostMortem base duration (`+0x134`); default 5.
     pub delay_kill_frames: i32,
     /// Native binary32 `DelayKillAtMax` widened exactly to f64; default 1.0f.
+    /// `WarheadTypeClass+0x138` (ReadDouble at `0x0075d477`, `FSTP float ptr`
+    /// at `0x0075d47c`, key string `0x00847e54`).
     pub delay_kill_at_max_f64: f64,
     /// Whether this warhead can damage walls/bridges (Wall=yes).
     /// NO-DIFF (GSI-08.33) — pass 1's three "unparsed effect flags" have no
@@ -74,16 +82,27 @@ pub struct WarheadType {
     /// with its consumer deleted. And all 28 stock `Sparky=` entries are `no`,
     /// including `[Fire]` and `[Fire2]` — the opposite of "most fire weapons are
     /// Sparky". Parsing them here would add fields nothing can read.
+    ///
+    /// The field itself is `WarheadTypeClass+0x144` (ReadINI `0x0075d508`,
+    /// key string `0x0081ac58`).
     pub wall: bool,
     /// Whether this warhead can damage terrain objects with Wood armor gate.
     /// TerrainClass::Take_Damage requires this before applying damage.
+    /// `WarheadTypeClass+0x147` (ReadINI `0x0075d556`, key string
+    /// `0x00847e00`).
     pub wood: bool,
     /// Whether this warhead reaches a target installed in a bunker. The active
     /// receiver has category-specific linked-building/occupant semantics.
+    /// `WarheadTypeClass+0x146` (ReadINI `0x0075d53c`, key string
+    /// `0x00847e08`).
     pub penetrates_bunker: bool,
     /// Whether this warhead can affect allied targets. Native default is true.
+    /// `WarheadTypeClass+0x179` (ReadINI `0x0075d9f2`, key string
+    /// `0x00847cc8`).
     pub affects_allies: bool,
     /// Psychic-damage immunity selector (distinct from Psychedelic).
+    /// `WarheadTypeClass+0x178` (ReadINI `0x0075d9d2`, key string
+    /// `0x00847cd8`).
     pub psychic_damage: bool,
     /// Explosion animation names indexed by damage magnitude (AnimList= in rules.ini).
     /// The original engine selects by `damage / 25`, clamped to list length.
@@ -94,21 +113,40 @@ pub struct WarheadType {
     pub inf_death: u8,
 
     // --- Bool fields (verified offsets from WarheadTypeClass::ReadINI) ---
-    /// Conventional warhead — no special effects. Offset +0x14B.
+    /// Conventional warhead — no special effects. `WarheadTypeClass+0x14D`,
+    /// written by `WarheadTypeClass::ReadINI` @ `0x0075d4ee` from the key
+    /// string at `0x00847e34`. (`+0x14B` is `Sonic=`, not this.)
     pub conventional: bool,
     /// Area-damage rocker: detonation pushes a rocker impulse into every
-    /// vehicle in a 3×3 cell radius (Rocker= in [Warhead]). Default `no`.
+    /// vehicle in a 3×3 cell radius (`Rocker=` in `[Warhead]`). Default `no`.
+    /// `WarheadTypeClass+0x14E`, written by `WarheadTypeClass::ReadINI`
+    /// @ `0x0075d5be` from the key string at `0x00847de8`.
     pub rocker: bool,
-    /// Direct-hit rocker: fires an impulse on the bullet's target if the
-    /// target is a vehicle (DirectRocker= in [Warhead]). Default `no`.
+    /// Direct-hit rocker: fires an impulse on the bullet's target if that
+    /// target is a vehicle (`DirectRocker=` in `[Warhead]`). Default `no`.
+    /// `WarheadTypeClass+0x14F`, written by `WarheadTypeClass::ReadINI`
+    /// @ `0x0075d5d8` from the key string at `0x00847dd8`.
+    ///
+    /// This is the eighth arm of the detonation chain — tested at
+    /// `BulletClass::DetonateAtCoord @ 0x0046978e`, the only arm there whose
+    /// predicate also inspects the target. Dead in stock YR: `rulesmd.ini`
+    /// has no live `DirectRocker=` line (its one textual occurrence sits
+    /// inside a `;` comment at line 27314), so the arm never fires in stock
+    /// play. Kept correct anyway.
     pub direct_rocker: bool,
-    /// Spawns tiberium/ore on impact. Offset +0x14E.
+    /// Spawns tiberium/ore on impact. `WarheadTypeClass+0x148`, written by
+    /// `WarheadTypeClass::ReadINI` @ `0x0075d570` from the key string at
+    /// `0x00817278`.
     pub tiberium: bool,
-    /// Bright flash on detonation. Offset +0x14F.
+    /// Bright flash on detonation. `WarheadTypeClass+0x150`, written by
+    /// `WarheadTypeClass::ReadINI` @ `0x0075d60c` from the key string at
+    /// `0x00847dd0`.
     pub bright: bool,
     /// Positive values override the damage-derived transient combat-light size.
     /// Parsed through native `ReadDouble`, whose input is f32-first and whose
     /// percent form therefore stores a fraction (`40%` -> widened f32 `0.4`).
+    /// `WarheadTypeClass+0x13C` (ReadDouble at `0x0075d496`, `FSTP float ptr`
+    /// at `0x0075d49b`, key string `0x00847e44`).
     pub combat_light_size_f64: f64,
     /// Native `double` damage multiplier read by InfantryClass before it enters
     /// the shared Foot/Techno/Object receiver. `50%` is stored as `0.5`.
@@ -117,53 +155,107 @@ pub struct WarheadType {
     /// concrete Infantry receiver. The authoritative receiver uses the double
     /// above.
     pub prone_damage_basis_points: u32,
-    /// Instantly destroys any wall. Offset +0x151.
+    /// Instantly destroys any wall. `WarheadTypeClass+0x145`, written by
+    /// `WarheadTypeClass::ReadINI` @ `0x0075d522` from the key string at
+    /// `0x00847e1c`. (`+0x151` is `CLDisableRed=`, not this.)
     pub wall_absolute_destroyer: bool,
-    /// Chrono legionnaire erase effect. Offset +0x152.
+    /// Chrono legionnaire erase effect. `WarheadTypeClass+0x15A` (ReadINI
+    /// `0x0075D871`, key string `0x00817168`), tested by the detonation chain
+    /// at `BulletClass::DetonateAtCoord @ 0x00469423`.
     pub temporal: bool,
     /// Changes target's locomotor (magnetron). `WarheadTypeClass+0x15B`
     /// (ReadINI `0x0075D87C`), read by
     /// `TechnoClass::What_Weapon_Should_I_Use @ 0x006F352E`.
     pub is_locomotor: bool,
-    /// Terror drone attach. Offset +0x154.
+    /// Terror drone / attack dog / squid attach. `WarheadTypeClass+0x159`
+    /// (ReadINI `0x0075D84E`, key string `0x0081717C`), tested by the
+    /// detonation chain at `BulletClass::DetonateAtCoord @ 0x004693d3`.
     pub parasite: bool,
-    /// Mind control visual effect. Offset +0x155.
+    /// Psychedelic (berserk) effect. `WarheadTypeClass+0x16D` (ReadINI
+    /// `0x0075D8FB`, key string `0x00847D30`). Not a detonation-chain arm.
     pub psychedelic: bool,
-    /// Crazy ivan bomb attach. Offset +0x174.
+    /// Crazy ivan bomb attach. `WarheadTypeClass+0x157` (ReadINI
+    /// `0x0075D823`, key string `0x0081BD60`), tested by the detonation chain
+    /// at `BulletClass::DetonateAtCoord @ 0x00469343`.
     pub ivan_bomb: bool,
-    /// Yuri mind control. Offset +0x175.
+    /// Yuri mind control. `WarheadTypeClass+0x155` (ReadINI `0x0075D7E0`, key
+    /// string `0x0081BBC8`), tested first in the detonation chain at
+    /// `BulletClass::DetonateAtCoord @ 0x00469211`.
     pub mind_control: bool,
-    /// Poison damage. Offset +0x176.
+    /// Poison damage. `WarheadTypeClass+0x156` (ReadINI `0x0075D800`, key
+    /// string `0x00847D58`).
     pub poison: bool,
     /// Calls in airstrike. `WarheadTypeClass+0x16C` (ReadINI `0x0075D8F0`),
     /// read by `TechnoClass::What_Weapon_Should_I_Use @ 0x006F3481`.
     pub airstrike: bool,
-    /// Tesla weapon. Offset +0x178.
+    /// Tesla weapon. Native offset **UNKNOWN** — VERA-internal, gamemd
+    /// equivalent UNCHECKED. `WarheadTypeClass::ReadINI_Body @ 0x0075D3A0`
+    /// (body `0x0075D3A0`-`0x0075DEBD`) pushes 61 distinct key strings and
+    /// none of them is `Electric`; `search_strings ^Electric$` over the image
+    /// returns nothing. So there is no native `Electric=` warhead key to bind
+    /// to, and `+0x178` — the offset previously claimed here — is
+    /// `PsychicDamage=`. Stock `rulesmd.ini` authors no `Electric=` line, so
+    /// this field is always `false` in stock play.
     pub electric: bool,
-    /// Radiation contamination. Offset +0x179.
+    /// Radiation contamination. `WarheadTypeClass+0x177`, written by
+    /// `WarheadTypeClass::ReadINI` @ `0x0075d9c7` from the key string at
+    /// `0x00839e80`. (`+0x179` is `AffectsAllies=`, not this.)
     pub radiation: bool,
-    /// Kills infantry outright below threshold. Offset +0x17A.
+    /// Squid finishing move — kills a weakened victim outright instead of
+    /// dealing the parasite's per-cycle damage. `WarheadTypeClass+0x174`
+    /// (ReadINI `0x0075D949`, key string `0x00847D10`); consumed by
+    /// `ParasiteClass::AI @ 0x006297F0`, not by the detonation chain.
     pub culling: bool,
-    /// Spy disguise warhead. Offset +0x17B.
+    /// Spy disguise warhead. `WarheadTypeClass+0x175` (ReadINI `0x0075D969`,
+    /// key string `0x00847D00`), tested by the detonation chain at
+    /// `BulletClass::DetonateAtCoord @ 0x00469a03`.
     pub makes_disguise: bool,
-    /// Ordered BulletClass detonation predicates whose effect bodies remain
-    /// explicit unsupported runtime branches.
-    ///
-    /// `electric_assault` is `WarheadTypeClass+0x158` (ReadINI
-    /// `0x0075D82E`), read by
-    /// `TechnoClass::What_Weapon_Should_I_Use @ 0x006F361F`.
+    /// Tesla Trooper charging a Tesla Coil. `WarheadTypeClass+0x158` (ReadINI
+    /// `0x0075D82E`, key string `0x00847D48`), read by
+    /// `TechnoClass::What_Weapon_Should_I_Use @ 0x006F361F` and tested by the
+    /// detonation chain at `BulletClass::DetonateAtCoord @ 0x0046937a`.
     pub electric_assault: bool,
+    /// Engineer defuse kit. `WarheadTypeClass+0x16E` (ReadINI `0x0075D91B`,
+    /// key string `0x00847D24`), tested by the detonation chain at
+    /// `BulletClass::DetonateAtCoord @ 0x004699ca`.
     pub bomb_disarm: bool,
+    /// Spawns the descending half of a nuke at the target cell.
+    /// `WarheadTypeClass+0x176` (ReadINI `0x0075D983`, key string
+    /// `0x00847CF4`), tested last in the detonation chain at
+    /// `BulletClass::DetonateAtCoord @ 0x00469a2c`.
     pub nuke_maker: bool,
-    /// Native WarheadType byte `+0x14f`; parser-key identity remains unproven.
-    pub raw_335: bool,
 
     // --- Int fields ---
-    /// EMP duration in frames. Offset +0x170.
+    /// EMP flag. RESIDUAL — native type mismatch, pre-existing, NOT fixed here
+    /// (M15a is documentation-only). `EMEffect=` is a **bool** in gamemd, at
+    /// `WarheadTypeClass+0x154`: `ReadBool` at `0x0075d7c1`, stored
+    /// `0x0075d7d5`, key string `0x00847d60`. VERA reads it as an `i32`.
+    /// `+0x170` — the offset previously claimed here — is a *different* key,
+    /// `Paralyzes=`, which is genuinely an int (`ReadInt` at `0x0075d92a`,
+    /// stored `0x0075d93e`, key string `0x00847d18`) and which VERA does not
+    /// parse at all.
+    /// - Trigger: a warhead authoring `EMEffect=` or `Paralyzes=`.
+    /// - Player effect: none in stock. The one stock `EMEffect=yes` is
+    ///   `[EMPuls]`, which retail itself annotates `;gs disabled in code` and
+    ///   which no stock weapon mounts; `get_i32("yes")` yields 0 where native
+    ///   would read `true`. The one stock `Paralyzes=32767` is `[ParasitePlus]`
+    ///   (SquidGrab) and belongs to the unported parasite effect (M15b).
+    /// - Frequency: zero observable occurrences in stock skirmish.
+    /// - Downstream risk: fixing the type is a rules-parse change, so it lands
+    ///   with whichever port first reads either field.
     pub em_effect: i32,
-    /// Money transfer on hit. Offset +0x17C.
+    /// Money transfer on hit. Native offset **UNKNOWN** — VERA-internal,
+    /// gamemd equivalent UNCHECKED. `WarheadTypeClass::ReadINI_Body` reads no
+    /// `TransactMoney=` key (and no such string exists in the image);
+    /// `+0x17C` — the offset previously claimed here — is `ShakeXlo=`, an int.
+    /// Stock `rulesmd.ini` authors no `TransactMoney=` line, so this field is
+    /// always 0 in stock play.
     pub transact_money: i32,
-    /// Infantry death type for cell-level kills. Offset +0x114.
+    /// Infantry death type for cell-level kills. Native offset **UNKNOWN** —
+    /// VERA-internal, gamemd equivalent UNCHECKED. `WarheadTypeClass::ReadINI_Body`
+    /// writes nothing at `+0x114` and reads no `CellInfDeath=` key (no such
+    /// string exists in the image). Stock `rulesmd.ini` authors no
+    /// `CellInfDeath=` line, so this field is always 0 in stock play.
     pub cell_inf_death: i32,
 
     // --- List fields ---
@@ -327,7 +419,6 @@ impl WarheadType {
             electric_assault: section.get_bool("ElectricAssault").unwrap_or(false),
             bomb_disarm: section.get_bool("BombDisarm").unwrap_or(false),
             nuke_maker: section.get_bool("NukeMaker").unwrap_or(false),
-            raw_335: false,
 
             // Int fields — all default 0
             em_effect: section.get_i32("EMEffect").unwrap_or(0),
