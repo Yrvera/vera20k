@@ -323,8 +323,9 @@ const FLAT_RAMP: u8 = 0;
 /// - Player effect: with a non-zero runtime offset the deck snap would land the
 ///   debris that many leptons above or below the bridge surface.
 /// - Frequency: bounded by bridge cells only; a vehicle has to die on or
-///   directly under a bridge and throw voxel debris (32 stock types in gamemd,
-///   36 in VERA until the INI case fix lands).
+///   directly under a bridge and throw voxel debris (32 stock types; the other
+///   4 of the 36 authoring `DebrisTypes=` mis-spell `MaxDebris=` and throw
+///   nothing).
 /// - Downstream risk: none to the stream — the offset is arithmetic on the
 ///   position, it consumes no draws and gates no branch count.
 const DECK_PLANE_OFFSET_LEPTONS: i32 = 0;

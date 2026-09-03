@@ -2245,11 +2245,11 @@ impl DeathEffects {
 /// - Frequency: continuous — every building death (no `[BuildingTypes]` section
 ///   authors `DebrisTypes=`, so all 292 that throw land here) plus 18 of the 50
 ///   registered `[VehicleTypes]` that throw and 11 of the 12 `[AircraftTypes]`.
-///   The other 32 vehicle types take the voxel arm instead.
-/// - PENDING the INI case fix: VERA currently counts 337 of 373 (456 authoring)
-///   and 31 of 67 vehicles, because `ObjectType::from_ini` still folds case on
-///   `MaxDebris=` and gamemd does not — 17 `[VehicleTypes]` spell it
-///   `Maxdebris=` and take the constructor default 0 in retail.
+///   The other 32 vehicle types take the voxel arm instead. Those counts are on
+///   gamemd's case-exact key read, which `ObjectType::from_ini_section` matches
+///   (`CCINIClass::ReadInt @ 0x005276D0` CRCs the raw key bytes): the 17
+///   `[VehicleTypes]` spelling `Maxdebris=` take the constructor default 0 here
+///   as they do in retail and never reach this arm.
 /// - Downstream risk: the constructor's own draws are not consumed either —
 ///   one `RandomRanged` for `RandomRate=`, three `Random__Next()` for the
 ///   launch velocity and three `RandomRanged(-0xFFFF, 0xFFFF)` inside

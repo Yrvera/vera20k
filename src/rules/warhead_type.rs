@@ -266,14 +266,21 @@ impl WarheadType {
             .collect();
 
         // `WarheadTypeClass::ReadINI @ 0x0075DA95..0x0075DAE6`: MaxDebris is
-        // read first, MinDebris is clamped up to zero, and only then is
-        // MaxDebris raised to meet MinDebris. The order is load-bearing — a
-        // negative MinDebris must not drag MaxDebris below zero.
-        let max_debris = section.get_i32_ignoring_case("MaxDebris").unwrap_or(0);
-        let min_debris = section
-            .get_i32_ignoring_case("MinDebris")
-            .unwrap_or(0)
-            .max(0);
+        // read first (`0x0075DA95 PUSH 0x84439C` -> `0x0075DAB1` +0x1C4),
+        // MinDebris second (`0x0075DAAB PUSH 0x844390` -> `0x0075DABE` +0x1C8),
+        // MinDebris is clamped up to zero (`0x0075DAC4 JGE`), and only then is
+        // MaxDebris raised to meet MinDebris (`0x0075DAE0`). The order is
+        // load-bearing — a negative MinDebris must not drag MaxDebris below
+        // zero.
+        //
+        // Both keys are read case-exactly, the same as their TechnoType
+        // siblings: `CCINIClass::ReadInt @ 0x005276D0` CRCs the raw key bytes
+        // and folds no case, and the pushed literals are `MaxDebris`
+        // (`0x0084439C`) and `MinDebris` (`0x00844390`). No stock `[Warheads]`
+        // section mis-spells either — only `Smashing` and `TRexWH` author them
+        // at all — so this changes nothing in retail and is right in principle.
+        let max_debris = section.get_i32("MaxDebris").unwrap_or(0);
+        let min_debris = section.get_i32("MinDebris").unwrap_or(0).max(0);
         let max_debris = max_debris.max(min_debris);
 
         Self {

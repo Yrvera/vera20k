@@ -31,10 +31,9 @@
 //!   in gamemd's own spelling, 83 author `MaxDebris=0` and throw nothing at
 //!   all, leaving 356 that throw — 166 with their own `DebrisAnims=`, 158
 //!   falling back to `[General] MetallicDebris=`, and the 32 voxel ones.
-//!   PENDING the INI case fix, VERA counts 36 / 337 / 456 / 373 / 171 instead,
-//!   because it still folds case on `MaxDebris=` where gamemd does not; see
-//!   [`throw_death_debris`] for the reconciliation and the 17 sections it
-//!   turns on.
+//!   VERA reads the key case-exactly and lands on these same figures; see
+//!   [`throw_death_debris`] for the 17 sections that mis-spell it and
+//!   therefore throw nothing.
 //! - Downstream risk: none to the stream — the pieces already consume their
 //!   draws, hash, and expire on schedule, so adding the draw later moves no
 //!   state.
@@ -459,8 +458,8 @@ const DEBRIS_LOOP_ITERATION_CEILING: u32 = 4096;
 ///    (84 of the 356 that throw), so their budget is
 ///    `RandomRanged(0, MaxDebris - 1)` and can come out zero. Every stock
 ///    `MinDebris=` is spelled exactly, so only the `MaxDebris=` half of these
-///    two figures moves with the INI case fix (VERA reads 184 of 456, 101 of
-///    373 today).
+///    two figures ever depended on the case basis; a folding read would have
+///    counted 184 of 456 and 101 of 373 instead.
 /// 4. The voxel loop, entered only when `DebrisTypes.Count > 0` (`+0x324`,
 ///    `0x007022EA`) AND `budget > 0` (`0x007022F8`). Per iteration:
 ///    - one `Random__Next()` at `0x0070232B`, then
@@ -502,25 +501,29 @@ const DEBRIS_LOOP_ITERATION_CEILING: u32 = 4096;
 /// yields 155. The 155 break down as 18 `[VehicleTypes]`, 11 `[AircraftTypes]`
 /// and 126 `[BuildingTypes]`.
 ///
-/// PENDING the INI case fix — the counting basis, stated because every figure
-/// above depends on it. gamemd's `INIClass` CRCs the raw bytes of the key on
-/// both the store and the lookup side and compares 32-bit integers only, with
-/// no folding instruction anywhere on the path, so `MaxDebris=` and
-/// `Maxdebris=` are different entries in retail. 17 stock `[VehicleTypes]`
-/// spell it `Maxdebris=3` — `APOC BFRT CMON FV HORV HTK HTNK LCRF LTNK MIND
-/// SAPC SREF TELE TTNK UTNK V3 YTNK` — and gamemd gives all 17 the
-/// `TechnoTypeClass` constructor default of 0, so the Rhino, the Apocalypse,
-/// the Prism Tank, the Battle Fortress and the IFV throw NO death debris in
-/// retail. 14 of the 17 are buildable; `CMON`, `HORV` and `UTNK` are
-/// `TechLevel=-1`. The three miners a player actually builds — `[HARV]`,
-/// `[CMIN]`, `[SMIN]` — spell `MaxDebris` exactly and keep their tyres on
-/// either basis; it is `HORV` and `CMON`, the unbuildable duplicates that
-/// share their `Name=`, that lose them. VERA still reads the key through
-/// [`crate::rules::ini_parser::IniSection::get_ignoring_case`] and therefore
-/// runs this block for all 17, on the counts 456 / 373 / 171 / 168 / 36. That
-/// is an RNG-cursor divergence, not a cosmetic one, and it is owned by this
-/// branch as a separate behavioural round; the numbers above are the ones the
-/// fix lands on.
+/// The counting basis, stated because every figure above depends on it.
+/// gamemd's `INIClass` CRCs the raw bytes of the key on both the store and the
+/// lookup side and compares 32-bit integers only, with no folding instruction
+/// anywhere on the path, so `MaxDebris=` and `Maxdebris=` are different
+/// entries in retail. 17 stock `[VehicleTypes]` spell it `Maxdebris=3` —
+/// `APOC BFRT CMON FV HORV HTK HTNK LCRF LTNK MIND SAPC SREF TELE TTNK UTNK V3
+/// YTNK` — and gamemd gives all 17 the `TechnoTypeClass` constructor default
+/// of 0, so the Rhino, the Apocalypse, the Prism Tank, the Battle Fortress and
+/// the IFV throw NO death debris in retail. 14 of the 17 are buildable;
+/// `CMON`, `HORV` and `UTNK` are `TechLevel=-1`. The three miners a player
+/// actually builds — `[HARV]`, `[CMIN]`, `[SMIN]` — spell `MaxDebris` exactly
+/// and keep their tyres; it is `HORV` and `CMON`, the unbuildable duplicates
+/// that share their `Name=`, that lose them. 13 of the 17 sit on the metallic
+/// arm and 4 (`CMON`, `FV`, `HORV`, `HTK`) author `DebrisTypes=TIRE` and would
+/// have sat on the voxel one.
+///
+/// `ObjectType::from_ini_section` reads the key case-exactly, so VERA lands on
+/// the counts above and takes no draw for those 17. The gate is the only one:
+/// `MaxDebris <= 0` at `0x00702293` jumps clear of both arms and the metallic
+/// fallback to `0x00702572`, so there is no other path a mis-spelled type
+/// falls back to. The warhead-side producer is separate and unaffected —
+/// `BulletClass::DetonateAtCoord @ 0x00469D0C` gates on the WARHEAD's
+/// `+0x1C4`, and only `[Smashing]` and `[TRexWH]` author it in stock.
 pub fn throw_death_debris(
     data: &DebrisTypeData<'_>,
     owner_house: Option<InternedId>,
@@ -800,8 +803,8 @@ mod tests {
         // `0x007023FC` tests `DebrisAnims.Count` first; only a type with an
         // EMPTY list AND no `DebrisTypes=` falls through to `RulesClass+0x140`
         // at `0x0070252D`. 166 stock sections take the first arm and 158 the
-        // second (171 until the INI case fix lands — 13 of the 17 sections
-        // spelling `Maxdebris=` sit on the second arm).
+        // second; 13 of the 17 sections spelling `Maxdebris=` would have
+        // joined the second arm had the read folded case, which it does not.
         let input = data(9, 7, &[], &[], 6, 20);
         let mut rng = SimRng::new(31);
         let thrown = throw(&input, &mut rng);

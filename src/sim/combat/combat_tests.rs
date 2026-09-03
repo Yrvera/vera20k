@@ -8833,17 +8833,17 @@ fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
 /// `0x00710FB7`) and takes no draw. Before this landed, none of them threw
 /// anything.
 ///
-/// PENDING the INI case fix: VERA reaches **168** here rather than 155, because
-/// `ObjectType::from_ini` still reads `MaxDebris=` case-insensitively while
-/// gamemd's `INIClass` CRCs the raw key bytes and folds no case anywhere on the
-/// path. 17 stock `[VehicleTypes]` spell the key `Maxdebris=` — 14 buildable
-/// (Rhino, Apocalypse, Lasher, Tesla, Gattling, Prism, V3, Magnetron, Master
-/// Mind, Battle Fortress, IFV, Flak Track, Landing Craft, Armored Transport)
-/// and 3 at `TechLevel=-1` (`CMON`, `HORV`, `UTNK`) — and gamemd gives every one
-/// of them the default 0 and no debris at all. 13 of the 17 sit on this metallic
-/// arm, which is exactly the 168 - 155 gap; the other 4 (`CMON`, `FV`, `HORV`,
-/// `HTK`) sit on the voxel arm. All three exemplars named above spell
-/// `MaxDebris` exactly, so they hold on either basis.
+/// 155, not 168: `ObjectType::from_ini_section` reads `MaxDebris=` case-exactly,
+/// the way gamemd's `INIClass` does — it CRCs the raw key bytes and folds no
+/// case anywhere on the path. 17 stock `[VehicleTypes]` spell the key
+/// `Maxdebris=` — 14 buildable (Rhino, Apocalypse, Lasher, Tesla, Gattling,
+/// Prism, V3, Magnetron, Master Mind, Battle Fortress, IFV, Flak Track, Landing
+/// Craft, Armored Transport) and 3 at `TechLevel=-1` (`CMON`, `HORV`, `UTNK`) —
+/// and every one of them takes the constructor default 0 and throws no debris
+/// at all. 13 of the 17 would have sat on this metallic arm, which is exactly
+/// the 168 - 155 gap; the other 4 (`CMON`, `FV`, `HORV`, `HTK`) author
+/// `DebrisTypes=TIRE` and would have sat on the voxel arm. All three exemplars
+/// named above spell `MaxDebris` exactly, so they are unaffected either way.
 #[test]
 fn gsi_05_14_a_dying_vehicle_scatters_metallic_debris() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
@@ -8900,7 +8900,7 @@ fn gsi_05_14_a_dying_vehicle_scatters_metallic_debris() {
 /// `[BuildingTypes]` that throw, 126 carry `MaxDebris=` alone and fall through
 /// to `[General] MetallicDebris=`. All three figures are basis-independent: the
 /// 17 sections that spell the key `Maxdebris=` are every one of them a
-/// `[VehicleTypes]`, so the INI case fix moves no building count.
+/// `[VehicleTypes]`, so the case-exact read moves no building count.
 #[test]
 fn gsi_05_14_a_dying_building_uses_its_own_debris_anims() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
