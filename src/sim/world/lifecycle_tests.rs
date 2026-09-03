@@ -3811,12 +3811,17 @@ fn gsi_05_04_guided_projectile(
     spawn.guidance = Some(ProjectileGuidance {
         rot: 60,
         missile_rot_var: SimFixed::lit("0.25"),
-        course_lock_frames: 0,
+        course_lock_duration: 0,
         sidewinder_phase: 0,
         airburst: false,
         very_high: false,
         level: false,
-        pitch_bam: 0,
+        heading_bam: 0,
+        max_speed: 0,
+        acceleration: 3,
+        fuse_reference: crate::sim::projectile::ProjectileCoord::new(0, 0, 0),
+        closing_frames: 0,
+        closing_accumulator_bits: 0,
         frames_elapsed: 0,
     });
     spawn.tracks_target = true;

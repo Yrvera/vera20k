@@ -6592,7 +6592,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
     let shared_cell_dummy = sim.effective_shared_cell_dummy();
     assert!(
         sim.projectiles
-            .advance(&target_positions, None, &shared_cell_dummy, |_, _| None,)
+            .advance(0, &target_positions, None, &shared_cell_dummy, |_, _| None,)
             .detonations
             .is_empty()
     );
@@ -6607,6 +6607,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
         detonations = restored
             .projectiles
             .advance(
+                0,
                 &target_positions,
                 None,
                 &restored_shared_cell_dummy,
@@ -8472,5 +8473,124 @@ fn gsi_08_04_projectile_spawns_at_the_muzzle_not_the_hull_centre() {
         (spawn.origin.x - hull_x, spawn.origin.y - hull_y),
         (189, -25),
         "muzzle offset in leptons"
+    );
+}
+
+/// `TechnoClass::FireAt 0x006FEA36`..`0x006FEA4C`: a `ROT > 0` shot leaves the
+/// tube at ONE lepton per frame and the weapon's `Speed=` is stored as
+/// `Bullet+0x110` instead, which `BulletTypeClass::Acceleration` (`+0x2D0`)
+/// then ramps toward. The launch direction is the aim facing, not the bearing
+/// to the target.
+#[test]
+fn gsi_08_06_homing_launch_uses_one_lepton_and_stores_speed_as_the_ceiling() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=LNCHR\n1=HTNK\n\
+         [LNCHR]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=Rocket\nTurret=yes\n\
+         [HTNK]\nStrength=2000\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=Rocket\n\
+         [Rocket]\nDamage=65\nROF=50\nRange=6\nSpeed=30\nProjectile=Seeker\nWarhead=AP\n\
+         [Seeker]\nROT=60\nArm=2\nRanged=yes\n\
+         [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("homing launch fixture parses");
+
+    let mut store = EntityStore::new();
+    let mut shooter = make_entity_owned(1, "LNCHR", 5, 5, 300, "Soviet");
+    shooter.facing = 0;
+    shooter.barrel_facing = Some(crate::sim::movement::facing_class::FacingClass::new(
+        0x4000, 0,
+    ));
+    store.insert(shooter);
+    let _ = test_intern("HTNK");
+    store.insert(make_entity_owned(2, "HTNK", 8, 5, 2000, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut SimRng::new(3),
+    );
+
+    let spawn = result
+        .projectile_spawns
+        .first()
+        .expect("the missile is a tracked projectile");
+    assert_eq!(
+        spawn.speed_leptons_per_frame, 1,
+        "every ROT > 0 launch starts at one lepton per frame"
+    );
+    let guidance = spawn.guidance.expect("a ROT > 0 shot carries guidance");
+    assert_eq!(guidance.max_speed, 30, "weapon Speed= is only the ceiling");
+    assert_eq!(guidance.acceleration, 3, "BulletTypeClass ctor default");
+    assert_eq!(
+        guidance.heading_bam, 0,
+        "the turret faces east (0x4000), which is heading BAM 0"
+    );
+    assert_eq!(
+        guidance.fuse_reference, spawn.initial_target_position,
+        "the ProximityDetector reference is frozen on the launch-time target"
+    );
+    assert_eq!(spawn.velocity, ProjectileVelocity::new(1, 0, 0));
+}
+
+/// `TechnoClass::FireAt 0x006FE9FE`: EVERY launch speed is clamped to half the
+/// straight-line distance to the target before the homing/vertical override.
+#[test]
+fn gsi_08_06_point_blank_shot_clamps_the_launch_speed_to_half_the_distance() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=ARTY\n1=HTNK\n\
+         [ARTY]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=Shell\n\
+         [HTNK]\nStrength=2000\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=Shell\n\
+         [Shell]\nDamage=65\nROF=50\nRange=6\nSpeed=200\nProjectile=Lob\nWarhead=AP\n\
+         [Lob]\nArcing=true\n\
+         [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("clamp fixture parses");
+
+    let mut store = EntityStore::new();
+    let mut shooter = make_entity_owned(1, "ARTY", 5, 5, 300, "Soviet");
+    // Turretless: the hull facing is what `GetFireError` gates on, so aim it
+    // east at the target before the shot.
+    shooter.facing = 64;
+    store.insert(shooter);
+    let _ = test_intern("HTNK");
+    store.insert(make_entity_owned(2, "HTNK", 6, 5, 2000, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut SimRng::new(3),
+    );
+
+    let spawn = result
+        .projectile_spawns
+        .first()
+        .expect("the shell is a tracked projectile");
+    let dx = spawn.initial_target_position.x - spawn.origin.x;
+    let dy = spawn.initial_target_position.y - spawn.origin.y;
+    let dz = spawn.initial_target_position.z - spawn.origin.z;
+    let distance = (f64::from(dx * dx + dy * dy + dz * dz)).sqrt().trunc() as i32;
+    assert!(
+        distance / 2 < 200,
+        "the fixture must be closer than twice the weapon speed"
+    );
+    assert_eq!(
+        i32::from(spawn.speed_leptons_per_frame),
+        distance / 2,
+        "the launch speed is clamped to dist/2"
     );
 }

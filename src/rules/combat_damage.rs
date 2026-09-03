@@ -30,6 +30,12 @@ pub struct CombatDamageDefaults {
     /// Signed, unclamped destroyable-cliff chance compared against one
     /// Scenario RandomRanged(0,99) draw. Native constructor default is 100.
     pub collapse_chance: i32,
+    /// `BallisticScatter=` in LEPTONS. `RulesClass::ReadCombatDamage
+    /// @ 0x0066CD5B` reads it through `CCINIClass::ReadRange @ 0x00474620`
+    /// into `RulesClass+0x1734`, so the authored cell count is multiplied by
+    /// 256; the constructor default written at `0x006675C4` is `0x100`, and
+    /// stock `rulesmd.ini:815` authors `1.0` for the same 256.
+    pub ballistic_scatter: i32,
     /// Global `DeathWeapon=` used only when a dying type has neither an
     /// explicit death weapon nor a live current-weapon fallback.
     pub death_weapon: Option<String>,
@@ -59,6 +65,7 @@ impl CombatDamageDefaults {
         Self {
             max_damage: section.get_i32("MaxDamage").unwrap_or(1000),
             collapse_chance: section.get_i32("CollapseChance").unwrap_or(100),
+            ballistic_scatter: section.read_range("BallisticScatter", 0x100),
             death_weapon: read_name(section, "DeathWeapon"),
             default_large_grey_smoke_system: read_name(section, "DefaultLargeGreySmokeSystem"),
             default_small_grey_smoke_system: read_name(section, "DefaultSmallGreySmokeSystem"),
@@ -78,6 +85,7 @@ impl Default for CombatDamageDefaults {
         Self {
             max_damage: 1000,
             collapse_chance: 100,
+            ballistic_scatter: 0x100,
             death_weapon: None,
             default_large_grey_smoke_system: None,
             default_small_grey_smoke_system: None,
@@ -169,8 +177,7 @@ mod tests {
 
     #[test]
     fn whitespace_only_value_treated_as_none() {
-        let ini =
-            IniFile::from_str("[CombatDamage]\nFixtureOnly=1\nDefaultSparkSystem=   \n");
+        let ini = IniFile::from_str("[CombatDamage]\nFixtureOnly=1\nDefaultSparkSystem=   \n");
         let section = ini.section("CombatDamage").unwrap();
         let cd = CombatDamageDefaults::from_ini_section(section);
         assert!(cd.default_spark_system.is_none());

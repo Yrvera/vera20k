@@ -5,6 +5,41 @@
 //! [`ProjectileDetonation`] into damage, warhead effects, and terrain changes.
 //! Keeping that handoff narrow lets the world phase place this system at the
 //! verified native frame rung without duplicating combat arithmetic here.
+//!
+//! ## `BulletClass::AI @ 0x004666E0` — the three flight arms
+//!
+//! Native selects an arm exactly twice, at `0x004668D1` on `ROT < 1` and then
+//! at `0x004671D0` on `Vertical` (`BulletTypeClass+0x2C0`). Nothing else takes
+//! part: `Arcing`, `SubjectToCliffs`, `SubjectToElevation`, `Proximity`,
+//! `FlakScatter`, `Inviso` and `Cluster` are launch-time or detonation-time
+//! keys. [`ProjectileTrajectory`] carries the same three arms.
+//!
+//! Detonation admission at `0x00467C70` is `impact || (!Dropping && fuse != 0)`
+//! and contains NO `Arm=` test — `Arm=` is written once into the bullet's
+//! embedded `ProximityDetector` at `BulletClass::Fire 0x00468A5D` and gates
+//! that one fuse result. A collision, a ground or bridge contact, a
+//! `DetonationAltitude` crossing, or a target reach all detonate an unarmed
+//! bullet.
+//!
+//! RESIDUAL (GSI-08.06) — a guided bullet that overshoots a fast target has
+//! three native termination rules; two of them are here (the reach test and
+//! the closing-rate heuristic) and one is not: the homing arm's own
+//! `GetAltitude() < 1` ground test at the same site. Trigger: a homing shot
+//! whose launch z sits at or below the terrain it crosses. Player effect: the
+//! missile flies over a hill it should hit. Frequency: only on rising terrain,
+//! since the arm holds its launch z. Downstream risk: it is one of the leak
+//! bounds, so the closing-rate heuristic is the only one left for a missile
+//! that never closes — it does terminate, but after up to a few seconds.
+//!
+//! RESIDUAL (GSI-08.06) — the ballistic arm's `reached_target` test is
+//! VERA-internal, gamemd equivalent UNCHECKED: native's `ROT < 1` arms
+//! terminate only on the ground clamp, the wall/building probe and the fuse,
+//! and its `0x00467CEC` "snap onto the target when within `max(128, 2|v|)`" is
+//! a coordinate adjustment applied AFTER detonation is already admitted, not a
+//! reason to detonate. Trigger: every arcing shell. Player effect: a shell can
+//! detonate one frame early, in the air, instead of on the ground at its
+//! landing point. Frequency: continuous for `Arcing` weapons. Downstream risk:
+//! it partly cancels the new launch scatter for `[FlakTProj]`.
 
 use std::collections::BTreeMap;
 
@@ -45,7 +80,28 @@ impl ProjectileVelocity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ProjectileTrajectory {
     Straight,
-    Ballistic { gravity: i32 },
+    Ballistic {
+        gravity: i32,
+    },
+    /// gamemd-derived: `BulletClass::AI @ 0x004666E0`, the `ROT < 1 &&
+    /// Vertical` arm entered at `0x004671E0`. No gravity is applied there and
+    /// the launch direction is never changed — only the magnitude ramps by
+    /// `Acceleration=` (`BulletTypeClass+0x2D0`) toward `MaxSpeed`
+    /// (`Bullet+0x110`), and flight ends on `z > DetonationAltitude`
+    /// (`+0x2BC`, read at `0x00467334`), a negative altitude, or a bridge-deck
+    /// crossing.
+    ///
+    /// The direction is kept as the launch (yaw, pitch) BAM pair rather than
+    /// as an integer velocity: native renormalises a *double* velocity vector
+    /// every frame, and at the 1-lepton launch magnitude an integer vector
+    /// would quantise the direction away.
+    Vertical {
+        detonation_altitude: i32,
+        acceleration: i32,
+        max_speed: i32,
+        heading_bam: u16,
+        pitch_bam: u16,
+    },
 }
 
 /// Persistent inputs and facing state for the `BulletClass::Update` ROT branch.
@@ -57,13 +113,45 @@ pub enum ProjectileTrajectory {
 pub struct ProjectileGuidance {
     pub rot: i32,
     pub missile_rot_var: SimFixed,
-    pub course_lock_frames: u16,
+    /// `BulletTypeClass::CourseLockDuration` (`+0x2E0`). This is the authored
+    /// duration, not a countdown: `BulletClass::AI @ 0x0046695B` compares its
+    /// own frame counter against it and latches `IsCourseLocked` (`+0x105`,
+    /// constructed to 1 at `0x004663B6`) off exactly once.
+    pub course_lock_duration: u16,
     pub sidewinder_phase: u8,
     pub airburst: bool,
     pub very_high: bool,
     pub level: bool,
-    pub pitch_bam: u16,
+    /// Flight heading as a math BAM (`0` = +X). Native keeps the direction
+    /// implicitly in the double velocity vector it renormalises each frame at
+    /// `0x004669F3`; VERA's velocity is integer leptons, so at the 1-lepton
+    /// launch magnitude the direction has to be carried explicitly.
+    /// `heading_bam == facing16 - 0x4000` for a native launch facing.
+    pub heading_bam: u16,
     pub frames_elapsed: u32,
+    /// `Bullet+0x110`, written from the weapon's `Speed=` (`WeaponTypeClass
+    /// +0xA8`) at `TechnoClass::FireAt 0x006FEA46`. This is the ceiling the
+    /// `Acceleration=` ramp climbs toward, never the launch speed.
+    pub max_speed: u16,
+    /// `BulletTypeClass::Acceleration` (`+0x2D0`, constructor default 3),
+    /// consumed by the homing ramp at `BulletClass::AI 0x00466985`.
+    pub acceleration: i32,
+    /// The proximity fuse's reference coordinate, frozen at launch.
+    /// `ProximityDetector::Setup @ 0x004E1130` (sole caller
+    /// `BulletClass::Fire 0x00468A93`) copies the target's launch-time
+    /// `GetTargetCoords` into detector `+0x18..+0x20` once;
+    /// `ProximityDetector::Check @ 0x004E11F0` (sole caller
+    /// `BulletClass::AI 0x00467C35`) measures the live bullet coordinate
+    /// against that stored copy and never rewrites it.
+    pub fuse_reference: ProjectileCoord,
+    /// `Bullet+0x118`, the warm-up counter of the closing-rate detonation
+    /// heuristic on the homing arm. Native runs the plain accumulate while it
+    /// is below 60 and only then admits the decay test.
+    pub closing_frames: u16,
+    /// `Bullet+0x11C`, the closing-rate accumulator of the same heuristic, held
+    /// as native `double` bits because the native update is
+    /// `accum * 0.9833333333333333 + delta` in x87 doubles.
+    pub closing_accumulator_bits: u64,
 }
 
 /// The independently proved altitude-policy result of
@@ -329,10 +417,10 @@ pub enum TargetExpiryPolicy {
     DetonateAtLastKnown,
 }
 
-/// Terrain checks admitted for one ordinary `BulletClass` flight.
+/// Terrain checks admitted for one `BulletClass` flight.
 ///
-/// The cases intentionally stay narrow: special trajectory kernels retain the
-/// typed immediate path until their native coordinate contracts are ported.
+/// The `Vertical` arm owns its own floor and bridge probe inside
+/// `BulletClass::AI 0x00467334`ff., so a vertical bullet takes none of these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProjectileCollisionPolicy {
     /// `BulletTypeClass::Level`: detonate after entering a non-water cell.
@@ -468,6 +556,74 @@ pub fn projectile_burst_plan(airburst: bool, cluster: i32) -> ProjectileBurstPla
         random_radius_rolls: count,
         random_coordinate_calls: count,
     }
+}
+
+/// One uniform BAM angle drawn the way `TechnoClass::FireAt` and
+/// `BulletClass::Fire` draw theirs: a raw `Random__RandomRanged(0, 0x7FFFFFFE)`
+/// mapped to `[0, 2π)`, pushed through the 16-bit facing quantisation, and
+/// converted back to radians.
+///
+/// Named locations: `0x006FE83D`..`0x006FE872` (plain arm),
+/// `0x006FE75B`..`0x006FE790` (flak arm), `0x00468807`..`0x00468840`
+/// (`BulletClass::Fire`). Constants read from the image:
+/// `[0x007E3570] = 1/(2^31 - 1)`, `[0x007E3CC0] = 2π`,
+/// `[0x007E2820] = π/2`, `[0x007E2818] = -10430.06004058427`,
+/// `[0x007E2810] = -9.587672516830327e-05`.
+fn scatter_angle_radians(scenario_rng: &mut SimRng) -> f64 {
+    const INVERSE_RANDOM_SPAN: f64 = 4.656_612_875_245_797e-10;
+    const FACING_SCALE: f64 = -10430.060_040_584_27;
+    const BAM_TO_RADIANS: f64 = -9.587_672_516_830_327e-05;
+    let raw = scenario_rng.next_range_u32_inclusive(0, 0x7fff_fffe);
+    let uniform = f64::from(raw as i32) * INVERSE_RANDOM_SPAN * std::f64::consts::TAU;
+    let bam = ((uniform - std::f64::consts::FRAC_PI_2) * FACING_SCALE).trunc() as i32 as i16;
+    f64::from(i32::from(bam) - 0x3fff) * BAM_TO_RADIANS
+}
+
+/// `TechnoClass::FireAt` launch-time scatter, gated by `Inaccurate && Arcing`
+/// at `0x006FE67D`/`0x006FE68B`. Both arms consume exactly two Scenario RNG
+/// draws — magnitude first, then angle — and both OFFSET the target delta
+/// rather than replacing it (`FIADD` on X at `0x006FE7E5`, `FSUBR` on Y at
+/// `0x006FE7C0`). Z is carried through untouched.
+///
+/// `flak` selects the range-scaled arm taken when
+/// `FlakScatter && !Inviso` (`0x006FE699`/`0x006FE6A7`); stock `[FlakTProj]`
+/// is its only user.
+pub fn projectile_launch_scatter(
+    delta: (i32, i32, i32),
+    ballistic_scatter: i32,
+    weapon_range_leptons: i32,
+    flak: bool,
+    scenario_rng: &mut SimRng,
+) -> (i32, i32, i32) {
+    let magnitude = if flak {
+        // `0x006FE6AD`..`0x006FE6F1` builds the distance from f32 components.
+        let fx = delta.0 as f32;
+        let fy = delta.1 as f32;
+        let fz = delta.2 as f32;
+        let distance = ((f64::from(fx) * f64::from(fx)
+            + f64::from(fy) * f64::from(fy)
+            + f64::from(fz) * f64::from(fz))
+        .sqrt()) as f32;
+        let roll = scenario_rng.next_range_u32_inclusive(0, ballistic_scatter.max(0) as u32) as i32;
+        let scaled = i64::from(roll) * i64::from(distance.trunc() as i32);
+        if weapon_range_leptons == 0 {
+            0
+        } else {
+            (scaled / i64::from(weapon_range_leptons)) as i32
+        }
+    } else {
+        // `0x006FE815`..`0x006FE81C`: `RandomRanged(BallisticScatter / 2,
+        // BallisticScatter)`, the halving being an arithmetic `SAR` by one.
+        let high = ballistic_scatter.max(0);
+        scenario_rng.next_range_u32_inclusive((high / 2) as u32, high as u32) as i32
+    };
+    let theta = scatter_angle_radians(scenario_rng);
+    let magnitude = f64::from(magnitude);
+    (
+        (theta.cos() * magnitude + f64::from(delta.0)).trunc() as i32,
+        (f64::from(delta.1) - theta.sin() * magnitude).trunc() as i32,
+        delta.2,
+    )
 }
 
 /// Produce the next `BulletClass::Explode` cluster coordinate.
@@ -608,7 +764,13 @@ pub struct ProjectileSpawn {
     /// this destination; homing shots replace it from the live target table.
     pub initial_target_position: ProjectileCoord,
     pub payload: ProjectilePayload,
-    /// Native weapon speed expressed by the caller in leptons per logical frame.
+    /// The bullet's CURRENT speed in leptons per frame — native's
+    /// `ftol(|velocity|)`, not the weapon's `Speed=`. `TechnoClass::FireAt
+    /// @ 0x006FEA3A` launches every `ROT > 0` or `Vertical` bullet at 1, and
+    /// `BulletClass::Fire @ 0x00468B2C` renormalises a `ROT > 0` bullet's
+    /// vector to magnitude 1.0 regardless; `Speed=` only becomes the ceiling
+    /// stored at `Bullet+0x110`. Non-homing, non-vertical bullets do keep the
+    /// launch speed here, clamped to `dist/2` at `0x006FE9FE`.
     pub speed_leptons_per_frame: u16,
     pub velocity: ProjectileVelocity,
     pub trajectory: ProjectileTrajectory,
@@ -746,8 +908,11 @@ impl ProjectileStore {
         true
     }
 
-    /// Admit one ordinary projectile. Vertical, airburst, cluster, and other
-    /// special trajectories remain outside this bounded foundation.
+    /// Admit one projectile. All three `BulletClass::AI` flight arms are
+    /// represented — `ROT >= 1` homing, the `ROT < 1` ballistic arm, and the
+    /// `ROT < 1, Vertical` arm; an `Inviso` bullet still resolves on combat's
+    /// immediate path because native's `BulletClass::Fire` scales its velocity
+    /// by `0.0 / |v|` at `0x00468A0E` and resolves the impact in the same call.
     // AbstractClass::AssignUniqueID @ 0x00410230 obtains this identity from
     // ScenarioClass::NextUniqueID @ 0x0068BCB0; the store never owns a second
     // allocator.
@@ -770,7 +935,10 @@ impl ProjectileStore {
                 arm_frames_remaining: spawn.arm_frames,
                 fuse_frames_remaining: spawn.fuse_frames,
                 ranged_fuse: spawn.ranged_fuse,
-                last_distance_half: i32::MAX,
+                // `ProximityDetector::Setup @ 0x004E1130` seeds `+0x24` with
+                // the FULL launch distance from the bullet to its reference
+                // coordinate, not the halved form `Check` writes afterwards.
+                last_distance_half: coord_distance(spawn.origin, spawn.initial_target_position),
                 tracks_target: spawn.tracks_target,
                 target_expiry: spawn.target_expiry,
                 collision: spawn.collision,
@@ -789,6 +957,7 @@ impl ProjectileStore {
     /// candidate next coordinate; object collision remains a later port.
     pub fn advance(
         &mut self,
+        binary_frame: u32,
         target_positions: &BTreeMap<u64, ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
         shared_cell_dummy: &SharedCellDummy,
@@ -797,6 +966,7 @@ impl ProjectileStore {
         let ids: Vec<u64> = self.projectiles.keys().copied().collect();
         self.advance_selected(
             &ids,
+            binary_frame,
             |id| target_positions.get(&id).copied(),
             terrain,
             shared_cell_dummy,
@@ -808,6 +978,7 @@ impl ProjectileStore {
     pub(crate) fn advance_one(
         &mut self,
         id: u64,
+        binary_frame: u32,
         target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
         shared_cell_dummy: &SharedCellDummy,
@@ -818,6 +989,7 @@ impl ProjectileStore {
         }
         Some(self.advance_selected(
             &[id],
+            binary_frame,
             target_position,
             terrain,
             shared_cell_dummy,
@@ -826,9 +998,11 @@ impl ProjectileStore {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn advance_selected(
         &mut self,
         ids: &[u64],
+        binary_frame: u32,
         mut target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
         shared_cell_dummy: &SharedCellDummy,
@@ -861,16 +1035,17 @@ impl ProjectileStore {
                             result.expired.push(id);
                             continue;
                         }
+                        // `Arm=` is NOT consulted here. The detonation
+                        // admission at `BulletClass::AI 0x00467C70` tests only
+                        // the impact flag and the proximity-fuse result; the
+                        // Arm counter lives inside `ProximityDetector::Check`
+                        // and gates that one result alone.
                         TargetExpiryPolicy::DetonateAtLastKnown => {
-                            if projectile.arm_frames_remaining == 0 {
-                                result.detonations.push(detonation(
-                                    projectile,
-                                    projectile.last_target_position,
-                                    ProjectileDetonationReason::TargetExpired,
-                                ));
-                            } else {
-                                result.expired.push(id);
-                            }
+                            result.detonations.push(detonation(
+                                projectile,
+                                projectile.last_target_position,
+                                ProjectileDetonationReason::TargetExpired,
+                            ));
                             continue;
                         }
                     },
@@ -893,10 +1068,67 @@ impl ProjectileStore {
             // before entering the trajectory portion of BulletClass::AI.
             projectile.visual.advance();
 
-            let candidate = if let Some(guidance) = projectile.guidance.as_mut() {
-                // `BulletClass::Update` @ 0x00466BD0 enters 0x005B20F0 only
-                // from the ROT-positive branch; ordinary straight flight does
-                // not share this steering decision.
+            // `ProximityDetector::Check @ 0x004E11F0` reads
+            // `CurrentFrame - launchFrame` against `Arm=`, so the counter has
+            // already advanced by one when the bullet's first AI frame runs.
+            // Nothing else consults it: the detonation admission at
+            // `BulletClass::AI 0x00467C70` never tests `Arm`.
+            if projectile.arm_frames_remaining > 0 {
+                projectile.arm_frames_remaining -= 1;
+            }
+
+            let previous_position = projectile.position;
+            // Native `local_198` — set by any arm that hits something. It is
+            // the only value besides the fuse that admits a detonation.
+            let mut impact_flag = false;
+            // Native carries one impact flag; VERA keeps the reason beside it
+            // purely as diagnostic provenance for the combat handoff.
+            let mut impact_reason = ProjectileDetonationReason::Collision;
+            // Native `local_190 == 2`: `FUN_00568350` says the new coordinate
+            // left the map, and `LAB_00467B7A` removes the bullet through
+            // `vtable+0x124(2)` and `ObjectClass::UnInit` with NO detonation.
+            let mut left_the_map = false;
+            let mut snap_impact: Option<ProjectileCoord> = None;
+
+            let candidate = if let Some(mut guidance) = projectile.guidance {
+                // ---- ARM C, `BulletClass::AI 0x004668D9`..`0x00466A33` ----
+                // The speed ramp runs before any steering. `Bullet+0x110` is
+                // MaxSpeed; the current magnitude is `ftol(|v|)`, which native
+                // keeps integral from the 1.0 launch onward.
+                let max_speed = i32::from(guidance.max_speed);
+                let current_speed = i32::from(projectile.speed_leptons_per_frame);
+                // `0x00466925`..`0x00466978`: with `CourseLockDuration == 0`
+                // the lock clears once MaxSpeed reaches 40 (`CMP ...,0x28` /
+                // `JGE`) or the magnitude comes within 0.5 of MaxSpeed;
+                // otherwise a per-bullet counter runs the authored duration
+                // out. Both releases latch, and both are monotone in the
+                // ramping speed, so deriving them per frame is equivalent to
+                // native's stored `IsCourseLocked` byte.
+                let course_locked = if guidance.course_lock_duration == 0 {
+                    max_speed < 40 && max_speed > current_speed
+                } else {
+                    guidance.frames_elapsed.saturating_add(1)
+                        < u32::from(guidance.course_lock_duration)
+                };
+                // `0x0046699D`: a still-locked bullet with no authored
+                // duration ramps at one lepton on even frames and none on odd.
+                let acceleration = if course_locked && guidance.course_lock_duration == 0 {
+                    i32::from(binary_frame.is_multiple_of(2))
+                } else {
+                    guidance.acceleration
+                };
+                let next_speed = if current_speed < max_speed {
+                    (current_speed + acceleration).min(max_speed)
+                } else if current_speed > max_speed {
+                    // `0x00466A33`: overspeed sheds `Acceleration / 2` a frame
+                    // and floors at zero.
+                    (current_speed - acceleration / 2).max(0)
+                } else {
+                    current_speed
+                };
+
+                // `BulletClass::HomingTrack` steering. The turn word is zero
+                // while course-locked (`bVar4 &= ~-(IsCourseLocked != 0)`).
                 let target_distance = horizontal_distance(projectile.position, target_position);
                 let phase = guidance
                     .frames_elapsed
@@ -905,42 +1137,69 @@ impl ProjectileStore {
                     + guidance.missile_rot_var
                     + SimFixed::from_num(1))
                     * SimFixed::from_num(guidance.rot);
-                let turn_word = projectile_rot_turn_word_fixed(
-                    varied_rot,
-                    target_distance,
-                    guidance.course_lock_frames != 0,
-                );
-                let current_yaw = atan2_bam(
-                    SimFixed::from_num(projectile.velocity.y),
-                    SimFixed::from_num(projectile.velocity.x),
-                );
+                let turn_word =
+                    projectile_rot_turn_word_fixed(varied_rot, target_distance, course_locked);
                 let desired_yaw = atan2_bam(
                     SimFixed::from_num(target_position.y - projectile.position.y),
                     SimFixed::from_num(target_position.x - projectile.position.x),
                 );
-                let yaw = step_toward_bam_inclusive(current_yaw, desired_yaw, turn_word);
-                let horizontal_speed = i64::from(projectile.velocity.x)
-                    .pow(2)
-                    .saturating_add(i64::from(projectile.velocity.y).pow(2))
-                    .isqrt() as i32;
-                let horizontal_speed = if horizontal_speed == 0 {
-                    i32::from(projectile.speed_leptons_per_frame)
-                } else {
-                    horizontal_speed
-                };
+                let yaw = step_toward_bam_inclusive(guidance.heading_bam, desired_yaw, turn_word);
+                guidance.heading_bam = yaw;
                 projectile.velocity.x =
-                    (SimFixed::from_num(horizontal_speed) * cos_bam(yaw)).to_num::<i32>();
+                    (SimFixed::from_num(next_speed) * cos_bam(yaw)).to_num::<i32>();
                 projectile.velocity.y =
-                    (SimFixed::from_num(horizontal_speed) * sin_bam(yaw)).to_num::<i32>();
+                    (SimFixed::from_num(next_speed) * sin_bam(yaw)).to_num::<i32>();
+                projectile.speed_leptons_per_frame =
+                    next_speed.clamp(0, i32::from(u16::MAX)) as u16;
                 guidance.frames_elapsed = guidance.frames_elapsed.wrapping_add(1);
-                if guidance.course_lock_frames > 0 {
-                    guidance.course_lock_frames -= 1;
-                }
-                ProjectileCoord::new(
+
+                let candidate = ProjectileCoord::new(
                     projectile.position.x.saturating_add(projectile.velocity.x),
                     projectile.position.y.saturating_add(projectile.velocity.y),
                     projectile.position.z.saturating_add(projectile.velocity.z),
-                )
+                );
+
+                // `HomingTrack` returns the post-step distance to the target
+                // coordinate and the arm detonates on `dist <= |v| * 0.5`,
+                // snapping the impact onto the target coordinate unless the
+                // bullet is `Airburst`.
+                let reached_distance = coord_distance(candidate, target_position);
+                if i64::from(reached_distance) * 2 <= i64::from(next_speed) {
+                    impact_flag = true;
+                    impact_reason = ProjectileDetonationReason::ReachedTarget;
+                    if !guidance.airburst {
+                        snap_impact = Some(target_position);
+                    }
+                }
+
+                // The closing-rate heuristic. `delta` is how much closer this
+                // step got; native accumulates it raw for the first 60 frames
+                // and then decays, detonating inside the `[0, 60)` window when
+                // the bullet is neither `Airburst` nor `VeryHigh`. It runs
+                // only once the course lock has cleared.
+                if !course_locked {
+                    let delta = f64::from(
+                        coord_distance(previous_position, target_position) - reached_distance,
+                    );
+                    let accumulator = f64::from_bits(guidance.closing_accumulator_bits);
+                    if guidance.closing_frames < 60 {
+                        guidance.closing_frames += 1;
+                        guidance.closing_accumulator_bits = (accumulator + delta).to_bits();
+                    } else {
+                        let decayed = accumulator * 0.983_333_333_333_333_3 + delta;
+                        guidance.closing_accumulator_bits = decayed.to_bits();
+                        if (0.0..60.0).contains(&decayed)
+                            && !guidance.airburst
+                            && !guidance.very_high
+                        {
+                            impact_flag = true;
+                            impact_reason = ProjectileDetonationReason::ReachedTarget;
+                        }
+                    }
+                }
+
+                projectile.guidance = Some(guidance);
+                candidate
             } else {
                 match projectile.trajectory {
                     ProjectileTrajectory::Straight => {
@@ -964,67 +1223,140 @@ impl ProjectileStore {
                             projectile.position.z.saturating_add(projectile.velocity.z),
                         )
                     }
+                    // ---- ARM A, `BulletClass::AI 0x004671E0`..`0x00467390` ----
+                    ProjectileTrajectory::Vertical {
+                        detonation_altitude,
+                        acceleration,
+                        max_speed,
+                        heading_bam,
+                        pitch_bam,
+                    } => {
+                        // `0x00467211`: the ramp uses the truncated integer
+                        // magnitude and applies NO clamp on the crossing frame,
+                        // so the magnitude may overshoot MaxSpeed once.
+                        let current_speed = i32::from(projectile.speed_leptons_per_frame);
+                        let next_speed = if current_speed < max_speed {
+                            current_speed + acceleration
+                        } else {
+                            current_speed
+                        };
+                        projectile.speed_leptons_per_frame =
+                            next_speed.clamp(0, i32::from(u16::MAX)) as u16;
+                        let horizontal = SimFixed::from_num(next_speed) * cos_bam(pitch_bam);
+                        projectile.velocity = ProjectileVelocity::new(
+                            (horizontal * cos_bam(heading_bam)).to_num::<i32>(),
+                            (horizontal * sin_bam(heading_bam)).to_num::<i32>(),
+                            (SimFixed::from_num(next_speed) * sin_bam(pitch_bam)).to_num::<i32>(),
+                        );
+                        let candidate = ProjectileCoord::new(
+                            projectile.position.x.saturating_add(projectile.velocity.x),
+                            projectile.position.y.saturating_add(projectile.velocity.y),
+                            projectile.position.z.saturating_add(projectile.velocity.z),
+                        );
+                        // `0x00467334`: `DetonationAltitude` is compared
+                        // against the new WORLD z, not against an altitude
+                        // above ground. Then a negative altitude, then the
+                        // bridge-deck crossing test. No gravity is applied on
+                        // this arm at all.
+                        if candidate.z > detonation_altitude {
+                            impact_flag = true;
+                        } else if terrain_floor_z(terrain, candidate.x, candidate.y)
+                            .is_some_and(|floor| candidate.z < floor)
+                        {
+                            impact_flag = true;
+                        } else if let Some(surface) =
+                            bridge_surface_z(terrain, previous_position, candidate)
+                            && projectile_bridge_crossing(previous_position.z, candidate.z, surface)
+                                != ProjectileBridgeCrossing::None
+                        {
+                            impact_flag = true;
+                        }
+                        candidate
+                    }
                 }
             };
-            if projectile.ranged_fuse && projectile.arm_frames_remaining == 0 {
-                let dx = f64::from(candidate.x - target_position.x);
-                let dy = f64::from(candidate.y - target_position.y);
-                let dz = f64::from(candidate.z - target_position.z);
-                let distance = dx.hypot(dy).hypot(dz).trunc() as i32;
-                let (fuse_mode, next_distance) =
-                    ranged_fuse_distance_step(distance, projectile.last_distance_half);
-                projectile.last_distance_half = next_distance;
-                if fuse_mode != 0 {
-                    result.detonations.push(detonation(
-                        projectile,
-                        candidate,
-                        ProjectileDetonationReason::Fuse,
-                    ));
-                    continue;
-                }
+
+            // `FUN_00568350(newCoord) == 0` -> terminal reason 2. Only the
+            // `ROT < 1` arms run this probe in native, so a homing bullet is
+            // never silently removed for leaving the map.
+            if projectile.guidance.is_none()
+                && let Some(grid) = terrain
+                && !coord_is_on_grid(grid, candidate)
+            {
+                left_the_map = true;
             }
-            if let Some(response) = collides_at(projectile, candidate) {
-                let impact = match response {
+
+            if left_the_map {
+                result.expired.push(id);
+                continue;
+            }
+
+            let collision_impact =
+                collides_at(projectile, candidate).map(|response| match response {
                     ProjectileCollisionResponse::TargetZClamp(impact) => impact,
                     ProjectileCollisionResponse::SlopeMatrixReflect { impact, velocity } => {
                         projectile.velocity = velocity;
                         impact
                     }
-                };
+                });
+            if let Some(impact) = collision_impact {
+                impact_flag = true;
+                impact_reason = ProjectileDetonationReason::Collision;
+                snap_impact = Some(impact);
+            }
+
+            // `ProximityDetector::Check @ 0x004E11F0`. The reference is the
+            // coordinate frozen at launch, the Arm counter gates this result
+            // and nothing else, and `Dropping=` suppresses it entirely at
+            // `0x00467C78` — folded into `ranged_fuse` at construction.
+            let mut fuse_mode = 0;
+            if projectile.ranged_fuse {
+                let reference = projectile
+                    .guidance
+                    .map_or(projectile.last_target_position, |guidance| {
+                        guidance.fuse_reference
+                    });
                 if projectile.arm_frames_remaining == 0 {
+                    let distance = coord_distance(candidate, reference);
+                    let (mode, next_distance) =
+                        ranged_fuse_distance_step(distance, projectile.last_distance_half);
+                    projectile.last_distance_half = next_distance;
+                    fuse_mode = mode;
+                }
+            }
+
+            if !impact_flag && fuse_mode == 0 {
+                projectile.position = candidate;
+                let reached_target = match projectile.trajectory {
+                    ProjectileTrajectory::Ballistic { .. } => {
+                        candidate.z <= target_position.z
+                            && squared_horizontal_distance(candidate, target_position)
+                                <= i64::from(projectile.speed_leptons_per_frame).pow(2)
+                    }
+                    ProjectileTrajectory::Straight if projectile.guidance.is_none() => {
+                        candidate == target_position
+                    }
+                    ProjectileTrajectory::Straight | ProjectileTrajectory::Vertical { .. } => false,
+                };
+                if reached_target {
                     result.detonations.push(detonation(
                         projectile,
-                        impact,
-                        ProjectileDetonationReason::Collision,
+                        candidate,
+                        ProjectileDetonationReason::ReachedTarget,
                     ));
-                } else {
-                    result.expired.push(id);
                 }
                 continue;
             }
 
-            projectile.position = candidate;
-            if projectile.arm_frames_remaining > 0 {
-                projectile.arm_frames_remaining -= 1;
-            }
-            let reached_target = match projectile.trajectory {
-                ProjectileTrajectory::Straight if projectile.guidance.is_none() => {
-                    candidate == target_position
-                }
-                ProjectileTrajectory::Ballistic { .. } => {
-                    candidate.z <= target_position.z
-                        && squared_horizontal_distance(candidate, target_position)
-                            <= i64::from(projectile.speed_leptons_per_frame).pow(2)
-                }
-                ProjectileTrajectory::Straight => false,
+            let impact = snap_impact.unwrap_or(candidate);
+            let reason = if impact_flag {
+                impact_reason
+            } else {
+                ProjectileDetonationReason::Fuse
             };
-            if reached_target && projectile.arm_frames_remaining == 0 {
-                result.detonations.push(detonation(
-                    projectile,
-                    candidate,
-                    ProjectileDetonationReason::ReachedTarget,
-                ));
-            }
+            result
+                .detonations
+                .push(detonation(projectile, impact, reason));
         }
 
         if remove_terminal {
@@ -1052,6 +1384,63 @@ pub fn ranged_fuse_distance_step(distance_fistp: i32, last_distance: i32) -> (i3
     } else {
         (0, distance_half)
     }
+}
+
+/// `Math__ftol(sqrt(dx*dx + dy*dy + dz*dz))` — the truncating straight-line
+/// lepton distance native uses for the proximity fuse, the homing reach test
+/// and the closing-rate accumulator.
+fn coord_distance(a: ProjectileCoord, b: ProjectileCoord) -> i32 {
+    let dx = f64::from(a.x - b.x);
+    let dy = f64::from(a.y - b.y);
+    let dz = f64::from(a.z - b.z);
+    (dx * dx + dy * dy + dz * dz).sqrt().trunc() as i32
+}
+
+/// `CellClass::GetGroundHeight` at a lepton coordinate, or `None` when the
+/// coordinate has no allocated CellClass (headless fixtures and off-map).
+fn terrain_floor_z(terrain: Option<&ResolvedTerrainGrid>, x: i32, y: i32) -> Option<i32> {
+    let rx = u16::try_from(x.div_euclid(256)).ok()?;
+    let ry = u16::try_from(y.div_euclid(256)).ok()?;
+    let cell = terrain?.cell(rx, ry)?;
+    crate::util::lepton::ground_height_leptons(cell.level, cell.slope_type, x, y).ok()
+}
+
+/// The bridge deck height for `BulletClass::AI`'s crossing test: the ground
+/// height plus `DAT_0089DE64`, admitted only when either the previous or the
+/// new cell carries the structural bridge bit (`CellClass+0x140 & 0x100`).
+fn bridge_surface_z(
+    terrain: Option<&ResolvedTerrainGrid>,
+    previous: ProjectileCoord,
+    candidate: ProjectileCoord,
+) -> Option<i32> {
+    let grid = terrain?;
+    let structural = |coord: ProjectileCoord| -> bool {
+        let (Ok(rx), Ok(ry)) = (
+            u16::try_from(coord.x.div_euclid(256)),
+            u16::try_from(coord.y.div_euclid(256)),
+        ) else {
+            return false;
+        };
+        grid.cell(rx, ry).is_some_and(|cell| {
+            cell.bridge_facts.raw_flags & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL != 0
+        })
+    };
+    if !structural(previous) && !structural(candidate) {
+        return None;
+    }
+    terrain_floor_z(terrain, candidate.x, candidate.y)
+        .map(|floor| floor + crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32)
+}
+
+/// `FUN_00568350`: whether the coordinate is still inside the playfield.
+fn coord_is_on_grid(grid: &ResolvedTerrainGrid, coord: ProjectileCoord) -> bool {
+    let (Ok(rx), Ok(ry)) = (
+        u16::try_from(coord.x.div_euclid(256)),
+        u16::try_from(coord.y.div_euclid(256)),
+    ) else {
+        return false;
+    };
+    grid.cell(rx, ry).is_some()
 }
 
 fn squared_horizontal_distance(a: ProjectileCoord, b: ProjectileCoord) -> i64 {
@@ -1268,19 +1657,28 @@ mod tests {
         guided.guidance = Some(ProjectileGuidance {
             rot: 4,
             missile_rot_var: SimFixed::from_num(0),
-            course_lock_frames: 0,
+            course_lock_duration: 0,
             sidewinder_phase: 0,
             airburst: false,
             very_high: true,
             level: false,
-            pitch_bam: 0x4000,
+            heading_bam: 0,
+            max_speed: 0,
+            acceleration: 3,
+            fuse_reference: ProjectileCoord::new(0, 0, 0),
+            closing_frames: 0,
+            closing_accumulator_bits: 0,
             frames_elapsed: 0,
         });
         let id = store.spawn(1, guided);
 
-        store.advance(&BTreeMap::new(), None, &SharedCellDummy::fresh(), |_, _| {
-            None
-        });
+        store.advance(
+            0,
+            &BTreeMap::new(),
+            None,
+            &SharedCellDummy::fresh(),
+            |_, _| None,
+        );
 
         let guided = store
             .get(id)
@@ -1350,9 +1748,13 @@ mod tests {
         let first = store.spawn(1, first_spawn);
         let second = store.spawn(2, spawn(ProjectileTarget::Cell { rx: 1, ry: 0 }));
 
-        let result = store.advance(&BTreeMap::new(), None, &SharedCellDummy::fresh(), |_, _| {
-            None
-        });
+        let result = store.advance(
+            0,
+            &BTreeMap::new(),
+            None,
+            &SharedCellDummy::fresh(),
+            |_, _| None,
+        );
 
         assert_eq!(
             result
@@ -1375,7 +1777,7 @@ mod tests {
         let id = store.spawn(1, spawn(ProjectileTarget::Entity(42)));
         let targets = BTreeMap::from([(42, ProjectileCoord::new(128, 128, 0))]);
 
-        store.advance(&targets, None, &SharedCellDummy::fresh(), |_, _| None);
+        store.advance(0, &targets, None, &SharedCellDummy::fresh(), |_, _| None);
 
         assert_eq!(
             store.get(id).unwrap().position,
@@ -1388,11 +1790,15 @@ mod tests {
         let mut store = ProjectileStore::new();
         let id = store.spawn(1, spawn(ProjectileTarget::Entity(42)));
         let targets = BTreeMap::from([(42, ProjectileCoord::new(128, 0, 0))]);
-        store.advance(&targets, None, &SharedCellDummy::fresh(), |_, _| None);
+        store.advance(0, &targets, None, &SharedCellDummy::fresh(), |_, _| None);
 
-        let result = store.advance(&BTreeMap::new(), None, &SharedCellDummy::fresh(), |_, _| {
-            None
-        });
+        let result = store.advance(
+            0,
+            &BTreeMap::new(),
+            None,
+            &SharedCellDummy::fresh(),
+            |_, _| None,
+        );
 
         assert_eq!(result.detonations.len(), 1);
         assert_eq!(result.detonations[0].projectile_id, id);
@@ -1415,6 +1821,7 @@ mod tests {
         let collision_id = store.spawn(2, spawn(ProjectileTarget::Cell { rx: 1, ry: 0 }));
 
         let result = store.advance(
+            0,
             &BTreeMap::new(),
             None,
             &SharedCellDummy::fresh(),
@@ -1595,6 +2002,216 @@ mod tests {
         assert_eq!(
             shrapnel_rng.logical_state(),
             shrapnel_reference.logical_state()
+        );
+    }
+
+    fn guided_spawn(max_speed: u16, acceleration: i32) -> ProjectileSpawn {
+        let mut spawn = spawn(ProjectileTarget::Entity(42));
+        spawn.speed_leptons_per_frame = 1;
+        spawn.velocity = ProjectileVelocity::new(1, 0, 0);
+        spawn.guidance = Some(ProjectileGuidance {
+            rot: 4,
+            missile_rot_var: SimFixed::from_num(0),
+            course_lock_duration: 0,
+            sidewinder_phase: 0,
+            airburst: false,
+            very_high: false,
+            level: false,
+            heading_bam: 0,
+            frames_elapsed: 0,
+            max_speed,
+            acceleration,
+            fuse_reference: ProjectileCoord::new(0, 0, 0),
+            closing_frames: 0,
+            closing_accumulator_bits: 0,
+        });
+        spawn
+    }
+
+    /// `TechnoClass::FireAt 0x006FEA3A` launches at one lepton per frame and
+    /// `BulletClass::AI 0x004669CD` adds `Acceleration=` per frame up to
+    /// `Bullet+0x110`. A `MaxSpeed >= 40` bullet clears the course lock on its
+    /// first AI frame (`CMP [EBP+0x110],0x28` / `JGE` at `0x00466936`), so it
+    /// gets the full acceleration immediately.
+    #[test]
+    fn gsi_08_06_fast_missile_ramps_from_one_by_full_acceleration() {
+        let mut store = ProjectileStore::new();
+        let id = store.spawn(1, guided_spawn(100, 3));
+        let targets = BTreeMap::from([(42, ProjectileCoord::new(10_000, 0, 0))]);
+
+        store.advance(0, &targets, None, &SharedCellDummy::fresh(), |_, _| None);
+        let after_one = store.get(id).expect("missile still flying");
+        assert_eq!(after_one.speed_leptons_per_frame, 4);
+        assert_eq!(after_one.position, ProjectileCoord::new(4, 0, 0));
+
+        store.advance(1, &targets, None, &SharedCellDummy::fresh(), |_, _| None);
+        let after_two = store.get(id).expect("missile still flying");
+        assert_eq!(after_two.speed_leptons_per_frame, 7);
+        assert_eq!(after_two.position, ProjectileCoord::new(11, 0, 0));
+    }
+
+    /// With `CourseLockDuration = 0` and `MaxSpeed < 40` the lock survives, and
+    /// `0x0046699D` replaces `Acceleration=` with one lepton on even global
+    /// frames and none on odd ones. The parity is the GLOBAL frame counter's,
+    /// not the bullet's own age.
+    #[test]
+    fn gsi_08_06_course_locked_missile_ramps_at_half_rate_on_even_frames() {
+        let mut store = ProjectileStore::new();
+        let id = store.spawn(1, guided_spawn(25, 3));
+        let targets = BTreeMap::from([(42, ProjectileCoord::new(10_000, 0, 0))]);
+
+        for (frame, expected) in [(0u32, 2u16), (1, 2), (2, 3), (3, 3), (4, 4)] {
+            store.advance(frame, &targets, None, &SharedCellDummy::fresh(), |_, _| {
+                None
+            });
+            assert_eq!(
+                store
+                    .get(id)
+                    .expect("missile still flying")
+                    .speed_leptons_per_frame,
+                expected,
+                "frame {frame}"
+            );
+        }
+    }
+
+    /// `BulletClass::AI 0x004671E0`: the `Vertical` arm applies no gravity,
+    /// preserves the launch direction, ramps the magnitude by `Acceleration=`
+    /// with no clamp on the crossing frame, and ends when the new world z
+    /// passes `DetonationAltitude` (`0x00467334`).
+    #[test]
+    fn gsi_08_08_vertical_projectile_climbs_and_ends_at_detonation_altitude() {
+        let mut store = ProjectileStore::new();
+        let mut vertical = spawn(ProjectileTarget::Cell { rx: 0, ry: 0 });
+        vertical.speed_leptons_per_frame = 1;
+        vertical.origin = ProjectileCoord::new(0, 0, 0);
+        vertical.trajectory = ProjectileTrajectory::Vertical {
+            detonation_altitude: 10,
+            acceleration: 1,
+            max_speed: 50,
+            heading_bam: 0,
+            pitch_bam: 0x4000,
+        };
+        let id = store.spawn(1, vertical);
+
+        let mut heights = Vec::new();
+        for frame in 0..8u32 {
+            let result = store.advance(
+                frame,
+                &BTreeMap::new(),
+                None,
+                &SharedCellDummy::fresh(),
+                |_, _| None,
+            );
+            if let Some(detonation) = result.detonations.first() {
+                assert_eq!(detonation.projectile_id, id);
+                assert!(
+                    detonation.impact.z > 10,
+                    "the arm ends only once z passes DetonationAltitude"
+                );
+                assert_eq!(detonation.impact.x, 0, "no horizontal drift straight up");
+                assert_eq!(heights, vec![2, 5, 9], "1 + 1, then +3, then +4");
+                return;
+            }
+            heights.push(store.get(id).expect("still climbing").position.z);
+        }
+        panic!("the vertical arm never reached DetonationAltitude");
+    }
+
+    /// `BulletClass::AI 0x00467C70` detonates on ANY impact flag with no `Arm`
+    /// test at all — `Arm=` is written once into the ProximityDetector at
+    /// `BulletClass::Fire 0x00468A5D` and gates only that fuse. An unarmed
+    /// shot that hits a wall must explode, not vanish.
+    #[test]
+    fn gsi_08_07_unarmed_collision_detonates_instead_of_vanishing() {
+        let mut store = ProjectileStore::new();
+        let mut unarmed = spawn(ProjectileTarget::Cell { rx: 4, ry: 0 });
+        unarmed.arm_frames = 5;
+        let id = store.spawn(1, unarmed);
+
+        let result = store.advance(
+            0,
+            &BTreeMap::new(),
+            None,
+            &SharedCellDummy::fresh(),
+            |_, coord| Some(ProjectileCollisionResponse::TargetZClamp(coord)),
+        );
+
+        assert!(result.expired.is_empty(), "an unarmed hit is not a vanish");
+        assert_eq!(result.detonations.len(), 1);
+        assert_eq!(result.detonations[0].projectile_id, id);
+        assert_eq!(
+            result.detonations[0].reason,
+            ProjectileDetonationReason::Collision
+        );
+    }
+
+    /// `ProximityDetector::Check @ 0x004E11F0` measures against the coordinate
+    /// `ProximityDetector::Setup @ 0x004E1130` froze at launch, never against
+    /// the live target.
+    #[test]
+    fn gsi_08_07_proximity_fuse_measures_the_frozen_launch_reference() {
+        let targets = BTreeMap::from([(42, ProjectileCoord::new(10_000, 0, 0))]);
+
+        let mut frozen_near = ProjectileStore::new();
+        let mut spawn_near = guided_spawn(1, 3);
+        spawn_near.ranged_fuse = true;
+        if let Some(guidance) = spawn_near.guidance.as_mut() {
+            guidance.fuse_reference = ProjectileCoord::new(1, 0, 0);
+        }
+        frozen_near.spawn(1, spawn_near);
+        let near = frozen_near.advance(0, &targets, None, &SharedCellDummy::fresh(), |_, _| None);
+        assert_eq!(near.detonations.len(), 1, "the frozen reference is reached");
+        assert_eq!(near.detonations[0].reason, ProjectileDetonationReason::Fuse);
+
+        let mut frozen_far = ProjectileStore::new();
+        let mut spawn_far = guided_spawn(1, 3);
+        spawn_far.ranged_fuse = true;
+        if let Some(guidance) = spawn_far.guidance.as_mut() {
+            guidance.fuse_reference = ProjectileCoord::new(10_000, 0, 0);
+        }
+        frozen_far.spawn(1, spawn_far);
+        let far = frozen_far.advance(0, &targets, None, &SharedCellDummy::fresh(), |_, _| None);
+        assert!(
+            far.detonations.is_empty(),
+            "a distant frozen reference keeps the shot flying even though the \
+             bullet is one lepton from where it started"
+        );
+    }
+
+    /// Both `TechnoClass::FireAt` scatter arms consume exactly two Scenario
+    /// draws — magnitude then angle — and both OFFSET the target delta,
+    /// leaving z untouched.
+    #[test]
+    fn gsi_08_07_launch_scatter_consumes_two_draws_and_offsets_the_delta() {
+        let mut rng = SimRng::new(0x6f_e7fe);
+        let mut reference = rng.clone();
+        let _ = reference.next_range_u32_inclusive(128, 256);
+        let _ = reference.next_range_u32_inclusive(0, 0x7fff_fffe);
+
+        let scattered = projectile_launch_scatter((1024, 0, 77), 256, 1280, false, &mut rng);
+        assert_eq!(rng.logical_state(), reference.logical_state());
+        assert_eq!(scattered.2, 77, "z is carried through unchanged");
+        let offset_x = scattered.0 - 1024;
+        let offset_y = scattered.1;
+        let magnitude = ((offset_x * offset_x + offset_y * offset_y) as f64).sqrt();
+        assert!(
+            (128.0..=257.0).contains(&magnitude),
+            "the plain arm draws its magnitude in [BallisticScatter/2, BallisticScatter], got {magnitude}"
+        );
+
+        // The flak arm scales by distance over weapon range, so a target at
+        // exactly the weapon's range can be displaced by the full scatter.
+        let mut flak_rng = SimRng::new(0x6f_e6ad);
+        let mut flak_reference = flak_rng.clone();
+        let _ = flak_reference.next_range_u32_inclusive(0, 256);
+        let _ = flak_reference.next_range_u32_inclusive(0, 0x7fff_fffe);
+        let flak = projectile_launch_scatter((1280, 0, 0), 256, 1280, true, &mut flak_rng);
+        assert_eq!(flak_rng.logical_state(), flak_reference.logical_state());
+        let flak_magnitude = (((flak.0 - 1280) * (flak.0 - 1280) + flak.1 * flak.1) as f64).sqrt();
+        assert!(
+            flak_magnitude <= 257.0,
+            "at exactly one weapon range the flak arm cannot exceed BallisticScatter, got {flak_magnitude}"
         );
     }
 
