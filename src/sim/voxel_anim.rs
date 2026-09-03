@@ -16,15 +16,20 @@
 //! RESIDUAL (GSI-05.14) — the pieces are simulated but not DRAWN. The unit
 //! voxel renderer is keyed by entity type, house remap and facing, and a
 //! `VoxelAnimClass` has none of those; its draw orientation is the quaternion
-//! tumble, which is itself blocked on the unread `Math__SinFromTable` /
-//! `Math__CosFromTable` contents (see [`crate::sim::bounce::BounceState`]), so
-//! a renderer added now would have to invent a facing.
+//! tumble ([`crate::sim::bounce::BounceState`]), which is not ported, so a
+//! renderer added now would have to invent a facing. That missing draw path is
+//! the whole blocker — the sine table it needs is readable, see the tumble
+//! residual on `BounceState` — and no harness or replay fixture exercises this
+//! module at all, so nothing red catches a regression here.
 //! - Trigger: a death whose type authors `DebrisTypes=`.
 //! - Player effect: the tyres a dying harvester throws are invisible; the SHP
 //!   half of the same block does draw, so the death is not silent.
 //! - Frequency: 36 stock sections author `DebrisTypes=` — the Allied and Soviet
-//!   miners, the Battle Fortress, the Flak Track, the demo truck. The other 420
-//!   sections that author `MaxDebris=` take the SHP arms and are visible.
+//!   miners, the Battle Fortress, the Flak Track, the demo truck. Against them,
+//!   337 sections take a visible SHP arm: of the 456 that author `MaxDebris=`,
+//!   83 author `MaxDebris=0` and throw nothing at all, leaving 373 that throw —
+//!   166 with their own `DebrisAnims=`, 171 falling back to `[General]
+//!   MetallicDebris=`, and the 36 voxel ones.
 //! - Downstream risk: none to the stream — the pieces already consume their
 //!   draws, hash, and expire on schedule, so adding the draw later moves no
 //!   state.
@@ -168,6 +173,13 @@ const DEBRIS_GRAVITY: NativeF64Bits = NativeF64Bits::from_bits(0x3ff6_6666_6000_
 /// native's `IDIV` raises a divide error. It needs `MaxXYVel` under 0.5, or a
 /// `MaxZVel` below `MinZVel - 1`; every stock `[VoxelAnims]` section authors
 /// `MaxXYVel` at 10 or above, so this is unreachable in stock.
+///
+/// VERA-internal, gamemd equivalent UNCHECKED: the sign flips at exactly
+/// `draw == 0x8000_0000`. Native's `CDQ/XOR/SUB` two's-complement negate
+/// saturates there — `abs(i32::MIN)` is still `i32::MIN` — so its `IDIV`
+/// divides a NEGATIVE dividend and yields a negative remainder, while
+/// `(draw as i32) % divisor` followed by `.abs()` here yields the positive one.
+/// `|x| % d == |x % d|` for every other draw. One draw in 2^32.
 fn raw_abs_modulo(draw: u32, divisor: i32) -> i32 {
     if divisor == 0 {
         return 0;
@@ -415,17 +427,21 @@ const DEBRIS_LOOP_ITERATION_CEILING: u32 = 4096;
 /// from the disassembly at `0x00702281`..`0x0070256C`.
 ///
 /// The gates and the draws, in native order:
-/// 1. `MapClass::Get_CellClass_At_Coord` on the death cell, then
-///    `CMP [cell+0xEC], 2 / JZ 0x00702672` at `0x00702274` — a unit dying on
-///    WATER throws no debris at all and takes no draw. That gate is the
-///    caller's: it is itself guarded by `vtable+0x1C8 < 0xB` and the object's
-///    `+0x8F`, which this function does not model.
+/// 1. A water skip that ordinary deaths never reach. `CMP [cell+0xEC], 2 /
+///    JZ 0x00702672` at `0x00702274` does suppress the whole block, RNG
+///    included, but reaching it needs BOTH `vtable+0x1C8 <= 0xA` and the
+///    object's `+0x8F` byte SET (`0x0070223D`, whose `JZ` on a clear byte
+///    jumps forward into the block). `+0x8F` is 0 from
+///    `ObjectClass::Constructor @ 0x005F3981` and is set only by
+///    `ObjectClass::DropIn @ 0x005F4171`, so only an object still falling from
+///    a drop-in can take the skip. VERA does not model drop-in free fall, so
+///    this function correctly models the byte as clear and never suppresses.
 /// 2. `TechnoType+0x5BC` (`MaxDebris`) must be positive (`0x00702291`). Below
 ///    that the block is skipped whole and the shared stream is untouched.
 /// 3. `budget = RandomRanged(MinDebris, MaxDebris - 1)` at `0x007022C8`. The
 ///    `DEC EDI` at `0x007022AD` is why the top is one BELOW `MaxDebris`, so
-///    `MaxDebris=1` can only ever yield the `MinDebris` end. 254 stock sections
-///    author `MaxDebris=` with no `MinDebris=`, so their budget is
+///    `MaxDebris=1` can only ever yield the `MinDebris` end. Most stock
+///    sections author `MaxDebris=` with no `MinDebris=`, so their budget is
 ///    `RandomRanged(0, MaxDebris - 1)` and can come out zero.
 /// 4. The voxel loop, entered only when `DebrisTypes.Count > 0` (`+0x324`,
 ///    `0x007022EA`) AND `budget > 0` (`0x007022F8`). Per iteration:
@@ -451,9 +467,11 @@ const DEBRIS_LOOP_ITERATION_CEILING: u32 = 4096;
 ///      `budget` anims from `[General] MetallicDebris=`, each taking one
 ///      `RandomRanged(0, RulesClass+0x14C - 1)` at `0x0070253A`.
 ///
-/// That last arm is the one players see most: 254 stock sections carry
-/// `MaxDebris=` alone, 166 carry it with `DebrisAnims=`, and only 36 name
-/// `DebrisTypes=`.
+/// That last arm is the one players see most. Of the 456 stock sections that
+/// author `MaxDebris=`, 83 author `MaxDebris=0` and stop at step 2; of the 373
+/// that throw, 171 carry `MaxDebris=` alone and land on `[General]
+/// MetallicDebris=`, 166 carry their own `DebrisAnims=`, and 36 name
+/// `DebrisTypes=` (all `TIRE`). The three sets do not overlap.
 pub fn throw_death_debris(
     data: &DebrisTypeData<'_>,
     owner_house: Option<InternedId>,
@@ -482,6 +500,11 @@ pub fn throw_death_debris(
             // length — 36 sections, each `DebrisTypes=TIRE` with one maximum —
             // so this is unreachable in stock.
             let maximum = data.debris_maximums.get(index).copied().unwrap_or(0);
+            // VERA-internal, gamemd equivalent UNCHECKED: the `.max(1)` floor.
+            // Native computes the divisor as `INC ECX` over the raw entry and
+            // divides with `IDIV ECX` at `0x00702339`, so a `DebrisMaximums=-1`
+            // entry faults there. Every stock `DebrisMaximums=` line is 4 or 6,
+            // so only a modded rules file reaches the floor.
             let divisor = maximum.saturating_add(1).max(1) as u32;
             let mut count = rng.next_raw_abs_modulo(divisor) as i32;
             if count >= budget {
@@ -524,7 +547,16 @@ pub fn throw_death_debris(
                 source: ShpDebrisSource::TypeDebrisAnims,
             });
         }
-    } else if data.debris_types.is_empty() && data.metallic_debris_count > 0 {
+    } else if data.debris_types.is_empty() {
+        // No count gate here, unlike the arm above: `0x007024D2` tests only
+        // `DebrisTypes.Count` and `0x007024DA` only the budget, then
+        // `0x00702525 MOV EAX,[Rules+0x14C] / DEC EAX` feeds the list length
+        // straight to `RandomRanged(0, len - 1)` at `0x0070253A`. An empty
+        // `[General] MetallicDebris=` therefore still costs `budget` draws in
+        // gamemd — the resulting -1 lands in the out-of-bounds index at
+        // `0x00702560 MOV EDX,[ECX + EAX*4]`, which is why the caller resolves
+        // the name with `.get()` and drops the row rather than inventing one.
+        // Stock authors 20 entries, so only a modded rules file reaches it.
         for _ in 0..budget.max(0) {
             let index =
                 rng.next_range_i32_inclusive(0, data.metallic_debris_count as i32 - 1) as usize;
@@ -611,6 +643,44 @@ mod tests {
     }
 
     #[test]
+    fn gsi_05_14_an_empty_metallic_debris_list_still_spends_the_budget_in_draws() {
+        // `0x007024D2` gates the arm on `DebrisTypes.Count` and `0x007024DA` on
+        // the budget — there is NO test of `[Rules+0x14C]`. `0x00702525
+        // MOV EAX,[EDX+0x14C] / DEC EAX` hands the length straight to
+        // `RandomRanged(0, len - 1)` at `0x0070253A`, so an empty list costs
+        // `budget` draws in gamemd and lands on an out-of-bounds index the
+        // caller resolves away. Skipping the draws instead would shift the
+        // shared cursor for every later consumer in the tick.
+        let input = data(5, 4, &[], &[], 0, 0);
+        let mut rng = SimRng::new(5);
+        let thrown = throw(&input, &mut rng);
+        assert!(
+            thrown.voxels.is_empty(),
+            "no DebrisTypes= means no voxel pieces"
+        );
+
+        // The budget is exactly 4 (MinDebris == MaxDebris - 1 takes no draw),
+        // and each unit spends one RandomRanged draw over the reversed span
+        // (0, -1) that native's `DEC EAX` produces on an empty list.
+        let mut expected = SimRng::new(5);
+        for _ in 0..4 {
+            let _ = expected.next_range_i32_inclusive(0, -1);
+        }
+        assert_eq!(
+            rng.logical_view(),
+            expected.logical_view(),
+            "an empty MetallicDebris list must still spend the budget in draws"
+        );
+        assert_eq!(thrown.anims.len(), 4);
+        assert!(
+            thrown
+                .anims
+                .iter()
+                .all(|row| row.source == ShpDebrisSource::RulesMetallicDebris)
+        );
+    }
+
+    #[test]
     fn gsi_05_14_the_voxel_budget_drains_and_the_type_index_wraps() {
         // The load-bearing correction to the earlier reading of this block.
         // `SUB EBX,EAX` at `0x007023B5` subtracts the spent count from the
@@ -677,8 +747,8 @@ mod tests {
     fn gsi_05_14_debris_anims_win_over_the_rules_metallic_list() {
         // `0x007023FC` tests `DebrisAnims.Count` first; only a type with an
         // EMPTY list AND no `DebrisTypes=` falls through to `RulesClass+0x140`
-        // at `0x0070252D`. 166 stock building sections take the first arm and
-        // 254 vehicle sections the second.
+        // at `0x0070252D`. 166 stock sections take the first arm and 171 the
+        // second.
         let input = data(9, 7, &[], &[], 6, 20);
         let mut rng = SimRng::new(31);
         let thrown = throw(&input, &mut rng);

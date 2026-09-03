@@ -58,18 +58,23 @@ pub struct BounceState {
     /// quaternion is to negate its components on a bounce.
     ///
     /// RESIDUAL (GSI-05.14) — the quaternion integration itself is not built,
-    /// but it is now fully specified. Everything below was read this session;
-    /// only the sine/cosine table remains unknown, so the next slice builds it
-    /// rather than re-deriving it.
+    /// but it is now fully specified, table included, so the next slice builds
+    /// it rather than re-deriving it. Nothing about it is instrument-blocked:
+    /// it is unstarted work behind a renderer that has no VoxelAnim draw path.
     /// - Units are RADIANS. `VoxelAnimTypeClass::ReadINI @ 0x0074B128`/
     ///   `0x0074B159` multiplies `MinAngularVelocity=`/`MaxAngularVelocity=` by
     ///   the double at `0x007F65E8`, whose bytes are pi/180. A degrees reading
     ///   spins debris ~57x too slowly.
     /// - `Quaternion_FromAxisAngle @ 0x00646480` re-normalises the axis a
     ///   SECOND time through `Sqrt_Approx` and then stores
-    ///   `(axis * sin(a/2), cos(a/2))` — `Math__SinFromTable`/
-    ///   `Math__CosFromTable`, whose table contents are UNCHECKED and are the
-    ///   one thing still needed.
+    ///   `(axis * sin(a/2), cos(a/2))` via `Math__SinFromTable @ 0x004CACB0`
+    ///   and `Math__CosFromTable`. That table is READABLE, not unknown:
+    ///   `SinFromTable` multiplies the radian argument by the exact f32
+    ///   2607.594482421875, `Math__ftol`s it, then half-step-indexes
+    ///   `&DAT_0084F084`, whose image bytes read
+    ///   `0.0, 7.6699e-4, 1.53398e-3, 2.30097e-3, …` = `sin(n * 2/2607.5945)`.
+    ///   An earlier note here called the contents UNCHECKED; they were simply
+    ///   not read, which is not the same thing and does not defer the port.
     /// - The product `FUN_00645ED0 @ 0x00645ED0` is a Hamilton product divided
     ///   by the SQUARED norm, not the norm, guarded by a `!= 0.0` test. Port
     ///   the quirk literally; a "corrected" normalise changes every frame of
@@ -656,9 +661,12 @@ impl BounceState {
     /// RESIDUAL (GSI-05.14) — the unconditional quaternion integration
     /// (`orientation = product(orientation, rotation)` at `0x0043A066`, and the
     /// bounce arm's negation of the rotation quaternion's components 0..=2) is
-    /// not built: `Quaternion_FromAxisAngle @ 0x00646480` needs
-    /// `Math__SinFromTable`/`Math__CosFromTable`, whose table contents are
-    /// UNCHECKED. Trigger: drawing any live piece of debris. Player effect: the
+    /// not built. It is unstarted, not blocked — the
+    /// `Math__SinFromTable @ 0x004CACB0` table at `&DAT_0084F084` that
+    /// `Quaternion_FromAxisAngle @ 0x00646480` needs is readable and its values
+    /// are recorded on [`BounceState::spin_axis`]; what is missing is a
+    /// renderer that can draw a `VoxelAnimClass` at an arbitrary orientation.
+    /// Trigger: drawing any live piece of debris. Player effect: the
     /// piece flies the right arc but does not tumble. Frequency: continuous
     /// while debris is airborne. Downstream risk: none — the spin is
     /// display-only, consumes no draws beyond the axis draws `Init` already

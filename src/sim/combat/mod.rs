@@ -2212,55 +2212,22 @@ impl DeathEffects {
     }
 }
 
-/// Select the death cues one dying object contributes.
-///
-/// The building tail is `BuildingClass::DestructionEffects`: when the dying
-/// object is a structure whose type carries **no** `DieSound=` entries,
-/// gamemd plays the global `[AudioVisual] BuildingDieSound` at the building's
-/// own coordinate — `0x0044173F MOV ECX,[type+0x520]` reads the `DieSound`
-/// vector's count (`TechnoTypeClass+0x510..0x528`), `0x0044174A CMP ECX,EBX ;
-/// JNZ` skips the global when it is non-zero (`EBX` is zeroed at
-/// `0x00441606` and stays zero), and `0x00441773 MOV ECX,[Rules+0x6E8]` +
-/// `0x00441779 CALL VocClass::PlayAtCoord @ 0x00750E20` is the play. It is
-/// not owner-gated and draws no RNG — there is one id, not a list.
-///
-/// Where the global sits relative to the per-type `VoiceDie=`/`DieSound=`
-/// draws is UNCHECKED: native emits it from the building-specific destruction
-/// path, not from the shared Techno death transaction. It cannot matter on
-/// retail data, because the branch that reaches it requires an empty
-/// `DieSound=` list and no stock building pairs `VoiceDie=` with an empty
-/// `DieSound=`.
-/// `CellClass+0xEC` LandType WATER, the value the death-side debris gate
-/// compares against at `0x00702274`.
-const WATER_YR_CELL_LAND_TYPE: u8 = 2;
-
-/// The height above ground below which the water gate applies, from
-/// `CMP EAX, 0xa / JG 0x00702281` at `0x00702238`.
-const DEBRIS_WATER_GATE_MAX_HEIGHT_LEPTONS: i32 = 10;
-
 /// The debris block of `TechnoClass::ReceiveDamage @ 0x00701900`, wired to the
 /// dying object.
 ///
-/// The entry gate is `0x00702232`..`0x0070227B`: the object's height virtual
-/// (`vtable+0x1C8`) must be at most 10 AND its `+0x8F` byte must be set before
-/// the cell is even looked up; only then does `LandType == Water` skip the
-/// whole block, RNG included. A high-flying object dying over water therefore
-/// still throws debris.
-///
-/// RESIDUAL (GSI-05.14) — `ObjectClass+0x8F` is read as one byte at
-/// `0x0070223D` and this session did not identify it; Ghidra's imported struct
-/// name for the slot is YRpp-derived and not evidence. It is modelled as always
-/// set, which is the suppressing direction: if the flag is ever clear on a
-/// ground-level object, VERA withholds debris where retail throws it and the
-/// shared stream diverges by the whole block's draws.
-/// - Trigger: any Techno death at height <= 10 on a water cell.
-/// - Player effect: a wreck sinking at a shoreline scatters nothing.
-/// - Frequency: naval deaths and shoreline vehicle deaths only; the same
-///   `+0x8F`-and-height pair guards the water-splash arm of
-///   `UnitClass::ReceiveDamage @ 0x00737C90`, which does fire in ordinary play,
-///   so the flag is at least commonly set.
-/// - Downstream risk: it gates draws, so a wrong reading shifts the cursor for
-///   every consumer after that death in the same tick.
+/// The entry gate is `0x00702232`..`0x0070227B` and it is a *drop-in* gate, not
+/// a water gate. `0x0070223D MOV AL,[ESI+0x8F] / TEST AL,AL / JZ 0x00702281`
+/// jumps **past** the cell lookup and into the `MaxDebris` test whenever the
+/// byte is CLEAR, so the `CMP [cell+0xEC],2` water skip at `0x00702274` is
+/// reached only while the byte is set. `ObjectClass+0x8F` is written 0 by
+/// `ObjectClass::Constructor @ 0x005F3981` (`MOV [ESI+0x8F],BL` after
+/// `XOR EBX,EBX` at `0x005F3909`) and set to 1 only by
+/// `ObjectClass::DropIn @ 0x005F4171` — the paradrop / free-fall entry, which
+/// sets `+0x8D` in the same breath — and `ObjectClass::AI @ 0x005F4021` reads
+/// it as the gate on its fall arm. A program-wide `search_instructions` for
+/// `+ 0x8f]` finds no third writer. An object that is not currently falling
+/// from a drop-in therefore has the byte clear, so an ordinary death over water
+/// DOES throw debris and consumes the block's draws.
 ///
 /// RESIDUAL (GSI-05.14) — the SHP half spawns through the existing
 /// `ExplosionEffect` -> `WorldEffect` path, which plays the sprite at a fixed
@@ -2268,8 +2235,8 @@ const DEBRIS_WATER_GATE_MAX_HEIGHT_LEPTONS: i32 = 10;
 /// debris AnimType is `Bouncer=yes` (`AnimTypeClass+0x35A`, read at
 /// `0x004286A7`), so native's constructor enters its own `BounceClass::Init`
 /// arm and the chunk flies an arc before landing.
-/// - Trigger: every death that reaches either SHP arm — 420 of the 456 stock
-///   sections that author `MaxDebris=`.
+/// - Trigger: every death that reaches either SHP arm — 337 of the 373 stock
+///   sections that throw (of 456 authoring `MaxDebris=`, 83 author 0).
 /// - Player effect: the debris sprite plays where the wreck stood instead of
 ///   tumbling outward, and its `Damage=`/`Warhead=` on landing is not applied.
 /// - Frequency: continuous — every building death and most vehicle deaths.
@@ -2284,7 +2251,6 @@ const DEBRIS_WATER_GATE_MAX_HEIGHT_LEPTONS: i32 = 10;
 fn throw_debris_for_death(
     object_type: &ObjectType,
     rules: &RuleSet,
-    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
     interner: &mut StringInterner,
     owner: InternedId,
     rx: u16,
@@ -2308,20 +2274,6 @@ fn throw_debris_for_death(
     let world_y = i32::from(ry)
         .wrapping_mul(256)
         .wrapping_add(sub_y.to_num::<i32>());
-    if let Some(cell) = terrain.and_then(|grid| grid.cell(rx, ry))
-        && cell.yr_cell_land_type == WATER_YR_CELL_LAND_TYPE
-    {
-        let ground = crate::util::lepton::ground_height_leptons(
-            cell.level,
-            cell.slope_type,
-            world_x,
-            world_y,
-        )
-        .unwrap_or(0);
-        if world_z_leptons - ground <= DEBRIS_WATER_GATE_MAX_HEIGHT_LEPTONS {
-            return;
-        }
-    }
 
     let debris_types: Vec<Option<(crate::rules::voxel_anim_type::VoxelAnimTypeId, _)>> =
         object_type
@@ -2376,6 +2328,24 @@ fn throw_debris_for_death(
     }
 }
 
+/// Select the death cues one dying object contributes.
+///
+/// The building tail is `BuildingClass::DestructionEffects`: when the dying
+/// object is a structure whose type carries **no** `DieSound=` entries,
+/// gamemd plays the global `[AudioVisual] BuildingDieSound` at the building's
+/// own coordinate — `0x0044173F MOV ECX,[type+0x520]` reads the `DieSound`
+/// vector's count (`TechnoTypeClass+0x510..0x528`), `0x0044174A CMP ECX,EBX ;
+/// JNZ` skips the global when it is non-zero (`EBX` is zeroed at
+/// `0x00441606` and stays zero), and `0x00441773 MOV ECX,[Rules+0x6E8]` +
+/// `0x00441779 CALL VocClass::PlayAtCoord @ 0x00750E20` is the play. It is
+/// not owner-gated and draws no RNG — there is one id, not a list.
+///
+/// Where the global sits relative to the per-type `VoiceDie=`/`DieSound=`
+/// draws is UNCHECKED: native emits it from the building-specific destruction
+/// path, not from the shared Techno death transaction. It cannot matter on
+/// retail data, because the branch that reaches it requires an empty
+/// `DieSound=` list and no stock building pairs `VoiceDie=` with an empty
+/// `DieSound=`.
 fn append_selected_death_sounds(
     object_type: &ObjectType,
     category: EntityCategory,
@@ -2570,7 +2540,6 @@ fn handle_entity_deaths(
                 throw_debris_for_death(
                     obj,
                     rules,
-                    terrain.as_deref(),
                     interner,
                     owner,
                     rx,
@@ -6640,8 +6609,13 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     cell_target_detaches.append(&mut late_death.cell_target_detaches);
     tiberium_reduction_requests.append(&mut late_death.tiberium_reduction_requests);
     explosion_effects.append(&mut late_death.explosion_effects);
-    voxel_debris.append(&mut late_death.voxel_debris);
+    // `death` collects the deaths committed before the late radiation pass, so
+    // its debris is stamped first. It is empty in every path today —
+    // `absorb_inline_death_effects` drains `death.voxel_debris` into
+    // `CombatEmit` before the lifecycle append — but taking it in the wrong
+    // order here would invert the spawn ids the moment it stopped being empty.
     voxel_debris.append(&mut death.voxel_debris);
+    voxel_debris.append(&mut late_death.voxel_debris);
     smudge_spawn_requests.append(&mut late_death.smudge_spawn_requests);
     death.append(late_death);
     under_attack_events.append(&mut late_pings);
