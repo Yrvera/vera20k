@@ -194,7 +194,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         fly_back: false,
         landable: false,
         jumpjet: false,
-        jumpjet_params: None,
+        jumpjet_params: JumpjetParams::default(),
         deploys_into: None,
         undeploys_into: None,
         deploy_facing: 0x80,
@@ -375,7 +375,7 @@ fn test_jumpjet_air_layer() {
 fn test_jumpjet_with_custom_params() {
     let mut obj = make_obj(LocomotorKind::Jumpjet, ObjectCategory::Infantry);
     obj.jumpjet = true;
-    obj.jumpjet_params = Some(JumpjetParams {
+    obj.jumpjet_params = JumpjetParams {
         turn_rate: 4,
         speed: sim_from_f32(20.0),
         climb: sim_from_f32(8.0),
@@ -385,7 +385,7 @@ fn test_jumpjet_with_custom_params() {
         wobbles: 0.2,
         deviation: 40,
         no_wobbles: false,
-    });
+    };
     let state = LocomotorState::from_object_type(&obj, 1500, 0);
     assert_eq!(state.target_altitude, SimFixed::from_num(750));
     assert_eq!(state.jumpjet_speed, sim_from_f32(20.0));
@@ -502,4 +502,111 @@ fn drive_piggyback_refuses_an_unstashed_active_drive() {
     assert!(!state.begin_drive_piggyback_for_teleporter(0));
     assert_eq!(state.kind, LocomotorKind::Drive);
     assert!(state.piggyback.is_none());
+}
+
+/// End of the production chain for the two units the `JumpJet=` gate broke:
+/// retail INI bytes -> `ObjectType::from_ini_section` -> `LocomotorState`.
+///
+/// gamemd copies the type's jumpjet block into the locomotor unconditionally
+/// once the Jumpjet locomotor is installed (parameter copy at `0x0054AD30`,
+/// reading `TechnoType+0xD70`..`+0xD8C`), and `TechnoTypeClass::ReadINI`
+/// `0x00715020`-`0x0071520F` filled that block with no reference to
+/// `JumpJet=`. So a stock Kirov hovers at its authored 750, not at the
+/// constructor's 500.
+#[test]
+fn retail_kirov_and_disc_reach_their_authored_hover_altitude() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("ini")
+        .join("rulesmd.ini");
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "cannot read {}: {e}. The gitignored ini/ directory is required; \
+             a fresh worktree needs it copied in from the main checkout.",
+            path.display()
+        )
+    });
+    let ini =
+        crate::rules::ini_parser::IniFile::from_bytes(&bytes).expect("retail rulesmd.ini parses");
+
+    // (section, JumpjetSpeed, JumpjetClimb, JumpjetCrash) as authored.
+    for (id, speed, climb, crash) in [("ZEP", 5.0, 6.0, 12.0), ("DISK", 16.0, 8.0, 15.0)] {
+        let obj = ObjectType::from_ini_section(
+            id,
+            ini.section(id).unwrap_or_else(|| panic!("[{id}] section")),
+            ObjectCategory::Vehicle,
+        );
+        let state = LocomotorState::from_object_type(&obj, 1500, 0);
+
+        assert_eq!(state.kind, LocomotorKind::Jumpjet, "[{id}]");
+        assert_eq!(
+            state.target_altitude,
+            SimFixed::from_num(750),
+            "[{id}] hovers at its authored JumpjetHeight"
+        );
+        assert_eq!(state.jumpjet_speed, sim_from_f32(speed), "[{id}]");
+        assert_eq!(
+            state.climb_rate,
+            sim_from_f32(climb) * SimFixed::from_num(15),
+            "[{id}]"
+        );
+        assert_eq!(
+            state.jumpjet_crash_speed,
+            (sim_from_f32(climb) + sim_from_f32(crash)) * SimFixed::from_num(15),
+            "[{id}] crash descent is (climb + crash)"
+        );
+        // The constructor's acceleration, because stock spells the key
+        // `JumpJetAccel=` and gamemd looks up `JumpjetAccel`.
+        assert_eq!(state.jumpjet_accel, sim_from_f32(2.0), "[{id}]");
+        assert_eq!(state.jumpjet_turn_rate, 4, "[{id}]");
+    }
+}
+
+/// Non-Jumpjet locomotors must not pick up the block. Every `TechnoType`
+/// carries it, but only the copy at `0x0054AD30` reads it, and that lives in
+/// the Jumpjet locomotor.
+#[test]
+fn non_jumpjet_locomotors_ignore_the_types_jumpjet_block() {
+    for kind in [
+        LocomotorKind::Drive,
+        LocomotorKind::Walk,
+        LocomotorKind::Hover,
+        LocomotorKind::Fly,
+        LocomotorKind::Ship,
+    ] {
+        let mut obj = make_obj(kind, ObjectCategory::Vehicle);
+        // A section that authored every jumpjet key would still not reach a
+        // Drive or Fly locomotor.
+        obj.jumpjet_params = JumpjetParams {
+            turn_rate: 100,
+            speed: sim_from_f32(99.0),
+            climb: sim_from_f32(9.0),
+            crash: sim_from_f32(9.0),
+            height: 750,
+            accel: sim_from_f32(10.0),
+            wobbles: 0.5,
+            deviation: 15,
+            no_wobbles: true,
+        };
+        let state = LocomotorState::from_object_type(&obj, 1500, 0);
+
+        assert_eq!(
+            state.jumpjet_accel,
+            crate::util::fixed_math::SIM_ZERO,
+            "{kind:?}"
+        );
+        assert_eq!(state.jumpjet_deviation, 0, "{kind:?}");
+        assert_eq!(
+            state.jumpjet_crash_speed,
+            crate::util::fixed_math::SIM_ZERO,
+            "{kind:?}"
+        );
+        assert_eq!(state.jumpjet_turn_rate, 4, "{kind:?}");
+        if kind != LocomotorKind::Fly {
+            assert_eq!(
+                state.target_altitude,
+                crate::util::fixed_math::SIM_ZERO,
+                "{kind:?}"
+            );
+        }
+    }
 }

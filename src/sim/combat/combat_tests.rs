@@ -8694,30 +8694,26 @@ fn flat_level_zero_terrain(
 /// altitude reaches `object_world_z_leptons`, the launch pitch points down, and
 /// the flight ends in a detonation.
 ///
-/// The fixture authors `JumpJet=yes`, which stock `[ZEP]` does NOT — it takes
-/// its Jumpjet locomotor from the GUID alone. That reproduces gamemd, where
-/// `TechnoTypeClass::ReadINI @ 0x00715151` stores `JumpjetHeight=` into
-/// `TechnoType+0xD80` unconditionally (over the constructor default 500 at
-/// `0x007115D3`), so a native Kirov really does hover at 750. VERA gates the
-/// whole `JumpjetParams` block on `JumpJet=yes` (`rules/object_type.rs`), so a
-/// stock `[ZEP]`/`[DISK]` currently hovers at the 500 default instead — a
-/// recorded DRIFT out of scope here, and the reason this fixture has to author
-/// the key to exercise the chain it claims to pin.
+/// The fixture is stock-faithful on the jumpjet keys: like retail `[ZEP]` it
+/// omits `JumpJet=` and takes its Jumpjet locomotor from the GUID alone, and
+/// `JumpjetHeight=750` still lands, because `TechnoTypeClass::ReadINI @
+/// 0x00715151` stores it into `TechnoType+0xD80` unconditionally (over the
+/// constructor default 500 at `0x007115D3`). A native Kirov really does hover
+/// at 750.
 #[test]
 fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
     use crate::map::resolved_terrain::SharedCellDummy;
     use crate::sim::projectile::{ProjectileStore, ProjectileTrajectory};
 
     // Stock `[BlimpBombP]`, `[BlimpBomb]` and the Kirov's `JumpjetHeight=750`,
-    // with two deliberate changes: `Range=` is widened from the stock 1.5 so the
+    // with one deliberate change: `Range=` is widened from the stock 1.5 so the
     // shot clears the fire-range gate while the firer hovers 750 leptons up
-    // (nothing on the `Vertical` arm reads `Range=`), and `JumpJet=yes` is
-    // authored so VERA's `JumpJet=`-gated parser reaches `JumpjetHeight=` the
-    // way `TechnoTypeClass::ReadINI` does unconditionally. See the doc comment.
+    // (nothing on the `Vertical` arm reads `Range=`). `JumpJet=` stays absent,
+    // as in stock. See the doc comment.
     let rules = RuleSet::from_ini(&IniFile::from_str(
         "[VehicleTypes]\n0=ZEP\n1=HTNK\n\
          [ZEP]\nStrength=2000\nArmor=medium\nSpeed=5\nPrimary=BlimpBomb\n\
-         BalloonHover=yes\nJumpJet=yes\nJumpjetHeight=750\nConsideredAircraft=yes\n\
+         BalloonHover=yes\nJumpjetHeight=750\nConsideredAircraft=yes\n\
          MovementZone=Fly\nSpeedType=Hover\n\
          Locomotor={92612C46-F71F-11d1-AC9F-006008055BB5}\n\
          [HTNK]\nStrength=2000\nArmor=heavy\nSpeed=4\n\
@@ -8944,7 +8940,10 @@ fn gsi_05_14_a_dying_building_uses_its_own_debris_anims() {
         .collect();
     let own: usize = names.iter().filter(|n| n.starts_with("DBRI-WM")).count();
     // `MinDebris=3`, `MaxDebris=4` pins the budget at 3 with no draw.
-    assert_eq!(own, 3, "the whole budget comes from DebrisAnims=: {names:?}");
+    assert_eq!(
+        own, 3,
+        "the whole budget comes from DebrisAnims=: {names:?}"
+    );
     assert!(
         !names.iter().any(|n| n.starts_with("DBRIS")),
         "the Rules MetallicDebris arm must not also fire: {names:?}"

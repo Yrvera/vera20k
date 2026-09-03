@@ -30,7 +30,7 @@ use crate::sim::movement::locomotion::piggyback::{
     self, EndGateContext, LocomotorRuntimePayload, StashedLocomotor,
 };
 use crate::sim::movement::slope_transition::SlopeTransitionState;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 /// Which spatial layer the unit currently occupies.
 ///
@@ -292,8 +292,21 @@ impl LocomotorState {
         let (target_alt, climb, jj_speed) =
             Self::air_params_from_object(kind, &obj.jumpjet_params, flight_level);
 
-        // Extract extended jumpjet fields (accel, deviation, crash, turn rate).
-        let jj = obj.jumpjet_params.as_ref();
+        // gamemd-derived: every `TechnoType` carries the `+0xD70`..`+0xD90`
+        // jumpjet block, but only the Jumpjet locomotor ever copies it out —
+        // the parameter copy at `0x0054AD30` pulls `+0xD70` (turn rate),
+        // `+0xD74` (speed), `+0xD78` (climb), `+0xD7C` (crash), `+0xD80`
+        // (height), `+0xD84` (accel), `+0xD88` (wobbles), `+0xD90`
+        // (deviation) and `+0xD8C` (no-wobbles) off the type in one run. A
+        // Drive/Fly/Hover locomotor has no such fields in gamemd and never
+        // reads the type's, so they stay inert here for every other kind.
+        // VERA-internal: this one struct serves every locomotor kind, so the
+        // non-jumpjet arms still need *a* value. Zero for the three that mean
+        // "off", and 4 for the turn rate — the `TechnoTypeClass::Constructor`
+        // seed at `0x007115AE`, which is also what this line produced before
+        // the block became unconditional.
+        let jj: Option<&JumpjetParams> =
+            (kind == LocomotorKind::Jumpjet).then_some(&obj.jumpjet_params);
         let jj_accel: SimFixed = jj.map_or(SIM_ZERO, |p| p.accel);
         let jj_deviation: i32 = jj.map_or(0, |p| p.deviation);
         let jj_crash_speed: SimFixed =
@@ -335,11 +348,16 @@ impl LocomotorState {
         }
     }
 
-    /// Compute altitude parameters from locomotor kind and optional jumpjet params.
-    /// Returns (target_altitude, climb_rate, jumpjet_speed).
+    /// Compute altitude parameters from locomotor kind and the type's jumpjet
+    /// block. Returns (target_altitude, climb_rate, jumpjet_speed).
+    ///
+    /// The Jumpjet arm has no fallback literals: `JumpjetParams` already
+    /// carries the `TechnoTypeClass::Constructor` seeds (`0x007115AE`ff) for
+    /// every key the section leaves out, so duplicating them here would be a
+    /// second, drift-prone source of truth.
     fn air_params_from_object(
         kind: LocomotorKind,
-        jumpjet_params: &Option<JumpjetParams>,
+        jumpjet_params: &JumpjetParams,
         flight_level: i32,
     ) -> (SimFixed, SimFixed, SimFixed) {
         match kind {
@@ -348,13 +366,13 @@ impl LocomotorState {
                 (alt, FLY_CLIMB_RATE, SIM_ZERO)
             }
             LocomotorKind::Jumpjet => {
-                let jj = jumpjet_params.as_ref();
-                let height: SimFixed =
-                    jj.map_or(SimFixed::from_num(500), |p| SimFixed::from_num(p.height));
-                let climb: SimFixed = jj.map_or(sim_from_f32(5.0), |p| p.climb);
-                let speed: SimFixed = jj.map_or(sim_from_f32(14.0), |p| p.speed);
+                let height: SimFixed = SimFixed::from_num(jumpjet_params.height);
                 // Jumpjet climb rate scaled to leptons/second (original is per-tick at 15Hz).
-                (height, climb * SimFixed::from_num(15), speed)
+                (
+                    height,
+                    jumpjet_params.climb * SimFixed::from_num(15),
+                    jumpjet_params.speed,
+                )
             }
             _ => (SIM_ZERO, SIM_ZERO, SIM_ZERO),
         }

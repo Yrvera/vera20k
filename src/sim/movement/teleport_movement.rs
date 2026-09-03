@@ -657,7 +657,7 @@ mod tests {
             fly_back: false,
             landable: false,
             jumpjet: false,
-            jumpjet_params: None,
+            jumpjet_params: crate::rules::jumpjet_params::JumpjetParams::default(),
             deploys_into: None,
             undeploys_into: None,
             deploy_facing: 0x80,
