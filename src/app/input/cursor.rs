@@ -210,6 +210,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             hover,
             state.rules(),
             sim.path_grid(),
+            state.overlay_registry(),
         );
         return Some(kind);
     }
@@ -435,6 +436,7 @@ fn capability_cursor_for_hover(
     hover: &crate::app::input::entity_pick::HoverTargetKindWithId,
     rules: Option<&crate::rules::ruleset::RuleSet>,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> CursorFeedbackKind {
     use crate::map::entities::EntityCategory;
 
@@ -590,6 +592,7 @@ fn capability_cursor_for_hover(
                         hover.stable_id,
                         rules,
                         sim.resolved_terrain.as_ref(),
+                        overlay_registry,
                     );
                     return if in_range {
                         if hover.kind == HoverTargetKind::FriendlyUnit {
@@ -654,6 +657,7 @@ fn capability_cursor_for_hover(
                     hover.stable_id,
                     rules,
                     sim.resolved_terrain.as_ref(),
+                    overlay_registry,
                 )
             });
             if in_range {
@@ -689,6 +693,7 @@ fn resolved_unit_in_range(
     target_id: u64,
     rules: Option<&crate::rules::ruleset::RuleSet>,
     terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> bool {
     let rules = match rules {
         Some(r) => r,
@@ -737,6 +742,11 @@ fn resolved_unit_in_range(
                 &sim.interner,
                 sim.entities(),
                 t,
+                &combat::line_of_fire::LineOfFireInputs {
+                    overlay_grid: sim.overlay_grid.as_ref(),
+                    overlay_registry,
+                    alliances: Some(&sim.house_alliances),
+                },
             )
         } else {
             let dist_sq = combat::lepton_distance_sq_raw(
@@ -1241,6 +1251,7 @@ mod tests {
             &hover,
             Some(&rules),
             None,
+            None,
         );
 
         // 7. Dump the gate inputs so we can see which condition fails
@@ -1295,6 +1306,7 @@ mod tests {
             Some(miner_id),
             &hover,
             Some(&rules),
+            None,
             None,
         );
         assert_eq!(

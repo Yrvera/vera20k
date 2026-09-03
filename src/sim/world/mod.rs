@@ -7510,7 +7510,7 @@ impl Simulation {
             );
             destroyed_structure |= c4_outcome.destroyed_structure;
             bridge_state_changed |= bridge_repaired | c4_outcome.bridge_state_changed;
-            self.tick_order_intents_pre_combat(rules, &tube_turn_owned_ids);
+            self.tick_order_intents_pre_combat(rules, overlay_registry, &tube_turn_owned_ids);
             // Pursuit: walk units with out-of-range attack_target into range,
             // halt movement on range entry. Must run before combat so combat
             // sees the up-to-date movement_target this tick.
@@ -7589,7 +7589,12 @@ impl Simulation {
                 .copied()
                 .filter(|id| !tube_turn_owned_ids.contains(id))
                 .collect::<Vec<_>>();
-            crate::sim::spawn_manager::tick_spawn_managers(self, rules, &ordinary_logic_order);
+            crate::sim::spawn_manager::tick_spawn_managers(
+                self,
+                rules,
+                &ordinary_logic_order,
+                overlay_registry,
+            );
             destroyed_structure |= combat_result.structure_destroyed;
             let combat_dead_infos: Vec<(InternedId, EntityCategory)> = combat_result
                 .despawned_ids

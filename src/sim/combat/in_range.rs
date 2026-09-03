@@ -14,11 +14,17 @@
 //! 0x00474620 scales `Range=` by 256 before truncating, so the fraction on 60
 //! of the 256 stock `Range=` weapons is real reach, not rounding noise.
 //!
+//! The gate's LAST step, on BOTH the arcing and the ground arm, is the
+//! line-of-fire walk at 0x006F7642, which `sim::combat::line_of_fire` owns: a
+//! wall or a cliff on the line refuses the shot outright. That is why this
+//! module takes `LineOfFireInputs` alongside the terrain grid.
+//!
 //! Stages 2-N add the remaining range-VALUE chain (Garrison / Bunker /
 //! OpenTopped / Veteran). Stage Arcing adds the full Branch B slope-arc check.
 //!
 //! Depends on: rules (ObjectType, Weapon, ProjectileType), map (terrain
-//! height + bridge), util/lepton (constants), util/fixed_math (isqrt_i64).
+//! height + bridge), sim/combat/line_of_fire, util/lepton (constants),
+//! util/fixed_math (isqrt_i64).
 //! Does NOT depend on render/ui/sidebar/audio/net.
 
 use crate::map::entities::EntityCategory;
@@ -26,6 +32,7 @@ use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::weapon_type::WeaponType;
 use crate::sim::combat::TargetKind;
+use crate::sim::combat::line_of_fire::{self, LineOfFireInputs};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::StringInterner;
@@ -219,11 +226,51 @@ fn height_fire_bonus_leptons(
     0
 }
 
+/// The `MinimumRange` arm of `TechnoClass::InRange` on its own.
+///
+/// 0x006F737F–0x006F73E8. Native runs it BEFORE the arcing split, always in
+/// 3-D, and gates on `!= 0` rather than `> 0`; the strict `JL` at 0x006F73E8
+/// makes the boundary itself legal.
+fn minimum_range_blocks(weapon: &WeaponType, src: (i64, i64, i64), tgt: (i64, i64, i64)) -> bool {
+    if weapon.minimum_range_leptons == 0 {
+        return false;
+    }
+    let (sx, sy, sz) = src;
+    let (tx, ty, tz) = tgt;
+    let dx = sx - tx;
+    let dy = sy - ty;
+    let dz = sz - tz;
+    isqrt_i64(dx * dx + dy * dy + dz * dz) < i64::from(weapon.minimum_range_leptons)
+}
+
+/// Whether the attacker is standing INSIDE `weapon`'s `MinimumRange` — the one
+/// `InRange` refusal that walking toward the target cannot fix.
+///
+/// Pursuit needs to tell this refusal apart from the others because VERA's
+/// approach produces a single candidate (the target's own cell) where native's
+/// approach search 0x004D5690 scans many: for a too-close refusal the target's
+/// cell is the worst candidate in the set, not the best.
+pub(crate) fn inside_minimum_range(
+    src: (i64, i64, i64),
+    target: &TargetKind,
+    weapon: &WeaponType,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    entities: &EntityStore,
+    terrain: &ResolvedTerrainGrid,
+) -> bool {
+    let Some(tgt) = resolve_target_coords_3d(target, entities, rules, interner, terrain) else {
+        return false;
+    };
+    minimum_range_blocks(weapon, src, tgt)
+}
+
 /// Full 3D range check. Returns true if `attacker` (firing from `src`) can
 /// hit `target` with `weapon`, accounting for all Stage 1 gates.
 ///
 /// `src` is caller-supplied as `(attacker_x_lep, attacker_y_lep,
 /// effective_z_leptons(attacker, terrain))`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_in_range(
     attacker: &GameEntity,
     src: (i64, i64, i64),
@@ -233,6 +280,7 @@ pub(crate) fn compute_in_range(
     interner: &StringInterner,
     entities: &EntityStore,
     terrain: &ResolvedTerrainGrid,
+    los: &LineOfFireInputs<'_>,
 ) -> bool {
     let weapon_range_lep: i64 = i64::from(weapon.range_leptons);
 
@@ -249,16 +297,9 @@ pub(crate) fn compute_in_range(
 
     let (sx, sy, sz) = src;
 
-    // MinimumRange, 0x006F737F–0x006F73E8. Native runs it BEFORE the arcing
-    // split, always in 3-D, and gates on `!= 0` rather than `> 0`; a strict
-    // `JL` at 0x006F73E8 makes the boundary itself legal.
-    if weapon.minimum_range_leptons != 0 {
-        let dx = sx - tx;
-        let dy = sy - ty;
-        let dz = sz - tz;
-        if isqrt_i64(dx * dx + dy * dy + dz * dz) < i64::from(weapon.minimum_range_leptons) {
-            return false;
-        }
+    // MinimumRange, 0x006F737F–0x006F73E8, before the arcing split.
+    if minimum_range_blocks(weapon, src, (tx, ty, tz)) {
+        return false;
     }
 
     // Arcing-weapon 2D fallthrough — preserves V3/Prism/etc. current behavior.
@@ -269,7 +310,24 @@ pub(crate) fn compute_in_range(
         .map(|p| p.arcing)
         .unwrap_or(false);
     if arcing {
-        return compute_in_range_arcing_2d(src, (tx, ty), weapon_range_lep);
+        if !compute_in_range_arcing_2d(src, (tx, ty), weapon_range_lep) {
+            return false;
+        }
+        // The arcing arm is NOT exempt from the line-of-fire walk: 0x006F7519
+        // pushes the same two arguments and jumps straight to 0x006F763C, so
+        // both arms share the `CALL 0x004CC310`. This matters on stock data —
+        // `[Cannon]`, the projectile behind every cannon tank, is
+        // `Arcing=true` AND `SubjectToWalls=yes`/`SubjectToCliffs=yes`.
+        return line_of_fire_clear(
+            attacker,
+            src,
+            (tx, ty),
+            weapon,
+            rules,
+            interner,
+            terrain,
+            los,
+        );
     }
 
     let max_range_lep =
@@ -289,7 +347,50 @@ pub(crate) fn compute_in_range(
         return false;
     }
 
-    true
+    // 0x006F7642 — the last thing `InRange` does. `TEST EAX,EAX; SETZ AL`
+    // means a blocking cell is a refusal, not a warning.
+    line_of_fire_clear(
+        attacker,
+        src,
+        (tx, ty),
+        weapon,
+        rules,
+        interner,
+        terrain,
+        los,
+    )
+}
+
+/// `CALL 0x004CC310` at 0x006F7642 with `InRange`'s own source and target
+/// coordinates, the weapon from `[EBP+0x10]`, and the firer's house from
+/// `this->+0x21C` (loaded at 0x006F7631 / 0x006F7511).
+#[allow(clippy::too_many_arguments)]
+fn line_of_fire_clear(
+    attacker: &GameEntity,
+    src: (i64, i64, i64),
+    target_xy: (i64, i64),
+    weapon: &WeaponType,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    terrain: &ResolvedTerrainGrid,
+    los: &LineOfFireInputs<'_>,
+) -> bool {
+    line_of_fire::line_of_fire_blocking_cell(
+        (src.0, src.1),
+        target_xy,
+        weapon,
+        // `try_resolve` rather than `resolve`: the house name is read only by
+        // the `[WallModel] AlliedWallTransparency` arm at 0x004CC458, which
+        // stock rules leave off, and a fixture interner that never saw this
+        // owner must not panic the range gate. An unresolvable owner matches
+        // no alliance, which is the same verdict the stock rule gives.
+        interner.try_resolve(attacker.owner).unwrap_or_default(),
+        rules,
+        terrain,
+        interner,
+        los,
+    )
+    .is_none()
 }
 
 /// Stage 1 arcing-weapon path: 2-D distance against the base weapon range.
@@ -984,6 +1085,7 @@ mod tests {
             &interner,
             &entities,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(in_range, "sentinel range should always be in range");
     }
@@ -1010,6 +1112,7 @@ mod tests {
             &interner,
             &entities,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(at_boundary, "exact-range boundary should be inclusive");
 
@@ -1027,6 +1130,7 @@ mod tests {
             &interner,
             &entities2,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(
             !one_past,
@@ -1060,6 +1164,7 @@ mod tests {
             &interner,
             &entities,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(
             at_min,
@@ -1080,6 +1185,7 @@ mod tests {
             &interner,
             &entities2,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(
             !inside_min,
@@ -1111,6 +1217,7 @@ mod tests {
             &interner,
             &entities,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(!r4, "1273-lepton 3D distance exceeds 1024 leptons");
 
@@ -1126,6 +1233,7 @@ mod tests {
             &interner,
             &entities,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(r5, "1273-lepton 3D distance is within 1280 leptons");
     }
@@ -1152,6 +1260,7 @@ mod tests {
             &interner,
             &entities,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(
             in_range,
@@ -1259,6 +1368,7 @@ mod tests {
             &interner,
             &entities,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(
             !in_range,
@@ -1305,6 +1415,7 @@ mod tests {
             &interner,
             &entities,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(
             in_range,
@@ -1337,6 +1448,7 @@ mod tests {
             &interner,
             &entities,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(in_range, "sentinel should bypass min-range gate");
     }
@@ -1363,6 +1475,7 @@ mod tests {
             &interner,
             &entities,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(
             !in_range,
@@ -1405,6 +1518,7 @@ mod tests {
             &interner,
             &entities,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         );
         assert!(
             in_range,
@@ -1452,7 +1566,15 @@ mod tests {
         let src =
             fire_source_coords(kirov, &target, weapon, &entities, &terrain).expect("source coords");
         compute_in_range(
-            kirov, src, &target, weapon, rules, &interner, &entities, &terrain,
+            kirov,
+            src,
+            &target,
+            weapon,
+            rules,
+            &interner,
+            &entities,
+            &terrain,
+            &LineOfFireInputs::terrain_only(),
         )
     }
 
@@ -1593,7 +1715,15 @@ mod tests {
             "Z becomes the target's own coordinate, not the 520 + 750 it stands at"
         );
         assert!(compute_in_range(
-            &cruising, src, &target, weapon, &rules, &interner, &entities, &terrain,
+            &cruising,
+            src,
+            &target,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &terrain,
+            &LineOfFireInputs::terrain_only(),
         ));
 
         // The same airship one lepton below the split is NOT high-flying, so
@@ -1612,6 +1742,7 @@ mod tests {
                 &interner,
                 &entities,
                 &terrain,
+                &LineOfFireInputs::terrain_only(),
             ),
             "below the split the attacker's own height is still charged"
         );
@@ -1656,6 +1787,7 @@ mod tests {
             &interner,
             &entities,
             &terrain,
+            &LineOfFireInputs::terrain_only(),
         ));
 
         // Two cells out (512 leptons flat) is inside a 599-lepton minimum, but
@@ -1674,6 +1806,7 @@ mod tests {
                 &interner,
                 &close_entities,
                 &close,
+                &LineOfFireInputs::terrain_only(),
             ),
             "a 2-D minimum-range test would have refused this arcing shot"
         );
@@ -1708,7 +1841,15 @@ mod tests {
         let weapon = rules.weapon("GUN").expect("weapon");
         let interner = test_interner();
         compute_in_range(
-            attacker, src, target, weapon, &rules, &interner, entities, terrain,
+            attacker,
+            src,
+            target,
+            weapon,
+            &rules,
+            &interner,
+            entities,
+            terrain,
+            &LineOfFireInputs::terrain_only(),
         )
     }
 
@@ -2056,50 +2197,146 @@ mod tests {
         panic!("unimplemented: InRange 0x006F74D7 arcing bridge height ceiling");
     }
 
-    /// RESIDUAL — gamemd address 0x006F7642, the `CALL 0x004CC310` whose
-    /// result decides `InRange`'s final `return`.
+    /// `InRange`'s final `return`, 0x006F7642: `CALL 0x004CC310` and
+    /// `TEST EAX,EAX; SETZ AL`. A `SubjectToCliffs` projectile with a
+    /// four-Level ridge between attacker and target is refused, and the same
+    /// shot over flat ground is legal — so the walk is reached from
+    /// `compute_in_range` and its verdict decides the gate.
     ///
-    /// Mechanism: after the distance test passes, `InRange` calls
-    /// `FUN_004CC310(weapon, this->+0x21C)` with the source and target
-    /// coordinates and returns `result == 0`. That function delegates to
-    /// `FUN_004CC100`, which — only when the projectile at `WeaponType+0xA0`
-    /// sets `SubjectToCliffs` (`BulletType+0x296`, key string 0x0081B118) or
-    /// `SubjectToWalls` (`+0x298`, key string 0x0081B0F4) — walks the line
-    /// source→target one cell at a time (Chebyshev step count, per-axis
-    /// integer division for the increments) and asks `FUN_004CC360` whether
-    /// each cell blocks. A nonzero answer means blocked, and
-    /// `CellClass::IsWallConnectableInDirection` 0x00480510 combined with the
-    /// warhead byte at `WeaponType+0xAC` `+0x144` re-admits the shot when the
-    /// warhead may break the wall itself.
-    ///
-    /// Trigger: any shot whose projectile is `SubjectToWalls=` or
-    /// `SubjectToCliffs=` and that has a wall or cliff on the line.
-    ///
-    /// Effect: gamemd reports "not in range" and the attacker never fires;
-    /// VERA passes the gate, fires, and leaves the outcome to the projectile's
-    /// own in-flight wall handling in `sim/projectile.rs`. Target selection and
-    /// pursuit also disagree, since both run through this same predicate.
-    ///
-    /// Frequency: 30 stock projectile sections declare either key; 10 set
-    /// `SubjectToWalls=yes` and 9 `SubjectToCliffs=yes`. Both land on
-    /// `InvisibleLow` — the small-arms projectile behind `M60` (`[E1]` GI,
-    /// `[GGI]`), `M1Carbine` (`[E2]` Conscript), `Vulcan` (`[NALASR]` Sentry
-    /// Gun), `AKM` (`[BORIS]`), `Sniper`, `MirageGun` and the rest — and on
-    /// `Cannon`, i.e. every cannon tank. That is most of the units in the game
-    /// shooting past a wall or a cliff.
-    ///
-    /// **This residual is NON-DEFERRABLE by ENGINE.md's own test** — it fires
-    /// in ordinary skirmish and it breaks a loop (pursuit walks a unit toward a
-    /// target it can never legally shoot). It is not ported HERE because the
-    /// per-cell blocking predicate `FUN_004CC360`, the wall-overlay topology,
-    /// `CellClass::IsWallConnectableInDirection` 0x00480510 and the
-    /// warhead wall-breaking re-admission are one coherent mechanism, and
-    /// half-porting it would mean a VERA-only blocking heuristic in `sim/`.
-    /// It is scheduled as its own mechanism, not filed as an accepted gap.
+    /// This is the live wiring of the whole mechanism; the per-cell rules are
+    /// pinned in `sim::combat::line_of_fire`.
     #[test]
-    #[ignore = "gamemd 0x006F7642 refuses the shot when a wall or cliff blocks the line; VERA's range gate has no line walk"]
-    fn inrange_line_of_fire_block_is_unported() {
-        panic!("unimplemented: InRange 0x006F7642 SubjectToWalls/SubjectToCliffs line walk");
+    fn a_cliff_on_the_line_refuses_the_shot() {
+        let rules = rules_with_weapon(
+            "Damage=1\nROF=20\nRange=8\nWarhead=WH\nProjectile=SHELL\n\n\
+             [SHELL]\nSubjectToCliffs=yes",
+            "",
+            "",
+        );
+        let weapon = rules.weapon("GUN").expect("weapon");
+        let attacker = ground_attacker(2, 2, 0, "ATKR");
+        let mut entities = EntityStore::new();
+        entities.insert(ground_target(6, 2, 0, "TGT"));
+        // Snapshot the thread-local interner only after both entities have
+        // interned their owner and type names.
+        let interner = test_interner();
+
+        let flat = flat_terrain(16, 16);
+        assert!(
+            compute_in_range(
+                &attacker,
+                src_at_cell(2, 2, 0),
+                &TargetKind::Entity(200),
+                weapon,
+                &rules,
+                &interner,
+                &entities,
+                &flat,
+                &LineOfFireInputs::terrain_only(),
+            ),
+            "flat ground: nothing blocks, the shot is legal"
+        );
+
+        let mut ridged = flat_terrain(16, 16);
+        for ry in 0..16u16 {
+            ridged.cell_mut(4, ry).expect("ridge cell").level = 4;
+        }
+        assert!(
+            !compute_in_range(
+                &attacker,
+                src_at_cell(2, 2, 0),
+                &TargetKind::Entity(200),
+                weapon,
+                &rules,
+                &interner,
+                &entities,
+                &ridged,
+                &LineOfFireInputs::terrain_only(),
+            ),
+            "a four-Level ridge on the line refuses the shot (0x004CC3F7)"
+        );
+    }
+
+    /// The arcing arm reaches the same call. 0x006F7519 pushes the weapon and
+    /// the firer's house and jumps to 0x006F763C, which is the ground arm's own
+    /// `CALL 0x004CC310`. Stock `[Cannon]` — every cannon tank's projectile —
+    /// is `Arcing=true` with both `SubjectToWalls=yes` and
+    /// `SubjectToCliffs=yes`, so leaving the arcing arm exempt would miss the
+    /// largest population this mechanism governs.
+    #[test]
+    fn the_arcing_arm_runs_the_line_walk_too() {
+        let rules = rules_with_weapon(
+            "Damage=1\nROF=20\nRange=8\nWarhead=WH\nProjectile=SHELL\n\n\
+             [SHELL]\nArcing=yes\nSubjectToCliffs=yes",
+            "",
+            "",
+        );
+        let weapon = rules.weapon("GUN").expect("weapon");
+        assert!(
+            rules.projectile("SHELL").expect("projectile").arcing,
+            "the fixture must actually take the arcing arm"
+        );
+        let attacker = ground_attacker(2, 2, 0, "ATKR");
+        let mut entities = EntityStore::new();
+        entities.insert(ground_target(6, 2, 0, "TGT"));
+        // Snapshot the thread-local interner only after both entities have
+        // interned their owner and type names.
+        let interner = test_interner();
+
+        let mut ridged = flat_terrain(16, 16);
+        for ry in 0..16u16 {
+            ridged.cell_mut(4, ry).expect("ridge cell").level = 4;
+        }
+        assert!(
+            !compute_in_range(
+                &attacker,
+                src_at_cell(2, 2, 0),
+                &TargetKind::Entity(200),
+                weapon,
+                &rules,
+                &interner,
+                &entities,
+                &ridged,
+                &LineOfFireInputs::terrain_only(),
+            ),
+            "the arcing arm must run the walk (0x006F7519 -> 0x006F763C)"
+        );
+    }
+
+    /// The `-512` always-in-range sentinel is tested first (0x006F724E,
+    /// `CMP EDI,0xFFFFFE00`), so it returns before the walk ever runs — a
+    /// `Range=-2` weapon is in range through a cliff.
+    #[test]
+    fn the_always_in_range_sentinel_precedes_the_line_walk() {
+        let rules = rules_with_weapon(
+            "Damage=1\nROF=20\nRange=-2\nWarhead=WH\nProjectile=SHELL\n\n\
+             [SHELL]\nSubjectToCliffs=yes",
+            "",
+            "",
+        );
+        let weapon = rules.weapon("GUN").expect("weapon");
+        let attacker = ground_attacker(2, 2, 0, "ATKR");
+        let mut entities = EntityStore::new();
+        entities.insert(ground_target(6, 2, 0, "TGT"));
+        // Snapshot the thread-local interner only after both entities have
+        // interned their owner and type names.
+        let interner = test_interner();
+
+        let mut ridged = flat_terrain(16, 16);
+        for ry in 0..16u16 {
+            ridged.cell_mut(4, ry).expect("ridge cell").level = 4;
+        }
+        assert!(compute_in_range(
+            &attacker,
+            src_at_cell(2, 2, 0),
+            &TargetKind::Entity(200),
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &ridged,
+            &LineOfFireInputs::terrain_only(),
+        ));
     }
 
     /// RESIDUAL — gamemd address 0x006F7314, `CALL dword ptr [EDX + 0x48]` on

@@ -313,7 +313,12 @@ pub fn commit_spawn_manager_pool(sim: &mut Simulation, owner_id: u64, rules: &Ru
 /// target through `Spawner=yes` this tick is seen by its own manager in the
 /// same tick — the ordering `TechnoClass::AI_Update` gives natively
 /// (Mission_Dispatch → Fire_At → SetTarget, then the SpawnManager dispatch).
-pub fn tick_spawn_managers(sim: &mut Simulation, rules: &RuleSet, order: &[u64]) {
+pub fn tick_spawn_managers(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    order: &[u64],
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) {
     let frame = sim.session.binary_frame;
     for &owner_id in order {
         let has_manager = sim
@@ -324,11 +329,17 @@ pub fn tick_spawn_managers(sim: &mut Simulation, rules: &RuleSet, order: &[u64])
         if !has_manager {
             continue;
         }
-        tick_one_manager(sim, rules, owner_id, frame);
+        tick_one_manager(sim, rules, owner_id, frame, overlay_registry);
     }
 }
 
-fn tick_one_manager(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, frame: u32) {
+fn tick_one_manager(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    owner_id: u64,
+    frame: u32,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) {
     // Update-timer gate. Everything below runs only on a manager frame.
     {
         let Some(entity) = sim.substrate.entities.get_mut(owner_id) else {
@@ -359,7 +370,7 @@ fn tick_one_manager(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, frame:
         step_slot(sim, rules, owner_id, slot_index, frame);
     }
 
-    step_manager_mode(sim, rules, owner_id, frame);
+    step_manager_mode(sim, rules, owner_id, frame, overlay_registry);
 }
 
 /// `SpawnManagerClass::PointerExpired` for the child-death case: a slot whose
@@ -750,7 +761,13 @@ fn regenerate_child(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, slot_i
 }
 
 /// The manager-level machine, run after every slot has been stepped.
-fn step_manager_mode(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, frame: u32) {
+fn step_manager_mode(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    owner_id: u64,
+    frame: u32,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) {
     let Some(mode) = manager_field(sim, owner_id, |m| m.mode) else {
         return;
     };
@@ -773,6 +790,11 @@ fn step_manager_mode(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, frame
                     &target,
                     terrain,
                     Some(&sim.house_alliances),
+                    &crate::sim::combat::line_of_fire::LineOfFireInputs {
+                        overlay_grid: sim.overlay_grid.as_ref(),
+                        overlay_registry,
+                        alliances: Some(&sim.house_alliances),
+                    },
                 )
             });
             if !target_is_legal {

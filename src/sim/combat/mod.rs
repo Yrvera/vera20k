@@ -28,6 +28,7 @@ pub(crate) mod fire_decision;
 pub(crate) mod greatest_threat;
 pub(crate) mod in_range;
 mod inviso_scatter;
+pub(crate) mod line_of_fire;
 pub mod smudge_dispatch;
 pub(crate) mod threat_range;
 pub(crate) mod veterancy;
@@ -76,6 +77,7 @@ use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::warhead_type::WarheadType;
+use crate::rules::weapon_type::WeaponType;
 use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::house_state::HouseState;
@@ -920,6 +922,7 @@ pub(crate) fn can_fire_at_target(
     target: &TargetKind,
     terrain: &ResolvedTerrainGrid,
     alliances: Option<&HouseAllianceMap>,
+    los: &line_of_fire::LineOfFireInputs<'_>,
 ) -> bool {
     let Some(attacker) = entities.get(attacker_id) else {
         return false;
@@ -958,10 +961,12 @@ pub(crate) fn can_fire_at_target(
         interner,
         entities,
         terrain,
+        los,
     )
 }
 
-/// Resolve the effective weapon range for an attacker against a `TargetKind`.
+/// Resolve the weapon an attacker would use against a `TargetKind` while
+/// pursuing it.
 ///
 /// Uses the same weapon-select inputs as the combat tick's Phase 2 weapon
 /// selection so pursuit and combat agree on "in range" at the boundary.
@@ -969,15 +974,15 @@ pub(crate) fn can_fire_at_target(
 /// Returns `None` if the selected weapon cannot legally fire at the target
 /// (GetFireError targeting subset). Pursuit treats `None` as "skip — combat
 /// tick will drop the attack on its own weapon-select fail."
-pub(crate) fn pursuit_weapon_range(
+pub(crate) fn pursuit_selected_weapon<'a>(
     entity: &GameEntity,
     target: &TargetKind,
     entities: &EntityStore,
-    rules: &RuleSet,
+    rules: &'a RuleSet,
     interner: &StringInterner,
     terrain: Option<&ResolvedTerrainGrid>,
     alliances: Option<&HouseAllianceMap>,
-) -> Option<SimFixed> {
+) -> Option<&'a WeaponType> {
     let attacker_obj = rules.object(interner.resolve(entity.type_ref))?;
     let selected = select_weapon_against(
         rules,
@@ -990,7 +995,112 @@ pub(crate) fn pursuit_weapon_range(
         terrain,
         alliances,
     )?;
-    Some(selected.weapon.range)
+    Some(selected.weapon)
+}
+
+/// What the pursuit stage should do with an attacker that is holding a target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PursuitRangeVerdict {
+    /// The full `InRange` gate passes — halt and let the combat tick fire.
+    CanFire,
+    /// Refused, and closing the distance is what native's approach search does
+    /// about it: too far, or a wall or a cliff on the line.
+    CloseIn,
+    /// Refused because the attacker stands INSIDE the weapon's `MinimumRange`.
+    ///
+    /// **VERA-internal, and a deliberate deferral of a native mechanism.**
+    /// Native's approach search 0x004D5690 scans candidate coordinates and
+    /// takes one where `InRange` holds, so a V3 that has been closed on backs
+    /// off to five cells. VERA's pursuit produces exactly one candidate — the
+    /// target's own cell — which for a too-close refusal is the WORST cell in
+    /// the set. So this verdict holds position instead, which is bit-for-bit
+    /// the behaviour this stage had before the walk landed.
+    /// - Trigger: `MinimumRange=` weapon whose target has come inside it —
+    ///   `V3Launcher` (5), `DredLauncher`/`CruiseLauncher` (8), `MagneticBeam`
+    ///   (3), `HowitzerGun` (2), the `MissileLauncher`/`HoverMissile` family (1).
+    /// - Player effect: the V3 stops rather than backing off, and the fire gate
+    ///   keeps refusing until the target moves away again.
+    /// - Frequency: ordinary — a V3 shelling an advancing column meets it every
+    ///   time the column closes.
+    /// - Downstream risk: none to deterministic state; it is a hold, and the
+    ///   fire gate already refused before this stage ran. Cured by porting the
+    ///   candidate-coordinate scan in 0x004D5690, which is its own mechanism.
+    HoldInsideMinimumRange,
+}
+
+/// Whether a pursuing attacker can already shoot its target from where it
+/// stands — the predicate that decides "halt and fire" against "keep closing".
+///
+/// gamemd-derived: `FootClass::Mission_Attack @ 0x004D4DC0` dispatches to the
+/// approach search — the "walk to somewhere I can shoot my target from" routine
+/// at vtable slot `+0x53C`, labelled `FootClass::Greatest_Threat_Scan @
+/// 0x004D5690` in the database — through `CALL [EAX+0x53c]` at `0x004D4E6A`,
+/// on the arm where TarCom (`[this+0x2B4]`) is non-null; `InfantryClass`'s
+/// override `0x00522340` chains straight into the same body at `0x0052236E`.
+/// That body decides with `TechnoClass::InRange @ 0x006F7220`, called at
+/// `0x004D622C` and `0x004D6550` with a candidate coordinate as arg1
+/// (`LEA EAX,[ESP+0x30]`) and TarCom as arg2 — and `InRange` ends in the
+/// line-of-fire walk (`CALL 0x004CC310` at `0x006F7642`).
+///
+/// So the approach predicate and the fire gate are the SAME test in gamemd.
+/// Using the 2-D twin here instead would let pursuit believe it had arrived
+/// while `resolve_attacker_fire` refuses the shot, and the unit would stand
+/// still under a standing order forever.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pursuit_in_range(
+    entity: &GameEntity,
+    target: &TargetKind,
+    weapon: &WeaponType,
+    entities: &EntityStore,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    terrain: Option<&ResolvedTerrainGrid>,
+    los: &line_of_fire::LineOfFireInputs<'_>,
+) -> PursuitRangeVerdict {
+    let Some(terrain) = terrain else {
+        // No resolved terrain (headless fixtures, pre-map bring-up): the 3-D
+        // gate has nothing to measure against, so fall back to the same 2-D
+        // twin `resolve_attacker_fire` falls back to in that situation. The
+        // two stages still agree, which is the property that matters. That twin
+        // has no MinimumRange arm either, so it cannot report the too-close
+        // verdict.
+        let Some((trx, try_, tsx, tsy)) =
+            resolve_target_coords(target, entities, Some(rules), interner)
+        else {
+            return PursuitRangeVerdict::CloseIn;
+        };
+        let dist_sq = lepton_distance_sq_raw(
+            entity.position.rx,
+            entity.position.ry,
+            entity.position.sub_x,
+            entity.position.sub_y,
+            trx,
+            try_,
+            tsx,
+            tsy,
+        );
+        return if is_within_range_leptons(dist_sq, weapon.range) {
+            PursuitRangeVerdict::CanFire
+        } else {
+            PursuitRangeVerdict::CloseIn
+        };
+    };
+
+    let Some(src) = in_range::fire_source_coords(entity, target, weapon, entities, terrain) else {
+        // The attacker has no resolvable ground height (off-grid). Report
+        // "keep closing" rather than freezing; the fire gate returns without
+        // firing on the same condition.
+        return PursuitRangeVerdict::CloseIn;
+    };
+    if in_range::compute_in_range(
+        entity, src, target, weapon, rules, interner, entities, terrain, los,
+    ) {
+        return PursuitRangeVerdict::CanFire;
+    }
+    if in_range::inside_minimum_range(src, target, weapon, rules, interner, entities, terrain) {
+        return PursuitRangeVerdict::HoldInsideMinimumRange;
+    }
+    PursuitRangeVerdict::CloseIn
 }
 
 /// Issue an attack command: make `attacker` fire at `target`.
@@ -7139,6 +7249,11 @@ pub(crate) fn resolve_attacker_fire(
                 // scanner-zone slot native fills at `0x006F8EC4` is read only by
                 // the mask-0 flat walk, which this callsite cannot select.
                 None,
+                line_of_fire::LineOfFireInputs {
+                    overlay_grid: overlay_grid.as_deref(),
+                    overlay_registry,
+                    alliances: fog.map(|fog_state| &fog_state.alliances),
+                },
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -7265,6 +7380,11 @@ pub(crate) fn resolve_attacker_fire(
                 // scanner-zone slot native fills at `0x006F8EC4` is read only by
                 // the mask-0 flat walk, which this callsite cannot select.
                 None,
+                line_of_fire::LineOfFireInputs {
+                    overlay_grid: overlay_grid.as_deref(),
+                    overlay_registry,
+                    alliances: fog.map(|fog_state| &fog_state.alliances),
+                },
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -7292,6 +7412,11 @@ pub(crate) fn resolve_attacker_fire(
                 // scanner-zone slot native fills at `0x006F8EC4` is read only by
                 // the mask-0 flat walk, which this callsite cannot select.
                 None,
+                line_of_fire::LineOfFireInputs {
+                    overlay_grid: overlay_grid.as_deref(),
+                    overlay_registry,
+                    alliances: fog.map(|fog_state| &fog_state.alliances),
+                },
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -7404,6 +7529,11 @@ pub(crate) fn resolve_attacker_fire(
                     interner,
                     entities,
                     t,
+                    &line_of_fire::LineOfFireInputs {
+                        overlay_grid: overlay_grid.as_deref(),
+                        overlay_registry,
+                        alliances: fog.map(|fog_state| &fog_state.alliances),
+                    },
                 )
             }
             _ => {
@@ -7423,6 +7553,22 @@ pub(crate) fn resolve_attacker_fire(
     } else {
         // Garrison override path — preserve 2D until a later stage threads
         // override-aware 3D.
+        //
+        // RESIDUAL (line of fire) — because this arm never calls
+        // `compute_in_range`, it never runs the wall/cliff walk that
+        // `TechnoClass::InRange` 0x006F7220 ends in at 0x006F7642.
+        // - Trigger: any garrisoned occupant firing across a wall or a
+        //   ≥4-Level step; stock `[E1]`'s `M60` is `Projectile=InvisibleLow`
+        //   (`SubjectToWalls=yes`, `SubjectToCliffs=yes`) and its `SA` warhead
+        //   has no `Wall=`, so gamemd refuses that shot.
+        // - Player effect: a garrisoned GI shoots straight through a GAWALL the
+        //   identical GI standing in the open is refused.
+        // - Frequency: routine on urban maps — garrisoning a building next to
+        //   a wall line is an ordinary opening, not an edge case.
+        // - Downstream risk: none to deterministic state. The cure is the
+        //   override-aware range VALUE chain M8 records (Garrison / Bunker /
+        //   OpenTopped), which lets this branch use `compute_in_range` instead
+        //   of a second walk bolted onto the 2-D twin.
         let dist_sq = lepton_distance_sq_raw(
             snap.pos_rx,
             snap.pos_ry,
@@ -8433,6 +8579,38 @@ pub(crate) fn lepton_distance_sq_raw(
 /// The fix belongs with the remaining `is_within_range_leptons` call sites'
 /// migration onto `compute_in_range`, not with a second sentinel test bolted
 /// on here.
+///
+/// RESIDUAL 2 — this twin also has no line-of-fire walk. `TechnoClass::InRange`
+/// ends in `CALL 0x004CC310` at 0x006F7642 and refuses the shot when a wall or
+/// a cliff sits on the line; `compute_in_range` runs that walk (see
+/// `sim::combat::line_of_fire`) and this function does not.
+///
+/// Pursuit no longer reaches it: `World::tick_attack_pursuit` measures through
+/// `pursuit_in_range` → `compute_in_range`, matching the approach search
+/// `FootClass::Greatest_Threat_Scan @ 0x004D5690`, which decides with `InRange`
+/// 0x006F7220 itself. Two production readers still take the plain radius, each
+/// recorded on its own call site:
+///
+/// - the fire gate's GARRISON branch (`resolve_attacker_fire`, the
+///   `is_garrison || effective_range != weapon.range` arm);
+/// - `ScanRange::Hard` in `greatest_threat::evaluate_candidate`, the
+///   garrison passive scan's override.
+///
+/// The remaining readers are the no-resolved-terrain fallbacks in the fire
+/// gate, the cursor and pursuit, which cannot run a walk at all and therefore
+/// agree with each other rather than diverging.
+///
+/// - Trigger: a garrisoned occupant firing, or a garrison passive scan
+///   choosing a candidate, across a wall or a ≥4-Level step.
+/// - Player effect: garrisoned infantry shoot through a wall the identical
+///   infantry standing in the open is refused; the passive scan can pick a
+///   candidate behind one.
+/// - Frequency: routine on urban maps, where garrisoning is a normal opening.
+/// - Downstream risk: none to deterministic state; both stages agree with each
+///   other, so it is a uniformly wrong answer, not a stall. The cure is
+///   threading the override-aware range into `compute_in_range` so the garrison
+///   branch can use the 3-D gate — the range VALUE chain M8 already records,
+///   not a second walk bolted onto this function.
 pub(crate) fn is_within_range_leptons(dist_sq_leptons: i64, range_cells: SimFixed) -> bool {
     let range_leptons: i64 = (i64::from(range_cells.to_bits()) * 256) >> 16;
     let range_sq: i64 = range_leptons * range_leptons;
@@ -8500,7 +8678,8 @@ fn veteran_rof_frames(
     .clamp(1, i32::from(u16::MAX)) as u16
 }
 
-pub use self::combat_targeting::{acquire_best_target_for_entity, tick_retaliation};
+pub(crate) use self::combat_targeting::acquire_best_target_for_entity;
+pub use self::combat_targeting::tick_retaliation;
 /// The threat mask an acquisition callsite pushes into
 /// `TechnoClass::Greatest_Threat @ 0x006F8DF0`, plus the passive block's own
 /// derivation of it. Re-exported because the mask is chosen by the mission

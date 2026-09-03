@@ -53,6 +53,7 @@ impl Simulation {
     pub(crate) fn tick_order_intents_pre_combat(
         &mut self,
         rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         turn_suppressed: &BTreeSet<u64>,
     ) {
         // Collect attacker candidates from EntityStore.
@@ -91,6 +92,11 @@ impl Simulation {
                 // "guard this spot" order. gamemd equivalent UNCHECKED.
                 scan_mask,
                 self.zone_grid.as_ref(),
+                combat::line_of_fire::LineOfFireInputs {
+                    overlay_grid: self.overlay_grid.as_ref(),
+                    overlay_registry,
+                    alliances: Some(&self.fog.alliances),
+                },
             ) else {
                 continue;
             };
@@ -1106,13 +1112,13 @@ impl Simulation {
                 Some(rules),
                 &self.interner,
             );
-            let Some((trx, try_, tsx, tsy)) = target_pos else {
+            let Some((trx, try_, _tsx, _tsy)) = target_pos else {
                 continue;
             };
 
-            // Resolve weapon range using shared helper. None means no weapon
+            // Resolve the weapon using the shared helper. None means no weapon
             // can engage; combat tick will drop on its own weapon-select fail.
-            let Some(weapon_range) = combat::pursuit_weapon_range(
+            let Some(weapon) = combat::pursuit_selected_weapon(
                 entity,
                 &attack.target,
                 &self.substrate.entities,
@@ -1124,20 +1130,43 @@ impl Simulation {
                 continue;
             };
 
-            // Range check — same math as combat tick.
-            let dist_sq = combat::lepton_distance_sq_raw(
-                entity.position.rx,
-                entity.position.ry,
-                entity.position.sub_x,
-                entity.position.sub_y,
-                trx,
-                try_,
-                tsx,
-                tsy,
+            // Range check — the SAME predicate the combat tick's fire gate
+            // uses, line-of-fire walk included. The approach search
+            // (`FootClass::Greatest_Threat_Scan @ 0x004D5690`, vt+0x53C,
+            // reached from `Mission_Attack` 0x004D4DC0 at 0x004D4E6A) decides
+            // with `TechnoClass::InRange` 0x006F7220 at 0x004D622C /
+            // 0x004D6550, and `InRange` ends in the wall/cliff walk at
+            // 0x006F7642. If this stage used the plain radius while the fire
+            // gate ran the walk, a unit ordered to shoot across a wall would
+            // halt here and then be refused the shot, standing still under a
+            // live order.
+            //
+            // The one refusal that must NOT produce a pursuit cell is
+            // `MinimumRange`: native's approach search picks a candidate
+            // FARTHER out, and the target's own cell — VERA's only candidate —
+            // is the worst one in that set. `HoldInsideMinimumRange` therefore
+            // takes the halt arm, which is exactly what this stage did for that
+            // case before the walk landed. See `PursuitRangeVerdict`.
+            let verdict = combat::pursuit_in_range(
+                entity,
+                &attack.target,
+                weapon,
+                &self.substrate.entities,
+                rules,
+                &self.interner,
+                self.resolved_terrain.as_ref(),
+                // Same alliance view the fire gate hands the walk
+                // (`resolve_attacker_fire` passes `fog.alliances`) and the same
+                // one the sibling pre-combat scan uses, so the two stages
+                // cannot disagree on the `AlliedWallTransparency` arm.
+                &combat::line_of_fire::LineOfFireInputs {
+                    overlay_grid: self.overlay_grid.as_ref(),
+                    overlay_registry,
+                    alliances: Some(&self.fog.alliances),
+                },
             );
-            let in_range = combat::is_within_range_leptons(dist_sq, weapon_range);
 
-            if !in_range {
+            if verdict == combat::PursuitRangeVerdict::CloseIn {
                 // **Sticky never chases.** The one place the engine tells
                 // Sticky apart from Guard at all — they share a mission handler
                 // — is the pursuit-cell producer: when the can-fire-at query
@@ -1160,7 +1189,9 @@ impl Simulation {
                 }
                 // else: existing pursuit movement is still running; let it continue.
             } else if entity.movement_target.is_some() {
-                // In range — halt for firing.
+                // `CanFire` — halt for firing. `HoldInsideMinimumRange` halts
+                // here too: closing further cannot help, and this is the arm it
+                // took before the walk landed.
                 actions.push(PursuitAction::ClearMovement { entity_id: id });
             }
         }
