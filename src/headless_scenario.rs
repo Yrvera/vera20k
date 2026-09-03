@@ -342,6 +342,15 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         &map.header.theater,
     )
     .map_err(|error| format!("bind authoritative animation assets: {error}"))?;
+    // Combat explosions are AnimClass instances; tolerant pass, after the strict
+    // one, which rewrites the scheduler-owned set wholesale.
+    let unbound_explosion_roots = art.bind_combat_explosion_anim_assets(
+        &crate::rules::effect_asset_catalog::combat_explosion_anim_roots(&rules),
+        &assets,
+        theater.extension,
+        &map.header.theater,
+    );
+    crate::rules::effect_asset_catalog::log_unbound_combat_explosion_roots(unbound_explosion_roots);
     let (populated_smudge_dims, fallback_smudge_dims) =
         art.populate_anim_frame_dims(&assets, theater.extension, &map.header.theater);
     log::info!(

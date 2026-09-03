@@ -7,10 +7,19 @@
 //! one at `+0xB0`; `AnimClass` embeds one too, for the SHP debris that uses the
 //! physics path.
 //!
-//! Do not confuse this with `Bouncer=yes` on an `AnimType`. That is a separate
-//! system — `AnimClass::BounceAI @ 0x00425670`, a 2D homing drift toward an
-//! attach target with no gravity and no elasticity — and it does not call
-//! anything here.
+//! `Bouncer=yes` on an `AnimType` really does drive this component. The
+//! constructor takes the `BounceClass::Init` fork on
+//! `!Bouncer(+0x35A) && !IsMeteor(+0x356)` being false
+//! (`AnimClass::AnimClass @ 0x00421EA0`), and
+//! `AnimClass::ProcessBounceResult @ 0x00423930` calls `BounceClass::Update`.
+//!
+//! The separate system to keep apart from this one is
+//! `AnimClass::BounceAI @ 0x00425670` — a 2D homing drift toward an attach
+//! target, with no gravity and no elasticity, which does not call anything
+//! here. `AnimClass::AI @ 0x00423AC0` gates that call on
+//! `IsFlamingGuy=` (`AnimType+0x354`, one stock section: `FLAMEGUY`), NOT on
+//! `Bouncer=`. An earlier revision of this header attributed `BounceAI` to
+//! `Bouncer=`; the mechanism description was right and the key was wrong.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on util/ and the rest of sim/.

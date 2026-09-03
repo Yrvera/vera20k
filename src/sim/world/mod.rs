@@ -3107,27 +3107,15 @@ impl Simulation {
         }
 
         self.admit_death_debris(std::mem::take(&mut effects.voxel_debris));
-        for fx in &effects.explosion_effects {
-            let frames = rules
-                .effect_frame_count(self.interner.resolve(fx.shp_name))
-                .unwrap_or(20);
-            self.world_effects.push(WorldEffect {
-                anim_spawn: None,
-                shp_name: fx.shp_name,
-                rx: fx.rx,
-                ry: fx.ry,
-                sub_x: fx.sub_x,
-                sub_y: fx.sub_y,
-                z: fx.z,
-                frame: 0,
-                total_frames: frames,
-                frame_delay: 1,
-                elapsed_frames: 0,
-                translucent: true,
-                delay_frames: 0,
-                start_sound_id: None,
-                start_sound_emitted: false,
-            });
+        // Explosion animations from a non-combat area-damage transaction.
+        // `AnimClass` instances, not legacy world effects: only the real
+        // constructor reaches `AnimClass::Start @ 0x00424CE0`, which is what
+        // plays the art type's `Report=`/`StartSound=`, and only the real
+        // AnimType carries its `Translucent=` and `Rate=`.
+        for fx in std::mem::take(&mut effects.explosion_effects) {
+            self.spawn_combat_explosion_anim(
+                rules, fx.shp_name, fx.rx, fx.ry, fx.sub_x, fx.sub_y, fx.z,
+            );
         }
         self.invulnerability_impact_effects
             .append(&mut effects.invulnerability_impact_effects);
@@ -7705,28 +7693,17 @@ impl Simulation {
                 }
             }
             self.admit_death_debris(std::mem::take(&mut combat_result.voxel_debris));
-            // Spawn explosion animations from combat deaths.
-            for fx in &combat_result.explosion_effects {
-                let frames = rules
-                    .effect_frame_count(self.interner.resolve(fx.shp_name))
-                    .unwrap_or(20);
-                self.world_effects.push(WorldEffect {
-                    anim_spawn: None,
-                    shp_name: fx.shp_name,
-                    rx: fx.rx,
-                    ry: fx.ry,
-                    sub_x: fx.sub_x,
-                    sub_y: fx.sub_y,
-                    z: fx.z,
-                    frame: 0,
-                    total_frames: frames,
-                    frame_delay: 1,
-                    elapsed_frames: 0,
-                    translucent: true,
-                    delay_frames: 0,
-                    start_sound_id: None,
-                    start_sound_emitted: false,
-                });
+            // Spawn explosion animations from combat deaths. `AnimClass`
+            // instances, not legacy world effects: only the real constructor
+            // reaches `AnimClass::Start @ 0x00424CE0`, which is what plays the
+            // art type's `Report=`/`StartSound=`.
+            let explosion_spawns = combat_result
+                .explosion_effects
+                .iter()
+                .map(|fx| (fx.shp_name, fx.rx, fx.ry, fx.sub_x, fx.sub_y, fx.z))
+                .collect::<Vec<_>>();
+            for (shp_name, rx, ry, sub_x, sub_y, z) in explosion_spawns {
+                self.spawn_combat_explosion_anim(rules, shp_name, rx, ry, sub_x, sub_y, z);
             }
             // gamemd-derived: `EBolt::Init @ 0x004C2A60` creates one spark
             // system per electric bolt at `0x004C2B30`, passing

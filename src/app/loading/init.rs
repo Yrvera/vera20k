@@ -1404,6 +1404,17 @@ impl MapLoadInitial {
             &map_data.header.theater,
         )
         .expect("retail scheduler animation closure");
+        // Combat explosions are AnimClass instances; tolerant pass, after the
+        // strict one, which rewrites the scheduler-owned set wholesale.
+        let unbound_explosion_roots = art.bind_combat_explosion_anim_assets(
+            &crate::rules::effect_asset_catalog::combat_explosion_anim_roots(&rules),
+            asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        );
+        crate::rules::effect_asset_catalog::log_unbound_combat_explosion_roots(
+            unbound_explosion_roots,
+        );
         rules.art_registry = art.clone();
         rules.bind_effect_assets(asset_manager, theater_ext, &map_data.header.theater);
         rules.bind_terrain_spawner_assets(
@@ -2382,6 +2393,18 @@ pub(crate) fn load_map_from_initial(
             theater_ext,
             &map_data.header.theater,
         )?;
+        // Combat explosions are AnimClass instances, so their art must carry the
+        // same loader-derived End/LoopEnd. Tolerant by design; must follow the
+        // strict pass, which rewrites the scheduler-owned set wholesale.
+        let unbound_explosion_roots = a.bind_combat_explosion_anim_assets(
+            &crate::rules::effect_asset_catalog::combat_explosion_anim_roots(r),
+            &asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        );
+        crate::rules::effect_asset_catalog::log_unbound_combat_explosion_roots(
+            unbound_explosion_roots,
+        );
         r.art_registry = a.clone();
         r.bind_effect_assets(&asset_manager, theater_ext, &map_data.header.theater);
         r.bind_terrain_spawner_assets(

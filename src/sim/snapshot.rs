@@ -374,7 +374,30 @@ use crate::sim::world::Simulation;
 // (`TechnoClass::ReceiveDamage @ 0x00701900`, `0x00702281`..`0x0070256C`).
 // Every consumer after a death in the same tick therefore reads a different
 // cursor than it did on v119.
-const SNAPSHOT_VERSION: u32 = 120;
+// Bumped 120 -> 123: combat explosions became `AnimClass` instances. They used
+// to be legacy `WorldEffect` records, which are in neither `AnimStore`'s
+// serialized shape nor the multiplayer checksum; they are now ordinary members
+// of `substrate.anims`, which is in both. So every shot that spawns a warhead
+// `AnimList=` animation now adds a hash-participating, serialized object where
+// it previously added none. No committed golden actually moved on this change
+// — the global parity harness authors no `AnimList=`/`Explosion=`/
+// `DestroyAnim=`, so it never reached the new path — but any future fixture
+// that fires a shot with explosion art will hash differently from a v120 one,
+// which is exactly what the version guards. `AnimTypeRuntimeConfig` also
+// gained the twenty previously unparsed art keys; that is rules data and is
+// not serialized.
+//
+// 121 and 122 are deliberately skipped because live unmerged branches already
+// stamp them, and two branches stamping different serialized shapes with one
+// number defeats the guard: a snapshot written under one and loaded under the
+// other passes the version check and then mis-decodes. Re-surveyed across
+// every local and `origin` ref when this branch was rebased for merge —
+// 120 `origin/main` (the `VoxelAnimClass` debris store, now landed),
+// 121 `origin/feature/phase3-map-spatial-close`,
+// 122 `origin/feature/phase3-map-spatial-integration`;
+// nothing else claims 123. Whoever resolves a `snapshot.rs` merge conflict
+// here must re-run that survey rather than picking a side.
+const SNAPSHOT_VERSION: u32 = 123;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3116,10 +3139,17 @@ mod tests {
     /// death-side debris producer, which changes both the hash schema and the
     /// shared RNG cursor at every Techno death whose type authors a POSITIVE
     /// `MaxDebris=` — the 83 stock sections that author `MaxDebris=0` stop at
-    /// `0x00702291` and still cost the stream nothing.
+    /// `0x00702291` and still cost the stream nothing; 120 -> 123 moves combat
+    /// explosions off the legacy `WorldEffect` list and into `AnimStore`, so a
+    /// warhead `AnimList=` animation is now a serialized, checksum-folded
+    /// object where it used to be neither. 121 and 122 are skipped because
+    /// unmerged branches already stamp them — 121
+    /// `origin/feature/phase3-map-spatial-close`, 122
+    /// `origin/feature/phase3-map-spatial-integration` — and two branches
+    /// sharing one version number defeat the mismatch guard entirely.
     #[test]
-    fn death_debris_store_snapshot_version_is_120() {
-        assert_eq!(super::SNAPSHOT_VERSION, 120);
+    fn combat_explosion_anim_snapshot_version_is_123() {
+        assert_eq!(super::SNAPSHOT_VERSION, 123);
     }
 
     #[test]

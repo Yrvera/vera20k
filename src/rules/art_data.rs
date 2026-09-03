@@ -16,6 +16,7 @@ use thiserror::Error;
 use crate::rules::flh::{Flh, parse_flh};
 use crate::rules::ini_parser::{IniFile, IniSection};
 use crate::rules::object_type::{BuildingHiddenOccupancyProfile, HIDDEN_OCCUPY_SLOT_COUNT};
+use crate::util::native_x87::NativeF64Bits;
 
 /// Per-object art configuration parsed from an art.ini section.
 #[derive(Debug, Clone)]
@@ -226,6 +227,84 @@ pub struct AnimTypeRuntimeConfig {
     pub spawns: Option<String>,
     pub spawn_count: i32,
     pub running_frames: i32,
+    /// art.ini `Damage=`, `AnimTypeClass+0x2A8`.
+    ///
+    /// gamemd-derived: `AnimTypeClass::ReadINI @ 0x00427D00` reads it through
+    /// `CCINIClass::ReadDouble` into `param_1[0xaa]` (= byte offset `0x2A8`), so
+    /// this is a **double**, not an integer — the stock population is dominated
+    /// by fractional values such as `.003`. The constructor
+    /// (`AnimTypeClass::AnimTypeClass @ 0x00427530`, `param_1[0xaa]/[0xab] = 0`)
+    /// leaves it `0.0` when the key is absent, and the read passes the current
+    /// value back as its own default.
+    ///
+    /// UNCHECKED consumer (M11b): the per-frame damage arm at
+    /// `AnimClass::AI 0x00424507..0x0042464C` accumulates this into
+    /// `AnimClass+0x188`, which the constructor seeds to **`1.0`**
+    /// (`0x00421FA4` zeroes the low dword, `0x00421FC8` writes `0x3FF00000` to
+    /// the high dword), so the first armed frame always emits at least one
+    /// point. Nothing reads this field yet.
+    pub damage: NativeF64Bits,
+    /// art.ini `Warhead=`, `AnimTypeClass+0x330`, resolved by
+    /// `WarheadTypeClass::FindOrAllocate`. Bouncer-landing only — the per-frame
+    /// damage arm hard-selects `[CombatDamage] C4Warhead`/`FlameDamage2`
+    /// instead. Not consumed yet (M11b).
+    pub warhead: Option<String>,
+    /// art.ini `DamageRadius=`, `AnimTypeClass+0x334`. Bouncer-landing only.
+    /// Not consumed yet (M11b).
+    pub damage_radius: i32,
+    /// art.ini `Elasticity=`, `AnimTypeClass+0x310`, a `ReadDouble`.
+    /// Constructor default `0x3FE99999_A0000000` — the single-precision `0.8f`
+    /// widened, **not** the nearest double to 0.8.
+    pub elasticity: NativeF64Bits,
+    /// art.ini `MinZVel=`, `AnimTypeClass+0x318`, a `ReadDouble`.
+    /// Constructor default `0x400C0000_00000000` = **3.5**.
+    pub min_z_vel: NativeF64Bits,
+    /// art.ini `MaxXYVel=`, `AnimTypeClass+0x328`, a `ReadDouble`.
+    /// Constructor default `0x402E0000_00000000` = **15.0**.
+    pub max_xy_vel: NativeF64Bits,
+    /// art.ini `IsMeteor=`, `AnimTypeClass+0x356`. Shares the constructor's
+    /// `BounceClass` fork with `Bouncer=`. Not consumed yet (M11b).
+    pub is_meteor: bool,
+    /// art.ini `IsVeins=`, `AnimTypeClass+0x355`. Zero stock sections author it.
+    pub is_veins: bool,
+    /// art.ini `IsFlamingGuy=`, `AnimTypeClass+0x354`. Gates
+    /// `AnimClass::BounceAI @ 0x00425670` — the flaming-infantry runner — from
+    /// `AnimClass::AI`'s third statement. One stock section (`FLAMEGUY`).
+    pub is_flaming_guy: bool,
+    /// art.ini `Scorch=`, `AnimTypeClass+0x36B`, read by
+    /// `AnimClass::Middle @ 0x00424F00`.
+    pub scorch: bool,
+    /// art.ini `Crater=`, `AnimTypeClass+0x36D`, read by
+    /// `AnimClass::Middle @ 0x00424F00`.
+    pub crater: bool,
+    /// art.ini `ForceBigCraters=`, `AnimTypeClass+0x36E`, read by
+    /// `AnimClass::Middle @ 0x00424F00`.
+    pub force_big_craters: bool,
+    /// art.ini `Sticky=`, `AnimTypeClass+0x36F`.
+    pub sticky: bool,
+    /// art.ini `PsiWarning=`, `AnimTypeClass+0x373`, read by `AnimClass::AI`.
+    pub psi_warning: bool,
+    /// art.ini `DoubleThick=`, `AnimTypeClass+0x368`.
+    pub double_thick: bool,
+    /// art.ini `Flamer=`, `AnimTypeClass+0x36C`. Zero stock sections author it.
+    pub flamer: bool,
+    /// art.ini `SpawnsParticle=`, `AnimTypeClass+0x2CC`, resolved by
+    /// `ParticleTypeClass::FindOrCreate`. Read by
+    /// `AnimClass::Middle @ 0x00424F00`, `NumParticles` times.
+    ///
+    /// Unlike every other key in this parser, `ReadINI` writes the field
+    /// **only when the key is present** (`0x00427D00`: the store sits inside
+    /// the `if (ReadString != 0)` arm), so an absent key keeps the
+    /// constructor's `-1`. `None` here is that `-1`.
+    pub spawns_particle: Option<String>,
+    /// art.ini `NumParticles=`, `AnimTypeClass+0x2D0`.
+    pub num_particles: i32,
+    /// art.ini `ShouldFogRemove=`, `AnimTypeClass+0x374`.
+    /// Constructor default **true**.
+    pub should_fog_remove: bool,
+    /// art.ini `ShouldUseCellDrawer=`, `AnimTypeClass+0x35C`.
+    /// Constructor default **true**.
+    pub should_use_cell_drawer: bool,
     pub detail_level: i32,
     pub next: Option<String>,
     pub bounce_anim: Option<String>,
@@ -248,9 +327,14 @@ pub struct AnimTypeRuntimeConfig {
     /// art.ini `AltPalette=`. gamemd's animation draw path picks the palette in a
     /// cascade: an explicit per-instance palette wins, otherwise the global
     /// ANIM.PAL conversion is used — except when this flag is set, which swaps in
-    /// the first colour scheme's converted unit palette instead. 41 stock sections
-    /// set it, including the Battle Bunker, the `CABUNK0x` bunkers, the Weather
-    /// Storm clouds and the squid grapple.
+    /// the first colour scheme's converted unit palette instead. **31** stock
+    /// art.ini sections set it — every one of them `yes` — including the Battle
+    /// Bunker, the `CABUNK0x` bunkers, the Weather Storm clouds and the squid
+    /// grapple; 23 of the 31 are also declared in `[Animations]`. (Derived by
+    /// section-scanning `artmd.ini` with the exact spelling `AltPalette`;
+    /// gamemd's `CCINIClass` key lookup is case-sensitive, so only that spelling
+    /// counts. The doc previously said 41, which no scan of the retail file
+    /// reproduces.)
     pub alt_palette: bool,
     /// art.ini `UseNormalLight=`. The retail art.ini documents this as "does this
     /// anim always draw at 100% brightness? (def=no)", and gamemd's animation draw
@@ -514,14 +598,27 @@ pub fn anim_translucency_draw_bits(
     anim_fixed_translucency_draw_bits(config.translucency).unwrap_or(ANIM_DRAW_BITS_OPAQUE)
 }
 
+/// Bits of a `CC_Draw_Shape` flag word that name the translucency family.
+///
+/// gamemd-derived: `AnimClass::DrawIt` loads the producer's whole flag word out
+/// of `AnimClass+0x190` (`0x0042304B MOV EBX,[ESI+0x190]`) and then ORs the
+/// selector INTO it — `0x00423075 OR EBX,0x6`, `0x0042307A OR EBX,0x4`, and the
+/// same pattern for the `Translucency=`/`Translucent=` arms further down. So a
+/// flag word carries the producer's bits (`0x600` for a trailer, `0x2600` for a
+/// combat explosion) alongside the family, and the family must be read as a
+/// masked field, never by matching the whole word.
+pub const ANIM_DRAW_BITS_TRANSLUCENCY_MASK: u32 = 0x6;
+
 /// Source-pixel weight implied by a set of translucency draw bits.
 ///
 /// This is the renderer-facing form of the blitter table above: the weight the
-/// native blend gives the incoming sprite pixel. Unknown bit patterns draw opaque.
-/// Float is correct here — it is a colour-target blend factor consumed only by the
-/// render layer, never by simulation math.
+/// native blend gives the incoming sprite pixel. Only
+/// [`ANIM_DRAW_BITS_TRANSLUCENCY_MASK`] is consulted, so a caller may pass the
+/// complete flag word; an unset family draws opaque. Float is correct here — it
+/// is a colour-target blend factor consumed only by the render layer, never by
+/// simulation math.
 pub const fn anim_translucency_source_alpha(draw_bits: u32) -> f32 {
-    match draw_bits {
+    match draw_bits & ANIM_DRAW_BITS_TRANSLUCENCY_MASK {
         ANIM_DRAW_BITS_TRANSLUCENT_25 => 0.75,
         ANIM_DRAW_BITS_TRANSLUCENT_50 => 0.5,
         ANIM_DRAW_BITS_TRANSLUCENT_75 => 0.25,
@@ -575,6 +672,30 @@ fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
         spawns: parse_anim_ref(section, "Spawns"),
         spawn_count: section.get_i32("SpawnCount").unwrap_or(0),
         running_frames: section.get_i32("RunningFrames").unwrap_or(0),
+        // gamemd-derived: `AnimTypeClass::ReadINI @ 0x00427D00` reads these
+        // through `CCINIClass::ReadDouble` and each defaults to the value the
+        // constructor (`AnimTypeClass::AnimTypeClass @ 0x00427530`) left.
+        damage: read_anim_double(section, "Damage", ANIM_DAMAGE_DEFAULT),
+        warhead: parse_anim_ref(section, "Warhead"),
+        damage_radius: section.get_i32("DamageRadius").unwrap_or(0),
+        elasticity: read_anim_double(section, "Elasticity", ANIM_ELASTICITY_DEFAULT),
+        min_z_vel: read_anim_double(section, "MinZVel", ANIM_MIN_Z_VEL_DEFAULT),
+        max_xy_vel: read_anim_double(section, "MaxXYVel", ANIM_MAX_XY_VEL_DEFAULT),
+        is_meteor: section.get_bool("IsMeteor").unwrap_or(false),
+        is_veins: section.get_bool("IsVeins").unwrap_or(false),
+        is_flaming_guy: section.get_bool("IsFlamingGuy").unwrap_or(false),
+        scorch: section.get_bool("Scorch").unwrap_or(false),
+        crater: section.get_bool("Crater").unwrap_or(false),
+        force_big_craters: section.get_bool("ForceBigCraters").unwrap_or(false),
+        sticky: section.get_bool("Sticky").unwrap_or(false),
+        psi_warning: section.get_bool("PsiWarning").unwrap_or(false),
+        double_thick: section.get_bool("DoubleThick").unwrap_or(false),
+        flamer: section.get_bool("Flamer").unwrap_or(false),
+        spawns_particle: parse_anim_ref(section, "SpawnsParticle"),
+        num_particles: section.get_i32("NumParticles").unwrap_or(0),
+        // Both constructor defaults are 1, not 0.
+        should_fog_remove: section.get_bool("ShouldFogRemove").unwrap_or(true),
+        should_use_cell_drawer: section.get_bool("ShouldUseCellDrawer").unwrap_or(true),
         detail_level: section.get_i32("DetailLevel").unwrap_or(0),
         next: section.get("Next").map(|s| s.trim().to_ascii_uppercase()),
         bounce_anim: parse_anim_ref(section, "BounceAnim"),
@@ -604,6 +725,39 @@ fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
         start_sound: parse_anim_ref(section, "StartSound"),
         stop_sound: parse_anim_ref(section, "StopSound"),
     }
+}
+
+/// `AnimTypeClass::AnimTypeClass @ 0x00427530` constructor defaults for the four
+/// `ReadDouble` animation keys, taken from the literal dword pairs the
+/// constructor stores.
+///
+/// - `Damage`   `param_1[0xaa] = 0; param_1[0xab] = 0`            -> `0.0`
+/// - `Elasticity` `[0xc4] = 0xA0000000; [0xc5] = 0x3FE99999`      -> `0.8f` as f64
+/// - `MinZVel`  `[0xc6] = 0; [0xc7] = 0x400C0000`                 -> `3.5`
+/// - `MaxXYVel` `[0xca] = 0; [0xcb] = 0x402E0000`                 -> `15.0`
+///
+/// `Elasticity` is worth spelling out: `0x3FE99999_A0000000` is the **single**
+/// precision `0.8f` (`0x3F4CCCCD`) widened, i.e. `0.800000011920929`, not the
+/// nearest double to 0.8 (`0x3FE99999_99999999A`). That is consistent with the
+/// authored path — `CCINIClass::ReadDouble` also parses `%f` and widens — so a
+/// port that writes `0.8_f64` here starts every unauthored bouncer from a
+/// different bit pattern than gamemd.
+const ANIM_DAMAGE_DEFAULT: NativeF64Bits = NativeF64Bits::POSITIVE_ZERO;
+const ANIM_ELASTICITY_DEFAULT: NativeF64Bits = NativeF64Bits::from_bits(0x3fe9_9999_a000_0000);
+const ANIM_MIN_Z_VEL_DEFAULT: NativeF64Bits = NativeF64Bits::from_bits(0x400c_0000_0000_0000);
+const ANIM_MAX_XY_VEL_DEFAULT: NativeF64Bits = NativeF64Bits::from_bits(0x402e_0000_0000_0000);
+
+/// One `CCINIClass::ReadDouble` animation key, retained as native bit pattern.
+///
+/// The bits are kept rather than an `f64` so `AnimTypeRuntimeConfig` stays
+/// `Eq`/`Hash`, and so a consumer that must reproduce a native x87 sequence has
+/// the exact stored value rather than a re-parsed approximation.
+fn read_anim_double(section: &IniSection, key: &str, default: NativeF64Bits) -> NativeF64Bits {
+    NativeF64Bits::from_bits(
+        section
+            .read_double(key, f64::from_bits(default.bits()))
+            .to_bits(),
+    )
 }
 
 fn parse_anim_ref(section: &IniSection, key: &str) -> Option<String> {
@@ -1123,6 +1277,168 @@ impl ArtRegistry {
         self.scheduler_anim_types.insert(key);
     }
 
+    /// Bind the combat-explosion animation family into the scheduler-owned set,
+    /// skipping (rather than failing on) a name retail data cannot resolve.
+    ///
+    /// These roots are the warhead `AnimList=`, `[General] InfDeathAnim*` and
+    /// object `Explosion=`/`DestroyAnim=` names that the combat tick turns into
+    /// `AnimClass` instances. They need the same loader-derived `End`/`LoopEnd`
+    /// as any other scheduler-owned animation, but they must not be able to fail
+    /// a match load, because retail authors names that resolve to no art section
+    /// at all and gamemd tolerates every one of them.
+    ///
+    /// RESIDUAL (M11a) — **retail's three unbindable explosion roots.** Derived
+    /// over the whole of `rulesmd.ini`/`artmd.ini`; neither file carries a
+    /// section for any of them:
+    ///
+    /// | root | authored by | SHP in `conquer.mix`? |
+    /// |---|---|---|
+    /// | `MININUKE - ADDED 11/30` | `[CRNUKEWH] AnimList=` | no |
+    /// | `GTPOWEXP` | `[GAPOWR]`, `[YAPOWR]`, `[YAROCK]` `Explosion=` | yes — 156x126, 29 frames |
+    /// | `TSTLEXP` | `[NAPOWR] Explosion=` | yes — 122x140, 33 frames |
+    ///
+    /// - *Trigger:* `[CRNuke]` for the first; for the other two, the death of a
+    ///   power plant of ANY faction — Allied `GAPOWR`, Soviet `NAPOWR`, Yuri
+    ///   `YAPOWR` — plus `YAROCK`. Each authors a six-entry `Explosion=` list
+    ///   whose last entry is the unbindable name, so one draw in six picks it,
+    ///   and native draws once per foundation cell.
+    /// - *Player effect:* none, and that is verified rather than assumed.
+    ///   `AnimTypeClass::ReadINI @ 0x00427D00` calls `ObjectTypeClass::ReadINI
+    ///   @ 0x005F92D0`, which calls `AbstractTypeClass::ReadINI @ 0x00410A60`;
+    ///   that one does `INIClass::FindSectionByName` and **returns 0 when the
+    ///   section is absent**, so `0x00427D22 JZ 0x004287E9` bails to the
+    ///   `XOR AL,AL` epilogue before the vtable `+0xA0` image-loader dispatch
+    ///   at `0x00427DDD`, which is itself behind a non-empty art-name test on
+    ///   `+0x1F8`. On an `AnimTypeClass` that `+0xA0` slot *is*
+    ///   `LoadImageAndResolveFrameBounds @ 0x00427B50` (vtable `0x007E3608`,
+    ///   slot `0x007E36A8` holds `0x00427B50`), so the dispatch and the loader
+    ///   are one thing and neither runs.
+    ///
+    ///   `End` (`+0x2C0`) therefore keeps its constructor `0`:
+    ///   `AnimTypeClass::Constructor 0x0042758A` stores `EBX`, and
+    ///   `0x00427542 XOR EBX,EBX` is that function's only write to `EBX`.
+    ///   **Three bodies fill `End` from the SHP header, not one.** Over all 34
+    ///   `+0x2C0` stores in the binary, the writers with an `AnimTypeClass`
+    ///   receiver are exactly: that constructor; `ReadINI` itself
+    ///   (`0x00427D5D`/`0x00427D6D`/`0x00427FE8`, never reached here);
+    ///   `LoadImageAndResolveFrameBounds` (`0x00427C37`/`0x00427C46`); and the
+    ///   lazy fills in `AnimClass::AnimClass @ 0x00422143` and `AnimClass::AI
+    ///   @ 0x00424434` (repeated at `0x00424823`) — the mechanism `anim_class`
+    ///   already models in `effective_bounds`. The lazy fills cannot rescue a
+    ///   sectionless type, and that is *why* they are gated the way they are:
+    ///   the gate wants `End == -1`, the constructor left `0`, and only an
+    ///   `End=` line could put `-1` there — which needs the missing section.
+    ///
+    ///   The other `+0xA0` call sites cannot reach these types either. All five
+    ///   in the binary: `0x00427DDD` above; `0x00427A1E`, `0x00427B3A` and
+    ///   `0x0042894F`, each gated on `NewTheater` (`+0x237`), which defaults
+    ///   false — its only three writers are `ObjectTypeClass::Constructor
+    ///   0x005F71A0` (`BL`, zeroed at `0x005F70A1`) and the two `ReadINI`s that
+    ///   never run; and `0x00428D9C`, inside the lazy art loader at
+    ///   `0x00428C30`, which bails at `0x00428C4F` unless `+0x35E` is set, and
+    ///   `AnimTypeClass::Constructor 0x004276B6` is the *only* instruction in
+    ///   the binary writing `+0x35E`, storing the same zero.
+    ///
+    ///   So the anim dies on its first `AnimClass::AI` visit having drawn
+    ///   nothing. The two SHPs really are in `conquer.mix`, but they are
+    ///   orphaned art: nothing loads them, because the art section that would
+    ///   trigger the load does not exist. **Do not "fix" this by minting a
+    ///   default config from the SHP header** — that would make VERA draw an
+    ///   explosion gamemd does not.
+    /// - *Frequency:* the `[CRNuke]` path is effectively never. The power-plant
+    ///   path is latent for a different reason: the object
+    ///   `Explosion=`/`DestroyAnim=` pick is still gated to
+    ///   `EntityCategory::Unit | Aircraft` under the GSI-08.11 residual in
+    ///   `src/sim/combat/mod.rs`, so no building reaches it yet. Whoever lands
+    ///   GSI-08.11 makes it continuous — every power plant death, every match.
+    /// - *Downstream risk:* the divergence that survives is object identity, not
+    ///   pixels. The unbindable name really does enter native's list:
+    ///   `TechnoTypeClass::ReadINI @ 0x00712170` reads `Explosion`
+    ///   (`0x0081DA00`) at `0x0071399A`, `strtok`s it, and calls
+    ///   `AnimTypeClass::FindOrAllocate @ 0x00428B80` per token at `0x007139E1`,
+    ///   which `operator_new`s a type on a name miss — so the list is six long
+    ///   and the dud is picked one time in six. Native still constructs the
+    ///   `AnimClass`, consuming an ID and a hash slot, then discards it; VERA
+    ///   constructs none. Closing it means
+    ///   minting default-`End` AnimType entries for unresolvable names so the
+    ///   object exists and dies, which belongs with the AnimType registry.
+    ///
+    /// The strict `bind_scheduler_anim_assets` contract for terrain and
+    /// damage-fire animations is deliberately left alone.
+    ///
+    /// Returns the number of roots that could not be bound. Callers log the
+    /// aggregate: a per-name `warn!` alone would let a future data change that
+    /// breaks ten roots pass unnoticed.
+    pub fn bind_combat_explosion_anim_assets(
+        &mut self,
+        roots: &[String],
+        asset_manager: &crate::assets::asset_manager::AssetManager,
+        theater_ext: &str,
+        theater_name: &str,
+    ) -> usize {
+        let mut skipped = 0;
+        for root in roots {
+            let name = root.trim().to_ascii_uppercase();
+            if name.is_empty() || self.scheduler_anim_types.contains(&name) {
+                continue;
+            }
+            match self.bind_one_anim_asset(&name, asset_manager, theater_ext, theater_name) {
+                Ok(()) => {
+                    self.scheduler_anim_types.insert(name);
+                }
+                Err(error) => {
+                    skipped += 1;
+                    log::warn!(
+                        "Combat explosion animation [{name}] stays on the legacy effect path: {error}"
+                    );
+                }
+            }
+        }
+        skipped
+    }
+
+    /// Resolve one animation's SHP and write the loader-derived bounds back into
+    /// its runtime config. Shared by the strict and tolerant binders.
+    fn bind_one_anim_asset(
+        &mut self,
+        name: &str,
+        asset_manager: &crate::assets::asset_manager::AssetManager,
+        theater_ext: &str,
+        theater_name: &str,
+    ) -> Result<(), AnimAssetBindError> {
+        let config = self
+            .anim_runtime_configs
+            .get(name)
+            .cloned()
+            .ok_or_else(|| AnimAssetBindError::MissingAnimType(name.to_string()))?;
+        let image_id = self.resolve_effective_image_id(name, name);
+        let candidates =
+            anim_shp_candidates(Some(self), name, &image_id, theater_ext, theater_name);
+        let data = candidates
+            .iter()
+            .find_map(|candidate| asset_manager.get_ref(candidate))
+            .ok_or_else(|| AnimAssetBindError::MissingShp(name.to_string()))?;
+        let raw_count = data
+            .get(6..8)
+            .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]) as i32)
+            .unwrap_or(0);
+        let (loaded_end, loaded_loop_end) = resolve_loaded_bounds(
+            name,
+            raw_count,
+            config.shadow,
+            config.explicit_end,
+            config.explicit_loop_end,
+        )?;
+        let bound = self
+            .anim_runtime_configs
+            .get_mut(name)
+            .expect("configuration was resolved above");
+        bound.raw_shp_frame_count = Some(raw_count);
+        bound.end = loaded_end;
+        bound.loop_end = loaded_loop_end;
+        Ok(())
+    }
+
     /// Bind native loader-derived End/LoopEnd values for the transitive
     /// Next/Trailer closure rooted at the supplied animation names.
     pub fn bind_scheduler_anim_assets(
@@ -1147,37 +1463,12 @@ impl ArtRegistry {
             if !resolved.insert(name.clone()) {
                 continue;
             }
+            self.bind_one_anim_asset(&name, asset_manager, theater_ext, theater_name)?;
             let config = self
                 .anim_runtime_configs
                 .get(&name)
                 .cloned()
-                .ok_or_else(|| AnimAssetBindError::MissingAnimType(name.clone()))?;
-            let image_id = self.resolve_effective_image_id(&name, &name);
-            let candidates =
-                anim_shp_candidates(Some(self), &name, &image_id, theater_ext, theater_name);
-            let data = candidates
-                .iter()
-                .find_map(|candidate| asset_manager.get_ref(candidate))
-                .ok_or_else(|| AnimAssetBindError::MissingShp(name.clone()))?;
-            let raw_count = data
-                .get(6..8)
-                .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]) as i32)
-                .unwrap_or(0);
-            let (loaded_end, loaded_loop_end) = resolve_loaded_bounds(
-                &name,
-                raw_count,
-                config.shadow,
-                config.explicit_end,
-                config.explicit_loop_end,
-            )?;
-
-            let bound = self
-                .anim_runtime_configs
-                .get_mut(&name)
-                .expect("configuration was resolved above");
-            bound.raw_shp_frame_count = Some(raw_count);
-            bound.end = loaded_end;
-            bound.loop_end = loaded_loop_end;
+                .expect("binding above resolved this configuration");
 
             if let Some(next) = config.next {
                 pending.push_back(next);
@@ -2072,8 +2363,28 @@ mod anim_runtime_metadata_tests {
             0.25
         );
         assert_eq!(anim_translucency_source_alpha(ANIM_DRAW_BITS_OPAQUE), 1.0);
-        // Bits outside the table are not a translucency stage.
+        // Bits outside the family mask are not a translucency stage.
         assert_eq!(anim_translucency_source_alpha(0x800), 1.0);
+
+        // `AnimClass::DrawIt` ORs the family into the producer's own flag word
+        // (`0x0042304B` loads `Anim+0x190`, `0x00423075`/`0x0042307A` OR into
+        // it), so the carried producer bits must not hide the stage. `0x600` is
+        // the trailer/damage-fire word and `0x2600` the combat-explosion word.
+        for carried in [0x0, 0x600, 0x2600] {
+            assert_eq!(
+                anim_translucency_source_alpha(carried | ANIM_DRAW_BITS_TRANSLUCENT_25),
+                0.75
+            );
+            assert_eq!(
+                anim_translucency_source_alpha(carried | ANIM_DRAW_BITS_TRANSLUCENT_50),
+                0.5
+            );
+            assert_eq!(
+                anim_translucency_source_alpha(carried | ANIM_DRAW_BITS_TRANSLUCENT_75),
+                0.25
+            );
+            assert_eq!(anim_translucency_source_alpha(carried), 1.0);
+        }
     }
 
     #[test]
@@ -2251,6 +2562,192 @@ mod anim_runtime_metadata_tests {
                 .expect("stock BIGBLUE declaration")
                 .is_animated_tiberium
         );
+    }
+
+    /// The retail values behind the four `ReadDouble` keys and the
+    /// `AltPalette=`/`UseNormalLight=` counts this module documents.
+    #[test]
+    #[ignore = "requires RA2_DIR with installed retail RA2/YR assets"]
+    fn retail_artmd_anim_damage_cluster_matches_active_yr() {
+        let ra2_dir = std::path::PathBuf::from(
+            std::env::var_os("RA2_DIR")
+                .expect("set RA2_DIR to the installed retail RA2/YR directory"),
+        );
+        let assets = AssetManager::new(&ra2_dir).expect("load retail RA2/YR archive stack");
+        let artmd_bytes = assets.get_ref("ARTMD.INI").expect("load retail ARTMD.INI");
+        let artmd = IniFile::from_bytes(artmd_bytes).expect("parse retail ARTMD.INI");
+        let registry = ArtRegistry::from_ini(&artmd);
+
+        let debris = registry
+            .anim_runtime_config("DBRIS1LG")
+            .expect("stock DBRIS1LG declaration");
+        assert_eq!(f64::from_bits(debris.damage.bits()), 20.0);
+        assert_eq!(debris.warhead.as_deref(), Some("HE"));
+        assert_eq!(debris.damage_radius, 80);
+        assert_eq!(f64::from_bits(debris.elasticity.bits()), 0.0);
+        assert_eq!(f64::from_bits(debris.min_z_vel.bits()), 25.0);
+        assert_eq!(f64::from_bits(debris.max_xy_vel.bits()), 25.0);
+        assert!(debris.bouncer);
+
+        // The one live per-frame-damage producer in stock skirmish: the fire a
+        // destroyed building leaves behind.
+        let fire3 = registry
+            .anim_runtime_config("FIRE3")
+            .expect("stock FIRE3 declaration");
+        let fire3_damage = f64::from_bits(fire3.damage.bits());
+        assert!(
+            fire3_damage > 0.0 && fire3_damage < 0.01,
+            "[FIRE3] Damage= is `.003`, read back as {fire3_damage}"
+        );
+
+        // A section with neither key keeps the constructor's non-zero doubles.
+        let twlt036 = registry
+            .anim_runtime_config("TWLT036")
+            .expect("stock TWLT036 declaration");
+        assert_eq!(f64::from_bits(twlt036.damage.bits()), 0.0);
+        assert_eq!(twlt036.elasticity.bits(), 0x3fe9_9999_a000_0000);
+        assert_eq!(f64::from_bits(twlt036.min_z_vel.bits()), 3.5);
+        assert_eq!(f64::from_bits(twlt036.max_xy_vel.bits()), 15.0);
+
+        // The counts this module's `alt_palette` / `use_normal_light` docs
+        // claim, derived rather than asserted from memory. gamemd's INI key
+        // lookup is case-sensitive, so only the exact spellings count.
+        let alt_palette = registry
+            .anim_runtime_configs
+            .values()
+            .filter(|config| config.alt_palette)
+            .count();
+        let use_normal_light = registry
+            .anim_runtime_configs
+            .values()
+            .filter(|config| config.use_normal_light)
+            .count();
+        assert_eq!(alt_palette, 31, "stock artmd.ini AltPalette= sections");
+        assert_eq!(
+            use_normal_light, 43,
+            "stock artmd.ini UseNormalLight= sections"
+        );
+    }
+
+    /// `AnimTypeClass::ReadINI @ 0x00427D00` reads `Damage=`, `Elasticity=`,
+    /// `MinZVel=` and `MaxXYVel=` through `CCINIClass::ReadDouble`, so each of
+    /// them keeps a fraction. `Damage` in particular is a double at `+0x2A8`,
+    /// never an integer: the stock population is `.003`-scale.
+    #[test]
+    fn anim_double_keys_keep_their_fraction() {
+        let ini = IniFile::from_str(
+            "[DEBRIS]\n\
+             Damage=20\n\
+             Warhead=he\n\
+             DamageRadius=80\n\
+             Elasticity=0.0\n\
+             MinZVel=25.0\n\
+             MaxXYVel=25.0\n\
+             [BURNER]\n\
+             Damage=.003\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        let debris = reg.anim_runtime_config("DEBRIS").unwrap();
+        assert_eq!(f64::from_bits(debris.damage.bits()), 20.0);
+        assert_eq!(debris.warhead.as_deref(), Some("HE"));
+        assert_eq!(debris.damage_radius, 80);
+        assert_eq!(f64::from_bits(debris.elasticity.bits()), 0.0);
+        assert_eq!(f64::from_bits(debris.min_z_vel.bits()), 25.0);
+        assert_eq!(f64::from_bits(debris.max_xy_vel.bits()), 25.0);
+
+        // The fraction survives; an i32 read would have produced 0.
+        let burner = reg.anim_runtime_config("BURNER").unwrap();
+        let damage = f64::from_bits(burner.damage.bits());
+        assert!(
+            damage > 0.0 && damage < 0.01,
+            "{damage} is not `.003`-scale"
+        );
+    }
+
+    /// Constructor defaults from `AnimTypeClass::AnimTypeClass @ 0x00427530`.
+    /// Three of them are NOT the zero/false a naive port would pick:
+    /// `Elasticity` 0.8, `MinZVel` 3.5, `MaxXYVel` 15.0, and both
+    /// `ShouldUseCellDrawer` and `ShouldFogRemove` start true.
+    #[test]
+    fn anim_constructor_defaults_are_not_all_zero() {
+        let ini = IniFile::from_str("[BARE]\nFixtureOnly=1\n");
+        let reg = ArtRegistry::from_ini(&ini);
+        let bare = reg.anim_runtime_config("BARE").unwrap();
+
+        assert_eq!(f64::from_bits(bare.damage.bits()), 0.0);
+        // The literal dword pair the constructor stores is the SINGLE-precision
+        // 0.8f widened, not the nearest double to 0.8.
+        assert_eq!(bare.elasticity.bits(), 0x3fe9_9999_a000_0000);
+        assert_eq!(f64::from_bits(bare.elasticity.bits()), f64::from(0.8_f32));
+        assert_ne!(f64::from_bits(bare.elasticity.bits()), 0.8_f64);
+        assert_eq!(f64::from_bits(bare.min_z_vel.bits()), 3.5);
+        assert_eq!(f64::from_bits(bare.max_xy_vel.bits()), 15.0);
+        assert!(bare.should_use_cell_drawer);
+        assert!(bare.should_fog_remove);
+
+        assert_eq!(bare.warhead, None);
+        assert_eq!(bare.damage_radius, 0);
+        assert_eq!(bare.spawns_particle, None);
+        assert_eq!(bare.num_particles, 0);
+        assert!(!bare.is_meteor);
+        assert!(!bare.is_veins);
+        assert!(!bare.is_flaming_guy);
+        assert!(!bare.scorch);
+        assert!(!bare.crater);
+        assert!(!bare.force_big_craters);
+        assert!(!bare.sticky);
+        assert!(!bare.psi_warning);
+        assert!(!bare.double_thick);
+        assert!(!bare.flamer);
+    }
+
+    /// The two true-by-default flags must be readable back to false, or the
+    /// default would be indistinguishable from an authored `no`.
+    #[test]
+    fn anim_true_by_default_flags_accept_an_authored_no() {
+        let ini = IniFile::from_str(
+            "[HIDDEN]\n\
+             ShouldUseCellDrawer=no\n\
+             ShouldFogRemove=no\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+        let hidden = reg.anim_runtime_config("HIDDEN").unwrap();
+        assert!(!hidden.should_use_cell_drawer);
+        assert!(!hidden.should_fog_remove);
+    }
+
+    #[test]
+    fn anim_middle_effect_flags_and_particle_spawn_parse() {
+        let ini = IniFile::from_str(
+            "[VIRUSD]\n\
+             SpawnsParticle=  gasCloud  \n\
+             NumParticles=8\n\
+             Scorch=yes\n\
+             Crater=yes\n\
+             ForceBigCraters=yes\n\
+             Sticky=yes\n\
+             PsiWarning=yes\n\
+             DoubleThick=yes\n\
+             Flamer=yes\n\
+             IsMeteor=yes\n\
+             IsVeins=yes\n\
+             IsFlamingGuy=yes\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+        let config = reg.anim_runtime_config("VIRUSD").unwrap();
+        assert_eq!(config.spawns_particle.as_deref(), Some("GASCLOUD"));
+        assert_eq!(config.num_particles, 8);
+        assert!(config.scorch);
+        assert!(config.crater);
+        assert!(config.force_big_craters);
+        assert!(config.sticky);
+        assert!(config.psi_warning);
+        assert!(config.double_thick);
+        assert!(config.flamer);
+        assert!(config.is_meteor);
+        assert!(config.is_veins);
+        assert!(config.is_flaming_guy);
     }
 
     #[test]
