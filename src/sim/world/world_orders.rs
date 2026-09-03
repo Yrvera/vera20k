@@ -1112,13 +1112,13 @@ impl Simulation {
                 Some(rules),
                 &self.interner,
             );
-            let Some((trx, try_, tsx, tsy)) = target_pos else {
+            let Some((trx, try_, _tsx, _tsy)) = target_pos else {
                 continue;
             };
 
-            // Resolve weapon range using shared helper. None means no weapon
+            // Resolve the weapon using the shared helper. None means no weapon
             // can engage; combat tick will drop on its own weapon-select fail.
-            let Some(weapon_range) = combat::pursuit_weapon_range(
+            let Some(weapon) = combat::pursuit_selected_weapon(
                 entity,
                 &attack.target,
                 &self.substrate.entities,
@@ -1130,18 +1130,30 @@ impl Simulation {
                 continue;
             };
 
-            // Range check — same math as combat tick.
-            let dist_sq = combat::lepton_distance_sq_raw(
-                entity.position.rx,
-                entity.position.ry,
-                entity.position.sub_x,
-                entity.position.sub_y,
-                trx,
-                try_,
-                tsx,
-                tsy,
+            // Range check — the SAME predicate the combat tick's fire gate
+            // uses, line-of-fire walk included. The approach search
+            // (`FootClass::Greatest_Threat_Scan @ 0x004D5690`, vt+0x53C,
+            // reached from `Mission_Attack` 0x004D4DC0 at 0x004D4E6A) decides
+            // with `TechnoClass::InRange` 0x006F7220 at 0x004D622C /
+            // 0x004D6550, and `InRange` ends in the wall/cliff walk at
+            // 0x006F7642. If this stage used the plain radius while the fire
+            // gate ran the walk, a unit ordered to shoot across a wall would
+            // halt here and then be refused the shot, standing still under a
+            // live order.
+            let in_range = combat::pursuit_in_range(
+                entity,
+                &attack.target,
+                weapon,
+                &self.substrate.entities,
+                rules,
+                &self.interner,
+                self.resolved_terrain.as_ref(),
+                &combat::line_of_fire::LineOfFireInputs {
+                    overlay_grid: self.overlay_grid.as_ref(),
+                    overlay_registry,
+                    alliances: Some(&self.house_alliances),
+                },
             );
-            let in_range = combat::is_within_range_leptons(dist_sq, weapon_range);
 
             if !in_range {
                 // **Sticky never chases.** The one place the engine tells

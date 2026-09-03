@@ -312,3 +312,194 @@ fn guard_still_chases_where_sticky_would_not() {
         "Guard is not short-circuited"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The pursuit predicate is the fire gate's predicate, walk included.
+//
+// `FootClass::Mission_Attack @ 0x004D4DC0` dispatches to the approach search
+// through vtable slot `+0x53C` (`CALL [EAX+0x53c]` at `0x004D4E6A`; the body is
+// `FootClass::Greatest_Threat_Scan @ 0x004D5690`, and InfantryClass's override
+// `0x00522340` chains into it at `0x0052236E`), and that body decides with
+// `TechnoClass::InRange @ 0x006F7220`
+// — called at `0x004D622C` and `0x004D6550` with a candidate coordinate as arg1
+// and TarCom as arg2. `InRange` ends in the wall/cliff walk
+// (`CALL 0x004CC310` at `0x006F7642`). So in gamemd the approach test and the
+// fire test are literally the same call, and VERA's two stages must not use
+// different predicates: if pursuit measured the plain radius while the fire
+// gate ran the walk, a unit ordered to shoot across a wall would halt here and
+// then be refused the shot, freezing under a live order.
+// ---------------------------------------------------------------------------
+
+/// Rules for the wall cases: a `SubjectToWalls=yes` projectile whose warhead
+/// carries no `Wall=`, so `0x004CC342` cannot re-admit the blocked shot.
+///
+/// `[OverlayTypes]` is read by DECLARATION index (`RulesClass::Process`
+/// `XOR EBX,EBX` at `0x00668CF3`, `PUSH EBX` at `0x00668D0A`), so `GAWALL` has
+/// to be the third entry to land on the id `IsWallConnectableInDirection`
+/// 0x00480510 accepts.
+fn wall_pursuit_rules() -> RuleSet {
+    let ini_str: &str = "\
+[OverlayTypes]\n1=GASAND\n2=CYCL\n3=GAWALL\n\n\
+[GASAND]\nWall=yes\n\n[CYCL]\n\n[GAWALL]\nWall=yes\n\n\
+[VehicleTypes]\n0=MTNK\n1=HTNK\n\n\
+[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
+[HTNK]\nStrength=400\nArmor=heavy\nSpeed=5\nPrimary=105mm\n\n\
+[105mm]\nDamage=65\nROF=50\nRange=6\nProjectile=CANNON\nWarhead=AP\n\n\
+[CANNON]\nSubjectToWalls=yes\n\n\
+[AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n";
+    let ini: IniFile = IniFile::from_str(ini_str);
+    RuleSet::from_ini(&ini).expect("wall_pursuit_rules should parse")
+}
+
+fn wall_pursuit_registry() -> crate::map::overlay_types::OverlayTypeRegistry {
+    let ini_str: &str = "\
+[OverlayTypes]\n1=GASAND\n2=CYCL\n3=GAWALL\n\n\
+[GASAND]\nWall=yes\n\n[CYCL]\n\n[GAWALL]\nWall=yes\n";
+    crate::map::overlay_types::OverlayTypeRegistry::from_ini(&IniFile::from_str(ini_str), None)
+}
+
+const WALL_TEST_GRID: u16 = 64;
+/// `GAWALL`'s declaration index in the fixture's `[OverlayTypes]`.
+const WALL_TEST_GAWALL_ID: u8 = 2;
+
+fn wall_test_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+    crate::map::resolved_terrain::ResolvedTerrainCell {
+        rx,
+        ry,
+        source_tile_index: 0,
+        source_sub_tile: 0,
+        final_tile_index: 0,
+        final_sub_tile: 0,
+        is_wood_bridge_repair_tile: false,
+        level: 0,
+        filled_clear: true,
+        tileset_index: Some(0),
+        land_type: 0,
+        yr_cell_land_type: 0,
+        slope_type: 0,
+        template_height: 0,
+        render_offset_x: 0,
+        render_offset_y: 0,
+        terrain_class: Default::default(),
+        speed_costs: Default::default(),
+        is_water: false,
+        is_cliff_like: false,
+        is_rough: false,
+        is_road: false,
+        height_in_pixels: 0,
+        variant: 0,
+        has_ramp: false,
+        canonical_ramp: None,
+        ground_walk_blocked: false,
+        terrain_object_blocks: false,
+        terrain_object_occupation: None,
+        overlay_blocks: false,
+        overlay_zone_type: None,
+        outside_playfield: false,
+        zone_type: 0,
+        base_ground_walk_blocked: false,
+        base_build_blocked: false,
+        base_land_type: 0,
+        base_yr_cell_land_type: 0,
+        base_terrain_class: Default::default(),
+        base_speed_costs: Default::default(),
+        build_blocked: false,
+        has_bridge_deck: false,
+        bridge_walkable: false,
+        bridge_transition: false,
+        bridge_deck_level: 0,
+        bridge_layer: None,
+        bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+        tube_index: None,
+        radar_left: [0; 3],
+        radar_right: [0; 3],
+        accepts_smudge: true,
+        allows_tiberium: false,
+        has_damaged_data: false,
+        bridgehead_anchor_class_at_load: None,
+    }
+}
+
+/// Flat terrain plus an overlay plane carrying the listed walls, installed on
+/// the sim so `tick_attack_pursuit_with_overlay_registry` can run the 3-D gate.
+fn install_wall_map(sim: &mut Simulation, walls: &[(u16, u16)]) {
+    let cells: Vec<crate::map::resolved_terrain::ResolvedTerrainCell> = (0..WALL_TEST_GRID)
+        .flat_map(|ry| (0..WALL_TEST_GRID).map(move |rx| wall_test_cell(rx, ry)))
+        .collect();
+    sim.resolved_terrain = Some(
+        crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+            WALL_TEST_GRID,
+            WALL_TEST_GRID,
+            cells,
+        ),
+    );
+    let mut overlays = crate::sim::overlay_grid::OverlayGrid::new(WALL_TEST_GRID, WALL_TEST_GRID);
+    for &(rx, ry) in walls {
+        overlays.cell_mut(rx, ry).overlay_id = Some(WALL_TEST_GAWALL_ID);
+    }
+    sim.overlay_grid = Some(overlays);
+}
+
+/// **The deadlock tripwire.** Grizzly at (2,5), Rhino at (6,5): four cells, so
+/// the plain radius says "in range" against `Range=6`. A `GAWALL` sits at (4,5),
+/// and `[CANNON]` is `SubjectToWalls=yes` while `[AP]` has no `Wall=`, so the
+/// fire gate refuses the shot at `0x006F7642`.
+///
+/// If pursuit judged range with the 2-D twin it would produce no pursuit cell,
+/// the fire gate would refuse, and the tank would stand still under a live
+/// attack order forever. Native never gets there: its approach routine measures
+/// with the same `InRange` that runs the walk, so it keeps repositioning.
+#[test]
+fn a_wall_on_the_line_keeps_pursuit_closing_instead_of_freezing() {
+    let mut grizzly = make_unit(1, "MTNK", "Americans", 2, 5, 300);
+    grizzly.attack_target = Some(AttackTarget::new(2));
+    let rhino = make_unit(2, "HTNK", "Soviet", 6, 5, 400);
+    let (mut sim, grid) = make_sim(vec![grizzly, rhino]);
+    install_wall_map(&mut sim, &[(4, 5)]);
+    let rules = wall_pursuit_rules();
+    let registry = wall_pursuit_registry();
+
+    sim.tick_attack_pursuit_with_overlay_registry(
+        &rules,
+        Some(&grid),
+        Some(&registry),
+        &std::collections::BTreeSet::new(),
+    );
+
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert!(
+        entity.attack_target.is_some(),
+        "the order survives — pursuit never drops a target it is still closing on"
+    );
+    assert!(
+        entity.movement_target.is_some(),
+        "a shot the fire gate refuses must keep pursuit moving, not freeze the unit"
+    );
+}
+
+/// The control: the same fixture with the wall removed still halts, so the
+/// tripwire above is pinning the walk and not merely "pursuit always moves".
+#[test]
+fn without_the_wall_the_same_shot_halts_pursuit() {
+    let mut grizzly = make_unit(1, "MTNK", "Americans", 2, 5, 300);
+    grizzly.attack_target = Some(AttackTarget::new(2));
+    grizzly.movement_target = Some(crate::sim::components::MovementTarget::default());
+    let rhino = make_unit(2, "HTNK", "Soviet", 6, 5, 400);
+    let (mut sim, grid) = make_sim(vec![grizzly, rhino]);
+    install_wall_map(&mut sim, &[]);
+    let rules = wall_pursuit_rules();
+    let registry = wall_pursuit_registry();
+
+    sim.tick_attack_pursuit_with_overlay_registry(
+        &rules,
+        Some(&grid),
+        Some(&registry),
+        &std::collections::BTreeSet::new(),
+    );
+
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert!(
+        entity.movement_target.is_none(),
+        "with a clear line at four cells the shot is legal, so pursuit halts to fire"
+    );
+}

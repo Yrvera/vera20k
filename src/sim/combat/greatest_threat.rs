@@ -1281,6 +1281,19 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
         candidate.position.sub_y,
     );
     let in_range = match ctx.range {
+        // RESIDUAL (line of fire) — the hard cutoff is a plain radius, so this
+        // arm never runs the wall/cliff walk `TechnoClass::InRange` 0x006F7220
+        // ends in at 0x006F7642. Its one production author is the garrison
+        // passive scan (`combat::mod`'s `scan_range` override), which is also
+        // the branch whose fire gate skips the walk, so scan and fire agree.
+        // - Trigger: a garrison passive scan with a wall or a ≥4-Level step
+        //   between the building and the candidate.
+        // - Player effect: garrisoned infantry acquire and open fire on a
+        //   target gamemd would refuse.
+        // - Frequency: routine on urban maps.
+        // - Downstream risk: none to deterministic state; it is consistent
+        //   with the garrison fire gate rather than deadlocking against it.
+        //   Cured by the same override-aware range chain.
         ScanRange::Hard(cells) => is_within_range_leptons(dist_sq, cells),
         ScanRange::NoCutoff => true,
         ScanRange::CanFireAt => match (ctx.terrain, ctx.entities.get(ctx.attacker.stable_id)) {

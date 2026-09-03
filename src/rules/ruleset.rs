@@ -2963,8 +2963,10 @@ impl RuleSet {
         // projection path has no `[Powerups]` accumulator of its own.
         let powerups = crate::rules::powerups::PowerupTable::default();
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
-        // `RulesClass::ReadWallModel` 0x0066D1E0 leaves the constructor value
-        // (0, from 0x00667825) in place when `[WallModel]` is absent.
+        // `RulesClass::ReadWallModel` 0x0066D1F0 (body 0x0066D1F0-0x0066D262)
+        // leaves the constructor value (0, from 0x00667825) in place when
+        // `[WallModel]` is absent: 0x0066D20E passes the current
+        // `[ESI+0x1850]` as the default and 0x0066D22E stores the answer back.
         let allied_wall_transparency: bool = ini
             .section("WallModel")
             .and_then(|s| s.get_bool("AlliedWallTransparency"))

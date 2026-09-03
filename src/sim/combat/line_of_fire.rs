@@ -47,12 +47,30 @@ const CLIFF_STEP_LEVELS: i32 = 4;
 /// Overlay array indices that `CellClass::IsWallConnectableInDirection`
 /// 0x00480510 accepts for the "any wall?" query — the form 0x004CC32D uses,
 /// pushing `-1` for both the type and the direction. The three ids are hard
-/// coded in that body; with stock `[OverlayTypes]` (list position IS the id,
-/// so INI key N is id N-1) they are `GAWALL`, `NAWALL` and `CAKRMW`.
+/// coded in that body.
 ///
-/// Deliberately NOT "every `Wall=yes` overlay": `GASAND` (id 0) and `CAFNCP`
-/// also carry `Wall=yes` and are absent from this set, so a wall-breaking
-/// warhead does not get waved through a sandbag line.
+/// **These are `[OverlayTypes]` DECLARATION indices, not the INI key text.**
+/// `RulesClass::Process` reads the section by 0-based entry index — `XOR
+/// EBX,EBX` at 0x00668CF3, `PUSH EBX` as the entry selector at 0x00668D0A,
+/// `INC EBX; CMP EBX,EBP; JL` at 0x00668D2F-0x00668D32 — and never parses the
+/// `N=` on the left of the line. Stock `rulesmd.ini` has 250 entries under keys
+/// 1..253 with keys **40, 41 and 183 missing**, so `id == key - 1` holds only
+/// below key 42. Resolved by declaration index the three ids are `GAWALL`
+/// (key 3), `NAWALL` (key 27) and `GAFWLL` (key 247). `CAKRMW`, the Kremlin
+/// wall, is id **240** and is NOT in this set — a wall-breaking shell is
+/// refused by it exactly as it is by sandbags. VERA shares that numbering:
+/// `rules::overlay_types::is_bridge_overlay_index` pins `BRIDGEB1`/`BRIDGEB2`
+/// at 237/238, their declaration indices, against INI keys 241/242.
+///
+/// Id 243 is inert on stock data anyway: `[GAFWLL]` has no section in
+/// `rulesmd.ini` at all (a Tiberian Sun firestorm-wall leftover left in the
+/// list), so it carries no `Wall=` and the walk never flags it as a wall in
+/// the first place.
+///
+/// Deliberately NOT "every `Wall=yes` overlay": stock authors `Wall=yes` on
+/// seven overlays — `GASAND` (0), `GAWALL` (2), `NAWALL` (26), `CAFNCB`,
+/// `CAFNCW`, `CAKRMW` (240) and `CAFNCP` — of which only two are re-admitted,
+/// so a wall-breaking warhead does not get waved through a sandbag line.
 const WALL_CONNECTABLE_OVERLAY_IDS: [u8; 3] = [2, 26, 243];
 
 /// Map state the walk consults beyond the resolved terrain grid.
@@ -413,8 +431,9 @@ mod tests {
     const SANDBAG_GASAND_ID: u8 = 0;
     const GRID: u16 = 16;
 
-    /// Overlay ids follow `[OverlayTypes]` list position, so the stock
-    /// numbering that puts `GAWALL` at 2 and `NAWALL` at 26 has to be
+    /// Overlay ids follow `[OverlayTypes]` DECLARATION order (0x00668CF3 /
+    /// 0x00668D0A read entries by 0-based index, never by key text), so the
+    /// stock numbering that puts `GAWALL` at 2 and `NAWALL` at 26 has to be
     /// reproduced by the fixture list, not asserted from names.
     fn rules_ini(extra: &str) -> String {
         format!(
