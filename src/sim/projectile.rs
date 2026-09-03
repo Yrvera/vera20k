@@ -146,10 +146,13 @@ pub struct ProjectileGuidance {
     pub fuse_reference: ProjectileCoord,
     /// `Bullet+0x118`, the warm-up counter of the closing-rate detonation
     /// heuristic on the homing arm. Native runs the plain accumulate while it
-    /// is below 60 and only then admits the decay test.
+    /// is below 60 and only then admits the decay test — `0x00466FB4
+    /// MOV EAX,[EBP+0x118] / CMP EAX,0x3C / JGE`, then `INC EAX /
+    /// MOV [EBP+0x118],EAX` on the warm-up side.
     pub closing_frames: u16,
-    /// `Bullet+0x11C`, the closing-rate accumulator of the same heuristic, held
-    /// as native `double` bits because the native update is
+    /// `Bullet+0x120`, the closing-rate accumulator of the same heuristic
+    /// (`0x00466FD8 FLD double ptr [EBP+0x120]` / `0x00466FEE FST double ptr
+    /// [EBP+0x120]`), held as native `double` bits because the native update is
     /// `accum * 0.9833333333333333 + delta` in x87 doubles.
     pub closing_accumulator_bits: u64,
 }
@@ -419,8 +422,28 @@ pub enum TargetExpiryPolicy {
 
 /// Terrain checks admitted for one `BulletClass` flight.
 ///
-/// The `Vertical` arm owns its own floor and bridge probe inside
-/// `BulletClass::AI 0x00467334`ff., so a vertical bullet takes none of these.
+/// `native_cell_collision` models the ground-height / bridge-deck / building
+/// block at `BulletClass::AI 0x004674AE`..`0x00467778`. That block lives inside
+/// the `ROT < 1, Vertical = no` arm: `0x004671D0 MOV CL,[EAX+0x2C0] /
+/// 0x004671D6 TEST CL,CL / 0x004671D8 JZ 0x00467402` reaches it only when
+/// `Vertical == 0`, and a `Vertical` bullet takes the `0x004671DE`..`0x00467390`
+/// arm instead, which runs its own `DetonationAltitude` / floor / bridge probe.
+/// That is why the flag is narrowed on `!vertical` — not because a `Vertical`
+/// bullet skips every terrain test.
+///
+/// RESIDUAL (GSI-08.08) — the shared post-move probe `FUN_00468BB0` is not
+/// modelled for ANY trajectory. `BulletClass::AI 0x00467BD1` calls it for every
+/// bullet whose impact flag is still clear (`0x00467BA4 MOV AL,[ESP+0x18] /
+/// TEST AL,AL / JNZ 0x00467BF0` — there is no `Vertical` or `ROT` test), and it
+/// detonates on `SubjectToCliffs`/`SubjectToWalls` cliff geometry
+/// (`FUN_004CC360`), on an altitude below `DAT_0089DE70 * -4`, on descending
+/// past an `AA` target, on the `Level` water branch, and on closing within
+/// `0x80` of an air target. Trigger: any bullet crossing a cliff, or an `AA`
+/// shot passing its target. Player effect: those shots keep flying where native
+/// would have detonated them. Frequency: zero for the two `Vertical` stock
+/// projectiles (`[BlimpBombP]`/`[BlimpBombPE]` author none of the gating keys);
+/// otherwise cliff-crossing shots on hilly maps. Downstream risk: none beyond
+/// the impact coordinate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProjectileCollisionPolicy {
     /// `BulletTypeClass::Level`: detonate after entering a non-water cell.
@@ -588,6 +611,15 @@ fn scatter_angle_radians(scenario_rng: &mut SimRng) -> f64 {
 /// `flak` selects the range-scaled arm taken when
 /// `FlakScatter && !Inviso` (`0x006FE699`/`0x006FE6A7`); stock `[FlakTProj]`
 /// is its only user.
+///
+/// **The axis binding below is deliberate and is NOT the one the mapping ledger
+/// records.** The ledger's §3a has sine and cosine swapped (`dX' = sin`,
+/// `dY' = cos`). Walked in assembly: the `Math__CosFromTable @ 0x004CAD00`
+/// result is the term that reaches the X `FIADD` at `0x006FE7E5`, and the
+/// `Math__SinFromTable @ 0x004CACB0` result is the term that reaches the Y
+/// `FSUBR` at `0x006FE7C0` — so `dX += cos(theta) * mag` and
+/// `dY -= sin(theta) * mag`, as written. Do not "correct" this back to the
+/// ledger.
 pub fn projectile_launch_scatter(
     delta: (i32, i32, i32),
     ballistic_scatter: i32,
@@ -1068,11 +1100,37 @@ impl ProjectileStore {
             // before entering the trajectory portion of BulletClass::AI.
             projectile.visual.advance();
 
-            // `ProximityDetector::Check @ 0x004E11F0` reads
-            // `CurrentFrame - launchFrame` against `Arm=`, so the counter has
-            // already advanced by one when the bullet's first AI frame runs.
-            // Nothing else consults it: the detonation admission at
-            // `BulletClass::AI 0x00467C70` never tests `Arm`.
+            // The arm gate is a WALL-CLOCK frame delta, not a count of AI
+            // visits: `ProximityDetector::Setup @ 0x004E1130` stores
+            // `g_CurrentFrameCounter` into detector `+0x0C` at launch and
+            // `ProximityDetector::Check @ 0x004E11F0` admits the fuse on
+            // `Arm (+0x14) <= g_CurrentFrameCounter - [+0x0C]`. VERA admits a
+            // projectile only AFTER the live-object pass
+            // (`World::advance_tick` -> `tick_combat_with_fatal_lifecycle` ->
+            // `Simulation::admit_projectile`, `world/mod.rs`; the follow-up
+            // tail walk `visit_combat_appended_wave_tail` visits Waves only),
+            // so a projectile's first `advance_one` runs on the tick after
+            // launch, where the native delta is already 1. Decrementing at the
+            // top of the frame therefore reproduces `Arm <= elapsed` on every
+            // frame — and it does so whether or not native's LogicClass pass
+            // also runs a launch-frame `BulletClass::AI`, because that question
+            // changes how many AI visits precede a frame, not the frame delta.
+            // Nothing else consults `Arm`: the detonation admission at
+            // `BulletClass::AI 0x00467C70` never tests it.
+            //
+            // RESIDUAL (VERA-internal, gamemd equivalent UNCHECKED): native's
+            // `LogicClass::PerTickUpdate @ 0x0055AFB0` object loop reloads its
+            // count after every `vtable+0x5C` callback and
+            // `LogicClass::RegisterObject @ 0x0055BAA0` tail-appends, so a
+            // bullet fired from an earlier index MAY take a launch-frame AI
+            // that VERA skips; the Ghidra plate comment on `BulletClass::AI`
+            // records same-pass execution of a concrete appended object as
+            // UNCHECKED. Trigger: every persistent projectile. Player effect:
+            // the shot's whole flight is one frame behind native, so it lands
+            // one frame late — at the new 1-4 leptons/frame launch speed that
+            // is a few leptons of travel. Frequency: every tracked shot.
+            // Downstream risk: deterministic state only; the arm gate above is
+            // unaffected because it is keyed on the frame counter.
             if projectile.arm_frames_remaining > 0 {
                 projectile.arm_frames_remaining -= 1;
             }

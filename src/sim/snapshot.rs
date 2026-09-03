@@ -3075,11 +3075,12 @@ mod tests {
     /// decode from a shorter v117 record; 118 -> 119 gives `ProjectileGuidance`
     /// the native `BulletClass` flight state — `Bullet+0x110` MaxSpeed,
     /// `BulletTypeClass+0x2D0` Acceleration, the launch-frozen
-    /// `ProximityDetector` reference coordinate, and the `Bullet+0x118/+0x11C`
-    /// closing-rate pair — and appends the `Vertical` trajectory variant. The
-    /// three guidance additions sit at the END of the struct, but a v118 record
-    /// still stops short of them, so bincode would run off the end of every
-    /// in-flight projectile.
+    /// `ProximityDetector` reference coordinate, and the `Bullet+0x118/+0x120`
+    /// closing-rate pair — and appends the `Vertical` trajectory variant. All
+    /// five guidance additions (`max_speed`, `acceleration`, `fuse_reference`,
+    /// `closing_frames`, `closing_accumulator_bits`) sit at the END of the
+    /// struct, but a v118 record still stops short of them, so bincode would
+    /// run off the end of every in-flight projectile.
     #[test]
     fn projectile_flight_state_snapshot_version_is_119() {
         assert_eq!(super::SNAPSHOT_VERSION, 119);

@@ -8594,3 +8594,205 @@ fn gsi_08_06_point_blank_shot_clamps_the_launch_speed_to_half_the_distance() {
         "the launch speed is clamped to dist/2"
     );
 }
+
+/// A flat level-0 grid, so the `Vertical` arm's floor probe has a ground
+/// surface to reach.
+fn flat_level_zero_terrain(
+    width: u16,
+    height: u16,
+) -> crate::map::resolved_terrain::ResolvedTerrainGrid {
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+
+    let speed_costs = SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(100),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
+    let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+    for ry in 0..height {
+        for rx in 0..width {
+            cells.push(ResolvedTerrainCell {
+                rx,
+                ry,
+                source_tile_index: 0,
+                source_sub_tile: 0,
+                final_tile_index: 0,
+                final_sub_tile: 0,
+                is_wood_bridge_repair_tile: false,
+                level: 0,
+                filled_clear: true,
+                tileset_index: Some(0),
+                land_type: 0,
+                yr_cell_land_type: 0,
+                slope_type: 0,
+                template_height: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: TerrainClass::Clear,
+                speed_costs,
+                is_water: false,
+                is_cliff_like: false,
+                height_in_pixels: 0,
+                variant: 0,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: false,
+                allows_tiberium: false,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: false,
+                terrain_object_blocks: false,
+                terrain_object_occupation: None,
+                overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
+                zone_type: 0,
+                base_ground_walk_blocked: false,
+                base_build_blocked: false,
+                base_land_type: 0,
+                base_yr_cell_land_type: 0,
+                base_terrain_class: TerrainClass::Clear,
+                base_speed_costs: speed_costs,
+                build_blocked: false,
+                has_bridge_deck: false,
+                bridge_walkable: false,
+                bridge_transition: false,
+                bridge_deck_level: 0,
+                bridge_layer: None,
+                bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
+                radar_left: [0, 0, 0],
+                radar_right: [0, 0, 0],
+                has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
+            });
+        }
+    }
+    ResolvedTerrainGrid::from_cells(width, height, cells)
+}
+
+/// GSI-08.08 end to end: the Kirov bomb has to FALL and explode.
+///
+/// `[BlimpBombP]` is `Vertical=yes` with `Acceleration=1`, no `ROT=` and no
+/// `Ranged=`, so it carries no fuse and no steering — its only terminations are
+/// the `Vertical` arm's own probes at `BulletClass::AI 0x00467334`ff.
+/// (`DetonationAltitude`, then `GetAltitude() < 0`, then the bridge deck).
+/// `TechnoClass::FireAt` gives a `Vertical` launch a pitch only when the
+/// muzzle-to-target separation exceeds 200 leptons, so if the firer's hover
+/// altitude failed to reach the launch coordinate the bomb would leave level,
+/// never cross `DetonationAltitude=20000`, never drop below the floor, and
+/// drift off the map unexploded. This pins the whole chain instead: the Jumpjet
+/// firer's `JumpjetHeight` reaches `object_world_z_leptons`, the launch pitch
+/// points down, and the flight ends in a detonation.
+#[test]
+fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
+    use crate::map::resolved_terrain::SharedCellDummy;
+    use crate::sim::projectile::{ProjectileStore, ProjectileTrajectory};
+
+    // Stock `[BlimpBombP]`, `[BlimpBomb]` and the Kirov's Jumpjet hover height,
+    // with one deliberate change: `Range=` is widened from the stock 1.5 so the
+    // shot clears the fire-range gate while the firer hovers 750 leptons up.
+    // Nothing on the `Vertical` arm reads `Range=`.
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=ZEP\n1=HTNK\n\
+         [ZEP]\nStrength=2000\nArmor=medium\nSpeed=5\nPrimary=BlimpBomb\n\
+         BalloonHover=yes\nJumpjetHeight=750\nConsideredAircraft=yes\n\
+         MovementZone=Fly\nSpeedType=Hover\n\
+         Locomotor={92612C46-F71F-11d1-AC9F-006008055BB5}\n\
+         [HTNK]\nStrength=2000\nArmor=heavy\nSpeed=4\n\
+         [BlimpBomb]\nDamage=250\nBurst=1\nROF=50\nRange=6\nSpeed=20\n\
+         Projectile=BlimpBombP\nWarhead=BlimpHE\nOmniFire=yes\n\
+         [BlimpBombP]\nArm=10\nAcceleration=1\nVertical=yes\nDetonationAltitude=20000\n\
+         [BlimpHE]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("Kirov bomb fixture parses");
+
+    let mut store = EntityStore::new();
+    let mut kirov = make_entity_owned(1, "ZEP", 5, 5, 2000, "Soviet");
+    kirov.category = EntityCategory::Aircraft;
+    let zep_object = rules.object("ZEP").expect("ZEP object type");
+    let mut locomotor =
+        crate::sim::movement::locomotor::LocomotorState::from_object_type(zep_object, 0, 0);
+    locomotor.altitude = crate::util::fixed_math::SimFixed::from_num(750);
+    locomotor.target_altitude = locomotor.altitude;
+    kirov.locomotor = Some(locomotor);
+    store.insert(kirov);
+    let _ = test_intern("HTNK");
+    // Directly beneath the airship, the way a Kirov bombs.
+    store.insert(make_entity_owned(2, "HTNK", 5, 5, 2000, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut SimRng::new(7),
+    );
+
+    let spawn = *result
+        .projectile_spawns
+        .first()
+        .expect("the Kirov bomb is a tracked projectile");
+    assert!(
+        matches!(spawn.trajectory, ProjectileTrajectory::Vertical { .. }),
+        "Vertical=yes takes the third arm"
+    );
+    assert!(
+        spawn.origin.z >= 750,
+        "the Jumpjet hover altitude must reach the launch coordinate, else the \
+         bomb leaves level and never terminates; got {}",
+        spawn.origin.z
+    );
+    assert!(
+        spawn.velocity.z < 0,
+        "the launch pitch has to point the bomb DOWN; got {:?}",
+        spawn.velocity
+    );
+
+    let terrain = flat_level_zero_terrain(10, 10);
+    let ground = ProjectileCoord::new(5 * 256, 5 * 256, 0);
+    let mut projectiles = ProjectileStore::new();
+    let id = projectiles.spawn(1, spawn);
+    let dummy = SharedCellDummy::fresh();
+    for frame in 1..600u32 {
+        let step = projectiles
+            .advance_one(
+                id,
+                frame,
+                |_| Some(ground),
+                Some(&terrain),
+                &dummy,
+                |_, _| None,
+            )
+            .expect("the bomb is still in flight");
+        assert!(
+            step.expired.is_empty(),
+            "the bomb must not vanish unexploded at frame {frame}"
+        );
+        if let Some(detonation) = step.detonations.first() {
+            assert_eq!(detonation.projectile_id, id);
+            // The only reachable terminator on this arm: `DetonationAltitude`
+            // is 20000 and the bomb is descending, and there is no bridge and
+            // no fuse — so this is the floor probe, native's `GetAltitude() < 0`
+            // over a level-0 cell.
+            assert!(
+                detonation.impact.z < 0,
+                "the bomb detonates below the level-0 floor, at {}",
+                detonation.impact.z
+            );
+            return;
+        }
+    }
+    panic!("the Kirov bomb never detonated");
+}

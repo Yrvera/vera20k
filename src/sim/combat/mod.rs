@@ -215,9 +215,9 @@ enum ImmediateProjectileReason {
 /// gamemd-derived: `BulletClass::AI @ 0x004666E0` has exactly two branches,
 /// keyed on `ROT < 1`; the non-homing arm then splits on `Vertical` (`+0x2C0`).
 /// `Arcing`, `SubjectToCliffs`, `SubjectToElevation`, `SubjectToWalls`,
-/// `Proximity`, `FlakScatter`, `Inviso` and `Cluster` are never read by the AI —
-/// they are launch-time or detonation-time keys — so only `ROT` and `Vertical`
-/// select a flight model.
+/// `Proximity`, `FlakScatter`, `Inviso` and `Cluster` never select an arm —
+/// they are launch-time, collision-probe or detonation-time keys — so only
+/// `ROT` and `Vertical` pick a flight model.
 ///
 /// Evidence-backed exclusions (verified 2026-09-03, exhaustive over the direct
 /// `[base + displacement]` operand forms via `search_instructions`) — these keys
@@ -243,18 +243,35 @@ enum ImmediateProjectileReason {
 /// - `Elasticity=` (`+0x2C8`) is live in the ARM B reflection block but has
 ///   zero stock projectile users (the `[PIECE]`/`[TIRE]` hits are VoxelAnims).
 ///
-/// RESIDUAL (GSI-08.07) — the second scatter site is not modelled.
-/// `BulletClass::Fire @ 0x004687B4` scatters an `Inviso && FlakScatter`
-/// bullet's already-resolved target coordinate by
-/// `RandomRanged(0, 2 * BallisticScatter) * ftol(dist) / Range`, so stock
-/// `[FlakProj]` — the Flak Cannon and Flak Track anti-air shell — should miss
-/// by up to two cells at maximum range. VERA resolves an `Inviso` shot on the
-/// immediate path, where the impact coordinate feeds area damage, wall routing,
-/// bridge damage, radiation and animation placement, so offsetting it is its
-/// own change. Trigger: every Flak Cannon / Flak Track shot at an aircraft.
-/// Player effect: flak never misses. Frequency: any skirmish with air units.
-/// Downstream risk: two Scenario RNG draws are missing from that path, so the
-/// draw sequence differs from native for those six weapons.
+/// RESIDUAL (GSI-08.07) — the second scatter site is not modelled, because one
+/// of its operands is unidentified. `BulletClass::Fire @ 0x004687B4` offsets an
+/// `Inviso && FlakScatter` bullet's already-resolved target coordinate, drawing
+/// `Random__RandomRanged(0, RulesClass+0x1734 << 1)` for the magnitude and
+/// `Random__RandomRanged(0, 0x7FFFFFFE)` for the angle. **The blocker is the
+/// divisor.** The magnitude is `(roll * ftol(dist)) / *(*(Bullet+0x130) + 0xB4)`
+/// — `0x004687D9 IMUL ESI,EAX`, `0x004687DC MOV ECX,[EBX+0x130]`,
+/// `0x004687E5 IDIV dword ptr [ECX+0xB4]` — and neither `Bullet+0x130`'s
+/// referent nor its `+0xB4` field has been identified, so the offset cannot be
+/// computed at all today. It is NOT the weapon `Range=`; an earlier note here
+/// said so and was wrong.
+///
+/// Two facts for whoever implements it. First, the site OFFSETS, walked in
+/// assembly this session: `0x00468884 CALL Math__CosFromTable / 0x00468889 FMUL
+/// <mag> / 0x00468890 FIADD dword ptr [ESP+0x44]` and `0x00468864 CALL
+/// Math__SinFromTable / 0x00468869 FMUL <mag> / 0x0046886D FSUBR double ptr
+/// [ESP+0x38]` — `x += cos(theta)*mag`, `y -= sin(theta)*mag`, the same shape as
+/// the verified launch site at `0x006FE7E5`/`0x006FE7C0`. The decompiler renders
+/// it as a plain assignment (the dropped-`FIADD` artifact that made the mapping
+/// ledger wrong at the launch site); do not follow that rendering. Second, VERA
+/// resolves an `Inviso` shot on the immediate path, where the impact coordinate
+/// feeds area damage, wall routing, bridge damage, radiation and animation
+/// placement, so wiring the offset in touches all of those consumers.
+///
+/// Trigger: every Flak Cannon / Flak Track shot at an aircraft (`[FlakProj]`,
+/// 6 weapons). Player effect: flak never misses — the miss distance itself is
+/// not yet derivable. Frequency: any skirmish with air units. Downstream risk:
+/// two Scenario RNG draws are missing from that path, so the draw sequence
+/// differs from native for those six weapons.
 ///
 /// RESIDUAL (GSI-08.06) — the `ROT < 1, Vertical = no` arm subtracts
 /// `Rules.Gravity` from `v.z` on EVERY frame (`0x00467402`..`0x00467429`),
@@ -7756,10 +7773,19 @@ pub(crate) fn resolve_attacker_fire(
         if guidance.is_some() || vertical.is_some() {
             launch_speed = 1;
         }
-        // The aim facing IS the launch direction for a homing or vertical
-        // bullet (`0x006FDD50` takes the turret/body facing whenever
-        // `ROT != 0 || Dropping`); only a `ROT == 0` non-dropping shot points
-        // at the target. `heading_bam` is the math-BAM form of that facing.
+        // The aim facing IS the launch direction for a homing bullet
+        // (`0x006FDD50` takes the turret/body facing whenever
+        // `ROT != 0 || Dropping`); everything else points at the target delta.
+        // `heading_bam` is the math-BAM form of that facing.
+        //
+        // RESIDUAL (VERA-internal, gamemd equivalent UNCHECKED for the two
+        // uncovered shapes): VERA's condition is `rot > 0 && !ballistic &&
+        // !vertical`, native's is `ROT != 0 || Dropping`. The two disagree only
+        // for an `Arcing`+`ROT>0` projectile or a `Dropping`+`ROT==0` one, and
+        // stock `rulesmd.ini` authors neither — every `Vertical` stock
+        // projectile has no `ROT=` and no `Dropping=`, so native takes the
+        // `atan2` delta heading for them exactly as VERA does here. Trigger: a
+        // mod authoring either shape. Frequency: zero in stock.
         let launch_heading_bam = if guidance.is_some() {
             aim_facing16.wrapping_sub(0x4000)
         } else {
