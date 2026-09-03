@@ -62,15 +62,31 @@ const CLIFF_STEP_LEVELS: i32 = 4;
 /// `rules::overlay_types::is_bridge_overlay_index` pins `BRIDGEB1`/`BRIDGEB2`
 /// at 237/238, their declaration indices, against INI keys 241/242.
 ///
-/// Id 243 is inert on stock data anyway: `[GAFWLL]` has no section in
-/// `rulesmd.ini` at all (a Tiberian Sun firestorm-wall leftover left in the
-/// list), so it carries no `Wall=` and the walk never flags it as a wall in
-/// the first place.
+/// Id 243 is LIVE, and all three ids fire in ordinary play. `[GAFWLL]` is the
+/// Yuri Citadel Wall: `rulesmd.ini:13561` declares it, `:13571` gives it
+/// `Wall=yes`, and it carries `Name=Yuri Citadel Wall`, `TechLevel=2`,
+/// `Prerequisite=YABRCK`. Its buildable half is `[BuildingTypes] 312`
+/// (`rulesmd.ini:1499`), `artmd.ini:4129`'s `[GAFWLL]` gives it
+/// `Cameo=CITWICON` and `ToOverlay=GAFWLL`, and `[AI] ConcreteWalls`
+/// (`rulesmd.ini:3077`) names exactly `GAWALL,NAWALL,GAFWLL` — this set. Any
+/// Yuri player who walls a base puts overlay 243 on the map.
+///
+/// It is easy to miss because its header carries a trailing comment —
+/// `[GAFWLL];temp wall for yuri[YAWALL]` — which a `^\[NAME\]$` matcher
+/// rejects. Neither real reader does. `INIClass::LoadFromStraw` 0x00525A60
+/// tests `CMP byte ptr [ESP+0x78],0x5B` at 0x00525DC1, calls
+/// `strchr(line, ']')` (`PUSH 0x5D` at 0x00525DCC) and NULs the FIRST `]` at
+/// 0x00525DDB before naming the section from `buffer+1`; VERA's
+/// `rules::ini_parser` takes the same `line.find(']')` prefix. Nor is this a
+/// GAFWLL quirk: 61 stock `rulesmd.ini` sections and 154 in `artmd.ini` have
+/// such headers, `[Controller]`, `[Parasite]`, `[FlakWeapon]` and
+/// `[JumpjetControls]` among them.
 ///
 /// Deliberately NOT "every `Wall=yes` overlay": stock authors `Wall=yes` on
-/// seven overlays — `GASAND` (0), `GAWALL` (2), `NAWALL` (26), `CAFNCB`,
-/// `CAFNCW`, `CAKRMW` (240) and `CAFNCP` — of which only two are re-admitted,
-/// so a wall-breaking warhead does not get waved through a sandbag line.
+/// eight overlays — `GASAND` (0), `GAWALL` (2), `NAWALL` (26), `CAFNCB` (203),
+/// `CAFNCW` (204), `CAKRMW` (240), `CAFNCP` (241) and `GAFWLL` (243) — of
+/// which only three are re-admitted, so a wall-breaking warhead does not get
+/// waved through a sandbag or a fence line.
 const WALL_CONNECTABLE_OVERLAY_IDS: [u8; 3] = [2, 26, 243];
 
 /// Map state the walk consults beyond the resolved terrain grid.
