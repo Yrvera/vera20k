@@ -141,7 +141,9 @@ pub fn start(
 }
 
 /// Process the active lightning storm for one tick.
-/// Called from `tick_superweapons()` each tick.
+/// Called from `tick_active_superweapon_effects()` each tick, which is what
+/// `World::advance_tick` reaches in production; `tick_superweapons()` is a
+/// test-only compatibility wrapper and is not on the production path.
 pub fn process(
     sim: &mut Simulation,
     rules: &RuleSet,
