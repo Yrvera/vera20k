@@ -362,8 +362,24 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // Merge 2026-09-02: main's veterancy re-baseline and this branch's queue-store
 // re-baseline both move the same constants, so the values below are the composed
 // measurement taken on the merged tree, not either side's number.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xDA76_4C03_F086_7BA9;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x3F5A_9EED_EC0A_9204;
+// Re-baselined 2026-09-03 for GSI-08.01, native target acquisition: the passive
+// scan is now `TechnoClass::Greatest_Threat @ 0x006F8DF0` -- an expanding-ring
+// cell walk, one candidate per cell, ranked by
+// `TechnoClass::Calculate_Threat_Score @ 0x0070CD10` and cut short at the first
+// band that finds anything -- in place of VERA's own
+// `(distance^2, threat_class, stable_id)` nearest-first key, and the human
+// building gate at `TechnoClass::Evaluate_Candidate @ 0x006F85AB` now refuses an
+// enemy building that has no weapon or `ThreatPosed=0`. Objects in this fixture
+// therefore engage different victims from the first contact on, which moves
+// positions, health and mission state for the rest of the run.
+// Ceremony: `FINAL_STREAM_STATES` passes UNCHANGED -- all three streams
+// byte-identical -- so no draw was added, removed or rescheduled (the scan takes
+// its one timer-jitter draw either way, and the native evaluation's own
+// `RandomRanged(0, 99)` at `0x006F8525` is unreachable in YR). Record/replay
+// tick equality holds. This is a target-choice shift, and all seven constants
+// below move with it.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x6E92_18AD_F5CF_5012;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xCDC7_F8DD_5AF5_5593;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -541,16 +557,16 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x3F5A_9EED_EC0A_9204;
 // Merge 2026-09-02: main's veterancy re-baseline and its queue-store re-baseline
 // both moved these constants, so the three historical probes below are main's
 // composed measurement, unchanged by this branch.
-const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x8637_8672_B2C7_DC94;
-const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xB534_6D3F_8096_2143;
-const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x036C_3475_4BE1_F73E;
+const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x6FC0_BCE7_AD42_E8B6;
+const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x82BD_A5B8_3197_9895;
+const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x0EC1_BD97_FBEB_370C;
 // Re-baselined 2026-09-02 for v117's disguise-detect folds (FogState's
 // `CellClass+0xAC[house]` counter plane and the cached `DetectDisguiseRange=`
 // deposit radius). The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved. The three RNG stream pins are unchanged.
-const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x743D_0C0C_8931_EF37;
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x8CAB_A20B_EBDA_C994;
+const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x9C5D_0EDF_4B4E_8C49;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x429A_FF90_A953_055E;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

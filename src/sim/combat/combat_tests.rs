@@ -2745,7 +2745,7 @@ fn gsi_04_07_damage_ai_retaliation_keeps_higher_scored_current_target() {
              [AircraftTypes]\n\
              [BuildingTypes]\n\
              [Warheads]\n0=HitWH\n1=AP\n2=HollowPoint2\n3=SA\n\
-             [General]\nDumbMyEffectivenessCoefficient=200\nDumbTargetEffectivenessCoefficient=200\nDumbTargetSpecialThreatCoefficient=200\nDumbTargetStrengthCoefficient=200\nDumbTargetDistanceCoefficient=-1\n\
+             [General]\nMyEffectivenessCoefficientDefault=200\nTargetEffectivenessCoefficientDefault=-200\nTargetSpecialThreatCoefficientDefault=200\nTargetStrengthCoefficientDefault=-200\nTargetDistanceCoefficientDefault=-10\n\
              [HTNK]\nStrength=400\nArmor=heavy\nSpeed=6\nPrimary=120mm\nCanRetaliate=yes\n\
              [TANY]\nStrength=200\nArmor=flak\nPrimary=DoublePistols\nSpecialThreatValue=1\n\
              [E1]\nStrength=125\nArmor=none\nPrimary=M60\n\
@@ -2867,10 +2867,17 @@ fn gsi_04_07_damage_ai_retaliation_keeps_higher_scored_current_target() {
         }
     }
 
+    // Scored on the per-type coefficient set (200 / -200 / 200 / -200 / -10),
+    // which `HouseClass+0x1FB` selects for every skirmish house from creation.
+    // Tanya: base 100000, C = 200*SpecialThreatValue 1 = +200, A = 200 * AP-vs-
+    // flak 25% = +50, D = -200 * (200/200) = -200, B absent (HollowPoint2 is 0%
+    // against heavy, so no weapon selects), E = 0 (2 cells, range 5) → 100050.
+    // GI: B = -200 * SA-vs-heavy 25% = -50, C = 0, A = 200 * AP-vs-none 25% =
+    // +50, D = -200, E = 0 → 99800.
     let keep_tanya = run(20, 30);
     assert_eq!(
         (keep_tanya.current_score, keep_tanya.attacker_score),
-        (100_450, 100_300)
+        (100_050, 99_800)
     );
     assert_eq!(
         keep_tanya.mission,
@@ -2890,7 +2897,7 @@ fn gsi_04_07_damage_ai_retaliation_keeps_higher_scored_current_target() {
             switch_to_tanya.current_score,
             switch_to_tanya.attacker_score
         ),
-        (100_300, 100_450)
+        (99_800, 100_050)
     );
     assert_eq!(
         switch_to_tanya.mission,
@@ -4915,9 +4922,24 @@ fn test_tick_combat_visibility_blocks_fire() {
 
     let target_health = store.get(2).expect("target alive").health.current;
     assert_eq!(target_health, 300, "Hidden target should not be damaged");
+    // Acquisition has no shroud gate. `TechnoClass::Evaluate_Candidate @
+    // 0x006F7CA0` was read end to end for GSI-08.01: its only visibility gates
+    // are the cloak/sensor arm at `0x006F7DA9` and the "discovered by the local
+    // player" arm at `0x006F81B8`, and the latter is guarded by `g_GameMode ==
+    // 0` — campaign only; a skirmish runs mode 5. So the re-acquire that the
+    // invisible-target branch triggers hands the attacker the SAME enemy back,
+    // and the shroud is enforced where native enforces it, at fire time.
     assert!(
-        store.get(1).unwrap().attack_target.is_none(),
-        "AttackTarget removed when target is not visible and no replacement exists"
+        matches!(
+            store
+                .get(1)
+                .unwrap()
+                .attack_target
+                .as_ref()
+                .map(|t| t.target),
+            Some(crate::sim::combat::TargetKind::Entity(2))
+        ),
+        "the scan re-picks the hidden enemy; only firing is blocked"
     );
 }
 
@@ -5090,8 +5112,17 @@ fn techno_playfield_invisible_target_reacquisition_rejects_false_candidate() {
     );
 }
 
+/// Two identical enemies share one cell. `TechnoClass::Scan_Cell_For_Target @
+/// 0x006F8960` walks ONE object list and stops at the first hostile entry, so
+/// the cell offers exactly one candidate and the other is never evaluated —
+/// there is no stable-id tie-break anywhere in the native scan.
+///
+/// The list head is the most recently added non-building
+/// (`CellListInsertion::PrependNonBuilding`), which for entities that have not
+/// moved is the higher `occupancy_enter_order`, seeded from the stable id. So
+/// the scan picks 20, not 3.
 #[test]
-fn test_tick_combat_retargets_by_distance_then_stable_id() {
+fn gsi_08_01_a_shared_cell_offers_only_its_list_head() {
     let rules: RuleSet = test_rules();
     let mut store = EntityStore::new();
     store.insert(make_entity_owned(10, "MTNK", 5, 5, 300, "Americans"));
@@ -5131,17 +5162,13 @@ fn test_tick_combat_retargets_by_distance_then_stable_id() {
         .as_ref()
         .expect("attacker should retarget");
     assert!(
-        matches!(attack.target, crate::sim::combat::TargetKind::Entity(3)),
-        "Tie should resolve to lower stable entity id"
-    );
-    assert!(
-        !matches!(attack.target, crate::sim::combat::TargetKind::Entity(20)),
-        "Should not target enemy_a (sid=20)"
+        matches!(attack.target, crate::sim::combat::TargetKind::Entity(20)),
+        "the cell's list head is the candidate, not the lower stable id"
     );
 }
 
 #[test]
-fn test_tick_combat_retargets_prefers_threat_class_when_distance_equal() {
+fn gsi_08_01_unarmed_building_loses_to_a_tank_at_equal_distance() {
     let rules: RuleSet = test_rules();
     let mut store = EntityStore::new();
     store.insert(make_entity_owned(10, "MTNK", 5, 5, 300, "Americans"));
@@ -5182,13 +5209,13 @@ fn test_tick_combat_retargets_prefers_threat_class_when_distance_equal() {
         .attack_target
         .as_ref()
         .expect("attacker should retarget");
+    // Not a "threat class" tie-break — gamemd has none. `[GAPOWR]` carries no
+    // weapon and `ThreatPosed=0`, so the human-attacker building gate at
+    // `TechnoClass::Evaluate_Candidate @ 0x006F85AB` refuses it outright and
+    // the tank is the only candidate the cell can offer that survives.
     assert!(
         matches!(attack.target, crate::sim::combat::TargetKind::Entity(200)),
-        "Combat unit should rank above building at equal distance"
-    );
-    assert!(
-        !matches!(attack.target, crate::sim::combat::TargetKind::Entity(1)),
-        "Should not target building (sid=1)"
+        "an unarmed enemy building is not a legal passive target for a human unit"
     );
 }
 

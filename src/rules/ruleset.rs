@@ -537,6 +537,26 @@ pub struct GeneralRules {
     pub dumb_target_strength_coefficient: f64,
     /// AI coefficient for whole cells beyond the selected weapon range.
     pub dumb_target_distance_coefficient: f64,
+    /// `MyEffectivenessCoefficientDefault=` (`RulesClass+0x1040`,
+    /// `RulesClass::ReadGeneral @ 0x00671AEE`). Read default for the per-type
+    /// `MyEffectivenessCoefficient=`, and through it the live coefficient for
+    /// every house that has ever had a building in the world — see
+    /// [`crate::sim::combat::greatest_threat`]. Fallbacks here are the stock
+    /// `rulesmd.ini` values; the `RulesClass` constructor seed is UNCHECKED.
+    pub my_effectiveness_coefficient_default: f64,
+    /// `TargetEffectivenessCoefficientDefault=` (`RulesClass+0x1048`).
+    pub target_effectiveness_coefficient_default: f64,
+    /// `TargetSpecialThreatCoefficientDefault=` (`RulesClass+0x1050`).
+    pub target_special_threat_coefficient_default: f64,
+    /// `TargetStrengthCoefficientDefault=` (`RulesClass+0x1058`).
+    pub target_strength_coefficient_default: f64,
+    /// `TargetDistanceCoefficientDefault=` (`RulesClass+0x1060`).
+    pub target_distance_coefficient_default: f64,
+    /// `ThreatPerOccupant=` (`RulesClass+0x0DF4`, `RulesClass::ReadGeneral @
+    /// 0x00670128`; constructor default 5 at `0x006668DE`, stock rulesmd 10).
+    /// A garrisoned building's `ThreatPosed` is `occupants * this` instead of
+    /// its own type value (`TechnoClass::Get_ThreatPosed @ 0x00708B40`).
+    pub threat_per_occupant: i32,
     /// `NormalTargetingDelay=` ([General], stock 27) — frames between passive
     /// target scans for every mission except Area Guard. The per-object scan
     /// timer is re-armed to this value plus a 0..=2 scenario-RNG jitter.
@@ -1094,6 +1114,12 @@ impl Default for GeneralRules {
             dumb_target_special_threat_coefficient: 200.0,
             dumb_target_strength_coefficient: 200.0,
             dumb_target_distance_coefficient: -1.0,
+            my_effectiveness_coefficient_default: 200.0,
+            target_effectiveness_coefficient_default: -200.0,
+            target_special_threat_coefficient_default: 200.0,
+            target_strength_coefficient_default: -200.0,
+            target_distance_coefficient_default: -10.0,
+            threat_per_occupant: 5,
             normal_targeting_delay: 27,
             guard_area_targeting_delay: 36,
             building_garrisoned_sound: None,
@@ -1562,6 +1588,24 @@ impl GeneralRules {
             dumb_target_distance_coefficient: general
                 .get_f64("DumbTargetDistanceCoefficient")
                 .unwrap_or(defaults.dumb_target_distance_coefficient),
+            my_effectiveness_coefficient_default: general
+                .get_f64("MyEffectivenessCoefficientDefault")
+                .unwrap_or(defaults.my_effectiveness_coefficient_default),
+            target_effectiveness_coefficient_default: general
+                .get_f64("TargetEffectivenessCoefficientDefault")
+                .unwrap_or(defaults.target_effectiveness_coefficient_default),
+            target_special_threat_coefficient_default: general
+                .get_f64("TargetSpecialThreatCoefficientDefault")
+                .unwrap_or(defaults.target_special_threat_coefficient_default),
+            target_strength_coefficient_default: general
+                .get_f64("TargetStrengthCoefficientDefault")
+                .unwrap_or(defaults.target_strength_coefficient_default),
+            target_distance_coefficient_default: general
+                .get_f64("TargetDistanceCoefficientDefault")
+                .unwrap_or(defaults.target_distance_coefficient_default),
+            threat_per_occupant: general
+                .get_i32("ThreatPerOccupant")
+                .unwrap_or(defaults.threat_per_occupant),
             // Passive-scan cadence, in frames. Both keys are present in stock
             // rulesmd.ini with exactly the constructor defaults (27 / 36); read
             // them rather than hardcoding so a mod's values take effect.
