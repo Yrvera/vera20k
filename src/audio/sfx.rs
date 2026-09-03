@@ -1303,12 +1303,25 @@ impl SfxPlayer {
     /// VERA-internal shape, gamemd equivalent read: native stores the handle
     /// on the techno (`+0x4DC`) so any number of objects can be speaking at
     /// once; VERA has one voice slot, so at most the slot's current owner can
-    /// answer `true`. Trigger: two objects with a latched line in the same
-    /// pass. Player effect: the second line cuts the first where native lets
-    /// them overlap. Frequency: never from player input — the one-voice-per-
-    /// batch latch (`g_SelectionVoice_Enable @ 0x00822CF2`) already lets only
-    /// one object speak per dispatch. Downstream risk: none; folding voices
-    /// into the 16-channel pool is the `voice_player` residual's job.
+    /// answer `true`.
+    ///
+    /// Two consequences, both recorded:
+    /// 1. An EVA line taking the slot kills a unit's handle mid-word.
+    /// 2. [`Self::drain_unit_voices`] resolves this **once** before its loop,
+    ///    so if two objects both have a line latched in the same pass, both
+    ///    play and the second cuts the first — native would let them overlap,
+    ///    because each object probes its own handle. Re-resolving inside the
+    ///    loop would not fix it either; one slot cannot hold two lines.
+    ///
+    /// Trigger: two objects with a latched line in the same
+    /// `drain_sound_events` pass, or an EVA line landing on a unit line.
+    /// Player effect: the second line cuts the first. Frequency: not reachable
+    /// from ordinary player input while A1's one-voice-per-batch latch
+    /// (`g_SelectionVoice_Enable @ 0x00822CF2`) holds — it lets only one
+    /// object speak per dispatch — but a selection voice and an order voice
+    /// from *different* objects arriving in the same pass would hit it.
+    /// Downstream risk: none; folding voices into the 16-channel pool is the
+    /// `voice_player` residual's job, and that is what closes both cases.
     fn live_voice_owner(&self) -> Option<u64> {
         let owner = self.current_voice_owner?;
         self.voice_player
@@ -1330,6 +1343,16 @@ impl SfxPlayer {
     }
 
     /// Forget one object's latch and playing index — object removal.
+    ///
+    /// RESIDUAL: **nothing calls this today.** The app layer has no
+    /// entity-removal hook that reaches `SfxPlayer`, so the intended
+    /// "object died, drop its voice state" edge is unwired. It is inert
+    /// rather than a leak: [`VoiceQueue::drain`] prunes `playing` at the top
+    /// of every pass, and `pending` can only ever hold the single live owner,
+    /// so no state survives a removed object. Trigger: none. Player effect:
+    /// none. Frequency: never. Downstream risk: the moment voices move into
+    /// the 16-channel pool, per-object state can outlive its object and this
+    /// must be wired to removal or deleted with the single-slot design.
     pub fn forget_unit_voice(&mut self, owner: u64) {
         self.voice_queue.forget(owner);
         if self.current_voice_owner == Some(owner) {

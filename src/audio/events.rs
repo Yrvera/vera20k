@@ -289,6 +289,23 @@ pub enum GameSoundEvent {
         sound_id: String,
     },
 
+    /// The global `[AudioVisual] BuildingDamageSound` cue for a struck
+    /// building whose type carries no `DamageSound=` of its own.
+    ///
+    /// `BuildingClass::ReceiveDamage @ 0x00442230` plays it at the building's
+    /// own coordinate (`0x004426DB LEA ECX,[ESI+0x9C]`,
+    /// `0x00442700 MOV ECX,[Rules+0x714]`,
+    /// `0x00442706 CALL VocClass::PlayAtCoord @ 0x00750E20`). The gate is
+    /// `0x004426D2 CMP [type+0x538],-1` and the arm is only reached for the
+    /// damage-state crossings 2 and 3 (`0x00442476 JMP [EAX*4 + 0x00442C18]`),
+    /// both decided sim-side.
+    BuildingDamagedSfx {
+        /// sound.ini ID from `[AudioVisual] BuildingDamageSound=`.
+        sound_id: String,
+        /// Screen position for spatial audio.
+        source: Option<SoundSource>,
+    },
+
     /// A lightning-storm bolt reached the ground — the thunder crack.
     ///
     /// `LightningStorm::GroundStrike @ 0x0053A45F..0x0053A4A2` plays
@@ -339,6 +356,7 @@ impl GameSoundEvent {
             | Self::BunkerWalls { sound_id, .. }
             | Self::ChuteSound { sound_id, .. }
             | Self::BridgeRepaired { sound_id, .. }
+            | Self::BuildingDamagedSfx { sound_id, .. }
             | Self::LightningStrike { sound_id, .. }
             | Self::WorldEffectStarted { sound_id, .. } => sound_id,
             Self::AnimationStopped { stop_sound_id, .. } => stop_sound_id.as_deref().unwrap_or(""),
@@ -367,6 +385,7 @@ impl GameSoundEvent {
             | Self::BunkerWalls { source, .. }
             | Self::ChuteSound { source, .. }
             | Self::BridgeRepaired { source, .. }
+            | Self::BuildingDamagedSfx { source, .. }
             | Self::LightningStrike { source, .. }
             | Self::WorldEffectStarted { source, .. } => *source,
             _ => None,
@@ -436,6 +455,33 @@ impl GameSoundEvent {
 /// line (`HouseClass::NotifyUnderAttack @ 0x004F95B8..0x004F95CF`), on the
 /// building branch only.
 ///
+/// `[AudioVisual] BuildingDamageSound=` (`Rules+0x714`) is landed too. It is a
+/// **damage-state** cue, not a per-hit one: `BuildingClass::ReceiveDamage @
+/// 0x00442230` only enters the arm through
+/// `0x00442476 JMP [EAX*4 + 0x00442C18]` with `EAX = result - 2`, so results 2
+/// (the hit crossed HP from `>= Strength >> 1` to below it) and 3 (it crossed
+/// below `Strength * Rules+0x1708`, ConditionRed) reach
+/// `0x004426D2 CMP [type+0x538],-1` while an ordinary non-crossing hit
+/// (result 1) plays nothing. A dead building is skipped earlier still by
+/// `0x0044242C MOV AL,[ESI+0x90]` (`ObjectClass::IsAlive`). Frequency: twice
+/// per building on the way down in a sustained base attack, plus every
+/// repair-and-re-damage cycle across a threshold — not the every-shot cadence
+/// an earlier pass assumed. Stock `BuildingDamageSound=BuildingDamaged` is a
+/// five-sample `[SoundList]`, and only 34 of all stock types author a
+/// `DamageSound=` of their own (30 `BuildingMetalDamaged`, 4 `Dummy`), so the
+/// global covers nearly every structure.
+///
+/// **Still absent on the damage side.** The per-type `DamageSound=`
+/// (`TechnoTypeClass+0x538`) is parsed but only *read as a gate*; native also
+/// plays it, from a TechnoClass-level path (`0x00702717` inside
+/// `TechnoClass::ReceiveDamage`, reached for results the switch at
+/// `0x00702049` sends there). That callsite was not walked, so nothing is
+/// asserted. Trigger: a damaged type that authors the key. Player effect: the
+/// 30 `BuildingMetalDamaged` structures and 4 `Dummy` ones are silent where
+/// native has a cue. Frequency: those 34 types only. Downstream risk: it is a
+/// Techno-level cue, so landing it means reading that switch arm, not
+/// extending the BuildingClass arm.
+///
 /// **Still absent.** Nothing emits the other ambient families:
 /// `WorkingSound=` (9 stock), `AuxSound1=` (8), `AuxSound2=` (5),
 /// `TurretRotateSound=` (2) and the water enter/leave pair have no producer.
@@ -448,13 +494,6 @@ impl GameSoundEvent {
 /// **`[AudioVisual]` keys with a verified native consumer but no VERA producer
 /// yet**, all read by `RulesClass::ReadAudioVisual @ 0x006691E0` and all
 /// UNCHECKED against their own callers unless noted:
-/// - `BuildingDamageSound=BuildingDamaged` (`Rules+0x714`).
-///   `BuildingClass::ReceiveDamage @ 0x00442700` plays it at the building's
-///   coordinate, but only when the type has no `DamageSound=` of its own
-///   (`0x004426D2 CMP [type+0x538],-1`); the jump-table arm that reaches
-///   `0x004426AC` was not mapped, and VERA parses neither the global nor the
-///   per-type key. Trigger: a non-fatal hit on a building. Player effect: a
-///   struck building is silent. Frequency: continuous in any base attack.
 /// - `EnterGrinderSound`/`LeaveGrinderSound` (`+0x268`/`+0x26C`),
 ///   `EnterBioReactorSound`/`LeaveBioReactorSound` (`+0x270`/`+0x274`): no
 ///   grinder or bio-reactor consumer exists in `sim/` at all.

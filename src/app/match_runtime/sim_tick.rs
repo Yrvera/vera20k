@@ -53,7 +53,8 @@ fn wall_sell_sound_for_local(
 /// `0x004F95B8..0x004F95CF` loads `Rules+0x184` and plays it through
 /// `VocClass::PlayAtPos @ 0x00750920` with pan `0x2000` and volume `1.0f`,
 /// immediately after the EVA call at `0x004F95B3`. The ore-miner branch at
-/// `0x004F94FB` plays its own EVA and then `goto LAB_004F95D4`, jumping past
+/// `0x004F94FB` plays its own EVA and then jumps (`0x004F9500 JMP`) to
+/// `LAB_004F95D4`, past
 /// the siren — so a harvester under attack is announced but not sirened.
 /// Callers apply the `CreateRadarEvent @ 0x0065FA70` accept gate
 /// (`0x004F95A5`) before reaching here.
@@ -1178,11 +1179,19 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         // `miner_tests::linked_to_pivoting_then_unloading_on_pad_arrival`
                         // pins that stock unload-start emits none. No native
                         // counterpart was found either — a refinery has no
-                        // building-side dock cue. `[GAREFN]`'s art carries
-                        // `ActiveAnim`/`SpecialAnim` with no `StartSound=`, and
-                        // stock `DeploySound=` appears on the three MCVs and
-                        // `[SMIN]` only, never on a refinery. What is audible
-                        // in a retail dock cycle is the miner's own
+                        // building-side dock cue. None of `[GAREFN]`,
+                        // `[NAREFN]`, `[YAREFN]` carries a `StartSound=` in
+                        // `artmd.ini` (their `ActiveAnim`/`ActiveAnimTwo..Four`
+                        // /`SpecialAnim` entries are silent) or any sound key
+                        // in `rulesmd.ini` except one: `[YAREFN]` — the
+                        // deployed Slave Miner, which *is* a refinery-category
+                        // building — carries
+                        // `DeploySound=SlaveMinerUndeploy` (rulesmd 13298).
+                        // That is an undeploy cue, not a dock cue. The full
+                        // stock `DeploySound=` set is `[E1]`, `[GGI]`,
+                        // `[AMCV]`, `[SMCV]`, `[PCV]`, `[SMIN]`, `[YAREFN]`
+                        // plus the empty `[AudioVisual]` default. What is
+                        // audible in a retail dock cycle is the miner's own
                         // `MoveSound=` (landed) and the departure cue
                         // `RefineryExitSfx` (landed).
                         // Trigger: none today. Player effect: none.
@@ -1275,12 +1284,20 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         GameSoundEvent::BuildingReady { sound_id }
                     }
                     SimSoundEvent::SuperWeaponLaunched { .. } => {
-                        // UNCHECKED residual, still silent. The producer is
-                        // live (six emitters: force shield, genetic converter,
+                        // UNCHECKED residual, still silent, and the NEXT slice
+                        // of this row — not another row's work.
+                        //
+                        // The blocker is evidence, not plumbing: adding a
+                        // `kind` discriminator to the sim event and touching
+                        // the six emitters (force shield, genetic converter,
                         // iron curtain, lightning storm, paradrop, psychic
-                        // reveal) but the event carries no superweapon
-                        // discriminator, and native's launch cue is
-                        // per-weapon, not global: `[AudioVisual]` holds
+                        // reveal) is a small in-scope change and is exactly
+                        // what gameplay-to-audio trigger routing is for. What
+                        // is missing is the native binding: nothing read here
+                        // proves which cue fires on *launch* as opposed to
+                        // ready or impact, and shipping a guessed mapping is
+                        // worse than a recorded silence. Native's launch cue
+                        // is per-weapon, not global: `[AudioVisual]` holds
                         // `PsychicDominatorActivateSound` (`Rules+0x24C`),
                         // `GeneticMutatorActivateSound` (`+0x250`) and
                         // `PsychicRevealActivateSound` (`+0x254`) from
@@ -1296,9 +1313,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         // Trigger: every superweapon launch. Player effect: the
                         // launch is silent — no siren, no EVA line. Frequency:
                         // once per superweapon per recharge (10 min stock),
-                        // i.e. a handful per long game. Downstream risk: the
-                        // fix needs a `kind` field on the sim event, so it
-                        // touches all six emitters.
+                        // i.e. a handful per long game. Downstream risk: none
+                        // beyond the six-emitter edit itself; the work is
+                        // isolating each cue's native callsite first.
                         continue;
                     }
                     SimSoundEvent::SuperWeaponStrike { rx, ry } => {
@@ -1322,9 +1339,13 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         // retail — stock `LightningSounds=WeatherStrike` is a
                         // one-entry list, so `rand % 1` is 0 either way and the
                         // same cue plays. Frequency: several bolts per storm.
-                        // Downstream risk: VERA's scenario stream sits one draw
-                        // ahead of gamemd's from the first bolt onward, and a
-                        // modded multi-entry list would pick a different entry.
+                        // Downstream risk: gamemd spends one scenario draw
+                        // per bolt that VERA never spends, so VERA's scenario
+                        // stream runs one draw BEHIND from the first bolt
+                        // onward. On stock data VERA spends no draw at all —
+                        // `pick_index` short-circuits at `count <= 1` — and a
+                        // modded multi-entry list would also pick a different
+                        // entry.
                         // Closing it means selecting the entry in `sim/` and
                         // re-baselining whatever goldens the extra draw moves.
                         let index = match state.audio.sfx_player.as_mut() {
@@ -1499,6 +1520,24 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             _ => continue,
                         };
                         GameSoundEvent::RefineryExitSfx {
+                            sound_id,
+                            source: Some(sound_source_at_cell(rx, ry)),
+                        }
+                    }
+                    SimSoundEvent::BuildingDamagedSfx { rx, ry } => {
+                        // `[AudioVisual] BuildingDamageSound` (`Rules+0x714`),
+                        // played at the building's own coordinate by
+                        // `BuildingClass::ReceiveDamage @ 0x00442700` /
+                        // `0x00442706 CALL VocClass::PlayAtCoord @ 0x00750E20`.
+                        // `RulesClass::ReadAudioVisual` stores only the
+                        // `VocClass::FindByName` result, so an absent or empty
+                        // key is silence rather than a bag lookup.
+                        let sound_id =
+                            match resources.rules.general.building_damage_sound.as_deref() {
+                                Some(s) if !s.is_empty() => s.to_string(),
+                                _ => continue,
+                            };
+                        GameSoundEvent::BuildingDamagedSfx {
                             sound_id,
                             source: Some(sound_source_at_cell(rx, ry)),
                         }
@@ -2410,7 +2449,8 @@ mod tests {
     }
 
     /// `HouseClass::NotifyUnderAttack`: the base siren rides the shared tail
-    /// (`0x004F95CF`), and the ore-miner branch at `0x004F94FB` jumps past it.
+    /// (`0x004F95CF`), and the ore-miner branch (EVA call `0x004F94FB`,
+    /// `JMP` at `0x004F9500`) jumps past it.
     #[test]
     fn base_under_attack_siren_skips_the_ore_miner_branch() {
         let rules =
@@ -2427,7 +2467,7 @@ mod tests {
         ));
         assert!(
             base_under_attack_siren(true, &rules).is_none(),
-            "0x004F94FB goes straight to LAB_004F95D4, so a harvester gets no siren"
+            "0x004F9500 jumps straight to LAB_004F95D4, so a harvester gets no siren"
         );
 
         let no_key =

@@ -577,9 +577,11 @@ pub struct GeneralRules {
     /// it non-positionally (pan `0x2000`, volume `1.0f`, no handle) through
     /// `VocClass::PlayAtPos @ 0x00750920`, right after the EVA line at
     /// `0x004F95B3` and only when `CreateRadarEvent @ 0x0065FA70` accepted the
-    /// ping. The ore-miner branch at `0x004F94FB` jumps straight to
-    /// `LAB_004F95D4`, so a harvester under attack gets the EVA and **no**
-    /// siren.
+    /// ping. The ore-miner branch plays `EVA_OreMinerUnderAttack` at
+    /// `0x004F94FB` and then jumps (`0x004F9500 JMP`) to `LAB_004F95D4`, so a
+    /// harvester under attack gets the EVA and **no** siren. The
+    /// `EVA_OurAllyIsUnderAttack` branch does NOT jump past — native sirens
+    /// for an ally's base too, which VERA does not (pre-existing residual).
     pub base_under_attack_sound: Option<String>,
     /// Building crumble cue from `[AudioVisual] BuildingDieSound=` (stock
     /// `BuildingGenericDie`).
@@ -596,6 +598,24 @@ pub struct GeneralRules {
     /// skips the global when it is non-zero (`EBX` is zeroed for the whole
     /// function at `0x00441606`).
     pub building_die_sound: Option<String>,
+    /// Struck-building cue from `[AudioVisual] BuildingDamageSound=` (stock
+    /// `BuildingDamaged`), stored at `Rules+0x714`.
+    ///
+    /// gamemd: `BuildingClass::ReceiveDamage @ 0x00442230` plays it at the
+    /// building's own coordinate (`0x004426DB LEA ECX,[ESI+0x9C]`,
+    /// `0x00442700 MOV ECX,[Rules+0x714]`, `0x00442706 CALL
+    /// VocClass::PlayAtCoord @ 0x00750E20`). It is **not** a per-hit cue: the
+    /// shared Techno receiver's result selects the arm. `0x0044242C MOV
+    /// AL,[ESI+0x90]` (`ObjectClass::IsAlive`) skips the whole dispatch for a
+    /// dead building; otherwise `0x00442476 JMP [EAX*4 + 0x00442C18]` with
+    /// `EAX = result - 2` enters the four-entry table
+    /// `{0x004426AC, 0x004426C8, 0x004424A2, 0x0044247D}`, and only entries 0
+    /// and 1 — result 2 (the hit crossed HP from `>= Strength >> 1` to below
+    /// it) and result 3 (it crossed below `Strength * Rules+0x1708`,
+    /// ConditionRed) — reach the gate at `0x004426D2 CMP [type+0x538],-1`.
+    /// A type with its own `DamageSound=` takes `JNZ 0x0044270B` and the
+    /// global is skipped.
+    pub building_damage_sound: Option<String>,
     /// Thunder cues from `[AudioVisual] LightningSounds=` (stock a single
     /// `WeatherStrike`), in source order.
     ///
@@ -1163,6 +1183,7 @@ impl Default for GeneralRules {
             sell_sound: None,
             base_under_attack_sound: None,
             building_die_sound: None,
+            building_damage_sound: None,
             lightning_sounds: Vec::new(),
             chute_sound: None,
             gui_main_button_sound: None,
@@ -1888,6 +1909,11 @@ impl GeneralRules {
                 .map(str::to_string),
             building_die_sound: audio_visual
                 .and_then(|s| s.get("BuildingDieSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            building_damage_sound: audio_visual
+                .and_then(|s| s.get("BuildingDamageSound"))
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
@@ -5401,6 +5427,30 @@ BuildingGarrisonedSound=BuildingGarrisoned
             "[General]\nFlightLevel=500\n[AudioVisual]\nBuildingDieSound=\n",
         ));
         assert_eq!(empty.building_die_sound, None);
+    }
+
+    /// `[AudioVisual] BuildingDamageSound=` — the global struck-building cue
+    /// `BuildingClass::ReceiveDamage` plays at `0x00442706` when the damaged
+    /// building's type has no `DamageSound=` of its own
+    /// (`0x004426D2 CMP [type+0x538],-1`).
+    #[test]
+    fn building_damage_sound_parses_and_an_absent_key_is_silence() {
+        let stock = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\nBuildingDamageSound=BuildingDamaged\n",
+        ));
+        assert_eq!(
+            stock.building_damage_sound.as_deref(),
+            Some("BuildingDamaged")
+        );
+
+        let absent =
+            GeneralRules::from_ini(&IniFile::from_str("[General]\nFlightLevel=500\n[AudioVisual]\n"));
+        assert_eq!(absent.building_damage_sound, None);
+
+        let empty = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\nBuildingDamageSound=\n",
+        ));
+        assert_eq!(empty.building_damage_sound, None);
     }
 
     /// `[AudioVisual] LightningSounds=` goes through `CCINIClass::ReadSoundList

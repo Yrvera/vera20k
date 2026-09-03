@@ -178,10 +178,25 @@ fn emit_resolved_order_voice(state: &mut AppState, speaker_id: u64, queued: &[Co
 
 /// Resolve one `Voice*` slot on an object type, with the native fallbacks.
 ///
-/// The capture slot is the only one with a fallback in gamemd: `0x00708DCB CMP
-/// [type+0x55C],-1 ; JZ 0x00708DF1` sends an absent `VoiceCapture=` to the
-/// Enter-voice method at `0x00709020`, which reads `VoiceEnter=`
-/// (`TechnoTypeClass+0x558`).
+/// The capture and enter slots are the two with a fallback in gamemd, and they
+/// chain: `0x00708DCB CMP [type+0x55C],-1 ; JZ 0x00708DF1` sends an absent
+/// `VoiceCapture=` to the Enter-voice method at `0x00709020`, which reads
+/// `VoiceEnter=` (`TechnoTypeClass+0x558`) and, when *that* is the `-1`
+/// sentinel too (`0x0070902B CMP [EAX+0x558],-1 ; JZ 0x00709051`), calls
+/// `[vtable+0x368]` — `0x00708FC0` for the BuildingClass-family vtable at
+/// `0x007E3EBC` (`read_memory 0x007E4224` → `0x00708FC0`). That body is **not**
+/// silence: it reads the `VoiceMove=` sound list at `TechnoTypeClass+0x468`
+/// (`0x00712AB6 LEA EDI,[EBP+0x468]` in `TechnoTypeClass::ReadINI` passes key
+/// `"VoiceMove"` at `0x008442C0` to `CCINIClass::ReadSoundList @ 0x00525430`),
+/// skips only when its count at `+0x478` is zero
+/// (`0x00708FD6 TEST ECX,ECX ; JZ 0x00709014`), and otherwise queues
+/// `items[rand % count]` through `[vtable+0x354]`.
+///
+/// VERA models `VoiceMove=` as one id, not a list. No stock type authors a
+/// comma-separated `VoiceMove=` (0 of 148 occurrences in `ini/rulesmd.ini`),
+/// so the pick is observationally identical on retail; the `rand % count` draw
+/// native spends on RNG instance `0x00886B88` (`0x00708FE1 CALL 0x0065C780`)
+/// has no VERA counterpart. Recorded, not landed.
 fn voice_id_for_key<'a>(
     obj: &'a crate::rules::object_type::ObjectType,
     voice_field: &str,
@@ -190,8 +205,12 @@ fn voice_id_for_key<'a>(
         "VoiceMove" => obj.voice_move.as_ref(),
         "VoiceAttack" => obj.voice_attack.as_ref(),
         "VoiceHarvest" => obj.voice_harvest.as_ref(),
-        "VoiceCapture" => obj.voice_capture.as_ref().or(obj.voice_enter.as_ref()),
-        "VoiceEnter" => obj.voice_enter.as_ref(),
+        "VoiceCapture" => obj
+            .voice_capture
+            .as_ref()
+            .or(obj.voice_enter.as_ref())
+            .or(obj.voice_move.as_ref()),
+        "VoiceEnter" => obj.voice_enter.as_ref().or(obj.voice_move.as_ref()),
         "VoiceSpecialAttack" => obj.voice_special_attack.as_ref(),
         _ => None,
     }
@@ -1464,6 +1483,11 @@ mod tests {
     /// `TechnoClass::Queue_Voice @ 0x00708D90`) and only falls through to
     /// `VoiceEnter=` when the key is the `-1` sentinel. Before this, every
     /// stock engineer capture spoke the Enter line.
+    ///
+    /// The chain does not end at `VoiceEnter=`: an absent one sends
+    /// `0x00709020` to `[vtable+0x368]` = `0x00708FC0`, which draws from the
+    /// `VoiceMove=` list at `TechnoTypeClass+0x468` and is silent only when
+    /// that list is empty.
     #[test]
     fn capture_speaks_the_capture_slot_and_falls_back_to_enter() {
         use crate::rules::ini_parser::IniFile;
@@ -1509,9 +1533,25 @@ mod tests {
             Some("EngAllMove")
         );
 
-        // Neither key: silence, not the move line.
+        // Neither key: `0x0070902B` sends the Enter slot to `[vtable+0x368]`
+        // = `0x00708FC0`, which draws from the `VoiceMove=` list at
+        // `TechnoTypeClass+0x468`. Native does NOT go silent here.
         let neither = object("[ENGINEER]\nVoiceMove=EngAllMove\n");
-        assert_eq!(voice_id_for_key(&neither, "VoiceCapture"), None);
+        assert_eq!(
+            voice_id_for_key(&neither, "VoiceCapture").map(String::as_str),
+            Some("EngAllMove")
+        );
+        assert_eq!(
+            voice_id_for_key(&neither, "VoiceEnter").map(String::as_str),
+            Some("EngAllMove"),
+            "the Enter slot itself falls through to the move list"
+        );
+
+        // Silence needs the move list empty too — `0x00708FD6 TEST ECX,ECX ;
+        // JZ 0x00709014` is the only exit that plays nothing.
+        let nothing = object("[ENGINEER]\nStrength=100\n");
+        assert_eq!(voice_id_for_key(&nothing, "VoiceCapture"), None);
+        assert_eq!(voice_id_for_key(&nothing, "VoiceEnter"), None);
     }
 
     fn chord_rules() -> crate::rules::ruleset::RuleSet {

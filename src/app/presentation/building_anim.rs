@@ -334,6 +334,24 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                     audio_indices,
                 );
             }
+            GameSoundEvent::BuildingDamagedSfx { sound_id, source } => {
+                // `RulesClass::ReadAudioVisual @ 0x006691E0` keeps only the
+                // `VocClass::FindByName` result in `Rules+0x714`, so a name
+                // that is not a registered Voc is silence in gamemd and must
+                // not reach the raw audio-bag fallback here.
+                if registry.get(sound_id).is_none() {
+                    continue;
+                }
+                if let Some(gain) = gain_for(sound_id, *source) {
+                    sfx.play_registered_sound_spatial(
+                        sound_id,
+                        gain,
+                        registry,
+                        assets,
+                        audio_indices,
+                    );
+                }
+            }
             GameSoundEvent::LightningStrike { sound_id, source } => {
                 // `CCINIClass::ReadSoundList @ 0x00525430` only stores tokens
                 // `VocClass::FindPtrByName` resolves, so a `LightningSounds=`

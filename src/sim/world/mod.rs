@@ -516,6 +516,27 @@ pub enum SimSoundEvent {
     /// "TankBunkerDown"). Stock zero-link refinery unload completion does
     /// not emit this event.
     RefineryExitSfx { rx: u16, ry: u16 },
+    /// A struck building crossed a damage-state threshold and its type carries
+    /// no `DamageSound=` of its own — the global `[AudioVisual]
+    /// BuildingDamageSound=` cue, played at the building's own coordinate.
+    ///
+    /// gamemd: `BuildingClass::ReceiveDamage @ 0x00442230`. After the shared
+    /// Techno receiver returns at `0x00442425`, `0x0044242C MOV AL,[ESI+0x90]`
+    /// (`ObjectClass::IsAlive`) skips the whole dispatch for a dead building;
+    /// otherwise `0x00442476 JMP [EAX*4 + 0x00442C18]` with `EAX = result - 2`
+    /// enters `{0x004426AC, 0x004426C8, 0x004424A2, 0x0044247D}`. Entry 0
+    /// (result 2) scales the docked unit's `+0xE8` and falls through into
+    /// entry 1 (result 3); both reach `0x004426D2 CMP [type+0x538],-1`, and
+    /// only an absent per-type `DamageSound=` continues to
+    /// `0x00442700 MOV ECX,[Rules+0x714]` / `0x00442706 CALL
+    /// VocClass::PlayAtCoord @ 0x00750E20` at `[ESI+0x9C]`.
+    ///
+    /// Results 2 and 3 are the threshold crossings computed by
+    /// `ObjectClass::ReceiveDamage @ 0x005F5390`: 2 when the hit took HP from
+    /// `>= Strength >> 1` to below it, 3 when it took HP from above
+    /// `Strength * Rules+0x1708` (ConditionRed) to below it. Ordinary hits
+    /// that cross nothing return 1 and are silent.
+    BuildingDamagedSfx { rx: u16, ry: u16 },
     /// Tank-bunker walls-up cue — emitted on install. App resolves to
     /// [AudioVisual] BunkerWallsUpSound (retail "TankBunkerUp").
     BunkerWallsUp { rx: u16, ry: u16 },

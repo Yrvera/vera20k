@@ -544,6 +544,7 @@ mod tests {
             prevent_attack_move: false,
             voice_die: Vec::new(),
             die_sounds: Vec::new(),
+            damage_sound: None,
             move_sound: None,
             voice_feedback: None,
             voice_special_attack: None,

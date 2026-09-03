@@ -406,6 +406,15 @@ pub struct ObjectType {
     pub voice_die: Vec<String>,
     /// Ordered sound choices played when this entity dies or is destroyed.
     pub die_sounds: Vec<String>,
+    /// `DamageSound=` — `TechnoTypeClass+0x538`, the type's own struck cue.
+    ///
+    /// Only its presence is consumed here: `BuildingClass::ReceiveDamage`
+    /// gates the global `[AudioVisual] BuildingDamageSound=` on
+    /// `0x004426D2 CMP [type+0x538],-1`, so a type that names any resolvable
+    /// sound suppresses the global. Playing this per-type cue itself is a
+    /// TechnoClass-level path (`0x00702717` in `TechnoClass::ReceiveDamage`)
+    /// that VERA does not route yet — recorded, not landed.
+    pub damage_sound: Option<String>,
     /// Sound ID played while this entity moves (looping engine/footstep).
     pub move_sound: Option<String>,
     /// Sound ID played when this unit reacts to taking fire (fear cry).
@@ -1527,6 +1536,11 @@ impl ObjectType {
             prevent_attack_move: section.get_bool("PreventAttackMove").unwrap_or(false),
             voice_die: parse_csv_string_list(section.get("VoiceDie")),
             die_sounds: parse_csv_string_list(section.get("DieSound")),
+            damage_sound: section
+                .get("DamageSound")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             move_sound: section.get("MoveSound").map(|s| s.to_string()),
             voice_feedback: section.get("VoiceFeedback").map(|s| s.to_string()),
             voice_special_attack: section.get("VoiceSpecialAttack").map(|s| s.to_string()),
