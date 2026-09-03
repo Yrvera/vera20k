@@ -39,6 +39,22 @@ pub struct WeaponType {
     pub damage: i32,
     /// Maximum range in cells (fixed-point for deterministic range checks).
     pub range: SimFixed,
+    /// Maximum range in LEPTONS — the value gamemd actually stores.
+    ///
+    /// `WeaponTypeClass::ReadINI` 0x00772080 fills `+0xB4` through
+    /// `CCINIClass::ReadRange` 0x00474620 at 0x00772336, and that reader
+    /// multiplies the INI cell count by `256.0` (`FMUL double ptr
+    /// [0x007E1710]` at 0x0047464C) before `Math__ftol` chops it. Every native
+    /// consumer — `TechnoClass::InRange` 0x006F7220 included — reads leptons.
+    ///
+    /// `range` above is the cell-valued form the older call sites still read;
+    /// scaling it with `to_num::<i64>() * 256` throws the fraction away, which
+    /// is what stranded 61 stock weapons (19 of them at `Range=1.5`) a third
+    /// short of their authored reach. Use this field for any range compare.
+    ///
+    /// The `-2` "infinite" sentinel survives the conversion as `-512`, which
+    /// is the constant 0x006F724E tests.
+    pub range_leptons: i32,
     /// Rate of fire: frames between consecutive shots (lower = faster).
     pub rof: i32,
     /// Projectile travel speed (0 = instant hit / hitscan).
@@ -63,6 +79,9 @@ pub struct WeaponType {
     /// Minimum firing range in cells (+0xb8). Weapon won't fire if target
     /// is closer than this distance.
     pub minimum_range: SimFixed,
+    /// Minimum firing range in LEPTONS — `+0xB8` through the same
+    /// `CCINIClass::ReadRange` 0x00474620 call at 0x00772350.
+    pub minimum_range_leptons: i32,
     /// Blink time for disguise fake when firing while disguised (+0x13c).
     pub disguise_fake_blink_time: i32,
     /// Duration of laser beam visual effect in frames (+0x14e).
@@ -185,6 +204,9 @@ impl WeaponType {
                 .get_f32("Range")
                 .map(sim_from_f32)
                 .unwrap_or(SIM_ZERO),
+            // `WeaponTypeClass::Constructor` 0x00771C70 zeroes +0xB4 at
+            // 0x00771CB6, so an absent (or literal `-1`) key leaves 0.
+            range_leptons: section.read_range("Range", 0),
             rof: section.get_i32("ROF").unwrap_or(0),
             speed: section.get_i32("Speed").unwrap_or(0),
             projectile: section.get("Projectile").map(|s| s.to_string()),
@@ -199,6 +221,8 @@ impl WeaponType {
                 .get_f32("MinimumRange")
                 .map(sim_from_f32)
                 .unwrap_or(SIM_ZERO),
+            // +0xB8 is zeroed alongside +0xB4 at 0x00771CBF.
+            minimum_range_leptons: section.read_range("MinimumRange", 0),
             disguise_fake_blink_time: section.get_i32("DisguiseFakeBlinkTime").unwrap_or(0),
             laser_duration: section.get_i32("LaserDuration").unwrap_or(0),
             rad_level: section.get_i32("RadLevel").unwrap_or(0),
@@ -313,6 +337,7 @@ mod tests {
         assert_eq!(weapon.id, "105mm");
         assert_eq!(weapon.damage, 65);
         assert_eq!(weapon.range, sim_from_f32(5.75));
+        assert_eq!(weapon.range_leptons, 1472, "5.75 cells * 256");
         assert_eq!(weapon.rof, 50);
         assert_eq!(weapon.speed, 40);
         assert_eq!(weapon.projectile, Some("InvisibleLow".to_string()));
@@ -373,14 +398,10 @@ mod tests {
             "[CruiseLauncher]\nDamage=25\n\
              [BoomerTorpedo]\nDamage=40\nDecloakToFire=no\n",
         );
-        let cruise = WeaponType::from_ini_section(
-            "CruiseLauncher",
-            ini.section("CruiseLauncher").unwrap(),
-        );
-        let torpedo = WeaponType::from_ini_section(
-            "BoomerTorpedo",
-            ini.section("BoomerTorpedo").unwrap(),
-        );
+        let cruise =
+            WeaponType::from_ini_section("CruiseLauncher", ini.section("CruiseLauncher").unwrap());
+        let torpedo =
+            WeaponType::from_ini_section("BoomerTorpedo", ini.section("BoomerTorpedo").unwrap());
         assert!(cruise.decloak_to_fire);
         assert!(!torpedo.decloak_to_fire);
     }
@@ -421,6 +442,41 @@ mod tests {
         assert_eq!(weapon.anim[2], "YOURBOOM");
     }
 
+    /// `CCINIClass::ReadRange` 0x00474620 multiplies by `256.0` and THEN chops,
+    /// so a fractional `Range=` keeps its fraction. 61 stock weapons carry one
+    /// and 19 sit at exactly `1.5`, the stock `[BlimpBomb]` among them.
+    #[test]
+    fn fractional_range_keeps_its_fraction_in_leptons() {
+        let ini = IniFile::from_str(
+            "[BlimpBomb]\nDamage=250\nROF=50\nRange=1.5\nCellRangefinding=yes\n\
+             [Nuke]\nRange=-2\n\
+             [Quarter]\nRange=0.25\n\
+             [NoKey]\nDamage=1\n",
+        );
+        let blimp = WeaponType::from_ini_section("BlimpBomb", ini.section("BlimpBomb").unwrap());
+        assert_eq!(
+            blimp.range_leptons, 384,
+            "1.5 cells is 384 leptons, not 256"
+        );
+        assert!(blimp.cell_rangefinding);
+
+        let nuke = WeaponType::from_ini_section("Nuke", ini.section("Nuke").unwrap());
+        assert_eq!(
+            nuke.range_leptons, -512,
+            "the -2 'infinite' sentinel scales to the -512 that 0x006F724E tests"
+        );
+
+        let quarter = WeaponType::from_ini_section("Quarter", ini.section("Quarter").unwrap());
+        assert_eq!(quarter.range_leptons, 64);
+
+        let none = WeaponType::from_ini_section("NoKey", ini.section("NoKey").unwrap());
+        assert_eq!(
+            none.range_leptons, 0,
+            "absent key keeps the 0x00771CB6 constructor zero"
+        );
+        assert_eq!(none.minimum_range_leptons, 0);
+    }
+
     #[test]
     fn test_parse_minimum_range() {
         let ini: IniFile = IniFile::from_str("[TestWeapon]\nDamage=50\nMinimumRange=3.5\n");
@@ -428,5 +484,6 @@ mod tests {
         let weapon: WeaponType = WeaponType::from_ini_section("TestWeapon", section);
 
         assert_eq!(weapon.minimum_range, sim_from_f32(3.5));
+        assert_eq!(weapon.minimum_range_leptons, 896, "3.5 cells * 256");
     }
 }

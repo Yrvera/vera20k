@@ -1278,18 +1278,18 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
         ScanRange::NoCutoff => true,
         ScanRange::CanFireAt => match (ctx.terrain, ctx.entities.get(ctx.attacker.stable_id)) {
             (Some(terrain), Some(attacker_entity)) => {
-                let source_z = super::in_range::effective_z_leptons(attacker_entity, terrain)?;
-                let src = (
-                    i64::from(ctx.attacker.pos_rx) * i64::from(LEPTONS_PER_CELL)
-                        + ctx.attacker.sub_x.to_num::<i64>(),
-                    i64::from(ctx.attacker.pos_ry) * i64::from(LEPTONS_PER_CELL)
-                        + ctx.attacker.sub_y.to_num::<i64>(),
-                    source_z,
-                );
+                let candidate_target = super::TargetKind::Entity(candidate.stable_id);
+                let src = super::in_range::fire_source_coords(
+                    attacker_entity,
+                    &candidate_target,
+                    selected.weapon,
+                    ctx.entities,
+                    terrain,
+                )?;
                 super::in_range::compute_in_range(
                     attacker_entity,
                     src,
-                    &super::TargetKind::Entity(candidate.stable_id),
+                    &candidate_target,
                     selected.weapon,
                     ctx.rules,
                     ctx.interner,

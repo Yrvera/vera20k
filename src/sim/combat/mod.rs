@@ -939,14 +939,15 @@ pub(crate) fn can_fire_at_target(
     ) else {
         return false;
     };
-    let Some(source_z) = in_range::effective_z_leptons(attacker, terrain) else {
+    let Some(source) = in_range::fire_source_coords(
+        attacker,
+        target,
+        selected.weapon,
+        entities,
+        terrain,
+    ) else {
         return false;
     };
-    let source = (
-        i64::from(attacker.position.rx) * 256 + attacker.position.sub_x.to_num::<i64>(),
-        i64::from(attacker.position.ry) * 256 + attacker.position.sub_y.to_num::<i64>(),
-        source_z,
-    );
     in_range::compute_in_range(
         attacker,
         source,
@@ -7180,14 +7181,15 @@ pub(crate) fn resolve_attacker_fire(
         // Standard fire: 3D check via compute_in_range when terrain available.
         match (terrain.as_deref(), entities.get(snap.stable_id)) {
             (Some(t), Some(attacker_entity)) => {
-                let Some(source_z) = in_range::effective_z_leptons(attacker_entity, t) else {
+                let Some(src) = in_range::fire_source_coords(
+                    attacker_entity,
+                    &snap.target,
+                    weapon,
+                    entities,
+                    t,
+                ) else {
                     return;
                 };
-                let src = (
-                    snap.pos_rx as i64 * 256 + snap.sub_x.to_num::<i64>(),
-                    snap.pos_ry as i64 * 256 + snap.sub_y.to_num::<i64>(),
-                    source_z,
-                );
                 in_range::compute_in_range(
                     attacker_entity,
                     src,
@@ -8197,8 +8199,13 @@ pub(crate) fn lepton_distance_sq_raw(
 ///
 /// Converts weapon range from cells to leptons (×256) before squaring.
 /// Uses i64 to match `lepton_distance_sq()` output.
+///
+/// The scale runs on the fixed-point bits, not through `to_num`, because
+/// `CCINIClass::ReadRange` 0x00474620 multiplies BEFORE truncating: a
+/// `Range=1.5` weapon reaches 384 leptons, and truncating to whole cells first
+/// cost it a third of its reach.
 pub(crate) fn is_within_range_leptons(dist_sq_leptons: i64, range_cells: SimFixed) -> bool {
-    let range_leptons: i64 = range_cells.to_num::<i64>() * 256;
+    let range_leptons: i64 = (i64::from(range_cells.to_bits()) * 256) >> 16;
     let range_sq: i64 = range_leptons * range_leptons;
     dist_sq_leptons <= range_sq
 }
