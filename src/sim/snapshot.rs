@@ -374,7 +374,19 @@ use crate::sim::world::Simulation;
 // (`TechnoClass::ReceiveDamage @ 0x00701900`, `0x00702281`..`0x0070256C`).
 // Every consumer after a death in the same tick therefore reads a different
 // cursor than it did on v119.
-const SNAPSHOT_VERSION: u32 = 120;
+// Bumped 120 -> 121: combat explosions became `AnimClass` instances. They used
+// to be legacy `WorldEffect` records, which are in neither `AnimStore`'s
+// serialized shape nor the multiplayer checksum; they are now ordinary members
+// of `substrate.anims`, which is in both. So every shot that spawns a warhead
+// `AnimList=` animation now adds a hash-participating, serialized object where
+// it previously added none. No committed golden actually moved on this change
+// — the global parity harness authors no `AnimList=`/`Explosion=`/
+// `DestroyAnim=`, so it never reached the new path — but any future fixture
+// that fires a shot with explosion art will hash differently from a v120 one,
+// which is exactly what the version guards. `AnimTypeRuntimeConfig` also
+// gained the twenty previously unparsed art keys; that is rules data and is
+// not serialized.
+const SNAPSHOT_VERSION: u32 = 121;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3116,10 +3128,13 @@ mod tests {
     /// death-side debris producer, which changes both the hash schema and the
     /// shared RNG cursor at every Techno death whose type authors a POSITIVE
     /// `MaxDebris=` — the 83 stock sections that author `MaxDebris=0` stop at
-    /// `0x00702291` and still cost the stream nothing.
+    /// `0x00702291` and still cost the stream nothing; 120 -> 121 moves combat
+    /// explosions off the legacy `WorldEffect` list and into `AnimStore`, so a
+    /// warhead `AnimList=` animation is now a serialized, checksum-folded
+    /// object where it used to be neither.
     #[test]
-    fn death_debris_store_snapshot_version_is_120() {
-        assert_eq!(super::SNAPSHOT_VERSION, 120);
+    fn combat_explosion_anim_snapshot_version_is_121() {
+        assert_eq!(super::SNAPSHOT_VERSION, 121);
     }
 
     #[test]

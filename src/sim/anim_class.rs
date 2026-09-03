@@ -4,7 +4,56 @@
 //! order. This module implements only the verified ordinary non-bouncer
 //! AnimClass lifecycle needed by building damage fire: constructor/reveal,
 //! first-AI guard, logic-frame timing, loops, reverse/ping-pong, Next, trailer,
-//! sound identity, conceal, and deferred deletion.
+//! sound identity, conceal, and deferred deletion — plus the combat-explosion
+//! producer.
+//!
+//! ## Residuals — two `AnimClass::AI` arms are not built
+//!
+//! RESIDUAL (M11b) — **the bouncing-debris landing arm.** `AnimClass::AI
+//! 0x00423E28..0x00423F37` runs when `AnimClass+0x194` (set by the constructor
+//! for `Bouncer=` or `IsMeteor=`) is live and
+//! `AnimClass::ProcessBounceResult @ 0x00423930` reports landed or gone. It
+//! constructs the type's `ExpireAnim=` and calls `Apply_area_damage` with the
+//! type's own `Damage=`/`Warhead=`/`DamageRadius=`, walks the impact cell's
+//! occupant list for `ReceiveDamage`, and spawns `Spawns=` behind two
+//! `RandomRanged` draws. `BounceState` (`src/sim/bounce.rs`) is ported but no
+//! `AnimClass` hosts one.
+//! - Trigger: every building death and every heavy-vehicle death, through
+//!   `[General] MetallicDebris=` (20 stock `DBRIS*` types, all `Bouncer=yes`).
+//! - Player effect: debris chunks neither damage what they land on
+//!   (`Damage=10..20`, warhead `HE`, `DamageRadius=50..80`) nor leave their
+//!   `TWLT026`/`TWLT036` landing explosions.
+//! - Frequency: continuous in ordinary skirmish — the higher-weight of the two
+//!   missing arms by a wide margin.
+//! - Downstream risk: the constructor fork draws two or three RNG values per
+//!   chunk on the scenario stream, so wiring it moves the lockstep stream and
+//!   needs its own `SNAPSHOT_VERSION` move and fixture re-record.
+//!
+//! RESIDUAL (M11b) — **the per-frame damage arm.** `AnimClass::AI
+//! 0x00424507..0x0042464C` accumulates the type's `Damage=` (parsed, see
+//! `AnimTypeRuntimeConfig::damage`) into `AnimClass+0x188`, which the
+//! constructor seeds to `1.0`, and calls `Apply_area_damage` with a
+//! truncating `Math__ftol` whenever the accumulator reaches 1.0, subtracting
+//! the emitted integer back as a double. The warhead is
+//! `[CombatDamage] C4Warhead` when the anim's own section name is `INVISO`
+//! (string at `0x008182F8`, NOT the neighbouring `RING1` at `0x008182F0`) and
+//! `[CombatDamage] FlameDamage2` otherwise; a `TerrainClass` owner
+//! (`What_Am_I` -> `0x24`) multiplies the per-frame value by 5.
+//! - Trigger: the `FIRE3` fires a destroyed building leaves behind
+//!   (`BuildingClass::DestructionEffects` loads the literal name at
+//!   `0x00441AEC`). The `BURN-S/M/L` family is commented out of
+//!   `[Animations]` and `INVISO` has no stock producer, so nothing else in
+//!   stock reaches it.
+//! - Player effect: `[FIRE3] Damage=.003` plus the `1.0` seed means exactly one
+//!   point of `Fire2` area damage on the fire's first ticked frame and then
+//!   none for another ~334 frames. Missing it costs one splash per burning
+//!   building.
+//! - Frequency: once per building death; magnitude 1.
+//! - Downstream risk: low — it applies damage through the existing
+//!   `Apply_area_damage` path and consumes no RNG.
+//!   The `TerrainClass` x5 multiplier has no verified stock producer at all:
+//!   its only source of a terrain-owned anim is `TerrainClass::Catch_Fire @
+//!   0x0071C5B0`, which has no code caller in active YR.
 
 use std::collections::BTreeMap;
 
@@ -65,7 +114,47 @@ impl AnimWorldCoord {
             .clamp(0, i32::from(u8::MAX)) as u8;
         (rx, ry, sub_x, sub_y, z)
     }
+
+    /// Inverse of [`Self::to_cell_sub_z`]: compose the absolute lepton
+    /// coordinate a producer's (cell, sub-cell, height-level) triple names.
+    /// Shares the anim Z scale with the decomposition, so a spawn followed by a
+    /// draw round-trips exactly.
+    pub(crate) fn from_cell_sub_z(
+        rx: u16,
+        ry: u16,
+        sub_x: crate::util::fixed_math::SimFixed,
+        sub_y: crate::util::fixed_math::SimFixed,
+        z: u8,
+    ) -> Self {
+        Self {
+            x: i32::from(rx)
+                .wrapping_mul(LEPTONS_PER_CELL)
+                .wrapping_add(sub_x.to_num::<i32>()),
+            y: i32::from(ry)
+                .wrapping_mul(LEPTONS_PER_CELL)
+                .wrapping_add(sub_y.to_num::<i32>()),
+            z: i32::from(z).wrapping_mul(ANIM_HEIGHT_LEVEL_LEPTONS),
+        }
+    }
 }
+
+/// `AnimClass` constructor `drawFlags` for a combat explosion.
+///
+/// gamemd-derived: `BulletClass::DetonateAtCoord` pushes the literal `0x2600`
+/// at `0x00469C82`, and identically at `0x0046A2E5`. The individual bits are
+/// UNCHECKED — only the `| 0x2000` that `AnimClass::DrawIt @ 0x0042304B` adds
+/// before `CC_Draw_Shape`, and the `AnimClass::SaveExtras` round trip, were
+/// read — so the word is carried verbatim, exactly as every other producer in
+/// this engine carries it.
+pub const COMBAT_EXPLOSION_DRAW_FLAGS: u32 = 0x2600;
+
+/// `AnimClass` constructor `zAdjust` for a combat explosion.
+///
+/// gamemd-derived: the argument at `0x00469C81` is the return of
+/// `0x0048ACE0`, whose whole body is `MOV EAX,0xFFFFFFF1; RET 0xC`
+/// (`disassemble_bytes 0x0048ACE0`) — it takes the impact `CoordStruct` by
+/// value and ignores it, always yielding `-15`.
+pub const COMBAT_EXPLOSION_Z_ADJUST: i32 = -15;
 
 const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 const ANIM_HEIGHT_LEVEL_LEPTONS: i32 = 128;
@@ -300,8 +389,15 @@ pub struct AnimDrawRuntime {
     pub translucency_ramp: u8,
     /// AnimClass `+0x119`: force the type-selected 50/75% draw family.
     pub forced_translucent: bool,
-    /// Producer-supplied type `+0x368` interpretation; the art-key mapping is
-    /// not closed, so this is deliberately not inferred from other fields.
+    /// Type `+0x368` = art.ini `DoubleThick=`, consulted only inside the
+    /// `+0x119` forced-translucency arm: `AnimClass::DrawIt` reads
+    /// `0x0042306B MOV CL,[EAX+0x368]` and takes `OR EBX,0x6` when set,
+    /// `OR EBX,0x4` when clear. `AnimTypeClass::ReadINI @ 0x00427D00` stores
+    /// `DoubleThick=` at `param_1[0xda]` (= byte offset `0x368`), which closes
+    /// the art-key mapping this comment previously left open. It stays a
+    /// producer-supplied instance byte rather than a type read because nothing
+    /// in this engine sets `+0x119` yet — the first producer that does should
+    /// feed it from `AnimTypeRuntimeConfig::double_thick`.
     pub forced_uses_75: bool,
 }
 
@@ -516,16 +612,82 @@ impl Simulation {
         rules: &RuleSet,
         descriptor: AnimClassSpawnDescriptor,
     ) -> Result<AnimId, AnimSpawnError> {
-        let world_coord = AnimWorldCoord {
-            x: i32::from(descriptor.rx)
-                .wrapping_mul(LEPTONS_PER_CELL)
-                .wrapping_add(descriptor.sub_x.to_num::<i32>()),
-            y: i32::from(descriptor.ry)
-                .wrapping_mul(LEPTONS_PER_CELL)
-                .wrapping_add(descriptor.sub_y.to_num::<i32>()),
-            z: i32::from(descriptor.z).wrapping_mul(ANIM_HEIGHT_LEVEL_LEPTONS),
-        };
+        let world_coord = AnimWorldCoord::from_cell_sub_z(
+            descriptor.rx,
+            descriptor.ry,
+            descriptor.sub_x,
+            descriptor.sub_y,
+            descriptor.z,
+        );
         self.spawn_anim_at_world(rules, descriptor, world_coord)
+    }
+
+    /// Construct one combat explosion as a real `AnimClass` instance.
+    ///
+    /// gamemd-derived: the warhead's `AnimList=` pick reaches
+    /// `AnimClass::AnimClass @ 0x00421EA0` from `BulletClass::DetonateAtCoord`
+    /// at `0x00469C93` (and identically at `0x0046A2F6`) with the argument row
+    /// `(type, &impactCoord, delay 0, loopCount 1, drawFlags 0x2600,
+    /// zAdjust -15, reverse 0)`. Read as raw pushes over
+    /// `0x00469C40..0x00469CA0`: `PUSH 0x0` (reverse) at `0x00469C65`, then the
+    /// by-value `CoordStruct` the `RET 0xC` helper at `0x0048ACE0` consumes,
+    /// then `PUSH EAX` (-15), `PUSH 0x2600`, `PUSH 0x1`, `PUSH 0x0`,
+    /// `PUSH ECX` (coord), `PUSH EBX` (type).
+    ///
+    /// Because `delay` is zero, `AnimClass::AnimClass` calls `AnimClass::Start
+    /// @ 0x00424CE0` before returning — that is where `Report=`/`StartSound=`
+    /// is played, from the single `AnimTypeClass+0x2F8` slot. So an explosion's
+    /// sound is a constructor-time effect, not a first-tick one.
+    ///
+    /// Returns `None` when the art type never bound (no art section or no SHP,
+    /// see `ArtRegistry::bind_combat_explosion_anim_assets`); native mints a
+    /// default `AnimTypeClass` in that case whose `End` stays 0, so the anim
+    /// dies on its first AI visit and draws nothing.
+    ///
+    /// RESIDUAL — the impact Z arrives as the producer's coarse height-level
+    /// byte, not exact leptons. `ExplosionEffect` carries that byte while its
+    /// paired `SmudgeSpawnRequest::Anim` carries the exact
+    /// `world_z_leptons`; this constructor uses the byte because the whole
+    /// `AnimStore` Z frame is 128 leptons per level (see
+    /// [`AnimWorldCoord::to_cell_sub_z`] and `Simulation::anim_owner_coords`),
+    /// and mixing frames inside one store is worse than the coarseness.
+    /// - Trigger: any detonation whose impact Z is not a multiple of 128
+    ///   leptons — an airburst, or a shot landing on a slope.
+    /// - Player effect: the explosion sprite's height, and therefore its depth
+    ///   sort against nearby objects, can be off by up to one height level.
+    /// - Frequency: common, but the legacy world-effect path had exactly the
+    ///   same byte, so this is inherited, not introduced.
+    /// - Downstream risk: reconciling it means moving the whole anim Z frame to
+    ///   exact leptons, which is a separate transaction.
+    pub(crate) fn spawn_combat_explosion_anim(
+        &mut self,
+        rules: &RuleSet,
+        type_name: InternedId,
+        rx: u16,
+        ry: u16,
+        sub_x: crate::util::fixed_math::SimFixed,
+        sub_y: crate::util::fixed_math::SimFixed,
+        z: u8,
+    ) -> Option<AnimId> {
+        let descriptor = AnimClassSpawnDescriptor {
+            delay: 0,
+            loop_count: 1,
+            draw_flags: COMBAT_EXPLOSION_DRAW_FLAGS,
+            z_adjust: COMBAT_EXPLOSION_Z_ADJUST,
+            reverse: false,
+            ..AnimClassSpawnDescriptor::new(type_name, rx, ry, sub_x, sub_y, z)
+        };
+        let world_coord = AnimWorldCoord::from_cell_sub_z(rx, ry, sub_x, sub_y, z);
+        match self.spawn_anim_at_world(rules, descriptor, world_coord) {
+            Ok(id) => Some(id),
+            Err(error) => {
+                log::debug!(
+                    "combat explosion [{}] did not construct: {error}",
+                    self.interner.resolve(type_name)
+                );
+                None
+            }
+        }
     }
 
     pub(crate) fn spawn_anim_at_world(
@@ -1887,6 +2049,95 @@ mod tests {
                 .make_infantry,
             -2
         );
+    }
+
+    /// The whole point of routing combat explosions through `AnimStore`: the
+    /// verified constructor row from `BulletClass::DetonateAtCoord 0x00469C93`,
+    /// and the `Report=` that only `AnimClass::Start @ 0x00424CE0` can play.
+    #[test]
+    fn combat_explosion_uses_the_verified_constructor_row_and_plays_report() {
+        // TWLT036 is the stock AP-shell explosion: Report=Explosion06,
+        // Translucent=yes, no Rate= (so one logic frame per image frame).
+        let rules = runtime_rules(
+            "[TWLT036]\nTranslucent=yes\nReport=Explosion06\nEnd=8\n",
+            &[("TWLT036", 8)],
+        );
+        let mut sim = Simulation::new();
+        let type_name = sim.interner.intern("TWLT036");
+
+        let id = sim
+            .spawn_combat_explosion_anim(
+                &rules,
+                type_name,
+                7,
+                9,
+                crate::util::fixed_math::SimFixed::from_num(128),
+                crate::util::fixed_math::SimFixed::from_num(64),
+                3,
+            )
+            .expect("bound explosion art constructs an AnimClass");
+
+        let anim = sim.anim(id).expect("explosion is a registered AnimObject");
+        assert_eq!(anim.draw_flags, COMBAT_EXPLOSION_DRAW_FLAGS);
+        assert_eq!(anim.z_adjust, COMBAT_EXPLOSION_Z_ADJUST);
+        assert_eq!(anim.runtime.delay_remaining, 0);
+        assert!(!anim.runtime.constructor_reverse);
+        assert_eq!(anim.runtime.current_frame, 0);
+        assert_eq!(anim.runtime.loop_remaining, 1);
+        assert_eq!(anim.owner_entity, None);
+
+        // `delay == 0` means the constructor itself reached Start, so the
+        // sound is already out before the first AI visit.
+        assert!(anim.start_sound_active);
+        let report = sim.interner.intern("EXPLOSION06");
+        assert!(
+            sim.sound_events.iter().any(|event| matches!(
+                event,
+                SimSoundEvent::AnimationStarted { anim_id, sound_id, .. }
+                    if *anim_id == id && *sound_id == report
+            )),
+            "explosion must emit its art `Report=`, got {:?}",
+            sim.sound_events
+        );
+
+        // The spawn coordinate round-trips through the shared anim Z scale, so
+        // the sprite lands where the legacy world effect did.
+        let coord = sim.anim_absolute_coord(id).expect("absolute coordinate");
+        assert_eq!(
+            coord.to_cell_sub_z(),
+            (
+                7,
+                9,
+                crate::util::fixed_math::SimFixed::from_num(128),
+                crate::util::fixed_math::SimFixed::from_num(64),
+                3
+            )
+        );
+    }
+
+    /// A warhead can name art retail never shipped — `[CRNUKEWH]` authors
+    /// `AnimList=MININUKE - added 11/30`. Native mints a default AnimType whose
+    /// `End` stays 0 and the anim dies unseen; VERA must decline the spawn
+    /// rather than panic or block the shot.
+    #[test]
+    fn combat_explosion_with_unbound_art_declines_instead_of_panicking() {
+        let rules = runtime_rules("[TWLT036]\nEnd=8\n", &[("TWLT036", 8)]);
+        let mut sim = Simulation::new();
+        let missing = sim.interner.intern("MININUKE - ADDED 11/30");
+        assert!(
+            sim.spawn_combat_explosion_anim(
+                &rules,
+                missing,
+                1,
+                1,
+                crate::util::fixed_math::SIM_ZERO,
+                crate::util::fixed_math::SIM_ZERO,
+                0,
+            )
+            .is_none()
+        );
+        assert_eq!(sim.substrate.anims.len(), 0);
+        assert!(sim.sound_events.is_empty());
     }
 
     #[test]

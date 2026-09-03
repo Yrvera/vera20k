@@ -182,6 +182,43 @@ pub fn available_effect_anim_frame_count(
     }
 }
 
+/// Every animation name the combat tick can turn into an `AnimClass` instance.
+///
+/// Exactly the three producers that fill `CombatResult::explosion_effects`:
+/// - the killing warhead's `AnimList=` pick
+///   (`WarheadTypeClass::Detonate` -> `Warhead::SelectExplosionAnim @ 0x0048A4F0`),
+/// - the infantry death animation for the warhead's `InfDeath=`,
+/// - the dying object's own `Explosion=` / `DestroyAnim=` pick
+///   (`UnitClass::Death_Explosion @ 0x00738680`).
+///
+/// The list is derived from loaded rules, never hand-written: over retail
+/// `rulesmd.ini` it resolves to 58 distinct names (34 `AnimList=`, 14
+/// `Explosion=`, 13 `DestroyAnim=`, plus the infantry-death family), which is
+/// why the binder that consumes it must tolerate the handful retail authors
+/// with no art section.
+pub fn combat_explosion_anim_roots(rules: &RuleSet) -> Vec<String> {
+    let mut roots = BTreeSet::new();
+    let mut insert = |name: &str| {
+        if let Some(name) = canonical_asset_id(name) {
+            roots.insert(name);
+        }
+    };
+    for warhead in rules.warheads_iter() {
+        for name in &warhead.anim_list {
+            insert(name);
+        }
+    }
+    for name in rules.general.infantry_death_anims.iter().flatten() {
+        insert(name);
+    }
+    for object in rules.all_objects() {
+        for name in object.explosion_anims.iter().chain(&object.destroy_anims) {
+            insert(name);
+        }
+    }
+    roots.into_iter().collect()
+}
+
 fn authoritative_effect_roots(rules: &RuleSet) -> BTreeSet<String> {
     let mut roots = BTreeSet::new();
     let mut insert = |name: &str| {

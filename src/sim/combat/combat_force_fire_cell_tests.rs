@@ -110,6 +110,93 @@ fn new_constructor_creates_entity_variant() {
     assert!(matches!(at.target, TargetKind::Entity(123)));
 }
 
+/// Production proof for the combat-explosion animation route: a real shot,
+/// through `Simulation::advance_tick`, must leave an `AnimClass` instance in
+/// `AnimStore` carrying the constructor row
+/// `BulletClass::DetonateAtCoord 0x00469C93` pushes, and must emit the art
+/// type's `Report=`. Before this route existed the same shot pushed a legacy
+/// `WorldEffect` with translucency forced on and no sound at all.
+#[test]
+fn force_fire_detonation_builds_an_anim_instance_and_plays_its_report() {
+    use crate::rules::art_data::ArtRegistry;
+    use crate::sim::anim_class::{COMBAT_EXPLOSION_DRAW_FLAGS, COMBAT_EXPLOSION_Z_ADJUST};
+    use crate::sim::command::{Command, CommandEnvelope};
+    use crate::sim::pathfinding::PathGrid;
+    use crate::sim::world::{SimSoundEvent, Simulation};
+    use std::collections::BTreeMap;
+
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=MTNK\n\n\
+         [InfantryTypes]\n\n[BuildingTypes]\n\n[AircraftTypes]\n\n\
+         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
+         [105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\n\
+         [AP]\nVerses=100%,100%,90%,75%,75%,75%,60%,30%,20%,0%,0%\n\
+         AnimList=TWLT036\n",
+    ))
+    .expect("explosion rules parse");
+    let mut art = ArtRegistry::from_ini(&IniFile::from_str(
+        "[TWLT036]\nTranslucent=yes\nReport=Explosion06\nEnd=8\n",
+    ));
+    art.bind_anim_frame_count_for_test("TWLT036", 8);
+    rules.art_registry = art;
+
+    let mut sim = Simulation::new();
+    sim.input_delay_ticks = 0;
+    sim.substrate
+        .entities
+        .insert(make_unit(1, "MTNK", 5, 5, 300));
+    sim.interner = crate::sim::intern::test_interner();
+    let owner_id = sim.interner.intern("Americans");
+    assert!(matches!(
+        sim.reveal(1),
+        crate::sim::world::RevealOutcome::Revealed { .. }
+    ));
+    let grid = PathGrid::test_all_passable(64, 64);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+    // In range from the start, so the shot lands without a pursuit walk.
+    sim.queue_command(CommandEnvelope::new(
+        owner_id,
+        sim.session.tick + 1,
+        Command::ForceAttackCell {
+            attacker_id: 1,
+            target_rx: 8,
+            target_ry: 5,
+        },
+    ));
+
+    let explosion_type = sim.interner.intern("TWLT036");
+    let mut explosion = None;
+    for _ in 0..60 {
+        let pending = sim.take_due_commands();
+        sim.advance_tick(&pending, Some(&rules), &height_map, Some(&grid), None, 100);
+        if let Some((&id, _)) = sim.anims().find(|(_, anim)| anim.type_id == explosion_type) {
+            explosion = Some(id);
+            break;
+        }
+    }
+
+    let id = explosion.expect("the detonation must construct a TWLT036 AnimClass");
+    let anim = sim.anim(id).expect("registered explosion anim");
+    assert_eq!(anim.draw_flags, COMBAT_EXPLOSION_DRAW_FLAGS);
+    assert_eq!(anim.z_adjust, COMBAT_EXPLOSION_Z_ADJUST);
+    assert!(anim.start_sound_active);
+    assert!(
+        sim.world_effects.is_empty(),
+        "combat explosions no longer take the legacy world-effect path"
+    );
+
+    let report = sim.interner.intern("EXPLOSION06");
+    assert!(
+        sim.sound_events.iter().any(|event| matches!(
+            event,
+            SimSoundEvent::AnimationStarted { anim_id, sound_id, .. }
+                if *anim_id == id && *sound_id == report
+        )),
+        "the explosion must play its art `Report=`"
+    );
+}
+
 #[test]
 fn force_fire_cell_pursuit_then_fire_integration() {
     // Full pipeline: ctrl-click on a far cell → ForceAttackCell command →
