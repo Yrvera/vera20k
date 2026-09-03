@@ -1118,6 +1118,19 @@ impl ProjectileStore {
             // Nothing else consults `Arm`: the detonation admission at
             // `BulletClass::AI 0x00467C70` never tests it.
             //
+            // One exception to "only AFTER the live-object pass", noted for
+            // accuracy rather than as a defect: shrapnel children are admitted
+            // from INSIDE the walk — `object_ai_visit_one` calls
+            // `commit_logic_projectile_detonations` (`world/techno_ai.rs`) and
+            // `for_each_live_object` reloads the length each iteration — so
+            // such a child IS visited in its own launch tick, where a
+            // decrement-at-top would arm it one frame early. Inert in stock:
+            // the only `ShrapnelWeapon=` chains are
+            // `SuperCometFragment`/`TeslaFragment`/`CometFragment` ->
+            // `[SuperSmallCometP]`/`[SmallTeslaP]`/`[SmallCometP]`, all
+            // `Inviso=yes` with no `Ranged=` and no `Arm=`, so no shrapnel child
+            // carries a fuse and this counter never runs for one.
+            //
             // RESIDUAL (VERA-internal, gamemd equivalent UNCHECKED): native's
             // `LogicClass::PerTickUpdate @ 0x0055AFB0` object loop reloads its
             // count after every `vtable+0x5C` callback and

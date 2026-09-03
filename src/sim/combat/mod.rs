@@ -7762,6 +7762,24 @@ pub(crate) fn resolve_attacker_fire(
         .sqrt())
         .trunc() as i32;
         let mut launch_speed = weapon.speed.min(launch_distance / 2).max(0);
+        // RESIDUAL (VERA-internal consequence of an otherwise native clamp,
+        // gamemd equivalent UNCHECKED at this separation): the integer `dist/2`
+        // makes `launch_speed` 0 at exactly 1 lepton of muzzle-to-target
+        // separation. Native reaches 0 there too, but its `ROT < 1` non-Vertical
+        // arm then subtracts `Rules.Gravity` every frame at `0x00467402` and the
+        // bullet falls out on the ground probe. VERA's `Straight` arm has no
+        // gravity (recorded separately), so `step_toward(pos, target, 0)`
+        // returns `pos`, `candidate == target_position` is never true, and the
+        // only other removals — target loss and off-grid — cannot fire for a
+        // live on-map target: the projectile never terminates and stays in a
+        // hashed store. Trigger: a `Straight`, non-guided projectile fired at a
+        // target exactly 1 lepton away. Player effect: an invisible immortal
+        // entry in deterministic state, growing one per such shot. Frequency:
+        // effectively zero — 1/256th of a cell of separation, and only for the
+        // four stock projectiles that take the `Straight` arm (`Sonic`,
+        // `Cannon2`, `ASWVirt`, `PulsPr`). Downstream risk: unbounded store
+        // growth and a diverging hash if it ever fires; giving the `Straight`
+        // arm its native gravity closes both this and residual 2 at once.
         // `0x006FEA36`..`0x006FEA4C`: a `ROT > 0` or `Vertical` bullet from a
         // firer with `RadialFireSegments == 0` — every stock firer except the
         // Aegis Cruiser — launches at one lepton per frame, and the weapon's

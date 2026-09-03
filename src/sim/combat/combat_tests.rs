@@ -8687,21 +8687,34 @@ fn flat_level_zero_terrain(
 /// altitude failed to reach the launch coordinate the bomb would leave level,
 /// never cross `DetonationAltitude=20000`, never drop below the floor, and
 /// drift off the map unexploded. This pins the whole chain instead: the Jumpjet
-/// firer's `JumpjetHeight` reaches `object_world_z_leptons`, the launch pitch
-/// points down, and the flight ends in a detonation.
+/// firer's `JumpjetHeight=` becomes the locomotor's hover target, that hover
+/// altitude reaches `object_world_z_leptons`, the launch pitch points down, and
+/// the flight ends in a detonation.
+///
+/// The fixture authors `JumpJet=yes`, which stock `[ZEP]` does NOT — it takes
+/// its Jumpjet locomotor from the GUID alone. That reproduces gamemd, where
+/// `TechnoTypeClass::ReadINI @ 0x00715151` stores `JumpjetHeight=` into
+/// `TechnoType+0xD80` unconditionally (over the constructor default 500 at
+/// `0x007115D3`), so a native Kirov really does hover at 750. VERA gates the
+/// whole `JumpjetParams` block on `JumpJet=yes` (`rules/object_type.rs`), so a
+/// stock `[ZEP]`/`[DISK]` currently hovers at the 500 default instead — a
+/// recorded DRIFT out of scope here, and the reason this fixture has to author
+/// the key to exercise the chain it claims to pin.
 #[test]
 fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
     use crate::map::resolved_terrain::SharedCellDummy;
     use crate::sim::projectile::{ProjectileStore, ProjectileTrajectory};
 
-    // Stock `[BlimpBombP]`, `[BlimpBomb]` and the Kirov's Jumpjet hover height,
-    // with one deliberate change: `Range=` is widened from the stock 1.5 so the
-    // shot clears the fire-range gate while the firer hovers 750 leptons up.
-    // Nothing on the `Vertical` arm reads `Range=`.
+    // Stock `[BlimpBombP]`, `[BlimpBomb]` and the Kirov's `JumpjetHeight=750`,
+    // with two deliberate changes: `Range=` is widened from the stock 1.5 so the
+    // shot clears the fire-range gate while the firer hovers 750 leptons up
+    // (nothing on the `Vertical` arm reads `Range=`), and `JumpJet=yes` is
+    // authored so VERA's `JumpJet=`-gated parser reaches `JumpjetHeight=` the
+    // way `TechnoTypeClass::ReadINI` does unconditionally. See the doc comment.
     let rules = RuleSet::from_ini(&IniFile::from_str(
         "[VehicleTypes]\n0=ZEP\n1=HTNK\n\
          [ZEP]\nStrength=2000\nArmor=medium\nSpeed=5\nPrimary=BlimpBomb\n\
-         BalloonHover=yes\nJumpjetHeight=750\nConsideredAircraft=yes\n\
+         BalloonHover=yes\nJumpJet=yes\nJumpjetHeight=750\nConsideredAircraft=yes\n\
          MovementZone=Fly\nSpeedType=Hover\n\
          Locomotor={92612C46-F71F-11d1-AC9F-006008055BB5}\n\
          [HTNK]\nStrength=2000\nArmor=heavy\nSpeed=4\n\
@@ -8718,8 +8731,17 @@ fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
     let zep_object = rules.object("ZEP").expect("ZEP object type");
     let mut locomotor =
         crate::sim::movement::locomotor::LocomotorState::from_object_type(zep_object, 0, 0);
-    locomotor.altitude = crate::util::fixed_math::SimFixed::from_num(750);
-    locomotor.target_altitude = locomotor.altitude;
+    // The hover altitude is NOT hand-set: `JumpjetHeight=750` has to arrive
+    // through `LocomotorState::air_params_from_object` as the hover target, and
+    // the airship is then placed at the top of its climb. Assert the rules hop
+    // at its source so a broken parse fails here rather than downstream.
+    assert_eq!(
+        locomotor.target_altitude,
+        crate::util::fixed_math::SimFixed::from_num(750),
+        "`JumpjetHeight=750` must reach the locomotor's hover target; a 500 here \
+         means the rules->locomotor hop is broken, not the flight model"
+    );
+    locomotor.altitude = locomotor.target_altitude;
     kirov.locomotor = Some(locomotor);
     store.insert(kirov);
     let _ = test_intern("HTNK");

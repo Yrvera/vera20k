@@ -1761,6 +1761,36 @@ impl ObjectType {
             fly_back: section.get_bool("FlyBack").unwrap_or(false),
             landable: section.get_bool("Landable").unwrap_or(false),
             jumpjet: section.get_bool("JumpJet").unwrap_or(false),
+            // RESIDUAL — DRIFT, not fixed here (this is not the projectile
+            // flight change's file; recorded so it is not lost).
+            // `TechnoTypeClass::ReadINI` reads the eight `Jumpjet*` keys in one
+            // unconditional straight-line block — `JumpjetClimb` -> `+0xD78`,
+            // `JumpjetCrash` -> `+0xD7C`, `JumpjetHeight` -> `+0xD80`
+            // (`0x00715151`), `JumpjetAccel` -> `+0xD84`, `JumpjetWobbles`,
+            // `JumpjetNoWobbles`, `JumpjetDeviation`, then `JumpJet` itself into
+            // a SEPARATE boolean field at `+0xD94` (`0x007151F8`). `JumpJet=` is
+            // NOT a gate on the others; the per-field defaults come from
+            // `TechnoTypeClass::Constructor` (`+0xD80` = 500 at `0x007115D3`),
+            // and `JumpjetLocomotionClass` reads `+0xD78`/`+0xD7C`/`+0xD80`/
+            // `+0xD84` off the type at `0x0054AD6F`ff.
+            // Gating the whole block on `JumpJet=yes` therefore drops every
+            // jumpjet key authored by a section that takes its Jumpjet locomotor
+            // from the GUID alone. Trigger: stock `[ZEP]` (Kirov) and `[DISK]`
+            // (Floating Disc) both author `JumpjetHeight=750`,
+            // `JumpjetSpeed=`, `JumpjetClimb=`, `JumpJetAccel=`,
+            // `JumpJetTurnRate=` and `JumpjetCrash=` without `JumpJet=`, so all
+            // of them are inert and both units fall back to the hard-coded
+            // defaults in `LocomotorState::air_params_from_object`. Player
+            // effect: a Kirov and a Floating Disc hover 250 leptons (~1 cell)
+            // lower than native and climb, turn and crash at the wrong rates;
+            // the lower hover also shortens the Kirov's bomb fall. Frequency:
+            // every Kirov and every Floating Disc, continuously, in any game
+            // that builds one. Downstream risk: altitude feeds the 3D fire-range
+            // gate and `object_world_z_leptons`, so it moves engagement
+            // distances as well as the picture. The other six stock
+            // `JumpJet=yes` sections ([JUMPJET], [LUNR], [SHAD], [HIND],
+            // [SCHP], [SCHD]) all author `JumpjetHeight=500`, which equals the
+            // fallback, so they are unaffected today.
             jumpjet_params: if section.get_bool("JumpJet").unwrap_or(false) {
                 Some(JumpjetParams::from_ini_section(section))
             } else {
