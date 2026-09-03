@@ -8825,8 +8825,8 @@ fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
 /// gamemd-derived: `TechnoClass::ReceiveDamage @ 0x00701900`. With
 /// `DebrisAnims.Count == 0` (`0x007023FC`) and `DebrisTypes.Count == 0`
 /// (`0x007024D2`) the whole budget goes to the arm at `0x007024E0`, one
-/// `RandomRanged(0, RulesClass+0x14C - 1)` per chunk at `0x0070253A`. 254 stock
-/// sections take exactly this path — MTNK, Rhino, the Battle Fortress, every
+/// `RandomRanged(0, RulesClass+0x14C - 1)` per chunk at `0x0070253A`. 168 stock
+/// TechnoTypes take exactly this path — MTNK, Rhino, the Battle Fortress, every
 /// aircraft — so before this landed, most vehicle deaths in the game threw
 /// nothing at all.
 #[test]

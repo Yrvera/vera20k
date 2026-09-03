@@ -25,8 +25,8 @@
 //! - Player effect: the tyres a dying harvester throws are invisible; the SHP
 //!   half of the same block does draw, so the death is not silent.
 //! - Frequency: 36 stock sections author `DebrisTypes=` — the Allied and Soviet
-//!   miners, the Battle Fortress, the Flak Track, the demo truck. Against them,
-//!   337 sections take a visible SHP arm: of the 456 that author `MaxDebris=`,
+//!   miners, the IFV, the Flak Track, the demo truck. Against them, 337
+//!   sections take a visible SHP arm: of the 456 that author `MaxDebris=`,
 //!   83 author `MaxDebris=0` and throw nothing at all, leaving 373 that throw —
 //!   166 with their own `DebrisAnims=`, 171 falling back to `[General]
 //!   MetallicDebris=`, and the 36 voxel ones.
@@ -434,8 +434,11 @@ const DEBRIS_LOOP_ITERATION_CEILING: u32 = 4096;
 ///    jumps forward into the block). `+0x8F` is 0 from
 ///    `ObjectClass::Constructor @ 0x005F3981` and is set only by
 ///    `ObjectClass::DropIn @ 0x005F4171`, so only an object still falling from
-///    a drop-in can take the skip. VERA does not model drop-in free fall, so
-///    this function correctly models the byte as clear and never suppresses.
+///    a drop-in can take the skip. This function models the byte as clear and
+///    never suppresses. VERA does have a paradrop descent, but it carries
+///    infantry only ([`crate::sim::superweapon::paradrop`]) and no stock
+///    `[InfantryTypes]` section authors a positive `MaxDebris=` — 0 of the 65 —
+///    so nothing VERA drops in survives step 2 even with the byte set.
 /// 2. `TechnoType+0x5BC` (`MaxDebris`) must be positive (`0x00702291`). Below
 ///    that the block is skipped whole and the shared stream is untouched.
 /// 3. `budget = RandomRanged(MinDebris, MaxDebris - 1)` at `0x007022C8`. The
@@ -472,6 +475,18 @@ const DEBRIS_LOOP_ITERATION_CEILING: u32 = 4096;
 /// that throw, 171 carry `MaxDebris=` alone and land on `[General]
 /// MetallicDebris=`, 166 carry their own `DebrisAnims=`, and 36 name
 /// `DebrisTypes=` (all `TIRE`). The three sets do not overlap.
+///
+/// Those are section counts. Only 168 of the 171 are registered TechnoTypes
+/// that can reach this function: `[TRexWH]` and `[Smashing]` are warheads
+/// (`[Warheads] 101=`/`86=`), whose `MaxDebris=` is read into the warhead by
+/// `WarheadTypeClass::ReadINI @ 0x0075D590` (the key at `0x0075DA95`) rather
+/// than into `TechnoType+0x5BC` by `TechnoTypeClass::ReadINI @ 0x00712170`
+/// (the key at `0x0071258E`), and `[UFO]` is a building-shaped section in no
+/// type registry, as is `[CAIRFGL]` among the 83 zeros. `[BuildingTypes]` also
+/// names `NAPSYA` twice, so a registry walk counts 169 where find-or-allocate
+/// yields 168. Every figure here is taken with a case-insensitive
+/// `MaxDebris=` read — 17 stock sections spell it `Maxdebris=`; see
+/// [`crate::rules::ini_parser::IniSection::get_ignoring_case`].
 pub fn throw_death_debris(
     data: &DebrisTypeData<'_>,
     owner_house: Option<InternedId>,
