@@ -306,6 +306,22 @@ pub enum GameSoundEvent {
         source: Option<SoundSource>,
     },
 
+    /// A techno crossed the half-strength threshold and speaks its
+    /// `VoiceFeedback=` line.
+    ///
+    /// `TechnoClass::ReceiveDamage @ 0x00701900`, arm `0x00702695` (index 2 of
+    /// the switch table at `0x00702D24`, i.e. damage result 2). The 30% roll,
+    /// the `HouseClass::IsHumanPlayer @ 0x0050B6F0` gate and the
+    /// `rand % count` pick are resolved before this event is built; it plays
+    /// positionally through `VocClass::PlayAt @ 0x007509E0` at the object's
+    /// own coordinate.
+    VoiceFeedback {
+        /// sound.ini ID for the chosen `VoiceFeedback=` entry.
+        sound_id: String,
+        /// Screen position for spatial audio.
+        source: Option<SoundSource>,
+    },
+
     /// A lightning-storm bolt reached the ground — the thunder crack.
     ///
     /// `LightningStorm::GroundStrike @ 0x0053A45F..0x0053A4A2` plays
@@ -357,6 +373,7 @@ impl GameSoundEvent {
             | Self::ChuteSound { sound_id, .. }
             | Self::BridgeRepaired { sound_id, .. }
             | Self::BuildingDamagedSfx { sound_id, .. }
+            | Self::VoiceFeedback { sound_id, .. }
             | Self::LightningStrike { sound_id, .. }
             | Self::WorldEffectStarted { sound_id, .. } => sound_id,
             Self::AnimationStopped { stop_sound_id, .. } => stop_sound_id.as_deref().unwrap_or(""),
@@ -386,6 +403,7 @@ impl GameSoundEvent {
             | Self::ChuteSound { source, .. }
             | Self::BridgeRepaired { source, .. }
             | Self::BuildingDamagedSfx { source, .. }
+            | Self::VoiceFeedback { source, .. }
             | Self::LightningStrike { source, .. }
             | Self::WorldEffectStarted { source, .. } => *source,
             _ => None,
@@ -425,14 +443,17 @@ impl GameSoundEvent {
 /// from `sim/`, so the whole guard lives in [`crate::audio::voice_queue`] as a
 /// device-free decision module and `sim/` never learns about audio.
 ///
-/// **Still absent on the voice side.** `VoiceFeedback=` (133 stock authors)
-/// has no consumer, `VoiceDeploy=`/`VoiceUndeploy=` (deploy/unload orders),
-/// `VoiceCrashing=` (7) and `VoiceSinking=`/`VoiceFalling=` are not parsed,
-/// and taunts reach an empty match arm. The native consumers of those slots
-/// were not isolated, so no mapping is asserted.
+/// **Still absent on the voice side.** `VoiceDeploy=`/`VoiceUndeploy=`
+/// (deploy/unload orders), `VoiceCrashing=` (7) and
+/// `VoiceSinking=`/`VoiceFalling=` are not parsed, and taunts reach an empty
+/// match arm. The native consumers of those slots were not isolated, so no
+/// mapping is asserted.
 /// - Player effect: those orders and states stay silent.
 /// - Frequency: deploy orders are common; crashing/sinking lines need an
 ///   aircraft or ship kill.
+///
+/// `VoiceFeedback=` (133 stock authors) is **no longer among them** — see
+/// [`Self::VoiceFeedback`].
 ///
 /// **Partly closed.** `MoveSound=` now has both halves: the sim's
 /// post-locomotor tail (`Simulation::tick_move_sound_after_process`) emits
@@ -471,16 +492,40 @@ impl GameSoundEvent {
 /// `DamageSound=` of their own (30 `BuildingMetalDamaged`, 4 `Dummy`), so the
 /// global covers nearly every structure.
 ///
-/// **Still absent on the damage side.** The per-type `DamageSound=`
-/// (`TechnoTypeClass+0x538`) is parsed but only *read as a gate*; native also
-/// plays it, from a TechnoClass-level path (`0x00702717` inside
-/// `TechnoClass::ReceiveDamage`, reached for results the switch at
-/// `0x00702049` sends there). That callsite was not walked, so nothing is
-/// asserted. Trigger: a damaged type that authors the key. Player effect: the
-/// 30 `BuildingMetalDamaged` structures and 4 `Dummy` ones are silent where
-/// native has a cue. Frequency: those 34 types only. Downstream risk: it is a
-/// Techno-level cue, so landing it means reading that switch arm, not
-/// extending the BuildingClass arm.
+/// `[AudioVisual]`'s companion damage voice is landed as well — see
+/// [`GameSoundEvent::VoiceFeedback`] for `TechnoClass::ReceiveDamage @
+/// 0x00701900`'s result-2 arm at `0x00702695`.
+///
+/// **Still absent on the damage side: the per-type `DamageSound=` cue.**
+/// `TechnoTypeClass+0x538` is parsed but only *read as a gate*. Native plays
+/// it from arm `0x00702713`/`0x00702717` of the same switch — **index 1 of the
+/// table at `0x00702D24`, the ordinary NON-crossing hit** (damage result 1),
+/// not the crossings the global rides. So the per-type and the global cue are
+/// mutually exclusive by *result*, not merely by the `-1` gate: a type with
+/// its own `DamageSound=` gets a clang on every ordinary hit and **nothing**
+/// on a crossing, while a type without one is silent on ordinary hits and
+/// sounds the global on crossings. The arm also plays the sound **twice** —
+/// two identical blocks at `0x00702760` and `0x007027A9`, each re-reading
+/// `[type+0x538]` and the same coordinate `[ESI+0x9C]`.
+/// Trigger: any non-crossing hit on a type that authors the key. Player
+/// effect: those types are silent under ordinary fire where native double-taps
+/// a clang. Frequency: all 34 stock authors are civilian/neutral props (30
+/// `CA*` structures plus `AMMOCRAT` on `BuildingMetalDamaged`, 4 `CAARMY0*` on
+/// `Dummy`) — no player-built structure and no unit authors it, so this is
+/// "whenever you shoot civilian scenery", common on urban maps and absent from
+/// a pure base fight. Downstream risk: landing it needs a distinct
+/// `DamageState::Damaged` (result 1) emission, which VERA classifies but does
+/// not currently route.
+///
+/// **Also unrecorded until now: an unresolvable per-type `DamageSound=`.**
+/// `TechnoTypeClass+0x538` is `-1` both when the key is absent *and* when the
+/// name resolves to no Voc, so native falls back to the global in both cases;
+/// VERA's `damage_sound: Option<String>` is `Some` for any non-empty string
+/// and suppresses the global. Trigger: a type naming a sound that is not in
+/// `soundmd.ini`. Player effect: that structure is silent where native plays
+/// the global cue. Frequency: never on retail — `BuildingMetalDamaged` and
+/// `Dummy` both register. Downstream risk: none; closing it means resolving
+/// the name against the sound registry, which lives above `rules/`.
 ///
 /// **Still absent.** Nothing emits the other ambient families:
 /// `WorkingSound=` (9 stock), `AuxSound1=` (8), `AuxSound2=` (5),

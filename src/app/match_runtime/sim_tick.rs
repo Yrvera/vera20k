@@ -16,6 +16,23 @@ use crate::app::input::commands::{preferred_local_owner, preferred_local_owner_n
 /// Minimum ticks between under-attack EVA voice lines (~30 s at 67 ms/tick).
 /// The native per-house attack-voice repeat delay is UNVERIFIED-pending-trace.
 const EVA_UNDER_ATTACK_COOLDOWN_TICKS: u64 = 450;
+/// Chance in 100 that a techno speaks its `VoiceFeedback=` line on the
+/// half-strength crossing. `TechnoClass::ReceiveDamage @ 0x007026BD
+/// CMP EAX,0x1E ; JGE` against `RandomRanged(0, 99)` — the cue speaks for a
+/// draw of 0..=29. Hardcoded in the binary, not an INI key.
+const VOICE_FEEDBACK_PERCENT: i32 = 0x1E;
+
+/// `TechnoClass::ReceiveDamage @ 0x00702695`'s two post-list gates, in native
+/// order: the roll at `0x007026BD CMP EAX,0x1E ; JGE 0x007027F7` against
+/// `RandomRanged(0, 99)`, then `HouseClass::IsHumanPlayer @ 0x0050B6F0` at
+/// `0x007026C6` — which for `g_GameMode != 0` (skirmish and multiplayer) is
+/// `house == g_PlayerPtr`, the local player alone.
+///
+/// The caller must have drawn `roll` already whatever the owner is: native
+/// spends the draw at `0x007026B3`, before it loads `[ESI+0x21C]`.
+fn voice_feedback_speaks(roll: i32, owner_is_local_human: bool) -> bool {
+    roll < VOICE_FEEDBACK_PERCENT && owner_is_local_human
+}
 use crate::app::types::SIM_TICK_HZ;
 use crate::app::types::SIM_TICK_MS;
 use crate::assets::asset_manager::AssetManager;
@@ -1542,6 +1559,67 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
+                    SimSoundEvent::VoiceFeedback {
+                        owner,
+                        type_ref,
+                        rx,
+                        ry,
+                    } => {
+                        // `TechnoClass::ReceiveDamage @ 0x00701900`, arm
+                        // `0x00702695`. `sim/` has already applied the two
+                        // gates that are deterministic — result 2 (the
+                        // `Strength >> 1` crossing) and a non-empty
+                        // `VoiceFeedback=` list (`0x007026A1`/`0x007026A9`).
+                        // What is left runs in native's exact order.
+                        //
+                        // 1. `0x007026B3` `RandomRanged(0, 99)` on
+                        //    `g_MainRng @ 0x00886B88`, `0x007026BD CMP
+                        //    EAX,0x1E ; JGE` — speaks on 0..=29. Native spends
+                        //    this draw for every house, so it is drawn before
+                        //    the owner gate here too.
+                        let Some(player) = state.audio.sfx_player.as_mut() else {
+                            continue;
+                        };
+                        let roll = player.roll_percent();
+                        // 2. `0x007026C6 MOV ECX,[ESI+0x21C]` / `CALL
+                        //    HouseClass::IsHumanPlayer @ 0x0050B6F0`. With
+                        //    `g_GameMode != 0` (skirmish/multiplayer) that
+                        //    function is `house == g_PlayerPtr`, so only the
+                        //    local player's objects speak.
+                        let owner_str = sim.interner.resolve(owner);
+                        let owner_is_local_human = local_owner_name
+                            .as_deref()
+                            .is_some_and(|local| local.eq_ignore_ascii_case(owner_str));
+                        if !voice_feedback_speaks(roll, owner_is_local_human) {
+                            continue;
+                        }
+                        // 3. `0x007026DE CALL 0x0065C780` / `0x007026E7 DIV
+                        //    [EDI+0x4E8]` picks `items[rand % count]`.
+                        //    RESIDUAL: VERA models `VoiceFeedback=` as one id
+                        //    where native holds a `CCINIClass::ReadSoundList`
+                        //    vector, so no draw is spent here. Trigger: every
+                        //    spoken line. Player effect: none on retail — all
+                        //    133 `VoiceFeedback=` authors in `rulesmd.ini` are
+                        //    single-entry (0 contain a comma), so `rand % 1`
+                        //    is 0 either way. Frequency: every half-health
+                        //    crossing that passes the roll. Downstream risk:
+                        //    none for lockstep — `g_MainRng` is not
+                        //    synchronised — but a modded comma list would pick
+                        //    the wrong entry. Same divergence as the
+                        //    `VoiceMove=` one recorded on `voice_id_for_key`.
+                        let sound_id = match resources
+                            .rules
+                            .object(sim.interner.resolve(type_ref))
+                            .and_then(|object| object.voice_feedback.as_deref())
+                        {
+                            Some(s) if !s.is_empty() => s.to_string(),
+                            _ => continue,
+                        };
+                        GameSoundEvent::VoiceFeedback {
+                            sound_id,
+                            source: Some(sound_source_at_cell(rx, ry)),
+                        }
+                    }
                     SimSoundEvent::BunkerWallsUp { rx, ry } => {
                         // Walls-up cue on install; skip when the rules key is empty.
                         let sound_id = match Some(&resources.rules)
@@ -2368,9 +2446,10 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExactStepError, ExactStepReceipt, append_fire_effect_batch, base_under_attack_siren,
-        begin_fire_effect_batch, cloak_sound_for_app, finish_fire_effect_batch, outcome_eva_entry,
-        upsert_overlay_entries, validate_exact_step_receipt, wall_sell_sound_for_local,
+        ExactStepError, ExactStepReceipt, VOICE_FEEDBACK_PERCENT, append_fire_effect_batch,
+        base_under_attack_siren, begin_fire_effect_batch, cloak_sound_for_app,
+        finish_fire_effect_batch, outcome_eva_entry, upsert_overlay_entries,
+        validate_exact_step_receipt, voice_feedback_speaks, wall_sell_sound_for_local,
         world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
@@ -2477,6 +2556,44 @@ mod tests {
             ))
             .unwrap();
         assert!(base_under_attack_siren(false, &no_key).is_none());
+    }
+
+    /// `TechnoClass::ReceiveDamage @ 0x00702695`, the `VoiceFeedback=` arm:
+    /// `0x007026BD CMP EAX,0x1E ; JGE 0x007027F7` against
+    /// `RandomRanged(0, 99)`, then `HouseClass::IsHumanPlayer @ 0x0050B6F0`.
+    #[test]
+    fn the_damage_voice_speaks_on_a_roll_under_thirty_and_only_for_the_local_owner() {
+        // `JGE 0x1E` — 0..=29 speak (30 in 100), 30..=99 fall to the tail.
+        assert!(voice_feedback_speaks(0, true));
+        assert!(voice_feedback_speaks(29, true));
+        assert!(!voice_feedback_speaks(30, true));
+        assert!(!voice_feedback_speaks(99, true));
+
+        // `0x007026C6 MOV ECX,[ESI+0x21C]` / `IsHumanPlayer`: an AI's or an
+        // opponent's object never speaks, however the roll landed.
+        assert!(!voice_feedback_speaks(0, false));
+        assert!(!voice_feedback_speaks(29, false));
+        assert!(!voice_feedback_speaks(30, false));
+    }
+
+    /// The roll itself is `RandomRanged(0, 99)` (`0x007026AF PUSH 0x63 ;
+    /// PUSH 0x0`), and `Random__RandomRanged @ 0x0065C7E0` only skips the draw
+    /// when its two endpoints are equal — so unlike `SfxPlayer::pick_index`
+    /// this one always advances the generator.
+    #[test]
+    fn the_damage_voice_roll_covers_the_native_range_at_the_native_rate() {
+        let mut rng = crate::audio::sfx::SfxRng::seeded(0x5EED);
+        let mut speaks = 0usize;
+        for _ in 0..10_000 {
+            let roll = crate::audio::sfx::SampleRng::ranged(&mut rng, 0, 99);
+            assert!((0..=99).contains(&roll), "roll {roll} left [0, 99]");
+            if roll < VOICE_FEEDBACK_PERCENT {
+                speaks += 1;
+            }
+        }
+        // 30 in 100. The band is wide on purpose: this pins what the 0x1E
+        // threshold means, not the generator behind it.
+        assert!((2_600..3_400).contains(&speaks), "spoke {speaks} of 10000");
     }
 
     #[test]
