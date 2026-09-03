@@ -342,10 +342,14 @@ pub enum GameSoundEvent {
     /// [`crate::app::match_runtime::sim_tick::superweapon_launch_cue`] for the
     /// case-by-case table and its addresses. Every cue in that table is played
     /// by `VocClass::PlayAtCoord @ 0x00750E20` (or `PlayAt @ 0x007509E0` for
-    /// `ForceShield`) at the target coordinate, hence `source`; the one
-    /// exception is `StormSound`, which `LightningStorm::Start @ 0x0053A044`
-    /// plays through `VocClass::PlayAtPos @ 0x00750920` with pan `0x2000` and
-    /// volume `1.0f`, hence `source: None` and a centred full-volume play.
+    /// `ForceShield`) at the target coordinate, hence `source`.
+    ///
+    /// The one `source: None` producer is `StormSound`, and it is not a launch
+    /// cue: `LightningStorm::Start @ 0x00539EB0` returns early on a deferred
+    /// launch, so the cue is played only when the deferment expires
+    /// (`0x0053A044`, `VocClass::PlayAtPos @ 0x00750920`, pan `0x2000`, volume
+    /// `1.0f` — centred and full-volume). See
+    /// [`crate::app::match_runtime::sim_tick::lightning_storm_begin_cue`].
     ///
     /// The EVA line is not gated on the launching house: native calls
     /// `VoxClass::PlayEVA` behind `[0x00A8B538]` only, a client-side flag that

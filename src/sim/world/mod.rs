@@ -514,6 +514,25 @@ pub enum SimSoundEvent {
         rx: u16,
         ry: u16,
     },
+    /// The lightning storm actually began — the moment the sky flips to Ion,
+    /// which on retail data is ~250 frames *after* the Weather Controller
+    /// fired. This is where `StormSound` belongs, not on the launch.
+    ///
+    /// `SuperClass::Launch @ 0x006CC390` case 2 calls `LightningStorm::Start
+    /// @ 0x00539EB0` with `param_2 = [Rules+0x1794]` — `[General]
+    /// LightningDeferment`, whose key string `"LightningDeferment"` sits at
+    /// `0x0083BD18` and is pushed at `0x00670F82` in `RulesClass::ReadGeneral`
+    /// (read `0x00670F75`, stored `0x00670F8F`). `Start`'s body opens with
+    /// `if (param_2 != 0) { arm the countdown; store the duration; return; }`,
+    /// and that early return is *before* the cue at `0x0053A044`
+    /// (`VocClass::PlayAtPos @ 0x00750920`). `LightningStorm::Process @
+    /// 0x0053A6C0` decrements the countdown and, at zero, re-enters `Start`
+    /// with `param_2` zeroed (`0x0053AAC8 XOR EDX,EDX ; 0x0053AACA CALL
+    /// 0x00539EB0`); that second entry is the one that plays it.
+    ///
+    /// Stock `rulesmd.ini:130` is `LightningDeferment=250`, so the launch call
+    /// *always* takes the early return and the cue is always deferred.
+    LightningStormBegan,
     /// A lightning bolt struck — play thunder sound.
     SuperWeaponStrike { rx: u16, ry: u16 },
     /// First occupant entered a CanBeOccupied building (cargo 0→1).

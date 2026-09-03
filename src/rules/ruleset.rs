@@ -638,6 +638,13 @@ pub struct GeneralRules {
     /// `VocClass::PlayAtPos @ 0x00750920` — and only inside the
     /// `0x0053A014 MOV AL,[Rules+0x17B0]` gate it shares with the on-screen
     /// storm message. See [`GeneralRules::lightning_print_text`].
+    ///
+    /// It is **not** a launch cue. `SuperClass::Launch @ 0x006CC390` case 2
+    /// passes `[Rules+0x1794]` (`LightningDeferment`, stock 250) as `Start`'s
+    /// `param_2`, and `Start` returns at `if (param_2 != 0)` before reaching
+    /// `0x0053A044`; `LightningStorm::Process @ 0x0053A6C0` re-enters with
+    /// `param_2` cleared (`0x0053AAC8 XOR EDX,EDX`) once the countdown expires
+    /// and that entry plays it.
     pub storm_sound: Option<String>,
     /// `[General] LightningPrintText=` (`Rules+0x17B0`), the gate on both the
     /// storm message and [`GeneralRules::storm_sound`].
