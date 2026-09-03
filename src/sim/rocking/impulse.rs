@@ -44,10 +44,30 @@ const DEFAULT_WEIGHT: SimFixed = SimFixed::lit("2.0");
 ///   - `dx`, `dy`: target_position − source_position in sim units. Only the
 ///      direction matters; magnitude cancels in the normalization.
 ///
-/// Deferred parity drifts (both documented in the design ledger):
-///   - L31: distance attenuation. Approximated here as constant 0.04
-///      (the maximum).
-///   - L32: rate-timer jitter on impulse direction. Dropped entirely.
+/// **NO PRODUCTION CALLER** — see the module header. Every drift below is
+/// therefore latent: it costs nothing today and must be settled in the slice
+/// that wires a producer and a renderer.
+///
+/// DRIFT (GSI-08.14), verified this session by `decompile_function 0x0070B280`
+/// (`TechnoClass::ApplyRocker`, vtable `+0x3D8`):
+///   - **Assignment, not accumulation.** Native ends with
+///     `this+0x334 = forwards` and `this+0x330 = -sideways` — plain stores. This
+///     function adds into `vel_forwards`/`vel_sideways` and then clamps, so two
+///     impulses in one tick stack here and the second simply replaces the first
+///     natively. Trigger: two `Rocker=` detonations on one vehicle in a frame.
+///     Player effect: a doubled lurch. Frequency: common under artillery fire.
+///   - **The type gate.** Native does nothing at all unless
+///     `TechnoType(vtable+0x84) + 0xB0` is non-null AND the string it points at
+///     is empty (`**(char**)(Type+0xB0) == 0`). Field identity UNCHECKED. Until
+///     it is named, which types can rock at all is unknown.
+///   - **L31 distance attenuation.** Native scales by
+///     `(0.04 - dist * 2.5e-05)` over the 3D source-to-target distance and
+///     additionally refuses the impulse when `|dist| < 2e-05`; this function
+///     uses the constant maximum `0.04`. Player effect: distant hits rock as
+///     hard as point-blank ones.
+///   - **Weight source.** Native divides by `TechnoType+0x370` read as a
+///     `double`; the `Weight=` binding here is DOC, not re-verified.
+///   - **L32:** rate-timer jitter on impulse direction. Dropped entirely.
 pub fn apply_rocker_impulse(
     rocking: &mut RockingState,
     force: SimFixed,

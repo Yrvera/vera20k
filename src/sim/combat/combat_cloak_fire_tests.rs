@@ -28,6 +28,11 @@ fn boomer_rules() -> RuleSet {
 fn entities(target_type: &str) -> EntityStore {
     let mut store = EntityStore::new();
     let mut bsub = GameEntity::test_default(1, "BSUB", "Soviet", 10, 10);
+    // `BSUB` authors no `Turret=`, so the native body gate
+    // (`UnitClass::GetFireError @ 0x00740FD0` step 17) compares its HULL
+    // `+0x388` against the target. Face it east at the target one cell away so
+    // this fixture exercises the DecloakToFire arm rather than turn-to-fire.
+    bsub.facing = 64;
     bsub.attack_target = Some(AttackTarget::new(2));
     let mut cloak = CloakRuntime::new(0, 9);
     cloak.establish_unlimbo_fully_cloaked();
