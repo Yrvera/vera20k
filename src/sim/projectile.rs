@@ -713,22 +713,124 @@ pub fn projectile_shrapnel_count(
         .max(0) as u32
 }
 
+/// Which arm of the native special-detonation chain claims one impact.
+///
+/// gamemd-derived: `BulletClass::DetonateAtCoord @ 0x004690b0` is a strict
+/// twelve-arm `else if` chain over `WarheadTypeClass` flag bytes. Each test's
+/// fall-through `JZ` targets the *next* test, so the arms are mutually
+/// exclusive and the order below is the native order, read from the flag tests
+/// at `0x00469211`, `0x00469343`, `0x0046937a`, `0x004693d3`, `0x00469423`,
+/// `0x004694cb`, `0x00469705`, `0x0046978e`, `0x004699ca`, `0x00469a03` and
+/// `0x00469a2c`.
+///
+/// Only the final else at `0x00469a3f` reaches
+/// `BulletClass::SpawnShrapnel @ 0x0046a310` and
+/// `Apply_area_damage @ 0x00489280`, so any special arm suppresses both. What a
+/// special arm does **not** suppress is the shared tail: every arm, including
+/// its internal bail-outs (e.g. MindControl with no CaptureManager at
+/// `0x00469235`), leaves through `JMP LAB_00469AA4`, and `LAB_00469AA4` is not
+/// the epilogue — it is the `Inviso` visual re-scatter (`0x00469ad7`), the
+/// `AnimList=` explosion (`Warhead::SelectExplosionAnim` called at
+/// `0x00469bcf`), the scorch/crater/combat-light spawn (`0x00469c41`), the
+/// debris loop and the `Airburst=` sub-munition fan (`BulletClass::Init` at
+/// `0x00469f7f` / `0x0046a150`). The ordinary arm reaches that same tail only
+/// behind the `bullet+0x90` gate at `0x00469a94`; special arms bypass the gate.
+///
+/// RESIDUAL — **no special effect body is implemented in VERA.** Every variant
+/// except `OrdinaryDamage` currently claims the detonation, suppresses damage
+/// and shrapnel exactly as native does, and then runs the shared tail without
+/// performing its effect. Per-variant native callees are named below; the
+/// unimplemented effect families are ports M15b (Parasite), M15c (MindControl)
+/// and M15d (the rest).
+/// - Trigger: any impact whose warhead carries one of the eleven flags. In
+///   stock `rulesmd.ini` that is 14 warhead sections across 20 weapons —
+///   Yuri/Yuri Prime/Psychic Tower/Mastermind, attack dogs, Terror Drones,
+///   Giant Squids, Chrono Legionnaires, Crazy Ivan, Engineers, Spies,
+///   Magnetrons, Tesla Troopers, Boris and the Weed Guy.
+/// - Player effect: the shot lands, plays its animation and leaves its crater,
+///   but nobody is controlled, attached to, erased, bombed, defused, disguised
+///   or lifted, and the target takes no damage from that shot.
+/// - Frequency: continuous in ordinary skirmish — an attack dog appears in
+///   almost every game and a Yuri beam fires every few seconds in any Yuri
+///   game.
+/// - Downstream risk: the ports add snapshotted, hashed entity state
+///   (`ParasiteClass`, the victim-side mind-control link, `TemporalClass`,
+///   `BombClass`), so each carries its own `SNAPSHOT_VERSION` bump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecialDetonationAction {
+    /// `MindControl=` (`WarheadTypeClass+0x155`), test `0x00469211` ->
+    /// `CaptureManagerClass::CaptureUnit @ 0x00471d40`. UNIMPLEMENTED (M15c).
     MindControl,
+    /// `IvanBomb=` (`+0x157`), test `0x00469343` ->
+    /// `BombClass::Attach @ 0x00438e70`. UNIMPLEMENTED (M15d).
     IvanBomb,
+    /// `ElectricAssault=` (`+0x158`), test `0x0046937a` -> the Tesla-Coil
+    /// charger-vector append at `0x00452820`. UNIMPLEMENTED (M15d).
     ElectricAssault,
+    /// `Parasite=` (`+0x159`), test `0x004693d3` ->
+    /// `ParasiteClass::AttachTo @ 0x0062a980`. UNIMPLEMENTED (M15b).
     Parasite,
+    /// `Temporal=` (`+0x15a`), test `0x00469423` ->
+    /// `TemporalClass::InitiateWarp @ 0x0071af20`. UNIMPLEMENTED (M15d).
     Temporal,
+    /// `IsLocomotor=` (`+0x15b`), test `0x004694cb` -> the Magnetron
+    /// deploy / chrono-warp arm. UNIMPLEMENTED (M15d).
     Locomotor,
+    /// `Airstrike=` (`+0x16c`), test `0x00469705` ->
+    /// `AirstrikeClass::SetTarget @ 0x0041d830`. UNIMPLEMENTED (M15d).
+    ///
+    /// The decompile shows this arm as conditional; the disassembly does not.
+    /// `0x0046970d JZ 0x0046978e` is its only fall-through and fires on the
+    /// flag alone — every sub-condition failure (`0x00469717`, `0x00469725`,
+    /// `0x0046972f`, `0x0046973d`, `0x0046975b`) jumps to `0x00469aa4`
+    /// instead. So Airstrike is flag-gated like the other ten.
     Airstrike,
-    Raw335,
+    /// `DirectRocker=` (`+0x14f`), test `0x0046978e` ->
+    /// `TechnoClass::ApplyRocker` through vtable `+0x3d8` at `0x004699a1`,
+    /// plus the mutual `+0x2a8` link.
+    ///
+    /// The **only** conditional arm in the chain: `0x00469796` (flag),
+    /// `0x004697a4` (`Target != 0`) and `0x004697b2`
+    /// (`Target->What_Am_I() == 1`, `UnitClass`) all fall through to
+    /// `0x004699c4`, the *next* test, so a `DirectRocker=yes` warhead that hits
+    /// infantry, a building or a bare cell still takes ordinary damage.
+    /// Failures *after* those three (`0x004697dc`, `0x004697e4`, `0x004697f6`)
+    /// jump to the tail like every other arm.
+    ///
+    /// Dead in stock YR: `rulesmd.ini` carries no live `DirectRocker=` line
+    /// (its one textual occurrence is inside a `;` comment), so the arm never
+    /// fires in stock play. Kept correct anyway; the impulse body is
+    /// deliberately NOT implemented.
+    DirectRocker,
+    /// `BombDisarm=` (`+0x16e`), test `0x004699ca` ->
+    /// `BombClass::Defuse @ 0x004389b0`. UNIMPLEMENTED (M15d).
     BombDisarm,
+    /// `MakesDisguise=` (`+0x175`), test `0x00469a03` -> the firer disguises as
+    /// the target through owner vtable `+0x46c` at `0x00469a24`.
+    /// UNIMPLEMENTED (M15d).
     MakesDisguise,
+    /// `NukeMaker=` (`+0x176`), test `0x00469a2c` ->
+    /// `BulletClass::SpawnDownwardNuke @ 0x0046b310`. UNIMPLEMENTED (M15d).
     NukeMaker,
+    /// The final else at `0x00469a3f`: shrapnel plus `Apply_area_damage`.
     OrdinaryDamage,
 }
 
+impl SpecialDetonationAction {
+    /// True for every arm that claims the detonation away from
+    /// `Apply_area_damage @ 0x00489280` and
+    /// `BulletClass::SpawnShrapnel @ 0x0046a310`.
+    pub fn suppresses_ordinary_damage(self) -> bool {
+        self != SpecialDetonationAction::OrdinaryDamage
+    }
+}
+
+/// The eleven `WarheadTypeClass` flag bytes the native chain tests, in native
+/// order. Offsets verified from `WarheadTypeClass::ReadINI` string->offset
+/// writes (`0x0075d5d8`, `0x0075d7e0`, `0x0075d823`, `0x0075d82e`,
+/// `0x0075d84e`, `0x0075d871`, `0x0075d87c`, `0x0075d8f0`, `0x0075d91b`,
+/// `0x0075d969`, `0x0075d983`) and cross-checked against the reads in
+/// `BulletClass::DetonateAtCoord @ 0x004690b0`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SpecialDetonationFlags {
     pub mind_control: bool,
@@ -738,14 +840,29 @@ pub struct SpecialDetonationFlags {
     pub temporal: bool,
     pub is_locomotor: bool,
     pub airstrike: bool,
-    pub raw_335: bool,
+    pub direct_rocker: bool,
     pub bomb_disarm: bool,
     pub makes_disguise: bool,
     pub nuke_maker: bool,
 }
 
+/// Target-side context the native chain consults *inside* an arm predicate.
+///
+/// Only `DirectRocker` reads it. `0x0046979c`/`0x004697aa` load the bullet's
+/// raw `+0x10c` target and call `What_Am_I` through vtable `+0x2c`; a null
+/// target or any RTTI id other than 1 (`UnitClass::What_Am_I @ 0x00746e20`)
+/// falls through to the BombDisarm test instead of claiming the detonation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SpecialDetonationTarget {
+    /// `Target != 0 && Target->What_Am_I() == 1`.
+    pub is_unit: bool,
+}
+
+/// Resolve the one arm of `BulletClass::DetonateAtCoord @ 0x004690b0` that owns
+/// this impact. The `else if` order is native; see [`SpecialDetonationAction`].
 pub fn projectile_special_detonation_action(
     flags: SpecialDetonationFlags,
+    target: SpecialDetonationTarget,
 ) -> SpecialDetonationAction {
     if flags.mind_control {
         SpecialDetonationAction::MindControl
@@ -760,9 +877,12 @@ pub fn projectile_special_detonation_action(
     } else if flags.is_locomotor {
         SpecialDetonationAction::Locomotor
     } else if flags.airstrike {
+        // Flag-gated, not conditional — see the `Airstrike` variant doc.
         SpecialDetonationAction::Airstrike
-    } else if flags.raw_335 {
-        SpecialDetonationAction::Raw335
+    } else if flags.direct_rocker && target.is_unit {
+        // The chain's only conditional arm: `0x004697a4` / `0x004697b2` fall
+        // through to the BombDisarm test at `0x004699c4`, not to the tail.
+        SpecialDetonationAction::DirectRocker
     } else if flags.bomb_disarm {
         SpecialDetonationAction::BombDisarm
     } else if flags.makes_disguise {
@@ -2037,13 +2157,70 @@ mod tests {
         assert_eq!(projectile_shrapnel_count(-8, true, 3), 5);
         assert_eq!(projectile_shrapnel_count(-8, false, 99), 3);
         assert_eq!(
-            projectile_special_detonation_action(SpecialDetonationFlags {
-                mind_control: true,
-                nuke_maker: true,
-                ..SpecialDetonationFlags::default()
-            }),
+            projectile_special_detonation_action(
+                SpecialDetonationFlags {
+                    mind_control: true,
+                    nuke_maker: true,
+                    ..SpecialDetonationFlags::default()
+                },
+                SpecialDetonationTarget::default()
+            ),
             SpecialDetonationAction::MindControl
         );
+    }
+
+    /// `BulletClass::DetonateAtCoord @ 0x0046978e` is the chain's only
+    /// conditional arm: `0x00469796` (flag), `0x004697a4` (`Target != 0`) and
+    /// `0x004697b2` (`Target->What_Am_I() == 1`) all fall through to the
+    /// BombDisarm test at `0x004699c4`, so a `DirectRocker=yes` warhead that
+    /// misses a vehicle still runs ordinary damage. Airstrike only *looks*
+    /// conditional in the decompile — `0x0046970d` is its sole fall-through
+    /// and fires on the flag alone.
+    #[test]
+    fn direct_rocker_is_the_only_conditional_arm() {
+        let rocker = SpecialDetonationFlags {
+            direct_rocker: true,
+            ..SpecialDetonationFlags::default()
+        };
+        assert_eq!(
+            projectile_special_detonation_action(rocker, SpecialDetonationTarget { is_unit: true }),
+            SpecialDetonationAction::DirectRocker
+        );
+        assert_eq!(
+            projectile_special_detonation_action(
+                rocker,
+                SpecialDetonationTarget { is_unit: false }
+            ),
+            SpecialDetonationAction::OrdinaryDamage
+        );
+
+        // A non-vehicle target falls through to the NEXT test, not to the
+        // tail: BombDisarm still claims the impact.
+        assert_eq!(
+            projectile_special_detonation_action(
+                SpecialDetonationFlags {
+                    direct_rocker: true,
+                    bomb_disarm: true,
+                    ..SpecialDetonationFlags::default()
+                },
+                SpecialDetonationTarget { is_unit: false }
+            ),
+            SpecialDetonationAction::BombDisarm
+        );
+
+        // Airstrike is entered on the flag alone, whatever the target is.
+        for is_unit in [false, true] {
+            assert_eq!(
+                projectile_special_detonation_action(
+                    SpecialDetonationFlags {
+                        airstrike: true,
+                        ..SpecialDetonationFlags::default()
+                    },
+                    SpecialDetonationTarget { is_unit }
+                ),
+                SpecialDetonationAction::Airstrike
+            );
+        }
     }
 
     #[test]

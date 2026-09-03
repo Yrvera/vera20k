@@ -95,9 +95,10 @@ use crate::sim::power_system::PowerState;
 use crate::sim::projectile::{
     ProjectileCollisionPolicy, ProjectileCoord, ProjectileDetonation, ProjectileGuidance,
     ProjectilePayload, ProjectileSpawn, ProjectileTarget, ProjectileTrajectory, ProjectileVelocity,
-    ProjectileVisualState, SpecialDetonationAction, SpecialDetonationFlags, TargetExpiryPolicy,
-    ballistic_launch_velocity, projectile_next_cluster_coord, projectile_random_shrapnel_cell,
-    projectile_shrapnel_count, projectile_special_detonation_action,
+    ProjectileVisualState, SpecialDetonationAction, SpecialDetonationFlags, SpecialDetonationTarget,
+    TargetExpiryPolicy, ballistic_launch_velocity, projectile_next_cluster_coord,
+    projectile_random_shrapnel_cell, projectile_shrapnel_count,
+    projectile_special_detonation_action,
 };
 use crate::sim::rng::SimRng;
 use crate::sim::terrain_object::{TerrainAreaReceiveResult, TerrainAreaState};
@@ -4881,114 +4882,142 @@ fn emit_one_projectile_detonation(
             });
     }
 
-    let special_action = projectile_special_detonation_action(SpecialDetonationFlags {
-        mind_control: warhead.mind_control,
-        ivan_bomb: warhead.ivan_bomb,
-        electric_assault: warhead.electric_assault,
-        parasite: warhead.parasite,
-        temporal: warhead.temporal,
-        is_locomotor: warhead.is_locomotor,
-        airstrike: warhead.airstrike,
-        raw_335: warhead.raw_335,
-        bomb_disarm: warhead.bomb_disarm,
-        makes_disguise: warhead.makes_disguise,
-        nuke_maker: warhead.nuke_maker,
-    });
-    if special_action != SpecialDetonationAction::OrdinaryDamage {
-        // Effect bodies remain explicit residuals. Native else-if ownership is
-        // authoritative, so an earlier unsupported predicate still shadows
-        // Shrapnel and ordinary DamageArea.
-        log::debug!(
-            "Projectile {} selected unsupported special detonation {:?}",
-            detonation.projectile_id,
-            special_action
-        );
-        return;
-    }
-
-    emit_projectile_shrapnel(
-        detonation,
-        entities,
-        occupancy,
-        rules,
-        interner,
-        terrain.as_deref(),
-        house_alliances,
-        scenario_rng,
-        out,
+    // `BulletClass::DetonateAtCoord @ 0x0046978e` is the chain's only
+    // conditional arm and the only one that consults the target: it reads the
+    // bullet's raw `+0x10c` and calls `What_Am_I` through vtable `+0x2c`,
+    // claiming the impact only for RTTI 1 (`UnitClass::What_Am_I
+    // @ 0x00746e20`). A cell, dummy-cell or null target is never a UnitClass.
+    let special_target = SpecialDetonationTarget {
+        is_unit: match detonation.target {
+            ProjectileTarget::Entity(id) => entities
+                .get(id)
+                .is_some_and(|entity| entity.category == EntityCategory::Unit),
+            ProjectileTarget::Cell { .. }
+            | ProjectileTarget::None
+            | ProjectileTarget::DummyCell => false,
+        },
+    };
+    let special_action = projectile_special_detonation_action(
+        SpecialDetonationFlags {
+            mind_control: warhead.mind_control,
+            ivan_bomb: warhead.ivan_bomb,
+            electric_assault: warhead.electric_assault,
+            parasite: warhead.parasite,
+            temporal: warhead.temporal,
+            is_locomotor: warhead.is_locomotor,
+            airstrike: warhead.airstrike,
+            direct_rocker: warhead.direct_rocker,
+            bomb_disarm: warhead.bomb_disarm,
+            makes_disguise: warhead.makes_disguise,
+            nuke_maker: warhead.nuke_maker,
+        },
+        special_target,
     );
 
-    let routed_wall = wall_overlay_flags_at(
-        overlay_grid.as_deref(),
-        overlay_registry,
-        impact_rx,
-        impact_ry,
-    )
-    .is_some_and(|flags| warhead_damages_wall(warhead, flags));
-    let ore_amount = if scenario_no_damage {
-        None
-    } else {
-        tiberium_reduction_amount(detonation.payload.base_damage, true, warhead)
-    };
-    let aoe = {
-        let mut cell_prelude = CombatTiberiumCellPrelude {
-            amount: ore_amount,
-            deferred: &mut out.tiberium_reduction_requests,
-            inline_hooks,
-            rules,
-            resource_nodes,
-            terrain_area_state,
-        };
-        self::combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
-            entities,
-            impact_rx,
-            impact_ry,
-            detonation.payload.base_damage,
-            warhead,
-            rules,
-            interner,
-            handles,
-            (
-                detonation.source_id,
-                Some(detonation.payload.owner),
-                detonation.payload.warhead,
-            ),
-            self::combat_aoe::AoELayerContext {
-                occupancy: Some(occupancy),
-                terrain: terrain.as_deref_mut(),
-                overlay_grid: overlay_grid.as_deref_mut(),
-                overlay_registry,
-                scenario_rng: Some(&mut *scenario_rng),
-                air_impact,
-                impact_z,
-            },
-            terrain_objects,
-            scenario_no_damage,
-            Some(&mut cell_prelude),
-        )
-    };
-    out.wall_mutations.extend(aoe.wall_mutations);
-    out.wall_radar_dirty_cells
-        .extend(aoe.wall_radar_dirty_cells);
-    out.cell_target_detaches.extend(aoe.cell_target_detaches);
-    out.damage_events.extend(aoe.receivers);
+    // Native ownership: only the final else at `0x00469a3f` runs
+    // `BulletClass::SpawnShrapnel @ 0x0046a310` and
+    // `Apply_area_damage @ 0x00489280`, so an arm that claims the impact
+    // shadows both — including an arm whose effect body VERA has not ported,
+    // because native's own bail-outs (e.g. `0x00469235`) shadow them too.
+    // What an arm never shadows is the shared tail below `LAB_00469AA4`: every
+    // arm reaches the explosion anim and its smudge. The RESIDUAL list for the
+    // unported effect bodies lives on `SpecialDetonationAction`.
+    match special_action {
+        SpecialDetonationAction::OrdinaryDamage => {
+            emit_projectile_shrapnel(
+                detonation,
+                entities,
+                occupancy,
+                rules,
+                interner,
+                terrain.as_deref(),
+                house_alliances,
+                scenario_rng,
+                out,
+            );
 
-    if !scenario_no_damage && detonation.payload.base_damage > 0 {
-        let damage = detonation.payload.base_damage.min(i32::from(u16::MAX)) as u16;
-        if !routed_wall && warhead.wall {
-            out.bridge_damage_events.push(BridgeDamageEvent {
-                rx: impact_rx,
-                ry: impact_ry,
-                damage,
-                warhead_ref: detonation.payload.warhead,
-                is_ion_cannon: detonation.payload.warhead
-                    == handles
-                        .expect("Simulation::resolve_type_handles must run before combat")
-                        .ion_cannon,
-                impact_z,
-            });
+            let routed_wall = wall_overlay_flags_at(
+                overlay_grid.as_deref(),
+                overlay_registry,
+                impact_rx,
+                impact_ry,
+            )
+            .is_some_and(|flags| warhead_damages_wall(warhead, flags));
+            let ore_amount = if scenario_no_damage {
+                None
+            } else {
+                tiberium_reduction_amount(detonation.payload.base_damage, true, warhead)
+            };
+            let aoe = {
+                let mut cell_prelude = CombatTiberiumCellPrelude {
+                    amount: ore_amount,
+                    deferred: &mut out.tiberium_reduction_requests,
+                    inline_hooks,
+                    rules,
+                    resource_nodes,
+                    terrain_area_state,
+                };
+                self::combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
+                    entities,
+                    impact_rx,
+                    impact_ry,
+                    detonation.payload.base_damage,
+                    warhead,
+                    rules,
+                    interner,
+                    handles,
+                    (
+                        detonation.source_id,
+                        Some(detonation.payload.owner),
+                        detonation.payload.warhead,
+                    ),
+                    self::combat_aoe::AoELayerContext {
+                        occupancy: Some(occupancy),
+                        terrain: terrain.as_deref_mut(),
+                        overlay_grid: overlay_grid.as_deref_mut(),
+                        overlay_registry,
+                        scenario_rng: Some(&mut *scenario_rng),
+                        air_impact,
+                        impact_z,
+                    },
+                    terrain_objects,
+                    scenario_no_damage,
+                    Some(&mut cell_prelude),
+                )
+            };
+            out.wall_mutations.extend(aoe.wall_mutations);
+            out.wall_radar_dirty_cells.extend(aoe.wall_radar_dirty_cells);
+            out.cell_target_detaches.extend(aoe.cell_target_detaches);
+            out.damage_events.extend(aoe.receivers);
+
+            if !scenario_no_damage && detonation.payload.base_damage > 0 {
+                let damage = detonation.payload.base_damage.min(i32::from(u16::MAX)) as u16;
+                if !routed_wall && warhead.wall {
+                    out.bridge_damage_events.push(BridgeDamageEvent {
+                        rx: impact_rx,
+                        ry: impact_ry,
+                        damage,
+                        warhead_ref: detonation.payload.warhead,
+                        is_ion_cannon: detonation.payload.warhead
+                            == handles
+                                .expect("Simulation::resolve_type_handles must run before combat")
+                                .ion_cannon,
+                        impact_z,
+                    });
+                }
+            }
+        }
+        claimed => {
+            log::debug!(
+                "Projectile {} claimed by unimplemented special detonation {:?}; \
+                 shrapnel and area damage suppressed, shared tail still runs",
+                detonation.projectile_id,
+                claimed
+            );
         }
     }
+
+    // `LAB_00469AA4` — reached by the ordinary arm and by every special arm.
     emit_warhead_detonation_effects(
         warhead,
         detonation.payload.base_damage,

@@ -97,14 +97,27 @@ pub struct WarheadType {
     /// Conventional warhead — no special effects. Offset +0x14B.
     pub conventional: bool,
     /// Area-damage rocker: detonation pushes a rocker impulse into every
-    /// vehicle in a 3×3 cell radius (Rocker= in [Warhead]). Default `no`.
+    /// vehicle in a 3×3 cell radius (`Rocker=` in `[Warhead]`). Default `no`.
+    /// `WarheadTypeClass+0x14E`, written by `WarheadTypeClass::ReadINI`
+    /// @ `0x0075d5be` from the key string at `0x00847de8`.
     pub rocker: bool,
-    /// Direct-hit rocker: fires an impulse on the bullet's target if the
-    /// target is a vehicle (DirectRocker= in [Warhead]). Default `no`.
+    /// Direct-hit rocker: fires an impulse on the bullet's target if that
+    /// target is a vehicle (`DirectRocker=` in `[Warhead]`). Default `no`.
+    /// `WarheadTypeClass+0x14F`, written by `WarheadTypeClass::ReadINI`
+    /// @ `0x0075d5d8` from the key string at `0x00847dd8`.
+    ///
+    /// This is the eighth arm of the detonation chain — tested at
+    /// `BulletClass::DetonateAtCoord @ 0x0046978e`, the only arm there whose
+    /// predicate also inspects the target. Dead in stock YR: `rulesmd.ini`
+    /// has no live `DirectRocker=` line (its one textual occurrence sits
+    /// inside a `;` comment at line 27314), so the arm never fires in stock
+    /// play. Kept correct anyway.
     pub direct_rocker: bool,
-    /// Spawns tiberium/ore on impact. Offset +0x14E.
+    /// Spawns tiberium/ore on impact.
     pub tiberium: bool,
-    /// Bright flash on detonation. Offset +0x14F.
+    /// Bright flash on detonation. `WarheadTypeClass+0x150`, written by
+    /// `WarheadTypeClass::ReadINI` @ `0x0075d60c` from the key string at
+    /// `0x00847dd0`.
     pub bright: bool,
     /// Positive values override the damage-derived transient combat-light size.
     /// Parsed through native `ReadDouble`, whose input is f32-first and whose
@@ -119,21 +132,31 @@ pub struct WarheadType {
     pub prone_damage_basis_points: u32,
     /// Instantly destroys any wall. Offset +0x151.
     pub wall_absolute_destroyer: bool,
-    /// Chrono legionnaire erase effect. Offset +0x152.
+    /// Chrono legionnaire erase effect. `WarheadTypeClass+0x15A` (ReadINI
+    /// `0x0075D871`, key string `0x00817168`), tested by the detonation chain
+    /// at `BulletClass::DetonateAtCoord @ 0x00469423`.
     pub temporal: bool,
     /// Changes target's locomotor (magnetron). `WarheadTypeClass+0x15B`
     /// (ReadINI `0x0075D87C`), read by
     /// `TechnoClass::What_Weapon_Should_I_Use @ 0x006F352E`.
     pub is_locomotor: bool,
-    /// Terror drone attach. Offset +0x154.
+    /// Terror drone / attack dog / squid attach. `WarheadTypeClass+0x159`
+    /// (ReadINI `0x0075D84E`, key string `0x0081717C`), tested by the
+    /// detonation chain at `BulletClass::DetonateAtCoord @ 0x004693d3`.
     pub parasite: bool,
-    /// Mind control visual effect. Offset +0x155.
+    /// Psychedelic (berserk) effect. `WarheadTypeClass+0x16D` (ReadINI
+    /// `0x0075D8FB`, key string `0x00847D30`). Not a detonation-chain arm.
     pub psychedelic: bool,
-    /// Crazy ivan bomb attach. Offset +0x174.
+    /// Crazy ivan bomb attach. `WarheadTypeClass+0x157` (ReadINI
+    /// `0x0075D823`, key string `0x0081BD60`), tested by the detonation chain
+    /// at `BulletClass::DetonateAtCoord @ 0x00469343`.
     pub ivan_bomb: bool,
-    /// Yuri mind control. Offset +0x175.
+    /// Yuri mind control. `WarheadTypeClass+0x155` (ReadINI `0x0075D7E0`, key
+    /// string `0x0081BBC8`), tested first in the detonation chain at
+    /// `BulletClass::DetonateAtCoord @ 0x00469211`.
     pub mind_control: bool,
-    /// Poison damage. Offset +0x176.
+    /// Poison damage. `WarheadTypeClass+0x156` (ReadINI `0x0075D800`, key
+    /// string `0x00847D58`).
     pub poison: bool,
     /// Calls in airstrike. `WarheadTypeClass+0x16C` (ReadINI `0x0075D8F0`),
     /// read by `TechnoClass::What_Weapon_Should_I_Use @ 0x006F3481`.
@@ -142,21 +165,29 @@ pub struct WarheadType {
     pub electric: bool,
     /// Radiation contamination. Offset +0x179.
     pub radiation: bool,
-    /// Kills infantry outright below threshold. Offset +0x17A.
+    /// Squid finishing move — kills a weakened victim outright instead of
+    /// dealing the parasite's per-cycle damage. `WarheadTypeClass+0x174`
+    /// (ReadINI `0x0075D949`, key string `0x00847D10`); consumed by
+    /// `ParasiteClass::AI @ 0x006297F0`, not by the detonation chain.
     pub culling: bool,
-    /// Spy disguise warhead. Offset +0x17B.
+    /// Spy disguise warhead. `WarheadTypeClass+0x175` (ReadINI `0x0075D969`,
+    /// key string `0x00847D00`), tested by the detonation chain at
+    /// `BulletClass::DetonateAtCoord @ 0x00469a03`.
     pub makes_disguise: bool,
-    /// Ordered BulletClass detonation predicates whose effect bodies remain
-    /// explicit unsupported runtime branches.
-    ///
-    /// `electric_assault` is `WarheadTypeClass+0x158` (ReadINI
-    /// `0x0075D82E`), read by
-    /// `TechnoClass::What_Weapon_Should_I_Use @ 0x006F361F`.
+    /// Tesla Trooper charging a Tesla Coil. `WarheadTypeClass+0x158` (ReadINI
+    /// `0x0075D82E`, key string `0x00847D48`), read by
+    /// `TechnoClass::What_Weapon_Should_I_Use @ 0x006F361F` and tested by the
+    /// detonation chain at `BulletClass::DetonateAtCoord @ 0x0046937a`.
     pub electric_assault: bool,
+    /// Engineer defuse kit. `WarheadTypeClass+0x16E` (ReadINI `0x0075D91B`,
+    /// key string `0x00847D24`), tested by the detonation chain at
+    /// `BulletClass::DetonateAtCoord @ 0x004699ca`.
     pub bomb_disarm: bool,
+    /// Spawns the descending half of a nuke at the target cell.
+    /// `WarheadTypeClass+0x176` (ReadINI `0x0075D983`, key string
+    /// `0x00847CF4`), tested last in the detonation chain at
+    /// `BulletClass::DetonateAtCoord @ 0x00469a2c`.
     pub nuke_maker: bool,
-    /// Native WarheadType byte `+0x14f`; parser-key identity remains unproven.
-    pub raw_335: bool,
 
     // --- Int fields ---
     /// EMP duration in frames. Offset +0x170.
@@ -327,7 +358,6 @@ impl WarheadType {
             electric_assault: section.get_bool("ElectricAssault").unwrap_or(false),
             bomb_disarm: section.get_bool("BombDisarm").unwrap_or(false),
             nuke_maker: section.get_bool("NukeMaker").unwrap_or(false),
-            raw_335: false,
 
             // Int fields — all default 0
             em_effect: section.get_i32("EMEffect").unwrap_or(0),
