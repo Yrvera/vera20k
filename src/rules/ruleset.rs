@@ -2652,15 +2652,18 @@ pub struct RuleSet {
     /// Garrison/bunker/open-topped combat multipliers from [CombatDamage].
     pub garrison_rules: GarrisonRules,
     /// `[WallModel] AlliedWallTransparency` — `RulesClass+0x1850`, read by
-    /// `RulesClass::ReadWallModel` at 0x0066D20E/0x0066D22E, default `false`
-    /// from the constructor store at 0x00667825. Its one consumer is the
+    /// `RulesClass::ReadWallModel` (body 0x0066D1F0-0x0066D262) at
+    /// 0x0066D20E/0x0066D22E with key string 0x0083B39C, default `false` from
+    /// the constructor store at 0x00667825. Its one consumer is the
     /// line-of-fire walk's wall arm (0x004CC458): when set, a wall belonging
     /// to a house allied with the firer stops blocking the shot. Stock rules
     /// set it to `no`.
     ///
-    /// `[WallModel] WallPenetratorThreshold` (`+0x1858`) is deliberately NOT
-    /// parsed here — it belongs to the AI's "fire through walls anyway"
-    /// decision, which is a different mechanism with no consumer in this tree.
+    /// `[WallModel] WallPenetratorThreshold` — a DOUBLE at `+0x1858`, read at
+    /// 0x0066D24A with key string 0x0083B384 and stored by the `FSTP` at
+    /// 0x0066D24F — is deliberately NOT parsed here: it belongs to the AI's
+    /// "fire through walls anyway" decision, a different mechanism with no
+    /// consumer in this tree.
     pub allied_wall_transparency: bool,
     /// Per-cell radiation-field constants from [Radiation].
     pub radiation: RadiationRules,

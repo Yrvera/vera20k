@@ -1140,7 +1140,14 @@ impl Simulation {
             // gate ran the walk, a unit ordered to shoot across a wall would
             // halt here and then be refused the shot, standing still under a
             // live order.
-            let in_range = combat::pursuit_in_range(
+            //
+            // The one refusal that must NOT produce a pursuit cell is
+            // `MinimumRange`: native's approach search picks a candidate
+            // FARTHER out, and the target's own cell — VERA's only candidate —
+            // is the worst one in that set. `HoldInsideMinimumRange` therefore
+            // takes the halt arm, which is exactly what this stage did for that
+            // case before the walk landed. See `PursuitRangeVerdict`.
+            let verdict = combat::pursuit_in_range(
                 entity,
                 &attack.target,
                 weapon,
@@ -1148,14 +1155,18 @@ impl Simulation {
                 rules,
                 &self.interner,
                 self.resolved_terrain.as_ref(),
+                // Same alliance view the fire gate hands the walk
+                // (`resolve_attacker_fire` passes `fog.alliances`) and the same
+                // one the sibling pre-combat scan uses, so the two stages
+                // cannot disagree on the `AlliedWallTransparency` arm.
                 &combat::line_of_fire::LineOfFireInputs {
                     overlay_grid: self.overlay_grid.as_ref(),
                     overlay_registry,
-                    alliances: Some(&self.house_alliances),
+                    alliances: Some(&self.fog.alliances),
                 },
             );
 
-            if !in_range {
+            if verdict == combat::PursuitRangeVerdict::CloseIn {
                 // **Sticky never chases.** The one place the engine tells
                 // Sticky apart from Guard at all — they share a mission handler
                 // — is the pursuit-cell producer: when the can-fire-at query
@@ -1178,7 +1189,9 @@ impl Simulation {
                 }
                 // else: existing pursuit movement is still running; let it continue.
             } else if entity.movement_target.is_some() {
-                // In range — halt for firing.
+                // `CanFire` — halt for firing. `HoldInsideMinimumRange` halts
+                // here too: closing further cannot help, and this is the arm it
+                // took before the walk landed.
                 actions.push(PursuitAction::ClearMovement { entity_id: id });
             }
         }

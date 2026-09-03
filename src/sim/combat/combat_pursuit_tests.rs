@@ -503,3 +503,50 @@ fn without_the_wall_the_same_shot_halts_pursuit() {
         "with a clear line at four cells the shot is legal, so pursuit halts to fire"
     );
 }
+
+/// A `MinimumRange` refusal must NOT produce a pursuit cell.
+///
+/// Native's approach search 0x004D5690 scans candidate coordinates and takes
+/// one where `InRange` holds, so a V3 that has been closed on backs off. VERA's
+/// pursuit has exactly one candidate — the target's own cell — which for a
+/// too-close refusal is the worst cell in the set. Feeding the fire gate's full
+/// verdict into pursuit without this arm would send the V3 driving AT the tank
+/// it cannot shell, which is a worse symptom than the hold it replaces.
+///
+/// `MinimumRange=` is ordinary stock data: `V3Launcher` 5, `DredLauncher` and
+/// `CruiseLauncher` 8, `MagneticBeam` 3, `HowitzerGun` 2, the
+/// `MissileLauncher`/`HoverMissile` family 1.
+#[test]
+fn inside_minimum_range_pursuit_holds_instead_of_closing() {
+    let ini_str: &str = "\
+[VehicleTypes]\n0=MTNK\n1=HTNK\n\n\
+[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=LOBBER\n\n\
+[HTNK]\nStrength=400\nArmor=heavy\nSpeed=5\nPrimary=LOBBER\n\n\
+[LOBBER]\nDamage=200\nROF=150\nRange=20\nMinimumRange=5\nWarhead=AP\n\n\
+[AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n";
+    let rules = RuleSet::from_ini(&IniFile::from_str(ini_str)).expect("min-range rules parse");
+
+    // Four cells apart: inside MinimumRange=5, well inside Range=20.
+    let mut lobber = make_unit(1, "MTNK", "Americans", 2, 5, 300);
+    lobber.attack_target = Some(AttackTarget::new(2));
+    let rhino = make_unit(2, "HTNK", "Soviet", 6, 5, 400);
+    let (mut sim, grid) = make_sim(vec![lobber, rhino]);
+    install_wall_map(&mut sim, &[]);
+
+    sim.tick_attack_pursuit_with_overlay_registry(
+        &rules,
+        Some(&grid),
+        None,
+        &std::collections::BTreeSet::new(),
+    );
+
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert!(
+        entity.attack_target.is_some(),
+        "the order survives a too-close refusal"
+    );
+    assert!(
+        entity.movement_target.is_none(),
+        "inside MinimumRange pursuit must hold, never drive at the target"
+    );
+}

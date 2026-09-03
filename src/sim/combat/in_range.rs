@@ -226,6 +226,45 @@ fn height_fire_bonus_leptons(
     0
 }
 
+/// The `MinimumRange` arm of `TechnoClass::InRange` on its own.
+///
+/// 0x006F737F–0x006F73E8. Native runs it BEFORE the arcing split, always in
+/// 3-D, and gates on `!= 0` rather than `> 0`; the strict `JL` at 0x006F73E8
+/// makes the boundary itself legal.
+fn minimum_range_blocks(weapon: &WeaponType, src: (i64, i64, i64), tgt: (i64, i64, i64)) -> bool {
+    if weapon.minimum_range_leptons == 0 {
+        return false;
+    }
+    let (sx, sy, sz) = src;
+    let (tx, ty, tz) = tgt;
+    let dx = sx - tx;
+    let dy = sy - ty;
+    let dz = sz - tz;
+    isqrt_i64(dx * dx + dy * dy + dz * dz) < i64::from(weapon.minimum_range_leptons)
+}
+
+/// Whether the attacker is standing INSIDE `weapon`'s `MinimumRange` — the one
+/// `InRange` refusal that walking toward the target cannot fix.
+///
+/// Pursuit needs to tell this refusal apart from the others because VERA's
+/// approach produces a single candidate (the target's own cell) where native's
+/// approach search 0x004D5690 scans many: for a too-close refusal the target's
+/// cell is the worst candidate in the set, not the best.
+pub(crate) fn inside_minimum_range(
+    src: (i64, i64, i64),
+    target: &TargetKind,
+    weapon: &WeaponType,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    entities: &EntityStore,
+    terrain: &ResolvedTerrainGrid,
+) -> bool {
+    let Some(tgt) = resolve_target_coords_3d(target, entities, rules, interner, terrain) else {
+        return false;
+    };
+    minimum_range_blocks(weapon, src, tgt)
+}
+
 /// Full 3D range check. Returns true if `attacker` (firing from `src`) can
 /// hit `target` with `weapon`, accounting for all Stage 1 gates.
 ///
@@ -258,16 +297,9 @@ pub(crate) fn compute_in_range(
 
     let (sx, sy, sz) = src;
 
-    // MinimumRange, 0x006F737F–0x006F73E8. Native runs it BEFORE the arcing
-    // split, always in 3-D, and gates on `!= 0` rather than `> 0`; a strict
-    // `JL` at 0x006F73E8 makes the boundary itself legal.
-    if weapon.minimum_range_leptons != 0 {
-        let dx = sx - tx;
-        let dy = sy - ty;
-        let dz = sz - tz;
-        if isqrt_i64(dx * dx + dy * dy + dz * dz) < i64::from(weapon.minimum_range_leptons) {
-            return false;
-        }
+    // MinimumRange, 0x006F737F–0x006F73E8, before the arcing split.
+    if minimum_range_blocks(weapon, src, (tx, ty, tz)) {
+        return false;
     }
 
     // Arcing-weapon 2D fallthrough — preserves V3/Prism/etc. current behavior.
