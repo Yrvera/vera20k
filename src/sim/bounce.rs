@@ -530,7 +530,8 @@ impl BounceState {
     /// `BounceClass::Update @ 0x00439B00` — one tick of the physics body.
     ///
     /// The verified order, from the body and the disassembly cited per step:
-    /// 1. `Velocity.Z -= Gravity` (`0x00439B4A`).
+    /// 1. `Velocity.Z -= Gravity`, stored back by `FSTP float [EBX+0x8]` at
+    ///    `0x00439B5F` — `EBX` is the velocity base `+0x24`, so `+0x8` is Z.
     /// 2. The angular clamp at `0x00439B7A` is DEAD and is deliberately not
     ///    ported: the raw bytes show `FLD ST(0)` / `FDIVRP` on an empty-above
     ///    stack, so the scale is `|V| / |V|` = 1.0, and every `Init` caller
@@ -625,8 +626,10 @@ impl BounceState {
             terrain.ramp(new_coord),
         )?;
 
-        // RESIDUAL (GSI-05.14) — the slope re-bounce at `0x00439F2C` is not
-        // modelled. When `cell(new).level - cell(old).level >= 2` and the
+        // RESIDUAL (GSI-05.14) — the slope re-bounce is not modelled. Its
+        // decisive test is `SUB EDX,ESI / CMP EDX,0x2` at `0x00439F5C`, over the
+        // two cells' `+0x11B` height levels read at `0x00439F3F` and
+        // `0x00439F55`. When `cell(new).level - cell(old).level >= 2` and the
         // entry-tick velocity conditions against `-0.0002` / `-0.0003` hold,
         // native rolls the body back to the pre-tick snapshot and REPLACES the
         // reflection above with one of four planar mirror matrices from
