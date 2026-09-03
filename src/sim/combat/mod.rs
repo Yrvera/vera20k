@@ -6795,6 +6795,12 @@ pub(crate) fn resolve_attacker_fire(
                 garrison_retarget_range,
                 terrain.as_deref(),
                 require_playfield_membership,
+                // No zone grid on the retarget path, and none is needed: this
+                // snapshot's mask comes from `build_attacker_snapshot`, i.e.
+                // `scan_mission_for`, which only ever returns `1` or `2`. The
+                // scanner-zone slot native fills at `0x006F8EC4` is read only by
+                // the mask-0 flat walk, which this callsite cannot select.
+                None,
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -6915,6 +6921,12 @@ pub(crate) fn resolve_attacker_fire(
                 garrison_retarget_range,
                 terrain.as_deref(),
                 require_playfield_membership,
+                // No zone grid on the retarget path, and none is needed: this
+                // snapshot's mask comes from `build_attacker_snapshot`, i.e.
+                // `scan_mission_for`, which only ever returns `1` or `2`. The
+                // scanner-zone slot native fills at `0x006F8EC4` is read only by
+                // the mask-0 flat walk, which this callsite cannot select.
+                None,
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -6936,6 +6948,12 @@ pub(crate) fn resolve_attacker_fire(
                 garrison_retarget_range,
                 terrain.as_deref(),
                 require_playfield_membership,
+                // No zone grid on the retarget path, and none is needed: this
+                // snapshot's mask comes from `build_attacker_snapshot`, i.e.
+                // `scan_mission_for`, which only ever returns `1` or `2`. The
+                // scanner-zone slot native fills at `0x006F8EC4` is read only by
+                // the mask-0 flat walk, which this callsite cannot select.
+                None,
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -7966,6 +7984,12 @@ fn veteran_rof_frames(
 }
 
 pub use self::combat_targeting::{acquire_best_target_for_entity, tick_retaliation};
+/// The threat mask an acquisition callsite pushes into
+/// `TechnoClass::Greatest_Threat @ 0x006F8DF0`, plus the passive block's own
+/// derivation of it. Re-exported because the mask is chosen by the mission
+/// handlers in `sim/world/`, not inside `combat/`.
+pub use self::threat_range::ScanMission;
+pub(crate) use self::threat_range::scan_mission_for;
 
 /// Impact-height tests: a shot that lands on a ground cell must take that
 /// cell's terrain floor height, not a constant. Kept inline because they pin

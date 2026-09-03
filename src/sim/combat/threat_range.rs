@@ -24,6 +24,16 @@
 //! The doubling applies to `GuardRange=` too, not just to the weapon-range
 //! fallback.
 //!
+//! ## The third mask: Hunt asks for no filter and no ring walk
+//!
+//! `FootClass::Mission_Hunt @ 0x004D5373` pushes the literal `0`, and mask 0
+//! does not select a third radius formula — it skips the radius block, the
+//! airborne pre-pass and the ring walk outright and enumerates the global
+//! object array instead, passing a literal `-1` where the ring path passes its
+//! computed radius. That is a scan *topology*, so it lives in
+//! [`super::greatest_threat`]; [`ScanRange::NoCutoff`] is only the
+//! per-candidate half of it. See [`ScanMission::Hunt`].
+//!
 //! ## Why plain Guard really is `CanFireAt` — the mask literals
 //!
 //! This has now been challenged twice, so the chain is written down here.
@@ -59,12 +69,16 @@
 //! scan's mask is forced down to the plain-Guard one, so a unit that has just
 //! moved takes the narrow radius even on Area Guard; the first scan that finds
 //! nothing lowers the flag, and the wide radius applies from the next scan on.
-//! Its whole observable effect is to delay the widening by one scan cadence
-//! after each movement — a parked guard reaches its doubled radius on its
-//! second scan instead of its first. VERA has no such field, and adding one
+//! Its observable effect is to delay the widening until the first scan that
+//! finds nothing — usually one cadence after each movement, so a parked guard
+//! reaches its doubled radius on its second scan; but the clear is conditional
+//! on the *result*, not on the scan happening (`TEST EAX,EAX ; JNZ 0x004D995B`
+//! at `0x004D9951` skips the store), so a unit that keeps finding targets at
+//! the narrow radius keeps the narrow radius. VERA has no such field, and
+//! adding one
 //! means writes from the locomotors plus a snapshot field, so it is recorded
-//! here rather than modelled: units acquire at the wide radius one cadence
-//! sooner than retail after they stop moving.
+//! here rather than modelled: units acquire at the wide radius at least one
+//! cadence sooner than retail after they stop moving.
 //!
 //! **The unarmed-Guard override.** When the scanning object has no usable
 //! weapon at all *and* its mission is exactly Guard, retail forces the radius
@@ -108,15 +122,83 @@ const AREA_GUARD_RANGE_MULTIPLIER: i32 = 2;
 /// lepton value to 0x1000; at 256 leptons per cell that is 16 cells.
 const AREA_GUARD_MAX_SCAN_CELLS: i32 = 16;
 
-/// Which acquisition mission the scanning object is on. Selects the threat
-/// mask retail forwards into the scan, and through it the radius formula.
+/// The threat mask a callsite pushes into the scan — retail's `Greatest_Threat`
+/// argument 2, a literal at every callsite, named here after the mission that
+/// pushes it. It selects the radius formula and, for [`ScanMission::Hunt`], the
+/// scan topology. It is NOT a property of the object being scanned for, nor
+/// read off the scanner's mission field: two callers can hand the same object
+/// different masks, and `FUN_0051F330` does exactly that when it re-acquires in
+/// place for a deployed infantryman that is sitting on Area Guard.
+///
+/// **The literal is not always what `TechnoClass::Greatest_Threat` receives.**
+/// A `FootClass` dispatch goes through a `+0x3C4` override first, and two of
+/// them rewrite it on the way:
+/// - `UnitClass @ 0x00743190` and the Infantry override (`CALL @ 0x0051E39F`)
+///   OR the attacker's own projectile class bits in (`FUN_00772A90`, AA → `4`,
+///   AG → `0xB8`) when `mask & 0x1B978 == 0`, which mask 0 satisfies. The
+///   topology survives — neither value carries `TEST AL,0x3` — but the derived
+///   flags word changes.
+/// - `FootClass::Greatest_Threat @ 0x004D9931` coerces the mask to
+///   `(mask & ~2) | 1` while `FootClass+0x688` is set, turning mask 0 into mask
+///   1 and so the flat walk into the ring walk, and clears that byte at
+///   `0x004D9955` when the scan returns nothing.
+///
+/// Neither rewrite is modelled; both are recorded as residuals on
+/// [`super::greatest_threat::greatest_threat`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ScanMission {
+pub enum ScanMission {
     /// Guard, Move, Harvest — the plain passive-acquire missions. All of them
     /// take the same mask, so they share one variant.
     Guard,
     /// Area Guard — "hold this spot and cover it".
     AreaGuard,
+    /// Hunt — mask **0**, which is not a third radius formula but the absence
+    /// of one.
+    ///
+    /// `FootClass::Mission_Hunt @ 0x004D5373` pushes the literal `0` as the
+    /// threat mask (`disassemble_function 0x004D5350`), and
+    /// `TechnoClass::Greatest_Threat @ 0x006F8FE0` opens its radius block with
+    /// `TEST AL,0x3 ; JZ 0x006F9B6E` — with neither bit set it jumps **past**
+    /// both the `Threat_Range` selection (`vt+0x31C` at `0x006F900A` /
+    /// `0x006F9018`, result stored into the range slot `[ESP+0x2C]` at
+    /// `0x006F9020`) and the cell walk that consumes it.
+    ///
+    /// Where mask 0 actually lands: at `0x006F9B6E` the **first** global walk
+    /// (the `0x00A8E394` list) is gated on `TEST AL,0x4` against the derived
+    /// flags word `[ESP+0x14]` — zeroed at entry (`XOR EDI,EDI @ 0x006F8DFD`,
+    /// stored at `0x006F8F2C`) and thereafter built from the mask alone
+    /// (`0x006F8F29`-`0x006F8F72`). For mask 0 it is 0, the bit is clear, and
+    /// that walk is **skipped** (`JZ 0x006F9C56`). Execution falls through
+    /// `0x006F9C56` (`TEST byte ptr [ESP+0x70],0x10 ; JZ 0x006F9C67`) into the
+    /// **unconditional** second walk over the `0x00A8EC7C` list at `0x006F9C67`.
+    ///
+    /// What removes the cutoff is that walk's range argument, not the absence
+    /// of a distance test: it passes the literal `PUSH -0x1` (`0x006F9D70`) in
+    /// the argument slot where the radius path passes its computed range
+    /// (`MOV ECX,[ESP+0x2C] @ 0x006F9292`, `PUSH ECX @ 0x006F92A7`).
+    /// `TechnoClass::Evaluate_Candidate @ 0x006F7CA0` rejects on distance only
+    /// when that argument is `> 0`, and falls back to the
+    /// `TechnoType+0x5B8` / `vt+0x3A8` (Sight / can-fire-at) test only when it
+    /// is `== 0`; `-1` trips neither. So a hunting object has no *distance*
+    /// cutoff at all — that is the mechanism that sends a berserked unit across
+    /// the map.
+    ///
+    /// It is not unfiltered, though. The same walk that removes the distance
+    /// cutoff switches a **movement-zone** gate on: it passes the scanner's own
+    /// zone id (`MapClass::GetZoneID @ 0x006F8EBF`, stored at `0x006F8EC4`) in
+    /// `Evaluate_Candidate`'s arg6 (`PUSH ECX @ 0x006F9D69`) where every ring
+    /// callsite passes `-1`, and a non-`-1` arg6 rejects any candidate whose
+    /// cell is in a different component under the attacker's own
+    /// `MovementZone=` (`0x006F7E7E`-`0x006F7E9C`). A hunter reaches the far
+    /// side of the map but not the far side of a river.
+    ///
+    /// **Mask 0 is a scan TOPOLOGY, not a radius.** The jump at `0x006F8FE2`
+    /// lands past the airborne pre-pass *and* past the expanding-ring cell walk
+    /// (`0x006F9169` and `0x006F94D0` both sit below `0x006F9B6E`), so a
+    /// hunting object never walks a single cell ring — it walks the global
+    /// object array. [`super::greatest_threat`] owns that branch; this variant
+    /// only names which mask the caller pushed.
+    Hunt,
 }
 
 /// The distance filter the candidate acceptance test applies.
@@ -128,9 +210,30 @@ pub(crate) enum ScanRange {
     CanFireAt,
     /// A hard Euclidean cutoff, in cells. The can-fire-at query is skipped.
     Hard(SimFixed),
+    /// Native's literal `-1` range argument (`PUSH -0x1 @ 0x006F9D70`), which
+    /// `Evaluate_Candidate` treats as neither `> 0` (no distance reject) nor
+    /// `== 0` (no Sight / can-fire-at fallback). Weapon legality still decides;
+    /// distance does not. Only mask 0 produces it, and it selects the flat
+    /// global-list topology in [`super::greatest_threat`] as well as the
+    /// per-candidate predicate.
+    NoCutoff,
 }
 
-/// Read the acquisition mission off an entity.
+/// The mask the *passive* acquisition callsites push.
+///
+/// In retail no callsite derives the mask from the object it is scanning for —
+/// it is a literal at the caller (what the `+0x3C4` overrides then do to that
+/// literal is documented on [`ScanMission`]), and the
+/// three literals are `1` (the common Techno AI body, the only route to the
+/// scan for missions Move/Guard/Harvest, and `FUN_0051F330`'s in-place
+/// re-acquire), `2` (`FootClass::Mission_AreaGuard`) and `0`
+/// (`FootClass::Mission_Hunt @ 0x004D5373`). This function is therefore not a
+/// general "what mask is this object on" reader: it is the *passive* block's
+/// own choice between its literal `1` and the Area Guard handler's literal `2`,
+/// and it is called BY those callsites. Hunt and the deploy shim pass their own
+/// literals and never come through here — reading [`ScanMission::Hunt`] off an
+/// entity's mission field would make the mask a property of the mission, which
+/// it is not.
 ///
 /// Area Guard has two representations here and both mean the same retail
 /// mission: the committed mission substrate value, and the `OrderIntent::Guard`
@@ -167,6 +270,15 @@ pub(crate) fn scan_range(
             Some(gr) => ScanRange::Hard(gr),
             None => ScanRange::CanFireAt,
         },
+        // Mask 0 never reaches the radius block at all: `TEST AL,0x3 ; JZ
+        // 0x006F9B6E` at `0x006F8FE0` jumps past `Threat_Range` *and* past the
+        // ring walk, so no radius is computed for Hunt and `GuardRange=` is not
+        // consulted — a `GuardRange=9` V3 on Hunt is no more limited than a
+        // Grizzly is. `greatest_threat` branches on the mask before it asks for
+        // a radius, so this arm is not on the live path; it carries native's
+        // literal `PUSH -0x1` (`0x006F9D70`) so that a caller which does ask
+        // gets the same answer the flat walk hardcodes.
+        ScanMission::Hunt => ScanRange::NoCutoff,
         ScanMission::AreaGuard => {
             let base = guard_range.unwrap_or_else(|| max_weapon_range(rules, obj, veterancy));
             let doubled = base.saturating_mul(SimFixed::from_num(AREA_GUARD_RANGE_MULTIPLIER));

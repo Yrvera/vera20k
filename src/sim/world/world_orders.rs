@@ -70,6 +70,14 @@ impl Simulation {
         }
 
         for attacker_id in attacker_ids {
+            let Some(scan_mask) = self
+                .substrate
+                .entities
+                .get(attacker_id)
+                .map(combat::scan_mission_for)
+            else {
+                continue;
+            };
             let Some(target_sid) = combat::acquire_best_target_for_entity(
                 &self.substrate.entities,
                 rules,
@@ -78,6 +86,11 @@ impl Simulation {
                 Some(&self.fog),
                 self.resolved_terrain.as_ref(),
                 self.playfield_bounds.is_some(),
+                // VERA-internal entry with no single native counterpart, so it
+                // keeps the passive block's mask — `1`, or `2` for a player
+                // "guard this spot" order. gamemd equivalent UNCHECKED.
+                scan_mask,
+                self.zone_grid.as_ref(),
             ) else {
                 continue;
             };

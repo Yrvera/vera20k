@@ -771,6 +771,9 @@ mod tests {
             refinery_smoke_frames: 0,
             gap_radius_in_cells: 0,
             super_gap_radius_in_cells: 0,
+            stupid_hunt: false,
+            vehicle_thief: false,
+            undeploy_delay: -1,
         }
     }
 

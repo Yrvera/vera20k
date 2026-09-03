@@ -13,9 +13,10 @@
 //! and the retaliation pass.
 //!
 //! ## Scan radius
-//! How far the scan reaches is a property of the attacker and the mission it is
-//! on, not of the candidate — see [`super::threat_range`]. A unit on Area Guard
-//! acquires roughly twice as far out as the same unit on plain Guard.
+//! How far the scan reaches is a property of the attacker and of the threat
+//! mask its CALLER pushed, not of the candidate — see [`super::threat_range`].
+//! A unit on Area Guard acquires roughly twice as far out as the same unit on
+//! plain Guard, and a unit on Hunt is not walking cell rings at all.
 //!
 //! ## Auto-deploy on target acquisition
 //! Targeting NEVER initiates a deploy transition. A walking GGI that acquires
@@ -35,7 +36,7 @@ use super::combat_weapon::{
     VersesGate, attacker_facts, is_ally_by_object, select_weapon_for_target, techno_target_facts,
     verses_gate,
 };
-use super::threat_range::{ScanMission, scan_mission_for};
+use super::threat_range::ScanMission;
 use crate::map::entities::EntityCategory;
 use crate::map::houses::{HouseAllianceMap, is_allied_with};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
@@ -109,8 +110,10 @@ pub(crate) struct AttackerSnapshot {
     pub weapon_override: Option<super::combat_weapon::WeaponOverride>,
     /// Garrison state — present only for garrisoned buildings (IsOccupied).
     pub garrison: Option<GarrisonSnapshot>,
-    /// Which acquisition mission the attacker is on. Selects the scan radius
-    /// formula — Area Guard reaches roughly twice as far as plain Guard.
+    /// The threat mask this scan's CALLER pushed — `Greatest_Threat`'s second
+    /// argument, always a literal in retail. It selects the radius formula
+    /// (Area Guard reaches roughly twice as far as plain Guard) and, for mask
+    /// 0, the scan topology itself.
     pub scan_mission: ScanMission,
 }
 
@@ -120,6 +123,26 @@ pub(crate) struct AttackerSnapshot {
 /// `terrain` is threaded through for the 3D InRange check; when `None`
 /// (headless tests, no map loaded), the range check falls back to the
 /// existing 2D behavior.
+///
+/// `mask` is `Greatest_Threat`'s second argument. Every caller pushes a literal
+/// — `0` from `FootClass::Mission_Hunt @ 0x004D5373`, `1` from the common Techno
+/// AI body and from `FUN_0051F330`'s in-place re-acquire (`vt+0x3C4(1, ...)`),
+/// `2` from `FootClass::Mission_AreaGuard` — and mask 0 selects a different scan
+/// topology entirely, not a wider radius. So it is a parameter here rather than
+/// something read off the entity. [`super::threat_range::scan_mission_for`]
+/// remains, for the passive callsites whose literal genuinely depends on which
+/// mission dispatched them.
+///
+/// What the literal is NOT is what `TechnoClass::Greatest_Threat` finally sees:
+/// a `FootClass` dispatch goes through the `+0x3C4` overrides first, which OR
+/// the attacker's projectile class bits in (`0x00743190`, `0x0051E39F`) and,
+/// while `FootClass+0x688` is set, coerce it to `(mask & ~2) | 1`
+/// (`0x004D9931`). Both are recorded as residuals on
+/// [`super::greatest_threat::greatest_threat`]; neither is modelled here.
+///
+/// `zone_grid` is `MapClass`'s per-movement-zone connectivity, which mask 0 uses
+/// to refuse candidates its own movement zone cannot reach.
+#[allow(clippy::too_many_arguments)]
 pub fn acquire_best_target_for_entity(
     entities: &EntityStore,
     rules: &RuleSet,
@@ -128,6 +151,8 @@ pub fn acquire_best_target_for_entity(
     fog: Option<&FogState>,
     terrain: Option<&ResolvedTerrainGrid>,
     require_playfield_membership: bool,
+    mask: ScanMission,
+    zone_grid: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
 ) -> Option<u64> {
     let entity = entities.get(attacker_id)?;
     // Aircraft with 0 ammo should not acquire new targets — need to reload.
@@ -181,7 +206,7 @@ pub fn acquire_best_target_for_entity(
         burst_delay_ticks: 0,
         weapon_override: entity.weapon_override,
         garrison: None,
-        scan_mission: scan_mission_for(entity),
+        scan_mission: mask,
     };
     acquire_best_target(
         entities,
@@ -193,6 +218,7 @@ pub fn acquire_best_target_for_entity(
         None,
         terrain,
         require_playfield_membership,
+        zone_grid,
     )
 }
 
@@ -216,6 +242,7 @@ pub fn acquire_best_target_for_entity(
 /// engineer scores highest — and that a base defence with several attackers in
 /// reach commits to the one in the innermost band rather than the nearest by
 /// Euclidean distance.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn acquire_best_target(
     entities: &EntityStore,
     rules: &RuleSet,
@@ -226,6 +253,7 @@ pub(crate) fn acquire_best_target(
     scan_range_override: Option<SimFixed>,
     terrain: Option<&ResolvedTerrainGrid>,
     require_playfield_membership: bool,
+    zone_grid: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
 ) -> Option<u64> {
     super::greatest_threat::greatest_threat(
         entities,
@@ -237,6 +265,7 @@ pub(crate) fn acquire_best_target(
         scan_range_override,
         terrain,
         require_playfield_membership,
+        zone_grid,
     )
 }
 
@@ -273,7 +302,12 @@ fn can_retaliate(
 }
 
 /// `TechnoClass::Calculate_Threat_Score @ 0x0070CD10` as `ShouldRetaliate`
-/// consumes it, on the native `&NullCoord` branch.
+/// consumes it, on the native `&NullCoord` branch — verified, not assumed:
+/// both `ShouldRetaliate` callsites push the sentinel literally
+/// (`PUSH 0xb0ea90 @ 0x00708A81` and `@ 0x00708A92` before the calls at
+/// `0x00708A89` / `0x00708A9A`), so this comparison is on the CELL scale. The
+/// lepton-scale branch is reachable only from `Evaluate_Candidate`'s mask-0
+/// flat walk; see [`super::greatest_threat::ThreatReference`].
 ///
 /// The five coefficients are the ones the scorer's own house selects — see
 /// [`super::greatest_threat::ThreatCoefficients`] and
@@ -308,6 +342,7 @@ pub(crate) fn calculate_ai_threat_score(
         terrain,
         alliances,
         coefficients,
+        super::greatest_threat::ThreatReference::NullCoord,
     )
 }
 
@@ -660,7 +695,17 @@ mod tests {
         let interner = test_interner();
 
         assert_eq!(
-            acquire_best_target_for_entity(&entities, &rules, &interner, 1, None, None, false),
+            acquire_best_target_for_entity(
+                &entities,
+                &rules,
+                &interner,
+                1,
+                None,
+                None,
+                false,
+                ScanMission::Guard,
+                None,
+            ),
             Some(2)
         );
     }
