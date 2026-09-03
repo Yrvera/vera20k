@@ -200,13 +200,14 @@ impl IniSection {
     /// equivalent, and no new caller should be added.**
     ///
     /// gamemd's `INIClass` is case-SENSITIVE on both section names and entry
-    /// names. It hashes the raw bytes on the store side (`INIClass::
-    /// LoadFromStraw @ 0x005260C9`, whose only text transform is `strtrim @
-    /// 0x00727CF0` — bytes `<= 0x20` off both ends) and on the lookup side
-    /// (`CCINIClass::ReadInt @ 0x00527715`), through the standard reflected
-    /// CRC-32 in `CRCEngine::AddData @ 0x004A1DE0` (table at `0x0081F7B4`,
-    /// poly `0xEDB88320`), and then compares 32-bit integers only —
-    /// `INIClass::FindEntry_BinarySearch @ 0x0052B4F0` and
+    /// names. It hashes the raw bytes on the store side
+    /// (`INIClass::LoadFromStraw @ 0x00525A60`, raw-pointer CRC call at
+    /// `0x005260D4`, whose only text transform is `strtrim @ 0x00727CF0` —
+    /// bytes `<= 0x20` off both ends) and on the lookup side
+    /// (`CCINIClass::ReadInt @ 0x005276D0`, CRC call at `0x00527727`), through
+    /// the standard reflected CRC-32 in `CRCEngine::AddData @ 0x004A1DE0`
+    /// (table at `0x0081F7B4`, poly `0xEDB88320`), and then compares 32-bit
+    /// integers only — `INIClass::FindEntry_BinarySearch @ 0x0052B4F0` and
     /// `FindSection_BinarySearch @ 0x0052B620` never call `strcmp`. There is
     /// no folding instruction anywhere on the path and no string fallback.
     ///
@@ -217,12 +218,14 @@ impl IniSection {
     /// divergence. Those call sites are now case-exact.
     ///
     /// Across the whole stock INI corpus exactly 6 authored key spellings
-    /// disagree in case with gamemd's own literal, touching 44 (section, key)
-    /// pairs; 0 section names disagree. The survivors here are
-    /// `sound_ini.rs`'s 18 call sites — the mis-spellings that reach them are
-    /// `Vshift` (9 soundmd sections), `Fshift` (3) and `volume` (2), 12
-    /// distinct sound events in all — and they belong to the audio lane. This
-    /// helper is deleted once those are converted.
+    /// disagree in case with gamemd's own literal: `Maxdebris` (17 sections),
+    /// `JumpJetAccel` (8), `JumpJetTurnRate` (8), `Vshift` (9), `Fshift` (3)
+    /// and `volume` (2) — 47 (section, key) pairs over 38 distinct sections.
+    /// 0 section names disagree. The survivors here are `sound_ini.rs`'s 18
+    /// call sites, reached by the three soundmd mis-spellings above: 14 of
+    /// those 47 pairs, over 13 distinct sound events, because
+    /// `[GrinderGrinding]` carries both `Fshift` and `Vshift`. They belong to
+    /// the audio lane; this helper is deleted once those are converted.
     pub fn get_ignoring_case(&self, key: &str) -> Option<&str> {
         self.key_ignore_ascii_case(key)
             .and_then(|exact| self.entries.get(exact))
