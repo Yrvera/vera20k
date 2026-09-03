@@ -1963,6 +1963,17 @@ fn hash_locomotor_runtime(
     common.speed_fraction.to_bits().hash(hasher);
     common.fly_current_speed.to_bits().hash(hasher);
     common.altitude.to_bits().hash(hasher);
+    // On a Jumpjet locomotor, the fields from `target_altitude` down to
+    // `jumpjet_turn_rate` are seeded from the type's `+0xD70`..`+0xD90` block —
+    // the run gamemd copies into the locomotor at `0x0054AD30` —
+    // `jumpjet_current_speed` excepted, which is runtime state. All of them are
+    // hash-visible, so any correction to how `rules::jumpjet_params` reads
+    // those keys changes this hash for every jumpjet type. No committed golden
+    // or parity fixture currently flies a Rocketeer, Kirov, Floating Disc,
+    // BlackHawk, Hind or Siege Chopper, so such a correction can land with a
+    // green suite — that is a gap in harness coverage, not evidence that
+    // nothing moved. A harness that adds one will need a re-baseline
+    // attributable to the rules read, not to a harness bug.
     common.target_altitude.to_bits().hash(hasher);
     common.climb_rate.to_bits().hash(hasher);
     common.jumpjet_speed.to_bits().hash(hasher);

@@ -737,10 +737,12 @@ pub struct ObjectType {
     pub fly_back: bool,
     /// Landable=yes — aircraft can land on the ground.
     pub landable: bool,
-    /// Whether this unit uses jumpjet controls (JumpJet= in rules.ini).
+    /// `JumpJet=` in rules.ini — `TechnoTypeClass+0xD94`, a sibling of the
+    /// nine parameters below rather than a gate on them.
     pub jumpjet: bool,
-    /// Jumpjet-specific tuning parameters. Only populated when `jumpjet` is true.
-    pub jumpjet_params: Option<JumpjetParams>,
+    /// The `TechnoTypeClass+0xD70..+0xD90` jumpjet block. Present on every
+    /// type, as in gamemd; only the Jumpjet locomotor ever reads it.
+    pub jumpjet_params: JumpjetParams,
 
     // -- Deploy / undeploy fields --
     /// What this unit deploys into (e.g., AMCV DeploysInto=GACNST).
@@ -1790,42 +1792,25 @@ impl ObjectType {
             fly_by: section.get_bool("FlyBy").unwrap_or(false),
             fly_back: section.get_bool("FlyBack").unwrap_or(false),
             landable: section.get_bool("Landable").unwrap_or(false),
+            // gamemd-derived: `TechnoTypeClass::ReadINI` reads `JumpJet` into
+            // its own boolean at `+0xD94` (`0x007151EC PUSH 0x843640` ->
+            // `0x00715200 MOV [EBP+0xD94],AL`), the last member of the same
+            // straight-line run that reads the nine parameters below. It is a
+            // sibling of theirs, not a gate on them.
             jumpjet: section.get_bool("JumpJet").unwrap_or(false),
-            // RESIDUAL — DRIFT, not fixed here (this is not the projectile
-            // flight change's file; recorded so it is not lost).
-            // `TechnoTypeClass::ReadINI` reads the eight `Jumpjet*` keys in one
-            // unconditional straight-line block — `JumpjetClimb` -> `+0xD78`,
-            // `JumpjetCrash` -> `+0xD7C`, `JumpjetHeight` -> `+0xD80`
-            // (`0x00715151`), `JumpjetAccel` -> `+0xD84`, `JumpjetWobbles`,
-            // `JumpjetNoWobbles`, `JumpjetDeviation`, then `JumpJet` itself into
-            // a SEPARATE boolean field at `+0xD94` (`0x007151F8`). `JumpJet=` is
-            // NOT a gate on the others; the per-field defaults come from
-            // `TechnoTypeClass::Constructor` (`+0xD80` = 500 at `0x007115D3`),
-            // and `JumpjetLocomotionClass` reads `+0xD78`/`+0xD7C`/`+0xD80`/
-            // `+0xD84` off the type at `0x0054AD6F`ff.
-            // Gating the whole block on `JumpJet=yes` therefore drops every
-            // jumpjet key authored by a section that takes its Jumpjet locomotor
-            // from the GUID alone. Trigger: stock `[ZEP]` (Kirov) and `[DISK]`
-            // (Floating Disc) both author `JumpjetHeight=750`,
-            // `JumpjetSpeed=`, `JumpjetClimb=`, `JumpJetAccel=`,
-            // `JumpJetTurnRate=` and `JumpjetCrash=` without `JumpJet=`, so all
-            // of them are inert and both units fall back to the hard-coded
-            // defaults in `LocomotorState::air_params_from_object`. Player
-            // effect: a Kirov and a Floating Disc hover 250 leptons (~1 cell)
-            // lower than native and climb, turn and crash at the wrong rates;
-            // the lower hover also shortens the Kirov's bomb fall. Frequency:
-            // every Kirov and every Floating Disc, continuously, in any game
-            // that builds one. Downstream risk: altitude feeds the 3D fire-range
-            // gate and `object_world_z_leptons`, so it moves engagement
-            // distances as well as the picture. The other six stock
-            // `JumpJet=yes` sections ([JUMPJET], [LUNR], [SHAD], [HIND],
-            // [SCHP], [SCHD]) all author `JumpjetHeight=500`, which equals the
-            // fallback, so they are unaffected today.
-            jumpjet_params: if section.get_bool("JumpJet").unwrap_or(false) {
-                Some(JumpjetParams::from_ini_section(section))
-            } else {
-                None
-            },
+            // gamemd-derived: the nine `Jumpjet*` parameters are read
+            // unconditionally for every section — `TechnoTypeClass::ReadINI`
+            // `0x00715020`-`0x0071520F` contains no branch instruction at all,
+            // so `JumpJet=` cannot gate them. Both stock sections that take
+            // their Jumpjet locomotor from the GUID alone, `[ZEP]` (Kirov,
+            // `JumpjetHeight=750`) and `[DISK]` (Floating Disc, likewise 750),
+            // omit `JumpJet=`; gating the block on it threw away all nine of
+            // their authored keys and dropped both units to the constructor's
+            // 500-lepton hover. Only the Jumpjet locomotor consults these —
+            // the parameter copy at `0x0054AD30` reads `+0xD70`..`+0xD8C` off
+            // the type — so carrying them on every `ObjectType`, as
+            // `TechnoTypeClass` does, changes nothing for other locomotors.
+            jumpjet_params: JumpjetParams::from_ini_section(section),
 
             // Crush properties. `Crushable=` is the one key whose default is
             // category-dependent: the ObjectTypeClass constructor clears the
@@ -3978,5 +3963,191 @@ mod tests {
             ObjectCategory::Vehicle,
         );
         assert_eq!(mtnk.weight, SimFixed::lit("2.0"));
+    }
+
+    /// Retail `rulesmd.ini`, read from the gitignored `ini/` corpus.
+    ///
+    /// The golden is retail INI bytes, not a hand-written fixture, so these are
+    /// parity checks on the authored data rather than Rust-vs-Rust.
+    #[cfg(test)]
+    fn retail_rules_ini() -> IniFile {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("ini")
+            .join("rulesmd.ini");
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+            panic!(
+                "cannot read {}: {e}. The gitignored ini/ directory is required; \
+                 a fresh worktree needs it copied in from the main checkout.",
+                path.display()
+            )
+        });
+        IniFile::from_bytes(&bytes).expect("retail rulesmd.ini parses")
+    }
+
+    /// The two stock sections that take their Jumpjet locomotor from the
+    /// `Locomotor=` GUID alone and never author `JumpJet=`.
+    ///
+    /// gamemd reads all nine parameters for them anyway —
+    /// `TechnoTypeClass::ReadINI` `0x00715020`-`0x0071520F` has no branch — so
+    /// a retail Kirov and Floating Disc hover at their authored 750, not at the
+    /// constructor's 500 (`0x007115D3`). Gating the block on `JumpJet=yes`
+    /// dropped every one of these values.
+    #[test]
+    fn retail_kirov_and_disc_keep_their_jumpjet_block_without_the_flag() {
+        let ini = retail_rules_ini();
+
+        for id in ["ZEP", "DISK"] {
+            let section = ini.section(id).unwrap_or_else(|| panic!("[{id}] section"));
+            assert!(
+                section.get("JumpJet").is_none(),
+                "[{id}] is only interesting because stock omits JumpJet="
+            );
+            let obj = ObjectType::from_ini_section(id, section, ObjectCategory::Vehicle);
+            assert!(
+                !obj.jumpjet,
+                "[{id}] JumpJet= is absent, so the flag is false"
+            );
+            assert_eq!(
+                obj.locomotor,
+                LocomotorKind::Jumpjet,
+                "[{id}] takes the Jumpjet locomotor from its CLSID"
+            );
+            assert_eq!(
+                obj.jumpjet_params.height, 750,
+                "[{id}] authors JumpjetHeight=750 and gamemd reads it"
+            );
+        }
+
+        let zep = ObjectType::from_ini_section(
+            "ZEP",
+            ini.section("ZEP").expect("[ZEP]"),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(
+            zep.jumpjet_params.speed,
+            crate::util::fixed_math::sim_from_f32(5.0)
+        );
+        assert_eq!(
+            zep.jumpjet_params.climb,
+            crate::util::fixed_math::sim_from_f32(6.0)
+        );
+        assert_eq!(
+            zep.jumpjet_params.crash,
+            crate::util::fixed_math::sim_from_f32(12.0)
+        );
+        assert!(zep.jumpjet_params.no_wobbles, "[ZEP] JumpjetNoWobbles=yes");
+        // `[ZEP]` authors no deviation, so the constructor's 40 stands.
+        assert_eq!(zep.jumpjet_params.deviation, 40);
+
+        let disk = ObjectType::from_ini_section(
+            "DISK",
+            ini.section("DISK").expect("[DISK]"),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(
+            disk.jumpjet_params.speed,
+            crate::util::fixed_math::sim_from_f32(16.0)
+        );
+        assert_eq!(
+            disk.jumpjet_params.climb,
+            crate::util::fixed_math::sim_from_f32(8.0)
+        );
+        assert_eq!(
+            disk.jumpjet_params.crash,
+            crate::util::fixed_math::sim_from_f32(15.0)
+        );
+        assert_eq!(disk.jumpjet_params.deviation, 15);
+    }
+
+    /// The six stock sections that do author `JumpJet=yes` must be untouched by
+    /// removing the gate: they all author `JumpjetHeight=500`, which is also the
+    /// constructor seed.
+    #[test]
+    fn retail_jumpjet_yes_sections_are_unchanged_by_dropping_the_gate() {
+        let ini = retail_rules_ini();
+        // Categories as the stock registries list them: the two jumpjet
+        // infantry under `[InfantryTypes]`, the four choppers/transports under
+        // `[VehicleTypes]`. Category does not reach the jumpjet block, but
+        // parsing a section under the wrong one invites a later reader to
+        // misread the fixture.
+        for (id, category) in [
+            ("JUMPJET", ObjectCategory::Infantry),
+            ("LUNR", ObjectCategory::Infantry),
+            ("SHAD", ObjectCategory::Vehicle),
+            ("HIND", ObjectCategory::Vehicle),
+            ("SCHP", ObjectCategory::Vehicle),
+            ("SCHD", ObjectCategory::Vehicle),
+        ] {
+            let section = ini.section(id).unwrap_or_else(|| panic!("[{id}] section"));
+            let obj = ObjectType::from_ini_section(id, section, category);
+            assert!(obj.jumpjet, "[{id}] authors JumpJet=yes");
+            assert_eq!(obj.jumpjet_params.height, 500, "[{id}] authors 500");
+        }
+    }
+
+    /// gamemd looks up `JumpjetTurnRate` (`0x008436D0`) and `JumpjetAccel`
+    /// (`0x00843680`) — lowercase `jet` — and `INIClass` compares CRC-32s of
+    /// the raw key bytes (`CRCEngine::AddData @ 0x004A1DE0`), so the capital-J
+    /// spelling stock uses is invisible to it. Every stock jumpjet section
+    /// therefore flies on the constructor's turn rate 4 (`0x007115AE`) and
+    /// acceleration 2.0 (`0x007115DD`).
+    ///
+    /// Derived over the retail file rather than asserted from a list: the
+    /// section set is whatever authors a `Jumpjet*` key, and the two counts are
+    /// counted here.
+    #[test]
+    fn retail_never_authors_the_spelling_gamemd_reads_for_turn_rate_or_accel() {
+        let ini = retail_rules_ini();
+
+        let mut native_spelling = 0usize;
+        let mut ini_spelling = 0usize;
+        let mut jumpjet_sections = 0usize;
+        let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for name in ini.section_names() {
+            if !seen.insert(name) {
+                continue;
+            }
+            let Some(section) = ini.section(name) else {
+                continue;
+            };
+            let authors_any = section
+                .keys()
+                .any(|k| k.to_ascii_lowercase().starts_with("jumpjet"));
+            if !authors_any {
+                continue;
+            }
+            jumpjet_sections += 1;
+            for key in ["JumpjetTurnRate", "JumpjetAccel"] {
+                if section.get(key).is_some() {
+                    native_spelling += 1;
+                }
+            }
+            for key in ["JumpJetTurnRate", "JumpJetAccel"] {
+                if section.get(key).is_some() {
+                    ini_spelling += 1;
+                }
+            }
+
+            let obj = ObjectType::from_ini_section(name, section, ObjectCategory::Vehicle);
+            assert_eq!(
+                obj.jumpjet_params.turn_rate, 4,
+                "[{name}] must keep the constructor turn rate"
+            );
+            assert_eq!(
+                obj.jumpjet_params.accel,
+                crate::util::fixed_math::sim_from_f32(2.0),
+                "[{name}] must keep the constructor acceleration"
+            );
+        }
+
+        assert_eq!(
+            native_spelling, 0,
+            "no stock section spells the keys the way gamemd looks them up"
+        );
+        assert_eq!(
+            (jumpjet_sections, ini_spelling),
+            (8, 16),
+            "8 stock sections author Jumpjet* keys and all 8 carry both mis-cased keys"
+        );
     }
 }
