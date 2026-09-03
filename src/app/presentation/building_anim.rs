@@ -183,12 +183,6 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
     use crate::audio::sfx::{SpatialGain, SpatialListener, SpatialSource, spatial_gain};
 
     let events = state.match_state.match_audio.sound_events.drain();
-    if events.is_empty() {
-        if let Some(sfx) = &mut state.audio.sfx_player {
-            sfx.advance_voice_queue();
-        }
-        return;
-    }
     let (tactical_width, tactical_height) = crate::app::input::camera::tactical_viewport_size_px(
         state.render_width(),
         state.render_height(),
@@ -344,6 +338,49 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             }
         }
     }
+
+    // `AnimClass::UpdateLoopingSound @ 0x00750D40` from the owner's side.
+    // Native's owner calls it on every one of its own updates with its
+    // current coordinate: a positive volume re-drives `SoundEvent::SetVolume`
+    // and `SetPan` and re-points the handle, and a volume that has fallen to
+    // zero calls `SoundEvent::Stop` and clears the handle — which is what
+    // ends a sustained cue whose object has driven out of earshot.
+    // `SoundEvent::UpdateState @ 0x004057DC` then reaps the event on its next
+    // pass because the owner no longer names it.
+    for owner in sfx.looping_owners() {
+        let Some(sim) = sim else {
+            sfx.update_looping_sound(owner, None);
+            continue;
+        };
+        let Some(world) = sim.looping_sound_owner_coord(owner) else {
+            // The owner object is gone. Native's `ObjectClass` uninit path
+            // releases the handle before the pointer can dangle
+            // (`release_move_sound` / `destroy_anim` push the stop event), so
+            // this is the belt-and-braces arm.
+            sfx.update_looping_sound(owner, None);
+            continue;
+        };
+        let (rx, ry, sub_x, sub_y, z) = world.to_cell_sub_z();
+        let (screen_x, screen_y) = crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z);
+        let facts = registry_facts_for_owner(registry, sfx, owner);
+        let gain = facts
+            .and_then(|facts| spatial_gain(facts, screen_x, screen_y, &listener, shrouded(rx, ry)));
+        sfx.update_looping_sound(owner, gain);
+    }
+}
+
+/// The `Range`/`Type`/`MinVolume` a live loop handle's entry carries, for the
+/// per-update `CalcVolumeAndPan` re-drive.
+fn registry_facts_for_owner(
+    registry: &crate::rules::sound_ini::SoundRegistry,
+    sfx: &crate::audio::sfx::SfxPlayer,
+    owner: u64,
+) -> Option<crate::audio::sfx::SpatialSource> {
+    let key = sfx.loop_handle_sound_id(owner)?;
+    Some(registry.get(&key).map_or_else(
+        || crate::audio::sfx::SpatialSource::from_registry_defaults(registry),
+        crate::audio::sfx::SpatialSource::from_entry,
+    ))
 }
 
 /// Spawn new garrison muzzle flash animations from pending fire events and

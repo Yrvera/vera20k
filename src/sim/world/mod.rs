@@ -3780,6 +3780,29 @@ impl Simulation {
         })
     }
 
+    /// Current world coordinate of whatever object holds one app-side loop
+    /// handle, whether that is an anim or a `MoveSound`-carrying entity.
+    ///
+    /// Read-only, and audio-agnostic: `sim/` never learns that a sound exists.
+    /// It exists because gamemd's owner re-drives its handle every update with
+    /// its own coordinate (`AnimClass::UpdateLoopingSound @ 0x00750D40`, whose
+    /// first argument is the owner's coords), and the app-side owner needs the
+    /// same value. Anim ids and entity stable ids come from one
+    /// `allocate_stable_id` counter — `spawn_anim_at_world` rejects a
+    /// collision against both maps — so one id names at most one object.
+    pub(crate) fn looping_sound_owner_coord(
+        &self,
+        id: crate::sim::anim_class::AnimId,
+    ) -> Option<crate::sim::anim_class::AnimWorldCoord> {
+        if let Some(coord) = self.anim_absolute_coord(id) {
+            return Some(coord);
+        }
+        self.substrate
+            .entities
+            .get(id)
+            .map(Self::movement_sound_world)
+    }
+
     pub(crate) fn movement_sound_world(
         entity: &crate::sim::game_entity::GameEntity,
     ) -> crate::sim::anim_class::AnimWorldCoord {

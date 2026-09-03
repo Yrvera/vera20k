@@ -368,20 +368,26 @@ impl GameSoundEvent {
 /// - Player effect: the line restarts where retail lets it finish.
 /// - Frequency: continuous — it is how players click.
 ///
-/// **Still absent, unchanged.** Nothing emits ambient sound: `WorkingSound=`
-/// (9 stock), `AuxSound1=` (8), `AuxSound2=` (5), `TurretRotateSound=` (2) and
-/// the water enter/leave pair have no producer, and `MoveSound=` is parsed with
-/// per-entity countdown state but no event carries it — and its real trigger is
-/// UNKNOWN, since the site an existing research note names plays
-/// `[AudioVisual] ScoldSound=` instead. `VoiceFeedback=` (133 stock) and
-/// `VoiceCapture=` (3) have no consumers, `VoiceCrashing=` (7) is not parsed,
-/// and taunts reach an empty match arm.
-/// - Player effect: the soundscape is thin — units move silently and bases have
-///   no working hum.
+/// **Partly closed.** `MoveSound=` now has both halves: the sim's
+/// post-locomotor tail (`Simulation::tick_move_sound_after_process`) emits
+/// [`Self::AnimationStarted`]/[`Self::AnimationStopped`] keyed on the object,
+/// and `audio::arbiter` gives that key a real `VocHandle` — so a
+/// `Control=loop` entry such as `RocketeerMoveLoop` sustains for the whole
+/// move and a `Control= random predelay` entry such as
+/// `GrizzlyTankMoveStart` plays one start-up sample, which is what gamemd
+/// does.
+///
+/// **Still absent.** Nothing emits the other ambient families:
+/// `WorkingSound=` (9 stock), `AuxSound1=` (8), `AuxSound2=` (5),
+/// `TurretRotateSound=` (2) and the water enter/leave pair have no producer.
+/// `VoiceFeedback=` (133 stock) and `VoiceCapture=` (3) have no consumers,
+/// `VoiceCrashing=` (7) is not parsed, and taunts reach an empty match arm.
+/// - Player effect: the soundscape is still thin — bases have no working hum.
 /// - Frequency: continuous.
-/// - Downstream risk: every ambient family needs the looping handles recorded on
-///   `audio/sfx.rs`, so they sit behind the same device-free arbiter. The voice
-///   guard does not — it needs only the liveness channel above.
+/// - Downstream risk: none left on the audio side. Each remaining family needs
+///   only a sim-side producer and the same owner-keyed handle `MoveSound=`
+///   already uses; the arbiter behind it is landed. The voice repeat guard
+///   above is separate — it needs only the liveness channel.
 #[derive(Debug, Default)]
 pub struct SoundEventQueue {
     events: Vec<GameSoundEvent>,
