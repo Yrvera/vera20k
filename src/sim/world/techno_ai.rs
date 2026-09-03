@@ -194,6 +194,44 @@ impl Simulation {
         self.mission_host_promote(id, self.session.binary_frame, rules);
     }
 
+
+    /// One `VoxelAnimClass::AI @ 0x00749F30` LogicVector slot.
+    ///
+    /// The piece is taken out of the store for the visit so the integrator can
+    /// read the live terrain grid through `&self` while it mutates the body,
+    /// then reinserted at the same key — `BTreeMap` order is unchanged.
+    ///
+    /// A `Delete` verdict is native's `vtable+0xF8`. Native queues the free on
+    /// the deferred finalization list; here the object leaves the LogicVector
+    /// and the store in the same step, because nothing resolves debris by id
+    /// between the two points.
+    pub(crate) fn visit_voxel_anim(&mut self, id: u64) {
+        let Some(mut debris) = self.substrate.voxel_anims.remove(id) else {
+            return;
+        };
+        let outcome = {
+            let terrain = ResolvedBounceTerrain {
+                terrain: self.resolved_terrain.as_ref(),
+            };
+            crate::sim::voxel_anim::voxel_anim_ai(&mut debris, &terrain)
+        };
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                log::warn!("voxel debris {id} left the verified x87 domain: {error}");
+                crate::sim::voxel_anim::VoxelAnimAiOutcome::Delete
+            }
+        };
+        // Reinsert before the verdict is acted on: the LogicVector dispatch
+        // classifies by store membership, and native's object is likewise still
+        // registered when `vtable+0xF8` runs.
+        self.substrate.voxel_anims.insert(debris);
+        if outcome == crate::sim::voxel_anim::VoxelAnimAiOutcome::Delete {
+            self.unregister_non_entity_object(id);
+            self.substrate.voxel_anims.remove(id);
+        }
+    }
+
     /// Dispatch one current LogicVector slot. A finishing death sequence calls
     /// UnInit synchronously here, so compacting removal is visible before the
     /// scheduler increments its cursor.
@@ -207,6 +245,10 @@ impl Simulation {
             if let Some(rules) = rules {
                 self.visit_anim(id, rules, ctx.overlay_registry);
             }
+            return true;
+        }
+        if self.substrate.voxel_anims.contains_key(id) {
+            self.visit_voxel_anim(id);
             return true;
         }
         if self.substrate.particle_systems.contains_key(id) {
@@ -6413,3 +6455,83 @@ ConditionRedSparkingProbability=1.0\nConditionYellowSparkingProbability=1.0\n\n\
 #[cfg(test)]
 #[path = "techno_ai_veterancy_tests.rs"]
 mod veterancy_tests;
+
+/// `CellClass+0xEC` LandType WATER.
+const BOUNCE_WATER_LAND_TYPE: u8 = 2;
+/// `RecalcZoneType` classes the bounce surface lookup accepts: 2 = Wall,
+/// 5 = Building / TerrainObject.
+const BOUNCE_SURFACE_ZONE_WALL: u8 = 2;
+const BOUNCE_SURFACE_ZONE_BUILDING: u8 = 5;
+
+/// The map facts `BounceClass::Update @ 0x00439B00` looks up, bound to the
+/// live `ResolvedTerrainGrid`.
+///
+/// `sim/bounce.rs` stays a pure integrator; this is the world-side port.
+struct ResolvedBounceTerrain<'a> {
+    terrain: Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid>,
+}
+
+impl ResolvedBounceTerrain<'_> {
+    fn cell(
+        &self,
+        coord: glam::IVec3,
+    ) -> Option<&crate::map::resolved_terrain::ResolvedTerrainCell> {
+        let rx = u16::try_from(coord.x.div_euclid(256)).ok()?;
+        let ry = u16::try_from(coord.y.div_euclid(256)).ok()?;
+        self.terrain?.cell(rx, ry)
+    }
+}
+
+impl crate::sim::bounce::BounceTerrain for ResolvedBounceTerrain<'_> {
+    fn ground_height_leptons(&self, coord: glam::IVec3) -> i32 {
+        self.cell(coord)
+            .and_then(|cell| {
+                crate::util::lepton::ground_height_leptons(
+                    cell.level,
+                    cell.slope_type,
+                    coord.x,
+                    coord.y,
+                )
+                .ok()
+            })
+            .unwrap_or(0)
+    }
+
+    fn is_bridge_cell(&self, coord: glam::IVec3) -> bool {
+        self.cell(coord).is_some_and(|cell| cell.has_bridge_deck)
+    }
+
+    fn cell_height_level(&self, coord: glam::IVec3) -> i32 {
+        self.cell(coord).map_or(0, |cell| i32::from(cell.level))
+    }
+
+    fn ramp(&self, coord: glam::IVec3) -> u8 {
+        self.cell(coord).map_or(0, |cell| cell.slope_type)
+    }
+
+    fn has_bounce_surface(&self, coord: glam::IVec3) -> bool {
+        // Native does `Look_up_building_in_cell` and, failing that,
+        // `CellClass::IsWallConnectableInDirection(-1, -1)`. `RecalcZoneType`
+        // already classifies exactly those two occupants, and the occupancy
+        // lifecycle keeps a dynamic building footprint's byte current, so this
+        // reads the same two facts through the cached class.
+        //
+        // RESIDUAL (GSI-05.14) — native then rejects the surface when the
+        // building's `+0x80` virtual returns non-zero. That virtual was
+        // verified only to return a `char` whose non-zero value suppresses the
+        // bounce; which buildings set it is UNCHECKED, so debris bounces off
+        // every building roof here. Trigger: debris landing on a structure.
+        // Player effect: a chunk that should pass through rests on the roof.
+        // Frequency: bounded by `[TIRE]`'s scatter reaching a building cell.
+        // Downstream risk: none to the stream.
+        self.cell(coord).is_some_and(|cell| {
+            cell.zone_type == BOUNCE_SURFACE_ZONE_WALL
+                || cell.zone_type == BOUNCE_SURFACE_ZONE_BUILDING
+        })
+    }
+
+    fn is_water(&self, coord: glam::IVec3) -> bool {
+        self.cell(coord)
+            .is_some_and(|cell| cell.yr_cell_land_type == BOUNCE_WATER_LAND_TYPE)
+    }
+}

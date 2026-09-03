@@ -363,7 +363,18 @@ use crate::sim::world::Simulation;
 // APPENDED at the end of the struct and the variant is appended to the enum, so
 // unlike the 117 and 118 bumps this one is serde-coverable in principle; the
 // version still moves because the hash schema folds the new state.
-const SNAPSHOT_VERSION: u32 = 119;
+// Bumped 119 -> 120: `ObjectSubstrate` gains the `VoxelAnimClass` registry —
+// the flying VXL debris a vehicle or building death throws. The field is
+// `#[serde(default)]` and appended, so bincode can read a v119 record, but the
+// version still moves because the hash schema folds the new store AND because
+// the death path now consumes draws it did not before: one
+// `RandomRanged(MinDebris, MaxDebris - 1)` per destroyed Techno with
+// `MaxDebris > 0`, then per debris entry one `Random__Next()` and seven draws
+// per voxel piece, then one `RandomRanged` per SHP debris anim
+// (`TechnoClass::ReceiveDamage @ 0x00701900`, `0x00702281`..`0x0070256C`).
+// Every consumer after a death in the same tick therefore reads a different
+// cursor than it did on v119.
+const SNAPSHOT_VERSION: u32 = 120;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -776,6 +787,15 @@ impl RestoredObjectIndex {
         }
         for (&registry_id, anim) in sim.substrate.anims.iter() {
             Self::register(&mut identities, "AnimStore", registry_id, anim.stable_id)?;
+            highest_id = highest_id.max(registry_id);
+        }
+        for (&registry_id, debris) in sim.substrate.voxel_anims.iter() {
+            Self::register(
+                &mut identities,
+                "VoxelAnimStore",
+                registry_id,
+                debris.stable_id,
+            )?;
             highest_id = highest_id.max(registry_id);
         }
         for (&registry_id, system) in sim.substrate.particle_systems.iter() {
@@ -3091,10 +3111,15 @@ mod tests {
     /// five guidance additions (`max_speed`, `acceleration`, `fuse_reference`,
     /// `closing_frames`, `closing_accumulator_bits`) sit at the END of the
     /// struct, but a v118 record still stops short of them, so bincode would
-    /// run off the end of every in-flight projectile.
+    /// run off the end of every in-flight projectile; 119 -> 120 adds the
+    /// `VoxelAnimClass` debris registry to `ObjectSubstrate` and wires the
+    /// death-side debris producer, which changes both the hash schema and the
+    /// shared RNG cursor at every Techno death whose type authors a POSITIVE
+    /// `MaxDebris=` — the 83 stock sections that author `MaxDebris=0` stop at
+    /// `0x00702291` and still cost the stream nothing.
     #[test]
-    fn projectile_flight_state_snapshot_version_is_119() {
-        assert_eq!(super::SNAPSHOT_VERSION, 119);
+    fn death_debris_store_snapshot_version_is_120() {
+        assert_eq!(super::SNAPSHOT_VERSION, 120);
     }
 
     #[test]

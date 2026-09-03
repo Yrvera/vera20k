@@ -3106,6 +3106,7 @@ impl Simulation {
             }
         }
 
+        self.admit_death_debris(std::mem::take(&mut effects.voxel_debris));
         for fx in &effects.explosion_effects {
             let frames = rules
                 .effect_frame_count(self.interner.resolve(fx.shp_name))
@@ -4529,6 +4530,11 @@ impl Simulation {
                         .is_some_and(|anim| anim.in_logic_vector)
                     || self
                         .substrate
+                        .voxel_anims
+                        .get(id)
+                        .is_some_and(|debris| debris.in_logic_vector)
+                    || self
+                        .substrate
                         .particle_systems
                         .get(id)
                         .is_some_and(|system| system.in_logic_vector)
@@ -4560,6 +4566,12 @@ impl Simulation {
             .iter()
             .filter(|(_, anim)| anim.in_logic_vector)
             .count();
+        let flagged_voxel_anims = self
+            .substrate
+            .voxel_anims
+            .iter()
+            .filter(|(_, debris)| debris.in_logic_vector)
+            .count();
         let flagged_particle_systems = self
             .substrate
             .particle_systems
@@ -4584,6 +4596,7 @@ impl Simulation {
             .count();
         let flagged = flagged_entities
             + flagged_anims
+            + flagged_voxel_anims
             + flagged_particle_systems
             + flagged_terrain
             + flagged_projectiles
@@ -4880,6 +4893,9 @@ impl Simulation {
         for anim in self.substrate.anims.values_mut() {
             anim.in_logic_vector = false;
         }
+        for debris in self.substrate.voxel_anims.values_mut() {
+            debris.in_logic_vector = false;
+        }
         for (_, system) in self.substrate.particle_systems.iter_mut() {
             system.in_logic_vector = false;
         }
@@ -4897,6 +4913,8 @@ impl Simulation {
                 e.in_logic_vector = true;
             } else if let Some(anim) = self.substrate.anims.get_mut(id) {
                 anim.in_logic_vector = true;
+            } else if let Some(debris) = self.substrate.voxel_anims.get_mut(id) {
+                debris.in_logic_vector = true;
             } else if let Some(system) = self.substrate.particle_systems.get_mut(id) {
                 system.in_logic_vector = true;
             } else if let Some(terrain) = self.production.terrain_objects.get_mut(&id) {
@@ -4908,6 +4926,28 @@ impl Simulation {
             }
         }
         self.substrate.logic.set_order_for_test(order);
+    }
+
+
+    /// Admit the `VoxelAnimClass` debris a death threw.
+    ///
+    /// gamemd-derived: `VoxelAnimClass::Constructor @ 0x007493B0` assigns the
+    /// shared unique id (`AbstractClass::AssignUniqueID`), appends to the
+    /// VoxelAnim registry, then `ObjectClass::Unlimbo` reveals the piece into
+    /// the LogicClass vector. The launch velocity and the physics body were
+    /// already built inside the combat transaction, which consumed the draws in
+    /// native order; only the identity and the registration happen here.
+    pub(crate) fn admit_death_debris(
+        &mut self,
+        spawns: Vec<crate::sim::voxel_anim::VoxelDebrisSpawn>,
+    ) {
+        for spawn in spawns {
+            let stable_id = self.allocate_stable_id();
+            let mut object = spawn.object;
+            object.stable_id = stable_id;
+            self.substrate.voxel_anims.insert(object);
+            self.reveal_voxel_anim(stable_id);
+        }
     }
 
     /// Increment owned count for the given owner when an entity spawns.
@@ -5302,6 +5342,9 @@ impl Simulation {
         for anim in self.substrate.anims.values_mut() {
             anim.in_logic_vector = false;
         }
+        for debris in self.substrate.voxel_anims.values_mut() {
+            debris.in_logic_vector = false;
+        }
         for (_, system) in self.substrate.particle_systems.iter_mut() {
             system.in_logic_vector = false;
         }
@@ -5319,6 +5362,8 @@ impl Simulation {
                 entity.in_logic_vector = true;
             } else if let Some(anim) = self.substrate.anims.get_mut(id) {
                 anim.in_logic_vector = true;
+            } else if let Some(debris) = self.substrate.voxel_anims.get_mut(id) {
+                debris.in_logic_vector = true;
             } else if let Some(system) = self.substrate.particle_systems.get_mut(id) {
                 system.in_logic_vector = true;
             } else if let Some(terrain) = self.production.terrain_objects.get_mut(&id) {
@@ -7497,7 +7542,7 @@ impl Simulation {
                 .map(|(&stable_id, _)| stable_id)
                 .collect::<BTreeSet<_>>();
             let fire_suppressed = tube_turn_owned_ids.clone();
-            let combat_result = self.tick_combat_with_fatal_lifecycle(
+            let mut combat_result = self.tick_combat_with_fatal_lifecycle(
                 rules,
                 overlay_registry,
                 tick_ms,
@@ -7654,6 +7699,7 @@ impl Simulation {
                     crate::sim::superweapon::refresh_super_weapons_for_owner(self, rules, owner_id);
                 }
             }
+            self.admit_death_debris(std::mem::take(&mut combat_result.voxel_debris));
             // Spawn explosion animations from combat deaths.
             for fx in &combat_result.explosion_effects {
                 let frames = rules

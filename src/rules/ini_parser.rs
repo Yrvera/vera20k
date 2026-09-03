@@ -196,15 +196,36 @@ impl IniSection {
         self.set(&next.to_string(), value);
     }
 
-    /// Value lookup that ignores key case.
+    /// Value lookup that ignores key case. **VERA-internal — gamemd has no
+    /// equivalent, and no new caller should be added.**
     ///
-    /// The ordinary readers match keys exactly, which is right for almost
-    /// everything because retail spells keys consistently. `MaxDebris=` is the
-    /// exception this exists for: 17 of the 456 stock sections that author it
-    /// spell it `Maxdebris=`, and gamemd's `INIClass` compares keys
-    /// case-insensitively, so those 17 do take effect in retail. Reach for this
-    /// only where a retail spelling inconsistency is known and counted — making
-    /// every reader case-insensitive is an INI-layer change with its own row.
+    /// gamemd's `INIClass` is case-SENSITIVE on both section names and entry
+    /// names. It hashes the raw bytes on the store side
+    /// (`INIClass::LoadFromStraw @ 0x00525A60`, raw-pointer CRC call at
+    /// `0x005260D4`, whose only text transform is `strtrim @ 0x00727CF0` —
+    /// bytes `<= 0x20` off both ends) and on the lookup side
+    /// (`CCINIClass::ReadInt @ 0x005276D0`, CRC call at `0x00527727`), through
+    /// the standard reflected CRC-32 in `CRCEngine::AddData @ 0x004A1DE0`
+    /// (table at `0x0081F7B4`, poly `0xEDB88320`), and then compares 32-bit
+    /// integers only — `INIClass::FindEntry_BinarySearch @ 0x0052B4F0` and
+    /// `FindSection_BinarySearch @ 0x0052B620` never call `strcmp`. There is
+    /// no folding instruction anywhere on the path and no string fallback.
+    ///
+    /// An earlier version of this comment claimed the opposite and cited
+    /// `MaxDebris=` as the reason this helper exists. That was backwards: the
+    /// 17 stock `[VehicleTypes]` spelling `Maxdebris=3` are invisible to
+    /// gamemd and keep the constructor default of 0, so reading them was the
+    /// divergence. Those call sites are now case-exact.
+    ///
+    /// Across the whole stock INI corpus exactly 6 authored key spellings
+    /// disagree in case with gamemd's own literal: `Maxdebris` (17 sections),
+    /// `JumpJetAccel` (8), `JumpJetTurnRate` (8), `Vshift` (9), `Fshift` (3)
+    /// and `volume` (2) — 47 (section, key) pairs over 38 distinct sections.
+    /// 0 section names disagree. The survivors here are `sound_ini.rs`'s 18
+    /// call sites, reached by the three soundmd mis-spellings above: 14 of
+    /// those 47 pairs, over 13 distinct sound events, because
+    /// `[GrinderGrinding]` carries both `Fshift` and `Vshift`. They belong to
+    /// the audio lane; this helper is deleted once those are converted.
     pub fn get_ignoring_case(&self, key: &str) -> Option<&str> {
         self.key_ignore_ascii_case(key)
             .and_then(|exact| self.entries.get(exact))

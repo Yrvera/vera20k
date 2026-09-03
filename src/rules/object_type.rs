@@ -1199,21 +1199,27 @@ pub struct ObjectType {
     /// from `[MinDebris, MaxDebris]` and spends it on `DebrisTypes` VoxelAnims
     /// and `DebrisAnims` SHP anims.
     ///
-    /// 456 stock sections author it, 17 of them spelled `Maxdebris=`; gamemd
-    /// matches keys case-insensitively, so this is read that way and all 456
-    /// count.
+    /// 456 stock sections author some spelling of it, but gamemd reads the key
+    /// case-exactly, so only the **439** spelled `MaxDebris=` count. The other
+    /// 17 spell it `Maxdebris=3` and keep the constructor default of 0
+    /// (`TechnoTypeClass::Constructor 0x00710FB7`), which is why the Rhino, the
+    /// Apocalypse and 12 more buildable vehicles throw no death debris at all.
     pub max_debris: i32,
-    /// `MinDebris=` — the floor of the same range. 272 stock sections, every
-    /// one of them a `[BuildingTypes]` member.
+    /// `MinDebris=` — the floor of the same range, read at `0x007125A8` into
+    /// `TechnoType+0x5C0` and floored to 0 at `0x007125BD`. 272 stock sections
+    /// author it, every one of them a `[BuildingTypes]` member.
     pub min_debris: i32,
     /// `DebrisTypes=` CSV of `[VoxelAnims]` ids. 36 stock sections author it
-    /// and every one of them names exactly `TIRE`.
+    /// and every one of them names exactly `TIRE`; 32 of the 36 also reach the
+    /// block, the other 4 (`CMON`, `FV`, `HORV`, `HTK`) being among the 17 that
+    /// mis-spell `MaxDebris=` and so throw nothing.
     pub debris_types: Vec<String>,
     /// `DebrisMaximums=` CSV, positionally paired with `debris_types`: the cap
     /// on how many of each type may be thrown. 36 stock sections.
     pub debris_maximums: Vec<i32>,
     /// `DebrisAnims=` CSV of `[Animations]` ids — the SHP half of the debris a
-    /// death throws, as distinct from the VXL half above. 166 stock sections.
+    /// death throws, as distinct from the VXL half above. 166 stock sections,
+    /// all of them `[BuildingTypes]`.
     pub debris_anims: Vec<String>,
     /// `CloseRange=` bool — `TechnoTypeClass+0x695`, read at `0x0071497A`
     /// (key string `0x008439C4`) and stored at `0x00714987`.
@@ -1476,6 +1482,30 @@ impl ObjectType {
         // `Primary`/`Secondary` are slots 0/1 of these arrays in gamemd — the
         // same storage, filled by whichever ReadINI branch this type takes.
         let (weapon_list, elite_weapon_list) = Self::read_weapon_arrays(section);
+
+        // `TechnoTypeClass::ReadINI @ 0x00712587..0x007125DF` reads the debris
+        // span in a fixed order and then clamps it twice:
+        //   `0x0071258E PUSH 0x84439C` ("MaxDebris") -> `0x0071259B` +0x5BC
+        //   `0x007125A8 PUSH 0x844390` ("MinDebris") -> `0x007125B7` +0x5C0
+        //   `0x007125BD JGE`  -> `0x007125BF` MinDebris = 0 when it read below 0
+        //   `0x007125D7 JGE`  -> `0x007125D9` MaxDebris = MinDebris when it is lower
+        // The order is load-bearing and matches the warhead sibling at
+        // `WarheadTypeClass::ReadINI 0x0075DAC4`/`0x0075DAE0`: MinDebris is
+        // floored first, so a negative MinDebris cannot drag MaxDebris below
+        // zero and re-open the block that `MaxDebris <= 0` closes. No stock
+        // section authors a negative MinDebris or an inverted span, so this is
+        // reachable only from modded rules — but it is what makes
+        // `throw_death_debris`'s inverted-span branch well-defined.
+        //
+        // Both keys are read case-exactly. `0x0084439C` is the C string
+        // `MaxDebris` and `0x00844390` is `MinDebris`, and `CCINIClass::ReadInt
+        // @ 0x005276D0` CRCs the raw key bytes (`0x00527715..0x00527750`) with
+        // no folding step, so the 17 `[VehicleTypes]` that spell it
+        // `Maxdebris=3` are invisible to gamemd and keep the constructor
+        // default of 0 (`TechnoTypeClass::Constructor 0x00710FB7`).
+        let max_debris = section.get_i32("MaxDebris").unwrap_or(0);
+        let min_debris = section.get_i32("MinDebris").unwrap_or(0).max(0);
+        let max_debris = max_debris.max(min_debris);
 
         Self {
             id: id.to_string(),
@@ -1981,14 +2011,14 @@ impl ObjectType {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             damage_particle_systems: parse_csv_string_list(section.get("DamageParticleSystems")),
-            max_debris: section.get_i32_ignoring_case("MaxDebris").unwrap_or(0),
-            min_debris: section.get_i32_ignoring_case("MinDebris").unwrap_or(0),
-            debris_types: parse_csv_string_list(section.get_ignoring_case("DebrisTypes")),
-            debris_maximums: parse_csv_string_list(section.get_ignoring_case("DebrisMaximums"))
+            max_debris,
+            min_debris,
+            debris_types: parse_csv_string_list(section.get("DebrisTypes")),
+            debris_maximums: parse_csv_string_list(section.get("DebrisMaximums"))
                 .iter()
                 .filter_map(|value| value.parse::<i32>().ok())
                 .collect(),
-            debris_anims: parse_csv_string_list(section.get_ignoring_case("DebrisAnims")),
+            debris_anims: parse_csv_string_list(section.get("DebrisAnims")),
             close_range: section.get_bool("CloseRange").unwrap_or(false),
             stupid_hunt: section.get_bool("StupidHunt").unwrap_or(false),
             cyborg: section.get_bool("Cyborg").unwrap_or(false),
@@ -3438,7 +3468,7 @@ mod tests {
     }
 
     #[test]
-    fn gsi_05_14_debris_keys_parse_including_the_retail_lowercase_spelling() {
+    fn gsi_05_14_debris_keys_are_case_exact_so_the_retail_lowercase_spelling_is_unread() {
         // A death spends a count drawn from [MinDebris, MaxDebris] on
         // DebrisTypes VoxelAnims and DebrisAnims SHP anims.
         let ini: IniFile = IniFile::from_str(
@@ -3457,16 +3487,83 @@ mod tests {
         assert_eq!(obj.debris_maximums, vec![3]);
         assert_eq!(obj.debris_anims.len(), 3);
 
-        // 17 of the 456 stock sections spell it `Maxdebris=`, and gamemd's
-        // INIClass compares keys case-insensitively, so those 17 do throw
-        // debris in retail. An exact-cased read would silently give them 0.
+        // The lowercase spelling must NOT be read. gamemd's `INIClass` hashes
+        // the raw bytes of the key on both the store side
+        // (`INIClass::LoadFromStraw @ 0x005260C9`) and the lookup side
+        // (`CCINIClass::ReadInt @ 0x00527715`), and both binary searches
+        // compare 32-bit CRCs only — there is no folding instruction anywhere
+        // on the path, and `strtrim @ 0x00727CF0` strips whitespace and
+        // nothing else. `0x0084439C` is the literal `MaxDebris`, so the 17
+        // stock `[VehicleTypes]` that spell it `Maxdebris=3` are invisible to
+        // the read and keep the `TechnoTypeClass::Constructor 0x00710FB7`
+        // default of 0. That zero closes the whole debris block at
+        // `TechnoClass::ReceiveDamage 0x00702293 JLE`, so the Rhino, the
+        // Apocalypse, the Prism Tank, the Battle Fortress, the IFV and 9 more
+        // buildable vehicles throw nothing on death in retail and take no RNG
+        // draw for it. Reading them would be the divergence, not the fix.
         let ini: IniFile = IniFile::from_str("[NAPOWR]\nMaxdebris=7\nMindebris=2\n");
         let obj = ObjectType::from_ini_section(
             "NAPOWR",
             ini.section("NAPOWR").unwrap(),
             ObjectCategory::Building,
         );
-        assert_eq!((obj.min_debris, obj.max_debris), (2, 7));
+        assert_eq!((obj.min_debris, obj.max_debris), (0, 0));
+
+        // The same rule on the CSV siblings: no stock section mis-spells any
+        // of these three, so this arm is wrong-in-principle only today, but it
+        // goes live the moment a mod mis-spells one.
+        let ini: IniFile = IniFile::from_str(
+            "[NAPOWR]\nMaxDebris=5\n\
+             debristypes=TIRE\nDEBRISMAXIMUMS=3\nDebrisanims=DBRIS1LG\n",
+        );
+        let obj = ObjectType::from_ini_section(
+            "NAPOWR",
+            ini.section("NAPOWR").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert_eq!(obj.max_debris, 5);
+        assert!(obj.debris_types.is_empty());
+        assert!(obj.debris_maximums.is_empty());
+        assert!(obj.debris_anims.is_empty());
+    }
+
+    /// `TechnoTypeClass::ReadINI @ 0x007125BD` floors `MinDebris` at 0, then
+    /// `0x007125D9` raises `MaxDebris` to meet it. The order matters: flooring
+    /// first is what stops a negative `MinDebris` from dragging `MaxDebris`
+    /// below zero and re-opening the block that `MaxDebris <= 0` closes.
+    ///
+    /// Stock-unreachable — 0 sections author a negative `MinDebris` and 0
+    /// author an inverted span — so this is modded-rules territory, but it is
+    /// what makes `throw_death_debris`'s inverted-span branch well-defined.
+    #[test]
+    fn gsi_05_14_mindebris_floors_at_zero_then_raises_maxdebris() {
+        let ini: IniFile = IniFile::from_str("[NAPOWR]\nMaxDebris=2\nMinDebris=-9\n");
+        let obj = ObjectType::from_ini_section(
+            "NAPOWR",
+            ini.section("NAPOWR").unwrap(),
+            ObjectCategory::Building,
+        );
+        // MinDebris floored to 0 first, so MaxDebris is left where it was.
+        assert_eq!((obj.min_debris, obj.max_debris), (0, 2));
+
+        let ini: IniFile = IniFile::from_str("[NAPOWR]\nMaxDebris=2\nMinDebris=7\n");
+        let obj = ObjectType::from_ini_section(
+            "NAPOWR",
+            ini.section("NAPOWR").unwrap(),
+            ObjectCategory::Building,
+        );
+        // Inverted span: MaxDebris rises to meet MinDebris.
+        assert_eq!((obj.min_debris, obj.max_debris), (7, 7));
+
+        let ini: IniFile = IniFile::from_str("[NAPOWR]\nMaxDebris=-4\nMinDebris=-9\n");
+        let obj = ObjectType::from_ini_section(
+            "NAPOWR",
+            ini.section("NAPOWR").unwrap(),
+            ObjectCategory::Building,
+        );
+        // A negative MinDebris must not drag MaxDebris up out of its own
+        // negative: the floor lands on 0, and MaxDebris rises only to 0.
+        assert_eq!((obj.min_debris, obj.max_debris), (0, 0));
     }
     #[test]
     fn techno_type_parses_damage_particle_systems_csv() {
