@@ -8940,10 +8940,7 @@ fn gsi_05_14_a_dying_building_uses_its_own_debris_anims() {
         .collect();
     let own: usize = names.iter().filter(|n| n.starts_with("DBRI-WM")).count();
     // `MinDebris=3`, `MaxDebris=4` pins the budget at 3 with no draw.
-    assert_eq!(
-        own, 3,
-        "the whole budget comes from DebrisAnims=: {names:?}"
-    );
+    assert_eq!(own, 3, "the whole budget comes from DebrisAnims=: {names:?}");
     assert!(
         !names.iter().any(|n| n.starts_with("DBRIS")),
         "the Rules MetallicDebris arm must not also fire: {names:?}"

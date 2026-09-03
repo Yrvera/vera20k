@@ -29,6 +29,13 @@
 //! constructor's 4 and 2.0. Reading the INI's spelling instead of gamemd's, as
 //! this module used to, applied an acceleration gamemd ignores.
 //!
+//! ## Recorded DRIFTs
+//!
+//! Two native behaviours this module does not reproduce, both harmless on stock
+//! data and both written out where the field lives: the 208-lepton hover floor
+//! the Jumpjet locomotor applies to [`JumpjetParams::height`], and the integer
+//! reader type of [`JumpjetParams::speed`].
+//!
 //! ## Dependency rules
 //! - Part of rules/ — no dependencies on sim/, render/, ui/, etc.
 
@@ -73,6 +80,10 @@ pub struct JumpjetParams {
     /// multiplier on `Speed=`: stock `[JUMPJET]` pairs `Speed=9` with
     /// `JumpjetSpeed=30`, and the constructor seeds 14 — the same value stock
     /// `[JumpjetControls] Speed=` carries.
+    ///
+    /// This is the one field whose Rust type does not match its native one —
+    /// `+0xD74` is an `int`. See the residual at the read site in
+    /// [`JumpjetParams::from_ini_section`].
     pub speed: SimFixed,
     /// Climb/ascent rate per tick (`JumpjetClimb=`, `+0xD78`).
     pub climb: SimFixed,
@@ -80,6 +91,29 @@ pub struct JumpjetParams {
     /// Total crash speed = climb + crash.
     pub crash: SimFixed,
     /// Target hover altitude in leptons (`JumpjetHeight=`, `+0xD80`).
+    ///
+    /// RESIDUAL — DRIFT, not implemented in VERA. gamemd never hovers at this
+    /// value raw: the `JumpjetLocomotionClass` parameter copy at `0x0054AD30`
+    /// clamps it **up** on the way into the locomotor (`0x0054AD9B`:
+    /// `ECX = 2 * [0x00ABC5E8]`, `CMP EAX,ECX`, `JG` keeps the type's value,
+    /// else `EAX = ECX`), giving an effective floor of **208 leptons**.
+    /// `[0x00ABC5E8]` has exactly one writer, `0x0054AB2B`, and every input is
+    /// a static `.rdata` constant: `[0x007ECD38] = pi/180`, times
+    /// `[0x007E1730] = 90` gives `[0x00ABC570] = pi/2` (`0x0054AAE0`); times
+    /// `[0x007E1728] = 60` gives `[0x00ABC598] = pi/3` (`0x0054AAC0`);
+    /// `sqrt(2 * 256^2)` gives `[0x00ABC590] = 256*sqrt(2) = 362.0387`
+    /// (`0x0054AA30`); then `0x0054AB00` computes
+    /// `ftol(tan_table(pi/2 - pi/3) * 362.0387 * 0.5)`, the 0.5 being
+    /// `[0x007E1738]`. The table entry the index lands on, `0x0085D5F8`, holds
+    /// `0x3F13A08F = 0.5766687`, so `104.3878 -> 104` and the floor is
+    /// `2 * 104`. Every constant in that chain was read out of the binary.
+    ///
+    /// Trigger: a section authoring `JumpjetHeight` below 208. Player effect:
+    /// that unit hovers lower in VERA than in gamemd, permanently. Frequency:
+    /// **zero on stock data** — the lowest authored height in retail
+    /// `rulesmd.ini` is 500, and `[ZEP]`/`[DISK]` author 750, so every stock
+    /// jumpjet clears the floor. Only a mod or map INI can reach it.
+    /// Downstream risk: none — nothing else reads the clamped value.
     pub height: i32,
     /// Acceleration rate (`JumpjetAccel=`, `+0xD84`). Deceleration = accel *
     /// 1.5.
@@ -128,6 +162,21 @@ impl JumpjetParams {
             // all eight stock jumpjet sections keep the constructor's 4.
             turn_rate: section.get_i32("JumpjetTurnRate").unwrap_or(ctor.turn_rate),
             // `0x007150D0 PUSH 0x8436C0` -> `0x007150E4 MOV [EBP+0xD74],EAX`.
+            //
+            // RESIDUAL — DRIFT, pre-existing and not fixed here. The native
+            // reader is `CCINIClass::ReadInt @ 0x005276D0` into the *integer*
+            // field `+0xD74`, which `0x0054AD5C` copies out as a plain int;
+            // VERA reads a double and keeps the fraction in `SimFixed`. Every
+            // other key in this block matches its native reader type (ints via
+            // `get_i32`, `ReadDouble` keys via `get_f32`, the flag via
+            // `get_bool`) — this one does not. Trigger: a section authoring a
+            // fractional `JumpjetSpeed=`, e.g. 16.5, where the native integer
+            // read yields 16 and VERA keeps 16.5 — that unit cruises ~3% fast
+            // for the life of the mod. Frequency: **zero on stock** — all eight
+            // jumpjet sections author integers (5, 16, 30x5, 40) and the
+            // constructor seeds 14. Downstream risk: low; only a mod or map INI
+            // reaches it. The fix is `get_i32` here; left recorded rather than
+            // changed to keep this slice documentation-only.
             speed: section
                 .get_f32("JumpjetSpeed")
                 .map(sim_from_f32)
