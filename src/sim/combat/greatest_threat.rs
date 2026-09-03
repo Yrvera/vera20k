@@ -295,7 +295,26 @@ pub(crate) enum ThreatReference {
     /// Because `Mission_Hunt`'s copy and `GetCoords` read the same three
     /// fields, the reference *point* is identical to the `NullCoord` branch's;
     /// only the scale differs. Modelled as the scorer's own coordinate here for
-    /// that reason, and no other caller can reach this branch.
+    /// that reason.
+    ///
+    /// **The name is narrower than the native branch, deliberately.** The
+    /// coordinate is chosen a level up, at `Greatest_Threat`, whose gate
+    /// `TEST AL,0x3 ; JZ 0x006F9B6E @ 0x006F8FE0` sends *any* mask with the low
+    /// two bits clear down the flat walk — and `search_instructions
+    /// CALL "+ 0x3c4]"` finds fourteen callsites, not one.
+    /// `FootClass::Mission_Rescue @ 0x004DE056` passes mask 0 with
+    /// `param_1[0x86]`'s coords, i.e. the **ArchiveTarget**
+    /// (`TechnoClass+0x218`) rather than the scanner's own position, and two
+    /// further flat-walk sites (`0x00414B24` mask `0x40`, `0x00414B64` mask 0)
+    /// sit in an undefined body with three more passing a register mask,
+    /// unsettled.
+    ///
+    /// So this variant is exact for every path VERA runs today — Hunt is the
+    /// only production caller that reaches the flat walk — but it is NOT a
+    /// general "supplied coordinate" model, and a second caller cannot simply
+    /// reuse it. Wiring Rescue (VERA already has a paradrop analogue in
+    /// `sim::aircraft::paradrop_mission`) needs an arbitrary-point sibling
+    /// carrying the ArchiveTarget, not this one.
     ScannerCoords,
 }
 
