@@ -164,8 +164,11 @@ pub(crate) fn eva_faction_key(
 
 /// Drain pending sound events from the queue and play them through the SFX player.
 ///
-/// Voice events (VoiceSelect, VoiceMove, VoiceAttack) are routed to the dedicated
-/// voice slot which cuts off the previous voice. All other sounds go to the SFX pool.
+/// Voice events (VoiceSelect, VoiceMove, VoiceAttack, VoiceCapture, ...) are
+/// latched per speaking object and drained at the end of the pass — see
+/// [`crate::audio::voice_queue`] — so a repeated click drops the second line
+/// instead of restarting the first mid-word. All other sounds go to the SFX
+/// pool.
 ///
 /// Positional cues go through `VocClass::CalcVolumeAndPan @ 0x00750AC0`
 /// (`audio::sfx::spatial_gain`) against the tactical view rect — the native
@@ -243,11 +246,15 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
 
     for event in &events {
         match event {
-            // Voice events — always full volume (non-positional), use dedicated voice slot.
-            GameSoundEvent::UnitSelected { .. }
-            | GameSoundEvent::UnitMoveOrder { .. }
-            | GameSoundEvent::UnitAttackOrder { .. } => {
-                sfx.play_voice_sound(event.sound_id(), registry, assets, audio_indices);
+            // Unit acknowledgement lines — always full volume (non-positional).
+            // `TechnoClass::Queue_Voice @ 0x00708D90` only latches the line on
+            // the speaking object; `drain_unit_voices` below is the
+            // `TechnoClass::AI_Update @ 0x006F9EBB` drain that decides whether
+            // it plays, is dropped as a repeat, or waits for the live line.
+            GameSoundEvent::UnitSelected { speaker_id, .. }
+            | GameSoundEvent::UnitMoveOrder { speaker_id, .. }
+            | GameSoundEvent::UnitAttackOrder { speaker_id, .. } => {
+                sfx.queue_unit_voice(*speaker_id, event.sound_id());
             }
             // STANDARD EVA cues are fire-and-forget: play only if voice is idle.
             GameSoundEvent::BuildingReady { .. }
@@ -297,6 +304,41 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                 // RulesClass::ReadAudioVisual @ 0x006691E0 stores only the
                 // VocClass::FindByName @ 0x007514D0 result. An invalid name is
                 // silent; it must not enter the generic raw audio-bag fallback.
+                if registry.get(sound_id).is_none() {
+                    continue;
+                }
+                if let Some(gain) = gain_for(sound_id, *source) {
+                    sfx.play_registered_sound_spatial(
+                        sound_id,
+                        gain,
+                        registry,
+                        assets,
+                        audio_indices,
+                    );
+                }
+            }
+            GameSoundEvent::BaseUnderAttackSfx { sound_id } => {
+                // `0x004F95BF MOV EDX,0x2000` / `0x004F95C4 PUSH 0x3F800000`:
+                // pan centred, volume 1.0f, no handle — an ordinary pooled
+                // event, not a voice. `RulesClass::ReadAudioVisual` keeps only
+                // the `VocClass::FindByName` result, so an unregistered name
+                // must not reach the raw audio-bag path.
+                if registry.get(sound_id).is_none() {
+                    continue;
+                }
+                sfx.play_registered_sound_spatial(
+                    sound_id,
+                    SpatialGain::CENTRED_FULL,
+                    registry,
+                    assets,
+                    audio_indices,
+                );
+            }
+            GameSoundEvent::LightningStrike { sound_id, source } => {
+                // `CCINIClass::ReadSoundList @ 0x00525430` only stores tokens
+                // `VocClass::FindPtrByName` resolves, so a `LightningSounds=`
+                // name that is not a registered Voc never reaches the list and
+                // must not fall through to the raw audio-bag path here.
                 if registry.get(sound_id).is_none() {
                     continue;
                 }
@@ -367,6 +409,12 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             .and_then(|facts| spatial_gain(facts, screen_x, screen_y, &listener, shrouded(rx, ry)));
         sfx.update_looping_sound(owner, gain);
     }
+
+    // `TechnoClass::AI_Update @ 0x006F9EBB` drains the per-object voice latch
+    // immediately after its `AnimClass::UpdateLoopingSound` call at
+    // `0x006F9EA8`, so the drain runs last here too. This is where a repeated
+    // click is dropped instead of restarting the line mid-word.
+    sfx.drain_unit_voices(registry, assets, audio_indices);
 }
 
 /// The `Range`/`Type`/`MinVolume` a live loop handle's entry carries, for the

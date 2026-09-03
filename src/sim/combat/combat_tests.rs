@@ -4120,6 +4120,100 @@ fn selected_death_sounds_for(
         .collect()
 }
 
+/// `BuildingClass::DestructionEffects`: a dying building whose type has no
+/// `DieSound=` of its own falls back to `[AudioVisual] BuildingDieSound`
+/// (`0x0044173F` reads the type's `DieSound` vector count at `+0x520`,
+/// `0x0044174A CMP ECX,EBX ; JNZ` skips the global when it is non-zero, and
+/// `0x00441773`/`0x00441779` play `Rules+0x6E8` at the building's coordinate).
+/// The fallback is not owner-gated and draws no RNG.
+#[test]
+fn a_building_with_no_die_sound_falls_back_to_the_global_building_die_sound() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[General]\nFlightLevel=500\n\n\
+[AudioVisual]\nBuildingDieSound=BuildingGenericDie\n\n\
+[InfantryTypes]\n0=E1\n\n\
+[VehicleTypes]\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n0=GAPOWR\n1=GATECH\n\n\
+[E1]\nStrength=1\nArmor=none\nDieSound=DieA\n\n\
+[GAPOWR]\nStrength=750\nArmor=wood\n\n\
+[GATECH]\nStrength=750\nArmor=wood\nDieSound=OwnCrumble\n",
+    ))
+    .expect("building die-sound rules parse");
+
+    let selected = |type_name: &str, category: EntityCategory| -> Vec<String> {
+        let mut interner = test_interner();
+        let mut rng = SimRng::new(11);
+        let rng_before = rng.state();
+        let mut sounds = Vec::new();
+        super::append_selected_death_sounds(
+            rules.object(type_name).expect("type"),
+            category,
+            rules.general.building_die_sound.as_deref(),
+            true,
+            &mut rng,
+            &mut interner,
+            4,
+            7,
+            &mut sounds,
+        );
+        assert_eq!(
+            rng.state() == rng_before,
+            rules.object(type_name).expect("type").die_sounds.is_empty(),
+            "the global cue must not draw; only a non-empty DieSound= list does",
+        );
+        sounds
+            .into_iter()
+            .map(|(id, rx, ry)| {
+                assert_eq!((rx, ry), (4, 7), "played at the building's own cell");
+                interner.resolve(id).to_string()
+            })
+            .collect()
+    };
+
+    assert_eq!(
+        selected("GAPOWR", EntityCategory::Structure),
+        ["BuildingGenericDie"],
+        "no DieSound= on the type, so the global crumble cue plays"
+    );
+    assert_eq!(
+        selected("GATECH", EntityCategory::Structure),
+        ["OwnCrumble"],
+        "0x0044174A skips the global when the type has its own list"
+    );
+    assert_eq!(
+        selected("E1", EntityCategory::Infantry),
+        ["DieA"],
+        "the fallback is BuildingClass-only"
+    );
+
+    // A rules file with no BuildingDieSound= leaves the building silent
+    // rather than inventing a cue.
+    let bare = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[General]\nFlightLevel=500\n\n\
+[InfantryTypes]\n\n[VehicleTypes]\n\n[AircraftTypes]\n\n\
+[BuildingTypes]\n0=GAPOWR\n\n[GAPOWR]\nStrength=750\nArmor=wood\n",
+    ))
+    .expect("bare rules parse");
+    let mut interner = test_interner();
+    let mut rng = SimRng::new(11);
+    let mut sounds = Vec::new();
+    super::append_selected_death_sounds(
+        bare.object("GAPOWR").expect("type"),
+        EntityCategory::Structure,
+        bare.general.building_die_sound.as_deref(),
+        true,
+        &mut rng,
+        &mut interner,
+        4,
+        7,
+        &mut sounds,
+    );
+    assert!(sounds.is_empty());
+}
+
 #[test]
 fn fatal_sound_selection_uses_human_voice_then_die_sound_main_draws() {
     let rules = RuleSet::from_ini(&IniFile::from_str(

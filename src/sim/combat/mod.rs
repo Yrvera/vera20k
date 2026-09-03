@@ -2069,8 +2069,28 @@ impl DeathEffects {
     }
 }
 
+/// Select the death cues one dying object contributes.
+///
+/// The building tail is `BuildingClass::DestructionEffects`: when the dying
+/// object is a structure whose type carries **no** `DieSound=` entries,
+/// gamemd plays the global `[AudioVisual] BuildingDieSound` at the building's
+/// own coordinate — `0x0044173F MOV ECX,[type+0x520]` reads the `DieSound`
+/// vector's count (`TechnoTypeClass+0x510..0x528`), `0x0044174A CMP ECX,EBX ;
+/// JNZ` skips the global when it is non-zero (`EBX` is zeroed at
+/// `0x00441606` and stays zero), and `0x00441773 MOV ECX,[Rules+0x6E8]` +
+/// `0x00441779 CALL VocClass::PlayAtCoord @ 0x00750E20` is the play. It is
+/// not owner-gated and draws no RNG — there is one id, not a list.
+///
+/// Where the global sits relative to the per-type `VoiceDie=`/`DieSound=`
+/// draws is UNCHECKED: native emits it from the building-specific destruction
+/// path, not from the shared Techno death transaction. It cannot matter on
+/// retail data, because the branch that reaches it requires an empty
+/// `DieSound=` list and no stock building pairs `VoiceDie=` with an empty
+/// `DieSound=`.
 fn append_selected_death_sounds(
     object_type: &ObjectType,
+    category: EntityCategory,
+    building_die_sound: Option<&str>,
     owner_is_human: bool,
     main_rng: &mut SimRng,
     interner: &mut StringInterner,
@@ -2090,6 +2110,12 @@ fn append_selected_death_sounds(
         append_choice(&object_type.voice_die);
     }
     append_choice(&object_type.die_sounds);
+
+    if category == EntityCategory::Structure && object_type.die_sounds.is_empty() {
+        if let Some(sound_id) = building_die_sound.filter(|id| !id.is_empty()) {
+            death_sounds.push((interner.intern(sound_id), rx, ry));
+        }
+    }
 }
 
 /// Concrete-class death work that native runs only after the shared Techno
@@ -2234,6 +2260,8 @@ fn handle_entity_deaths(
             if let Some(obj) = rules.object(type_id_str) {
                 append_selected_death_sounds(
                     obj,
+                    category,
+                    rules.general.building_die_sound.as_deref(),
                     houses.get(&owner).is_some_and(|house| house.is_human),
                     main_rng,
                     interner,

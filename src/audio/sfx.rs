@@ -36,6 +36,7 @@ use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::aud_file;
 use crate::audio::arbiter::{self, ArbiterAction, EntryFacts, EventId, PlayRequest, SoundArbiter};
+use crate::audio::voice_queue::VoiceQueue;
 use crate::rules::sound_ini::{SoundEntry, SoundRegistry, VOLUME_SCALE, control, sound_type};
 
 /// How many passes of a sustaining cue are kept queued on its rodio player:
@@ -965,6 +966,13 @@ pub struct SfxPlayer {
     queued_voice: VecDeque<QueuedVoice>,
     /// Sound id currently occupying the dedicated voice slot, when known.
     current_voice_id: Option<String>,
+    /// Stable id of the object whose acknowledgement line owns the voice slot,
+    /// i.e. the object whose `TechnoClass+0x4DC` handle is live. `None` for an
+    /// EVA cue or an ownerless voice.
+    current_voice_owner: Option<u64>,
+    /// The per-object voice latch: `TechnoClass::Queue_Voice @ 0x00708D90`
+    /// writes it, `TechnoClass::AI_Update @ 0x006F9EBB` drains it.
+    voice_queue: VoiceQueue,
     /// Ordinary and animation SFX master volume (0.0 to 1.0).
     sound_volume: f64,
     /// Unit and EVA voice master volume (0.0 to 1.0).
@@ -1000,6 +1008,8 @@ impl SfxPlayer {
             voice_player: None,
             queued_voice: VecDeque::new(),
             current_voice_id: None,
+            current_voice_owner: None,
+            voice_queue: VoiceQueue::new(),
             sound_volume: 0.7,
             voice_volume: 0.7,
             output_scale: 1.0,
@@ -1246,28 +1256,85 @@ impl SfxPlayer {
         self.arbiter.clear_loop_handle(anim_id);
     }
 
-    /// Play a sound as a unit voice response (VoiceSelect, VoiceMove, VoiceAttack).
+    /// `TechnoClass::Queue_Voice @ 0x00708D90` — latch one object's
+    /// acknowledgement line (VoiceSelect, VoiceMove, VoiceAttack, ...).
     ///
-    /// Uses a dedicated voice slot that cuts off the previous voice — unit responses
-    /// don't stack, matching the original engine's behavior. Voices are
-    /// non-positional: `TechnoClass::AI_Update @ 0x006F9EBB` plays them at
-    /// volume 1.0 and pan `0x2000`.
-    pub fn play_voice_sound(
+    /// Nothing plays here. [`Self::drain_unit_voices`] is the drain half, and
+    /// it is what decides whether a second click restarts the line, drops it,
+    /// or waits — see [`crate::audio::voice_queue`] for the three outcomes.
+    pub fn queue_unit_voice(&mut self, owner: u64, sound_id: &str) {
+        self.voice_queue.queue(owner, sound_id);
+    }
+
+    /// `TechnoClass::AI_Update @ 0x006F9EBB` — drain every latched line.
+    ///
+    /// Voices are non-positional: `0x006F9EE0`/`0x006F9EE5` pass pan `0x2000`
+    /// and volume `1.0f` to `VocClass::PlayAtPos @ 0x00750920`, which is what
+    /// the dedicated voice slot already does.
+    pub fn drain_unit_voices(
         &mut self,
-        sound_id: &str,
         registry: &SoundRegistry,
         assets: &AssetManager,
         audio_indices: &[crate::assets::audio_bag::AudioIndex],
-    ) -> bool {
-        self.advance_voice_queue();
-        let Some(resolved) = self.resolve_any(sound_id, registry, assets, audio_indices) else {
-            return false;
-        };
-        self.play_voice(
-            resolved.decoded,
-            resolved.event_linear,
-            Some(sound_id.to_string()),
-        )
+    ) {
+        // `VocHandle::ValidateOrClear @ 0x00406130` for each object, resolved
+        // once for the pass: VERA's single voice slot means at most one
+        // object's handle can be live at a time.
+        let live_owner = self.live_voice_owner();
+        let decisions = self.voice_queue.drain(|owner| live_owner == Some(owner));
+        for decision in decisions {
+            let Some(resolved) =
+                self.resolve_any(&decision.sound_id, registry, assets, audio_indices)
+            else {
+                continue;
+            };
+            if self.play_voice(
+                resolved.decoded,
+                resolved.event_linear,
+                Some(decision.sound_id),
+            ) {
+                self.current_voice_owner = Some(decision.owner);
+            }
+        }
+    }
+
+    /// The object whose voice handle is still live, if any.
+    ///
+    /// VERA-internal shape, gamemd equivalent read: native stores the handle
+    /// on the techno (`+0x4DC`) so any number of objects can be speaking at
+    /// once; VERA has one voice slot, so at most the slot's current owner can
+    /// answer `true`. Trigger: two objects with a latched line in the same
+    /// pass. Player effect: the second line cuts the first where native lets
+    /// them overlap. Frequency: never from player input — the one-voice-per-
+    /// batch latch (`g_SelectionVoice_Enable @ 0x00822CF2`) already lets only
+    /// one object speak per dispatch. Downstream risk: none; folding voices
+    /// into the 16-channel pool is the `voice_player` residual's job.
+    fn live_voice_owner(&self) -> Option<u64> {
+        let owner = self.current_voice_owner?;
+        self.voice_player
+            .as_ref()
+            .filter(|output| !output.player.empty())
+            .map(|_| owner)
+    }
+
+    /// Draw an index in `0..count` from the presentation RNG.
+    ///
+    /// The app layer's stand-in for a native `rand % count` list pick — the
+    /// `LightningSounds=` choice at `0x0053A48D DIV [Rules+0x744]` is the one
+    /// caller. `count == 0` yields 0 and the caller must not index with it.
+    pub fn pick_index(&mut self, count: usize) -> usize {
+        if count <= 1 {
+            return 0;
+        }
+        self.rng.ranged(0, count as i32 - 1) as usize
+    }
+
+    /// Forget one object's latch and playing index — object removal.
+    pub fn forget_unit_voice(&mut self, owner: u64) {
+        self.voice_queue.forget(owner);
+        if self.current_voice_owner == Some(owner) {
+            self.current_voice_owner = None;
+        }
     }
 
     /// Queue an EVA-style announcement without interrupting the current voice.
@@ -1439,6 +1506,12 @@ impl SfxPlayer {
         output.player.append(source);
         self.voice_player = Some(output);
         self.current_voice_id = sound_id;
+        // Every other route into the slot (EVA queue, STANDARD cue, interrupt)
+        // is ownerless; `drain_unit_voices` re-stamps the owner right after it
+        // starts an object's line. An EVA cue taking the slot therefore kills
+        // the live techno handle — VERA-internal, and the same single-slot
+        // limitation the `voice_player` field records.
+        self.current_voice_owner = None;
         true
     }
 

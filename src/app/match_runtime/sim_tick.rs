@@ -46,6 +46,34 @@ fn wall_sell_sound_for_local(
     })
 }
 
+/// The `[AudioVisual] BaseUnderAttackSound` siren that follows an accepted
+/// under-attack EVA line.
+///
+/// `HouseClass::NotifyUnderAttack`: the shared tail at
+/// `0x004F95B8..0x004F95CF` loads `Rules+0x184` and plays it through
+/// `VocClass::PlayAtPos @ 0x00750920` with pan `0x2000` and volume `1.0f`,
+/// immediately after the EVA call at `0x004F95B3`. The ore-miner branch at
+/// `0x004F94FB` plays its own EVA and then `goto LAB_004F95D4`, jumping past
+/// the siren — so a harvester under attack is announced but not sirened.
+/// Callers apply the `CreateRadarEvent @ 0x0065FA70` accept gate
+/// (`0x004F95A5`) before reaching here.
+fn base_under_attack_siren(
+    miner: bool,
+    rules: &crate::rules::ruleset::RuleSet,
+) -> Option<GameSoundEvent> {
+    if miner {
+        return None;
+    }
+    let sound_id = rules
+        .general
+        .base_under_attack_sound
+        .as_deref()
+        .filter(|id| !id.is_empty())?;
+    Some(GameSoundEvent::BaseUnderAttackSfx {
+        sound_id: sound_id.to_string(),
+    })
+}
+
 /// Persist and consume the in-memory deterministic diagnostic log.
 ///
 /// The log lives on the app-owned diagnostics owner (F10) and is appended
@@ -1145,8 +1173,22 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                     }
                     SimSoundEvent::DockDeploy { .. } => {
-                        // TODO: resolve building's deploy sound from art.ini
-                        // and select healthy/damaged variant based on health ratio.
+                        // UNCHECKED residual, deliberately silent. This variant
+                        // has no producer: nothing in `sim/` pushes it, and
+                        // `miner_tests::linked_to_pivoting_then_unloading_on_pad_arrival`
+                        // pins that stock unload-start emits none. No native
+                        // counterpart was found either — a refinery has no
+                        // building-side dock cue. `[GAREFN]`'s art carries
+                        // `ActiveAnim`/`SpecialAnim` with no `StartSound=`, and
+                        // stock `DeploySound=` appears on the three MCVs and
+                        // `[SMIN]` only, never on a refinery. What is audible
+                        // in a retail dock cycle is the miner's own
+                        // `MoveSound=` (landed) and the departure cue
+                        // `RefineryExitSfx` (landed).
+                        // Trigger: none today. Player effect: none.
+                        // Frequency: never. Downstream risk: the variant is
+                        // dead sim surface; deleting it needs a `SimSoundEvent`
+                        // change nobody currently depends on.
                         continue;
                     }
                     SimSoundEvent::ChronoTeleport { sound_id, rx, ry } => {
@@ -1233,12 +1275,66 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         GameSoundEvent::BuildingReady { sound_id }
                     }
                     SimSoundEvent::SuperWeaponLaunched { .. } => {
-                        // TODO: play EVA superweapon warning sound.
+                        // UNCHECKED residual, still silent. The producer is
+                        // live (six emitters: force shield, genetic converter,
+                        // iron curtain, lightning storm, paradrop, psychic
+                        // reveal) but the event carries no superweapon
+                        // discriminator, and native's launch cue is
+                        // per-weapon, not global: `[AudioVisual]` holds
+                        // `PsychicDominatorActivateSound` (`Rules+0x24C`),
+                        // `GeneticMutatorActivateSound` (`+0x250`) and
+                        // `PsychicRevealActivateSound` (`+0x254`) from
+                        // `RulesClass::ReadAudioVisual @ 0x006691E0`, and
+                        // `evamd.ini` holds `EVA_IronCurtainActivated`,
+                        // `EVA_ChronosphereActivated`,
+                        // `EVA_LightningStormCreated`,
+                        // `EVA_PsychicDominatorActivated`,
+                        // `EVA_GeneticMutatorActivated` and
+                        // `EVA_ForceShieldActivated`. The reader sites that
+                        // bind each cue to its launch were NOT isolated, so no
+                        // mapping is asserted here.
+                        // Trigger: every superweapon launch. Player effect: the
+                        // launch is silent — no siren, no EVA line. Frequency:
+                        // once per superweapon per recharge (10 min stock),
+                        // i.e. a handful per long game. Downstream risk: the
+                        // fix needs a `kind` field on the sim event, so it
+                        // touches all six emitters.
                         continue;
                     }
-                    SimSoundEvent::SuperWeaponStrike { .. } => {
-                        // TODO: play lightning bolt thunder sound.
-                        continue;
+                    SimSoundEvent::SuperWeaponStrike { rx, ry } => {
+                        // `LightningStorm::GroundStrike @
+                        // 0x0053A45F..0x0053A4A2`: an empty `LightningSounds=`
+                        // list plays nothing (`0x0053A46A TEST ECX,ECX ; JLE`),
+                        // otherwise one entry is drawn and played at the strike
+                        // coordinate through `VocClass::PlayAt @ 0x007509E0`.
+                        let choices = &resources.rules.general.lightning_sounds;
+                        if choices.is_empty() {
+                            continue;
+                        }
+                        // DRIFT, recorded: native's index comes from the
+                        // SCENARIO RNG (`0x0053A46E MOV EDX,[g_ScenarioClass
+                        // @ 0x00A8B230]; LEA ECX,[EDX+0x218]; CALL 0x0065C780`,
+                        // then `0x0053A48D DIV [Rules+0x744]`), so gamemd
+                        // spends one deterministic draw per bolt. VERA draws
+                        // from the presentation RNG instead, the same one
+                        // `audio::sfx` already uses for sample selection.
+                        // Trigger: every lightning bolt. Player effect: none on
+                        // retail — stock `LightningSounds=WeatherStrike` is a
+                        // one-entry list, so `rand % 1` is 0 either way and the
+                        // same cue plays. Frequency: several bolts per storm.
+                        // Downstream risk: VERA's scenario stream sits one draw
+                        // ahead of gamemd's from the first bolt onward, and a
+                        // modded multi-entry list would pick a different entry.
+                        // Closing it means selecting the entry in `sim/` and
+                        // re-baselining whatever goldens the extra draw moves.
+                        let index = match state.audio.sfx_player.as_mut() {
+                            Some(player) => player.pick_index(choices.len()),
+                            None => continue,
+                        };
+                        GameSoundEvent::LightningStrike {
+                            sound_id: choices[index].clone(),
+                            source: Some(sound_source_at_cell(rx, ry)),
+                        }
                     }
                     SimSoundEvent::UnitComplete { owner } => {
                         let owner_str = sim.interner.resolve(owner);
@@ -1526,7 +1622,15 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             .get(cue, faction)
                             .unwrap_or(fallback)
                             .to_string();
-                        GameSoundEvent::UnderAttackEva { eva_sound_id }
+                        state
+                            .match_state
+                            .match_audio
+                            .sound_events
+                            .push(GameSoundEvent::UnderAttackEva { eva_sound_id });
+                        if let Some(siren) = base_under_attack_siren(miner, &resources.rules) {
+                            state.match_state.match_audio.sound_events.push(siren);
+                        }
+                        continue;
                     }
                     SimSoundEvent::WorldEffectStarted {
                         sound_id,
@@ -2225,9 +2329,10 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
-        cloak_sound_for_app, finish_fire_effect_batch, outcome_eva_entry, upsert_overlay_entries,
-        validate_exact_step_receipt, wall_sell_sound_for_local, world_point_to_cell,
+        ExactStepError, ExactStepReceipt, append_fire_effect_batch, base_under_attack_siren,
+        begin_fire_effect_batch, cloak_sound_for_app, finish_fire_effect_batch, outcome_eva_entry,
+        upsert_overlay_entries, validate_exact_step_receipt, wall_sell_sound_for_local,
+        world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
     use crate::map::overlay::OverlayEntry;
@@ -2302,6 +2407,36 @@ mod tests {
         assert!(
             wall_sell_sound_for_local(receiver_name, Some("Receiver"), Some(&no_sound)).is_none()
         );
+    }
+
+    /// `HouseClass::NotifyUnderAttack`: the base siren rides the shared tail
+    /// (`0x004F95CF`), and the ore-miner branch at `0x004F94FB` jumps past it.
+    #[test]
+    fn base_under_attack_siren_skips_the_ore_miner_branch() {
+        let rules =
+            crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+                "[General]\nFixtureOnly=1\n[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+                 [BuildingTypes]\n[AudioVisual]\nBaseUnderAttackSound=BaseUnderAttackSiren\n",
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            base_under_attack_siren(false, &rules),
+            Some(crate::audio::events::GameSoundEvent::BaseUnderAttackSfx { sound_id })
+                if sound_id == "BaseUnderAttackSiren"
+        ));
+        assert!(
+            base_under_attack_siren(true, &rules).is_none(),
+            "0x004F94FB goes straight to LAB_004F95D4, so a harvester gets no siren"
+        );
+
+        let no_key =
+            crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+                "[General]\nFixtureOnly=1\n[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+                 [BuildingTypes]\n",
+            ))
+            .unwrap();
+        assert!(base_under_attack_siren(false, &no_key).is_none());
     }
 
     #[test]

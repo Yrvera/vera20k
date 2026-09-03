@@ -1310,6 +1310,18 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
         | HotkeyCommand::NextObject
         | HotkeyCommand::CombatantSelect
         | HotkeyCommand::VeterancyNav => {}
+        // UNCHECKED residual, all still no-ops. Three of them are audio
+        // triggers whose rules keys VERA already parses or could:
+        // `PlaceBeacon` should place the beacon and play `[AudioVisual]
+        // PlaceBeaconSound` (`Rules+0x1CC`, stock `BeaconPlaced`),
+        // `AllToCheer` should run the cheer animation and play `CheerSound`
+        // (`Rules+0x1C8`, stock `Cheer`), and `Taunt(n)` should broadcast the
+        // multiplayer taunt sample. None of their native command handlers was
+        // read this session, so no mapping is asserted and nothing is wired.
+        // Trigger: pressing the bound key. Player effect: the key does
+        // nothing. Frequency: rare in skirmish — all three are multiplayer
+        // social commands. Downstream risk: beacons and taunts are network
+        // messages, so they belong with `net/`, not with this row.
         HotkeyCommand::ToggleAlliance
         | HotkeyCommand::PlaceBeacon
         | HotkeyCommand::AllToCheer
@@ -2157,7 +2169,7 @@ mod item83_selection_order_tests {
                 .iter()
                 .filter_map(|id| selection_voice_event(&sim, &rules, *id))
                 .map(|event| match event {
-                    GameSoundEvent::UnitSelected { sound_id } => sound_id,
+                    GameSoundEvent::UnitSelected { sound_id, .. } => sound_id,
                     other => panic!("unexpected selection event: {other:?}"),
                 })
                 .collect::<Vec<_>>()
@@ -2543,6 +2555,7 @@ fn selection_voice_event(
     let entity = sim.entities().get(entity_id)?;
     let object = rules.object(sim.interner.resolve(entity.type_ref))?;
     Some(GameSoundEvent::UnitSelected {
+        speaker_id: entity_id,
         sound_id: object.voice_select.clone()?,
     })
 }
