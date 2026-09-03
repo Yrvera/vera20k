@@ -92,17 +92,20 @@ pub(crate) fn resolve_order_modifiers(ctrl: bool, shift: bool, alt: bool) -> Ord
 /// Unload each have their own slot, and every other mission falls to a default
 /// branch that draws a random entry from the type's `VoiceSpecialAttack` list.
 ///
-/// Two retail slots have no VERA counterpart yet:
-/// * Capture has its **own** slot, verified: it reads the type's `VoiceCapture=`
-///   sound and speaks it, and only when the key is absent does it call the Enter
-///   slot instead. VERA now PARSES `VoiceCapture=` (`ObjectType::voice_capture`)
-///   but this router still has no arm for it, so capture keeps routing to the
-///   Enter slot — and every stock engineer ships the key, so every
-///   engineer capture order in ordinary play speaks the wrong line today
-///   (Allied `EngAllMove` instead of `EngAllAttackCommand`, Soviet `EngSovMove`
-///   instead of `EngSovAttackCommand`; Yuri's two keys happen to hold the same
-///   sound, so Yuri is unaffected). Recorded DRIFT, not equivalence: closing it
-///   needs a `VoiceCapture=` field on the object type.
+/// Capture has its **own** slot, and it is wired here now. The dispatcher at
+/// `0x00708DC0` reads the type's `VoiceCapture=` (`TechnoTypeClass+0x55C`) and
+/// queues it (`0x00708DE8 CALL [EDI+0x354]` = `TechnoClass::Queue_Voice @
+/// 0x00708D90`); only when that slot is the `-1` sentinel (`0x00708DCB CMP
+/// [EAX+0x55C],-1`) does it fall through to the Enter-voice method
+/// (`0x00708DF5 CALL [EDX+0x358]` = `0x00709020`, which reads
+/// `VoiceEnter=` at `+0x558` and itself falls through to `[+0x368]` when that
+/// is absent). Every stock engineer ships `VoiceCapture=`, so before this arm
+/// existed every engineer capture spoke the move line (Allied `EngAllMove`
+/// instead of `EngAllAttackCommand`, Soviet `EngSovMove` instead of
+/// `EngSovAttackCommand`; Yuri's two keys hold the same sound, so Yuri was
+/// unaffected).
+///
+/// One retail slot still has no VERA counterpart:
 /// * Deploy/unload plays `VoiceDeploy` / `VoiceUndeploy`, neither of which VERA
 ///   parses — those orders stay silent.
 ///
@@ -115,11 +118,11 @@ fn order_voice_key(command: &Command) -> Option<&'static str> {
             Some("VoiceAttack")
         }
         Command::HarvestCell { .. } => Some("VoiceHarvest"),
+        Command::CaptureBuilding { .. } => Some("VoiceCapture"),
         Command::MinerReturn { .. }
         | Command::EnterTransport { .. }
         | Command::RepairAtDepot { .. }
-        | Command::EnterBunker { .. }
-        | Command::CaptureBuilding { .. } => Some("VoiceEnter"),
+        | Command::EnterBunker { .. } => Some("VoiceEnter"),
         // Sabotage and area guard have no dedicated slot, so retail takes the
         // default branch and speaks a VoiceSpecialAttack line.
         Command::PlantC4 { .. } | Command::Guard { .. } => Some("VoiceSpecialAttack"),
@@ -173,6 +176,46 @@ fn emit_resolved_order_voice(state: &mut AppState, speaker_id: u64, queued: &[Co
     emit_entity_order_voice(state, speaker_id, voice_field);
 }
 
+/// Resolve one `Voice*` slot on an object type, with the native fallbacks.
+///
+/// The capture and enter slots are the two with a fallback in gamemd, and they
+/// chain: `0x00708DCB CMP [type+0x55C],-1 ; JZ 0x00708DF1` sends an absent
+/// `VoiceCapture=` to the Enter-voice method at `0x00709020`, which reads
+/// `VoiceEnter=` (`TechnoTypeClass+0x558`) and, when *that* is the `-1`
+/// sentinel too (`0x0070902B CMP [EAX+0x558],-1 ; JZ 0x00709051`), calls
+/// `[vtable+0x368]` — `0x00708FC0` for the BuildingClass-family vtable at
+/// `0x007E3EBC` (`read_memory 0x007E4224` → `0x00708FC0`). That body is **not**
+/// silence: it reads the `VoiceMove=` sound list at `TechnoTypeClass+0x468`
+/// (`0x00712AB6 LEA EDI,[EBP+0x468]` in `TechnoTypeClass::ReadINI` passes key
+/// `"VoiceMove"` at `0x008442C0` to `CCINIClass::ReadSoundList @ 0x00525430`),
+/// skips only when its count at `+0x478` is zero
+/// (`0x00708FD6 TEST ECX,ECX ; JZ 0x00709014`), and otherwise queues
+/// `items[rand % count]` through `[vtable+0x354]`.
+///
+/// VERA models `VoiceMove=` as one id, not a list. No stock type authors a
+/// comma-separated `VoiceMove=` (0 of 148 occurrences in `ini/rulesmd.ini`),
+/// so the pick is observationally identical on retail; the `rand % count` draw
+/// native spends on RNG instance `0x00886B88` (`0x00708FE1 CALL 0x0065C780`)
+/// has no VERA counterpart. Recorded, not landed.
+fn voice_id_for_key<'a>(
+    obj: &'a crate::rules::object_type::ObjectType,
+    voice_field: &str,
+) -> Option<&'a String> {
+    match voice_field {
+        "VoiceMove" => obj.voice_move.as_ref(),
+        "VoiceAttack" => obj.voice_attack.as_ref(),
+        "VoiceHarvest" => obj.voice_harvest.as_ref(),
+        "VoiceCapture" => obj
+            .voice_capture
+            .as_ref()
+            .or(obj.voice_enter.as_ref())
+            .or(obj.voice_move.as_ref()),
+        "VoiceEnter" => obj.voice_enter.as_ref().or(obj.voice_move.as_ref()),
+        "VoiceSpecialAttack" => obj.voice_special_attack.as_ref(),
+        _ => None,
+    }
+}
+
 /// Play one entity's voice line for the given `Voice*` INI key.
 ///
 /// The superseded app-layer order-voice helper always spoke the lowest-`stable_id` selected
@@ -196,21 +239,17 @@ fn emit_entity_order_voice(state: &mut AppState, speaker_id: u64, voice_field: &
     let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
         return;
     };
-    let voice_id: Option<&String> = match voice_field {
-        "VoiceMove" => obj.voice_move.as_ref(),
-        "VoiceAttack" => obj.voice_attack.as_ref(),
-        "VoiceHarvest" => obj.voice_harvest.as_ref(),
-        "VoiceEnter" => obj.voice_enter.as_ref(),
-        "VoiceSpecialAttack" => obj.voice_special_attack.as_ref(),
-        _ => None,
+    let Some(id) = voice_id_for_key(obj, voice_field) else {
+        return;
     };
-    let Some(id) = voice_id else { return };
     let event = if voice_field == "VoiceAttack" {
         crate::audio::events::GameSoundEvent::UnitAttackOrder {
+            speaker_id,
             sound_id: id.clone(),
         }
     } else {
         crate::audio::events::GameSoundEvent::UnitMoveOrder {
+            speaker_id,
             sound_id: id.clone(),
         }
     };
@@ -1437,6 +1476,82 @@ mod tests {
             }),
             Some("VoiceSpecialAttack")
         );
+    }
+
+    /// A capture order takes the type's own `VoiceCapture=` slot
+    /// (`0x00708DC0` reads `TechnoTypeClass+0x55C` and queues it through
+    /// `TechnoClass::Queue_Voice @ 0x00708D90`) and only falls through to
+    /// `VoiceEnter=` when the key is the `-1` sentinel. Before this, every
+    /// stock engineer capture spoke the Enter line.
+    ///
+    /// The chain does not end at `VoiceEnter=`: an absent one sends
+    /// `0x00709020` to `[vtable+0x368]` = `0x00708FC0`, which draws from the
+    /// `VoiceMove=` list at `TechnoTypeClass+0x468` and is silent only when
+    /// that list is empty.
+    #[test]
+    fn capture_speaks_the_capture_slot_and_falls_back_to_enter() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::object_type::{ObjectCategory, ObjectType};
+
+        assert_eq!(
+            order_voice_key(&Command::CaptureBuilding {
+                engineer_id: 1,
+                target_building_id: 2,
+            }),
+            Some("VoiceCapture"),
+            "capture has its own slot, it does not share the Enter slot"
+        );
+
+        let object = |body: &str| {
+            let ini = IniFile::from_str(body);
+            ObjectType::from_ini_section(
+                "ENGINEER",
+                ini.section("ENGINEER").unwrap(),
+                ObjectCategory::Infantry,
+            )
+        };
+
+        // Stock Allied engineer: both keys present, capture wins.
+        let stock = object(
+            "[ENGINEER]\nVoiceMove=EngAllMove\nVoiceEnter=EngAllMove\n\
+             VoiceCapture=EngAllAttackCommand\n",
+        );
+        assert_eq!(
+            voice_id_for_key(&stock, "VoiceCapture").map(String::as_str),
+            Some("EngAllAttackCommand")
+        );
+        assert_eq!(
+            voice_id_for_key(&stock, "VoiceEnter").map(String::as_str),
+            Some("EngAllMove"),
+            "an ordinary Enter order is unaffected"
+        );
+
+        // `VoiceCapture=` absent: `0x00708DCB` falls through to the Enter slot.
+        let no_capture = object("[ENGINEER]\nVoiceMove=EngAllMove\nVoiceEnter=EngAllMove\n");
+        assert_eq!(
+            voice_id_for_key(&no_capture, "VoiceCapture").map(String::as_str),
+            Some("EngAllMove")
+        );
+
+        // Neither key: `0x0070902B` sends the Enter slot to `[vtable+0x368]`
+        // = `0x00708FC0`, which draws from the `VoiceMove=` list at
+        // `TechnoTypeClass+0x468`. Native does NOT go silent here.
+        let neither = object("[ENGINEER]\nVoiceMove=EngAllMove\n");
+        assert_eq!(
+            voice_id_for_key(&neither, "VoiceCapture").map(String::as_str),
+            Some("EngAllMove")
+        );
+        assert_eq!(
+            voice_id_for_key(&neither, "VoiceEnter").map(String::as_str),
+            Some("EngAllMove"),
+            "the Enter slot itself falls through to the move list"
+        );
+
+        // Silence needs the move list empty too — `0x00708FD6 TEST ECX,ECX ;
+        // JZ 0x00709014` is the only exit that plays nothing.
+        let nothing = object("[ENGINEER]\nStrength=100\n");
+        assert_eq!(voice_id_for_key(&nothing, "VoiceCapture"), None);
+        assert_eq!(voice_id_for_key(&nothing, "VoiceEnter"), None);
     }
 
     fn chord_rules() -> crate::rules::ruleset::RuleSet {

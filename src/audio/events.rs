@@ -86,19 +86,30 @@ pub enum GameSoundEvent {
     },
 
     /// A unit was selected by the player — play VoiceSelect.
+    ///
+    /// `speaker_id` is the object that speaks: `TechnoClass::Queue_Voice @
+    /// 0x00708D90` latches the line on the techno itself (`+0x4F0`), so the
+    /// repeat guard in [`crate::audio::voice_queue`] needs to know whose line
+    /// this is.
     UnitSelected {
+        /// Stable id of the speaking object.
+        speaker_id: u64,
         /// sound.ini ID from the unit's VoiceSelect= field.
         sound_id: String,
     },
 
     /// A unit was ordered to move — play VoiceMove.
     UnitMoveOrder {
+        /// Stable id of the speaking object.
+        speaker_id: u64,
         /// sound.ini ID from the unit's VoiceMove= field.
         sound_id: String,
     },
 
     /// A unit was ordered to attack — play VoiceAttack.
     UnitAttackOrder {
+        /// Stable id of the speaking object.
+        speaker_id: u64,
         /// sound.ini ID from the unit's VoiceAttack= field.
         sound_id: String,
     },
@@ -265,6 +276,66 @@ pub enum GameSoundEvent {
         source: Option<SoundSource>,
     },
 
+    /// The `[AudioVisual] BaseUnderAttackSound` siren that rides with the
+    /// under-attack EVA line.
+    ///
+    /// `HouseClass::NotifyUnderAttack @ 0x004F95B8..0x004F95CF` plays
+    /// `Rules+0x184` through `VocClass::PlayAtPos @ 0x00750920` with pan
+    /// `0x2000` and volume `1.0f` — non-positional — immediately after the EVA
+    /// call at `0x004F95B3`, and only when `CreateRadarEvent @ 0x0065FA70`
+    /// accepted the ping (`0x004F95A5 TEST AL,AL ; JZ`).
+    BaseUnderAttackSfx {
+        /// sound.ini ID from `[AudioVisual] BaseUnderAttackSound=`.
+        sound_id: String,
+    },
+
+    /// The global `[AudioVisual] BuildingDamageSound` cue for a struck
+    /// building whose type carries no `DamageSound=` of its own.
+    ///
+    /// `BuildingClass::ReceiveDamage @ 0x00442230` plays it at the building's
+    /// own coordinate (`0x004426DB LEA ECX,[ESI+0x9C]`,
+    /// `0x00442700 MOV ECX,[Rules+0x714]`,
+    /// `0x00442706 CALL VocClass::PlayAtCoord @ 0x00750E20`). The gate is
+    /// `0x004426D2 CMP [type+0x538],-1` and the arm is only reached for the
+    /// damage-state crossings 2 and 3 (`0x00442476 JMP [EAX*4 + 0x00442C18]`),
+    /// both decided sim-side.
+    BuildingDamagedSfx {
+        /// sound.ini ID from `[AudioVisual] BuildingDamageSound=`.
+        sound_id: String,
+        /// Screen position for spatial audio.
+        source: Option<SoundSource>,
+    },
+
+    /// A techno crossed the half-strength threshold and speaks its
+    /// `VoiceFeedback=` line.
+    ///
+    /// `TechnoClass::ReceiveDamage @ 0x00701900`, arm `0x00702695` (index 2 of
+    /// the switch table at `0x00702D24`, i.e. damage result 2). The 30% roll,
+    /// the `HouseClass::IsHumanPlayer @ 0x0050B6F0` gate and the
+    /// `rand % count` pick are resolved before this event is built; it plays
+    /// positionally through `VocClass::PlayAt @ 0x007509E0` at the object's
+    /// own coordinate.
+    VoiceFeedback {
+        /// sound.ini ID for the chosen `VoiceFeedback=` entry.
+        sound_id: String,
+        /// Screen position for spatial audio.
+        source: Option<SoundSource>,
+    },
+
+    /// A lightning-storm bolt reached the ground — the thunder crack.
+    ///
+    /// `LightningStorm::GroundStrike @ 0x0053A45F..0x0053A4A2` plays
+    /// `[AudioVisual] LightningSounds[n]` positionally at the strike cell
+    /// through `VocClass::PlayAt @ 0x007509E0`; the entry is chosen when the
+    /// event is built. Skipped upstream when the list is empty
+    /// (`0x0053A46A TEST ECX,ECX ; JLE`).
+    LightningStrike {
+        /// sound.ini ID for the chosen `LightningSounds=` entry.
+        sound_id: String,
+        /// Screen position for spatial audio.
+        source: Option<SoundSource>,
+    },
+
     /// Generic UI sound (button click, error beep, etc.).
     UiSound {
         /// sound.ini ID for the UI sound.
@@ -278,9 +349,9 @@ impl GameSoundEvent {
         match self {
             Self::WeaponFired { sound_id, .. }
             | Self::AnimationStarted { sound_id, .. }
-            | Self::UnitSelected { sound_id }
-            | Self::UnitMoveOrder { sound_id }
-            | Self::UnitAttackOrder { sound_id }
+            | Self::UnitSelected { sound_id, .. }
+            | Self::UnitMoveOrder { sound_id, .. }
+            | Self::UnitAttackOrder { sound_id, .. }
             | Self::EntityDestroyed { sound_id, .. }
             | Self::EntityCrushed { sound_id, .. }
             | Self::EntityDeployed { sound_id, .. }
@@ -292,6 +363,7 @@ impl GameSoundEvent {
             | Self::UnitReady { sound_id }
             | Self::CannotDeployHere { sound_id }
             | Self::UiSound { sound_id }
+            | Self::BaseUnderAttackSfx { sound_id }
             | Self::StructureGarrisoned { sound_id }
             | Self::StructureAbandoned { sound_id }
             | Self::BuildingGarrisonedSfx { sound_id, .. }
@@ -300,6 +372,9 @@ impl GameSoundEvent {
             | Self::BunkerWalls { sound_id, .. }
             | Self::ChuteSound { sound_id, .. }
             | Self::BridgeRepaired { sound_id, .. }
+            | Self::BuildingDamagedSfx { sound_id, .. }
+            | Self::VoiceFeedback { sound_id, .. }
+            | Self::LightningStrike { sound_id, .. }
             | Self::WorldEffectStarted { sound_id, .. } => sound_id,
             Self::AnimationStopped { stop_sound_id, .. } => stop_sound_id.as_deref().unwrap_or(""),
             Self::UnderAttackEva { eva_sound_id }
@@ -327,6 +402,9 @@ impl GameSoundEvent {
             | Self::BunkerWalls { source, .. }
             | Self::ChuteSound { source, .. }
             | Self::BridgeRepaired { source, .. }
+            | Self::BuildingDamagedSfx { source, .. }
+            | Self::VoiceFeedback { source, .. }
+            | Self::LightningStrike { source, .. }
             | Self::WorldEffectStarted { source, .. } => *source,
             _ => None,
         }
@@ -354,19 +432,28 @@ impl GameSoundEvent {
 /// nothing (`ObjectClass::Select @ 0x005F4520` returns false), and the
 /// one-voice-per-batch latch matches `g_SelectionVoice_Enable @ 0x00822CF2`.
 ///
-/// **The repeat guard proper is NOT a timer, and it is what is missing.** Each
-/// techno owns a pending-voice index (`+0x4F0`, sentinel -1), a live handle
-/// (`+0x4DC`) and the playing index (`+0x4F4`). `TechnoClass::Queue_Voice @
-/// 0x00708D90` only latches; `TechnoClass::AI_Update @ 0x006F9EBB` drains it —
-/// handle free plays, handle live with the SAME index drops, handle live with a
-/// different index holds and retries next tick. Voices are non-positional
-/// (volume 1.0, pan 0x2000). VERA cannot model this yet because the drain needs
-/// a liveness fact that only the audio layer knows, and `sim/` must not depend
-/// on `audio/`: it wants a read-only per-tick liveness view passed INTO the
-/// tick, or an inbound event queue — never an import.
-/// - Trigger: ordering the same unit twice in quick succession.
-/// - Player effect: the line restarts where retail lets it finish.
-/// - Frequency: continuous — it is how players click.
+/// **The repeat guard is landed.** It is not a timer: each techno owns a
+/// pending-voice index (`+0x4F0`, sentinel -1), a live handle (`+0x4DC`) and
+/// the playing index (`+0x4F4`); `TechnoClass::Queue_Voice @ 0x00708D90` only
+/// latches and `TechnoClass::AI_Update @ 0x006F9EBB` drains — handle free
+/// plays, handle live with the SAME index drops, handle live with a different
+/// index holds and retries next pass. Voices are non-positional (volume 1.0f,
+/// pan 0x2000, `0x006F9EE0`/`0x006F9EE5`). The layering worry turned out not to
+/// bind: VERA emits acknowledgement lines from the **app** input layer, never
+/// from `sim/`, so the whole guard lives in [`crate::audio::voice_queue`] as a
+/// device-free decision module and `sim/` never learns about audio.
+///
+/// **Still absent on the voice side.** `VoiceDeploy=`/`VoiceUndeploy=`
+/// (deploy/unload orders), `VoiceCrashing=` (7) and
+/// `VoiceSinking=`/`VoiceFalling=` are not parsed, and taunts reach an empty
+/// match arm. The native consumers of those slots were not isolated, so no
+/// mapping is asserted.
+/// - Player effect: those orders and states stay silent.
+/// - Frequency: deploy orders are common; crashing/sinking lines need an
+///   aircraft or ship kill.
+///
+/// `VoiceFeedback=` (133 stock authors) is **no longer among them** — see
+/// [`Self::VoiceFeedback`].
 ///
 /// **Partly closed.** `MoveSound=` now has both halves: the sim's
 /// post-locomotor tail (`Simulation::tick_move_sound_after_process`) emits
@@ -377,17 +464,96 @@ impl GameSoundEvent {
 /// `GrizzlyTankMoveStart` plays one start-up sample, which is what gamemd
 /// does.
 ///
+/// **Also landed.** `VoiceCapture=` is routed (`0x00708DC0` reads
+/// `TechnoTypeClass+0x55C` and only falls through to the Enter slot at
+/// `0x00709020` when it is absent), so an engineer capture speaks the capture
+/// line instead of the move line. `[AudioVisual] BuildingDieSound=` is emitted
+/// when a dying building's type carries no `DieSound=` of its own
+/// (`BuildingClass::DestructionEffects`, `0x0044173F`..`0x00441779`),
+/// `[AudioVisual] LightningSounds=` is played at each bolt strike
+/// (`LightningStorm::GroundStrike @ 0x0053A45F..0x0053A4A2`), and
+/// `[AudioVisual] BaseUnderAttackSound=` now rides with the under-attack EVA
+/// line (`HouseClass::NotifyUnderAttack @ 0x004F95B8..0x004F95CF`), on the
+/// building branch only.
+///
+/// `[AudioVisual] BuildingDamageSound=` (`Rules+0x714`) is landed too. It is a
+/// **damage-state** cue, not a per-hit one: `BuildingClass::ReceiveDamage @
+/// 0x00442230` only enters the arm through
+/// `0x00442476 JMP [EAX*4 + 0x00442C18]` with `EAX = result - 2`, so results 2
+/// (the hit crossed HP from `>= Strength >> 1` to below it) and 3 (it crossed
+/// below `Strength * Rules+0x1708`, ConditionRed) reach
+/// `0x004426D2 CMP [type+0x538],-1` while an ordinary non-crossing hit
+/// (result 1) plays nothing. A dead building is skipped earlier still by
+/// `0x0044242C MOV AL,[ESI+0x90]` (`ObjectClass::IsAlive`). Frequency: twice
+/// per building on the way down in a sustained base attack, plus every
+/// repair-and-re-damage cycle across a threshold — not the every-shot cadence
+/// an earlier pass assumed. Stock `BuildingDamageSound=BuildingDamaged` is a
+/// five-sample `[SoundList]`, and only 34 of all stock types author a
+/// `DamageSound=` of their own (30 `BuildingMetalDamaged`, 4 `Dummy`), so the
+/// global covers nearly every structure.
+///
+/// `[AudioVisual]`'s companion damage voice is landed as well — see
+/// [`GameSoundEvent::VoiceFeedback`] for `TechnoClass::ReceiveDamage @
+/// 0x00701900`'s result-2 arm at `0x00702695`.
+///
+/// **Still absent on the damage side: the per-type `DamageSound=` cue.**
+/// `TechnoTypeClass+0x538` is parsed but only *read as a gate*. Native plays
+/// it from arm `0x00702713`/`0x00702717` of the same switch — **index 1 of the
+/// table at `0x00702D24`, the ordinary NON-crossing hit** (damage result 1),
+/// not the crossings the global rides. So the per-type and the global cue are
+/// mutually exclusive by *result*, not merely by the `-1` gate: a type with
+/// its own `DamageSound=` gets a clang on every ordinary hit and **nothing**
+/// on a crossing, while a type without one is silent on ordinary hits and
+/// sounds the global on crossings. The arm also plays the sound **twice** —
+/// two identical blocks at `0x00702760` and `0x007027A9`, each re-reading
+/// `[type+0x538]` and the same coordinate `[ESI+0x9C]`.
+/// Trigger: any non-crossing hit on a type that authors the key. Player
+/// effect: those types are silent under ordinary fire where native double-taps
+/// a clang. Frequency: all 34 stock authors are civilian/neutral props (30
+/// `CA*` structures plus `AMMOCRAT` on `BuildingMetalDamaged`, 4 `CAARMY0*` on
+/// `Dummy`) — no player-built structure and no unit authors it, so this is
+/// "whenever you shoot civilian scenery", common on urban maps and absent from
+/// a pure base fight. Downstream risk: landing it needs a distinct
+/// `DamageState::Damaged` (result 1) emission, which VERA classifies but does
+/// not currently route.
+///
+/// **Also unrecorded until now: an unresolvable per-type `DamageSound=`.**
+/// `TechnoTypeClass+0x538` is `-1` both when the key is absent *and* when the
+/// name resolves to no Voc, so native falls back to the global in both cases;
+/// VERA's `damage_sound: Option<String>` is `Some` for any non-empty string
+/// and suppresses the global. Trigger: a type naming a sound that is not in
+/// `soundmd.ini`. Player effect: that structure is silent where native plays
+/// the global cue. Frequency: never on retail — `BuildingMetalDamaged` and
+/// `Dummy` both register. Downstream risk: none; closing it means resolving
+/// the name against the sound registry, which lives above `rules/`.
+///
 /// **Still absent.** Nothing emits the other ambient families:
 /// `WorkingSound=` (9 stock), `AuxSound1=` (8), `AuxSound2=` (5),
 /// `TurretRotateSound=` (2) and the water enter/leave pair have no producer.
-/// `VoiceFeedback=` (133 stock) and `VoiceCapture=` (3) have no consumers,
-/// `VoiceCrashing=` (7) is not parsed, and taunts reach an empty match arm.
 /// - Player effect: the soundscape is still thin — bases have no working hum.
 /// - Frequency: continuous.
 /// - Downstream risk: none left on the audio side. Each remaining family needs
 ///   only a sim-side producer and the same owner-keyed handle `MoveSound=`
-///   already uses; the arbiter behind it is landed. The voice repeat guard
-///   above is separate — it needs only the liveness channel.
+///   already uses; the arbiter behind it is landed.
+///
+/// **`[AudioVisual]` keys with a verified native consumer but no VERA producer
+/// yet**, all read by `RulesClass::ReadAudioVisual @ 0x006691E0` and all
+/// UNCHECKED against their own callers unless noted:
+/// - `EnterGrinderSound`/`LeaveGrinderSound` (`+0x268`/`+0x26C`),
+///   `EnterBioReactorSound`/`LeaveBioReactorSound` (`+0x270`/`+0x274`): no
+///   grinder or bio-reactor consumer exists in `sim/` at all.
+/// - The seven `Crate*Sound` keys (`+0x1E4`..`+0x1FC`): no crate-pickup
+///   producer exists.
+/// - `PlaceBeaconSound` (`+0x1CC`), `MindClearedSound` (`+0x264`),
+///   `MasterMindOverloadDeathSound` (`+0x258`), `ImpactLandSound`/
+///   `ImpactWaterSound` (`+0x204`/`+0x200`), `CreditTicks` (`+0x6DC`),
+///   `IceCrackSounds` (`+0x644`): no producer.
+/// - **No player-visible gap on retail data:** `GateUp`/`GateDown`
+///   (`+0x404`/`+0x408`) are both `Dummy`, `Construction` (`+0x6C8`) is
+///   `Dummy`, and `CreateUnitSound`/`CreateInfantrySound`/`CreateAircraftSound`
+///   (`+0x178`..`+0x180`) and `LeaveGrinderSound` are empty in stock
+///   `rulesmd.ini`. `Dummy` is one of the eight `[SoundList]` ids with no
+///   usable `Sounds=`, so it registers silently.
 #[derive(Debug, Default)]
 pub struct SoundEventQueue {
     events: Vec<GameSoundEvent>,

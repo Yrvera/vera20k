@@ -2069,8 +2069,28 @@ impl DeathEffects {
     }
 }
 
+/// Select the death cues one dying object contributes.
+///
+/// The building tail is `BuildingClass::DestructionEffects`: when the dying
+/// object is a structure whose type carries **no** `DieSound=` entries,
+/// gamemd plays the global `[AudioVisual] BuildingDieSound` at the building's
+/// own coordinate — `0x0044173F MOV ECX,[type+0x520]` reads the `DieSound`
+/// vector's count (`TechnoTypeClass+0x510..0x528`), `0x0044174A CMP ECX,EBX ;
+/// JNZ` skips the global when it is non-zero (`EBX` is zeroed at
+/// `0x00441606` and stays zero), and `0x00441773 MOV ECX,[Rules+0x6E8]` +
+/// `0x00441779 CALL VocClass::PlayAtCoord @ 0x00750E20` is the play. It is
+/// not owner-gated and draws no RNG — there is one id, not a list.
+///
+/// Where the global sits relative to the per-type `VoiceDie=`/`DieSound=`
+/// draws is UNCHECKED: native emits it from the building-specific destruction
+/// path, not from the shared Techno death transaction. It cannot matter on
+/// retail data, because the branch that reaches it requires an empty
+/// `DieSound=` list and no stock building pairs `VoiceDie=` with an empty
+/// `DieSound=`.
 fn append_selected_death_sounds(
     object_type: &ObjectType,
+    category: EntityCategory,
+    building_die_sound: Option<&str>,
     owner_is_human: bool,
     main_rng: &mut SimRng,
     interner: &mut StringInterner,
@@ -2090,6 +2110,12 @@ fn append_selected_death_sounds(
         append_choice(&object_type.voice_die);
     }
     append_choice(&object_type.die_sounds);
+
+    if category == EntityCategory::Structure && object_type.die_sounds.is_empty() {
+        if let Some(sound_id) = building_die_sound.filter(|id| !id.is_empty()) {
+            death_sounds.push((interner.intern(sound_id), rx, ry));
+        }
+    }
 }
 
 /// Concrete-class death work that native runs only after the shared Techno
@@ -2234,6 +2260,8 @@ fn handle_entity_deaths(
             if let Some(obj) = rules.object(type_id_str) {
                 append_selected_death_sounds(
                     obj,
+                    category,
+                    rules.general.building_die_sound.as_deref(),
                     houses.get(&owner).is_some_and(|house| house.is_human),
                     main_rng,
                     interner,
@@ -3499,6 +3527,12 @@ fn commit_damage_events_with_isolation(
         let mut healing_only = false;
         let mut latch_hostile_hit = false;
         let mut uncloak_after_damage = false;
+        // `BuildingClass::ReceiveDamage`'s damage-state dispatch result: the
+        // building coordinate to sound the global struck cue at, or `None`.
+        let mut building_damage_cue: Option<(u16, u16)> = None;
+        // `TechnoClass::ReceiveDamage`'s result-2 damage-voice arm: the owner,
+        // type and coordinate to sound the `VoiceFeedback=` line at, or `None`.
+        let mut voice_feedback_cue: Option<(InternedId, InternedId, u16, u16)> = None;
         let mut threat_feedback: Option<(InternedId, InternedId, i32, i32, i32)> = None;
         if let Some(target) = entities.get_mut(target_id) {
             if event.distance_leptons.is_none()
@@ -3669,6 +3703,91 @@ fn commit_damage_events_with_isolation(
                     smoke_maintenance = None;
                     latch_hostile_hit = false;
                 }
+            }
+
+            // gamemd-derived: `BuildingClass::ReceiveDamage @ 0x00442230`'s
+            // damage-state dispatch, latched here and emitted below so it
+            // lands after the shared Techno receiver's own consequences —
+            // native only reaches it once `TechnoClass::ReceiveDamage`
+            // (`0x00442425`) has returned.
+            //
+            // `0x0044242C MOV AL,[ESI+0x90]` is `ObjectClass::IsAlive`: a dead
+            // building skips the dispatch and the function returns. Otherwise
+            // `0x00442476 JMP [EAX*4 + 0x00442C18]` with `EAX = result - 2`
+            // enters `{0x004426AC, 0x004426C8, 0x004424A2, 0x0044247D}`.
+            // Entry 0 (result 2) multiplies the `float` at `+0xE8` of the
+            // object pointed to by `BuildingClass+0x30C` by `1.5f`
+            // (`0x007E4460`) when that pointer is non-null, then falls
+            // through into entry 1 (result 3). That object's identity is
+            // UNCHECKED — it is written once by `BuildingClass::Unlimbo @
+            // 0x00440F5B` from `CALL 0x0062DC50` on `[BuildingTypeClass
+            // +0x764]`, and read and rewritten by
+            // `BuildingClass::UpdateGapGenerator_Tick` (`0x00454E7F`,
+            // `0x0045500C`). Both entries reach
+            // `0x004426D2 CMP [type+0x538],-1`, so only a type with **no**
+            // `DamageSound=` of its own continues to
+            // `0x00442700 MOV ECX,[Rules+0x714]` and `0x00442706 CALL
+            // VocClass::PlayAtCoord @ 0x00750E20` at the building's own
+            // coordinate (`0x004426DB LEA ECX,[ESI+0x9C]`). Not owner-gated,
+            // draws no RNG.
+            //
+            // Results 2/3 are `DamageState::Yellow`/`Red` — the threshold
+            // crossings `ObjectClass::ReceiveDamage @ 0x005F5390` computes
+            // (2: HP went from `>= Strength >> 1` to below it; 3: from above
+            // `Strength * Rules+0x1708` to below it). A hit that crosses
+            // nothing returns 1 and is silent, so this is a per-crossing cue,
+            // not a per-hit one.
+            if matches!(
+                receive_state,
+                Some(damage::DamageState::Yellow | damage::DamageState::Red)
+            ) && target.category == EntityCategory::Structure
+                && target.lifecycle.object_alive
+                && rules
+                    .object(interner.resolve(target.type_ref))
+                    .is_some_and(|object| object.damage_sound.is_none())
+            {
+                building_damage_cue = Some((target.position.rx, target.position.ry));
+            }
+
+            // gamemd-derived: `TechnoClass::ReceiveDamage @ 0x00701900`, the
+            // damage-voice arm. `0x00702049 JMP [EDI*4 + 0x00702D24]` selects
+            // on the damage result (`EDI` forced to 4 at `0x00702035` when
+            // `[ESI+0x6C]` Health is zero); index 2 — result 2, the
+            // `Strength >> 1` crossing, i.e. `DamageState::Yellow` — is
+            // `0x00702695`, which reads the type's `VoiceFeedback=` count at
+            // `+0x4E8` and returns without drawing when it is empty
+            // (`0x007026A9 JLE`).
+            //
+            // This is TechnoClass, not BuildingClass: every category reaches
+            // it, and result 3 (`Red`) does not — index 3 is `0x007027F7`, the
+            // shared tail. Native runs it *inside* `TechnoClass::ReceiveDamage`,
+            // so it precedes the BuildingClass cue latched above; the push
+            // below preserves that order.
+            //
+            // Only the "would native draw?" test lives here. The 30% roll
+            // (`0x007026B3` `RandomRanged(0, 99)` vs `0x007026BD CMP EAX,0x1E`),
+            // the `HouseClass::IsHumanPlayer @ 0x0050B6F0` gate at `0x007026C6`
+            // and the `rand % count` pick at `0x007026DE`/`0x007026E7` are all
+            // app-side: both draws are on `g_MainRng @ 0x00886B88`, which
+            // per-frame draw paths also consume, so they are not lockstep state
+            // and must not touch a `sim/` stream. Native spends the roll before
+            // the owner gate, so the event is emitted for every house.
+            if receive_state == Some(damage::DamageState::Yellow)
+                && rules
+                    .object(interner.resolve(target.type_ref))
+                    .is_some_and(|object| {
+                        object
+                            .voice_feedback
+                            .as_deref()
+                            .is_some_and(|voice| !voice.is_empty())
+                    })
+            {
+                voice_feedback_cue = Some((
+                    target.owner,
+                    target.type_ref,
+                    target.position.rx,
+                    target.position.ry,
+                ));
             }
         }
 
@@ -3948,6 +4067,27 @@ fn commit_damage_events_with_isolation(
             if attacker_id != RAD_NO_ATTACKER && event.distance_leptons.is_none() {
                 target.last_attacker_id = Some(attacker_id);
             }
+        }
+
+        // Native order: the TechnoClass arm runs inside
+        // `TechnoClass::ReceiveDamage @ 0x00701900`, which `BuildingClass::
+        // ReceiveDamage` only resumes after at `0x00442425`, so the voice
+        // precedes the building cue.
+        if let Some((owner, type_ref, rx, ry)) = voice_feedback_cue
+            && let Some(sink) = sound_sink.as_deref_mut()
+        {
+            sink.push(SimSoundEvent::VoiceFeedback {
+                owner,
+                type_ref,
+                rx,
+                ry,
+            });
+        }
+
+        if let Some((rx, ry)) = building_damage_cue
+            && let Some(sink) = sound_sink.as_deref_mut()
+        {
+            sink.push(SimSoundEvent::BuildingDamagedSfx { rx, ry });
         }
 
         if synchronous_retaliation && attacker_id != RAD_NO_ATTACKER {

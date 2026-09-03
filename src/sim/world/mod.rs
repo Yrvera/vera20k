@@ -516,6 +516,77 @@ pub enum SimSoundEvent {
     /// "TankBunkerDown"). Stock zero-link refinery unload completion does
     /// not emit this event.
     RefineryExitSfx { rx: u16, ry: u16 },
+    /// A struck building crossed a damage-state threshold and its type carries
+    /// no `DamageSound=` of its own — the global `[AudioVisual]
+    /// BuildingDamageSound=` cue, played at the building's own coordinate.
+    ///
+    /// gamemd: `BuildingClass::ReceiveDamage @ 0x00442230`. After the shared
+    /// Techno receiver returns at `0x00442425`, `0x0044242C MOV AL,[ESI+0x90]`
+    /// (`ObjectClass::IsAlive`) skips the whole dispatch for a dead building;
+    /// otherwise `0x00442476 JMP [EAX*4 + 0x00442C18]` with `EAX = result - 2`
+    /// enters `{0x004426AC, 0x004426C8, 0x004424A2, 0x0044247D}`. Entry 0
+    /// (result 2) multiplies the `float` at `+0xE8` of the object pointed to
+    /// by `BuildingClass+0x30C` by `1.5f` (`0x007E4460`) when that pointer is
+    /// non-null, then falls through into entry 1 (result 3). The identity of
+    /// that object is UNCHECKED: it is written once by
+    /// `BuildingClass::Unlimbo @ 0x00440F5B` from `CALL 0x0062DC50` on
+    /// `[BuildingTypeClass+0x764]` and is read and rewritten by
+    /// `BuildingClass::UpdateGapGenerator_Tick` (`0x00454E7F`, `0x0045500C`).
+    /// Both entries reach `0x004426D2 CMP [type+0x538],-1`, and only an absent
+    /// per-type `DamageSound=` continues to
+    /// `0x00442700 MOV ECX,[Rules+0x714]` / `0x00442706 CALL
+    /// VocClass::PlayAtCoord @ 0x00750E20` at `[ESI+0x9C]`.
+    ///
+    /// Results 2 and 3 are the threshold crossings computed by
+    /// `ObjectClass::ReceiveDamage @ 0x005F5390`: 2 when the hit took HP from
+    /// `>= Strength >> 1` to below it, 3 when it took HP from above
+    /// `Strength * Rules+0x1708` (ConditionRed) to below it. Ordinary hits
+    /// that cross nothing return 1 and are silent.
+    BuildingDamagedSfx { rx: u16, ry: u16 },
+    /// A techno of any category crossed the half-strength threshold and its
+    /// type authors a non-empty `VoiceFeedback=` — the damage voice line.
+    ///
+    /// gamemd: `TechnoClass::ReceiveDamage @ 0x00701900`. The damage result
+    /// selects an arm through `0x00702049 JMP [EDI*4 + 0x00702D24]`
+    /// (`{0x007027F7, 0x00702713, 0x00702695, 0x007027F7, 0x00702050}`, with
+    /// `EDI` forced to 4 when `[ESI+0x6C]` Health is zero at `0x00702035`).
+    /// Index 2 — result 2, the `Strength >> 1` crossing — is `0x00702695`:
+    ///
+    /// - `0x007026A1 MOV EAX,[EDI+0x4E8]` / `0x007026A9 JLE` — an empty
+    ///   `VoiceFeedback=` list returns without drawing anything.
+    /// - `0x007026B3 MOV ECX,0x886B88` / `CALL 0x0065C7E0` with `(0, 0x63)` —
+    ///   `RandomRanged(0, 99)`; `0x007026BD CMP EAX,0x1E ; JGE` drops the cue,
+    ///   so it speaks 30 times in 100. **The draw is spent before the owner
+    ///   gate**, so this event is emitted for every qualifying crossing on any
+    ///   house and the roll happens app-side.
+    /// - `0x007026C6 MOV ECX,[ESI+0x21C]` / `CALL HouseClass::IsHumanPlayer @
+    ///   0x0050B6F0` — in a skirmish or multiplayer game (`g_GameMode != 0`)
+    ///   that is `house == g_PlayerPtr`, i.e. the local player only.
+    /// - `0x007026DE CALL 0x0065C780` then `0x007026E7 DIV [EDI+0x4E8]` picks
+    ///   `items[rand % count]` from `[EDI+0x4DC]`, and `0x00702709 CALL
+    ///   VocClass::PlayAt @ 0x007509E0` plays it at the object's own coords
+    ///   (`0x00702702 CALL [EDX+0x48]`).
+    ///
+    /// `TechnoTypeClass+0x4D8` is the `VoiceFeedback=` vector (items `+0x4DC`,
+    /// count `+0x4E8`): `0x00712D9C LEA EDI,[EBP+0x4D8]` in
+    /// `TechnoTypeClass::ReadINI` pushes the key string at `0x0084424C`
+    /// (`"VoiceFeedback"`) into `CCINIClass::ReadSoundList @ 0x00525430` at
+    /// `0x00712DCB`.
+    ///
+    /// Both draws are on `g_MainRng @ 0x00886B88`, which
+    /// `Init_Random_Number_System @ 0x0052FC20` seeds from `g_RngSeed`
+    /// alongside the scenario stream but which per-frame draw paths
+    /// (`EBolt::DrawRecursiveBolt`, `LaserDrawClass::Draw`,
+    /// `RadBeam::DrawAndTickAll`) also consume, so it is not lockstep state.
+    /// They therefore belong to the presentation RNG here, not to `sim/`.
+    VoiceFeedback {
+        /// Owning house — `[ESI+0x21C]`, resolved against the local player.
+        owner: InternedId,
+        /// The techno's type, for the `VoiceFeedback=` list lookup.
+        type_ref: InternedId,
+        rx: u16,
+        ry: u16,
+    },
     /// Tank-bunker walls-up cue — emitted on install. App resolves to
     /// [AudioVisual] BunkerWallsUpSound (retail "TankBunkerUp").
     BunkerWallsUp { rx: u16, ry: u16 },

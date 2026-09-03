@@ -406,9 +406,39 @@ pub struct ObjectType {
     pub voice_die: Vec<String>,
     /// Ordered sound choices played when this entity dies or is destroyed.
     pub die_sounds: Vec<String>,
+    /// `DamageSound=` — `TechnoTypeClass+0x538`, the type's own struck cue.
+    ///
+    /// Only its presence is consumed here: `BuildingClass::ReceiveDamage`
+    /// gates the global `[AudioVisual] BuildingDamageSound=` on
+    /// `0x004426D2 CMP [type+0x538],-1`, so a type that names any resolvable
+    /// sound suppresses the global.
+    ///
+    /// RESIDUAL: the per-type cue itself is not routed. Native plays it from
+    /// `TechnoClass::ReceiveDamage @ 0x00701900` arm `0x00702713`/`0x00702717`
+    /// — index **1** of the switch table at `0x00702D24`, i.e. the ordinary
+    /// **non-crossing** hit (damage result 1), not the result-2/3 crossings
+    /// the global rides — and plays it **twice** (`0x00702760`, `0x007027A9`).
+    /// The two cues are therefore mutually exclusive by result, not just by
+    /// the `-1` gate. Trigger / player effect / frequency are recorded in full
+    /// on `crate::audio::events::SoundEventQueue`.
+    pub damage_sound: Option<String>,
     /// Sound ID played while this entity moves (looping engine/footstep).
     pub move_sound: Option<String>,
-    /// Sound ID played when this unit reacts to taking fire (fear cry).
+    /// `VoiceFeedback=` — `TechnoTypeClass+0x4D8`, the line spoken when this
+    /// techno's HP crosses below half strength.
+    ///
+    /// Identity: `0x00712D9C LEA EDI,[EBP+0x4D8]` in
+    /// `TechnoTypeClass::ReadINI` pushes the key string at `0x0084424C`
+    /// (`"VoiceFeedback"`) into `CCINIClass::ReadSoundList @ 0x00525430`
+    /// (`0x00712DCB`), so the vector is at `+0x4D8` with items `+0x4DC` and
+    /// count `+0x4E8` — the exact fields
+    /// `TechnoClass::ReceiveDamage @ 0x00702695` reads. Consumed through
+    /// `SimSoundEvent::VoiceFeedback`.
+    ///
+    /// RESIDUAL: native holds a comma list, VERA one id. All 133 stock authors
+    /// are single-entry (0 contain a comma), so the `rand % count` pick at
+    /// `0x007026E7` is 0 either way; a modded list would diverge. Same
+    /// divergence as the `VoiceMove=` one on `voice_id_for_key`.
     pub voice_feedback: Option<String>,
     /// Sound ID played when this unit performs a special attack.
     pub voice_special_attack: Option<String>,
@@ -1527,6 +1557,11 @@ impl ObjectType {
             prevent_attack_move: section.get_bool("PreventAttackMove").unwrap_or(false),
             voice_die: parse_csv_string_list(section.get("VoiceDie")),
             die_sounds: parse_csv_string_list(section.get("DieSound")),
+            damage_sound: section
+                .get("DamageSound")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             move_sound: section.get("MoveSound").map(|s| s.to_string()),
             voice_feedback: section.get("VoiceFeedback").map(|s| s.to_string()),
             voice_special_attack: section.get("VoiceSpecialAttack").map(|s| s.to_string()),

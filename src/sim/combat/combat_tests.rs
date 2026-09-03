@@ -4120,6 +4120,413 @@ fn selected_death_sounds_for(
         .collect()
 }
 
+/// `BuildingClass::DestructionEffects`: a dying building whose type has no
+/// `DieSound=` of its own falls back to `[AudioVisual] BuildingDieSound`
+/// (`0x0044173F` reads the type's `DieSound` vector count at `+0x520`,
+/// `0x0044174A CMP ECX,EBX ; JNZ` skips the global when it is non-zero, and
+/// `0x00441773`/`0x00441779` play `Rules+0x6E8` at the building's coordinate).
+/// The fallback is not owner-gated and draws no RNG.
+#[test]
+fn a_building_with_no_die_sound_falls_back_to_the_global_building_die_sound() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[General]\nFlightLevel=500\n\n\
+[AudioVisual]\nBuildingDieSound=BuildingGenericDie\n\n\
+[InfantryTypes]\n0=E1\n\n\
+[VehicleTypes]\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n0=GAPOWR\n1=GATECH\n\n\
+[E1]\nStrength=1\nArmor=none\nDieSound=DieA\n\n\
+[GAPOWR]\nStrength=750\nArmor=wood\n\n\
+[GATECH]\nStrength=750\nArmor=wood\nDieSound=OwnCrumble\n",
+    ))
+    .expect("building die-sound rules parse");
+
+    let selected = |type_name: &str, category: EntityCategory| -> Vec<String> {
+        let mut interner = test_interner();
+        let mut rng = SimRng::new(11);
+        let rng_before = rng.state();
+        let mut sounds = Vec::new();
+        super::append_selected_death_sounds(
+            rules.object(type_name).expect("type"),
+            category,
+            rules.general.building_die_sound.as_deref(),
+            true,
+            &mut rng,
+            &mut interner,
+            4,
+            7,
+            &mut sounds,
+        );
+        assert_eq!(
+            rng.state() == rng_before,
+            rules.object(type_name).expect("type").die_sounds.is_empty(),
+            "the global cue must not draw; only a non-empty DieSound= list does",
+        );
+        sounds
+            .into_iter()
+            .map(|(id, rx, ry)| {
+                assert_eq!((rx, ry), (4, 7), "played at the building's own cell");
+                interner.resolve(id).to_string()
+            })
+            .collect()
+    };
+
+    assert_eq!(
+        selected("GAPOWR", EntityCategory::Structure),
+        ["BuildingGenericDie"],
+        "no DieSound= on the type, so the global crumble cue plays"
+    );
+    assert_eq!(
+        selected("GATECH", EntityCategory::Structure),
+        ["OwnCrumble"],
+        "0x0044174A skips the global when the type has its own list"
+    );
+    assert_eq!(
+        selected("E1", EntityCategory::Infantry),
+        ["DieA"],
+        "the fallback is BuildingClass-only"
+    );
+
+    // A rules file with no BuildingDieSound= leaves the building silent
+    // rather than inventing a cue.
+    let bare = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[General]\nFlightLevel=500\n\n\
+[InfantryTypes]\n\n[VehicleTypes]\n\n[AircraftTypes]\n\n\
+[BuildingTypes]\n0=GAPOWR\n\n[GAPOWR]\nStrength=750\nArmor=wood\n",
+    ))
+    .expect("bare rules parse");
+    let mut interner = test_interner();
+    let mut rng = SimRng::new(11);
+    let mut sounds = Vec::new();
+    super::append_selected_death_sounds(
+        bare.object("GAPOWR").expect("type"),
+        EntityCategory::Structure,
+        bare.general.building_die_sound.as_deref(),
+        true,
+        &mut rng,
+        &mut interner,
+        4,
+        7,
+        &mut sounds,
+    );
+    assert!(sounds.is_empty());
+}
+
+/// `BuildingClass::ReceiveDamage @ 0x00442230`: the global
+/// `[AudioVisual] BuildingDamageSound` (`Rules+0x714`) is a **damage-state**
+/// cue, not a per-hit one.
+///
+/// `0x00442476 JMP [EAX*4 + 0x00442C18]` indexes the four-entry table
+/// `{0x004426AC, 0x004426C8, 0x004424A2, 0x0044247D}` with `result - 2`;
+/// entry 0 (result 2, the `Strength >> 1` crossing) falls through into entry 1
+/// (result 3, the `Strength * Rules+0x1708` crossing) and both reach
+/// `0x004426D2 CMP [type+0x538],-1`, so a type with its own `DamageSound=`
+/// takes `JNZ 0x0044270B` and the global never plays. Results 1 (no crossing)
+/// and 4 (dead) leave the arm unvisited, and `0x0044242C MOV AL,[ESI+0x90]`
+/// (`ObjectClass::IsAlive`) skips the whole dispatch for a corpse.
+#[test]
+fn a_struck_building_sounds_the_global_damage_cue_only_on_a_state_crossing() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[General]\nFlightLevel=500\n\n\
+[AudioVisual]\nBuildingDamageSound=BuildingDamaged\nConditionRed=25%\n\n\
+[InfantryTypes]\n0=E1\n\n\
+[VehicleTypes]\n0=MTNK\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n0=GAPOWR\n1=GAWEAP\n\n\
+[E1]\nStrength=100\nArmor=none\n\n\
+[MTNK]\nStrength=300\nArmor=none\nSpeed=6\nPrimary=Plain\n\n\
+[GAPOWR]\nStrength=100\nArmor=none\n\n\
+[GAWEAP]\nStrength=100\nArmor=none\nDamageSound=BuildingMetalDamaged\n\n\
+[Plain]\nDamage=10\nROF=20\nRange=6\nWarhead=PlainWH\n\n\
+[PlainWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("building damage-sound rules parse");
+
+    // One `commit_damage_events` transaction: entity 1 (MTNK) hits entity 2
+    // for `damage`. `victim_type`/`victim_category` shape the receiver.
+    let hit = |victim_type: &str,
+               victim_category: EntityCategory,
+               damage: i32|
+     -> (Vec<SimSoundEvent>, u16) {
+        // `GameEntity::test_default` interns through the thread-local test
+        // interner, and `test_interner()` snapshots it — so the entities must
+        // exist before the snapshot or their type ids resolve to whatever the
+        // clone happens to hold at that index.
+        let mut entities = EntityStore::new();
+        let mut attacker = GameEntity::test_default(1, "MTNK", "Americans", 10, 10);
+        attacker.lifecycle.in_limbo = false;
+        attacker.in_playfield = true;
+        entities.insert(attacker);
+        let mut victim = GameEntity::test_default(2, victim_type, "Soviet", 4, 7);
+        victim.category = victim_category;
+        victim.health = Health {
+            current: 100,
+            max: 100,
+        };
+        victim.lifecycle.in_limbo = false;
+        victim.in_playfield = true;
+        entities.insert(victim);
+
+        let mut interner = test_interner();
+        let allies = interner.intern("Americans");
+        let soviet = interner.intern("Soviet");
+        let warhead_ref = interner.intern("PlainWH");
+
+        let mut houses = BTreeMap::from([
+            (soviet, HouseState::new(soviet, 0, None, false, 0, 10)),
+            (allies, HouseState::new(allies, 1, None, false, 0, 10)),
+        ]);
+        let house_order = [soviet, allies];
+        let mut occupancy = OccupancyGrid::new();
+        let mut main_rng = SimRng::new(11);
+        let mut scenario_rng = SimRng::new(13);
+        let mut handled_deaths = Vec::new();
+        let mut resources = BTreeMap::new();
+        let mut hooks = None;
+        let mut collected: Vec<SimSoundEvent> = Vec::new();
+        let mut sound_sink: Option<&mut Vec<SimSoundEvent>> = Some(&mut collected);
+
+        let records = [EntityDamageEvent::area(
+            2,
+            damage,
+            0,
+            1,
+            Some(allies),
+            warhead_ref,
+        )];
+        let _ = commit_damage_events(
+            &records,
+            &mut entities,
+            &mut occupancy,
+            &rules,
+            &mut interner,
+            &mut houses,
+            &house_order,
+            &HouseAllianceMap::new(),
+            &mut main_rng,
+            &mut scenario_rng,
+            &mut handled_deaths,
+            &mut resources,
+            None,
+            None,
+            None,
+            100,
+            &mut hooks,
+            &mut sound_sink,
+        );
+        let hp = entities.get(2).map_or(0, |victim| victim.health.current);
+        (collected, hp)
+    };
+
+    let damage_cues = |sounds: &[SimSoundEvent]| -> Vec<(u16, u16)> {
+        sounds
+            .iter()
+            .filter_map(|sound| match sound {
+                SimSoundEvent::BuildingDamagedSfx { rx, ry } => Some((*rx, *ry)),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // 100 -> 40 crosses `Strength >> 1` = 50: result 2, entry 0 of the table,
+    // and the cue plays at the building's own cell.
+    let (sounds, hp) = hit("GAPOWR", EntityCategory::Structure, 60);
+    assert_eq!(hp, 40);
+    assert_eq!(damage_cues(&sounds), [(4, 7)]);
+
+    // 100 -> 80 crosses nothing: result 1, which the `CMP EAX,3 ; JA` bound at
+    // `0x0044246D` rejects, so the damage-sound arm is never entered.
+    let (sounds, hp) = hit("GAPOWR", EntityCategory::Structure, 20);
+    assert_eq!(hp, 80);
+    assert!(damage_cues(&sounds).is_empty());
+
+    // 100 -> 0 is result 4: entry 2 of the table (`0x004424A2`), which never
+    // reaches `0x004426D2`. A dying building gets its crumble cue instead.
+    let (sounds, _) = hit("GAPOWR", EntityCategory::Structure, 100);
+    assert!(damage_cues(&sounds).is_empty());
+
+    // `[GAWEAP] DamageSound=` is the `0x004426D2` gate: the type's own cue
+    // wins and the global is skipped.
+    let (sounds, hp) = hit("GAWEAP", EntityCategory::Structure, 60);
+    assert_eq!(hp, 40);
+    assert!(damage_cues(&sounds).is_empty());
+
+    // The arm is BuildingClass-only — an infantryman crossing the same
+    // threshold returns through `TechnoClass::ReceiveDamage`, never
+    // `0x00442476`.
+    let (sounds, hp) = hit("E1", EntityCategory::Infantry, 60);
+    assert_eq!(hp, 40);
+    assert!(damage_cues(&sounds).is_empty());
+}
+
+/// `TechnoClass::ReceiveDamage @ 0x00701900` arm `0x00702695` — index 2 of the
+/// switch table at `0x00702D24`, i.e. damage result 2 only. Unlike the
+/// BuildingClass cue this is a Techno-level arm, so every category reaches it;
+/// and unlike it, result 3 does NOT (index 3 is `0x007027F7`, the tail).
+#[test]
+fn a_techno_speaks_its_voice_feedback_only_on_the_half_strength_crossing() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[General]\nFlightLevel=500\n\n\
+[AudioVisual]\nBuildingDamageSound=BuildingDamaged\nConditionRed=25%\n\n\
+[InfantryTypes]\n0=E1\n1=E2\n\n\
+[VehicleTypes]\n0=MTNK\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n0=GAPOWR\n\n\
+[E1]\nStrength=100\nArmor=none\nVoiceFeedback=GIFear\n\n\
+[E2]\nStrength=100\nArmor=none\n\n\
+[MTNK]\nStrength=300\nArmor=none\nSpeed=6\nPrimary=Plain\n\n\
+[GAPOWR]\nStrength=100\nArmor=none\nVoiceFeedback=StructureFear\n\n\
+[Plain]\nDamage=10\nROF=20\nRange=6\nWarhead=PlainWH\n\n\
+[PlainWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("voice-feedback rules parse");
+
+    let hit = |victim_type: &str,
+               victim_category: EntityCategory,
+               damage: i32|
+     -> (Vec<SimSoundEvent>, u16) {
+        let mut entities = EntityStore::new();
+        let mut attacker = GameEntity::test_default(1, "MTNK", "Americans", 10, 10);
+        attacker.lifecycle.in_limbo = false;
+        attacker.in_playfield = true;
+        entities.insert(attacker);
+        let mut victim = GameEntity::test_default(2, victim_type, "Soviet", 4, 7);
+        victim.category = victim_category;
+        victim.health = Health {
+            current: 100,
+            max: 100,
+        };
+        victim.lifecycle.in_limbo = false;
+        victim.in_playfield = true;
+        entities.insert(victim);
+
+        let mut interner = test_interner();
+        let allies = interner.intern("Americans");
+        let soviet = interner.intern("Soviet");
+        let warhead_ref = interner.intern("PlainWH");
+
+        let mut houses = BTreeMap::from([
+            (soviet, HouseState::new(soviet, 0, None, false, 0, 10)),
+            (allies, HouseState::new(allies, 1, None, false, 0, 10)),
+        ]);
+        let house_order = [soviet, allies];
+        let mut occupancy = OccupancyGrid::new();
+        let mut main_rng = SimRng::new(11);
+        let mut scenario_rng = SimRng::new(13);
+        let mut handled_deaths = Vec::new();
+        let mut resources = BTreeMap::new();
+        let mut hooks = None;
+        let mut collected: Vec<SimSoundEvent> = Vec::new();
+        let mut sound_sink: Option<&mut Vec<SimSoundEvent>> = Some(&mut collected);
+
+        let records = [EntityDamageEvent::area(
+            2,
+            damage,
+            0,
+            1,
+            Some(allies),
+            warhead_ref,
+        )];
+        let scenario_before = scenario_rng.state();
+        let main_before = main_rng.state();
+        let _ = commit_damage_events(
+            &records,
+            &mut entities,
+            &mut occupancy,
+            &rules,
+            &mut interner,
+            &mut houses,
+            &house_order,
+            &HouseAllianceMap::new(),
+            &mut main_rng,
+            &mut scenario_rng,
+            &mut handled_deaths,
+            &mut resources,
+            None,
+            None,
+            None,
+            100,
+            &mut hooks,
+            &mut sound_sink,
+        );
+        // Both native draws are on `g_MainRng @ 0x00886B88`, which per-frame
+        // draw paths also consume, so the cue must cost `sim/` nothing.
+        assert_eq!(
+            scenario_rng.state(),
+            scenario_before,
+            "the damage voice must not spend a scenario draw"
+        );
+        assert_eq!(
+            main_rng.state(),
+            main_before,
+            "the damage voice must not spend a sim main draw"
+        );
+        let hp = entities.get(2).map_or(0, |victim| victim.health.current);
+        (collected, hp)
+    };
+
+    let voices = |sounds: &[SimSoundEvent]| -> Vec<(u16, u16)> {
+        sounds
+            .iter()
+            .filter_map(|sound| match sound {
+                SimSoundEvent::VoiceFeedback { rx, ry, .. } => Some((*rx, *ry)),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // 100 -> 40 crosses `Strength >> 1` = 50 without reaching ConditionRed
+    // (25): result 2, index 2 of `0x00702D24`, spoken at the object's own cell
+    // (`0x00702702 CALL [EDX+0x48]`).
+    let (sounds, hp) = hit("E1", EntityCategory::Infantry, 60);
+    assert_eq!(hp, 40);
+    assert_eq!(voices(&sounds), [(4, 7)]);
+
+    // 100 -> 80 crosses nothing: result 1, index 1 — the per-type
+    // `DamageSound=` arm, never the voice.
+    let (sounds, hp) = hit("E1", EntityCategory::Infantry, 20);
+    assert_eq!(hp, 80);
+    assert!(voices(&sounds).is_empty());
+
+    // 100 -> 20 crosses BOTH thresholds, and `ObjectClass::ReceiveDamage @
+    // 0x005F5390` lets 3 override 2. Index 3 is `0x007027F7`, the shared tail,
+    // so a hit that drops a unit straight into the red says nothing.
+    let (sounds, hp) = hit("E1", EntityCategory::Infantry, 80);
+    assert_eq!(hp, 20);
+    assert!(voices(&sounds).is_empty());
+
+    // 100 -> 0 is forced to index 4 by `0x00702035 MOV EDI,0x4`.
+    let (sounds, _) = hit("E1", EntityCategory::Infantry, 100);
+    assert!(voices(&sounds).is_empty());
+
+    // `0x007026A1 MOV EAX,[EDI+0x4E8]` / `0x007026A9 JLE`: an empty list
+    // returns before the roll, so a type with no `VoiceFeedback=` is silent.
+    let (sounds, hp) = hit("E2", EntityCategory::Infantry, 60);
+    assert_eq!(hp, 40);
+    assert!(voices(&sounds).is_empty());
+
+    // The arm is TechnoClass-level, so a building speaks too — and the voice
+    // is emitted first, because native runs it inside
+    // `TechnoClass::ReceiveDamage`, which `BuildingClass::ReceiveDamage` only
+    // resumes after at `0x00442425`.
+    let (sounds, hp) = hit("GAPOWR", EntityCategory::Structure, 60);
+    assert_eq!(hp, 40);
+    assert_eq!(voices(&sounds), [(4, 7)]);
+    let order: Vec<&str> = sounds
+        .iter()
+        .filter_map(|sound| match sound {
+            SimSoundEvent::VoiceFeedback { .. } => Some("voice"),
+            SimSoundEvent::BuildingDamagedSfx { .. } => Some("building"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, ["voice", "building"]);
+}
+
 #[test]
 fn fatal_sound_selection_uses_human_voice_then_die_sound_main_draws() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
