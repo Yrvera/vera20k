@@ -728,13 +728,33 @@ pub fn projectile_shrapnel_count(
 /// `Apply_area_damage @ 0x00489280`, so any special arm suppresses both. What a
 /// special arm does **not** suppress is the shared tail: every arm, including
 /// its internal bail-outs (e.g. MindControl with no CaptureManager at
-/// `0x00469235`), leaves through `JMP LAB_00469AA4`, and `LAB_00469AA4` is not
-/// the epilogue — it is the `Inviso` visual re-scatter (`0x00469ad7`), the
-/// `AnimList=` explosion (`Warhead::SelectExplosionAnim` called at
-/// `0x00469bcf`), the scorch/crater/combat-light spawn (`0x00469c41`), the
-/// debris loop and the `Airburst=` sub-munition fan (`BulletClass::Init` at
-/// `0x00469f7f` / `0x0046a150`). The ordinary arm reaches that same tail only
-/// behind the `bullet+0x90` gate at `0x00469a94`; special arms bypass the gate.
+/// `0x00469235`), leaves through `JMP LAB_00469AA4`, and `LAB_00469AA4`
+/// (`0x00469aa4 MOV EAX,[EBP+0x8]`) is not the epilogue — the epilogue is
+/// `0x0046a290`. Unconditionally the tail is the `Inviso` visual re-scatter
+/// (`0x00469ad7`), the explosion-anim *selection*
+/// (`Warhead::SelectExplosionAnim` called at `0x00469bcf`), the `AnimList=`
+/// `AnimClass` itself (built from `0x00469c46`), the debris loop and the
+/// `Airburst=` sub-munition fan (`BulletClass::Init` at `0x00469f7f` /
+/// `0x0046a150`). The ordinary arm reaches that same tail only behind the
+/// `bullet+0x90` gate at `0x00469a94`; special arms bypass the gate.
+///
+/// **The combat-light / `CLDisable*` block is NOT part of that unconditional
+/// tail.** `0x00469bf0..0x00469c45`, ending in the light spawn
+/// `0x00469c41 CALL 0x0048a620`, runs only when `bullet+0xe0 != 0` **and**
+/// `[ESP+0xf] == 0` — `0x00469bdc TEST AL,AL` / `0x00469be2 JZ 0x0046a299`
+/// then `0x00469be8 TEST AL,AL` / `0x00469bea JNZ 0x0046a2a1` — and
+/// `0x0046a29b JZ 0x00469c46` rejoins *past* it, so the `AnimList=` anim is
+/// reached either way. `bullet+0xe0` is the per-**weapon** `Bright=` flag, not
+/// a warhead key: `BulletClass::Init` stores its last stack argument there
+/// (`0x004664e6 MOV byte ptr [ECX+0xe0], DL` from `[ESP+0x1c]`), fed from
+/// `TechnoClass::FireAt` (`0x006fe53f MOV CL, byte ptr [EBX+0x12f]`) =
+/// `WeaponTypeClass+0x12f`, written by `WeaponTypeClass::ReadINI` at
+/// `0x00772817` from the key string at `0x00847dd0` = `"Bright"`. Whoever
+/// ports `0x0048a620` must carry that gate, or every non-`Bright=` impact
+/// flashes. The block itself folds warhead `+0x151`/`+0x152`/`+0x153`
+/// (`CLDisableRed=`/`Green=`/`Blue=`, read at `0x00469bf8`/`0x00469c07`/
+/// `0x00469c13`) into a 2/4/8 bit mask and passes it with the impact coord and
+/// `bullet+0x6c`; the exact visual `0x0048a620` produces is UNCHECKED here.
 ///
 /// RESIDUAL — **no special effect body is implemented in VERA.** Every variant
 /// except `OrdinaryDamage` currently claims the detonation, suppresses damage
@@ -743,10 +763,15 @@ pub fn projectile_shrapnel_count(
 /// unimplemented effect families are ports M15b (Parasite), M15c (MindControl)
 /// and M15d (the rest).
 /// - Trigger: any impact whose warhead carries one of the eleven flags. In
-///   stock `rulesmd.ini` that is 14 warhead sections across 20 weapons —
-///   Yuri/Yuri Prime/Psychic Tower/Mastermind, attack dogs, Terror Drones,
+///   stock `rulesmd.ini` that is 14 warhead sections, named by 24 weapon
+///   sections through an exact-case `Warhead=`, of which 22 are actually
+///   mounted (`TankMakeupKit` and `CRMakeupKit` are named by no mount key;
+///   gamemd's INI lookup is case-sensitive, and there is no near-miss
+///   spelling of any of the eleven keys or of `Warhead=` in stock) — carried
+///   by Yuri/Yuri Prime/Psychic Tower/Mastermind, attack dogs, Terror Drones,
 ///   Giant Squids, Chrono Legionnaires, Crazy Ivan, Engineers, Spies,
-///   Magnetrons, Tesla Troopers, Boris and the Weed Guy.
+///   Magnetrons, Tesla Troopers, the IFV's chrono weapon, Boris and the Weed
+///   Guy.
 /// - Player effect: the shot lands, plays its animation and leaves its crater,
 ///   but nobody is controlled, attached to, erased, bombed, defused, disguised
 ///   or lifted, and the target takes no damage from that shot.
@@ -756,6 +781,33 @@ pub fn projectile_shrapnel_count(
 /// - Downstream risk: the ports add snapshotted, hashed entity state
 ///   (`ParasiteClass`, the victim-side mind-control link, `TemporalClass`,
 ///   `BombClass`), so each carries its own `SNAPSHOT_VERSION` bump.
+///
+/// RESIDUAL — **the `[ESP+0xf]` ordinary-arm visual bypass is not modelled.**
+/// `0x004690c9` zeroes `[ESP+0xf]` on entry and `0x00469a9f` is its only
+/// writer: it sets 1 when `Apply_area_damage` (called at `0x00469a83`) returns
+/// exactly 2 and the `bullet+0x90` gate at `0x00469a94` passed
+/// (`0x00469a9a CMP EAX,0x2` / `0x00469a9d JNZ 0x00469aa4`). When set, the tail
+/// diverts at `0x00469bea` / `0x0046a299` to `0x0046a2a1`, which builds a
+/// different `0x1c8`-byte object from global `[0x008871e0] + 0x350` and falls
+/// straight into the epilogue — skipping the `AnimList=` anim, the combat
+/// light, the debris loop and the `Airburst=` fan entirely. It is the same
+/// `Apply_area_damage` return-value handling as the `bullet+0x90` gate above,
+/// and it suppresses far more than that gate does.
+/// - Trigger: an ordinary-arm impact where `Apply_area_damage` returns 2. What
+///   that return value means is **UNCHECKED** — settled by reading
+///   `Apply_area_damage @ 0x00489280`'s return contract.
+/// - Player effect: on native such an impact draws the alternate object
+///   instead of its explosion, crater, debris and `Airburst=` children; VERA
+///   always draws the ordinary set.
+/// - Frequency: UNCHECKED on the ordinary arm, and provably **zero on every
+///   arm in this enum** — `0x00469a9f` is the flag's only writer and it sits
+///   inside the final else at `0x00469a3f`, which `get_xrefs_to 0x00469a3f`
+///   shows is entered by exactly one jump, the `NukeMaker` test's `JZ` at
+///   `0x00469a34`. No special arm can reach it, so the flag is 0 for all of
+///   them.
+/// - Downstream risk: none for M15a. It belongs with the rest of the tail
+///   (`Inviso`, debris, `Airburst=`) and with the `bullet+0x90` gate, i.e. to
+///   whoever ports `Apply_area_damage`'s return contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecialDetonationAction {
     /// `MindControl=` (`WarheadTypeClass+0x155`), test `0x00469211` ->
