@@ -313,8 +313,13 @@ pub(crate) fn compute_in_range(
 /// The bonus terms are NOT missing — native's arcing arm does not apply the
 /// foundation bonus either (it is computed at 0x006F751E, inside the
 /// non-arcing arm), and the one term it does keep, `AirRangeBonus`
-/// (`EBX = EDI` at 0x006F7457), has no stock arcing user: `[FV]` is the only
-/// `AirRangeBonus=` unit and its weapons are not arcing.
+/// (`EBX = EDI` at 0x006F7457), cannot reach a stock arcing shot. `[FV]` is
+/// the only `AirRangeBonus=` unit, and one of its weapons IS arcing —
+/// `Weapon4=CRFlakGuyGun` fires `FlakTProj`, which carries `Arcing=true`. The
+/// bonus still never applies, on a stronger fact than "no arcing user":
+/// native adds it only against a high-flying target, and `[FlakTProj] AA=no`
+/// refuses one outright. So the stub drops a term that is unreachable rather
+/// than one that is unused.
 ///
 /// The MinimumRange test that used to live here has moved to the caller: the
 /// native runs it once, in 3-D, before the `MOV CL,[EDX+0x29B]` arcing split
