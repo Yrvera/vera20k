@@ -186,6 +186,15 @@ enum ProjectileDelivery {
         tracks_target: bool,
         collision: ProjectileCollisionPolicy,
         ballistic: bool,
+        /// `Vertical=` (`BulletTypeClass+0x2C0`) selects the third
+        /// `BulletClass::AI` arm. Carries `DetonationAltitude=` (`+0x2BC`).
+        vertical: Option<i32>,
+        /// `BulletTypeClass::Acceleration` (`+0x2D0`), constructor default 3.
+        acceleration: i32,
+        /// `Inaccurate= && Arcing=` — the launch-time scatter gate at
+        /// `TechnoClass::FireAt 0x006FE67D`/`0x006FE68B`. `Some(true)` takes
+        /// the range-scaled flak arm, `Some(false)` the plain arm.
+        launch_scatter_is_flak: Option<bool>,
         guidance: Option<ProjectileGuidance>,
     },
     Immediate(ImmediateProjectileReason),
@@ -199,8 +208,6 @@ enum ImmediateProjectileReason {
     MissingProjectileType,
     Invisible,
     InstantSpeed,
-    Vertical,
-    SpecialTrajectory,
 }
 
 /// Which delivery path a weapon's shot takes.
@@ -208,37 +215,84 @@ enum ImmediateProjectileReason {
 /// gamemd-derived: `BulletClass::AI @ 0x004666E0` has exactly two branches,
 /// keyed on `ROT < 1`; the non-homing arm then splits on `Vertical` (`+0x2C0`).
 /// `Arcing`, `SubjectToCliffs`, `SubjectToElevation`, `SubjectToWalls`,
-/// `Proximity`, `FlakScatter`, `Inviso` and `Cluster` are never read by the AI —
-/// they are launch-time or detonation-time keys — so only `ROT` and `Vertical`
-/// select a flight model.
+/// `Proximity`, `FlakScatter`, `Inviso` and `Cluster` never select an arm —
+/// they are launch-time, collision-probe or detonation-time keys — so only
+/// `ROT` and `Vertical` pick a flight model.
 ///
-/// RESIDUAL (GSI-08.06/08.07/08.08) — four gaps remain, all verified this pass:
-/// - **Launch speed.** `TechnoClassFireAtSpawnsBullet @ 0x006FDD50` sets a
-///   homing or vertical shot's speed to 1 lepton/frame, and
-///   `BulletClassFireRevealArmAndSubmit @ 0x00468670` renormalises the vector to
-///   magnitude 1.0 when `ROT > 0`; the weapon's `Speed=` is only the ceiling
-///   that `Acceleration=` (`+0x2D0`, default 3) ramps toward. VERA launches
-///   every non-ballistic shot at full weapon speed, so missiles leave the tube
-///   at terminal velocity and reach their target early. Frequency: continuous —
-///   every missile in the game. Closing it needs `max_speed_leptons_per_frame`
-///   beside the current speed and a per-frame ramp, and moves the projectile
-///   hash.
-/// - **`Inaccurate=`/`FlakScatter=` are launch-time offsets**, not
-///   disqualifiers: two scenario draws each, at `0x006FDD50` (`Inaccurate &&
-///   Arcing`) and `0x00468670` (`FlakScatter && Inviso`). They still divert a
-///   shot off the tracked path here rather than offsetting its target.
-/// - **`Vertical=`** is the one genuinely missing flight model (the nuke, the
-///   Kirov bomb, the Disc drain).
-/// - **Detonation.** `Arm` gates only the fuse in native, where VERA gates all
-///   four detonation reasons — so an unarmed shot that hits a wall silently
-///   vanishes — and the fuse's reference coordinate is frozen at launch in
-///   native while VERA measures to the live target. `ranged_fuse_distance_step`
-///   itself is bit-exact against `ProximityDetector::Check @ 0x004E11F0`.
+/// Evidence-backed exclusions (verified 2026-09-03, exhaustive over the direct
+/// `[base + displacement]` operand forms via `search_instructions`) — these keys
+/// must NOT divert a shot off authoritative flight, because native never reads
+/// them in the flight loop at all:
+/// - `Bouncy=` (`+0x2A7`) has **no consumer anywhere in the binary**. The
+///   apparent hits at `0x0070D2D2`/`0x0070D2EE` are `TechnoTypeClass+0x2A7`
+///   behind `VeterancyClass::IsVeteran/IsElite`. Stock `[Lobbed]` (the dog
+///   discus) is therefore an ordinary `Arcing` shell.
+/// - `Proximity=` (`+0x29F`) likewise has no consumer; `0x00702BC0`ff. are
+///   `TechnoTypeClass+0x29F` behind the same veterancy pattern.
+/// - `SubjectToCliffs=` (`+0x296`) is consumed only by the AI collision probe
+///   `FUN_00468BB0 @ 0x00468BEC`, and `SubjectToElevation=` (`+0x297`) only by
+///   `TechnoClass::InRange @ 0x006F72EF`/`0x006F7459` — a targeting key, not a
+///   flight key.
+/// - `VeryHigh=` (`+0x299`) is read only as a `HomingTrack` argument on the
+///   `ROT >= 1` arm, so `VeryHigh` with `ROT <= 0` is unreachable; the one
+///   stock user `[ChemMissile]` has `ROT=4`.
+/// - `Degenerates=` (`+0x2A6`) IS live code — `BulletClass::AI 0x00467C86`
+///   decrements the bullet's damage on every non-detonating frame while it
+///   exceeds 5 — but stock `rulesmd.ini` has zero users, so it is recorded and
+///   not implemented.
+/// - `Elasticity=` (`+0x2C8`) is live in the ARM B reflection block but has
+///   zero stock projectile users (the `[PIECE]`/`[TIRE]` hits are VoxelAnims).
 ///
-/// Not gaps: `Floater=` is read on both ballistic launch paths, `ShrapnelWeapon=`
-/// is fully wired, and gravity applies to every `ROT < 1, Vertical=no` bullet —
-/// VERA's gravity-free straight arm is wrong, but only four rare stock
-/// projectiles use it.
+/// RESIDUAL (GSI-08.07) — the second scatter site is not modelled, because one
+/// of its operands is unidentified. `BulletClass::Fire @ 0x004687B4` offsets an
+/// `Inviso && FlakScatter` bullet's already-resolved target coordinate, drawing
+/// `Random__RandomRanged(0, RulesClass+0x1734 << 1)` for the magnitude and
+/// `Random__RandomRanged(0, 0x7FFFFFFE)` for the angle. **The blocker is the
+/// divisor.** The magnitude is `(roll * ftol(dist)) / *(*(Bullet+0x130) + 0xB4)`
+/// — `0x004687D9 IMUL ESI,EAX`, `0x004687DC MOV ECX,[EBX+0x130]`,
+/// `0x004687E5 IDIV dword ptr [ECX+0xB4]` — and neither `Bullet+0x130`'s
+/// referent nor its `+0xB4` field has been identified, so the offset cannot be
+/// computed at all today. It is NOT the weapon `Range=`; an earlier note here
+/// said so and was wrong.
+///
+/// Two facts for whoever implements it. First, the site OFFSETS, walked in
+/// assembly this session: `0x00468884 CALL Math__CosFromTable / 0x00468889 FMUL
+/// <mag> / 0x00468890 FIADD dword ptr [ESP+0x44]` and `0x00468864 CALL
+/// Math__SinFromTable / 0x00468869 FMUL <mag> / 0x0046886D FSUBR double ptr
+/// [ESP+0x38]` — `x += cos(theta)*mag`, `y -= sin(theta)*mag`, the same shape as
+/// the verified launch site at `0x006FE7E5`/`0x006FE7C0`. The decompiler renders
+/// it as a plain assignment (the dropped-`FIADD` artifact that made the mapping
+/// ledger wrong at the launch site); do not follow that rendering. Second, VERA
+/// resolves an `Inviso` shot on the immediate path, where the impact coordinate
+/// feeds area damage, wall routing, bridge damage, radiation and animation
+/// placement, so wiring the offset in touches all of those consumers.
+///
+/// Trigger: every Flak Cannon / Flak Track shot at an aircraft (`[FlakProj]`,
+/// 6 weapons). Player effect: flak never misses — the miss distance itself is
+/// not yet derivable. Frequency: any skirmish with air units. Downstream risk:
+/// two Scenario RNG draws are missing from that path, so the draw sequence
+/// differs from native for those six weapons.
+///
+/// RESIDUAL (GSI-08.06) — the `ROT < 1, Vertical = no` arm subtracts
+/// `Rules.Gravity` from `v.z` on EVERY frame (`0x00467402`..`0x00467429`),
+/// `Arcing=` is not consulted there, and the position integrates as
+/// `pos += ftol(v)`. VERA's `Straight` arm still walks toward the target
+/// coordinate with no gravity. Trigger: a non-`Arcing`, non-`Inviso`, `ROT=0`
+/// projectile. Player effect: those shots fly flat instead of dropping.
+/// Frequency: four stock projectiles across five weapons (`Sonic`, `Cannon2`,
+/// `ASWVirt`, `PulsPr`); every common shell is `Arcing` and every common gun is
+/// `Inviso`. Downstream risk: converting it means giving the arm a real launch
+/// velocity and the native ground clamp, which is the same work as the
+/// `Arcing` solver.
+///
+/// RESIDUAL (GSI-08.07) — `BulletClass::AI 0x00467CDE` refuses the
+/// detonation-coordinate snap onto the target for an `Inaccurate=` bullet, the
+/// same way it does for `Airburst=`. The homing arm's snap here is gated on
+/// `Airburst` only, because no stock `Inaccurate` projectile has `ROT > 0`
+/// (`[FlakProj]` and `[FlakTProj]` are both `ROT=0`), so the gate is
+/// unreachable in stock data. Trigger: a mod authoring `Inaccurate=yes` with
+/// `ROT`. Player effect: the shot would still snap onto its target. Frequency:
+/// zero in stock. Downstream risk: none.
 fn classify_projectile_delivery(
     weapon: &crate::rules::weapon_type::WeaponType,
     rules: &RuleSet,
@@ -255,54 +309,51 @@ fn classify_projectile_delivery(
     if weapon.speed <= 0 {
         return ProjectileDelivery::Immediate(ImmediateProjectileReason::InstantSpeed);
     }
-    if projectile.vertical {
-        return ProjectileDelivery::Immediate(ImmediateProjectileReason::Vertical);
-    }
-    // `BulletClass::AI @ 0x004666E0` reads neither `SubjectToCliffs` (+0x296)
-    // nor `SubjectToElevation` (+0x297) nor `Proximity` (+0x29F) — the flight
-    // loop branches only on `ROT < 1` and then on `Vertical` (+0x2C0). Those
-    // three keys are consumed elsewhere, so they must not disqualify a shot
-    // from authoritative flight; diverting them took essentially the whole
-    // missile family (every `AAHeatSeeker2` carrier, all stock AA missiles, the
-    // six Maverick weapons, the Dreadnought, dog and squid jumps, and Boomer
-    // torpedoes) off the tracked path.
-    //
-    // UNCHECKED: where `+0x296`/`+0x297` ARE consumed. Not in the AI loop; the
-    // collision rung already owns the wall and water predicates.
-    let ballistic = projectile.arcing || weapon.lobber;
-    if projectile.dropping
-        || (projectile.very_high && projectile.rot <= 0)
-        || projectile.flak_scatter
-        || projectile.inaccurate
-        || projectile.degenerates
-        || projectile.bouncy
-    {
-        return ProjectileDelivery::Immediate(ImmediateProjectileReason::SpecialTrajectory);
-    }
+    // `BulletClass::AI @ 0x004666E0` selects an arm exactly twice: `ROT < 1` at
+    // `0x004668D1`, then `Vertical` (`+0x2C0`) at `0x004671D0`. Nothing else
+    // participates.
+    let ballistic = !projectile.vertical && (projectile.arcing || weapon.lobber);
     ProjectileDelivery::Persistent {
         arm_frames: projectile.arm.max(0).min(u16::MAX as i32) as u16,
         tracks_target: projectile.rot > 0,
         collision: ProjectileCollisionPolicy {
             level_non_water: projectile.level,
             subject_to_walls: projectile.subject_to_walls,
-            native_cell_collision: projectile.rot <= 0,
+            native_cell_collision: projectile.rot <= 0 && !projectile.vertical,
         },
         ballistic,
-        guidance: (!ballistic && projectile.rot > 0).then_some(ProjectileGuidance {
-            rot: projectile.rot,
-            missile_rot_var: rules.general.missile_rot_var,
-            course_lock_frames: projectile
-                .course_lock_duration
-                .clamp(0, i32::from(u16::MAX)) as u16,
-            // The RE contract proves this is BulletClass-identity-derived but
-            // not its formula. Keep the raw phase as an explicit live seam.
-            sidewinder_phase: 0,
-            airburst: projectile.airburst,
-            very_high: projectile.very_high,
-            level: projectile.level,
-            pitch_bam: 0x4000,
-            frames_elapsed: 0,
-        }),
+        vertical: projectile.vertical.then_some(projectile.detonation_altitude),
+        acceleration: projectile.acceleration,
+        // `0x006FE67D`/`0x006FE68B`: the outer gate is `Inaccurate && Arcing`.
+        // Inside, `FlakScatter && !Inviso` takes the range-scaled arm at
+        // `0x006FE6AD` and everything else the plain arm at `0x006FE7FE`.
+        launch_scatter_is_flak: (projectile.inaccurate && projectile.arcing)
+            .then_some(projectile.flak_scatter && !projectile.inviso),
+        guidance: (!ballistic && !projectile.vertical && projectile.rot > 0).then_some(
+            ProjectileGuidance {
+                rot: projectile.rot,
+                missile_rot_var: rules.general.missile_rot_var,
+                course_lock_duration: projectile
+                    .course_lock_duration
+                    .clamp(0, i32::from(u16::MAX))
+                    as u16,
+                // The RE contract proves this is BulletClass-identity-derived but
+                // not its formula. Keep the raw phase as an explicit live seam.
+                sidewinder_phase: 0,
+                airburst: projectile.airburst,
+                very_high: projectile.very_high,
+                level: projectile.level,
+                // Replaced at construction with the launch facing.
+                heading_bam: 0,
+                frames_elapsed: 0,
+                max_speed: weapon.speed.clamp(0, i32::from(u16::MAX)) as u16,
+                acceleration: projectile.acceleration,
+                // Replaced at construction with the launch-time target coord.
+                fuse_reference: ProjectileCoord::new(0, 0, 0),
+                closing_frames: 0,
+                closing_accumulator_bits: 0,
+            },
+        ),
     }
 }
 
@@ -365,9 +416,90 @@ mod projectile_delivery_tests {
                     native_cell_collision: true,
                 },
                 ballistic: false,
+                vertical: None,
+                acceleration: 3,
+                launch_scatter_is_flak: None,
                 guidance: None,
             }
         );
+    }
+
+    /// `Bouncy=` (`+0x2A7`), `Proximity=` (`+0x29F`) and `Degenerates=`
+    /// (`+0x2A6`) never divert a shot: the first two have no consumer anywhere
+    /// in `gamemd.exe`, and the third is a damage decay inside
+    /// `BulletClass::AI 0x00467C86`, not a trajectory selector. `Inaccurate=`
+    /// and `FlakScatter=` are launch-time target offsets at
+    /// `TechnoClass::FireAt 0x006FE67D`, and `Dropping=` (`+0x29C`) only
+    /// suppresses the proximity fuse at `0x00467C78`.
+    #[test]
+    fn gsi_08_08_dead_and_launch_time_keys_keep_authoritative_flight() {
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=TA\n1=TB\n\
+             [TA]\nStrength=100\nArmor=heavy\nPrimary=W0\nSecondary=W1\n\
+             [TB]\nStrength=100\nArmor=heavy\nPrimary=W2\nSecondary=W3\n\
+             [W0]\nDamage=10\nROF=20\nRange=5\nSpeed=40\nProjectile=P0\nWarhead=WH\n\
+             [W1]\nDamage=10\nROF=20\nRange=5\nSpeed=40\nProjectile=P1\nWarhead=WH\n\
+             [W2]\nDamage=10\nROF=20\nRange=5\nSpeed=40\nProjectile=P2\nWarhead=WH\n\
+             [W3]\nDamage=10\nROF=20\nRange=5\nSpeed=40\nProjectile=P3\nWarhead=WH\n\
+             [P0]\nBouncy=yes\nArcing=yes\n[P1]\nDegenerates=yes\n\
+             [P2]\nInaccurate=yes\nFlakScatter=yes\nArcing=true\n[P3]\nDropping=yes\nROT=4\n\
+             [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("projectile fixture parses");
+        for weapon_name in ["W0", "W1", "W2", "W3"] {
+            let weapon = rules.weapon(weapon_name).expect("weapon");
+            assert!(
+                matches!(
+                    classify_projectile_delivery(weapon, &rules),
+                    ProjectileDelivery::Persistent { .. }
+                ),
+                "{weapon_name} must stay on the tracked path"
+            );
+        }
+        // The flak arm is only selected when `FlakScatter && !Inviso`.
+        let flak = rules.weapon("W2").expect("weapon");
+        assert!(matches!(
+            classify_projectile_delivery(flak, &rules),
+            ProjectileDelivery::Persistent {
+                launch_scatter_is_flak: Some(true),
+                ..
+            }
+        ));
+        // `Bouncy` + `Arcing` is an ordinary ballistic shell, with no scatter.
+        let bouncy = rules.weapon("W0").expect("weapon");
+        assert!(matches!(
+            classify_projectile_delivery(bouncy, &rules),
+            ProjectileDelivery::Persistent {
+                ballistic: true,
+                launch_scatter_is_flak: None,
+                ..
+            }
+        ));
+    }
+
+    /// `Vertical=` selects the third `BulletClass::AI` arm and carries
+    /// `DetonationAltitude=` (`+0x2BC`) and `Acceleration=` (`+0x2D0`).
+    #[test]
+    fn gsi_08_08_vertical_projectile_takes_the_vertical_arm() {
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=T\n[T]\nStrength=100\nArmor=heavy\nPrimary=NUKE\n\
+             [NUKE]\nDamage=10\nROF=20\nRange=5\nSpeed=40\nProjectile=GiantNukeUp\nWarhead=WH\n\
+             [GiantNukeUp]\nArm=2\nAcceleration=1\nVertical=yes\nDetonationAltitude=20000\n\
+             [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("projectile fixture parses");
+        let weapon = rules.weapon("NUKE").expect("weapon");
+        assert!(matches!(
+            classify_projectile_delivery(weapon, &rules),
+            ProjectileDelivery::Persistent {
+                vertical: Some(20000),
+                acceleration: 1,
+                arm_frames: 2,
+                guidance: None,
+                ballistic: false,
+                ..
+            }
+        ));
     }
 }
 
@@ -7510,7 +7642,10 @@ pub(crate) fn resolve_attacker_fire(
         tracks_target,
         collision,
         ballistic,
-        guidance,
+        vertical,
+        acceleration,
+        launch_scatter_is_flak,
+        mut guidance,
     } = persistent_delivery
     {
         let impact_world_z_leptons = attack_world_z_leptons(
@@ -7593,11 +7728,146 @@ pub(crate) fn resolve_attacker_fire(
                 }
             })
             .unwrap_or(0);
+        // `TechnoClass::FireAt` step order, `0x006FE663`..`0x006FEA52`:
+        // resolve the target delta, scatter it, recompute the facing from the
+        // scattered delta, clamp the launch speed to half the straight-line
+        // distance, and only then force a homing or vertical shot to one
+        // lepton per frame.
+        let delta = (
+            impact.x - origin.x,
+            impact.y - origin.y,
+            impact.z - origin.z,
+        );
+        let delta = match launch_scatter_is_flak {
+            Some(flak) => crate::sim::projectile::projectile_launch_scatter(
+                delta,
+                rules.combat_damage.ballistic_scatter,
+                (weapon.range * SimFixed::from_num(crate::util::lepton::LEPTONS_PER_CELL_I32))
+                    .to_num::<i32>(),
+                flak,
+                scenario_rng,
+            ),
+            None => delta,
+        };
+        let impact = ProjectileCoord::new(
+            origin.x + delta.0,
+            origin.y + delta.1,
+            origin.z + delta.2,
+        );
+        // `0x006FE9FB`..`0x006FEA00`: `if (dist / 2 < speed) speed = dist / 2`,
+        // applied to EVERY launch before the homing/vertical override.
+        let launch_distance = ((f64::from(delta.0) * f64::from(delta.0)
+            + f64::from(delta.1) * f64::from(delta.1)
+            + f64::from(delta.2) * f64::from(delta.2))
+        .sqrt())
+        .trunc() as i32;
+        let mut launch_speed = weapon.speed.min(launch_distance / 2).max(0);
+        // RESIDUAL (VERA-internal consequence of an otherwise native clamp,
+        // gamemd equivalent UNCHECKED at this separation): the integer `dist/2`
+        // makes `launch_speed` 0 at exactly 1 lepton of muzzle-to-target
+        // separation. Native reaches 0 there too, but its `ROT < 1` non-Vertical
+        // arm then subtracts `Rules.Gravity` every frame at `0x00467402` and the
+        // bullet falls out on the ground probe. VERA's `Straight` arm has no
+        // gravity (recorded separately), so `step_toward(pos, target, 0)`
+        // returns `pos`, `candidate == target_position` is never true, and the
+        // only other removals — target loss and off-grid — cannot fire for a
+        // live on-map target: the projectile never terminates and stays in a
+        // hashed store. Trigger: a `Straight`, non-guided projectile fired at a
+        // target exactly 1 lepton away. Player effect: an invisible immortal
+        // entry in deterministic state, growing one per such shot. Frequency:
+        // effectively zero — 1/256th of a cell of separation, and only for the
+        // four stock projectiles that take the `Straight` arm (`Sonic`,
+        // `Cannon2`, `ASWVirt`, `PulsPr`). Downstream risk: unbounded store
+        // growth and a diverging hash if it ever fires; giving the `Straight`
+        // arm its native gravity closes both this and residual 2 at once.
+        // `0x006FEA36`..`0x006FEA4C`: a `ROT > 0` or `Vertical` bullet from a
+        // firer with `RadialFireSegments == 0` — every stock firer except the
+        // Aegis Cruiser — launches at one lepton per frame, and the weapon's
+        // `Speed=` is stored as `Bullet+0x110` instead. For `ROT > 0` this is
+        // belt-and-braces anyway: `BulletClass::Fire @ 0x00468B2C`
+        // renormalises the vector to magnitude 1.0 whatever the launch speed
+        // was, which is why the Aegis exception has no stock effect and is
+        // deliberately not modelled here.
+        if guidance.is_some() || vertical.is_some() {
+            launch_speed = 1;
+        }
+        // The aim facing IS the launch direction for a homing bullet
+        // (`0x006FDD50` takes the turret/body facing whenever
+        // `ROT != 0 || Dropping`); everything else points at the target delta.
+        // `heading_bam` is the math-BAM form of that facing.
+        //
+        // RESIDUAL (VERA-internal, gamemd equivalent UNCHECKED for the two
+        // uncovered shapes): VERA's condition is `rot > 0 && !ballistic &&
+        // !vertical`, native's is `ROT != 0 || Dropping`. The two disagree only
+        // for an `Arcing`+`ROT>0` projectile or a `Dropping`+`ROT==0` one, and
+        // stock `rulesmd.ini` authors neither — every `Vertical` stock
+        // projectile has no `ROT=` and no `Dropping=`, so native takes the
+        // `atan2` delta heading for them exactly as VERA does here. Trigger: a
+        // mod authoring either shape. Frequency: zero in stock.
+        let launch_heading_bam = if guidance.is_some() {
+            aim_facing16.wrapping_sub(0x4000)
+        } else {
+            crate::sim::movement::homing_movement::atan2_bam(
+                SimFixed::from_num(delta.1),
+                SimFixed::from_num(delta.0),
+            )
+        };
+        if let Some(guidance) = guidance.as_mut() {
+            guidance.heading_bam = launch_heading_bam;
+            guidance.fuse_reference = impact;
+        }
+        // `0x006FEB..`: the launch pitch. `Arcing` uses the solver below;
+        // otherwise a level `0x3FFF` unless the vertical separation exceeds
+        // 200 leptons, where native calls `FUN_004CB3D0(dZ - 20, max(dist,
+        // 0.05))`. VERA-internal: that helper's identity is UNCHECKED, so the
+        // pitch is taken as the geometric elevation of the same two arguments.
+        let launch_pitch_bam = if delta.2.abs() > 200 {
+            let horizontal = ((f64::from(delta.0) * f64::from(delta.0)
+                + f64::from(delta.1) * f64::from(delta.1))
+            .sqrt())
+            .max(0.05);
+            crate::sim::movement::homing_movement::atan2_bam(
+                SimFixed::from_num(delta.2 - 20),
+                SimFixed::from_num(horizontal.trunc() as i32),
+            )
+        } else {
+            0
+        };
         // The root-selector argument remains ABI-ambiguous in the closed RE;
         // use the proved ordinary (+root) path rather than inferring Lobber.
         let velocity = if ballistic {
-            ballistic_launch_velocity(origin, impact, weapon.speed, gravity, false)
+            ballistic_launch_velocity(origin, impact, launch_speed, gravity, false)
                 .unwrap_or(ProjectileVelocity::new(0, 0, 0))
+        } else if vertical.is_some() {
+            let horizontal = SimFixed::from_num(launch_speed)
+                * crate::sim::movement::homing_movement::cos_bam(launch_pitch_bam);
+            ProjectileVelocity::new(
+                (horizontal * crate::sim::movement::homing_movement::cos_bam(launch_heading_bam))
+                    .to_num::<i32>(),
+                (horizontal * crate::sim::movement::homing_movement::sin_bam(launch_heading_bam))
+                    .to_num::<i32>(),
+                (SimFixed::from_num(launch_speed)
+                    * crate::sim::movement::homing_movement::sin_bam(launch_pitch_bam))
+                .to_num::<i32>(),
+            )
+        } else if guidance.is_some() {
+            // RESIDUAL (GSI-08.06): the homing arm here is two-dimensional —
+            // `BulletClass::HomingTrack` owns the native pitch control and is
+            // not ported, so the launch pitch is dropped and the bullet keeps
+            // its launch z. Trigger: a homing shot at a target more than 200
+            // leptons above or below the muzzle. Player effect: the missile
+            // flies flat and detonates at the target's horizontal position
+            // instead of climbing to it. Frequency: cliff and building-roof
+            // engagements. Downstream risk: none beyond the impact z.
+            ProjectileVelocity::new(
+                (SimFixed::from_num(launch_speed)
+                    * crate::sim::movement::homing_movement::cos_bam(launch_heading_bam))
+                .to_num::<i32>(),
+                (SimFixed::from_num(launch_speed)
+                    * crate::sim::movement::homing_movement::sin_bam(launch_heading_bam))
+                .to_num::<i32>(),
+                0,
+            )
         } else {
             ProjectileVelocity::new(0, 0, 0)
         };
@@ -7621,19 +7891,30 @@ pub(crate) fn resolve_attacker_fire(
                 weapon: interner.intern(selected.weapon_id),
                 owner: snap.owner,
             },
-            speed_leptons_per_frame: weapon.speed.clamp(1, i32::from(u16::MAX)) as u16,
+            speed_leptons_per_frame: launch_speed.clamp(0, i32::from(u16::MAX)) as u16,
             velocity,
-            trajectory: if ballistic {
-                ProjectileTrajectory::Ballistic { gravity }
-            } else {
-                ProjectileTrajectory::Straight
+            trajectory: match vertical {
+                Some(detonation_altitude) => ProjectileTrajectory::Vertical {
+                    detonation_altitude,
+                    acceleration,
+                    max_speed: weapon.speed,
+                    heading_bam: launch_heading_bam,
+                    pitch_bam: launch_pitch_bam,
+                },
+                None if ballistic => ProjectileTrajectory::Ballistic { gravity },
+                None => ProjectileTrajectory::Straight,
             },
             guidance,
             visual,
             arm_frames,
             fuse_frames: None,
-            ranged_fuse: tracks_target
-                || projectile_type.is_some_and(|projectile| projectile.ranged),
+            // `BulletClass::AI 0x00467C1C`: the fuse runs when `ROT > 0` or
+            // `Ranged=`. `Dropping=` (`0x00467C78`) then discards its result
+            // outright, which is equivalent to never admitting the fuse — the
+            // detector's running minimum feeds nothing else.
+            ranged_fuse: (tracks_target
+                || projectile_type.is_some_and(|projectile| projectile.ranged))
+                && !projectile_type.is_some_and(|projectile| projectile.dropping),
             tracks_target,
             target_expiry: TargetExpiryPolicy::DetonateAtLastKnown,
             collision,

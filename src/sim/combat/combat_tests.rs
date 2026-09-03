@@ -6592,7 +6592,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
     let shared_cell_dummy = sim.effective_shared_cell_dummy();
     assert!(
         sim.projectiles
-            .advance(&target_positions, None, &shared_cell_dummy, |_, _| None,)
+            .advance(0, &target_positions, None, &shared_cell_dummy, |_, _| None,)
             .detonations
             .is_empty()
     );
@@ -6607,6 +6607,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
         detonations = restored
             .projectiles
             .advance(
+                0,
                 &target_positions,
                 None,
                 &restored_shared_cell_dummy,
@@ -8473,4 +8474,347 @@ fn gsi_08_04_projectile_spawns_at_the_muzzle_not_the_hull_centre() {
         (189, -25),
         "muzzle offset in leptons"
     );
+}
+
+/// `TechnoClass::FireAt 0x006FEA36`..`0x006FEA4C`: a `ROT > 0` shot leaves the
+/// tube at ONE lepton per frame and the weapon's `Speed=` is stored as
+/// `Bullet+0x110` instead, which `BulletTypeClass::Acceleration` (`+0x2D0`)
+/// then ramps toward. The launch direction is the aim facing, not the bearing
+/// to the target.
+#[test]
+fn gsi_08_06_homing_launch_uses_one_lepton_and_stores_speed_as_the_ceiling() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=LNCHR\n1=HTNK\n\
+         [LNCHR]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=Rocket\nTurret=yes\n\
+         [HTNK]\nStrength=2000\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=Rocket\n\
+         [Rocket]\nDamage=65\nROF=50\nRange=6\nSpeed=30\nProjectile=Seeker\nWarhead=AP\n\
+         [Seeker]\nROT=60\nArm=2\nRanged=yes\n\
+         [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("homing launch fixture parses");
+
+    let mut store = EntityStore::new();
+    let mut shooter = make_entity_owned(1, "LNCHR", 5, 5, 300, "Soviet");
+    shooter.facing = 0;
+    shooter.barrel_facing = Some(crate::sim::movement::facing_class::FacingClass::new(
+        0x4000, 0,
+    ));
+    store.insert(shooter);
+    let _ = test_intern("HTNK");
+    store.insert(make_entity_owned(2, "HTNK", 8, 5, 2000, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut SimRng::new(3),
+    );
+
+    let spawn = result
+        .projectile_spawns
+        .first()
+        .expect("the missile is a tracked projectile");
+    assert_eq!(
+        spawn.speed_leptons_per_frame, 1,
+        "every ROT > 0 launch starts at one lepton per frame"
+    );
+    let guidance = spawn.guidance.expect("a ROT > 0 shot carries guidance");
+    assert_eq!(guidance.max_speed, 30, "weapon Speed= is only the ceiling");
+    assert_eq!(guidance.acceleration, 3, "BulletTypeClass ctor default");
+    assert_eq!(
+        guidance.heading_bam, 0,
+        "the turret faces east (0x4000), which is heading BAM 0"
+    );
+    assert_eq!(
+        guidance.fuse_reference, spawn.initial_target_position,
+        "the ProximityDetector reference is frozen on the launch-time target"
+    );
+    assert_eq!(spawn.velocity, ProjectileVelocity::new(1, 0, 0));
+}
+
+/// `TechnoClass::FireAt 0x006FE9FE`: EVERY launch speed is clamped to half the
+/// straight-line distance to the target before the homing/vertical override.
+#[test]
+fn gsi_08_06_point_blank_shot_clamps_the_launch_speed_to_half_the_distance() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=ARTY\n1=HTNK\n\
+         [ARTY]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=Shell\n\
+         [HTNK]\nStrength=2000\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=Shell\n\
+         [Shell]\nDamage=65\nROF=50\nRange=6\nSpeed=200\nProjectile=Lob\nWarhead=AP\n\
+         [Lob]\nArcing=true\n\
+         [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("clamp fixture parses");
+
+    let mut store = EntityStore::new();
+    let mut shooter = make_entity_owned(1, "ARTY", 5, 5, 300, "Soviet");
+    // Turretless: the hull facing is what `GetFireError` gates on, so aim it
+    // east at the target before the shot.
+    shooter.facing = 64;
+    store.insert(shooter);
+    let _ = test_intern("HTNK");
+    store.insert(make_entity_owned(2, "HTNK", 6, 5, 2000, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut SimRng::new(3),
+    );
+
+    let spawn = result
+        .projectile_spawns
+        .first()
+        .expect("the shell is a tracked projectile");
+    let dx = spawn.initial_target_position.x - spawn.origin.x;
+    let dy = spawn.initial_target_position.y - spawn.origin.y;
+    let dz = spawn.initial_target_position.z - spawn.origin.z;
+    let distance = (f64::from(dx * dx + dy * dy + dz * dz)).sqrt().trunc() as i32;
+    assert!(
+        distance / 2 < 200,
+        "the fixture must be closer than twice the weapon speed"
+    );
+    assert_eq!(
+        i32::from(spawn.speed_leptons_per_frame),
+        distance / 2,
+        "the launch speed is clamped to dist/2"
+    );
+}
+
+/// A flat level-0 grid, so the `Vertical` arm's floor probe has a ground
+/// surface to reach.
+fn flat_level_zero_terrain(
+    width: u16,
+    height: u16,
+) -> crate::map::resolved_terrain::ResolvedTerrainGrid {
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+
+    let speed_costs = SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(100),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
+    let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+    for ry in 0..height {
+        for rx in 0..width {
+            cells.push(ResolvedTerrainCell {
+                rx,
+                ry,
+                source_tile_index: 0,
+                source_sub_tile: 0,
+                final_tile_index: 0,
+                final_sub_tile: 0,
+                is_wood_bridge_repair_tile: false,
+                level: 0,
+                filled_clear: true,
+                tileset_index: Some(0),
+                land_type: 0,
+                yr_cell_land_type: 0,
+                slope_type: 0,
+                template_height: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: TerrainClass::Clear,
+                speed_costs,
+                is_water: false,
+                is_cliff_like: false,
+                height_in_pixels: 0,
+                variant: 0,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: false,
+                allows_tiberium: false,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: false,
+                terrain_object_blocks: false,
+                terrain_object_occupation: None,
+                overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
+                zone_type: 0,
+                base_ground_walk_blocked: false,
+                base_build_blocked: false,
+                base_land_type: 0,
+                base_yr_cell_land_type: 0,
+                base_terrain_class: TerrainClass::Clear,
+                base_speed_costs: speed_costs,
+                build_blocked: false,
+                has_bridge_deck: false,
+                bridge_walkable: false,
+                bridge_transition: false,
+                bridge_deck_level: 0,
+                bridge_layer: None,
+                bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
+                radar_left: [0, 0, 0],
+                radar_right: [0, 0, 0],
+                has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
+            });
+        }
+    }
+    ResolvedTerrainGrid::from_cells(width, height, cells)
+}
+
+/// GSI-08.08 end to end: the Kirov bomb has to FALL and explode.
+///
+/// `[BlimpBombP]` is `Vertical=yes` with `Acceleration=1`, no `ROT=` and no
+/// `Ranged=`, so it carries no fuse and no steering — its only terminations are
+/// the `Vertical` arm's own probes at `BulletClass::AI 0x00467334`ff.
+/// (`DetonationAltitude`, then `GetAltitude() < 0`, then the bridge deck).
+/// `TechnoClass::FireAt` gives a `Vertical` launch a pitch only when the
+/// muzzle-to-target separation exceeds 200 leptons, so if the firer's hover
+/// altitude failed to reach the launch coordinate the bomb would leave level,
+/// never cross `DetonationAltitude=20000`, never drop below the floor, and
+/// drift off the map unexploded. This pins the whole chain instead: the Jumpjet
+/// firer's `JumpjetHeight=` becomes the locomotor's hover target, that hover
+/// altitude reaches `object_world_z_leptons`, the launch pitch points down, and
+/// the flight ends in a detonation.
+///
+/// The fixture authors `JumpJet=yes`, which stock `[ZEP]` does NOT — it takes
+/// its Jumpjet locomotor from the GUID alone. That reproduces gamemd, where
+/// `TechnoTypeClass::ReadINI @ 0x00715151` stores `JumpjetHeight=` into
+/// `TechnoType+0xD80` unconditionally (over the constructor default 500 at
+/// `0x007115D3`), so a native Kirov really does hover at 750. VERA gates the
+/// whole `JumpjetParams` block on `JumpJet=yes` (`rules/object_type.rs`), so a
+/// stock `[ZEP]`/`[DISK]` currently hovers at the 500 default instead — a
+/// recorded DRIFT out of scope here, and the reason this fixture has to author
+/// the key to exercise the chain it claims to pin.
+#[test]
+fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
+    use crate::map::resolved_terrain::SharedCellDummy;
+    use crate::sim::projectile::{ProjectileStore, ProjectileTrajectory};
+
+    // Stock `[BlimpBombP]`, `[BlimpBomb]` and the Kirov's `JumpjetHeight=750`,
+    // with two deliberate changes: `Range=` is widened from the stock 1.5 so the
+    // shot clears the fire-range gate while the firer hovers 750 leptons up
+    // (nothing on the `Vertical` arm reads `Range=`), and `JumpJet=yes` is
+    // authored so VERA's `JumpJet=`-gated parser reaches `JumpjetHeight=` the
+    // way `TechnoTypeClass::ReadINI` does unconditionally. See the doc comment.
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=ZEP\n1=HTNK\n\
+         [ZEP]\nStrength=2000\nArmor=medium\nSpeed=5\nPrimary=BlimpBomb\n\
+         BalloonHover=yes\nJumpJet=yes\nJumpjetHeight=750\nConsideredAircraft=yes\n\
+         MovementZone=Fly\nSpeedType=Hover\n\
+         Locomotor={92612C46-F71F-11d1-AC9F-006008055BB5}\n\
+         [HTNK]\nStrength=2000\nArmor=heavy\nSpeed=4\n\
+         [BlimpBomb]\nDamage=250\nBurst=1\nROF=50\nRange=6\nSpeed=20\n\
+         Projectile=BlimpBombP\nWarhead=BlimpHE\nOmniFire=yes\n\
+         [BlimpBombP]\nArm=10\nAcceleration=1\nVertical=yes\nDetonationAltitude=20000\n\
+         [BlimpHE]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("Kirov bomb fixture parses");
+
+    let mut store = EntityStore::new();
+    let mut kirov = make_entity_owned(1, "ZEP", 5, 5, 2000, "Soviet");
+    kirov.category = EntityCategory::Aircraft;
+    let zep_object = rules.object("ZEP").expect("ZEP object type");
+    let mut locomotor =
+        crate::sim::movement::locomotor::LocomotorState::from_object_type(zep_object, 0, 0);
+    // The hover altitude is NOT hand-set: `JumpjetHeight=750` has to arrive
+    // through `LocomotorState::air_params_from_object` as the hover target, and
+    // the airship is then placed at the top of its climb. Assert the rules hop
+    // at its source so a broken parse fails here rather than downstream.
+    assert_eq!(
+        locomotor.target_altitude,
+        crate::util::fixed_math::SimFixed::from_num(750),
+        "`JumpjetHeight=750` must reach the locomotor's hover target; a 500 here \
+         means the rules->locomotor hop is broken, not the flight model"
+    );
+    locomotor.altitude = locomotor.target_altitude;
+    kirov.locomotor = Some(locomotor);
+    store.insert(kirov);
+    let _ = test_intern("HTNK");
+    // Directly beneath the airship, the way a Kirov bombs.
+    store.insert(make_entity_owned(2, "HTNK", 5, 5, 2000, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut SimRng::new(7),
+    );
+
+    let spawn = *result
+        .projectile_spawns
+        .first()
+        .expect("the Kirov bomb is a tracked projectile");
+    assert!(
+        matches!(spawn.trajectory, ProjectileTrajectory::Vertical { .. }),
+        "Vertical=yes takes the third arm"
+    );
+    assert!(
+        spawn.origin.z >= 750,
+        "the Jumpjet hover altitude must reach the launch coordinate, else the \
+         bomb leaves level and never terminates; got {}",
+        spawn.origin.z
+    );
+    assert!(
+        spawn.velocity.z < 0,
+        "the launch pitch has to point the bomb DOWN; got {:?}",
+        spawn.velocity
+    );
+
+    let terrain = flat_level_zero_terrain(10, 10);
+    let ground = ProjectileCoord::new(5 * 256, 5 * 256, 0);
+    let mut projectiles = ProjectileStore::new();
+    let id = projectiles.spawn(1, spawn);
+    let dummy = SharedCellDummy::fresh();
+    for frame in 1..600u32 {
+        let step = projectiles
+            .advance_one(
+                id,
+                frame,
+                |_| Some(ground),
+                Some(&terrain),
+                &dummy,
+                |_, _| None,
+            )
+            .expect("the bomb is still in flight");
+        assert!(
+            step.expired.is_empty(),
+            "the bomb must not vanish unexploded at frame {frame}"
+        );
+        if let Some(detonation) = step.detonations.first() {
+            assert_eq!(detonation.projectile_id, id);
+            // The only reachable terminator on this arm: `DetonationAltitude`
+            // is 20000 and the bomb is descending, and there is no bridge and
+            // no fuse — so this is the floor probe, native's `GetAltitude() < 0`
+            // over a level-0 cell.
+            assert!(
+                detonation.impact.z < 0,
+                "the bomb detonates below the level-0 floor, at {}",
+                detonation.impact.z
+            );
+            return;
+        }
+    }
+    panic!("the Kirov bomb never detonated");
 }

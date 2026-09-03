@@ -227,6 +227,10 @@ impl Simulation {
             return true;
         }
         if self.projectiles.get(id).is_some() {
+            // `BulletClass::AI 0x0046699D` reads the GLOBAL frame counter's
+            // parity for the half-rate course-locked acceleration ramp, so the
+            // Logic slot has to hand the flight loop the current frame.
+            let binary_frame = self.session.binary_frame;
             let shared_cell_dummy = self.effective_shared_cell_dummy();
             let terrain = self.resolved_terrain.as_ref();
             let overlay_grid = self.overlay_grid.as_ref();
@@ -238,6 +242,7 @@ impl Simulation {
                 .projectiles
                 .advance_one(
                     id,
+                    binary_frame,
                     |target_id| {
                         let target = entities
                             .get(target_id)
