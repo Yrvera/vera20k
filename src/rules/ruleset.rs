@@ -627,6 +627,70 @@ pub struct GeneralRules {
     /// entirely when the count is zero and otherwise plays
     /// `items[rand % count]` at the strike coordinate.
     pub lightning_sounds: Vec<String>,
+    /// Weather-storm start cue from `[AudioVisual] StormSound=` (stock
+    /// `WeatherIntro`), stored at `Rules+0x730`.
+    ///
+    /// gamemd: `RulesClass::ReadAudioVisual @ 0x0066AEAE..0x0066AEE6` reads
+    /// the key at `0x0083A400` and keeps the `VocClass::FindByName` result.
+    /// `LightningStorm::Start @ 0x0053A032..0x0053A044` plays it
+    /// **non-positionally** — `MOV ECX,[Rules+0x730]`, `MOV EDX,0x2000`
+    /// (centred pan), `PUSH 0x3F800000` (volume `1.0f`), no handle, through
+    /// `VocClass::PlayAtPos @ 0x00750920` — and only inside the
+    /// `0x0053A014 MOV AL,[Rules+0x17B0]` gate it shares with the on-screen
+    /// storm message. See [`GeneralRules::lightning_print_text`].
+    ///
+    /// It is **not** a launch cue. `SuperClass::Launch @ 0x006CC390` case 2
+    /// passes `[Rules+0x1794]` (`LightningDeferment`, stock 250) as `Start`'s
+    /// `param_2`, and `Start` returns at `if (param_2 != 0)` before reaching
+    /// `0x0053A044`; `LightningStorm::Process @ 0x0053A6C0` re-enters with
+    /// `param_2` cleared (`0x0053AAC8 XOR EDX,EDX`) once the countdown expires
+    /// and that entry plays it.
+    pub storm_sound: Option<String>,
+    /// `[General] LightningPrintText=` (`Rules+0x17B0`), the gate on both the
+    /// storm message and [`GeneralRules::storm_sound`].
+    ///
+    /// gamemd: `RulesClass::ReadGeneral @ 0x0067107F..0x0067108C` reads the
+    /// key at `0x0083BC74`. Stock `rulesmd.ini` does **not** author it, so the
+    /// constructor default decides: `RulesClass::Constructor @ 0x006676BC MOV
+    /// byte ptr [ESI+0x17B0],AL`, where the last definition of `EAX` before it
+    /// is `0x00667202 MOV EAX,0x1` and the function's last `CALL` is at
+    /// `0x0066715D` — so the default is **true** and the storm cue does play
+    /// on retail data.
+    pub lightning_print_text: bool,
+    /// Nuclear-missile launch cue from `[AudioVisual] DigSound=` (stock
+    /// `NukeSiren`), stored at `Rules+0x174`.
+    ///
+    /// gamemd: `RulesClass::ReadAudioVisual @ 0x00669331..0x00669367` reads
+    /// the key at `0x0083AB70` (`"DigSound"`). Despite the name it is the
+    /// nuke siren — stock `rulesmd.ini` says so in a comment — and
+    /// `SuperClass::Launch @ 0x006CC390` case 0 (`Type=MultiMissile`) is its
+    /// only reader, playing it at the target coordinate through
+    /// `VocClass::PlayAtCoord @ 0x00750E20` on both branches
+    /// (`0x006CDCA8`/`0x006CDCAE` when the silo animates the launch,
+    /// `0x006CDDE3`/`0x006CDDE9` when it does not).
+    pub dig_sound: Option<String>,
+    /// `[AudioVisual] PsychicDominatorActivateSound=` (stock
+    /// `PsychicDominatorActivate`), stored at `Rules+0x24C`.
+    ///
+    /// gamemd: `SuperClass::Launch @ 0x006CC390` case 7 plays it at the target
+    /// coordinate — `0x006CCE22 MOV ECX,[Rules+0x24C]`,
+    /// `0x006CCE28 CALL VocClass::PlayAtCoord @ 0x00750E20`.
+    pub psychic_dominator_activate_sound: Option<String>,
+    /// `[AudioVisual] GeneticMutatorActivateSound=` (stock
+    /// `GeneticMutatorActivate`), stored at `Rules+0x250`.
+    ///
+    /// gamemd: `SuperClass::Launch @ 0x006CC390` case 9 plays it at the target
+    /// coordinate — `0x006CD8CD MOV ECX,[Rules+0x250]`,
+    /// `0x006CD8D3 CALL VocClass::PlayAtCoord @ 0x00750E20`.
+    pub genetic_mutator_activate_sound: Option<String>,
+    /// `[AudioVisual] PsychicRevealActivateSound=` (stock
+    /// `PsychicRevealActivate`), stored at `Rules+0x254`.
+    ///
+    /// gamemd: `SuperClass::Launch @ 0x006CC390` case 11 plays it at the
+    /// target coordinate — `0x006CD7B9 MOV ECX,[Rules+0x254]`,
+    /// `0x006CD7BF CALL VocClass::PlayAtCoord @ 0x00750E20`. This case plays
+    /// no EVA line.
+    pub psychic_reveal_activate_sound: Option<String>,
     /// SFX played when a paradropped passenger successfully deploys a parachute.
     /// Parsed from [AudioVisual] ChuteSound (stock "ParachuteDrop").
     /// None = no sound configured. Resolved at app layer to a sound.ini entry.
@@ -1185,6 +1249,14 @@ impl Default for GeneralRules {
             building_die_sound: None,
             building_damage_sound: None,
             lightning_sounds: Vec::new(),
+            storm_sound: None,
+            // `RulesClass::Constructor @ 0x006676BC` writes AL, and the last
+            // definition of EAX before it is `0x00667202 MOV EAX,0x1`.
+            lightning_print_text: true,
+            dig_sound: None,
+            psychic_dominator_activate_sound: None,
+            genetic_mutator_activate_sound: None,
+            psychic_reveal_activate_sound: None,
             chute_sound: None,
             gui_main_button_sound: None,
             gui_move_in_sound: None,
@@ -1933,6 +2005,35 @@ impl GeneralRules {
                         .collect()
                 })
                 .unwrap_or_default(),
+            storm_sound: audio_visual
+                .and_then(|s| s.get("StormSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            // `RulesClass::ReadGeneral @ 0x0067107F` passes the field's own
+            // current value as the default, so an absent key keeps the
+            // constructor's `true` (see the field doc).
+            lightning_print_text: general.get_bool("LightningPrintText").unwrap_or(true),
+            dig_sound: audio_visual
+                .and_then(|s| s.get("DigSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            psychic_dominator_activate_sound: audio_visual
+                .and_then(|s| s.get("PsychicDominatorActivateSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            genetic_mutator_activate_sound: audio_visual
+                .and_then(|s| s.get("GeneticMutatorActivateSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            psychic_reveal_activate_sound: audio_visual
+                .and_then(|s| s.get("PsychicRevealActivateSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             chute_sound: audio_visual
                 .and_then(|s| s.get("ChuteSound"))
                 .map(str::trim)
@@ -5484,6 +5585,81 @@ BuildingGarrisonedSound=BuildingGarrisoned
             empty.lightning_sounds.is_empty(),
             "stock ships an empty IceCrackSounds= in the same shape"
         );
+    }
+
+    /// `SuperClass::Launch @ 0x006CC390` reads three `[AudioVisual]` cues
+    /// straight off `RulesClass` — `+0x24C` at `0x006CCE22`, `+0x250` at
+    /// `0x006CD8CD`, `+0x254` at `0x006CD7B9` — plus `DigSound` (`+0x174`,
+    /// `0x006CDCA8`), the nuke siren despite the name.
+    #[test]
+    fn superweapon_activate_sounds_parse_their_stock_values() {
+        let stock = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]
+FlightLevel=500
+[AudioVisual]
+             PsychicDominatorActivateSound=PsychicDominatorActivate
+             GeneticMutatorActivateSound=GeneticMutatorActivate
+             PsychicRevealActivateSound=PsychicRevealActivate
+             DigSound=NukeSiren		; HACK: Nuke siren here
+             StormSound=WeatherIntro
+",
+        ));
+        assert_eq!(
+            stock.psychic_dominator_activate_sound.as_deref(),
+            Some("PsychicDominatorActivate")
+        );
+        assert_eq!(
+            stock.genetic_mutator_activate_sound.as_deref(),
+            Some("GeneticMutatorActivate")
+        );
+        assert_eq!(
+            stock.psychic_reveal_activate_sound.as_deref(),
+            Some("PsychicRevealActivate")
+        );
+        assert_eq!(
+            stock.dig_sound.as_deref(),
+            Some("NukeSiren"),
+            "the inline comment is cut before the value is trimmed"
+        );
+        assert_eq!(stock.storm_sound.as_deref(), Some("WeatherIntro"));
+
+        let absent = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]
+FlightLevel=500
+[AudioVisual]
+DigSound=
+StormSound=
+",
+        ));
+        assert_eq!(absent.psychic_dominator_activate_sound, None);
+        assert_eq!(absent.genetic_mutator_activate_sound, None);
+        assert_eq!(absent.psychic_reveal_activate_sound, None);
+        assert_eq!(absent.dig_sound, None, "an empty value is silence");
+        assert_eq!(absent.storm_sound, None);
+    }
+
+    /// `LightningPrintText` is absent from stock `rulesmd.ini`, so the gate on
+    /// `StormSound` is decided by `RulesClass::Constructor @ 0x006676BC`, which
+    /// stores `AL` after `0x00667202 MOV EAX,0x1` with no intervening `CALL`
+    /// (the function's last is `0x0066715D`).
+    #[test]
+    fn lightning_print_text_defaults_true_and_reads_the_general_key() {
+        let stock = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]
+FlightLevel=500
+",
+        ));
+        assert!(
+            stock.lightning_print_text,
+            "the storm cue is audible on stock data"
+        );
+        let off = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]
+FlightLevel=500
+LightningPrintText=no
+",
+        ));
+        assert!(!off.lightning_print_text);
     }
 
     #[test]

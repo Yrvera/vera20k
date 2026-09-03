@@ -502,6 +502,146 @@ fn anim_world_sound_source(world: crate::sim::anim_class::AnimWorldCoord) -> Sou
     SoundSource::new(screen, (rx, ry))
 }
 
+/// What one superweapon `Type=` case plays when it fires.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct SuperWeaponLaunchCue {
+    /// `[AudioVisual]` (or the type's own `StartSound=`) cue name, if any.
+    pub sound_id: Option<String>,
+    /// `true` when the cue plays at the target coordinate. Every launch cue
+    /// this table still carries is positional; the one non-positional cue in
+    /// the system, `StormSound`, is not a launch cue at all — see
+    /// [`lightning_storm_begin_cue`].
+    pub positional: bool,
+    /// `evamd.ini` event name, if the case plays one.
+    pub eva_event: Option<&'static str>,
+    /// The `evamd.ini` entry's `Type=QUEUE` (vs the STANDARD default).
+    pub eva_queued: bool,
+}
+
+/// The launch cue table of `SuperClass::Launch @ 0x006CC390`.
+///
+/// Native switches on `*(param_1[10] + 0xB4)` — the launched
+/// `SuperWeaponTypeClass`'s `Type=` index, whose name table is the 12 pointers
+/// at `0x008425C0` (`MultiMissile`, `IronCurtain`, `LightningStorm`,
+/// `ChronoSphere`, `ChronoWarp`, `ParaDrop`, `AmerParaDrop`,
+/// `PsychicDominator`, `SpyPlane`, `GeneticConverter`, `ForceShield`,
+/// `PsychicReveal`), i.e. exactly [`SuperWeaponKind`]'s order. Per case:
+///
+/// | `Type=` | cue | EVA |
+/// |---|---|---|
+/// | `MultiMissile` | `[Rules+0x174]` `DigSound` at target (`0x006CDCAE`, and `0x006CDDE9` on the silo branch) | `EVA_NuclearMissileLaunched` (`0x006CDC98`, `0x006CDE01`) |
+/// | `IronCurtain` | — | `EVA_IronCurtainActivated` (`0x006CCF21`) |
+/// | `LightningStorm` | — (the `StormSound` cue is deferred, see [`lightning_storm_begin_cue`]) | `EVA_LightningStormCreated` (`0x006CCD81`) |
+/// | `ChronoSphere` | — | — |
+/// | `ChronoWarp` | — | `EVA_ChronosphereActivated` (`0x006CCD03`) |
+/// | `ParaDrop`, `AmerParaDrop`, `SpyPlane` | — | — |
+/// | `PsychicDominator` | `[Rules+0x24C]` at target (`0x006CCE28`) | `EVA_PsychicDominatorActivated` (`0x006CCDFA`) |
+/// | `GeneticConverter` | `[Rules+0x250]` at target (`0x006CD8D3`) | `EVA_GeneticMutatorActivated` (`0x006CD8BD`) |
+/// | `ForceShield` | the **type's own** `StartSound=` (`SuperWeaponTypeClass+0xC4`, key at `0x00818418`) at target, skipped when `-1` (`0x006CD16B CMP ECX,-1 ; JZ`), through `VocClass::PlayAt @ 0x007509E0` (`0x006CD176`) | — |
+/// | `PsychicReveal` | `[Rules+0x254]` at target (`0x006CD7BF`) | — |
+///
+/// Every EVA call sits behind `MOV EAX,[0x00A8B538] ; TEST ; JNZ` and nothing
+/// else — not the launching house — so an enemy launch announces itself too.
+/// `0x00A8B538` is the client-side defeated/spectating flag
+/// (`HouseClass::MPlayer_Defeated @ 0x004FC205` sets it to 1); VERA has no
+/// equivalent state, so the gate is unmodelled and always open here.
+pub(crate) fn superweapon_launch_cue(
+    kind: crate::rules::superweapon_type::SuperWeaponKind,
+    general: &crate::rules::ruleset::GeneralRules,
+    start_sound: Option<&str>,
+) -> SuperWeaponLaunchCue {
+    use crate::rules::superweapon_type::SuperWeaponKind as K;
+    let positional = SuperWeaponLaunchCue {
+        positional: true,
+        ..Default::default()
+    };
+    match kind {
+        K::MultiMissile => SuperWeaponLaunchCue {
+            sound_id: general.dig_sound.clone(),
+            eva_event: Some("EVA_NuclearMissileLaunched"),
+            ..positional
+        },
+        K::IronCurtain => SuperWeaponLaunchCue {
+            eva_event: Some("EVA_IronCurtainActivated"),
+            ..Default::default()
+        },
+        // Case 2 plays the EVA line and nothing else at launch. It hands
+        // `[Rules+0x1794]` (`LightningDeferment`, stock 250) to
+        // `LightningStorm::Start @ 0x00539EB0`, whose `if (param_2 != 0)`
+        // early return fires before the `StormSound` call at `0x0053A044` —
+        // so the cue belongs to the deferment expiry, not to the launch.
+        // [`lightning_storm_begin_cue`] carries it.
+        K::LightningStorm => SuperWeaponLaunchCue {
+            eva_event: Some("EVA_LightningStormCreated"),
+            ..Default::default()
+        },
+        K::ChronoWarp => SuperWeaponLaunchCue {
+            eva_event: Some("EVA_ChronosphereActivated"),
+            ..Default::default()
+        },
+        K::PsychicDominator => SuperWeaponLaunchCue {
+            sound_id: general.psychic_dominator_activate_sound.clone(),
+            eva_event: Some("EVA_PsychicDominatorActivated"),
+            // `evamd.ini [EVA_PsychicDominatorActivated] Type=QUEUE` — and all
+            // three of its faction values are `Dummy`, so on retail data the
+            // line resolves to a zero-sample entry and is inaudible; only the
+            // `[AudioVisual]` cue is heard.
+            eva_queued: true,
+            ..positional
+        },
+        K::GeneticConverter => SuperWeaponLaunchCue {
+            sound_id: general.genetic_mutator_activate_sound.clone(),
+            eva_event: Some("EVA_GeneticMutatorActivated"),
+            // `evamd.ini [EVA_GeneticMutatorActivated] Type=QUEUE`.
+            eva_queued: true,
+            ..positional
+        },
+        K::ForceShield => SuperWeaponLaunchCue {
+            sound_id: start_sound
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            ..positional
+        },
+        K::PsychicReveal => SuperWeaponLaunchCue {
+            sound_id: general.psychic_reveal_activate_sound.clone(),
+            ..positional
+        },
+        // Cases 3, 5, 6 and 8 reach neither a `VocClass` nor a `VoxClass` call.
+        K::ChronoSphere | K::ParaDrop | K::AmerParaDrop | K::SpyPlane => {
+            SuperWeaponLaunchCue::default()
+        }
+    }
+}
+
+/// The cue the storm plays when it *begins* — `[Rules+0x730]`, i.e.
+/// `[AudioVisual] StormSound=` (key `"StormSound"` at `0x0083A400`, bound at
+/// `0x0066AEAE`/`0x0066AEE6`), behind the `0x0053A014 MOV AL,[Rules+0x17B0]`
+/// gate. `Rules+0x17B0` is `[General] LightningPrintText=` and the
+/// `0x0053A01C JZ` skips the cue and the on-screen storm message together.
+///
+/// **Not a launch cue.** `SuperClass::Launch @ 0x006CC390` case 2 passes
+/// `[Rules+0x1794]` (`LightningDeferment`) as `LightningStorm::Start @
+/// 0x00539EB0`'s `param_2`, and `Start` opens `if (param_2 != 0) { arm the
+/// countdown; return; }` — returning before `0x0053A044`. `LightningStorm::
+/// Process @ 0x0053A6C0` decrements that countdown (`0x0053AAAD`) and at zero
+/// re-enters `Start` with `param_2` cleared (`0x0053AAC8 XOR EDX,EDX`), which
+/// is the entry that reaches the cue. Stock `rulesmd.ini:130` sets
+/// `LightningDeferment=250`, so on retail the cue always trails the launch
+/// EVA line by the full deferment.
+///
+/// Non-positional: `0x0053A044 CALL VocClass::PlayAtPos @ 0x00750920` with pan
+/// `0x2000` (`0x0053A03A`) and volume `1.0f` (`0x0053A03F`), so it is played
+/// centred rather than at the storm cell.
+pub(crate) fn lightning_storm_begin_cue(
+    general: &crate::rules::ruleset::GeneralRules,
+) -> Option<String> {
+    general
+        .lightning_print_text
+        .then(|| general.storm_sound.clone())
+        .flatten()
+}
+
 /// The sound source of a flat cell event. Native `VocClass::PlayAt`
 /// callers pass an object or cell coordinate — the cell centre `(cell << 8)
 /// + 0x80` — so the projected point is the cell's diamond centre, not the
@@ -1300,40 +1440,66 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             .to_string();
                         GameSoundEvent::BuildingReady { sound_id }
                     }
-                    SimSoundEvent::SuperWeaponLaunched { .. } => {
-                        // UNCHECKED residual, still silent, and the NEXT slice
-                        // of this row — not another row's work.
-                        //
-                        // The blocker is evidence, not plumbing: adding a
-                        // `kind` discriminator to the sim event and touching
-                        // the six emitters (force shield, genetic converter,
-                        // iron curtain, lightning storm, paradrop, psychic
-                        // reveal) is a small in-scope change and is exactly
-                        // what gameplay-to-audio trigger routing is for. What
-                        // is missing is the native binding: nothing read here
-                        // proves which cue fires on *launch* as opposed to
-                        // ready or impact, and shipping a guessed mapping is
-                        // worse than a recorded silence. Native's launch cue
-                        // is per-weapon, not global: `[AudioVisual]` holds
-                        // `PsychicDominatorActivateSound` (`Rules+0x24C`),
-                        // `GeneticMutatorActivateSound` (`+0x250`) and
-                        // `PsychicRevealActivateSound` (`+0x254`) from
-                        // `RulesClass::ReadAudioVisual @ 0x006691E0`, and
-                        // `evamd.ini` holds `EVA_IronCurtainActivated`,
-                        // `EVA_ChronosphereActivated`,
-                        // `EVA_LightningStormCreated`,
-                        // `EVA_PsychicDominatorActivated`,
-                        // `EVA_GeneticMutatorActivated` and
-                        // `EVA_ForceShieldActivated`. The reader sites that
-                        // bind each cue to its launch were NOT isolated, so no
-                        // mapping is asserted here.
-                        // Trigger: every superweapon launch. Player effect: the
-                        // launch is silent — no siren, no EVA line. Frequency:
-                        // once per superweapon per recharge (10 min stock),
-                        // i.e. a handful per long game. Downstream risk: none
-                        // beyond the six-emitter edit itself; the work is
-                        // isolating each cue's native callsite first.
-                        continue;
+                    SimSoundEvent::SuperWeaponLaunched {
+                        sw_type, rx, ry, ..
+                    } => {
+                        // `SuperClass::Launch @ 0x006CC390` switches on the
+                        // launched type's `Type=` index and plays that case's
+                        // cue and/or EVA line. `superweapon_launch_cue` is that
+                        // table; both halves come off the one type object, as
+                        // native's `param_1[10]` does.
+                        let type_name = sim.interner.resolve(sw_type);
+                        let Some(sw) = resources.rules.super_weapon(type_name) else {
+                            continue;
+                        };
+                        let cue = superweapon_launch_cue(
+                            sw.kind,
+                            &resources.rules.general,
+                            sw.start_sound.as_deref(),
+                        );
+                        // The EVA sample is picked for the *listening* client's
+                        // side, not the launcher's: `VoxClass::PlayEVA` takes
+                        // only the event name and resolves the faction row
+                        // locally.
+                        let eva_sound_id = cue.eva_event.and_then(|event| {
+                            let local = local_owner_name.as_deref()?;
+                            let faction = crate::app::presentation::building_anim::eva_faction_key(
+                                local,
+                                &state.match_state.match_presentation.house_roster,
+                            );
+                            state
+                                .audio
+                                .eva_registry
+                                .get(event, faction)
+                                .map(str::to_string)
+                        });
+                        if cue.sound_id.is_none() && eva_sound_id.is_none() {
+                            continue;
+                        }
+                        GameSoundEvent::SuperWeaponActivated {
+                            sound_id: cue.sound_id.unwrap_or_default(),
+                            source: cue.positional.then(|| sound_source_at_cell(rx, ry)),
+                            eva_sound_id,
+                            eva_queued: cue.eva_queued,
+                        }
+                    }
+                    SimSoundEvent::LightningStormBegan => {
+                        // The deferred half of case 2: the sky flips to Ion and
+                        // `LightningStorm::Start` plays `StormSound`
+                        // (`0x0053A044`). Nothing else — the EVA line was
+                        // already spoken at launch, ~250 frames earlier.
+                        let Some(sound_id) = lightning_storm_begin_cue(&resources.rules.general)
+                        else {
+                            continue;
+                        };
+                        GameSoundEvent::SuperWeaponActivated {
+                            sound_id,
+                            // `PlayAtPos` with pan `0x2000`: centred, not at
+                            // the storm cell.
+                            source: None,
+                            eva_sound_id: None,
+                            eva_queued: false,
+                        }
                     }
                     SimSoundEvent::SuperWeaponStrike { rx, ry } => {
                         // `LightningStorm::GroundStrike @
@@ -2445,12 +2611,13 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::SuperWeaponLaunchCue;
     use super::{
         ExactStepError, ExactStepReceipt, VOICE_FEEDBACK_PERCENT, append_fire_effect_batch,
         base_under_attack_siren, begin_fire_effect_batch, cloak_sound_for_app,
-        finish_fire_effect_batch, outcome_eva_entry, upsert_overlay_entries,
-        validate_exact_step_receipt, voice_feedback_speaks, wall_sell_sound_for_local,
-        world_point_to_cell,
+        finish_fire_effect_batch, lightning_storm_begin_cue, outcome_eva_entry,
+        superweapon_launch_cue, upsert_overlay_entries, validate_exact_step_receipt,
+        voice_feedback_speaks, wall_sell_sound_for_local, world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
     use crate::map::overlay::OverlayEntry;
@@ -2594,6 +2761,144 @@ mod tests {
         // 30 in 100. The band is wide on purpose: this pins what the 0x1E
         // threshold means, not the generator behind it.
         assert!((2_600..3_400).contains(&speaks), "spoke {speaks} of 10000");
+    }
+
+    /// Stock `[AudioVisual]` values, so the table below is what a retail
+    /// skirmish actually plays.
+    fn stock_audio_visual() -> crate::rules::ruleset::GeneralRules {
+        // The parse of each key from stock `[AudioVisual]` text is pinned in
+        // `rules::ruleset::tests::superweapon_activate_sounds_parse_their_stock_values`.
+        let mut general = crate::rules::ruleset::GeneralRules::default();
+        general.psychic_dominator_activate_sound = Some("PsychicDominatorActivate".to_string());
+        general.genetic_mutator_activate_sound = Some("GeneticMutatorActivate".to_string());
+        general.psychic_reveal_activate_sound = Some("PsychicRevealActivate".to_string());
+        general.dig_sound = Some("NukeSiren".to_string());
+        general.storm_sound = Some("WeatherIntro".to_string());
+        general
+    }
+
+    /// The whole `SuperClass::Launch @ 0x006CC390` cue table, one row per
+    /// `Type=` case. Addresses are on `superweapon_launch_cue`.
+    #[test]
+    fn every_superweapon_case_plays_the_cue_its_native_arm_plays() {
+        use crate::rules::superweapon_type::SuperWeaponKind as K;
+        let g = stock_audio_visual();
+        let cue = |kind, start: Option<&str>| superweapon_launch_cue(kind, &g, start);
+
+        // Case 0: DigSound at the target plus the nuke EVA.
+        let nuke = cue(K::MultiMissile, None);
+        assert_eq!(nuke.sound_id.as_deref(), Some("NukeSiren"));
+        assert!(nuke.positional);
+        assert_eq!(nuke.eva_event, Some("EVA_NuclearMissileLaunched"));
+        assert!(!nuke.eva_queued);
+
+        // Case 1: EVA only — the arm reaches no VocClass call.
+        let ic = cue(K::IronCurtain, None);
+        assert_eq!(ic.sound_id, None);
+        assert_eq!(ic.eva_event, Some("EVA_IronCurtainActivated"));
+
+        // Case 2: EVA only at launch. `Start` gets `LightningDeferment` as
+        // `param_2` and returns before the cue, so `StormSound` is not a
+        // launch cue — `the_storm_cue_is_deferred_and_rides_lightning_print_text`
+        // owns it.
+        let storm = cue(K::LightningStorm, None);
+        assert_eq!(
+            storm.sound_id, None,
+            "case 2 reaches no VocClass call of its own"
+        );
+        assert_eq!(storm.eva_event, Some("EVA_LightningStormCreated"));
+
+        // Case 4 speaks; case 3 is entirely silent.
+        assert_eq!(
+            cue(K::ChronoWarp, None).eva_event,
+            Some("EVA_ChronosphereActivated")
+        );
+        assert_eq!(cue(K::ChronoSphere, None), SuperWeaponLaunchCue::default());
+
+        // Cases 5, 6 and 8 are silent: no VocClass and no VoxClass call.
+        for kind in [K::ParaDrop, K::AmerParaDrop, K::SpyPlane] {
+            assert_eq!(
+                cue(kind, None),
+                SuperWeaponLaunchCue::default(),
+                "{kind:?} plays nothing in gamemd"
+            );
+        }
+
+        // Cases 7 and 9: positional cue plus a Type=QUEUE EVA line.
+        let dominator = cue(K::PsychicDominator, None);
+        assert_eq!(
+            dominator.sound_id.as_deref(),
+            Some("PsychicDominatorActivate")
+        );
+        assert!(dominator.positional && dominator.eva_queued);
+        let mutator = cue(K::GeneticConverter, None);
+        assert_eq!(mutator.sound_id.as_deref(), Some("GeneticMutatorActivate"));
+        assert!(mutator.positional && mutator.eva_queued);
+
+        // Case 11: cue only, no EVA.
+        let reveal = cue(K::PsychicReveal, None);
+        assert_eq!(reveal.sound_id.as_deref(), Some("PsychicRevealActivate"));
+        assert_eq!(reveal.eva_event, None);
+    }
+
+    /// Case 10 is the only one whose cue comes off the *type* object
+    /// (`SuperWeaponTypeClass+0xC4`, `StartSound=`), and `0x006CD16B CMP
+    /// ECX,-1 ; JZ 0x006CD17B` skips it when the type authors none. Stock
+    /// `[ForceShieldSpecial]` is the only `[SuperWeaponTypes]` section that
+    /// does author it.
+    #[test]
+    fn force_shield_takes_its_cue_from_the_launched_type_not_from_audiovisual() {
+        use crate::rules::superweapon_type::SuperWeaponKind as K;
+        let g = stock_audio_visual();
+
+        let stock = superweapon_launch_cue(K::ForceShield, &g, Some("ForceShieldStarting"));
+        assert_eq!(stock.sound_id.as_deref(), Some("ForceShieldStarting"));
+        assert!(stock.positional);
+        assert_eq!(stock.eva_event, None, "case 10 reaches no VoxClass call");
+
+        let unset = superweapon_launch_cue(K::ForceShield, &g, None);
+        assert_eq!(unset.sound_id, None);
+        let empty = superweapon_launch_cue(K::ForceShield, &g, Some("  "));
+        assert_eq!(empty.sound_id, None);
+    }
+
+    /// `StormSound` belongs to the storm *beginning*, not to the launch.
+    /// `SuperClass::Launch` case 2 hands `[Rules+0x1794]`
+    /// (`LightningDeferment`, stock 250) to `LightningStorm::Start @
+    /// 0x00539EB0`, whose `if (param_2 != 0) { arm the countdown; return; }`
+    /// returns before the cue at `0x0053A044`;
+    /// `LightningStorm::Process @ 0x0053A6C0` re-enters with `param_2` cleared
+    /// (`0x0053AAC8 XOR EDX,EDX`) at countdown zero and that entry plays it.
+    ///
+    /// `0x0053A014 MOV AL,[Rules+0x17B0]` (`[General] LightningPrintText=`)
+    /// gates the cue and the on-screen storm message together. The EVA line is
+    /// outside that gate — `SuperClass::Launch` plays it at `0x006CCD81`,
+    /// after `Start` has returned, deferred or not.
+    #[test]
+    fn the_storm_cue_is_deferred_and_rides_lightning_print_text() {
+        use crate::rules::superweapon_type::SuperWeaponKind as K;
+        let on = stock_audio_visual();
+        assert!(on.lightning_print_text, "the constructor default is true");
+
+        // The launch moment: EVA only, no cue.
+        let launch = superweapon_launch_cue(K::LightningStorm, &on, None);
+        assert_eq!(launch.sound_id, None);
+        assert_eq!(launch.eva_event, Some("EVA_LightningStormCreated"));
+
+        // The beginning: the cue, and nothing else.
+        assert_eq!(
+            lightning_storm_begin_cue(&on).as_deref(),
+            Some("WeatherIntro")
+        );
+
+        let mut off = stock_audio_visual();
+        off.lightning_print_text = false;
+        assert_eq!(lightning_storm_begin_cue(&off), None);
+        assert_eq!(
+            superweapon_launch_cue(K::LightningStorm, &off, None).eva_event,
+            Some("EVA_LightningStormCreated"),
+            "the EVA line is outside the LightningPrintText gate"
+        );
     }
 
     #[test]

@@ -336,6 +336,37 @@ pub enum GameSoundEvent {
         source: Option<SoundSource>,
     },
 
+    /// A superweapon fired: its `[AudioVisual]` cue and/or its EVA warning.
+    ///
+    /// `SuperClass::Launch @ 0x006CC390` decides both per `Type=` case; see
+    /// [`crate::app::match_runtime::sim_tick::superweapon_launch_cue`] for the
+    /// case-by-case table and its addresses. Every cue in that table is played
+    /// by `VocClass::PlayAtCoord @ 0x00750E20` (or `PlayAt @ 0x007509E0` for
+    /// `ForceShield`) at the target coordinate, hence `source`.
+    ///
+    /// The one `source: None` producer is `StormSound`, and it is not a launch
+    /// cue: `LightningStorm::Start @ 0x00539EB0` returns early on a deferred
+    /// launch, so the cue is played only when the deferment expires
+    /// (`0x0053A044`, `VocClass::PlayAtPos @ 0x00750920`, pan `0x2000`, volume
+    /// `1.0f` — centred and full-volume). See
+    /// [`crate::app::match_runtime::sim_tick::lightning_storm_begin_cue`].
+    ///
+    /// The EVA line is not gated on the launching house: native calls
+    /// `VoxClass::PlayEVA` behind `[0x00A8B538]` only, a client-side flag that
+    /// `HouseClass::MPlayer_Defeated @ 0x004FC205` sets to 1 — i.e. an
+    /// enemy's launch announces itself on your client until you are defeated.
+    SuperWeaponActivated {
+        /// `[AudioVisual]`/`StartSound=` cue; empty when the case plays none.
+        sound_id: String,
+        /// Target-cell position, or `None` for a non-positional cue.
+        source: Option<SoundSource>,
+        /// Resolved per-faction `evamd.ini` sample, or `None` when the case
+        /// plays no EVA line.
+        eva_sound_id: Option<String>,
+        /// The EVA entry's `Type=QUEUE` (true) vs STANDARD (false).
+        eva_queued: bool,
+    },
+
     /// Generic UI sound (button click, error beep, etc.).
     UiSound {
         /// sound.ini ID for the UI sound.
@@ -375,6 +406,7 @@ impl GameSoundEvent {
             | Self::BuildingDamagedSfx { sound_id, .. }
             | Self::VoiceFeedback { sound_id, .. }
             | Self::LightningStrike { sound_id, .. }
+            | Self::SuperWeaponActivated { sound_id, .. }
             | Self::WorldEffectStarted { sound_id, .. } => sound_id,
             Self::AnimationStopped { stop_sound_id, .. } => stop_sound_id.as_deref().unwrap_or(""),
             Self::UnderAttackEva { eva_sound_id }
@@ -405,6 +437,7 @@ impl GameSoundEvent {
             | Self::BuildingDamagedSfx { source, .. }
             | Self::VoiceFeedback { source, .. }
             | Self::LightningStrike { source, .. }
+            | Self::SuperWeaponActivated { source, .. }
             | Self::WorldEffectStarted { source, .. } => *source,
             _ => None,
         }
@@ -542,18 +575,35 @@ impl GameSoundEvent {
 /// - `EnterGrinderSound`/`LeaveGrinderSound` (`+0x268`/`+0x26C`),
 ///   `EnterBioReactorSound`/`LeaveBioReactorSound` (`+0x270`/`+0x274`): no
 ///   grinder or bio-reactor consumer exists in `sim/` at all.
-/// - The seven `Crate*Sound` keys (`+0x1E4`..`+0x1FC`): no crate-pickup
-///   producer exists.
-/// - `PlaceBeaconSound` (`+0x1CC`), `MindClearedSound` (`+0x264`),
-///   `MasterMindOverloadDeathSound` (`+0x258`), `ImpactLandSound`/
-///   `ImpactWaterSound` (`+0x204`/`+0x200`), `CreditTicks` (`+0x6DC`),
-///   `IceCrackSounds` (`+0x644`): no producer.
-/// - **No player-visible gap on retail data:** `GateUp`/`GateDown`
-///   (`+0x404`/`+0x408`) are both `Dummy`, `Construction` (`+0x6C8`) is
-///   `Dummy`, and `CreateUnitSound`/`CreateInfantrySound`/`CreateAircraftSound`
-///   (`+0x178`..`+0x180`) and `LeaveGrinderSound` are empty in stock
-///   `rulesmd.ini`. `Dummy` is one of the eight `[SoundList]` ids with no
-///   usable `Sounds=`, so it registers silently.
+/// - The seven `Crate*Sound` keys (`+0x1E4`..`+0x1FC`): `sim/crates` places
+///   and regenerates crates but nothing picks one up, so there is no VERA
+///   producer to hang them on. The gap is a crate-pickup gap, not an audio one.
+/// - `MindClearedSound` (`+0x264`) — native consumer
+///   `CaptureManagerClass::FreeUnit @ 0x004720C5`; `MasterMindOverloadDeath`‑
+///   `Sound` (`+0x258`) — `CaptureManagerClass::Update @ 0x00471B39`;
+///   `PlaceBeaconSound` (`+0x1CC`) — `RadarClass::PlaceBeacon @ 0x00430D8E`
+///   (each found by an operand sweep for that `RulesClass` offset, which is
+///   capped and therefore not an exhaustive enumeration of readers). VERA has
+///   no mind-control release path, no MasterMind overload and no beacons, so
+///   none of the three has a producer to wire.
+/// - `ImpactWaterSound` (`+0x200`), `CreditTicks` (`+0x6DC`): no producer; the
+///   native readers were not isolated.
+/// - **Dead on retail data, so not parsed:** `ImpactLandSound` (`+0x204`) and
+///   `IceCrackSounds` (`+0x644`) are both **empty** in stock `rulesmd.ini`;
+///   `GateUp`/`GateDown` (`+0x404`/`+0x408`) and `Construction` (`+0x6C8`) are
+///   `Dummy`; `CreateUnitSound`/`CreateInfantrySound`/`CreateAircraftSound`
+///   (`+0x178`..`+0x180`) and `LeaveGrinderSound` are empty. `Dummy` is one of
+///   the eight `[SoundList]` ids with no usable `Sounds=`, so it registers
+///   silently. Parsing any of these would add a field with no player effect.
+///
+/// **Superweapon launch cues are landed** — see
+/// [`GameSoundEvent::SuperWeaponActivated`] and
+/// [`crate::app::match_runtime::sim_tick::superweapon_launch_cue`]. Two
+/// residuals remain there: the EVA suppression flag `[0x00A8B538]` has no VERA
+/// equivalent (VERA has no defeated-spectator state), and the `MultiMissile`,
+/// `ChronoSphere`, `ChronoWarp`, `PsychicDominator` and `SpyPlane` cases have
+/// no sim launch handler yet, so their rows in the table are mapped but never
+/// reached.
 #[derive(Debug, Default)]
 pub struct SoundEventQueue {
     events: Vec<GameSoundEvent>,

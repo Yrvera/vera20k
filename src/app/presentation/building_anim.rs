@@ -396,6 +396,54 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                     );
                 }
             }
+            GameSoundEvent::SuperWeaponActivated {
+                sound_id,
+                source,
+                eva_sound_id,
+                eva_queued,
+            } => {
+                // `RulesClass::ReadAudioVisual @ 0x006691E0` and
+                // `SuperWeaponTypeClass::ReadINI @ 0x006CEBE5` both store only
+                // the `VocClass::FindByName @ 0x007514D0` result, so a name
+                // that is not a registered Voc is silence in gamemd and must
+                // not reach the raw audio-bag fallback.
+                if !sound_id.is_empty() && registry.get(sound_id).is_some() {
+                    match source {
+                        // `VocClass::PlayAtCoord @ 0x00750E20` /
+                        // `PlayAt @ 0x007509E0` at the target coordinate.
+                        Some(source) => {
+                            if let Some(gain) = gain_for(sound_id, Some(*source)) {
+                                let _ = sfx.play_registered_sound_spatial(
+                                    sound_id,
+                                    gain,
+                                    registry,
+                                    assets,
+                                    audio_indices,
+                                );
+                            }
+                        }
+                        // `StormSound` only: `LightningStorm::Start` calls
+                        // `VocClass::PlayAtPos @ 0x00750920` with pan `0x2000`
+                        // and volume `1.0f` (`0x0053A03A`/`0x0053A03F`).
+                        None => {
+                            let _ = sfx.play_registered_sound_spatial(
+                                sound_id,
+                                SpatialGain::CENTRED_FULL,
+                                registry,
+                                assets,
+                                audio_indices,
+                            );
+                        }
+                    }
+                }
+                if let Some(eva_sound_id) = eva_sound_id.as_deref().filter(|s| !s.is_empty()) {
+                    if *eva_queued {
+                        let _ = sfx.queue_eva_sound(eva_sound_id, registry, assets, audio_indices);
+                    } else {
+                        sfx.play_standard_eva_sound(eva_sound_id, registry, assets, audio_indices);
+                    }
+                }
+            }
             GameSoundEvent::BridgeRepaired {
                 sound_id,
                 source,

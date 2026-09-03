@@ -493,8 +493,46 @@ pub enum SimSoundEvent {
         miner: bool,
         eva_allowed: bool,
     },
-    /// A superweapon was launched — play EVA warning.
-    SuperWeaponLaunched { owner: InternedId, rx: u16, ry: u16 },
+    /// A superweapon fired. `sw_type` is the interned `[SuperWeaponTypes]`
+    /// section name of the launched weapon — the discriminator the app layer
+    /// needs to pick the cue, and the same object gamemd switches on.
+    ///
+    /// `SuperClass::Launch @ 0x006CC390` switches on `*(param_1[10] + 0xB4)`,
+    /// the launched `SuperWeaponTypeClass`'s `Type=` index, and each case
+    /// plays its own cue: nothing at all for `ChronoSphere`, `ParaDrop`,
+    /// `AmerParaDrop` and `SpyPlane`; an EVA line only for `IronCurtain`
+    /// (`0x006CCF21`), `LightningStorm` (`0x006CCD81`) and `ChronoWarp`
+    /// (`0x006CCD03`); a positional `[AudioVisual]` cue only for `ForceShield`
+    /// (`0x006CD176`, from the *type's* own `StartSound=`) and `PsychicReveal`
+    /// (`0x006CD7BF`); and both for `MultiMissile`, `PsychicDominator` and
+    /// `GeneticConverter`. Carrying the type rather than a per-case flag is
+    /// what lets the app read both the case index and `StartSound=` off one
+    /// object, as `param_1[10]` does.
+    SuperWeaponLaunched {
+        owner: InternedId,
+        sw_type: InternedId,
+        rx: u16,
+        ry: u16,
+    },
+    /// The lightning storm actually began — the moment the sky flips to Ion,
+    /// which on retail data is ~250 frames *after* the Weather Controller
+    /// fired. This is where `StormSound` belongs, not on the launch.
+    ///
+    /// `SuperClass::Launch @ 0x006CC390` case 2 calls `LightningStorm::Start
+    /// @ 0x00539EB0` with `param_2 = [Rules+0x1794]` — `[General]
+    /// LightningDeferment`, whose key string `"LightningDeferment"` sits at
+    /// `0x0083BD18` and is pushed at `0x00670F82` in `RulesClass::ReadGeneral`
+    /// (read `0x00670F75`, stored `0x00670F8F`). `Start`'s body opens with
+    /// `if (param_2 != 0) { arm the countdown; store the duration; return; }`,
+    /// and that early return is *before* the cue at `0x0053A044`
+    /// (`VocClass::PlayAtPos @ 0x00750920`). `LightningStorm::Process @
+    /// 0x0053A6C0` decrements the countdown and, at zero, re-enters `Start`
+    /// with `param_2` zeroed (`0x0053AAC8 XOR EDX,EDX ; 0x0053AACA CALL
+    /// 0x00539EB0`); that second entry is the one that plays it.
+    ///
+    /// Stock `rulesmd.ini:130` is `LightningDeferment=250`, so the launch call
+    /// *always* takes the early return and the cue is always deferred.
+    LightningStormBegan,
     /// A lightning bolt struck — play thunder sound.
     SuperWeaponStrike { rx: u16, ry: u16 },
     /// First occupant entered a CanBeOccupied building (cargo 0→1).

@@ -237,6 +237,7 @@ fn paradrop_launch_spawns_carrier_with_loaded_cargo() {
     let owner = sim.interner.intern("Americans");
 
     // Target near the north edge of the map.
+    let sw_test = sim.interner.intern("SWTEST");
     let ok = launch(
         &mut sim,
         &rules,
@@ -244,6 +245,7 @@ fn paradrop_launch_spawns_carrier_with_loaded_cargo() {
         50,
         20,
         ParaDropKind::American,
+        sw_test,
         Some(&path_grid),
     );
     assert!(ok, "launch should succeed with valid waypoint edge + cargo");
@@ -304,6 +306,7 @@ fn paradrop_multi_entry_resolves_each_edge_after_its_carrier_constructor() {
         let _passenger_constructor_word = expected_rng.next_u32();
     }
 
+    let sw_test = sim.interner.intern("SWTEST");
     assert!(launch(
         &mut sim,
         &rules,
@@ -311,6 +314,7 @@ fn paradrop_multi_entry_resolves_each_edge_after_its_carrier_constructor() {
         50,
         20,
         ParaDropKind::American,
+        sw_test,
         Some(&path_grid),
     ));
     let mut actual_cells = sim
@@ -342,6 +346,7 @@ fn paradrop_launch_ignores_blocked_ground_spawn_edge() {
     let owner = sim.interner.intern("Americans");
     let blocked_grid = PathGrid::test_all_blocked(200, 200);
 
+    let sw_test = sim.interner.intern("SWTEST");
     let ok = launch(
         &mut sim,
         &rules,
@@ -349,6 +354,7 @@ fn paradrop_launch_ignores_blocked_ground_spawn_edge() {
         50,
         20,
         ParaDropKind::American,
+        sw_test,
         Some(&blocked_grid),
     );
 
@@ -374,6 +380,7 @@ fn paradrop_launch_invalid_waypoint_edge_falls_back_to_north() {
     let owner = sim.interner.intern("Americans");
     sim.houses.get_mut(&owner).unwrap().waypoint_edge = 255;
 
+    let sw_test = sim.interner.intern("SWTEST");
     let ok = launch(
         &mut sim,
         &rules,
@@ -381,6 +388,7 @@ fn paradrop_launch_invalid_waypoint_edge_falls_back_to_north() {
         40,
         20,
         ParaDropKind::American,
+        sw_test,
         Some(&path_grid),
     );
 
@@ -405,6 +413,7 @@ fn paradrop_cargo_load_bypasses_pdplane_capacity_and_passenger_occupancy() {
     let (mut sim, path_grid) = build_sim(&rules);
     let owner = sim.interner.intern("Americans");
 
+    let sw_test = sim.interner.intern("SWTEST");
     let ok = launch(
         &mut sim,
         &rules,
@@ -412,6 +421,7 @@ fn paradrop_cargo_load_bypasses_pdplane_capacity_and_passenger_occupancy() {
         50,
         20,
         ParaDropKind::American,
+        sw_test,
         Some(&path_grid),
     );
 
@@ -454,6 +464,7 @@ fn paradrop_full_pipeline_drops_infantry_until_cargo_empty() {
     let pre_e1_count = count_alive_infantry(&sim, "E1");
     assert_eq!(pre_e1_count, 0, "no E1 should exist pre-launch");
 
+    let sw_test = sim.interner.intern("SWTEST");
     let ok = launch(
         &mut sim,
         &rules,
@@ -461,6 +472,7 @@ fn paradrop_full_pipeline_drops_infantry_until_cargo_empty() {
         50,
         20,
         ParaDropKind::American,
+        sw_test,
         Some(&path_grid),
     );
     assert!(ok, "launch should succeed");
@@ -518,6 +530,7 @@ fn paradrop_descent_ends_with_landed_infantry_and_carrier_despawned() {
     let (mut sim, path_grid) = build_sim(&rules);
     let owner = sim.interner.intern("Americans");
 
+    let sw_test = sim.interner.intern("SWTEST");
     launch(
         &mut sim,
         &rules,
@@ -525,6 +538,7 @@ fn paradrop_descent_ends_with_landed_infantry_and_carrier_despawned() {
         50,
         20,
         ParaDropKind::American,
+        sw_test,
         Some(&path_grid),
     );
 
@@ -653,6 +667,7 @@ CellSpread=0
         sim.houses.insert(owner_id, house);
         let path_grid = PathGrid::test_all_passable(200, 200);
 
+        let sw_test = sim.interner.intern("SWTEST");
         launch(
             &mut sim,
             &rules,
@@ -660,6 +675,7 @@ CellSpread=0
             50,
             20,
             ParaDropKind::Generic,
+            sw_test,
             Some(&path_grid),
         );
 
@@ -709,6 +725,7 @@ CellSpread=0
         sim.houses.insert(owner_id, house);
         let path_grid = PathGrid::test_all_passable(200, 200);
 
+        let sw_test = sim.interner.intern("SWTEST");
         launch(
             &mut sim,
             &rules,
@@ -716,6 +733,7 @@ CellSpread=0
             50,
             20,
             ParaDropKind::Generic,
+            sw_test,
             Some(&path_grid),
         );
 
@@ -743,6 +761,7 @@ CellSpread=0
         sim.houses.insert(owner_id, house);
         let path_grid = PathGrid::test_all_passable(200, 200);
 
+        let sw_test = sim.interner.intern("SWTEST");
         launch(
             &mut sim,
             &rules,
@@ -750,6 +769,7 @@ CellSpread=0
             50,
             20,
             ParaDropKind::Generic,
+            sw_test,
             Some(&path_grid),
         );
 

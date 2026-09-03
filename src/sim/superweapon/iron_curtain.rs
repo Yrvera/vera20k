@@ -25,6 +25,7 @@ pub fn launch(
     owner: InternedId,
     target_rx: u16,
     target_ry: u16,
+    sw_type: InternedId,
 ) -> bool {
     let duration = rules.general.iron_curtain_duration;
     let anim_name = rules.general.iron_curtain_invoke_anim.clone();
@@ -64,6 +65,7 @@ pub fn launch(
     // 4. Sound event.
     sim.sound_events.push(SimSoundEvent::SuperWeaponLaunched {
         owner,
+        sw_type,
         rx: target_rx,
         ry: target_ry,
     });
@@ -126,7 +128,8 @@ mod tests {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         spawn(&mut sim, 1, "MTNK", 10, 10, EntityCategory::Unit);
-        assert!(launch(&mut sim, &rules, owner, 10, 10));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(launch(&mut sim, &rules, owner, 10, 10, sw_test));
         let e = sim.substrate.entities.get(1).expect("tank exists");
         assert!(e.invulnerability.is_some());
         assert!(is_invulnerable(
@@ -141,7 +144,8 @@ mod tests {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         spawn(&mut sim, 1, "E1", 10, 10, EntityCategory::Infantry);
-        assert!(launch(&mut sim, &rules, owner, 10, 10));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(launch(&mut sim, &rules, owner, 10, 10, sw_test));
         let e = sim.substrate.entities.get(1).expect("infantry exists");
         assert_eq!(e.health.current, 0);
         assert!(e.dying);
@@ -156,7 +160,8 @@ mod tests {
         spawn(&mut sim, 1, "MTNK", 9, 9, EntityCategory::Unit);
         spawn(&mut sim, 2, "MTNK", 10, 10, EntityCategory::Unit);
         spawn(&mut sim, 3, "MTNK", 11, 11, EntityCategory::Unit);
-        launch(&mut sim, &rules, owner, 10, 10);
+        let sw_test = sim.interner.intern("SWTEST");
+        launch(&mut sim, &rules, owner, 10, 10, sw_test);
         assert!(
             sim.substrate
                 .entities
@@ -189,7 +194,8 @@ mod tests {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         spawn(&mut sim, 1, "MTNK", 15, 15, EntityCategory::Unit);
-        launch(&mut sim, &rules, owner, 10, 10);
+        let sw_test = sim.interner.intern("SWTEST");
+        launch(&mut sim, &rules, owner, 10, 10, sw_test);
         assert!(
             sim.substrate
                 .entities

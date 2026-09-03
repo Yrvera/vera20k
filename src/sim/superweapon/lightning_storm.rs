@@ -54,6 +54,17 @@ pub struct LightningStormState {
     pub last_bolt_ry: u16,
 }
 
+/// The storm actually begins — the non-deferred half of
+/// `LightningStorm::Start @ 0x00539EB0`, which flips the sky and plays the
+/// `StormSound` cue at `0x0053A044` in that order. Every path that reaches the
+/// beginning goes through here so the lighting and the cue cannot separate:
+/// in gamemd they are two statements of one straight-line block, reached only
+/// once the deferment countdown is zero.
+fn begin(sim: &mut Simulation) {
+    sim.session.lighting.select_ion();
+    sim.sound_events.push(SimSoundEvent::LightningStormBegan);
+}
+
 /// Start a new lightning storm. An overlapping invocation retargets the one
 /// global storm without creating a second queued lifetime.
 pub fn start(
@@ -62,23 +73,26 @@ pub fn start(
     owner: InternedId,
     target_rx: u16,
     target_ry: u16,
+    sw_type: InternedId,
 ) -> bool {
     if let Some(storm) = sim.lightning_storm.as_mut() {
         storm.owner = owner;
         storm.target_rx = target_rx;
         storm.target_ry = target_ry;
-        if storm.deferment_remaining > 0 {
+        let begins_now = if storm.deferment_remaining > 0 {
             let requested_deferment = rules.general.lightning_deferment;
             if requested_deferment <= storm.deferment_remaining {
                 storm.deferment_remaining = requested_deferment;
             }
             storm.duration_remaining = rules.general.lightning_storm_duration;
-            if storm.deferment_remaining <= 0 {
-                sim.session.lighting.select_ion();
-            }
             log::info!("Deferred Lightning Storm retargeted to ({target_rx}, {target_ry})");
+            storm.deferment_remaining <= 0
         } else {
             log::info!("Active Lightning Storm retargeted to ({target_rx}, {target_ry})");
+            false
+        };
+        if begins_now {
+            begin(sim);
         }
         return true;
     }
@@ -98,12 +112,18 @@ pub fn start(
     let starts_active = state.deferment_remaining <= 0;
     sim.lightning_storm = Some(state);
     if starts_active {
-        sim.session.lighting.select_ion();
+        // `LightningDeferment=0` is the only way the launch call reaches the
+        // cue: `Start`'s `if (param_2 != 0)` early return is skipped and the
+        // whole block runs inside `SuperClass::Launch` itself. Native plays it
+        // before the case-2 EVA line at `0x006CCD81`, hence this order.
+        begin(sim);
     }
 
-    // Sound event for EVA warning.
+    // `EVA_LightningStormCreated` — `0x006CCD81`, played by case 2 after
+    // `LightningStorm::Start` returns, deferred or not.
     sim.sound_events.push(SimSoundEvent::SuperWeaponLaunched {
         owner,
+        sw_type,
         rx: target_rx,
         ry: target_ry,
     });
@@ -121,7 +141,9 @@ pub fn start(
 }
 
 /// Process the active lightning storm for one tick.
-/// Called from `tick_superweapons()` each tick.
+/// Called from `tick_active_superweapon_effects()` each tick, which is what
+/// `World::advance_tick` reaches in production; `tick_superweapons()` is a
+/// test-only compatibility wrapper and is not on the production path.
 pub fn process(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -140,7 +162,12 @@ pub fn process(
         Some(_) => false,
     };
     if activates_now {
-        sim.session.lighting.select_ion();
+        // `LightningStorm::Process @ 0x0053AAAD` decrements the countdown and
+        // at zero re-enters `Start` with `param_2` cleared (`0x0053AAC8 XOR
+        // EDX,EDX`), so this is the frame that runs the non-deferred block —
+        // Ion lighting and `StormSound`. On stock data (`LightningDeferment=
+        // 250`) this is the only frame the cue is ever heard on.
+        begin(sim);
         // Native Process calls Start and returns on the countdown-zero frame;
         // expiry and bolt cadence begin on the next object tick.
         return;
@@ -470,7 +497,8 @@ mod tests {
         let heights = std::collections::BTreeMap::new();
         let rng_before = sim.scenario_rng.state();
 
-        assert!(start(&mut sim, &rules, owner, 8, 9));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(start(&mut sim, &rules, owner, 8, 9, sw_test));
         assert_eq!(
             sim.session.lighting.selected_profile,
             ScenarioLightingProfile::Normal,
@@ -545,13 +573,117 @@ mod tests {
         assert_eq!(sim.scenario_rng.state(), rng_before);
     }
 
+    fn storm_began_count(sim: &Simulation) -> usize {
+        sim.sound_events
+            .iter()
+            .filter(|event| matches!(event, SimSoundEvent::LightningStormBegan))
+            .count()
+    }
+
+    fn launch_announced_count(sim: &Simulation) -> usize {
+        sim.sound_events
+            .iter()
+            .filter(|event| matches!(event, SimSoundEvent::SuperWeaponLaunched { .. }))
+            .count()
+    }
+
+    /// `StormSound` is deferred. `SuperClass::Launch @ 0x006CC390` case 2
+    /// hands `LightningStorm::Start @ 0x00539EB0` the `[Rules+0x1794]`
+    /// `LightningDeferment` value as `param_2`, and `Start` returns at
+    /// `if (param_2 != 0) { arm the countdown; return; }` — before the cue at
+    /// `0x0053A044`. `LightningStorm::Process @ 0x0053A6C0` decrements the
+    /// countdown (`0x0053AAAD`) and at zero re-enters `Start` with `param_2`
+    /// cleared (`0x0053AAC8 XOR EDX,EDX ; 0x0053AACA CALL 0x00539EB0`); that
+    /// second entry is what plays it. Stock `rulesmd.ini:130` is
+    /// `LightningDeferment=250`, so on retail data the cue never lands on the
+    /// launch frame — only the EVA line does.
+    #[test]
+    fn the_storm_cue_lands_on_the_deferment_expiry_not_on_the_launch() {
+        let rules = lighting_timing_rules(3, 2, ".2");
+        let mut sim = Simulation::with_seed(0x422);
+        let owner = sim.interner.intern("Americans");
+        let sw_test = sim.interner.intern("LightningStormSpecial");
+
+        assert!(start(&mut sim, &rules, owner, 8, 9, sw_test));
+        assert_eq!(
+            storm_began_count(&sim),
+            0,
+            "a deferred launch returns before the cue"
+        );
+        assert_eq!(
+            launch_announced_count(&sim),
+            1,
+            "the EVA line is still spoken at launch (0x006CCD81)"
+        );
+        assert_eq!(
+            sim.session.lighting.selected_profile,
+            ScenarioLightingProfile::Normal
+        );
+
+        for frame in 1..=2 {
+            process(&mut sim, &rules, None);
+            assert_eq!(
+                storm_began_count(&sim),
+                0,
+                "countdown frame {frame} has not reached zero"
+            );
+        }
+
+        process(&mut sim, &rules, None);
+        assert_eq!(
+            storm_began_count(&sim),
+            1,
+            "the countdown-zero frame re-enters Start and plays the cue"
+        );
+        assert_eq!(
+            sim.session.lighting.selected_profile,
+            ScenarioLightingProfile::Ion,
+            "the cue and the Ion flip are one block in Start"
+        );
+
+        process(&mut sim, &rules, None);
+        assert_eq!(
+            storm_began_count(&sim),
+            1,
+            "the non-deferred block runs once per storm"
+        );
+    }
+
+    /// The one launch that does reach the cue: `LightningDeferment=0` skips
+    /// `Start`'s early return, so the whole non-deferred block runs inside
+    /// `SuperClass::Launch` itself, before the case-2 EVA line.
+    #[test]
+    fn a_zero_deferment_storm_plays_its_cue_on_the_launch_frame() {
+        let rules = lighting_timing_rules(0, 2, ".2");
+        let mut sim = Simulation::with_seed(0x423);
+        let owner = sim.interner.intern("Americans");
+        let sw_test = sim.interner.intern("LightningStormSpecial");
+
+        assert!(start(&mut sim, &rules, owner, 8, 9, sw_test));
+        assert_eq!(storm_began_count(&sim), 1);
+        assert_eq!(launch_announced_count(&sim), 1);
+        let cue_first = sim
+            .sound_events
+            .iter()
+            .position(|event| matches!(event, SimSoundEvent::LightningStormBegan))
+            < sim
+                .sound_events
+                .iter()
+                .position(|event| matches!(event, SimSoundEvent::SuperWeaponLaunched { .. }));
+        assert!(
+            cue_first,
+            "native calls Start before the EVA line at 0x006CCD81"
+        );
+    }
+
     #[test]
     fn gsi_04_20_minus_one_duration_remains_active_and_ion_selected() {
         let rules = lighting_timing_rules(0, -1, ".2");
         let mut sim = Simulation::with_seed(0x421);
         let owner = sim.interner.intern("Americans");
 
-        assert!(start(&mut sim, &rules, owner, 8, 9));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(start(&mut sim, &rules, owner, 8, 9, sw_test));
         for _ in 0..4 {
             process(&mut sim, &rules, None);
             assert_eq!(
@@ -576,12 +708,21 @@ mod tests {
         let first_owner = sim.interner.intern("Americans");
         let second_owner = sim.interner.intern("Soviet");
 
-        assert!(start(&mut sim, &first_rules, first_owner, 4, 5));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(start(&mut sim, &first_rules, first_owner, 4, 5, sw_test));
         sim.lightning_storm
             .as_mut()
             .expect("deferred storm")
             .deferment_remaining = 3;
-        assert!(start(&mut sim, &second_rules, second_owner, 17, 19));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(start(
+            &mut sim,
+            &second_rules,
+            second_owner,
+            17,
+            19,
+            sw_test
+        ));
 
         let storm = sim.lightning_storm.as_ref().expect("one deferred storm");
         assert_eq!(storm.owner, second_owner);
@@ -601,14 +742,16 @@ mod tests {
         let first_owner = sim.interner.intern("Americans");
         let second_owner = sim.interner.intern("Soviet");
 
-        assert!(start(&mut sim, &rules, first_owner, 4, 5));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(start(&mut sim, &rules, first_owner, 4, 5, sw_test));
         assert_eq!(
             sim.session.lighting.selected_profile,
             ScenarioLightingProfile::Ion
         );
         let duration = sim.lightning_storm.as_ref().unwrap().duration_remaining;
 
-        assert!(start(&mut sim, &rules, second_owner, 17, 19));
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(start(&mut sim, &rules, second_owner, 17, 19, sw_test));
         let storm = sim
             .lightning_storm
             .as_ref()
