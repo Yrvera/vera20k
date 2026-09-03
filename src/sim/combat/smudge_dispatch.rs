@@ -27,8 +27,10 @@ use std::collections::BTreeMap;
 /// is within 30 leptons of the ground.
 const SMUDGE_ALTITUDE_GATE_LEPTONS: i32 = 30;
 
-/// Hardcoded ore-reduction amount on `AnimClass::Start @ 0x00424F00`'s
-/// crater branch.
+/// Hardcoded ore-reduction amount on `AnimClass::Middle @ 0x00424F00`'s
+/// crater branch. (Ghidra labels `0x00424F00` `AnimClass__Start`; the label is
+/// transposed with `0x00424CE0` — `0x00424F00` is the particle/scorch/crater
+/// body and plays no sound, so it is `Middle`. The address is right.)
 const CRATER_ORE_REDUCTION: u16 = 6;
 
 /// Damage values passed to `SmudgeGrid::try_place` for building destruction

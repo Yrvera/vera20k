@@ -2805,6 +2805,17 @@ fn handle_entity_deaths(
             // (forcing the last `Explosion=` entry for a loaded miner) is
             // likewise unread. Trigger: every building death, and every loaded
             // miner death. Frequency: continuous.
+            //
+            // Landing that arm also un-latents a second gap: four of the
+            // buildings it would newly reach — the base power plant of every
+            // faction (`GAPOWR`, `NAPOWR`, `YAPOWR`) plus `YAROCK` — author an
+            // `Explosion=` list whose sixth entry (`gtpowexp`/`tstlexp`) has no
+            // art section, so one draw in six per foundation cell resolves to
+            // nothing VERA can construct. That is correct against gamemd, which
+            // also draws nothing there, but VERA skips the object entirely
+            // where native still constructs and discards one. Read the residual
+            // on `ArtRegistry::bind_combat_explosion_anim_assets` before
+            // treating a missing power-plant explosion as a bug.
             if matches!(category, EntityCategory::Unit | EntityCategory::Aircraft)
                 && let Some(obj) = rules.object(interner.resolve(type_id))
             {

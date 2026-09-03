@@ -219,6 +219,24 @@ pub fn combat_explosion_anim_roots(rules: &RuleSet) -> Vec<String> {
     roots.into_iter().collect()
 }
 
+/// Report how many combat-explosion roots the tolerant binder could not bind.
+///
+/// The binder already emits a per-name `warn!`, but a per-name line is invisible
+/// in aggregate: a data change that breaks ten roots reads the same as retail's
+/// standing three unless the count is stated once. Retail's own baseline is
+/// three (`MININUKE - ADDED 11/30`, `GTPOWEXP`, `TSTLEXP` — see
+/// `ArtRegistry::bind_combat_explosion_anim_assets`), so anything above that is
+/// new and worth looking at.
+pub fn log_unbound_combat_explosion_roots(unbound: usize) {
+    if unbound == 0 {
+        return;
+    }
+    log::info!(
+        "{unbound} combat explosion animation root(s) have no art section and stay on the \
+         legacy effect path (retail's own baseline is 3)"
+    );
+}
+
 fn authoritative_effect_roots(rules: &RuleSet) -> BTreeSet<String> {
     let mut roots = BTreeSet::new();
     let mut insert = |name: &str| {

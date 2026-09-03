@@ -1717,6 +1717,25 @@ impl Simulation {
         }
     }
 
+    /// Native `AnimClass::Start @ 0x00424CE0` — the anim's sound emitter.
+    ///
+    /// **The Ghidra labels on this pair are transposed.** `0x00424CE0` is
+    /// labelled `AnimClass__Middle` but its body is `Start`: it Marks, then
+    /// `if (Anim+0x198 /* silent */ == 0 && AnimType+0x2F8 != -1)` takes the
+    /// coordinate through vtable `+0x48` and plays it with `VocClass::PlayAt`,
+    /// then tail-calls `0x00424F00` when `AnimType+0x298 == 0`. `0x00424F00` is
+    /// labelled `AnimClass__Start` but its body is `Middle`: `SpawnsParticle=`
+    /// looped `NumParticles=` times, `Scorch=`, `Crater=`, `ForceBigCraters=`,
+    /// and it plays nothing. This function implements `0x00424CE0`; the Rust
+    /// name follows the (wrong) Ghidra label and is left alone only because
+    /// renaming it is a separate transaction. Read the address, not the name.
+    ///
+    /// `AnimType+0x2F8` is one slot: `AnimTypeClass::ReadINI @ 0x00427D00`
+    /// reads `Report=` into it only when `StartSound=` resolved to `-1`, which
+    /// is what `start_sound.or(report)` reproduces.
+    ///
+    /// The particle/scorch/crater half (`0x00424F00`) is not wired — see the
+    /// module header.
     fn anim_middle(&mut self, id: AnimId, config: &AnimTypeRuntimeConfig) {
         let sound_name = config
             .start_sound
@@ -2115,10 +2134,14 @@ mod tests {
         );
     }
 
-    /// A warhead can name art retail never shipped — `[CRNUKEWH]` authors
-    /// `AnimList=MININUKE - added 11/30`. Native mints a default AnimType whose
-    /// `End` stays 0 and the anim dies unseen; VERA must decline the spawn
-    /// rather than panic or block the shot.
+    /// A producer can name art that resolves to no INI section — retail has
+    /// three (`MININUKE - ADDED 11/30` from `[CRNUKEWH] AnimList=`, plus
+    /// `GTPOWEXP` and `TSTLEXP` from the faction power plants' `Explosion=`).
+    /// Native mints a default AnimType, but `AnimTypeClass::ReadINI @
+    /// 0x00427D00` bails on the absent section before the image loader, so
+    /// `End` stays 0 and the anim dies unseen. VERA must decline the spawn
+    /// rather than panic or block the shot. Full residual on
+    /// `ArtRegistry::bind_combat_explosion_anim_assets`.
     #[test]
     fn combat_explosion_with_unbound_art_declines_instead_of_panicking() {
         let rules = runtime_rules("[TWLT036]\nEnd=8\n", &[("TWLT036", 8)]);

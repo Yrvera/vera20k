@@ -1284,18 +1284,57 @@ impl ArtRegistry {
     /// object `Explosion=`/`DestroyAnim=` names that the combat tick turns into
     /// `AnimClass` instances. They need the same loader-derived `End`/`LoopEnd`
     /// as any other scheduler-owned animation, but they must not be able to fail
-    /// a match load: retail `rulesmd.ini` authors at least one unresolvable name
-    /// (`[CRNUKEWH] AnimList=MININUKE - added 11/30`, an editing artefact with no
-    /// art section), and gamemd itself tolerates it — `AnimTypeClass::FindOrCreate`
-    /// mints a type on constructor defaults whose `End` stays `0`, so the anim
-    /// dies on its first `AnimClass::AI` visit and never draws. Skipping the
-    /// binding here reproduces the visible outcome; the residual is that VERA
-    /// also never creates the object.
+    /// a match load, because retail authors names that resolve to no art section
+    /// at all and gamemd tolerates every one of them.
+    ///
+    /// RESIDUAL (M11a) — **retail's three unbindable explosion roots.** Derived
+    /// over the whole of `rulesmd.ini`/`artmd.ini`; neither file carries a
+    /// section for any of them:
+    ///
+    /// | root | authored by | SHP in `conquer.mix`? |
+    /// |---|---|---|
+    /// | `MININUKE - ADDED 11/30` | `[CRNUKEWH] AnimList=` | no |
+    /// | `GTPOWEXP` | `[GAPOWR]`, `[YAPOWR]`, `[YAROCK]` `Explosion=` | yes — 156x126, 29 frames |
+    /// | `TSTLEXP` | `[NAPOWR] Explosion=` | yes — 122x140, 33 frames |
+    ///
+    /// - *Trigger:* `[CRNuke]` for the first; for the other two, the death of a
+    ///   power plant of ANY faction — Allied `GAPOWR`, Soviet `NAPOWR`, Yuri
+    ///   `YAPOWR` — plus `YAROCK`. Each authors a six-entry `Explosion=` list
+    ///   whose last entry is the unbindable name, so one draw in six picks it,
+    ///   and native draws once per foundation cell.
+    /// - *Player effect:* none, and that is verified rather than assumed.
+    ///   `AnimTypeClass::ReadINI @ 0x00427D00` calls `ObjectTypeClass::ReadINI
+    ///   @ 0x005F92D0`, which calls `AbstractTypeClass::ReadINI @ 0x00410A60`;
+    ///   that one does `INIClass::FindSectionByName` and **returns 0 when the
+    ///   section is absent**, so `0x00427D22 JZ 0x004287E9` bails out of
+    ///   `ReadINI` before the vtable `+0xA0` image-loader dispatch at
+    ///   `0x0042894F`. `AnimTypeClass::LoadImageAndResolveFrameBounds @
+    ///   0x00427B50` — the only thing that ever fills `End` (`+0x2C0`) from the
+    ///   SHP header — therefore never runs, `End` keeps its constructor `0`, and
+    ///   the anim dies on its first `AnimClass::AI` visit having drawn nothing.
+    ///   The two SHPs really are in `conquer.mix`, but they are orphaned art:
+    ///   nothing loads them, because the art section that would trigger the load
+    ///   does not exist. **Do not "fix" this by minting a default config from
+    ///   the SHP header** — that would make VERA draw an explosion gamemd does
+    ///   not.
+    /// - *Frequency:* the `[CRNuke]` path is effectively never. The power-plant
+    ///   path is latent for a different reason: the object
+    ///   `Explosion=`/`DestroyAnim=` pick is still gated to
+    ///   `EntityCategory::Unit | Aircraft` under the GSI-08.11 residual in
+    ///   `src/sim/combat/mod.rs`, so no building reaches it yet. Whoever lands
+    ///   GSI-08.11 makes it continuous — every power plant death, every match.
+    /// - *Downstream risk:* the divergence that survives is object identity, not
+    ///   pixels. Native still constructs the `AnimClass`, consuming an ID and a
+    ///   hash slot, then discards it; VERA constructs none. Closing it means
+    ///   minting default-`End` AnimType entries for unresolvable names so the
+    ///   object exists and dies, which belongs with the AnimType registry.
     ///
     /// The strict `bind_scheduler_anim_assets` contract for terrain and
     /// damage-fire animations is deliberately left alone.
     ///
-    /// Returns the number of roots that could not be bound.
+    /// Returns the number of roots that could not be bound. Callers log the
+    /// aggregate: a per-name `warn!` alone would let a future data change that
+    /// breaks ten roots pass unnoticed.
     pub fn bind_combat_explosion_anim_assets(
         &mut self,
         roots: &[String],
