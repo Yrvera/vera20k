@@ -24,12 +24,17 @@
 //! - Trigger: a death whose type authors `DebrisTypes=`.
 //! - Player effect: the tyres a dying harvester throws are invisible; the SHP
 //!   half of the same block does draw, so the death is not silent.
-//! - Frequency: 36 stock sections author `DebrisTypes=` — the Allied and Soviet
-//!   miners, the IFV, the Flak Track, the demo truck. Against them, 337
-//!   sections take a visible SHP arm: of the 456 that author `MaxDebris=`,
-//!   83 author `MaxDebris=0` and throw nothing at all, leaving 373 that throw —
-//!   166 with their own `DebrisAnims=`, 171 falling back to `[General]
-//!   MetallicDebris=`, and the 36 voxel ones.
+//! - Frequency: 36 stock sections author `DebrisTypes=`, of which 32 reach the
+//!   block in gamemd — the Chrono Miner, the War Miner, the Slave Miner, the
+//!   demolitions truck, the fire truck and the civilian traffic. Against them,
+//!   324 sections take a visible SHP arm: of the 439 that author `MaxDebris=`
+//!   in gamemd's own spelling, 83 author `MaxDebris=0` and throw nothing at
+//!   all, leaving 356 that throw — 166 with their own `DebrisAnims=`, 158
+//!   falling back to `[General] MetallicDebris=`, and the 32 voxel ones.
+//!   PENDING the INI case fix, VERA counts 36 / 337 / 456 / 373 / 171 instead,
+//!   because it still folds case on `MaxDebris=` where gamemd does not; see
+//!   [`throw_death_debris`] for the reconciliation and the 17 sections it
+//!   turns on.
 //! - Downstream risk: none to the stream — the pieces already consume their
 //!   draws, hash, and expire on schedule, so adding the draw later moves no
 //!   state.
@@ -171,8 +176,14 @@ const DEBRIS_GRAVITY: NativeF64Bits = NativeF64Bits::from_bits(0x3ff6_6666_6000_
 ///
 /// VERA-internal, gamemd equivalent UNCHECKED: a zero divisor returns 0 where
 /// native's `IDIV` raises a divide error. It needs `MaxXYVel` under 0.5, or a
-/// `MaxZVel` below `MinZVel - 1`; every stock `[VoxelAnims]` section authors
-/// `MaxXYVel` at 10 or above, so this is unreachable in stock.
+/// `MaxZVel` below `MinZVel - 1`. Neither occurs in stock, and the two facts are
+/// independent of each other: the lowest `MaxXYVel` in the ten `[VoxelAnims]`
+/// sections is 8.0 (`GASTANK`, `SONICTURRET`, `4TNKTURRET` — the rest run
+/// 10.0..100.0), so the smallest XY divisor is `ftol(2 * 8.0)` = 16; and no
+/// section has `MaxZVel < MinZVel` at all — `METEOR01`/`METEOR02` sit at
+/// `MaxZVel == MinZVel == -100.0`, which the `+ 1.0` bias turns into a Z divisor
+/// of 1. The death-debris path is narrower still: all 36 stock `DebrisTypes=`
+/// lines name `[TIRE]`, at `MaxXYVel=10.0`.
 ///
 /// VERA-internal, gamemd equivalent UNCHECKED: the sign flips at exactly
 /// `draw == 0x8000_0000`. Native's `CDQ/XOR/SUB` two's-complement negate
@@ -443,9 +454,13 @@ const DEBRIS_LOOP_ITERATION_CEILING: u32 = 4096;
 ///    that the block is skipped whole and the shared stream is untouched.
 /// 3. `budget = RandomRanged(MinDebris, MaxDebris - 1)` at `0x007022C8`. The
 ///    `DEC EDI` at `0x007022AD` is why the top is one BELOW `MaxDebris`, so
-///    `MaxDebris=1` can only ever yield the `MinDebris` end. Most stock
-///    sections author `MaxDebris=` with no `MinDebris=`, so their budget is
-///    `RandomRanged(0, MaxDebris - 1)` and can come out zero.
+///    `MaxDebris=1` can only ever yield the `MinDebris` end. 167 of the 439
+///    stock sections gamemd sees authoring `MaxDebris=` author no `MinDebris=`
+///    (84 of the 356 that throw), so their budget is
+///    `RandomRanged(0, MaxDebris - 1)` and can come out zero. Every stock
+///    `MinDebris=` is spelled exactly, so only the `MaxDebris=` half of these
+///    two figures moves with the INI case fix (VERA reads 184 of 456, 101 of
+///    373 today).
 /// 4. The voxel loop, entered only when `DebrisTypes.Count > 0` (`+0x324`,
 ///    `0x007022EA`) AND `budget > 0` (`0x007022F8`). Per iteration:
 ///    - one `Random__Next()` at `0x0070232B`, then
@@ -470,23 +485,42 @@ const DEBRIS_LOOP_ITERATION_CEILING: u32 = 4096;
 ///      `budget` anims from `[General] MetallicDebris=`, each taking one
 ///      `RandomRanged(0, RulesClass+0x14C - 1)` at `0x0070253A`.
 ///
-/// That last arm is the one players see most. Of the 456 stock sections that
-/// author `MaxDebris=`, 83 author `MaxDebris=0` and stop at step 2; of the 373
-/// that throw, 171 carry `MaxDebris=` alone and land on `[General]
-/// MetallicDebris=`, 166 carry their own `DebrisAnims=`, and 36 name
+/// That last arm is the one players see most. Of the 439 stock sections gamemd
+/// sees authoring `MaxDebris=`, 83 author `MaxDebris=0` and stop at step 2; of
+/// the 356 that throw, 158 carry `MaxDebris=` alone and land on `[General]
+/// MetallicDebris=`, 166 carry their own `DebrisAnims=`, and 32 name
 /// `DebrisTypes=` (all `TIRE`). The three sets do not overlap.
 ///
-/// Those are section counts. Only 168 of the 171 are registered TechnoTypes
+/// Those are section counts. Only 155 of the 158 are registered TechnoTypes
 /// that can reach this function: `[TRexWH]` and `[Smashing]` are warheads
 /// (`[Warheads] 101=`/`86=`), whose `MaxDebris=` is read into the warhead by
 /// `WarheadTypeClass::ReadINI @ 0x0075D590` (the key at `0x0075DA95`) rather
 /// than into `TechnoType+0x5BC` by `TechnoTypeClass::ReadINI @ 0x00712170`
 /// (the key at `0x0071258E`), and `[UFO]` is a building-shaped section in no
 /// type registry, as is `[CAIRFGL]` among the 83 zeros. `[BuildingTypes]` also
-/// names `NAPSYA` twice, so a registry walk counts 169 where find-or-allocate
-/// yields 168. Every figure here is taken with a case-insensitive
-/// `MaxDebris=` read — 17 stock sections spell it `Maxdebris=`; see
-/// [`crate::rules::ini_parser::IniSection::get_ignoring_case`].
+/// names `NAPSYA` twice, so a registry walk counts 156 where find-or-allocate
+/// yields 155. The 155 break down as 18 `[VehicleTypes]`, 11 `[AircraftTypes]`
+/// and 126 `[BuildingTypes]`.
+///
+/// PENDING the INI case fix — the counting basis, stated because every figure
+/// above depends on it. gamemd's `INIClass` CRCs the raw bytes of the key on
+/// both the store and the lookup side and compares 32-bit integers only, with
+/// no folding instruction anywhere on the path, so `MaxDebris=` and
+/// `Maxdebris=` are different entries in retail. 17 stock `[VehicleTypes]`
+/// spell it `Maxdebris=3` — `APOC BFRT CMON FV HORV HTK HTNK LCRF LTNK MIND
+/// SAPC SREF TELE TTNK UTNK V3 YTNK` — and gamemd gives all 17 the
+/// `TechnoTypeClass` constructor default of 0, so the Rhino, the Apocalypse,
+/// the Prism Tank, the Battle Fortress and the IFV throw NO death debris in
+/// retail. 14 of the 17 are buildable; `CMON`, `HORV` and `UTNK` are
+/// `TechLevel=-1`. The three miners a player actually builds — `[HARV]`,
+/// `[CMIN]`, `[SMIN]` — spell `MaxDebris` exactly and keep their tyres on
+/// either basis; it is `HORV` and `CMON`, the unbuildable duplicates that
+/// share their `Name=`, that lose them. VERA still reads the key through
+/// [`crate::rules::ini_parser::IniSection::get_ignoring_case`] and therefore
+/// runs this block for all 17, on the counts 456 / 373 / 171 / 168 / 36. That
+/// is an RNG-cursor divergence, not a cosmetic one, and it is owned by this
+/// branch as a separate behavioural round; the numbers above are the ones the
+/// fix lands on.
 pub fn throw_death_debris(
     data: &DebrisTypeData<'_>,
     owner_house: Option<InternedId>,
@@ -499,10 +533,13 @@ pub fn throw_death_debris(
     }
     // `Random__RandomRanged` sorts reversed bounds and consumes no draw when
     // they coincide; `next_range_i32_inclusive` models that helper directly.
-    // The signed form is the right one because a `MinDebris=` above
-    // `MaxDebris - 1` is authored by stock buildings (`MinDebris=4`,
-    // `MaxDebris=6` gives 4..5, but `MinDebris=7`/`MaxDebris=15` gives 7..14)
-    // and an unsigned read of a negative top would invent a huge span.
+    // The signed form is what native computes: `DEC EDI` at `0x007022AD` puts
+    // the top at `MaxDebris - 1`, which `MinDebris` can sit on or above, and an
+    // unsigned read of an inverted span would invent a huge one instead of
+    // letting the helper sort it. No stock section goes above the top — 5 pin
+    // `MinDebris == MaxDebris - 1` (`(0,1)`, `(1,2)`, three at `(2,3)`), which
+    // is a coincident span costing no draw, and none is higher — so only a
+    // modded rules file inverts it.
     let mut budget = rng.next_range_i32_inclusive(data.min_debris, data.max_debris - 1);
 
     if !data.debris_types.is_empty() && budget > 0 {
@@ -762,8 +799,9 @@ mod tests {
     fn gsi_05_14_debris_anims_win_over_the_rules_metallic_list() {
         // `0x007023FC` tests `DebrisAnims.Count` first; only a type with an
         // EMPTY list AND no `DebrisTypes=` falls through to `RulesClass+0x140`
-        // at `0x0070252D`. 166 stock sections take the first arm and 171 the
-        // second.
+        // at `0x0070252D`. 166 stock sections take the first arm and 158 the
+        // second (171 until the INI case fix lands — 13 of the 17 sections
+        // spelling `Maxdebris=` sit on the second arm).
         let input = data(9, 7, &[], &[], 6, 20);
         let mut rng = SimRng::new(31);
         let thrown = throw(&input, &mut rng);

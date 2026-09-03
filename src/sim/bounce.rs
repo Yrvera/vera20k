@@ -89,8 +89,9 @@ pub struct BounceState {
     /// - Player effect: debris would fly the right arc but not tumble.
     /// - Frequency: continuous while debris is airborne. The death-side
     ///   producer now throws pieces on every vehicle death that authors
-    ///   `DebrisTypes=` (36 stock sections, all naming `[TIRE]`), and `[TIRE]`
-    ///   lives 150 ticks.
+    ///   `DebrisTypes=` (36 stock sections, all naming `[TIRE]`, of which 32
+    ///   reach the block in gamemd — `CMON`, `FV`, `HORV` and `HTK` spell
+    ///   `Maxdebris=` and take the default 0), and `[TIRE]` lives 150 ticks.
     /// - Downstream risk: none to the simulation. The spin is display-only and
     ///   consumes no RNG beyond the axis draws already taken here, so it moves
     ///   no hash.
@@ -281,12 +282,16 @@ impl BounceState {
 /// - `Elasticity = 0` stops on FIRST ground contact and exits via `Stopped`,
 ///   not `Bounced`, so it never plays its `BounceAnim`. Every stock
 ///   `[VoxelAnims]` type is `Elasticity=0` except `[TIRE]` at `0.8` — so the
-///   reflection produces real motion for exactly one stock type, and the
-///   scrap a dying vehicle throws (`PIECE`, `GASTANK`) lands dead.
+///   reflection produces real motion for exactly one stock type, and `PIECE`,
+///   `GASTANK` and the other seven land dead. The death-debris producer never
+///   reaches them: all 36 stock `DebrisTypes=` lines name `TIRE`, so no stock
+///   section throws `PIECE` or `GASTANK` on death.
 /// - The building/wall arm's first rejection — `type+0x16BF` (`LaserFence=`)
 ///   with `building+0x618 >= 8` — is Tiberian Sun legacy. No stock RA2/YR
-///   building authors `LaserFence=`; `rulesmd.ini:3652` mentions it only in a
-///   comment. Do not port it as a default.
+///   building authors `LaserFence=`, and the string occurs exactly once in
+///   `rulesmd.ini` — line 3652, a comment describing the neighbouring
+///   `LaserFencePost=` key, which nothing authors either. Do not port it as a
+///   default.
 ///
 /// Still UNCHECKED, and each blocks a piece of the implementation:
 /// - `DAT_0089C76C`'s runtime value. The image bytes are zero and its only
@@ -318,7 +323,8 @@ const FLAT_RAMP: u8 = 0;
 /// - Player effect: with a non-zero runtime offset the deck snap would land the
 ///   debris that many leptons above or below the bridge surface.
 /// - Frequency: bounded by bridge cells only; a vehicle has to die on or
-///   directly under a bridge and throw voxel debris (36 stock types).
+///   directly under a bridge and throw voxel debris (32 stock types in gamemd,
+///   36 in VERA until the INI case fix lands).
 /// - Downstream risk: none to the stream — the offset is arithmetic on the
 ///   position, it consumes no draws and gates no branch count.
 const DECK_PLANE_OFFSET_LEPTONS: i32 = 0;
@@ -415,9 +421,10 @@ impl BounceState {
     /// - Frequency: `[TIRE]` is the only stock `[VoxelAnims]` entry with a
     ///   non-zero `Elasticity` (0.8), and `Elasticity = 0` zeroes the velocity
     ///   whatever the matrix — but all 36 stock `DebrisTypes=` lines name
-    ///   `TIRE`, so every debris-throwing stock vehicle throws exactly the
-    ///   bouncing type. The remaining bound is terrain alone: debris lands on
-    ///   flat ground far more often than on a ramp.
+    ///   `TIRE`, so every stock section that throws VOXEL debris throws exactly
+    ///   the bouncing type. (Most stock vehicles throw SHP debris instead and
+    ///   never reach this code.) The remaining bound is terrain alone: debris
+    ///   lands on flat ground far more often than on a ramp.
     /// - Downstream risk: closing it needs the runtime contents of
     ///   `MATRIX_TABLE_0x00B45188`, which `VXL_MasterLighting_Init` builds from
     ///   `Matrix3x4_BuildFromRotateXAndFacing` — the eight facings and two
@@ -472,7 +479,8 @@ impl BounceState {
     /// - Frequency: every bounce that lands on a ramp cell. Only `[TIRE]`
     ///   (`Elasticity=0.8`) bounces at all in stock — but all 36 stock
     ///   `DebrisTypes=` lines name `TIRE`, so it is every voxel-debris death
-    ///   whose scatter reaches a ramp.
+    ///   whose scatter reaches a ramp. (32 of those 36 sections reach the
+    ///   producer in gamemd; the other four spell `Maxdebris=`.)
     /// - Downstream risk: none to the stream. The reflection consumes no draws;
     ///   it only changes where a display object travels. The `Stopped` decision
     ///   reads the reflected velocity, so a piece can rest one tick earlier or
@@ -742,11 +750,13 @@ mod tests {
 
     #[test]
     fn gsi_05_14_zero_elasticity_kills_the_bounce() {
-        // Every stock `[VoxelAnims]` type except `[TIRE]` is `Elasticity=0`, so
-        // this is the path the scrap a dying vehicle throws actually takes: the
-        // reflection runs in full and produces no motion, which is why that
-        // debris stops on first contact and exits through the STOP test rather
-        // than the bounce one — and so never plays its `BounceAnim`.
+        // Nine of the ten stock `[VoxelAnims]` types are `Elasticity=0`, so
+        // this is the path every one of them takes: the reflection runs in full
+        // and produces no motion, which is why such a piece stops on first
+        // contact and exits through the STOP test rather than the bounce one —
+        // and so never plays its `BounceAnim`. The death-debris producer is not
+        // one of their callers: all 36 stock `DebrisTypes=` lines name `TIRE`,
+        // the one type with `Elasticity=0.8`.
         let v = [f32bits(3.0), f32bits(-4.0), f32bits(12.0)];
         let out = BounceState::reflect_off_ground(v, NativeF64Bits::POSITIVE_ZERO, 0)
             .expect("zero elasticity is in domain")

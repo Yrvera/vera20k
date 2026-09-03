@@ -8825,10 +8825,25 @@ fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
 /// gamemd-derived: `TechnoClass::ReceiveDamage @ 0x00701900`. With
 /// `DebrisAnims.Count == 0` (`0x007023FC`) and `DebrisTypes.Count == 0`
 /// (`0x007024D2`) the whole budget goes to the arm at `0x007024E0`, one
-/// `RandomRanged(0, RulesClass+0x14C - 1)` per chunk at `0x0070253A`. 168 stock
-/// TechnoTypes take exactly this path — MTNK, Rhino, the Battle Fortress, every
-/// aircraft — so before this landed, most vehicle deaths in the game threw
-/// nothing at all.
+/// `RandomRanged(0, RulesClass+0x14C - 1)` per chunk at `0x0070253A`. 155 stock
+/// TechnoTypes take exactly this path in gamemd — `MTNK` (Grizzly), `ZEP` (Kirov
+/// Airship), `NAPSYA` (Psychic Amplifier), and 11 of the 12 `[AircraftTypes]`;
+/// the twelfth, `APACHE`, has no `[APACHE]` section in `rulesmd.ini` at all, so
+/// it keeps the `TechnoTypeClass` constructor default of 0 (`0x00710B00` ->
+/// `0x00710FB7`) and takes no draw. Before this landed, none of them threw
+/// anything.
+///
+/// PENDING the INI case fix: VERA reaches **168** here rather than 155, because
+/// `ObjectType::from_ini` still reads `MaxDebris=` case-insensitively while
+/// gamemd's `INIClass` CRCs the raw key bytes and folds no case anywhere on the
+/// path. 17 stock `[VehicleTypes]` spell the key `Maxdebris=` — 14 buildable
+/// (Rhino, Apocalypse, Lasher, Tesla, Gattling, Prism, V3, Magnetron, Master
+/// Mind, Battle Fortress, IFV, Flak Track, Landing Craft, Armored Transport)
+/// and 3 at `TechLevel=-1` (`CMON`, `HORV`, `UTNK`) — and gamemd gives every one
+/// of them the default 0 and no debris at all. 13 of the 17 sit on this metallic
+/// arm, which is exactly the 168 - 155 gap; the other 4 (`CMON`, `FV`, `HORV`,
+/// `HTK`) sit on the voxel arm. All three exemplars named above spell
+/// `MaxDebris` exactly, so they hold on either basis.
 #[test]
 fn gsi_05_14_a_dying_vehicle_scatters_metallic_debris() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
@@ -8880,8 +8895,12 @@ fn gsi_05_14_a_dying_vehicle_scatters_metallic_debris() {
 ///
 /// gamemd-derived: `0x007023EF` reads `TechnoType+0x5D4` first and only a zero
 /// count falls through to the Rules list at `0x007024BB`. All 166 stock
-/// `DebrisAnims=` lines sit on `[BuildingTypes]` sections, so this is the arm
-/// every structure death takes.
+/// `DebrisAnims=` lines sit on `[BuildingTypes]` sections, so only a structure
+/// ever takes this arm — but not every structure does: of the 292 registered
+/// `[BuildingTypes]` that throw, 126 carry `MaxDebris=` alone and fall through
+/// to `[General] MetallicDebris=`. All three figures are basis-independent: the
+/// 17 sections that spell the key `Maxdebris=` are every one of them a
+/// `[VehicleTypes]`, so the INI case fix moves no building count.
 #[test]
 fn gsi_05_14_a_dying_building_uses_its_own_debris_anims() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
@@ -8935,8 +8954,9 @@ fn gsi_05_14_a_dying_building_uses_its_own_debris_anims() {
 /// gamemd-derived: with `DebrisTypes.Count > 0` the loop at `0x007022FE`
 /// drains the budget to zero before either SHP arm is tested, so a type that
 /// names `DebrisTypes=` throws VXL debris and nothing else. All 36 stock
-/// `DebrisTypes=` lines name `TIRE`; `[HARV]` is `MaxDebris=6`,
-/// `DebrisMaximums=4`.
+/// `DebrisTypes=` lines name `TIRE`, and 32 of the 36 reach the block in gamemd
+/// — `CMON`, `FV`, `HORV` and `HTK` spell `Maxdebris=` and so get the default 0.
+/// `[HARV]` spells `MaxDebris=6` exactly, with `DebrisMaximums=4`.
 #[test]
 fn gsi_05_14_a_dying_harvester_throws_voxel_tires_and_no_shp_debris() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
@@ -8995,9 +9015,9 @@ fn gsi_05_14_a_dying_harvester_throws_voxel_tires_and_no_shp_debris() {
 /// A type with `MaxDebris=0` costs the shared stream nothing.
 ///
 /// `TEST ECX,ECX / JLE 0x00702572` at `0x00702291` skips the whole block above
-/// the budget draw. Most `[InfantryTypes]` sections author no `MaxDebris=` at
-/// all, so this is the common case, and consuming a draw here would shift the
-/// cursor for every later consumer in the tick.
+/// the budget draw. No `[InfantryTypes]` section authors `MaxDebris=` at all —
+/// 0 of the 65 — so this is the common case, and consuming a draw here would
+/// shift the cursor for every later consumer in the tick.
 #[test]
 fn gsi_05_14_a_type_without_maxdebris_takes_no_draw() {
     let ini = "[General]\nMetallicDebris=DBRIS1LG,DBRIS2LG,DBRIS3LG\n\

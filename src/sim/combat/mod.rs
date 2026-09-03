@@ -2232,14 +2232,24 @@ impl DeathEffects {
 /// RESIDUAL (GSI-05.14) — the SHP half spawns through the existing
 /// `ExplosionEffect` -> `WorldEffect` path, which plays the sprite at a fixed
 /// point. Native builds a real `AnimClass` (`0x00421EA0`), and every stock
-/// debris AnimType is `Bouncer=yes` (`AnimTypeClass+0x35A`, read at
-/// `0x004286A7`), so native's constructor enters its own `BounceClass::Init`
+/// debris AnimType is `Bouncer=yes` — all 26 named by `[General]
+/// MetallicDebris=` or by any `DebrisAnims=` line carry it, authored in
+/// `artmd.ini` rather than `rulesmd.ini` (`AnimTypeClass+0x35A`, read at
+/// `0x004286A7`) — so native's constructor enters its own `BounceClass::Init`
 /// arm and the chunk flies an arc before landing.
-/// - Trigger: every death that reaches either SHP arm — 337 of the 373 stock
-///   sections that throw (of 456 authoring `MaxDebris=`, 83 author 0).
+/// - Trigger: every death that reaches either SHP arm — in gamemd, 324 of the
+///   356 stock sections that throw (of 439 authoring `MaxDebris=` in gamemd's
+///   own spelling, 83 author 0).
 /// - Player effect: the debris sprite plays where the wreck stood instead of
 ///   tumbling outward, and its `Damage=`/`Warhead=` on landing is not applied.
-/// - Frequency: continuous — every building death and most vehicle deaths.
+/// - Frequency: continuous — every building death (no `[BuildingTypes]` section
+///   authors `DebrisTypes=`, so all 292 that throw land here) plus 18 of the 50
+///   registered `[VehicleTypes]` that throw and 11 of the 12 `[AircraftTypes]`.
+///   The other 32 vehicle types take the voxel arm instead.
+/// - PENDING the INI case fix: VERA currently counts 337 of 373 (456 authoring)
+///   and 31 of 67 vehicles, because `ObjectType::from_ini` still folds case on
+///   `MaxDebris=` and gamemd does not — 17 `[VehicleTypes]` spell it
+///   `Maxdebris=` and take the constructor default 0 in retail.
 /// - Downstream risk: the constructor's own draws are not consumed either —
 ///   one `RandomRanged` for `RandomRate=`, three `Random__Next()` for the
 ///   launch velocity and three `RandomRanged(-0xFFFF, 0xFFFF)` inside

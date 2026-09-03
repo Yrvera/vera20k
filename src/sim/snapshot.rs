@@ -3114,7 +3114,9 @@ mod tests {
     /// run off the end of every in-flight projectile; 119 -> 120 adds the
     /// `VoxelAnimClass` debris registry to `ObjectSubstrate` and wires the
     /// death-side debris producer, which changes both the hash schema and the
-    /// shared RNG cursor at every Techno death that authors `MaxDebris=`.
+    /// shared RNG cursor at every Techno death whose type authors a POSITIVE
+    /// `MaxDebris=` — the 83 stock sections that author `MaxDebris=0` stop at
+    /// `0x00702291` and still cost the stream nothing.
     #[test]
     fn death_debris_store_snapshot_version_is_120() {
         assert_eq!(super::SNAPSHOT_VERSION, 120);
