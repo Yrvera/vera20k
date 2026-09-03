@@ -352,6 +352,17 @@ use crate::sim::world::Simulation;
 // for a short record, so a v117 save would pass the version check and then
 // misread every byte from entity one onward. A mid-struct insertion is exactly
 // the case serde defaults cannot cover, so the version has to move.
+// Bumped 118 -> 119: `ProjectileGuidance` gains the five fields the native
+// speed ramp needs — `BulletClass::AI @ 0x00466985` accelerates a homing bullet
+// from one lepton per frame toward the MaxSpeed stored at `+0x110`, so a
+// projectile must carry its current speed, its cap, its acceleration and its
+// flight heading. The heading is stored rather than derived because VERA's
+// velocity is integral: at magnitude 1 the direction would be destroyed by
+// truncation and the missile would leave along an axis instead of the barrel.
+// `ProjectileTrajectory` also gains a `Vertical` variant. All five fields are
+// APPENDED at the end of the struct and the variant is appended to the enum, so
+// unlike the 117 and 118 bumps this one is serde-coverable in principle; the
+// version still moves because the hash schema folds the new state.
 const SNAPSHOT_VERSION: u32 = 119;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
