@@ -670,6 +670,11 @@ const STRUCTURE_FOOTPRINT_SLACK_CELLS: i32 = 8;
 /// Everything one scan needs that does not change between candidates.
 struct ScanContext<'a> {
     entities: &'a EntityStore,
+    /// Overlay/alliance state the InRange line-of-fire walk consults
+    /// (0x006F7642). Target selection runs the same `TechnoClass::InRange`
+    /// the fire site does, so it has to see the same walls and cliffs or a
+    /// unit picks a target it can never legally shoot.
+    los: crate::sim::combat::line_of_fire::LineOfFireInputs<'a>,
     rules: &'a RuleSet,
     interner: &'a StringInterner,
     attacker: &'a AttackerSnapshot,
@@ -838,6 +843,7 @@ pub(crate) fn greatest_threat(
     terrain: Option<&ResolvedTerrainGrid>,
     require_playfield_membership: bool,
     zone_grid: Option<&ZoneGrid>,
+    los: crate::sim::combat::line_of_fire::LineOfFireInputs<'_>,
 ) -> Option<u64> {
     let range = match scan_range_override {
         Some(cells) => ScanRange::Hard(cells),
@@ -886,6 +892,7 @@ pub(crate) fn greatest_threat(
 
     let ctx = ScanContext {
         entities,
+        los,
         rules,
         interner,
         attacker,
@@ -1295,6 +1302,7 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
                     ctx.interner,
                     ctx.entities,
                     terrain,
+                    &ctx.los,
                 )
             }
             _ => is_within_range_leptons(dist_sq, selected.weapon.range),
@@ -1589,7 +1597,16 @@ mod tests {
     ) -> Option<u64> {
         let interner = test_interner();
         super::super::acquire_best_target_for_entity(
-            entities, rules, &interner, attacker, None, None, false, mask, zones,
+            entities,
+            rules,
+            &interner,
+            attacker,
+            None,
+            None,
+            false,
+            mask,
+            zones,
+            crate::sim::combat::line_of_fire::LineOfFireInputs::default(),
         )
     }
 

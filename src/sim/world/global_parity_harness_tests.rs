@@ -587,6 +587,18 @@ fn harness_ini() -> IniFile {
     // Anyone extending this fixture: a fractional `Range=` on `[105mm]` would
     // close the gap, at the cost of one re-baseline of GLOBAL_HARNESS_FINAL_HASH
     // plus the stream pins.
+    //
+    // The same gap covers the line-of-fire walk at `InRange`'s tail
+    // (0x006F7642 -> 0x004CC310). It fires only for a projectile that sets
+    // `SubjectToWalls=` or `SubjectToCliffs=`, and neither `[M60]` nor
+    // `[105mm]` declares a `Projectile=` at all, so no projectile section
+    // exists to carry either key; the only overlay here is `TIB01` ore, so
+    // there is no wall on any line; and the terrain the scenario builds is
+    // flat, so no four-Level cliff step exists either. Stock `[Cannon]` and
+    // `[InvisibleLow]` — every cannon tank and every small-arms infantryman —
+    // DO set both keys. Closing this half needs a projectile section plus a
+    // wall overlay or a level step in the fixture terrain, and the same
+    // re-baseline.
     IniFile::from_str(
         "[InfantryTypes]\n0=E1\n\n\
          [VehicleTypes]\n0=MTNK\n1=HARV\n\n\

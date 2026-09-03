@@ -143,7 +143,7 @@ pub(crate) struct AttackerSnapshot {
 /// `zone_grid` is `MapClass`'s per-movement-zone connectivity, which mask 0 uses
 /// to refuse candidates its own movement zone cannot reach.
 #[allow(clippy::too_many_arguments)]
-pub fn acquire_best_target_for_entity(
+pub(crate) fn acquire_best_target_for_entity(
     entities: &EntityStore,
     rules: &RuleSet,
     interner: &StringInterner,
@@ -153,6 +153,7 @@ pub fn acquire_best_target_for_entity(
     require_playfield_membership: bool,
     mask: ScanMission,
     zone_grid: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
+    los: super::line_of_fire::LineOfFireInputs<'_>,
 ) -> Option<u64> {
     let entity = entities.get(attacker_id)?;
     // Aircraft with 0 ammo should not acquire new targets — need to reload.
@@ -219,6 +220,7 @@ pub fn acquire_best_target_for_entity(
         terrain,
         require_playfield_membership,
         zone_grid,
+        los,
     )
 }
 
@@ -254,6 +256,7 @@ pub(crate) fn acquire_best_target(
     terrain: Option<&ResolvedTerrainGrid>,
     require_playfield_membership: bool,
     zone_grid: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
+    los: super::line_of_fire::LineOfFireInputs<'_>,
 ) -> Option<u64> {
     super::greatest_threat::greatest_threat(
         entities,
@@ -266,6 +269,7 @@ pub(crate) fn acquire_best_target(
         terrain,
         require_playfield_membership,
         zone_grid,
+        los,
     )
 }
 
@@ -705,6 +709,7 @@ mod tests {
                 false,
                 ScanMission::Guard,
                 None,
+                crate::sim::combat::line_of_fire::LineOfFireInputs::default(),
             ),
             Some(2)
         );

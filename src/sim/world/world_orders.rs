@@ -53,6 +53,7 @@ impl Simulation {
     pub(crate) fn tick_order_intents_pre_combat(
         &mut self,
         rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         turn_suppressed: &BTreeSet<u64>,
     ) {
         // Collect attacker candidates from EntityStore.
@@ -91,6 +92,11 @@ impl Simulation {
                 // "guard this spot" order. gamemd equivalent UNCHECKED.
                 scan_mask,
                 self.zone_grid.as_ref(),
+                combat::line_of_fire::LineOfFireInputs {
+                    overlay_grid: self.overlay_grid.as_ref(),
+                    overlay_registry,
+                    alliances: Some(&self.fog.alliances),
+                },
             ) else {
                 continue;
             };

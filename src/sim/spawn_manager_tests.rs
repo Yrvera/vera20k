@@ -440,7 +440,7 @@ fn set_target_queues_and_the_ai_pass_promotes_it() {
         manager.update_timer = SpawnTimer::ready();
     }
 
-    tick_spawn_managers(&mut sim, &rules, &[v3]);
+    tick_spawn_managers(&mut sim, &rules, &[v3], None);
 
     let manager = sim
         .substrate
@@ -478,7 +478,7 @@ fn gsi_05_08_hornet_launcher_maximum_accepts_6400_and_clears_6401() {
         manager.update_timer = SpawnTimer::ready();
 
         move_target_to_x_distance(&mut sim, target, distance);
-        tick_spawn_managers(&mut sim, &rules, &[carrier]);
+        tick_spawn_managers(&mut sim, &rules, &[carrier], None);
 
         let manager = sim
             .substrate
@@ -533,7 +533,7 @@ fn gsi_05_08_idle_legality_uses_effective_3d_distance() {
         .expect("target remains live")
         .position
         .exact_z_leptons = Some(TARGET_Z_LEPTONS);
-    tick_spawn_managers(&mut sim, &rules, &[carrier]);
+    tick_spawn_managers(&mut sim, &rules, &[carrier], None);
 
     let manager = sim
         .substrate
@@ -572,7 +572,7 @@ fn gsi_05_08_v3_minimum_accepts_1280_and_clears_1279() {
         manager.update_timer = SpawnTimer::ready();
 
         move_target_to_x_distance(&mut sim, target, distance);
-        tick_spawn_managers(&mut sim, &rules, &[v3]);
+        tick_spawn_managers(&mut sim, &rules, &[v3], None);
 
         let manager = sim
             .substrate
@@ -617,7 +617,7 @@ fn update_timer_gates_the_whole_ai_pass() {
 
     // Frame 0 with the constructor's 20-frame first delay still pending: no
     // promotion, no launch.
-    tick_spawn_managers(&mut sim, &rules, &[v3]);
+    tick_spawn_managers(&mut sim, &rules, &[v3], None);
     let manager = sim
         .substrate
         .entities
@@ -665,7 +665,7 @@ fn v3_launches_its_rocket_into_the_kamikaze_window() {
     }
     // Pass 1: Idle → Launching (the slot walk runs before the mode block, so
     // nothing launches while the manager is still Idle).
-    tick_spawn_managers(&mut sim, &rules, &[v3]);
+    tick_spawn_managers(&mut sim, &rules, &[v3], None);
     assert_eq!(
         sim.substrate
             .entities
@@ -684,7 +684,7 @@ fn v3_launches_its_rocket_into_the_kamikaze_window() {
     {
         manager.update_timer = SpawnTimer::ready();
     }
-    tick_spawn_managers(&mut sim, &rules, &[v3]);
+    tick_spawn_managers(&mut sim, &rules, &[v3], None);
 
     let child = sim.substrate.entities.get(child_id).expect("child alive");
     assert!(!child.lifecycle.in_limbo, "rocket is out in the world");
@@ -746,7 +746,7 @@ fn a_moving_launcher_holds_its_missile() {
             manager.mode = SpawnManagerMode::Launching;
         }
     }
-    tick_spawn_managers(&mut sim, &rules, &[v3]);
+    tick_spawn_managers(&mut sim, &rules, &[v3], None);
 
     assert!(
         sim.substrate
@@ -999,7 +999,7 @@ fn launcher_death_destroys_a_missile_already_in_flight() {
             manager.set_target(Some(TargetKind::Entity(target)));
             manager.update_timer = SpawnTimer::ready();
         }
-        tick_spawn_managers(&mut sim, &rules, &[v3]);
+        tick_spawn_managers(&mut sim, &rules, &[v3], None);
     }
     assert_eq!(
         sim.substrate
@@ -1114,7 +1114,7 @@ fn missile_flight_speed_uses_the_ra2_conversion() {
             manager.set_target(Some(TargetKind::Entity(target)));
             manager.update_timer = SpawnTimer::ready();
         }
-        tick_spawn_managers(&mut sim, &rules, &[v3]);
+        tick_spawn_managers(&mut sim, &rules, &[v3], None);
     }
 
     let speed = sim
@@ -1205,7 +1205,7 @@ fn hornets_hold_over_the_carrier_until_the_whole_wing_is_up() {
             manager.set_target(Some(TargetKind::Entity(target)));
             manager.update_timer = SpawnTimer::ready();
         }
-        tick_spawn_managers(&mut sim, &rules, &[carrier]);
+        tick_spawn_managers(&mut sim, &rules, &[carrier], None);
     }
 
     let launched: Vec<u64> = sim
@@ -1272,7 +1272,7 @@ fn target_death_clears_the_wing_target() {
         manager.set_target(Some(TargetKind::Entity(target)));
         manager.update_timer = SpawnTimer::ready();
     }
-    tick_spawn_managers(&mut sim, &rules, &[carrier]);
+    tick_spawn_managers(&mut sim, &rules, &[carrier], None);
     assert_eq!(
         sim.substrate
             .entities
@@ -1375,7 +1375,7 @@ fn a_launch_at_a_vanished_target_leaves_no_orphan() {
         manager.mode = SpawnManagerMode::Launching;
         manager.update_timer = SpawnTimer::ready();
     }
-    tick_spawn_managers(&mut sim, &rules, &[v3]);
+    tick_spawn_managers(&mut sim, &rules, &[v3], None);
 
     let child = sim
         .substrate

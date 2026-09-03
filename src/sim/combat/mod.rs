@@ -28,6 +28,7 @@ pub(crate) mod fire_decision;
 pub(crate) mod greatest_threat;
 pub(crate) mod in_range;
 mod inviso_scatter;
+pub(crate) mod line_of_fire;
 pub mod smudge_dispatch;
 pub(crate) mod threat_range;
 pub(crate) mod veterancy;
@@ -920,6 +921,7 @@ pub(crate) fn can_fire_at_target(
     target: &TargetKind,
     terrain: &ResolvedTerrainGrid,
     alliances: Option<&HouseAllianceMap>,
+    los: &line_of_fire::LineOfFireInputs<'_>,
 ) -> bool {
     let Some(attacker) = entities.get(attacker_id) else {
         return false;
@@ -958,6 +960,7 @@ pub(crate) fn can_fire_at_target(
         interner,
         entities,
         terrain,
+        los,
     )
 }
 
@@ -7139,6 +7142,11 @@ pub(crate) fn resolve_attacker_fire(
                 // scanner-zone slot native fills at `0x006F8EC4` is read only by
                 // the mask-0 flat walk, which this callsite cannot select.
                 None,
+                line_of_fire::LineOfFireInputs {
+                    overlay_grid: overlay_grid.as_deref(),
+                    overlay_registry,
+                    alliances: fog.map(|fog_state| &fog_state.alliances),
+                },
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -7265,6 +7273,11 @@ pub(crate) fn resolve_attacker_fire(
                 // scanner-zone slot native fills at `0x006F8EC4` is read only by
                 // the mask-0 flat walk, which this callsite cannot select.
                 None,
+                line_of_fire::LineOfFireInputs {
+                    overlay_grid: overlay_grid.as_deref(),
+                    overlay_registry,
+                    alliances: fog.map(|fog_state| &fog_state.alliances),
+                },
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -7292,6 +7305,11 @@ pub(crate) fn resolve_attacker_fire(
                 // scanner-zone slot native fills at `0x006F8EC4` is read only by
                 // the mask-0 flat walk, which this callsite cannot select.
                 None,
+                line_of_fire::LineOfFireInputs {
+                    overlay_grid: overlay_grid.as_deref(),
+                    overlay_registry,
+                    alliances: fog.map(|fog_state| &fog_state.alliances),
+                },
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -7404,6 +7422,11 @@ pub(crate) fn resolve_attacker_fire(
                     interner,
                     entities,
                     t,
+                    &line_of_fire::LineOfFireInputs {
+                        overlay_grid: overlay_grid.as_deref(),
+                        overlay_registry,
+                        alliances: fog.map(|fog_state| &fog_state.alliances),
+                    },
                 )
             }
             _ => {
@@ -8433,6 +8456,26 @@ pub(crate) fn lepton_distance_sq_raw(
 /// The fix belongs with the remaining `is_within_range_leptons` call sites'
 /// migration onto `compute_in_range`, not with a second sentinel test bolted
 /// on here.
+///
+/// RESIDUAL 2 — this twin also has no line-of-fire walk. `TechnoClass::InRange`
+/// ends in `CALL 0x004CC310` at 0x006F7642 and refuses the shot when a wall or
+/// a cliff sits on the line; `compute_in_range` now runs that walk (see
+/// `sim::combat::line_of_fire`) and this function does not.
+///
+/// - Trigger: pursuit (`World::tick_attack_pursuit`, which calls
+///   `pursuit_weapon_range` + this predicate) closing on a target behind a
+///   wall or a cliff with a `SubjectToWalls=`/`SubjectToCliffs=` projectile.
+/// - Player effect: pursuit stops at the weapon's plain radius and reports
+///   "in range" while the fire gate refuses the shot, so the unit sits still
+///   instead of continuing to reposition. The reverse of the old defect (it
+///   used to walk into range and fire illegally), and narrower: the shot no
+///   longer happens either way.
+/// - Frequency: ordinary — `InvisibleLow` (GI, Conscript, Sentry Gun, Sniper,
+///   Boris) and `Cannon` (every cannon tank) both declare the keys.
+/// - Downstream risk: none to deterministic state; it is a stall, not a
+///   divergent action. The cure is the same migration named above — native's
+///   approach path measures through the same `InRange`, so a second walk
+///   bolted onto this function would be a VERA-only predicate.
 pub(crate) fn is_within_range_leptons(dist_sq_leptons: i64, range_cells: SimFixed) -> bool {
     let range_leptons: i64 = (i64::from(range_cells.to_bits()) * 256) >> 16;
     let range_sq: i64 = range_leptons * range_leptons;
@@ -8500,7 +8543,8 @@ fn veteran_rof_frames(
     .clamp(1, i32::from(u16::MAX)) as u16
 }
 
-pub use self::combat_targeting::{acquire_best_target_for_entity, tick_retaliation};
+pub(crate) use self::combat_targeting::acquire_best_target_for_entity;
+pub use self::combat_targeting::tick_retaliation;
 /// The threat mask an acquisition callsite pushes into
 /// `TechnoClass::Greatest_Threat @ 0x006F8DF0`, plus the passive block's own
 /// derivation of it. Re-exported because the mask is chosen by the mission

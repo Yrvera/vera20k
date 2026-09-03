@@ -2651,6 +2651,17 @@ pub struct RuleSet {
     pub powerups: crate::rules::powerups::PowerupTable,
     /// Garrison/bunker/open-topped combat multipliers from [CombatDamage].
     pub garrison_rules: GarrisonRules,
+    /// `[WallModel] AlliedWallTransparency` — `RulesClass+0x1850`, read by
+    /// `RulesClass::ReadWallModel` at 0x0066D20E/0x0066D22E, default `false`
+    /// from the constructor store at 0x00667825. Its one consumer is the
+    /// line-of-fire walk's wall arm (0x004CC458): when set, a wall belonging
+    /// to a house allied with the firer stops blocking the shot. Stock rules
+    /// set it to `no`.
+    ///
+    /// `[WallModel] WallPenetratorThreshold` (`+0x1858`) is deliberately NOT
+    /// parsed here — it belongs to the AI's "fire through walls anyway"
+    /// decision, which is a different mechanism with no consumer in this tree.
+    pub allied_wall_transparency: bool,
     /// Per-cell radiation-field constants from [Radiation].
     pub radiation: RadiationRules,
     /// Radar event visual parameters (ping rectangles on minimap).
@@ -2952,6 +2963,12 @@ impl RuleSet {
         // projection path has no `[Powerups]` accumulator of its own.
         let powerups = crate::rules::powerups::PowerupTable::default();
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
+        // `RulesClass::ReadWallModel` 0x0066D1E0 leaves the constructor value
+        // (0, from 0x00667825) in place when `[WallModel]` is absent.
+        let allied_wall_transparency: bool = ini
+            .section("WallModel")
+            .and_then(|s| s.get_bool("AlliedWallTransparency"))
+            .unwrap_or(false);
         let radiation: RadiationRules = RadiationRules::from_ini(ini);
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
         let country_side_registry = parse_country_side_registry(ini);
@@ -3424,6 +3441,7 @@ impl RuleSet {
             crate_rules,
             powerups,
             garrison_rules,
+            allied_wall_transparency,
             radiation,
             radar_event_config,
             super_weapons,

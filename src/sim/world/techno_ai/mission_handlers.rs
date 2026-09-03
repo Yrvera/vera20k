@@ -24,6 +24,7 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
     sim: &mut Simulation,
     id: u64,
     rules: &RuleSet,
+    ctx: super::ObjectAiCtx<'_>,
 ) {
     let now = sim.session.binary_frame;
     let input = {
@@ -265,7 +266,7 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             // The re-acquire can install or clear a target, so running it
             // after the draw would both reorder the state writes and move the
             // scenario-stream position for anything the scan itself consumes.
-            let queue = infantry_deployed_attack_reacquire(sim, id, rules, input);
+            let queue = infantry_deployed_attack_reacquire(sim, id, rules, input, ctx);
             let delay = jittered_mission_cadence(sim, rules, MissionType::Attack);
             MissionHandlerEvaluation {
                 delay,
@@ -365,7 +366,7 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         ) if input.infantry_deployed_do_type && input.infantry_deploy_fire_stance => {
             // Order is native's: `[vtable+0x428]` runs FIRST, then the shim's
             // tail computes `ftol(Rate * 900)` and draws `RandomRanged(0, 2)`.
-            let queue = infantry_deployed_attack_reacquire(sim, id, rules, input);
+            let queue = infantry_deployed_attack_reacquire(sim, id, rules, input, ctx);
             // `MissionClass::GetMissionTimerEntry @ 0x005B3A00` indexes the
             // control table on `[this+0xAC]`, the object's OWN committed
             // selector — so the shim re-arms a Guard man at `[Guard] Rate` and
@@ -435,10 +436,10 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // land. The Foot body's own slave-recall arm is absent for the same
         // reason.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::AreaGuard)) => {
-            evaluate_foot_area_guard(sim, id, rules)
+            evaluate_foot_area_guard(sim, id, rules, ctx)
         }
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Hunt)) => {
-            evaluate_foot_hunt(sim, id, rules)
+            evaluate_foot_hunt(sim, id, rules, ctx)
         }
         // SKIP/PROVE (GSI-07.09) — Mission 4 Retreat is a dead slot for foot
         // objects, and pass 1's reason was wrong. `FootClass::Mission_Retreat @
@@ -812,6 +813,7 @@ fn retaliate_and_scan(
     rules: &RuleSet,
     mission: MissionType,
     scan_mask: crate::sim::combat::ScanMission,
+    ctx: super::ObjectAiCtx<'_>,
 ) -> bool {
     let now = sim.session.binary_frame;
     let base_delay = if mission == MissionType::AreaGuard {
@@ -873,6 +875,11 @@ fn retaliate_and_scan(
         // Mask 0 asks it for the hunter's own movement-zone component and
         // refuses every candidate outside it.
         sim.zone_grid.as_ref(),
+        crate::sim::combat::line_of_fire::LineOfFireInputs {
+            overlay_grid: sim.overlay_grid.as_ref(),
+            overlay_registry: ctx.overlay_registry,
+            alliances: Some(&sim.fog.alliances),
+        },
     );
     if let Some(sid) = pick {
         let _ = sim
@@ -995,7 +1002,12 @@ fn retaliate_and_scan(
 /// Drone on a miner. Frequency: uncommon, and the visible effect is nil either
 /// way — a `StupidHunt` type does nothing on Hunt in retail either. Downstream
 /// risk: one missing draw per dispatch.
-fn evaluate_foot_hunt(sim: &mut Simulation, id: u64, rules: &RuleSet) -> MissionHandlerEvaluation {
+fn evaluate_foot_hunt(
+    sim: &mut Simulation,
+    id: u64,
+    rules: &RuleSet,
+    ctx: super::ObjectAiCtx<'_>,
+) -> MissionHandlerEvaluation {
     let type_ref = sim.substrate.entities.get(id).map(|entity| entity.type_ref);
     let stupid_hunt = type_ref
         .and_then(|type_ref| sim.interner.try_resolve(type_ref))
@@ -1014,6 +1026,7 @@ fn evaluate_foot_hunt(sim: &mut Simulation, id: u64, rules: &RuleSet) -> Mission
             // `PUSH 0x0` at `0x004D5373` — the literal threat mask Hunt hands
             // the scanner.
             crate::sim::combat::ScanMission::Hunt,
+            ctx,
         );
     }
     MissionHandlerEvaluation::cadence(jittered_mission_cadence(sim, rules, MissionType::Hunt))
@@ -1091,6 +1104,7 @@ fn evaluate_foot_area_guard(
     sim: &mut Simulation,
     id: u64,
     rules: &RuleSet,
+    ctx: super::ObjectAiCtx<'_>,
 ) -> MissionHandlerEvaluation {
     let needs_target = sim
         .substrate
@@ -1098,7 +1112,7 @@ fn evaluate_foot_area_guard(
         .get(id)
         .is_some_and(|entity| entity.attack_target.is_none());
     if needs_target && can_acquire_target(sim, id, rules) {
-        passive_target_scan(sim, id, rules, MissionType::AreaGuard);
+        passive_target_scan(sim, id, rules, MissionType::AreaGuard, ctx);
         let acquired = sim
             .substrate
             .entities
@@ -1520,6 +1534,7 @@ fn infantry_deployed_attack_reacquire(
     id: u64,
     rules: &RuleSet,
     input: MissionHandlerInput,
+    ctx: super::ObjectAiCtx<'_>,
 ) -> Option<MissionType> {
     let had_target = input.has_attack_target;
     if had_target && !attack_target_is_stale(sim, id) {
@@ -1546,6 +1561,11 @@ fn infantry_deployed_attack_reacquire(
         // literal `2`.
         crate::sim::combat::ScanMission::Guard,
         sim.zone_grid.as_ref(),
+        crate::sim::combat::line_of_fire::LineOfFireInputs {
+            overlay_grid: sim.overlay_grid.as_ref(),
+            overlay_registry: ctx.overlay_registry,
+            alliances: Some(&sim.fog.alliances),
+        },
     );
     if had_target || pick.is_some() {
         let current = sim

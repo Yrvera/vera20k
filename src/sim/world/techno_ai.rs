@@ -486,9 +486,9 @@ fn techno_ai_shell(
             clear_passive_target_off_mission(sim, id);
             mission_common_step(sim, id, rules);
             if let Some(rules) = rules {
-                dispatch_supported_foot_mission_cadence(sim, id, rules);
+                dispatch_supported_foot_mission_cadence(sim, id, rules, ctx);
             }
-            passive_acquire_step(sim, id, rules);
+            passive_acquire_step(sim, id, rules, ctx);
         }
         EntityCategory::Structure => {
             if let Some(rules) = rules {
@@ -521,7 +521,7 @@ fn techno_ai_shell(
             // (`0x0043FE43`/`0x0043FFA3`); with no latch writers live the
             // promotion evaluates to not-ready (recorded residual).
             mission_common_step(sim, id, rules);
-            passive_acquire_step(sim, id, rules);
+            passive_acquire_step(sim, id, rules, ctx);
             // BuildingClass::Update consumes the shared C4/PostMortem latch at
             // its late tail. Keep the forced receiver inline in this object's
             // LogicVector visit so nested death effects precede the next slot.
@@ -1010,11 +1010,11 @@ fn unit_techno_bracket(
         );
     }
     if let Some(rules) = rules {
-        dispatch_supported_foot_mission_cadence(sim, id, rules);
+        dispatch_supported_foot_mission_cadence(sim, id, rules, ctx);
     }
     // Passive / opportunity target acquisition sits between mission dispatch
     // and the second IsAlive guard, before the object's own locomotion.
-    passive_acquire_step(sim, id, rules);
+    passive_acquire_step(sim, id, rules, ctx);
     // Guard E (post-dispatch IsAlive): the dispatched handler may have
     // destroyed the Unit; a dead Unit runs no post-mission block.
     if !sim.substrate.entities.get(id).is_some_and(|e| e.is_alive()) {
@@ -1190,7 +1190,13 @@ fn can_acquire_target(sim: &Simulation, id: u64, rules: &RuleSet) -> bool {
 /// but Area Guard is not one of the three missions that reach here from the AI
 /// body — it becomes live when the Area Guard mission handler (a separate
 /// caller of this scanner) lands.
-fn passive_target_scan(sim: &mut Simulation, id: u64, rules: &RuleSet, mission: MissionType) {
+fn passive_target_scan(
+    sim: &mut Simulation,
+    id: u64,
+    rules: &RuleSet,
+    mission: MissionType,
+    ctx: ObjectAiCtx<'_>,
+) {
     let now = sim.session.binary_frame;
     let base_delay = if mission == MissionType::AreaGuard {
         rules.general.guard_area_targeting_delay
@@ -1286,6 +1292,11 @@ fn passive_target_scan(sim: &mut Simulation, id: u64, rules: &RuleSet, mission: 
         // `scan_mission_for` is that choice, and this is the site that makes it.
         scan_mask,
         sim.zone_grid.as_ref(),
+        crate::sim::combat::line_of_fire::LineOfFireInputs {
+            overlay_grid: sim.overlay_grid.as_ref(),
+            overlay_registry: ctx.overlay_registry,
+            alliances: Some(&sim.fog.alliances),
+        },
     );
     // Install the target only — no mission, no destination, and nothing fires
     // this tick. A unit that acquires while driving keeps driving, and an idle
@@ -1375,7 +1386,12 @@ fn passive_target_scan(sim: &mut Simulation, id: u64, rules: &RuleSet, mission: 
 /// - A deployed Desolator that picks something up on its own suppresses its own
 ///   radiation self-target re-arm, because that path only fires for a structure
 ///   or unit with no target installed.
-fn passive_acquire_step(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
+fn passive_acquire_step(
+    sim: &mut Simulation,
+    id: u64,
+    rules: Option<&RuleSet>,
+    ctx: ObjectAiCtx<'_>,
+) {
     let Some(rules) = rules else {
         return;
     };
@@ -1405,7 +1421,7 @@ fn passive_acquire_step(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) 
     ) {
         return;
     }
-    passive_target_scan(sim, id, rules, mission);
+    passive_target_scan(sim, id, rules, mission, ctx);
 }
 
 /// The off-mission clear, which runs before the AI counter: a passively
@@ -2155,7 +2171,7 @@ mod tests {
 
         // First scan: no hostile, so nothing is installed but the draw happens.
         let before = sim.scenario_rng.state();
-        passive_acquire_step(&mut sim, 1, Some(&rules));
+        passive_acquire_step(&mut sim, 1, Some(&rules), ObjectAiCtx::default());
         assert_ne!(sim.scenario_rng.state(), before);
 
         // Pretend the scan had found something.
@@ -2176,7 +2192,7 @@ mod tests {
         );
 
         let armed = sim.scenario_rng.state();
-        passive_acquire_step(&mut sim, 1, Some(&rules));
+        passive_acquire_step(&mut sim, 1, Some(&rules), ObjectAiCtx::default());
         assert_ne!(
             sim.scenario_rng.state(),
             armed,
@@ -2221,7 +2237,7 @@ mod tests {
             e.passively_acquired_target = true;
             e.passive_scan_timer.clear();
         }
-        passive_acquire_step(&mut sim, 1, Some(&rules));
+        passive_acquire_step(&mut sim, 1, Some(&rules), ObjectAiCtx::default());
         let attack = sim
             .substrate
             .entities
@@ -2269,7 +2285,7 @@ mod tests {
             e.passively_acquired_target = true;
             e.passive_scan_timer.clear();
         }
-        passive_acquire_step(&mut sim, 1, Some(&rules));
+        passive_acquire_step(&mut sim, 1, Some(&rules), ObjectAiCtx::default());
         let attack = sim
             .substrate
             .entities
@@ -2678,7 +2694,7 @@ mod tests {
         let mut probe = sim.scenario_rng.clone();
         let expected_jitter = probe.next_range_u32_inclusive(0, PASSIVE_SCAN_DELAY_JITTER_MAX);
 
-        passive_acquire_step(&mut sim, 1, Some(&rules));
+        passive_acquire_step(&mut sim, 1, Some(&rules), ObjectAiCtx::default());
 
         let timer = sim.substrate.entities.get(1).unwrap().passive_scan_timer;
         assert_eq!(timer.start_frame, sim.session.binary_frame);
@@ -2711,7 +2727,7 @@ mod tests {
         let main_before = sim.main_rng.state();
         let mapgen_before = sim.mapgen_rng.state();
 
-        passive_acquire_step(&mut sim, 1, Some(&rules));
+        passive_acquire_step(&mut sim, 1, Some(&rules), ObjectAiCtx::default());
 
         assert_eq!(
             sim.scenario_rng.state(),
@@ -2740,7 +2756,7 @@ mod tests {
 
         // A second call before the timer expires draws nothing at all.
         let after_first = sim.scenario_rng.state();
-        passive_acquire_step(&mut sim, 1, Some(&rules));
+        passive_acquire_step(&mut sim, 1, Some(&rules), ObjectAiCtx::default());
         assert_eq!(
             sim.scenario_rng.state(),
             after_first,
@@ -2766,7 +2782,7 @@ mod tests {
         );
 
         let before = sim.scenario_rng.state();
-        passive_acquire_step(&mut sim, 1, Some(&rules));
+        passive_acquire_step(&mut sim, 1, Some(&rules), ObjectAiCtx::default());
         assert_eq!(
             sim.scenario_rng.state(),
             before,
@@ -2784,7 +2800,7 @@ mod tests {
             .unwrap()
             .passive_scan_timer
             .clear();
-        passive_acquire_step(&mut sim, 1, Some(&rules));
+        passive_acquire_step(&mut sim, 1, Some(&rules), ObjectAiCtx::default());
         assert_ne!(
             sim.scenario_rng.state(),
             before,
