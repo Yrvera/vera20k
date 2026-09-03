@@ -1012,11 +1012,16 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
     // `0x006F860C` when the attacker's `vtable+0x330` byte (stored at
     // `0x006F7CBA`) is set. That byte also lets an ALLIED candidate past the
     // ally gate at `0x006F7F43`, and `0x006F860C` only accepts a damaged allied
-    // Building — i.e. it is the medic/repair scan, which VERA does not run from
-    // this site at all. Trigger: an attacker whose weapon heals or repairs.
-    // Player effect: none today, since VERA never asks this scan for a repair
-    // target. Frequency: n/a. Downstream risk: wiring service units in must
-    // carry the whole `0x006F860C` arm, not just this fall-through.
+    // Building — the engineer-repair scan. Five vtables hold a `return 0` stub
+    // for `+0x330`; only `InfantryClass` overrides it, at `0x005224D0`, reading
+    // `InfantryTypeClass+0xEC3`, whose ReadINI key string at `0x0082596C` is
+    // `Engineer`. Trigger: an Engineer scanning for a damaged allied structure.
+    // Player effect: none, and not merely none *today* —
+    // `CanAcquireTarget @ 0x007091D0` returns 0 outright when that flag is set
+    // for a human-controlled owner, so no human player's engineer ever reaches
+    // this scan. Frequency: n/a. Downstream risk: wiring the AI's engineer
+    // repair in must carry the whole `0x006F860C` arm, not just this
+    // fall-through.
     if candidate.category == EntityCategory::Structure
         && !is_one_by_one_undeployable(candidate_obj)
         && (!is_armed(candidate, candidate_obj)
