@@ -8204,6 +8204,30 @@ pub(crate) fn lepton_distance_sq_raw(
 /// `CCINIClass::ReadRange` 0x00474620 multiplies BEFORE truncating: a
 /// `Range=1.5` weapon reaches 384 leptons, and truncating to whole cells first
 /// cost it a third of its reach.
+///
+/// RESIDUAL — this 2-D twin does NOT honour the `-512` always-in-range
+/// sentinel that `in_range::compute_in_range` does. `TechnoClass::InRange`
+/// 0x006F7220 tests it first of all (`CMP EDI,0xFFFFFE00` at 0x006F724E) and
+/// returns true; here `Range=-2` scales to `-512` leptons, squares to a
+/// positive `262144`, and reads as a two-cell reach.
+///
+/// - Trigger: any consumer of this function firing a `Range=-2` weapon —
+///   `ASWLauncher` (`[DEST]`/`[CDEST]` Destroyer secondary), `MakeupKit`
+///   (`[SPY]` primary), and the unreferenced `TankMakeupKit`/`CRMakeupKit`.
+/// - Player effect: a Destroyer's anti-submarine weapon reads as in range only
+///   within two cells, where gamemd is always in range.
+/// - Frequency: every Destroyer ASW acquisition that reaches this predicate —
+///   pursuit (`world_orders.rs`), the greatest-threat scan, the attack cursor —
+///   so ordinary naval play, not an edge case.
+/// - Downstream risk: pursuit walks the Destroyer to two cells before it will
+///   fire, and target selection agrees with it, so the drift is consistent
+///   rather than self-correcting.
+///
+/// Pre-existing, not introduced here; recorded because the lepton scaling on
+/// the line above rewrote this function while leaving the sentinel unhandled.
+/// The fix belongs with the remaining `is_within_range_leptons` call sites'
+/// migration onto `compute_in_range`, not with a second sentinel test bolted
+/// on here.
 pub(crate) fn is_within_range_leptons(dist_sq_leptons: i64, range_cells: SimFixed) -> bool {
     let range_leptons: i64 = (i64::from(range_cells.to_bits()) * 256) >> 16;
     let range_sq: i64 = range_leptons * range_leptons;

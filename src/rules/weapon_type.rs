@@ -49,8 +49,10 @@ pub struct WeaponType {
     ///
     /// `range` above is the cell-valued form the older call sites still read;
     /// scaling it with `to_num::<i64>() * 256` throws the fraction away, which
-    /// is what stranded 61 stock weapons (19 of them at `Range=1.5`) a third
-    /// short of their authored reach. Use this field for any range compare.
+    /// is what stranded 60 of the 256 stock weapons that carry a `Range=` key
+    /// (21 of them at `Range=1.5`) short of their authored reach — up to 212
+    /// leptons, and a third of it at `1.5`. Use this field for any range
+    /// compare.
     ///
     /// The `-2` "infinite" sentinel survives the conversion as `-512`, which
     /// is the constant 0x006F724E tests.
@@ -443,8 +445,9 @@ mod tests {
     }
 
     /// `CCINIClass::ReadRange` 0x00474620 multiplies by `256.0` and THEN chops,
-    /// so a fractional `Range=` keeps its fraction. 61 stock weapons carry one
-    /// and 19 sit at exactly `1.5`, the stock `[BlimpBomb]` among them.
+    /// so a fractional `Range=` keeps its fraction. 60 of the 256 stock
+    /// `Range=` weapons carry one and 21 sit at exactly `1.5`, the stock
+    /// `[BlimpBomb]` among them.
     #[test]
     fn fractional_range_keeps_its_fraction_in_leptons() {
         let ini = IniFile::from_str(

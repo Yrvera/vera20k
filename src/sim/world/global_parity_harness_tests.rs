@@ -573,6 +573,20 @@ fn harness_ini() -> IniFile {
     // real harvester (Harvester/Dock/Storage) and a real refinery (Refinery=yes)
     // so the miner dock path is reachable. Short weapon ranges keep combat to the
     // scripted engagements, keeping the scenario deterministic.
+    //
+    // KNOWN COVERAGE GAP — the fire-range gate is invisible to this tripwire.
+    // `[M60] Range=5` and `[105mm] Range=6` are whole cells, neither weapon sets
+    // `MinimumRange=` or `CellRangefinding=`, no projectile section exists (so
+    // nothing is `Arcing=`), and no attacker is airborne. The 2026-09 change that
+    // moved `TechnoClass::InRange` 0x006F7220 onto lepton ranges and onto the
+    // source coordinate `TechnoClass::CanFireAt` 0x006F77B0 builds shifted the
+    // reach of 60 of the 256 stock `Range=` weapons — Rhino and Apocalypse at
+    // `Range=5.75` among them — and moved NO hash here, because this fixture
+    // cannot express any of those inputs. Read an unchanged harness hash as
+    // "this scenario is unaffected", never as "range behaviour did not move".
+    // Anyone extending this fixture: a fractional `Range=` on `[105mm]` would
+    // close the gap, at the cost of one re-baseline of GLOBAL_HARNESS_FINAL_HASH
+    // plus the stream pins.
     IniFile::from_str(
         "[InfantryTypes]\n0=E1\n\n\
          [VehicleTypes]\n0=MTNK\n1=HARV\n\n\

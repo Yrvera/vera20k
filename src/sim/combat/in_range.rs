@@ -11,8 +11,8 @@
 //! attacker's target-Z swap — that let a Kirov reach the ground below it.
 //!
 //! Ranges are compared in LEPTONS throughout: `CCINIClass::ReadRange`
-//! 0x00474620 scales `Range=` by 256 before truncating, so the fraction on 61
-//! stock weapons is real reach, not rounding noise.
+//! 0x00474620 scales `Range=` by 256 before truncating, so the fraction on 60
+//! of the 256 stock `Range=` weapons is real reach, not rounding noise.
 //!
 //! Stages 2-N add the remaining range-VALUE chain (Garrison / Bunker /
 //! OpenTopped / Veteran). Stage Arcing adds the full Branch B slope-arc check.
@@ -292,14 +292,36 @@ pub(crate) fn compute_in_range(
     true
 }
 
-/// Stage 1 arcing-weapon path: 2D distance only, base weapon range only
-/// (no AirRange / Foundation / height-fire bonuses), preserving the current
-/// 2D behavior for V3 / Prism / Dreadnought / Apocalypse Rocket / etc.
+/// Stage 1 arcing-weapon path: 2-D distance against the base weapon range.
 /// Stage Arcing replaces this with the full slope-arc check.
+///
+/// **Who is actually on this path.** Not the siege units this comment used to
+/// name: `V3Launcher`, `DredLauncher` and `CruiseLauncher` all fire
+/// `InvisibleHigh`, which carries no `Arcing=` key at all. The stock arcing
+/// projectiles are `Cannon`, `Ballistic`, `FlakTProj`, `GrandCannonBall`,
+/// `Lobbed`, `Lobbed2` and `DogShard`, whose weapons are every cannon tank in
+/// the game — `105mm` (MTNK Grizzly), `120mm` (HTNK Rhino), `120mmx` (APOC),
+/// `ATGUN` (LTNK Lasher), `SABOT`/`SABOTE` (TNKD Tank Destroyer), `Robogun`
+/// (ROBO), `STALGREN` (STLN), `20mmRapidE` (elite HARV/SMIN) — plus
+/// `FlakTrackGun` (HTK/HYD), `155mm` (DEST/CDEST Destroyer), `HowitzerGun`
+/// (HOWI) and `GrandCannonWeapon` (GTGCAN). Ordinary tank fire runs through
+/// this stub, and it is the path that delivers the `Range=5.75` reach the
+/// lepton scaling recovers for the Rhino and the Apocalypse.
+///
+/// Missing here, therefore, on everyday shots: the slope-clearance solver
+/// (0x0048AB90 / 0x0048ABC0) and the bridge height ceiling (0x006F74D7).
+/// The bonus terms are NOT missing — native's arcing arm does not apply the
+/// foundation bonus either (it is computed at 0x006F751E, inside the
+/// non-arcing arm), and the one term it does keep, `AirRangeBonus`
+/// (`EBX = EDI` at 0x006F7457), has no stock arcing user: `[FV]` is the only
+/// `AirRangeBonus=` unit and its weapons are not arcing.
 ///
 /// The MinimumRange test that used to live here has moved to the caller: the
 /// native runs it once, in 3-D, before the `MOV CL,[EDX+0x29B]` arcing split
-/// at 0x006F73F6.
+/// at 0x006F73F6. That move is LIVE on stock data, not a formality —
+/// `GrandCannonWeapon` (`MinimumRange=3`), `HowitzerGun` (2) and `RPGTower`
+/// (2) are all arcing, so the Grand Cannon's three-cell dead zone is now
+/// measured in 3-D as 0x006F737F does.
 fn compute_in_range_arcing_2d(
     src: (i64, i64, i64),
     target_xy: (i64, i64),
@@ -406,6 +428,23 @@ fn target_own_z_leptons(
 ///
 /// Both steps write the same Z slot, so a high-flying attacker with
 /// `CellRangefinding=` ends on the target's Z — step 3 runs last.
+///
+/// RESIDUAL (VERA-internal, gamemd equivalent UNCHECKED) — this returns
+/// `Option` where native cannot fail: `GetCoords` and `CellClass::GetCoords`
+/// always answer, so 0x006F77B0 has no "could not build a source" path. Two of
+/// the three `None` arms are new with this function — a `CellRangefinding=`
+/// attacker whose own cell has no resolved terrain, and a high-flying attacker
+/// whose entity target has already left the store. Callers treat `None` as
+/// "no shot" and return BEFORE the range-failure bookkeeping they would
+/// otherwise run (`resolve_attacker_fire`'s `pending_infantry_updates` and idle
+/// switch), so such a shot is dropped one step earlier than a native refusal.
+/// Trigger: an unresolved/off-map cell under a `CellRangefinding=` attacker, or
+/// a target removed between the attacker snapshot and the fire step in the same
+/// tick. Frequency: rare — the entity arm needs a same-tick removal, and the
+/// cell arm an attacker standing where terrain did not resolve. Downstream
+/// risk: bounded to that one tick's bookkeeping; the third arm
+/// (`effective_z_leptons` on the attacker) is pre-existing and every call site
+/// already had it.
 pub(crate) fn fire_source_coords(
     attacker: &GameEntity,
     target: &TargetKind,
@@ -523,10 +562,14 @@ fn cell_is_bridge(terrain: &ResolvedTerrainGrid, rx: u16, ry: u16) -> bool {
 /// that are airborne whenever they are alive, so the branch cannot decide this
 /// gate for anything a player commands.
 ///
-/// `is_high_flying` is scoped to aircraft where the native predicate is
-/// universal. They agree on every input this gate can reach: a ground object's
-/// height is 0, which fails the native's `>= 208` just as VERA's category test
-/// fails. Recorded rather than glossed.
+/// `is_high_flying` is the universal `ObjectClass` predicate — the same body
+/// this slot resolves to — so the exemption now answers for any high-flying
+/// object, not only for the aircraft category. That is a behaviour change AT
+/// THIS SITE: a Jumpjet vehicle or a Rocketeer above 208 leptons used to eat
+/// FireError 5 for a bridge mismatch and now does not, which is what
+/// `vtable+0x54` does at 0x006FCBE6. Do NOT re-scope the predicate to
+/// `EntityCategory::Aircraft` to "tighten" this gate: the stock Kirov `[ZEP]`
+/// is a `[VehicleTypes]` Jumpjet, and a category test grounds it.
 ///
 /// This is deliberately NOT folded into `compute_in_range`. The native
 /// `InRange` 0x006F7220 has no such clause; putting it there would be a gate
@@ -1986,16 +2029,22 @@ mod tests {
     /// opposite of the gate at 0x006F75FB in the same function, which reads the
     /// source's.
     ///
-    /// Trigger: arcing weapons (V3, Dreadnought, artillery, Apocalypse rocket)
-    /// firing at something standing on a bridge deck.
+    /// Trigger: an arcing weapon firing at something standing on a bridge
+    /// deck. The arcing population is every cannon tank — `Cannon`,
+    /// `Ballistic`, `FlakTProj`, `GrandCannonBall`, `Lobbed`, `Lobbed2` and
+    /// `DogShard` — NOT the V3/Dreadnought/Cruise launchers, which fire
+    /// `InvisibleHigh` and carry no `Arcing=` key. See
+    /// `compute_in_range_arcing_2d` for the full weapon list.
     ///
     /// Effect: `compute_in_range_arcing_2d` is a documented 2D fallthrough stub
     /// with neither the slope test nor this ceiling, so VERA allows arcing
     /// shots at deck targets that gamemd refuses.
     ///
-    /// Frequency: every arcing shot at a unit on a bridge. Bounded by the fact
-    /// that the whole arc check is stubbed, so this clause is downstream of a
-    /// larger unported mechanism and cannot be fixed on its own.
+    /// Frequency: every arcing shot at a unit on a bridge — i.e. Grizzly,
+    /// Rhino, Apocalypse, Lasher, Tank Destroyer, Flak Track and Destroyer
+    /// fire, not a siege-unit footnote. Bounded by the fact that the whole arc
+    /// check is stubbed, so this clause is downstream of a larger unported
+    /// mechanism and cannot be fixed on its own.
     #[test]
     #[ignore = "gamemd 0x006F74D7 adds a height ceiling for arcing shots at bridge-cell targets; VERA's arcing path is a 2D stub"]
     fn inrange_arcing_branch_bridge_ceiling_is_unported() {
@@ -2026,11 +2075,22 @@ mod tests {
     /// own in-flight wall handling in `sim/projectile.rs`. Target selection and
     /// pursuit also disagree, since both run through this same predicate.
     ///
-    /// Frequency: 10 of the 30 stock projectiles carry `SubjectToWalls=yes`
-    /// and 9 `SubjectToCliffs=yes`, covering most direct-fire ground weapons —
-    /// so this fires whenever such a unit shoots across a wall or cliff, which
-    /// is ordinary skirmish, not an edge case. Not ported here because the
-    /// cell-blocking predicate `FUN_004CC360` is its own mechanism.
+    /// Frequency: 30 stock projectile sections declare either key; 10 set
+    /// `SubjectToWalls=yes` and 9 `SubjectToCliffs=yes`. Both land on
+    /// `InvisibleLow` — the small-arms projectile behind `M60` (`[E1]` GI,
+    /// `[GGI]`), `M1Carbine` (`[E2]` Conscript), `Vulcan` (`[NALASR]` Sentry
+    /// Gun), `AKM` (`[BORIS]`), `Sniper`, `MirageGun` and the rest — and on
+    /// `Cannon`, i.e. every cannon tank. That is most of the units in the game
+    /// shooting past a wall or a cliff.
+    ///
+    /// **This residual is NON-DEFERRABLE by ENGINE.md's own test** — it fires
+    /// in ordinary skirmish and it breaks a loop (pursuit walks a unit toward a
+    /// target it can never legally shoot). It is not ported HERE because the
+    /// per-cell blocking predicate `FUN_004CC360`, the wall-overlay topology,
+    /// `CellClass::IsWallConnectableInDirection` 0x00480510 and the
+    /// warhead wall-breaking re-admission are one coherent mechanism, and
+    /// half-porting it would mean a VERA-only blocking heuristic in `sim/`.
+    /// It is scheduled as its own mechanism, not filed as an accepted gap.
     #[test]
     #[ignore = "gamemd 0x006F7642 refuses the shot when a wall or cliff blocks the line; VERA's range gate has no line walk"]
     fn inrange_line_of_fire_block_is_unported() {
@@ -2064,6 +2124,26 @@ mod tests {
     #[ignore = "gamemd 0x006F7314 reads CellClass::GetCoords (no deck term) for a cell target; VERA adds the deck offset"]
     fn inrange_cell_target_deck_offset_is_drift() {
         panic!("unimplemented: InRange 0x006F7314 cell-target coordinate has no bridge deck term");
+    }
+
+    /// RESIDUAL — gamemd address 0x006F724E, `CMP EDI,0xFFFFFE00`, the first
+    /// thing `TechnoClass::InRange` tests.
+    ///
+    /// `compute_in_range` honours the `-512` always-in-range sentinel;
+    /// `combat::is_within_range_leptons`, the 2-D twin the other range call
+    /// sites still use, does not — `Range=-2` squares to a positive `262144`
+    /// there and reads as a two-cell reach. Full trigger / effect / frequency /
+    /// downstream note sits on that function in `sim/combat/mod.rs`; the short
+    /// of it is that a Destroyer's `ASWLauncher` closes to two cells where
+    /// gamemd is always in range.
+    ///
+    /// Pre-existing, and recorded here rather than fixed because the cure is
+    /// migrating those call sites onto `compute_in_range`, not adding a second
+    /// sentinel test to the twin.
+    #[test]
+    #[ignore = "gamemd 0x006F724E -512 always-in-range sentinel is unhandled in combat::is_within_range_leptons"]
+    fn is_within_range_leptons_ignores_the_always_in_range_sentinel() {
+        panic!("unimplemented: is_within_range_leptons has no InRange 0x006F724E -512 sentinel");
     }
 
     /// Guards the INCLUSIVE half of the gate's boundary pair (`JGE` at
