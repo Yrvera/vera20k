@@ -1,72 +1,48 @@
 ---
 name: sync
-description: "Audit and safely synchronize VERA20k branches and worktrees. Use for branch drift, fast-forward catch-up, or cleanup. Preserves unmerged work and local-only data."
+description: "Audit or synchronize VERA20k branches/worktrees while preserving ownership, unmerged work, and local-only data."
 ---
 
 # Sync
 
-Apply `ENGINE.md`'s Git and ownership rules to the requested catch-up or cleanup.
-An audit alone is read-only. Carry out actions already covered by the request;
-ask only when ownership, preservation, or the intended target remains ambiguous.
+Apply ENGINE's Git/authorization rules. Inspect status, branches/upstreams,
+worktrees, and task ownership. Fetch/prune for synchronization; for a read-only
+audit use `git ls-remote --heads origin` without ref updates.
 
-## Establish actual state
+Establish relevant tips, ahead/behind counts, unique work versus `main`, and
+ownership. Squashed PRs can preserve changes without preserving commit ancestry;
+inspect history before declaring work disposable.
 
-Inspect status, branches/upstreams, worktrees, and active task ownership. For a
-sync request, fetch with pruning before comparing tips. For a read-only audit,
-use `git ls-remote --heads origin` without updating refs and label cached
-remote-tracking information accordingly.
+Use clean, owned checkouts and fast-forward-only catch-up. An actual conflict in
+a publication-authorized PR may be resolved by its owner: verify base/head/current
+`origin/main`, merge `origin/main` into the feature branch, resolve both sides'
+intent, validate, and review changed behavior/evidence. Finish or abort the merge.
+Other divergence is not permission to rewrite history.
 
-For relevant branches, establish local and remote tips, ahead/behind counts,
-unique commits versus `main`, worktree ownership, and whether the work is
-active, unpublished, merged, or safely removable. A squashed PR can preserve
-changes without making its original commits ancestors; inspect that history
-before claiming work is lost or disposable.
+## Cleanup
 
-Require a clean, task-owned checkout before switching or updating its branch.
-Use fast-forward-only catch-up. Do not replace a refused fast-forward with
-history rewriting. Publication follows the existing task authorization.
+Before removing a checkout or ignored data:
 
-## Owned PR conflicts
+1. Run the primary checkout's `LOCAL.md` "Local-only backup" command. Require a
+   successful backup commit; do not bypass missing files or refused deletions.
+2. From the primary checkout run:
 
-An actual conflict in a publication-authorized PR may be resolved by its task
-or continuation owner. Verify base/head/current `origin/main`, then merge
-`origin/main` into the clean feature branch. Resolve from both sides' intended
-behavior, validate the affected scope, and obtain fresh review when behavior or
-evidence changed. Finish or abort the merge before handing off. Other branch
-divergence is not permission to perform this flow.
+   ```text
+   powershell -NoProfile -File .agents/skills/sync/scripts/check_worktree_cleanup.ps1 -Worktree <absolute-path>
+   ```
 
-## Preserve local-only data before cleanup
+3. External/unresolved links stop removal. Classify all ignored content as backed
+   up, uniquely valuable, or regenerable; inspect any truncated preview remainder.
+   Gitignored research, INIs, configuration, and tools are not disposable.
 
-Before removing a checkout or its ignored data, run the machine-local backup
-command in `LOCAL.md`'s "Local-only backup" section. Require its successful
-backup commit; investigate missing files or refused deletions instead of
-bypassing the protection.
+Delete authorized candidates only after proving preservation and no active owner.
+Use `git branch -d`, never `-D`. If stale upstream metadata alone blocks deletion
+of a branch merged into protected history, unset that association and retry `-d`;
+otherwise report refusal. Remote-only deletion may retain a proven local copy.
 
-From the primary checkout, run:
+Use ordinary `git worktree remove`; never bypass dirty files, external links,
+or unclassified data with force removal or root-wide `git clean -fdX`.
+This workflow never rebases, resets, amends, or force-pushes.
 
-```text
-powershell -NoProfile -File .agents/skills/sync/scripts/check_worktree_cleanup.ps1 -Worktree <absolute-path>
-```
-
-The script checks the worktree root, external reparse points, dirty files, and
-previews ignored cleanup. External or unresolved links stop removal. Classify
-all ignored content as backed up, uniquely valuable, or regenerable; if the
-preview was truncated, inspect the remainder. Research, retail INIs, local
-configuration, and tools do not become disposable because Git ignores them.
-
-Delete only requested or clearly authorized cleanup candidates after proving
-their work is preserved and no task owns them. Use `git branch -d`, not `-D`.
-If stale upstream metadata alone prevents deletion of a branch merged into the
-protected history, remove that association and retry `-d`; otherwise report
-the refusal. A remote-only deletion can retain a proven local copy.
-
-Use ordinary `git worktree remove` after preservation checks. Do not use
-root-wide `git clean -fdX` or force removal to bypass dirty files, external
-links, or unclassified ignored data. Do not rebase, reset, amend, or force-push
-as part of this workflow.
-
-## Report
-
-Verify final tips, requested deletions, and checkout state. Briefly list what
-was updated, removed, kept, unpublished, or blocked, with the preservation or
-ownership reason. An audit with no safe changes is a complete result.
+Verify final tips, deletions, and checkout state. Report updated/removed/kept/
+unpublished/blocked work with its preservation or ownership reason.

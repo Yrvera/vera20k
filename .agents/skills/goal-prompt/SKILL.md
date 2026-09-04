@@ -1,59 +1,40 @@
 ---
 name: goal-prompt
 description: >
-  Compose, revise or review a prompt for an autonomous VERA20k goal, including
-  continuation in another Codex or Claude session. Preserves the user's outcome,
-  evidence bar, authority and stopping condition while leaving execution choices
-  open. Produces paste-ready text; never launches or schedules the goal.
+  Compose, revise or review an autonomous VERA20k goal prompt or cross-session
+  continuation. Produces paste-ready text; never launches or schedules the goal.
 ---
 
 # Goal Prompt
 
-Write the prompt requested by the user. Follow [ENGINE.md](../../../ENGINE.md);
-refer to the shared contract instead of copying its Git, Cargo or evidence rules.
-This skill composes text only: it does not start a goal, task, loop or automation.
+Compose text only. Reference [ENGINE.md](../../../ENGINE.md) rather than repeating
+shared rules. State outcome/reason, scope/exclusions, an inspectable comparison bar,
+production acceptance and stopping condition. Use active gamemd/retail data for
+parity, behavior-preservation checks for refactors, and the concrete user workflow
+for tooling.
 
-A useful prompt gives the executor:
+Preserve explicit publication authority, model/effort, time/token limits and supplied
+invocations such as `/loop`; add none when absent. Respect requested length and
+save/edit prompt files only when asked.
 
-- The intended outcome, why it matters and the actual scope/exclusions.
-- A reference it can inspect and compare against: active gamemd and retail data for
-  parity; identified behavior-preservation checks for refactors; the user's concrete
-  workflow and acceptance properties for tooling.
-- Evidence of completion through the real production path.
-- Any task-specific authority, budget, model choice and stopping condition.
+Leave architecture, decomposition, tools and research order open except for real
+task constraints. For substantial goals, use coherent transactions and
+[independent review](../_shared/review.md): critics can inspect original evidence
+and challenge scope, design, omissions and tests.
 
-Use established project intent when the reference is clear. Resolve discoverable
-questions; ask only if a missing user decision would materially change the result.
-Keep explicit publication authority, model/effort choices and time/token limits exactly
-as given. Do not add them when absent. An example's permission is never permission
-for the current task. Preserve a supplied invocation such as `/loop` when adapting it.
-
-For substantial goals, describe coherent transactions with independent review using
-[review guidance](../_shared/review.md). The critic can inspect original evidence and
-challenge scope, design, omitted mechanisms and tests. Leave architecture, decomposition,
-tools and research order to the executor except where the task has a real constraint.
-Do not append mandatory scan suites or an arbitrary number of critique rounds.
-
-Preserve the requested completion standard. In exhaustive parity work, plan rows are
-ownership hypotheses: discovered in-scope mechanisms and unresolved required behavior
-remain open. A ranked effort may stop with explicitly allowed deferrals; never silently
-convert one form into the other. Completion of a transaction does not stop an authorized
-multi-transaction goal. State authorized publication/merge cadence when it matters to
-the goal; do not infer permission to publish from a request to write a prompt.
+Preserve the completion standard. Exhaustive parity keeps discovered in-scope
+mechanisms and unresolved required behavior open; plan rows are ownership hypotheses.
+Ranked efforts may stop with explicitly allowed deferrals. Do not silently convert
+between them. A completed transaction does not end an authorized multi-transaction
+goal; include publication/merge cadence only within the granted authority.
 
 ## Continuation
 
-Read the governing prompt, latest user amendments and available current task/Git state.
-Add only the information needed to resume: worktree/branch, relevant HEAD and unmerged
-work, evidence/artifact locations, review/validation state, remaining scope and next
-safe action. See [handoff guidance](../_shared/handoff.md).
+Read the governing prompt, latest amendments and current task/Git state. Add the
+worktree/branch, relevant HEAD/unmerged work, artifact locations, review/validation
+state and next safe action using [handoff guidance](../_shared/handoff.md).
+Adopt supported work, recheck contradicted premises/ownership, and preserve subsequent
+scope, budget, publication and stop instructions.
 
-Adopt useful existing work rather than restarting discovery, but recheck stale or
-contradicted claims and ownership before acting. A historical scope inventory cannot
-prevent new primary evidence from exposing missing required behavior. Do not revive
-work the user stopped or silently reset the budget or publication boundary.
-
-Output paste-ready text, respecting any requested length. Save or revise a prompt file
-only when requested. If reviewing a prompt, explain material changes and preserve its
-meaning. [Examples](references/engine-boundaries-example.md) illustrate the shape;
-they are not additional requirements.
+[Examples](references/engine-boundaries-example.md) illustrate shape, not permissions
+or additional requirements.
