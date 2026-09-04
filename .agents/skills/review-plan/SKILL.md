@@ -1,24 +1,24 @@
 ---
 name: review-plan
 description: >
-  Review a VERA20k implementation plan against current code, native evidence and
-  the requested outcome. Find stale assumptions, missing consumers and inadequate
-  acceptance checks without implementing.
+  Review a VERA20k design or implementation plan for evidence, architectural fit,
+  missing consumers and adequate production validation. Report readiness; revise
+  the document only when corrections are requested.
 ---
 
-# Review Plan
+# Review Design or Plan
 
-Use the supplied plan; resolve short filenames under `docs/plans/`. Otherwise use
-conversation context, not automatically the newest file. Follow
-[ENGINE.md](../../../ENGINE.md) and [independent review](../_shared/review.md),
-with freedom to inspect original evidence and challenge omitted mechanisms.
+Use the supplied document or conversation context, not automatically the newest file.
+Follow [ENGINE.md](../../../ENGINE.md). Inspect original evidence and challenge
+omitted mechanisms independently of the author's packet.
 
-Check consequential source assumptions, native behavior/applicability, downstream
-consumers, dependency order and whether acceptance scenarios expose the claimed
-failure through production. Compare the same operation on both sides: initialization
-and per-tick rules may differ. A missing INI key may use a native default. Shifted
-line numbers matter when the intended symbol or assumption changed.
+Check consequential source assumptions, native behavior/applicability, ownership and
+lifecycle handoffs, dependencies and whether acceptance scenarios expose failure
+through production. For visuals, check parent composition and active frames/flags,
+not merely a draw helper. Compare the same operation on both sides: initialization
+and per-tick rules may differ; a missing INI key may use a native default.
 
 Report readiness, sourced findings and coverage gaps, separating uncertain questions
-from defects. Do not require full code or fixed headings. Review-only requests leave
-the plan unchanged; requested corrections permit plan edits, not implementation.
+and design preferences from defects. Judge substance rather than headings, line-number
+tolerances or full-code templates. Review-only requests leave files unchanged;
+authorized document corrections do not authorize implementing the feature.

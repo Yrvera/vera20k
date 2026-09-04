@@ -1,31 +1,28 @@
 ---
 name: write-plan
 description: >
-  Write or revise a VERA20k implementation plan when explicitly requested.
-  Describe coherent changes, dependencies and acceptance checks; use review-plan
-  for assessment without edits.
+  Write or revise a requested VERA20k implementation plan or behavior contract.
+  Ground changes in current source and evidence, with dependencies and acceptance
+  scenarios. Does not require a preceding brainstorm or contract stage.
 ---
 
 # Write Plan
 
-Follow [ENGINE.md](../../../ENGINE.md). Use the intended outcome and available
-design; a separate brainstorm document is not required. Reconcile assumptions
-with current source, consumers and relevant recent changes.
+Follow [ENGINE.md](../../../ENGINE.md). Reconcile the intended outcome and available
+design with current owners, consumers and recent changes. Plan coherent mechanisms:
+required deltas, file/symbol anchors, dependencies, production integration, obsolete
+logic and acceptance scenarios with setup, action and expected result. Leave design
+choices open where evidence does not constrain them; use code snippets only to
+clarify consequential decisions.
 
-Save the requested plan, normally
-`docs/plans/YYYY-MM-DD-<topic>-plan.md` in the task's worktree. Include:
+When a behavior contract is requested, emphasize the comparison instead of task
+breakdown: behavior/trigger, native evidence, current Rust evidence, required delta
+or unresolved question, and acceptance scenario. Distinguish demonstrated mismatches,
+supported matches, evidence gaps and missing coverage. Name necessary foundations,
+source revision and what is ready versus unresolved; proposed checks are not results.
 
-- Outcome, scope, completion condition and supporting evidence.
-- Coherent tasks with file/symbol anchors, required deltas, dependencies,
-  affected consumers and production integration.
-- Necessary foundations/migrations, obsolete logic, unresolved questions and
-  acceptance scenarios with setup, action and expected result.
-
-Plan complete mechanisms, leaving the executor freedom to adjust boundaries as
-evidence develops. Short signatures or pseudocode can clarify decisions; full
-implementations and test bodies usually become stale before execution. Use
-ENGINE's validation tiers rather than a ritual for each row.
-
-A plan-only request ends with the plan. Already-authorized execution continues
-without another approval gate. For read-only assessment, use
-[review-plan](../review-plan/SKILL.md).
+Honor the requested output. Saved artifacts normally use task-owned
+`docs/plans/YYYY-MM-DD-<topic>-plan.md` or
+`docs/plans/YYYY-MM-DD-<topic>-implementation-contract.md`.
+A plan/contract-only request does not authorize implementation or source-research
+patches. Already-authorized execution continues without another approval gate.

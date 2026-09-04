@@ -1,4 +1,0 @@
-interface:
-  display_name: "Trace Swarm"
-  short_description: "Run bounded parallel parity traces and reconcile disparities."
-  default_prompt: "/trace-swarm"

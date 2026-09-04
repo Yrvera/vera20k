@@ -1,33 +1,39 @@
 ---
 name: disparity-scan
-description: "Compare a system's current Rust with active YR evidence. Separate demonstrated gaps from doc-derived candidates and rank impact independently."
+description: "Compare current Rust with active YR behavior across a system or through one concrete action's production path. Separate demonstrated differences from unresolved candidates."
 ---
 
-# Find disparities
+# Compare Rust with native behavior
 
-Use [ENGINE.md](../../../ENGINE.md), research and current code to discover
-differences within the requested system/scenario. Inspect production Rust and
-consumers for every comparison; missing symbols or old reports do not prove absence.
+Use [ENGINE.md](../../../ENGINE.md) and the
+[binary reference](../../../docs/research/ghidra-workflow.md). Match the method to the
+request: inventory a system's behavior or trace concrete retail inputs through an action.
 
-Classify before ranking:
+Inspect current production Rust and consumers for every comparison. Research and
+missing symbols do not prove missing behavior. Verify consequential, uncertain,
+stale or conflicting native claims against the binary and retail data.
 
-- **Verified gap:** native behavior is established and Rust differs; cite both sides.
-- **Doc-derived candidate:** Rust differs from unverified research; name missing proof.
-- **Rust state unknown:** the production equivalent remains unresolved.
-- **Inactive / TS legacy:** exclusion requires gate/default evidence.
-- **Match:** state the checked boundary and evidence strength.
+For an action, follow trigger, computation, state changes, consumers and visual/audio
+output. Check lifecycle entry points that may bypass a working helper, including
+map-spawn, capture, destruction and exit. Compare concrete values or transitions,
+including timing, units, rounding, RNG, operation order and pre-/post-update reads.
 
-Use the [binary workflow](../../../docs/research/ghidra-workflow.md) for decisive
-checks of stale, conflicting, uncertain or implementation-consequential claims.
-Include relevant visuals, audio, INI behavior and boundaries. Name omissions;
-exhaustive requests require complete declared coverage.
+Distinguish:
 
-Group by mechanism/prerequisite and rank frequency, player impact, determinism
-and unblock value. A missing prerequisite leaves dependent gaps blocked, not
-correctly absent.
+- Demonstrated gaps: established active-YR behavior differs from current Rust.
+- Research-derived candidates: the native premise still needs proof.
+- Unresolved Rust state or comparisons.
+- Matches limited to the checked inputs/boundary.
+- Inactive/TS behavior excluded with gate/default evidence.
 
-Save a dated task-owned `docs/research/` report with evidence, Rust locations,
-gaps/candidates, prerequisites and unresolved checks; include useful false positives
-and stale-doc corrections. Keep source and research inputs unchanged. Ghidra sync is
-opt-in under the binary workflow; workers report candidates only. Already-authorized
-implementation may continue in the parent task.
+Matching examples do not prove mechanism equivalence. Separate calculations, executed
+Rust checks and native-derived evidence. Explicit exhaustive requests require complete
+declared coverage; report missing or uninspected behavior.
+
+Explain the earliest divergence, downstream effects, evidence and Rust locations.
+Group shared causes/prerequisites and rank frequency, impact and determinism risk.
+A missing prerequisite leaves dependent gaps blocked, not correctly absent.
+
+Choose delegation and presentation to fit the task; save reports when requested or
+useful. Comparison alone leaves source and research inputs unchanged. Already-authorized
+implementation can continue from these findings. Ghidra authority follows the binary reference.

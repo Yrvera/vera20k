@@ -45,7 +45,8 @@ not hand calculations or prior Rust. Avoid unqualified “VERIFIED”/“complet
 Each cohesive gamemd-derived Rust behavior carries nearby native identity/address
 and source; sim-behavior commits cite their evidence. Unproven internal rules say
 “VERA-internal, gamemd equivalent UNCHECKED”; the label does not prove equivalence.
-Read the [Ghidra reference](docs/research/ghidra-workflow.md) before binary work.
+Consult the [Ghidra reference](docs/research/ghidra-workflow.md) for access,
+interpretation pitfalls and shared-database edits.
 
 ## Architecture and delivery
 
@@ -66,9 +67,9 @@ production path, using runtime reproduction when needed. Reassess worsening fixe
 Design/plan artifacts are optional; implementation authority includes design choices.
 
 Promote coherent prerequisites when a smaller patch creates broken behavior, duplicate
-authority or predictable rework. A separable foundation has its own PR, merged before
-its consumer. Record adjacent findings without absorbing their backlog. Residuals name
-trigger, effect, frequency and downstream risk; deferring required loop or
+authority or predictable rework. Choose branch/PR boundaries to keep dependencies
+coherent and reviewable. Record adjacent findings without absorbing their backlog.
+Residuals name trigger, effect, frequency and downstream risk; deferring required loop or
 determinism/authority/lifecycle work cannot close that loop.
 
 Delegate independent work with clear ownership. Substantial/risky changes need a fresh

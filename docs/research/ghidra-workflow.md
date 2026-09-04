@@ -1,89 +1,69 @@
-# Ghidra evidence and annotation
+# Ghidra working notes
 
-[ENGINE.md](../../ENGINE.md) owns scope, exactness and implementation authority.
-This reference preserves the binary-specific pitfalls and mutation protocol.
+[ENGINE.md](../../ENGINE.md) defines evidence and delivery. These notes cover tool
+behavior and recurring interpretation errors; choose the investigation method yourself.
 
-## Establish the claim
+## Connect to the intended program
 
-Start at the production owner. Follow relevant callers/callees, input writers,
-output consumers, initialization and teardown. Establish active-YR reachability
-from gates, defaults and retail data; inherited TS code is not automatically active.
-Stock traps include disabled fog-of-war (shroud is active), subterranean locomotion
-and dormant `SpecialFlags` branches. Low-bridge `TubeClass` movement is active.
+Discover the instance and confirm the program path, binary identity and image base
+before relying on addresses. Use explicit program selectors when the tool exposes
+them; another session can change the shared current program.
 
-For new findings cite the address and reproducible decompile/memory read, including
-the caller/data binding proving its role. Distinguish direct evidence, cited research
-and inference. Resolve contradictions; name uninspected paths instead of overstating
-coverage. Labels, YRpp and displayed signatures are navigation hints.
+The installed bridge registers analysis tools after connection. `check_tools` checks
+that registry, not endpoint health: `not_found` before connection does not establish
+that an operation is unsupported. After connecting, inspect the current schema,
+load needed groups if using lazy loading, and try a relevant read. Tool names,
+arguments and availability come from that schema, not an old command list.
 
-## Fragile interpretations
+Empty discovery does not prove Ghidra is stopped. Inspect the process and configured
+connection before relaunching; use machine-local `ghidra-up` when available. Reuse
+the analyzed program. Re-importing or enabling analysis is not routine reconnection.
 
-- **Pointer offsets:** check the actual base type. Integer-address
-  `*(param_1 + 0x98)` uses bytes; `int *` indexing `param_1[0xac]` means
-  `0xac * 4 = 0x2b0` bytes. An explicit cast/add to an integer address uses bytes.
-- **Boundaries:** inspect adjacent instructions, incoming edges, tail calls and stack
-  balance. Shared epilogues, hot/cold regions and thunks can mislead the decompiler.
-- **Signatures:** recover receiver/ECX, stack arguments/cleanup and returns from callers.
-  Account for hidden returns and adjusted `this`; derive widths/signedness from instructions.
-- **Vtables:** prove owner/subobject through Complete Object Locator, TypeDescriptor,
-  hierarchy and displacement; read the 32-bit slot, follow adjustor thunks and verify
-  real callers' receiver shape. Positional labels are not identity proof.
-- **Lifecycle:** distinguish vptr staging, deleting-destructor flags, subobject calls,
-  array cookies and conditional frees from gameplay without losing lifecycle effects.
-- **Runtime tables:** locate writers; zero-filled image bytes need not reflect initialized data.
+## Interpret evidence
 
-Use assembly/bytes when pseudocode is ambiguous. Do not change types, prototypes or
-boundaries merely to make output plausible.
+- Names, signatures and pseudocode are interpretations. Resolve consequential
+  ambiguity from bytes/instructions, receiver/argument flow and actual callers.
+  A nearby label or attractive decompile is not proof of identity.
+- Check pointer types: `int *p; p[0xac]` addresses byte offset `0x2b0` on this
+  32-bit target. Addition to an integer address uses byte offsets.
+- For virtual calls, establish the table/subobject owner, read the actual slot,
+  follow receiver-adjusting thunks and check callers. Inspect surrounding instructions
+  for questionable boundaries; compiler lifecycle plumbing can resemble gameplay.
+- Find state writers and initialization. Zero-filled image data may be populated
+  at runtime. Confirm active-YR gates and retail inputs; inherited TS code alone
+  does not establish a feature's applicability.
 
-## Visual/audio evidence and Rust provenance
+Follow production consumers far enough to establish the claimed result. Visual/audio
+work includes composition, active flags, selected assets/frames, timing and output;
+a loaded asset or working helper does not prove the final result. Keep address,
+verified role and reproducible evidence together, naming uncertainty honestly.
 
-Trace the full relevant paint/render handler through return, including layers after
-helper calls: order, flags, assets/frames, rectangles, anchors, clipping and palettes.
-Loaded is not drawn; unused for one role does not mean invisible. Inspect enough
-variants to establish actual selection. Plausible palette previews, body-only voxels
-and successful parsing are not full render proof. Follow audio admission/selection
-through timing and playback. Reopen paths contradicted by runtime observations.
+## Preserve findings without polluting shared analysis
 
-Use a nearby comment for each cohesive native-derived Rust behavior:
+During authorized reverse engineering, preserve proven identities and useful evidence
+with focused labels, comments and missing references. Read-only requests or
+`--no-sync-ghidra-labels` disable these writes; `--sync-ghidra-labels` explicitly requests
+them. This policy is the same for serial and delegated work. No separate candidate
+ledger is required when a concise finding suffices.
 
-```rust
-// gamemd: <verified owner>::<function> @ <address> — <behavior>.
-// Source: <document/section or live body and caller evidence>.
-```
+Keep uncertain identities unnamed. References need decoded endpoints, operand and
+reference kind; check for duplicates. Type, prototype or boundary repairs belong
+within an authorized analysis-repair task, with prior definitions recoverable.
+Once that scope is granted, do not ask permission for every edit. Read back structural
+repairs immediately, including layout/offsets and affected decompilation. Byte patches,
+bulk reanalysis and unrelated database changes need their own task scope.
 
-Never invent placeholder identities. Use `FUN_<address>` plus the established role
-and unknown owner when necessary. Architecture glue needs no fictitious provenance;
-unproven internal behavior uses ENGINE's explicit UNCHECKED label.
+Use one writer per shared program and coordinate changes affecting other workers'
+evidence. Small coherent annotation batches are allowed. Inspect per-item results,
+explicitly save the intended program, and read back the changes before unrelated
+work or handoff. A committed analysis transaction is not a disk save. After a timeout,
+inspect actual state before retrying; report partial or unsaved work accurately.
 
-## Access and write authority
+Label/type changes affect analysis, not executable bytes. Inspect current analyzer
+settings when relevant; do not assume historical settings are still in force or
+blame drift on an analyzer without evidence.
 
-For connection-refused, empty instances or no program, use local `ghidra-up` when
-available, then retry. Avoid duplicate instances, routine re-imports and Auto Analyze.
-
-Metadata synchronization requires a selected skill description promising it,
-`--sync-ghidra-labels`, or a direct user request. Read-only requests and
-`--no-sync-ghidra-labels` override defaults. Document correction alone grants no
-Ghidra writes. Workers always keep Ghidra read-only; the authorized root/sole agent
-writes serially after all readers stop. Without authority, report candidates.
-
-Routine permission covers certain function/global labels, evidence comments and
-proven missing memory references. Function creation/boundaries, prototypes, structs,
-field/type edits, variable renames and byte patches need separate per-task authorization.
-
-## Mutation protocol
-
-Prove boundary, behavior, owner/receiver and caller/data binding before naming;
-otherwise retain `FUN_*`/`DAT_*`. Use `ClassName__MethodName` only for proven identity.
-
-For `add_memory_reference`, decode source bytes and exact target/operand, prove reference
-kind and check for an existing equivalent. Bind `from_address`, `to_address`,
-`operand_index`, `ref_type` and `USER_DEFINED` source type accordingly. Do not add
-generic xrefs or delete analyzer-created references during routine mapping.
-
-After **each mutation**, including comments: `save_program` → read back → continue.
-Never batch saves; report failed/unapplied changes.
-
-Analyzer changes affect interpretation, not executable bytes, actual slots or native
-fields. Inspect local analysis settings and binary/database identity; do not assume
-historical settings persist or bulk-sync labels from documents. Missing work after
-restart calls for save/persistence investigation.
+Tool behavior checked 2026-09-04 against the installed GhidraMCP 5.14.2 bridge
+(`connect_instance`, `check_tools`) and plugin (`CommentService`,
+`ProgramScriptService.saveCurrentProgram`). No connected instance was available
+for a live persistence test; repeat capability checks when working against one.
