@@ -41,10 +41,11 @@ functions, or fixed-to-float conversions in the simulation authority cone.
 
 Confirm whether the value can affect gameplay or canonical state. Comments,
 reference-only tests, and hash-excluded presentation state are not desync
-findings, though presentation state living in `sim/` may be ARCH-002. A native
-float/double mechanism does not silently override VERA's fixed-point contract;
-record the contract conflict and required evidence. Do not replace math until
-native conversion, rounding, overflow, and boundary behavior are known.
+findings, though presentation state living in `sim/` may be ARCH-002. Establish
+native numeric semantics before judging the representation. For authoritative
+floating point, inspect precision, evaluation order, conversions, rounding,
+overflow, and supported-build consistency. A fixed-point replacement also needs
+evidence that it preserves the required native behavior.
 
 ### DET-002 — unordered collections
 
@@ -55,8 +56,8 @@ Membership and keyed lookup alone are deterministic. Confirm a risk only when
 iteration, serialization, reduction, selection, command generation, RNG
 consumption, insertion order, or a downstream sort exposes unordered order.
 `BTreeMap` is not a universal fix: key order can itself drift from gamemd's
-insertion/scheduler order. Preserve the explicit `EntityStore = BTreeMap`
-invariant and otherwise require the verified ordering contract. Standard
+insertion/scheduler order. Storage and active-object scheduling have distinct
+contracts; establish both from current owners and native evidence. Standard
 `Hash`/`DefaultHasher` output is not a stable save, replay, network, or canonical
 digest contract across toolchains and platforms; require an explicitly specified
 canonical encoding and digest where stability matters.
@@ -77,10 +78,10 @@ selects canonical input.
 Candidate signal: `as` conversion to integer types, especially narrowing,
 signed/unsigned, float/integer, or `usize`/`isize` conversions.
 
-Resolve the actual source type and prove its range. `i32 as usize` is unsafe for
-negative values; it is not widening. A modulo after a narrowing cast does not
-make the cast safe because truncation already occurred. Cover all widths, not
-only 8/16/32-bit targets. Separate arithmetic overflow from cast truncation.
+Resolve the actual source type and prove its range. Casting a negative `i32`
+to `usize` produces a large unsigned value, which may violate the consumer's
+range. A modulo after a narrowing cast does not recover truncated bits. Cover
+all relevant widths. Separate arithmetic overflow from cast truncation.
 Do not automatically suggest clamp, saturate, or `TryFrom`: first establish
 gamemd's wrap/truncate/clamp behavior and the supported-platform contract.
 
@@ -207,8 +208,8 @@ Literal `256` or bit shifts are candidates, not proof of a bug.
 ### PROV-001 — gamemd-derived behavior provenance
 
 When simulation semantics are derived in any way from gamemd, verify the nearby
-canonical provenance comment naming the mechanism, native class/function, and
-exact verified address. Absence is a finding only after establishing derivation;
+provenance comment naming the mechanism and verified identity/address, using the
+Ghidra workflow's unknown-owner fallback when necessary. Absence is a finding only after establishing derivation;
 pure Rust architecture glue does not need invented provenance.
 
 ## Validation direction

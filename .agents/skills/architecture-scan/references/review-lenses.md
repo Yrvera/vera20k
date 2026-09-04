@@ -36,8 +36,8 @@ project policy and overrides generic Rust guidance.
 - Remember that modules define namespace, privacy, and paths; files store module
   bodies. A file move or split can improve navigation without changing architecture.
 - Place code with the responsibility that owns its state, invariants, lifecycle,
-  or externally meaningful contract. A shared location is appropriate only for a
-  genuinely lower-level concept with multiple independent consumers.
+  or externally meaningful contract. Justify shared placement through responsibility,
+  dependency direction and actual consumers; consumer count alone decides nothing.
 - Read the crate root, parent module, `//!` contract, definitions, and callers.
   Folder depth, sibling count, and filename prefixes are discovery signals only.
 - Check whether a facade offers one coherent entry point while keeping its
@@ -134,9 +134,9 @@ project policy and overrides generic Rust guidance.
   constructors, serialization, registration, tests, and public paths.
 - For authoritative simulation, preserve scheduler and tie order, RNG ownership
   and draw count, lifecycle effects, same-tick visibility, snapshot/hash coverage,
-  and gamemd provenance. Report a behavioral question as out of scope and name
-  `$rust-scan` or the appropriate parity workflow for a separate explicit request;
-  never invoke it automatically or resolve it by architectural taste.
+  and gamemd provenance. Inspect native/Rust evidence needed to assess the boundary;
+  use a focused parity workflow when helpful. Record unrelated behavior questions
+  separately without implementing them. Architectural taste cannot settle semantics.
 - Do not recommend translating gamemd's C++ class hierarchy literally. Preserve
   verified behavior contracts while using Rust-native modules, ownership, and APIs.
 

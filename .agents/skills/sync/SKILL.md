@@ -1,185 +1,72 @@
 ---
 name: sync
-description: >
-  Audit and safely synchronize this repository's GitHub Flow branches:
-  protected main plus short-lived feature/* branches. Use for branch drift,
-  safe fast-forward pulls, branch or worktree cleanup, or questions about what
-  is out of date. Never force-pushes, rewrites history, deletes unmerged work,
-  or removes unprotected local-only data.
+description: "Audit and safely synchronize VERA20k branches and worktrees. Use for branch drift, fast-forward catch-up, or cleanup. Preserves unmerged work and local-only data."
 ---
 
-# Sync — GitHub Flow Branch Audit
+# Sync
 
-Audit branch state first, then perform only explicitly authorized safe actions.
-The standard lifecycle is `main` → `feature/<topic>` → PR → `main` → cleanup.
-There is no long-lived `dev` branch.
+Apply `ENGINE.md`'s Git and ownership rules to the requested catch-up or cleanup.
+An audit alone is read-only. Carry out actions already covered by the request;
+ask only when ownership, preservation, or the intended target remains ambiguous.
 
-## Safety rules
+## Establish actual state
 
-- Require a clean working tree before switching branches or updating refs.
-- Fetch with pruning before drawing conclusions.
-- Use fast-forward-only pulls. Never rebase, reset, amend, or force-push. The only
-  non-fast-forward merge allowed is the owned PR-conflict flow below.
-- Never commit or push directly to `main`; it moves through reviewed PRs or an
-  explicit user-owned GitHub action.
-- Never push an unpublished/local-ahead feature branch without user authorization.
-- Branch deletion requires explicit user confirmation after the audit identifies
-  the exact local/remote refs and proves where their unique commits remain.
-- Use `git branch -d`, never `-D`. If safe deletion refuses, stop and explain why.
-- Do not switch or delete a branch checked out by another worktree or active task.
-- Before removing a worktree or cleaning ignored files, run
-  `powershell -NoProfile -File .agents/skills/sync/scripts/check_worktree_cleanup.ps1 -Worktree <absolute-path>`
-  from the primary checkout. Treat an external junction/symlink as a hard stop,
-  and classify every ignored path as backed up, uniquely valuable, or
-  regenerable before proceeding.
-- Never run root-wide `git clean -fdX`. Ignored project contracts, skills,
-  research, INIs, and tool source are authoritative local data, not build litter.
+Inspect status, branches/upstreams, worktrees, and active task ownership. For a
+sync request, fetch with pruning before comparing tips. For a read-only audit,
+use `git ls-remote --heads origin` without updating refs and label cached
+remote-tracking information accordingly.
 
-## 1. Preflight and fetch
+For relevant branches, establish local and remote tips, ahead/behind counts,
+unique commits versus `main`, worktree ownership, and whether the work is
+active, unpublished, merged, or safely removable. A squashed PR can preserve
+changes without making its original commits ancestors; inspect that history
+before claiming work is lost or disposable.
 
-For a normal sync run, use:
+Require a clean, task-owned checkout before switching or updating its branch.
+Use fast-forward-only catch-up. Do not replace a refused fast-forward with
+history rewriting. Publication follows the existing task authorization.
 
-```text
-git status --porcelain
-git worktree list --porcelain
-git fetch --all --prune
-```
+## Owned PR conflicts
 
-If the user explicitly requests a read-only/no-ref-mutation audit, do not fetch or
-prune. Use `git ls-remote --heads origin` for live remote tips, label local
-remote-tracking refs as cached, and make no changes.
+An actual conflict in a publication-authorized PR may be resolved by its task
+or continuation owner. Verify base/head/current `origin/main`, then merge
+`origin/main` into the clean feature branch. Resolve from both sides' intended
+behavior, validate the affected scope, and obtain fresh review when behavior or
+evidence changed. Finish or abort the merge before handing off. Other branch
+divergence is not permission to perform this flow.
 
-If the tree is dirty, another task owns the checkout, or Cargo/worktree ownership is
-unclear, stop before mutation and report the conflict.
+## Preserve local-only data before cleanup
 
-### Local-only backup preflight
+Before removing a checkout or its ignored data, run the machine-local backup
+command in `LOCAL.md`'s "Local-only backup" section. Require its successful
+backup commit; investigate missing files or refused deletions instead of
+bypassing the protection.
 
-Before an authorized action could remove a checkout or local-only data, refresh
-the adjacent private local backup using the machine-local command recorded in
-`LOCAL.md` (section "Local-only backup").
-
-Require a successful backup commit before continuing. If the backup script is
-missing, refuses because source files disappeared, or reports unapproved
-deletions, stop. Do not bypass it by copying a few visible files or by passing
-the deletion override without separately reviewing the exact stale paths.
-
-## 2. Audit
-
-Collect:
+From the primary checkout, run:
 
 ```text
-git branch --format='%(refname:short)|%(upstream:short)|%(upstream:track)|%(objectname:short)'
-git rev-list --left-right --count <branch>...main
-git ls-remote --heads origin
+powershell -NoProfile -File .agents/skills/sync/scripts/check_worktree_cleanup.ps1 -Worktree <absolute-path>
 ```
 
-For `main` and every relevant feature branch report:
+The script checks the worktree root, external reparse points, dirty files, and
+previews ignored cleanup. External or unresolved links stop removal. Classify
+all ignored content as backed up, uniquely valuable, or regenerable; if the
+preview was truncated, inspect the remainder. Research, retail INIs, local
+configuration, and tools do not become disposable because Git ignores them.
 
-- local tip and upstream tip;
-- ahead/behind relative to upstream;
-- commits unique to the branch versus `main`;
-- whether it is checked out in any worktree;
-- whether it is unpublished, active, merged, or a cleanup candidate.
+Delete only requested or clearly authorized cleanup candidates after proving
+their work is preserved and no task owns them. Use `git branch -d`, not `-D`.
+If stale upstream metadata alone prevents deletion of a branch merged into the
+protected history, remove that association and retry `-d`; otherwise report
+the refusal. A remote-only deletion can retain a proven local copy.
 
-Treat a legacy `dev` ref like any other obsolete branch. Never recreate or
-fast-forward it. It is deletable only when it has zero unique commits versus `main`
-and the user explicitly confirms local/remote deletion.
+Use ordinary `git worktree remove` after preservation checks. Do not use
+root-wide `git clean -fdX` or force removal to bypass dirty files, external
+links, or unclassified ignored data. Do not rebase, reset, amend, or force-push
+as part of this workflow.
 
-Present the audit before changing refs. A compact example:
+## Report
 
-```text
-main                    [origin/main] sync
-feature/current-task    (local only)  4 unique commits — keep
-feature/merged-task     [origin/...]  0 unique commits — delete candidate
-```
-
-## 3. Classify actions
-
-- **NO ACTION** — synchronized or legitimate unique work.
-- **PULL MAIN** — local `main` is behind `origin/main` and can fast-forward.
-- **PULL FEATURE** — a clean feature branch is behind its upstream and can fast-forward.
-- **PUBLISH CANDIDATE** — local branch has unpushed commits; report only unless the
-  user asked to push or open/update a PR.
-- **DELETE CANDIDATE** — branch has zero unique commits versus `main`, or the user
-  explicitly wants a remote-only deletion while retaining a proven local copy.
-- **ANOMALY** — divergence, missing commits, unclear ownership, dirty state, or a
-  protected-branch mismatch. Stop and request direction unless an owned PR conflict
-  meets every gate in the conflict flow below.
-
-## 4. Execute safe catch-up
-
-For an authorized pull:
-
-```text
-git switch main
-git pull --ff-only origin main
-```
-
-or:
-
-```text
-git switch feature/<topic>
-git pull --ff-only
-```
-
-If `--ff-only` refuses, stop. Do not substitute a merge commit or rebase except through
-the owned PR-conflict flow below.
-
-## 5. Resolve an owned PR conflict
-
-Use this only when an open, publication-authorized PR reports an actual conflict with
-`main`. The current task must own the clean feature worktree and branch, or be its
-explicit continuation owner. Fetch first and verify the PR base, head, and current
-`origin/main`; otherwise stop.
-
-Merge current `origin/main` into the feature branch without rebasing or force-pushing.
-Resolve each conflict from both sides' intended behavior; do not accept `ours` or `theirs`
-wholesale without inspecting and justifying that conflicted file. If ownership is unclear
-or the conflict expands beyond the transaction, abort the merge and report the boundary.
-Otherwise rerun affected validation, obtain fresh critic review when behavior or evidence
-changed, ensure final PR certification covers the resolved tree, commit the merge, and
-push normally. Never leave a merge in progress.
-
-## 6. Clean up confirmed branches
-
-After rechecking unique commits and worktree ownership:
-
-```text
-git branch -d feature/<topic>
-git push origin --delete feature/<topic>
-git fetch origin --prune
-```
-
-For a confirmed remote-only deletion that keeps the local branch:
-
-```text
-git push origin --delete feature/<topic>
-git branch --unset-upstream feature/<topic>
-```
-
-If stale upstream metadata makes `git branch -d` refuse even though the branch is
-merged into the current protected history, remove only that upstream association and
-retry `-d`; never escalate to `-D`.
-
-For worktree removal, first run the local-only backup preflight and the bundled
-cleanup check. `git worktree remove --force` is forbidden while the check reports
-external reparse points, dirty files, or unclassified ignored content.
-
-## 7. Verify and report
-
-Verify exact local/remote tips, absence of deleted refs, a clean working tree, and no
-unexpected branch switch. Report kept, updated, deleted, skipped, and unpublished
-branches in one screen. Zero mutations is a valid result when nothing is safely
-actionable.
-
-## Never do
-
-- `git push --force` or `--force-with-lease`
-- `git rebase`, `git reset --hard`, or `git commit --amend`
-- `git branch -D`
-- direct commits or pushes to `main`
-- automatic publication of local feature work
-- deletion of an unmerged or worktree-owned branch
-- root-wide ignored-file cleanup
-- forced removal of a worktree containing external junctions or symlinks
-- recreation of a long-lived `dev` branch
+Verify final tips, requested deletions, and checkout state. Briefly list what
+was updated, removed, kept, unpublished, or blocked, with the preservation or
+ownership reason. An audit with no safe changes is a complete result.

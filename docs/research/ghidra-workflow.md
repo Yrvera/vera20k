@@ -1,254 +1,153 @@
-# Ghidra decompilation workflow & label discipline
+# Ghidra evidence and annotation reference
 
-Reference material relocated from `ENGINE.md`, which keeps only the non-negotiable rules and
-points here. The **Ghidra MCP server** is connected to `gamemd.exe`. Always prefer live
-decompilation via MCP over static reports — it allows tracing xrefs, reading vtables,
-inspecting memory, and following call chains interactively. Authenticity matters more than
-speed. If tool calls fail with connection-refused, an empty `list_instances`, or "No program
-loaded", Ghidra isn't running — the MCP connects, it cannot launch. Relaunch before retrying.
+Read this before binary work. [ENGINE.md](../../ENGINE.md) defines the parity standard,
+project scope and implementation authority. Use this reference for fragile evidence
+questions and Ghidra operations, not as a compulsory investigation checklist.
 
-**CAUTION:** gamemd.exe contains massive amounts of inherited Tiberian Sun code that is
-dead or dormant in YR. When decompiling, always trace callers to confirm the code path
-is reachable in a normal YR skirmish. See "Tiberian Sun legacy" below.
+## Establish behavior
 
-## Evidence rules for reverse engineering
+Start from the production entry point for the requested scenario. Read the body,
+relevant callers and load-bearing callees; follow inputs to their writers and outputs
+to their consumers. Include initialization, state transitions and teardown when they
+affect the claim. A helper's correctness does not prove it is reached by the game.
 
-- **Asked to study, research, inspect, or investigate → analysis only**, no implementation
-  unless explicitly requested.
-- **Never invent** offsets, addresses, vtable slots, fields, enum values, or labels. Not
-  verified this session → `UNKNOWN`/`UNCHECKED`. Always separate verified from inferred.
-- Treat Ghidra names and decompiler symbols as **navigation hints only** — this project
-  carries stale labels, and YRpp is not ground truth. Verify load-bearing claims from the
-  function body, assembly, callsites, receiver/`this` pointer, argument flow, vtable slot
-  bytes, data references, and active-YR reachability. Prefer address plus verified role over
-  label name; record label drift when found.
-- **Cite the decompile/read-memory call inline** for every address, offset, or slot written
-  into a doc ("verified via `decompile_function 0x00520A60`"). Unverifiable claims go in a
-  separate UNVERIFIED section, never mixed into the verified body. Prior agent prose without
-  cited evidence is not verification.
-- **Treat your own prior claims as unverified.** Asked "are you sure?" → re-check from the
-  binary rather than restating. Audit in two passes: enumerate claims without editing, then
-  verify and classify against current binary evidence.
-- Verify plan anchors before dispatching parallel work — one wrong address contaminates every
-  downstream report.
-- **Record proven low-risk metadata as annotation candidates in the same session** —
-  certainty-gated function/global labels, evidence comments, and proven missing memory
-  references. Apply them only when synchronization is authorized below. Types, function
-  boundaries, prototypes, structs, field edits, and variable renames require separate
-  explicit per-task authorization. Inferred findings stay unlabelled; a confident wrong
-  label is worse than none.
+Use decompilation for navigation, then assembly/bytes when types, arithmetic, branching
+or bindings are ambiguous. Ghidra labels, inferred signatures, YRpp and previous prose
+are hints. A credible name does not establish receiver identity or behavior.
+Do not fabricate addresses, offsets, enum values, vtable slots or native names.
 
-## Tiberian Sun legacy — the most common mistake
+For new findings, cite the address and relevant decompile/memory read inline, including
+the caller/data binding that establishes the claimed role. Distinguish direct evidence
+from inference and reuse of a named research document. Recheck uncertain or conflicting
+inherited claims rather than silently promoting them to new verification. A challenge
+to a claim warrants checking the evidence, not repeating the claim.
 
-The binary inherited a large TS codebase; entire systems, struct fields, and branches are
-dead or irrelevant in YR, and implementing TS-only logic is the single most frequent error
-when working from decompilation. For any behavior found: is it gated behind a flag whose YR
-default is off? Is the path reachable in a normal YR skirmish? Does it have a visible effect
-in standard YR? When in doubt, test in the original or ask — don't implement speculatively.
-Even where a path is live, its internals may be awkward TS plumbing; only observable output
-matters. Always note whether a feature is active by default in YR.
+Use the evidence depth the claim needs. A narrow question can have a narrow answer;
+an exhaustive investigation must account for the requested active paths and report
+uninspected or unresolved ones. No finding/function quota proves completeness.
+Unknowns stay unknown. Record useful annotation candidates as evidence is established.
 
-**Known dormant, do NOT implement as default:**
-- **Fog of war** — `[MultiplayerDialogSettings] FogOfWar` defaults to `false`. Once explored,
-  a cell stays fully visible. Implement shroud only (black for unexplored).
-- **Subterranean locomotion** — TS legacy, not in RA2 or YR; skip it in audits and scans. Do
-  not conflate it with low-bridge `TubeClass` movement, which *is* active YR behavior.
-- Many `SpecialFlags`-gated features and unused mission/trigger actions.
+## Active Yuri's Revenge versus inherited code
 
-## The mapping pass — the standard opening move for porting a system
+Confirm that the behavior is enabled and reached in the target game/mode/scenario.
+Read relevant defaults, flags, cases, retail INIs and callers. Code present in
+`gamemd.exe` may be inherited, dormant or repurposed; absence from one observed
+path does not prove global inactivity. State the reachability scope of exclusions.
 
-**Before porting a system, map its functions and globals. Then port.** The reading has to
-happen anyway. Record candidates even when the current workflow is not authorized to sync;
-an authorized sync makes those verified facts durable in the Ghidra database.
+Known stock-skirmish traps include disabled fog-of-war behavior (shroud is active),
+subterranean locomotion inherited from TS, and many `SpecialFlags` paths.
+Low-bridge `TubeClass` movement must not be excluded merely because it resembles
+subterranean plumbing. Recheck the specific branch when its activation matters.
 
-Evidence this is worth the serial cost, from the 2026-08-06 refinery/miner and draw-anchor
-work: the occlusion projection behind the nearby-cell classifier, the search's selection
-tail, and two path-search callers were each worked out independently by different lanes,
-three or four times over, because none of them carried a name. In the same session, two
-functions that *did* carry verified plate comments — `BuildingClass::GetCoords` and the
-direction-table initialiser — were trusted-then-checked in seconds rather than re-derived,
-and one of those comments prevented a live trap (the table is zero-filled in the image and
-written at runtime, so a raw `read_memory` of it is meaningless).
+Preserve downstream state, RNG, timing, ordering and lifecycle semantics even when
+a detail looks internal. The scale exception permits different storage, not arbitrary
+behavior changes. Verify defaults in the main checkout's retail INIs; YR does not
+load RA2 base INIs as an implicit layer below the `*MD.INI` files.
 
-**Bound the pass by entry points, not transitive closure.** Start from the functions the
-port actually needs — the mission handler, the INI reader, the virtual the production loop
-dispatches — and expand only where a callee is load-bearing. "The system" balloons
-otherwise, and a pass that never finishes maps nothing.
+## Reading suspicious decompilation
 
-**The mapped set is the scope.** "These are the functions and globals that make up the
-harvest loop" is itself the artifact: it tells you when you have ported the *system* rather
-than a slice. When synchronization is authorized, accepted labels and comments make that
-set directly navigable in Ghidra; otherwise the candidate ledger preserves it for review.
+- **Pointer arithmetic:** determine the actual base type and access width.
+  `*(param_1 + 0x98)` with an integer address means a byte displacement;
+  `param_1[0xac]` with `int *` means `0xac * 4 = 0x2b0` bytes.
+  `*(type *)((int)param_1 + 0x372)` has an explicit byte displacement.
+  Do not memorize one class's current decompiler type as a universal rule.
+- **Function boundaries:** inspect instructions on both sides, incoming edges,
+  tail calls and stack balance. Shared epilogues, hot/cold regions and jump thunks
+  need not be separate gameplay functions. A decompiler failure alone proves no boundary.
+- **Calling convention:** recover ECX/receiver setup, stack arguments/cleanup and
+  returns from callsites. Account for hidden return pointers and adjusted `this`.
+  Resolve widths and signedness from consuming instructions, not just displayed C types.
+- **Vtables:** for an owner/slot claim, locate the table's Complete Object Locator,
+  TypeDescriptor and relevant hierarchy/subobject offset; read the 32-bit slot bytes,
+  follow adjustor thunks and check the receiver used by real callers.
+  Nearby labels and positional guesses are not identity evidence.
+- **Construction/destruction:** staged vptr writes, deleting-destructor flags,
+  subobject calls, array cookies and conditional frees can be compiler plumbing.
+  Separate them from gameplay effects without dropping lifecycle consequences.
+- **Runtime data:** static image bytes do not describe a table populated during startup.
+  Find its writers before interpreting zero-filled memory or treating contents as constant.
 
-**A name is a claim, so carry the confidence in the annotation.** The certainty gate below
-is not relaxed by doing the pass earlier. What the pass produces:
-- proved → a `ClassName__MethodName` candidate plus a dated plate-comment candidate stating
-  what was verified and how;
-- understood-but-unproved → keep `FUN_*`; a comment candidate may state only the verified
-  partial fact, the uncertainty, and the specific call that would settle it;
-- guessed → nothing. Silence beats a plausible wrong name; that is how
-  `g_refinery_unload_adjacent_lookup_dx` (which is nothing of the sort — it is entry 6 of the
-  eight-direction table) has been misleading readers.
+When layers disagree, resolve the discrepancy between bytes, assembly, decompile,
+callers, data references and object identity before writing a confident conclusion.
+Do not repair types, prototypes or boundaries merely to make the output look plausible.
 
-**Write down the writer, not just the readers.** The 2026-08-06 coordinate-frame error — a
-building's `Location` documented as the NW cell origin when the map loader stores the NW cell
-*centre* — survived across several investigations because everyone read the consumers
-(`GetCoords`, `Get_Cell_Packed`) and nobody opened the function that establishes the value.
-For any field a port depends on, identify the function that writes it and include that
-writer in the mapping ledger. Label it only through an authorized synchronization pass.
+## Visual and audio claims
 
-**The pass is candidate-first and any mutation is single-writer and serial.** Ghidra reads
-can fan out; writes cannot. Workers report candidates only. An authorized root or standalone
-investigator waits for every reader to stop, re-verifies accepted candidates, and applies
-them one at a time under the save/readback discipline below.
+For visual parity, start at the relevant paint/render handler and follow composition
+through return, including layers drawn after helper calls. Establish draw order, selected
+assets/frames, source/destination rectangles, anchors, clipping, palette/conversion path,
+and the flags enabling each layer. Inspect the relevant asset variants; if the selected
+frame is unknown, inspect enough frames or native selection logic to resolve it.
 
-## Synchronization authorization
+Loaded is not drawn, and unused for one role does not mean invisible in every role.
+An asset-browser preview can choose a plausible but incorrect palette; body-only voxel
+output and successful parsing are not full render proof. For audio, trace event admission,
+selection, timing and the actual playback consumer. If screenshots or runtime evidence
+contradict the account, reopen the composition/trigger path.
 
-Reporting annotation candidates is part of reverse-engineering work. Mutating Ghidra is
-authorized only when at least one of these is true:
+## Provenance in Rust
 
-1. the selected skill's user-facing description explicitly promises Ghidra synchronization;
-2. the invocation includes `--sync-ghidra-labels`; or
-3. the user directly requests Ghidra synchronization in plain language.
+Place one nearby comment per cohesive gamemd-derived behavior, not one per line:
 
-`--no-sync-ghidra-labels` or any request for read-only work overrides those permissions.
-Workers and parallel readers never mutate Ghidra. If synchronization is not authorized,
-finish with a candidate ledger; do not treat that as incomplete work. If it is authorized,
-the root or sole agent applies candidates serially after all readers stop. Skills should
-reference this section instead of copying the full certainty gate into their own prompts.
-The compatibility flag name `--sync-ghidra-labels` covers the whole low-risk metadata set:
-verified function/global labels, evidence comments, and proven missing memory references.
+```rust
+// gamemd: <verified owner>::<verified function> @ <exact address> — <behavior>.
+// Source: <research document/section or live decompile and caller evidence>.
+```
 
-## Annotation best practices
+The angle-bracket fields are placeholders, not names to invent. If only the address and
+role are established, use `FUN_<address>` and describe the verified role; mark owner
+identity unknown. Pure Rust architecture glue does not need a fictitious native owner.
+An internal behavior without an established native equivalent is explicitly
+`VERA-internal, gamemd equivalent UNCHECKED` and cannot support a parity claim.
 
-**Only label what is proved.** A wrong label is worse than `FUN_*` — it misleads every
-future session. Before renaming a function, prove its boundary, behavior, owner/receiver,
-and relevant caller or data binding from the live binary. Existing names, Rust comments,
-docs, YRpp, and neighboring patterns are navigation only. If any identity or binding fact
-is uncertain, leave it as `FUN_*` and note the address in `docs/research/` instead.
+## Ghidra access and mutation authority
 
-When you do label: rename via `rename_function_by_address` using `ClassName__MethodName`,
-rename identified helpers, then `save_program` and read back. Do not create a missed
-function boundary without explicit per-task authorization. Don't bulk-label vtable methods
-positionally and don't label from guesses — decompile and bind first.
+On connection-refused, empty instances or no loaded program, use the local
+`ghidra-up` skill when available to reconnect, then retry. Do not launch duplicate
+Ghidra instances or re-import the binary as a routine recovery step.
 
-**Cross-reference discipline.** `add_memory_reference` is an annotation mutation, not a
-shortcut around uncertain analysis. Add one only after reading the source instruction or
-table-slot bytes, proving the exact target and operand, selecting the correct reference kind,
-and confirming that Ghidra does not already hold the equivalent reference. Names, docs,
-neighboring table patterns, and plausible control flow are not proof. If either endpoint or
-the reference kind is uncertain, report the candidate and leave the database unchanged.
-Routine mapping never deletes analyzer-created references.
+Investigations may report annotation candidates. Applying them is authorized only by:
 
-For `add_memory_reference`, bind every argument from that proof: `from_address` is the
-verified instruction/table-slot address, `to_address` is the exact decoded target,
-`operand_index` is the operand that encodes it, `ref_type` matches the proved access kind,
-and `source_type` is `USER_DEFINED`. Do not use a generic DATA/READ/CALL kind merely to
-make an xref appear.
+- a selected skill whose description explicitly promises Ghidra synchronization;
+- `--sync-ghidra-labels`; or
+- a direct user request to synchronize Ghidra.
 
-**Save discipline — call `save_program` immediately after every mutation.** Every
-`rename_function_by_address`, `create_label`, `set_plate_comment`,
-`set_decompiler_comment`, `set_disassembly_comment`, or `add_memory_reference` — plus any
-separately authorized structural/type edit — must be
-followed by `save_program` before moving on. Do NOT batch saves at the end of a session.
-The MCP server can disconnect, the Ghidra UI can crash, and parallel sessions can clobber
-unsaved state — any of these silently loses every label applied since the last save. The
-pattern is: mutate → save → verify the rename appears (e.g., via `get_function_by_address`)
-→ only then move on.
+`--no-sync-ghidra-labels` and read-only requests override those defaults. A request to
+correct a document alone grants no Ghidra writes. Workers are always read-only in Ghidra.
+After all readers stop, the authorized root/sole agent applies accepted candidates
+serially. Without synchronization authority, a candidate report is a complete deliverable.
 
-**Finding ReadINI functions:** search for a known INI key string → follow xref into the
-ReadINI function → if its boundary is missing, record it unless function creation was
-explicitly authorized → each `ReadBool/ReadInt/ReadString` call reveals an INI key name
-and its struct offset.
+This permission covers only certain function/global labels, evidence comments and
+proven missing memory references. Function creation/boundaries, prototypes, structs,
+field/type edits, variable renames and byte patches require separate explicit per-task
+authorization. Never infer permission for them from “fix labels.”
 
-`RTTI_VTable_Labeler.java` at `<local>/ghidra_scripts/` is already run.
+## Certain metadata, saved immediately
 
-## Label drift — the RTTI analyzer / demangler are the source
+Before naming a function, prove its boundary, behavior, owner/receiver and relevant
+caller/data binding from the live binary. Keep `FUN_*`/`DAT_*` when identity is uncertain.
+Use `ClassName__MethodName` only for an established identity. A comment may describe a
+proven partial fact while explicitly recording what is unknown.
 
-Ghidra's **built-in auto-analyzers re-derive labels**, and they are the primary cause of
-label drift across `docs/research/`. Two enabled-by-default analyzers do the damage:
+For `add_memory_reference`, read the source instruction/table bytes, decode the exact
+target and operand, choose the proved reference kind, and check for an existing
+equivalent reference. Bind `from_address`, `to_address`, `operand_index` and `ref_type`
+from that evidence; use `USER_DEFINED` source type. Do not add a generic reference merely
+to make an xref appear, or delete analyzer-created references during routine mapping.
 
-- **`Windows x86 PE RTTI Analyzer`** — walks `.?AV` RTTI → COL → vtable and (re)labels classes, vtables, and virtual functions. Overlaps directly with `RTTI_VTable_Labeler.java`; you do not have to run the script to get re-labeling — Ghidra's own analyzer does it.
-- **`Demangler Microsoft`** (with Apply Function Signatures/Calling Conventions) — (re)demangles symbol names and can rewrite signatures.
+After **each mutation**: call `save_program`, read back the changed metadata, then
+continue. This includes comments and separately authorized structural edits. Do not
+batch saves at the end. Report failures and unapplied candidates accurately.
 
-These run on **import** and on any explicit **"Auto Analyze" / "Analyze All"** — **not**
-on simply opening the project or rebooting. So drift is event-driven: a past re-analyze
-shifted function names / vtable-slot indices, and research docs that copied a name once
-then went stale (doc says `Mission_Enter`, binary now says `PerCellProcess`). The
-2026-05-28 corpus audit found this across dozens of docs (`RTTI_LABEL_DRIFT`), e.g.
-`0x005196A0` = `InfantryClass::PerCellProcess`, not `Mission_Enter`.
+## Label drift and local analyzer state
 
-**These analyzers have been disabled in the gamemd.exe analysis options and the program
-saved, so labels are now frozen.** Implications:
+Names, signatures, function boundaries and inferred structures can change when Ghidra
+analyzers or scripts run. Relabeling does not move the executable's bytes, actual
+vtable entries or native object fields. Distinguish changed interpretation from
+changed binary identity; record the program/build being analyzed when comparing evidence.
 
-- **Do not casually re-import gamemd or click "Analyze" / "Analyze All".** That is what re-fires the RTTI analyzer + demangler and reshuffles labels. There is no reason to re-analyze an already-analyzed, fully-labeled DB.
-- **Authority order is binary → Ghidra → docs.** The binary is unchanging truth; docs are the durable record; Ghidra labels are mutable *scaffolding*. A wrong label is worse than `FUN_*`. When a label and a doc disagree, re-verify against the live binary — never sync docs→Ghidra wholesale (docs are downstream).
-- **If labels look wrong after a restart**, suspect **unsaved state** (work not `Ctrl+S`'d before closing) or a re-import — not the docs. Verified 2026-05-28: saved labels persist identically across a full Ghidra restart, so a per-startup wipe is a save/persistence problem, not analysis drift.
-- Record candidates as you decode. When synchronization is authorized, apply verified
-  metadata one item at a time with immediate save/readback. Do not run bulk
-  auto-labeling/relabeling against gamemd to "fix" drift — that re-creates it.
-
-## Decompilation pitfall: param_1 pointer arithmetic
-
-CRITICAL: When extracting struct field offsets from Ghidra decompilation, always check
-the `param_1` type in the function signature:
-- `param_1` is `int` → offsets like `*(param_1 + 0x98)` are **direct byte offsets**
-- `param_1` is `int *` → indexing like `param_1[0xac]` means **byte offset = 0xac × 4 = 0x2B0**
-- `*(type *)((int)param_1 + 0x372)` is always a **direct byte offset** regardless of param type
-
-Getting this wrong produces silently incorrect struct layouts. WeaponTypeClass and
-BulletTypeClass use `int` (safe). AnimTypeClass uses `int *` (must multiply by 4).
-
-## Decoder ring: when the decompile looks structurally wrong
-
-(Absorbed from the retired `re-decoder-ring` skill, 2026-08-02. Escalation guide for
-suspicious output — function boundaries, calling conventions, RTTI identity, thunks,
-ctor/dtor plumbing. The core rule is triangulation: no local name, decompiler
-signature, or attractive pseudocode is authoritative by itself.)
-
-**Evidence stack** — use as many layers as the claim requires; if two disagree,
-explain the disagreement before recording anything: (1) raw bytes and instruction
-boundaries, (2) assembly-level register/stack/branch behavior, (3) the decompiled
-body treated as a *rendering* of the first two, (4) direct callers/callees including
-argument and receiver flow, (5) data refs, imports, strings, globals, (6) RTTI /
-Complete Object Locators / vtables / subobject displacement, (7) ctor/dtor and
-allocation patterns, (8) active-YR reachability.
-
-**Function boundaries.** Suspect a bad boundary when the prologue/epilogue is
-inconsistent, a branch lands inside another function, stack balance only works
-across the boundary, or callers target a nearby byte instead of the named entry.
-Inspect bytes on both sides, follow every incoming edge including tail calls,
-distinguish hot/cold splits and shared epilogues from separate functions, and treat
-tiny jump-only bodies as thunks until the destination and receiver adjustment are
-understood. Do not infer a new boundary solely because the decompiler failed.
-
-**Calling conventions.** Recover the effective signature from callsites: track
-ECX/receiver setup, stack pushes, return cleanup, and returned registers. Check
-whether an apparent argument is actually a hidden return pointer, adjusted `this`,
-vbase displacement, or compiler-generated state. Verify widths and signedness from
-the consuming instructions, not the displayed C type; compare multiple callers —
-one unusual wrapper can hide the normal convention. (Pointer-index scaling: see the
-param_1 pitfall section above.)
-
-**Vtable/slot claims.** Locate the table's COL, resolve the TypeDescriptor and
-hierarchy to establish owner/subobject, account for COL offset and constructor
-displacement, read the 32-bit entry at `slot_index * 4`, follow adjustor thunks to
-the ultimate body, and confirm representative virtual callsites use the same
-receiver shape. An address *near* a named table, or a label inherited from a prior
-analyst, is not class identity proof.
-
-**Ctor/dtor/thunk plumbing.** Compiler-generated object code often looks like
-gameplay logic. Before assigning semantics check for staged vptr writes, scalar/
-vector deleting-destructor flags, base-subobject calls with `this` adjustment,
-array cookies and conditional frees, and jump thunks that only normalize the
-receiver. Separate lifecycle plumbing from active game behavior in the handoff.
-SEH/EH setup, unwind helpers, security cookies, and import thunks likewise distort
-the decompile — identify runtime scaffolding before interpreting state writes as
-game semantics.
-
-**Label-drift test.** When a local symbol name is load-bearing, independently
-answer: what is the receiver, which callers reach it in active YR, which fields
-does the body consume, which vtable/COL or ctor evidence owns it, and does the
-alleged role explain all representative callsites? If the name fails, cite the
-address and verified role and record the drift explicitly — never silently reuse
-the polluted name.
+Do not casually run Auto Analyze, bulk relabeling, or docs-to-Ghidra synchronization.
+RTTI analysis and Microsoft demangling can change metadata; inspect local analysis
+options instead of assuming their historical settings still hold. If work disappears
+after restart, investigate save/persistence and database identity before inventing a
+new account of native behavior.

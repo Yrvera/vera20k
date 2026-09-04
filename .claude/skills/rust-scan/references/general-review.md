@@ -52,10 +52,10 @@ correct.
 
 ### ERR-002 — error-layer boundary
 
-Use `thiserror` for typed library/domain errors and `anyhow` for application
-propagation. Report `anyhow` in library code only after confirming the function
-is not an app facade/boundary. Also inspect discarded errors (`.ok()`, ignored
-results, broad fallback/default) when they can hide malformed production input.
+Inspect whether consumers receive the error information and recovery boundary
+they need. Follow existing typed-domain and application-propagation conventions;
+a crate choice alone is not a defect. Also inspect discarded errors (`.ok()`,
+ignored results, broad fallback/default) when they hide malformed production input.
 
 ### SAFE-003 — lint suppression
 
@@ -131,8 +131,8 @@ Require a proved hot phase plus traversal order, fields touched, working-set siz
 indirection, and cache/bandwidth evidence before recommending a layout change.
 Report the representative release scenario, target hardware, sampling window,
 milliseconds against an explicit subsystem budget, and relevant counters. Never
-infer “AoS bad,” require an ECS/SoA rewrite, or replace the mandated `BTreeMap`
-authority from syntax alone.
+infer “AoS bad,” require an ECS/SoA rewrite, or replace the current storage owner
+from syntax alone. Storage changes must preserve its consumers and ordering contract.
 
 ### PERF-004 — spatial-query and pathfinding scaling
 
@@ -178,10 +178,9 @@ modules before reporting.
 
 ### STRUCT-002 — file growth and cohesion
 
-Around 600 lines is a review cue, not a violation. Check continued growth and
-mixed responsibilities; exempt cohesive data-heavy files and tests. Prefer
-diff-aware reporting of newly crossed thresholds or materially enlarged
-outliers over a repository-wide wall of size warnings.
+Use continued growth as a cue to inspect cohesion and change locality.
+Cohesive tables, state machines, and tests may belong together. Report the
+concrete ownership or maintenance cost, not a crossed line-count threshold.
 
 ### MODERN-001 — lazy initialization
 
