@@ -1,228 +1,119 @@
 # Simulation risk rules
 
-Use these rules for `src/sim/` and for parsers, bootstrap code, commands, or
-other code that feeds authoritative simulation. `ENGINE.md` wins if this file
-ever conflicts with it.
-
-Interpret these as evidence lenses for a requested review, not as independent
-implementation policy. They identify questions the scan must resolve; verified
-`gamemd.exe` evidence, `ENGINE.md`, and the explicitly authorized task govern any
-later code change.
-
-## Contents
-
-- [Confirmation gate](#confirmation-gate)
-- [Determinism and ordering](#determinism-and-ordering)
-- [Authoritative state and lifecycle](#authoritative-state-and-lifecycle)
-- [Architecture](#architecture)
-- [Coordinates and provenance](#coordinates-and-provenance)
-- [Validation direction](#validation-direction)
-
-## Confirmation gate
-
-Treat every lexical hit as a candidate. Before assigning severity:
-
-1. Exclude comments, strings, test-only items, setup-only paths, diagnostics, and
-   presentation-only data where the rule does not apply.
-2. Resolve source and destination types, guards, callers, and the owning state.
-3. Establish whether the path can affect commands, RNG draws, ordering,
-   canonical state, serialization, hashing, persistence, or same-tick reads.
-4. State the player trigger and frequency. A rare deterministic-state risk may
-   still be critical, but must not be described as common.
-5. For behavior changes, identify the gamemd evidence or label the equivalent
-   `UNCHECKED`. Never invent the native correction.
+Apply to authoritative simulation and its inputs. Resolve production reachability,
+types, guards, owners, and consumers before treating a match as a defect.
+ENGINE owns policy; these IDs guide inspection.
 
 ## Determinism and ordering
 
 ### DET-001 — host floating point
 
-Candidate signal: `f32`/`f64` types, literals, arithmetic, transcendental
-functions, or fixed-to-float conversions in the simulation authority cone.
-
-Confirm whether the value can affect gameplay or canonical state. Comments,
-reference-only tests, and hash-excluded presentation state are not desync
-findings, though presentation state living in `sim/` may be ARCH-002. A native
-float/double mechanism does not silently override VERA's fixed-point contract;
-record the contract conflict and required evidence. Do not replace math until
-native conversion, rounding, overflow, and boundary behavior are known.
+Trace floating-point values into gameplay/canonical state. Presentation and
+reference-test arithmetic are different. Establish native precision, evaluation
+order, conversions, rounding, and supported-build consistency; fixed-point
+replacement also needs semantic evidence.
 
 ### DET-002 — unordered collections
 
-Candidate signal: `HashMap`, `HashSet`, unordered collection, or upstream data
-with unspecified order.
-
-Membership and keyed lookup alone are deterministic. Confirm a risk only when
-iteration, serialization, reduction, selection, command generation, RNG
-consumption, insertion order, or a downstream sort exposes unordered order.
-`BTreeMap` is not a universal fix: key order can itself drift from gamemd's
-insertion/scheduler order. Preserve the explicit `EntityStore = BTreeMap`
-invariant and otherwise require the verified ordering contract. Standard
-`Hash`/`DefaultHasher` output is not a stable save, replay, network, or canonical
-digest contract across toolchains and platforms; require an explicitly specified
-canonical encoding and digest where stability matters.
+Membership/keyed lookup alone is deterministic. Trace exposed iteration,
+serialization, selection, reductions, and RNG effects. Sorted keys may still
+violate native scheduler order. `Hash`/`DefaultHasher` is not a stable
+cross-toolchain persistence or canonical-digest contract.
 
 ### DET-003 — external entropy, clock, environment, or filesystem order
 
-Candidate signal: `rand::rng`, `thread_rng`, `rand::random`, `OsRng`,
-`getrandom`, entropy seeding, `SystemTime::now`, `Instant::now`, environment
-reads, locale, or directory enumeration.
-
-Confirm whether the result enters authoritative decisions. App-owned logging,
-debug assertions, and evidence sinks are not desyncs when they cannot feed back
-into simulation. Filesystem iteration must be explicitly sorted before it
-selects canonical input.
+Trace entropy, clocks, environment, locale, and directory order into authoritative
+decisions. Logging without feedback is not desync; canonical input selection
+requires deterministic enumeration.
 
 ### DET-004 — casts, ranges, and native-width arithmetic
 
-Candidate signal: `as` conversion to integer types, especially narrowing,
-signed/unsigned, float/integer, or `usize`/`isize` conversions.
-
-Resolve the actual source type and prove its range. `i32 as usize` is unsafe for
-negative values; it is not widening. A modulo after a narrowing cast does not
-make the cast safe because truncation already occurred. Cover all widths, not
-only 8/16/32-bit targets. Separate arithmetic overflow from cast truncation.
-Do not automatically suggest clamp, saturate, or `TryFrom`: first establish
-gamemd's wrap/truncate/clamp behavior and the supported-platform contract.
+Prove ranges before judging casts. Negative signed-to-unsigned conversion can
+break consumers; modulo cannot recover truncated bits. Distinguish cast truncation
+from arithmetic overflow and preserve native wrap/clamp/round behavior.
 
 ### DET-005 — conditional production behavior
 
-Candidate signal: `cfg`, `cfg_attr`, `cfg!`, target OS/architecture/pointer
-width, feature, or debug-only branches.
-
-Test-only helpers are normally fine. Confirm a risk when configuration changes
-production structs, serialization, phase logic, RNG use, commands, or canonical
-results between supported peers/builds. Check aliases and macro-expanded gates
-when a direct hit is ambiguous.
+Inspect OS/architecture/feature/debug gates, including macro expansions.
+Report differences affecting supported peers' production state, serialization,
+phase logic, commands, or RNG; test-only helpers are not such differences.
 
 ### DET-006 — concurrency, atomics, and uninitialized storage
 
-Candidate signal: spawned work, Rayon/parallel iterators, async tasks, atomics,
-`MaybeUninit`, or unsafe initialization.
-
-Parallelism is allowed when work is pure/read-only or commits in a proved
-deterministic order without changing RNG or same-tick visibility. Atomics,
-including `Relaxed`, are not inherently nondeterministic; confirm that
-inter-thread timing can affect authoritative state. For `MaybeUninit`, inspect
-initialization coverage and each `assume_init*`/raw read rather than flagging
-the type itself. Explicitly inspect Rayon `reduce*`, `sum`, `product`, equal-key
-min/max, `find_any`, `par_bridge`, channel/completion-order collection, and
-parallel mutation buffers. Race-free output is not necessarily deterministic.
-Outcome-bearing work requires schedule-independent unique ordering keys and a
-single deterministic commit in the verified authoritative order; thread index or
-completion order is not such a key.
+Race-free need not mean deterministic. Inspect reductions, equal-key selection,
+`find_any`, completion-order buffers, and commit ordering against native semantics.
+Atomics are not inherently nondeterministic. For `MaybeUninit`, prove initialization
+before each read. Pure/read-only parallel work is allowed.
 
 ### DET-007 — scheduler, sort, heap, and tie order
 
-Candidate signal: `sort*`, `BinaryHeap`, priority queues, entity snapshots,
-stable-ID walks, insertion/removal, or equal-key comparators.
-
-Trace the order into effects. Require a total, deterministic tie-breaker when
-equal elements can change damage, lifecycle, commands, or RNG. Do not replace
-native/live-object insertion order with stable-ID or sorted-key order merely
-because it is deterministic. Also inspect equal-key min/max/find selection and
-non-associative reductions: stable sorting cannot repair a nondeterministic input
-order, and a deterministic key can still be the wrong native order.
+Trace equal-key selection and ordering into effects. Stable-ID order may differ
+from native insertion order; stable sorting cannot repair nondeterministic input.
+Non-associative reductions and outcome-bearing ties need the correct deterministic order.
 
 ### DET-008 — RNG ownership and draw order
 
-Candidate signal: `SimRng`, `main_rng`, `scenario_rng`, `mapgen_rng`, stream
-cloning, helper draws, or branch-dependent draws.
-
-Verify the owning stream, caller order, draw count, rejected-draw behavior, and
-same-tick state commit. New direct stream access outside an owning/routing seam
-requires evidence. A deterministic PRNG algorithm can still desync when draw
-order differs.
+Verify stream ownership, caller order, draw count, rejected draws, cloning, and
+same-tick commits. A deterministic generator with the wrong draw order still diverges.
 
 ## Authoritative state and lifecycle
 
 ### STATE-001 — serialization, hash, and snapshot coverage
 
-For every added or changed authoritative field in `Simulation`, `GameEntity`,
-RNG, scheduler, production, house, trigger, or mission state, verify:
-
-- serialization/deserialization or a justified `serde(skip)`;
-- inclusion in the canonical state hash, or an explicit proof that it cannot
-  feed future simulation;
-- snapshot-version and compatibility impact;
-- initialization/default and save/load/replay/hash mutation tests.
-
-A `serde(skip)` field is high risk if its value can influence a later decision.
-Do not infer coverage from `derive(Serialize)` alone when hashing is manual.
-Classify state as authoritative, deterministically derived, or presentation-only.
-Derived state must rebuild deterministically and should remain diagnosable by a
-canonical dump/hash when it can expose a divergence.
+For changed authoritative fields, check initialization, serialization, manual
+hashing, snapshot compatibility, and continuation. `derive(Serialize)` does not
+prove hash coverage. Skipped/derived state must rebuild deterministically without
+losing future behavior.
 
 ### STATE-002 — lifecycle and authority ownership
 
-Inspect direct entity-store insertion/removal, pending-delete writes, scheduler
-or LogicVector edits, owner changes, reveal/conceal, limbo/unlimbo, occupancy,
-radio links, and reservations. Confirm that the owning lifecycle/helper performs
-side effects in native order. A direct mutation is not automatically wrong, but
-must not bypass registration, hashing, occupancy, or same-tick consequences.
+Trace insertion/removal, ownership, limbo, scheduler membership, occupancy, radio
+links, and reservations through lifecycle effects. Direct mutation is wrong when
+it bypasses required registration, hashing, ordering, or same-tick consequences.
 
 ### STATE-003 — tick-spine and phase changes
 
-Elevate changes around command ingress, master-frame phases, live-object
-snapshots, combat/projectile resolution, pending deletion, and frame commit.
-Read the current `SPINE REGION` comments and relevant closed loop. Verify
-ordering and same-tick visibility even if ordinary lint checks pass.
+Read the actual `SPINE REGION` comments and surrounding loop at command ingress,
+combat/projectile resolution, deletion, and frame commit. Ordinary lints do not
+establish phase order or same-tick visibility.
 
 ### STATE-004 — command and replay path
 
-Inspect player/network commands, AI intentions, delayed work, and replay records
-as ordered data entering the live simulation path. Verify tick assignment,
-ordering, duplicate and missing-target behavior, rejection semantics, RNG effects,
-and same-tick visibility. Replay-only callbacks or alternate mutation paths are
-candidates because they can hide divergence. Do not import another engine's
-command delay, rollback window, or phase boundary; `gamemd.exe` evidence owns the
-exact contract.
+Compare live commands, AI intentions, delayed work, and replay: tick assignment,
+ordering, rejection, duplicates, missing targets, and RNG. Alternate replay mutation
+paths can hide divergence; another engine does not establish YR command timing.
 
 ## Architecture
 
 ### ARCH-001 — forbidden dependency
 
-Production `sim/` must not depend on `render/`, `ui/`, `sidebar/`, `audio/`, or
-`net/`. Search direct imports, fully qualified paths, grouped imports, aliases,
-re-exports, and indirect module edges. Separate genuine test-only references.
-A confirmed production edge is critical even when it currently appears harmless.
+Check ENGINE's production simulation boundary through imports, aliases, re-exports,
+and indirect edges. Separate genuine test/tool paths; an apparently harmless
+production dependency still violates the boundary.
 
 ### ARCH-002 — presentation ownership leaked into simulation
 
-Candidate signal: screen/pixel coordinates, sprites, textures, GPU/UI types,
-audio handles, or render-only animation state stored under `sim/`.
-
-Confirm ownership and feedback direction. Hash-excluded presentation data is
-not automatically a determinism fault, but it may violate the headless/replay
-boundary or let presentation state feed authoritative logic.
+Trace GPU/UI/audio handles and visual state to their owners and feedback.
+Hash exclusion alone proves neither correct placement nor absence of effects
+on future simulation.
 
 ## Coordinates and provenance
 
 ### COORD-001 — frame, unit, sign, and rounding boundary
 
-For cell/lepton/screen, foundation-anchor, facing-byte, height, and isometric
-conversions, require named source and destination frames/units plus exact
-shift/divide/round/clamp/sign semantics. Walk one concrete boundary fixture.
-Literal `256` or bit shifts are candidates, not proof of a bug.
+Establish frames/units and shift/divide/round/clamp/sign behavior for coordinates,
+height, facing, and foundation anchors. Check a concrete boundary fixture;
+`256` or bit-shift syntax alone proves no bug.
 
 ### PROV-001 — gamemd-derived behavior provenance
 
-When simulation semantics are derived in any way from gamemd, verify the nearby
-canonical provenance comment naming the mechanism, native class/function, and
-exact verified address. Absence is a finding only after establishing derivation;
-pure Rust architecture glue does not need invented provenance.
+Establish derivation before requiring nearby native provenance. Use the Ghidra
+workflow's unknown-owner fallback where needed; Rust architecture glue requires
+no invented native identity.
 
 ## Validation direction
 
-Match the proposed validation to the confirmed risk rather than adding a generic
-certification matrix:
-
-- arithmetic, parser, lifecycle, and command boundary tests for local contracts;
-- twin simulations comparing canonical state at every tick, including varied
-  insertion or worker order when ordering is at risk;
-- uninterrupted versus save/load/continue for snapshot coverage;
-- repeated replay through the live command path for command/RNG/order risks;
-- the first divergent tick plus canonical human-readable state dumps for diagnosis.
-
-Cross-toolchain, architecture, optimization, or worker-count runs are appropriate
-only when the finding crosses those boundaries. Rust-vs-Rust agreement is a
-regression check; it does not verify parity with `gamemd.exe`.
+Choose checks exposing the first divergent tick or state: live commands, varied
+ordering, replay, or uninterrupted versus save/load continuation. Broaden build/
+platform/worker matrices only when the risk crosses those boundaries.
+Rust-vs-Rust agreement is regression evidence, not gamemd parity.

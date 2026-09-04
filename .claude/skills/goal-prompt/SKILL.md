@@ -1,179 +1,31 @@
 ---
 name: goal-prompt
 description: >
-  Compose or revise a goal prompt for a long-running autonomous VERA20k
-  program (Claude Code or Codex), or write the continuation header that lets a
-  fresh session take over a goal mid-flight. Use when the user asks to write,
-  redesign, tighten, or review a goal prompt, wants to launch a multi-slice
-  autonomous program, or wants an in-progress goal handed to another session.
-  Produces paste-ready prompt text; never launches the program itself.
+  Compose, revise or review an autonomous VERA20k goal prompt or cross-session
+  continuation. Produces paste-ready text; never launches or schedules the goal.
 ---
 
-# Goal Prompt — Autonomous Program Launcher
+# Goal Prompt
 
-A goal prompt is the one document a long-running session re-reads when its
-context compacts, its plans drift, or a fresh session takes over. Every
-sentence either constrains the program or wastes the executor's attention —
-write it like a contract, not a briefing.
+Compose text only. Reference [ENGINE.md](../../../ENGINE.md) rather than repeating
+shared rules. State outcome/reason, scope/exclusions, an inspectable comparison bar,
+production acceptance and stopping condition. Use active gamemd/retail data for
+parity, behavior-preservation checks for refactors, and the user's workflow for tooling.
 
-Two modes. Decide first, because they produce different documents:
+Preserve explicit publication authority, model/effort, time/token limits and supplied
+invocations such as `/loop`; add none when absent. Respect requested length and
+save/edit prompt files only when asked. Leave design, decomposition, tools and research
+order open except for real constraints. Critics can inspect original evidence and
+challenge scope, design, omissions and tests.
 
-- **New goal** — the program does not exist yet. Produce the full prompt.
-- **Continuation** — a program is mid-flight (often started in another tool,
-  e.g. Codex). Produce a continuation header + the governing prompt. Skipping
-  the header makes the new session re-trace, re-derive, or fork the branch.
+Preserve the completion standard. Exhaustive parity keeps discovered in-scope
+mechanisms and unresolved required behavior open; plan rows are ownership hypotheses.
+Ranked efforts may stop with explicitly allowed deferrals. A completed transaction
+does not end an authorized multi-transaction goal; publication/merge cadence must
+stay within granted authority.
 
-## The reference is yours to supply
-
-An autonomous loop is good at closing the gap between what exists and the
-reference you gave it. It cannot decide what the reference should be. Name
-the reference explicitly in every goal prompt: for sim behavior it is gamemd
-and the delivery bar (ENGINE.md); for refactors it is behavior-preservation
-proven by hashes and bytes; for tooling it is the named user workflow. A
-prompt whose bar is a vibe ("clean", "idiomatic", "coherent") authorizes
-unbounded work — the program will happily consume weeks matching a reference
-nobody chose.
-
-A valid bar passes three tests: **named** (a specific thing, not a
-category), **fetchable** (the critic can read it, run it, decompile it, or
-diff against it), and **comparable** (the work and the bar can sit side by
-side under one judgment). Everything else in the prompt is scaffolding —
-the loop only produces quality if the thing it compares against is real.
-If the user hasn't named a bar, propose two or three concrete candidates
-and stop for their pick before writing the prompt; never invent the
-reference silently, because the executor's critics will then invent their
-own.
-
-## New-goal template
-
-Six parts, in this order. Keep the whole prompt near one page; the executor's
-fresh-critic loop is the catch-all for cases the prompt doesn't anticipate —
-do not try to pre-decide everything.
-
-1. **Outcome and ranked scope.** What exists when this is done, and the
-   ranking that lets the program stop early with the valuable part finished:
-   player-visibility × frequency first, determinism risk second, maintenance
-   cost last. Say which tiers may end as recorded residuals. A goal that
-   cannot stop early will not stop early.
-2. **Ground rules.** Read AGENTS.md and ENGINE.md completely. Reconcile git,
-   worktrees, running processes, and in-progress work before editing — and
-   again before any slice that moves files or splits state containers; defer
-   those slices while other branches are in flight.
-3. **Trace → frozen ledger → ratchet.** Trace the real production
-   architecture first; convert findings into a finite ledger; freeze its
-   scope (later discoveries are residuals unless required for correctness).
-   Immediately after the trace, install the cheap enforcement that stops
-   drift while work proceeds (dependency guards with current violations
-   allowlisted, a golden, a schema check — whatever ratchets this domain).
-4. **Execution protocol.** One coherent slice at a time. Builder implements;
-   smallest relevant `--lib` filter; a fresh read-only critic gets the
-   requirement, evidence, diff, and actual validation output — **not the
-   builder's reasoning** (the builder remembers why every decision felt
-   right; the critic must judge the artifact, not the narrative). Builders
-   never grade themselves. The critic passes a slice only when its diff and
-   non-interactive validation **reproduce the contract** without unsupported
-   approximations — a defined pass condition, not a review ritual. On
-   BLOCK: close the largest meaningful gap and resubmit to a fresh critic
-   until pass; re-verify the previous round's fixes before judging anything
-   new; commit. For each publishable tier that changes Rust, give a fresh
-   read-only auditor the tier-base SHA, complete diff, requirement, evidence,
-   and literal validation, and explicitly invoke
-   `/rust-scan --changed --base <tier-base-sha>`. Independently, if the tier
-   changes module or state ownership, dependency direction, API visibility,
-   lifecycle seams, Rust file or package placement, or
-   Cargo targets, give a separate fresh auditor the same packet and explicitly
-   invoke `/architecture-scan --changed --base <tier-base-sha>`. These scans
-   sample change-caused engineering risk; they neither prove gamemd parity nor
-   authorize unrelated cleanup. Confirmed tier-caused CRITICAL or WARNING
-   findings block publication; fix and re-audit only the affected scope. At
-   phase completion, when multiple accepted tiers changed shared authority or
-   crossed subsystem boundaries, give a fresh read-only auditor the complete
-   phase diff and explicitly invoke
-   `/architecture-scan --changed --base <phase-base-sha>`. When publication is
-   authorized, **publish per tier**: open or update the PR when a tier
-   completes — correctness fixes never wait on refactor slices. Evidence
-   rules: sim behavior changes name their gamemd source or carry UNCHECKED;
-   verification is production-observable ("it compiled" and "it plays" are
-   different checkpoints — pin the one that matters).
-5. **Structure rules.** A trait only where two real implementations already
-   exist in production. Fix dependency direction by moving code to the lower
-   layer, never by inverting through an interface. Headless, replay, and
-   tests run the real simulation through the same concrete types. No
-   speculative abstractions, giant relocations, mass formatting, or
-   unrelated cleanup. (Each clause exists because its generic form has been
-   exploited: "test seam", "dependency inversion", and "repeated behavior"
-   all re-admit one-implementation traits.)
-6. **Done-clause.** Every ledger item fixed, proven intentional, or recorded
-   as a bounded residual; the ratchet green; one final full
-   `cargo test -p vera20k --lib`; when publication is authorized, all completed
-   tiers published for review; otherwise coherent commits and an exact handoff.
-
-## Two continuation models — choose before writing
-
-A program outliving one session continues in one of two ways; pick
-deliberately, because they produce different prompts:
-
-- **Idempotent re-entry** (prefer when available). Write the prompt as a
-  convergent pass, not a linear program: "Preserve what already matches,
-  replace what is wrong, and implement what is missing" over an external
-  frozen ledger (a phase/plan document). Every invocation re-derives the
-  frontier by checking each item's disposition against the bar — no
-  memory, no handoff, no stale done-inventory to trust. When a run dies
-  (usage limit, crash), fire the same prompt again. This works exactly
-  when a fresh executor can determine what is done by inspecting the
-  artifact against the bar; it is the proven pattern of the Codex phase
-  prompts, which converged over repeated runs with zero handoff text.
-- **Continuation header** (below). Needed when the truth lives in session
-  state rather than in the work: mid-slice on a shared branch, unreviewed
-  inherited commits, a tool switch, an ownership question. The header
-  transfers exactly the facts the world cannot re-derive.
-
-The test: if re-running from scratch would waste nothing but a little
-re-checking, write idempotently and skip the header.
-
-## Continuation header template
-
-Prepend this to the governing prompt, filled in concretely:
-
-> **Continuation.** This goal is mid-flight. The approved design/ledger is at
-> `<doc path>` (tracked under `docs/plans/`, so it is present in every
-> worktree and clone). Do not
-> re-trace or re-derive — adopt it. Completed on `<branch>`: <item → SHA
-> list>. Verify no other session or tool owns the checkout/branch before
-> touching it (<how to check>; if owned, stop and report). First actions:
-> <e.g. critic-review the unreviewed commits, publish the completed tier,
-> install the ratchet, resume at item N>.
-
-The header exists because three things go wrong without it: the new session
-re-runs the expensive trace; it cannot find the design doc (main-checkout
-gitignore); it forks a second branch and orphans the finished work. Each
-line of the header closes one of those.
-
-## Failure modes this template encodes against
-
-Observed, not hypothetical — check a draft against each:
-
-- **Unbounded endpoint**: "until coherent/idiomatic" has no stop; ranked
-  tiers with residuals do.
-- **No merge cadence**: "ready for review" only in the done-clause parks
-  weeks of unmerged commits while every parallel branch drifts against them.
-- **Reconcile-once**: worktree checks only at start miss branches created
-  after launch; high-churn slices need a re-check and a deferral clause.
-- **Escape-hatch clauses**: every justification list ("...or a test
-  boundary, or dependency inversion") will be read as authorization by a
-  compliant executor. Gate on facts ("two implementations exist"), not
-  purposes.
-- **Prompt bloat**: a clause added "just in case" competes with the load-
-  bearing ones. The critic loop handles the unanticipated; the prompt only
-  needs the rules the critic can't infer.
-- **Self-graded verification**: any bar the builder can attest to itself
-  ("tests added", "looks correct") will be attested. Bars are literal test
-  output, hashes, bytes, or a fresh critic's verdict.
-
-## Worked example
-
-Read [references/engine-boundaries-example.md](references/engine-boundaries-example.md)
-for the real prompt pair that ran the 2026-08 engine-domain-boundaries
-program: the revised new-goal prompt, the continuation header that moved it
-from Codex to Claude Code without re-tracing, and one paragraph on what each
-revision fixed. Use it as the calibration for length and specificity.
+For continuation, read the governing prompt, latest amendments and current task/Git
+state. Add worktree/branch, relevant HEAD/unmerged work, artifact locations,
+review/validation state and next safe action. Adopt supported work, recheck
+contradicted premises/ownership, and preserve scope, budget, publication and stop
+instructions. Do not revive a superseded goal.
