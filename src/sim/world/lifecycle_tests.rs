@@ -3806,6 +3806,9 @@ fn gsi_05_04_guided_projectile(
     initial_target_position: ProjectileCoord,
 ) -> ProjectileSpawn {
     let mut spawn = gsi_05_02_projectile(source_id, None);
+    // These fixtures test pointer lifetime/steering, above the native ground
+    // impact plane (including their level-2 terrain). Impact tests override it.
+    spawn.origin.z = 1000;
     spawn.target = target;
     spawn.initial_target_position = initial_target_position;
     spawn.guidance = Some(ProjectileGuidance {
@@ -3814,6 +3817,7 @@ fn gsi_05_04_guided_projectile(
         course_lock_duration: 0,
         sidewinder_phase: 0,
         airburst: false,
+        inaccurate: false,
         very_high: false,
         level: false,
         heading_bam: 0,
@@ -3827,6 +3831,160 @@ fn gsi_05_04_guided_projectile(
     spawn.tracks_target = true;
     spawn.target_expiry = TargetExpiryPolicy::DetonateAtLastKnown;
     spawn
+}
+
+#[test]
+fn homing_ground_impact_reaches_damage_and_cleanup_through_runtime_frame() {
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::runtime::SimRuntime;
+
+    // Retail AAHeatSeeker2's active ROT/Arm/collision policy, with a one-point
+    // wall receiver to expose the final impact cell and ground-layer handoff.
+    let ini = IniFile::from_str(
+        "[VehicleTypes]\n0=MTNK\n[MTNK]\nJumpJet=yes\nStrength=100\n\
+         [Warheads]\n0=WALLWH\n[OverlayTypes]\n0=GAWALL\n\
+         [WALLWH]\nWall=yes\nCellSpread=0\nPercentAtMax=1\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+         [GAWALL]\nWall=yes\nStrength=1\n",
+    );
+    let art = IniFile::from_str("[GAWALL]\nDamageLevels=4\n");
+    for (old_height, with_source, expire_source) in [
+        (0, false, false),
+        (1, false, false),
+        (0, true, false),
+        (0, true, true),
+    ] {
+        let mut sim = Simulation::new();
+        install_common_raw_terrain(&mut sim, 16, 16, 2, None);
+        let mut overlays = crate::sim::overlay_grid::OverlayGrid::new(16, 16);
+        overlays.place_overlay(5, 5, 0, 0);
+        overlays.place_overlay(12, 5, 0, 0);
+        let _ = overlays.take_dirty_cells();
+        sim.overlay_grid = Some(overlays);
+        let origin = ProjectileCoord::new(5 * 256 + 128, 5 * 256 + 128, 208 + old_height);
+        let mut shot = gsi_05_04_guided_projectile(
+            crate::sim::combat::RAD_NO_ATTACKER,
+            ProjectileTarget::Cell { rx: 12, ry: 5 },
+            ProjectileCoord::new(12 * 256 + 128, 5 * 256 + 128, 208),
+        );
+        shot.origin = origin;
+        shot.speed_leptons_per_frame = 4;
+        shot.velocity = ProjectileVelocity::new(4, 0, -2);
+        shot.arm_frames = 2;
+        shot.ranged_fuse = true;
+        let guidance = shot.guidance.as_mut().unwrap();
+        guidance.max_speed = 4;
+        guidance.fuse_reference = shot.initial_target_position;
+        let source_id = if with_source {
+            let source_id = sim.allocate_stable_id();
+            insert_entity(&mut sim, source_id, EntityCategory::Unit);
+            let type_ref = sim.interner.intern("MTNK");
+            sim.substrate.entities.get_mut(source_id).unwrap().type_ref = type_ref;
+            shot.source_id = source_id;
+            shot.arm_frames = 0;
+            guidance.fuse_reference = ProjectileCoord::new(origin.x + 104, origin.y, origin.z - 2);
+            Some(source_id)
+        } else {
+            None
+        };
+        shot.payload = ProjectilePayload {
+            base_damage: 1,
+            warhead: sim.interner.intern("WALLWH"),
+            weapon: sim.interner.intern("MISSINGWEAPON"),
+            owner: sim.interner.intern("Americans"),
+        };
+        let id = sim.allocate_stable_id();
+        sim.admit_projectile(id, shot);
+        if with_source {
+            sim.projectiles.get_mut(id).unwrap().last_distance_half = 0;
+        }
+        if expire_source {
+            sim.uninit(source_id.unwrap());
+            assert_eq!(
+                sim.projectiles.get(id).unwrap().source_id,
+                crate::sim::combat::RAD_NO_ATTACKER
+            );
+        }
+        let mut runtime = SimRuntime::from_simulation(sim);
+        runtime.resources.rules = RuleSet::from_ini(&ini).unwrap();
+        runtime.resources.overlay_registry =
+            crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, Some(&art));
+
+        let _ = runtime.advance_frame(&[], 16, super::TickLane::Ordinary);
+        if old_height == 1 {
+            let bullet = runtime.simulation.projectiles.get(id).expect(
+                "crossing below ground does not trigger the OLD-height predicate until next visit",
+            );
+            assert!(bullet.in_logic_vector);
+            assert_eq!(bullet.position.z, 207);
+            assert_eq!(
+                runtime
+                    .simulation
+                    .overlay_grid
+                    .as_ref()
+                    .unwrap()
+                    .cell(5, 5)
+                    .overlay_data,
+                0
+            );
+            let _ = runtime.advance_frame(&[], 16, super::TickLane::Ordinary);
+        }
+        assert!(runtime.simulation.projectiles.get(id).is_none());
+        let hits_target = with_source && !expire_source;
+        let overlays = runtime.simulation.overlay_grid.as_ref().unwrap();
+        assert_eq!(
+            overlays.cell(5, 5).overlay_data,
+            if hits_target { 0 } else { 0x10 }
+        );
+        assert_eq!(
+            overlays.cell(12, 5).overlay_data,
+            if hits_target { 0x10 } else { 0 },
+            "only a still-live JumpJet firer converts overshoot mode2 to the target-location mode1 snap"
+        );
+        assert!(
+            runtime.simulation.pending_projectile_detonations.is_empty(),
+            "production commits in the Bullet slot, with no test-only pending handoff"
+        );
+    }
+}
+
+#[test]
+fn homing_mode_one_fuse_snaps_to_cell_location_below_bridge_aim_point() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 16, 16, 2, Some((5, 5)));
+    let aim = cell_target_coord(sim.resolved_terrain.as_ref(), 5, 5);
+    assert_eq!(aim.z, 624);
+    let mut shot = gsi_05_04_guided_projectile(
+        crate::sim::combat::RAD_NO_ATTACKER,
+        ProjectileTarget::Cell { rx: 5, ry: 5 },
+        aim,
+    );
+    shot.origin = ProjectileCoord::new(4 * 256 + 128, 5 * 256 + 128, 400);
+    shot.speed_leptons_per_frame = 4;
+    shot.velocity = ProjectileVelocity::new(4, 0, 0);
+    shot.ranged_fuse = true;
+    let guidance = shot.guidance.as_mut().unwrap();
+    guidance.max_speed = 4;
+    guidance.fuse_reference = shot.origin;
+    let id = sim.allocate_stable_id();
+    sim.admit_projectile(id, shot);
+    let result = sim.projectiles.advance(
+        0,
+        &BTreeMap::new(),
+        sim.resolved_terrain.as_ref(),
+        &sim.shared_cell_dummy,
+        |_, _| None,
+    );
+    assert_eq!(result.detonations.len(), 1);
+    assert_eq!(
+        result.detonations[0].impact,
+        ProjectileCoord::new(aim.x, aim.y, 208)
+    );
+    assert_eq!(
+        result.detonations[0].reason,
+        crate::sim::projectile::ProjectileDetonationReason::Fuse
+    );
 }
 
 fn gsi_05_02_mixed_fixture() -> (Simulation, [u64; 6]) {
@@ -4907,7 +5065,7 @@ fn gsi_05_04_high_flying_source_and_target_become_explicit_null() {
         ProjectileTarget::Entity(target_id),
         ProjectileCoord::new(13 * 256 + 128, 15 * 256 + 64, 208),
     );
-    spawn.origin = ProjectileCoord::new(1024, 1024, 0);
+    spawn.origin = ProjectileCoord::new(1024, 1024, 1000);
     sim.admit_projectile(projectile_id, spawn);
     sim.lifecycle_test_events.clear();
 

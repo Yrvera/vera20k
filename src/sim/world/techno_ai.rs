@@ -268,7 +268,19 @@ impl Simulation {
             );
             return true;
         }
-        if self.projectiles.get(id).is_some() {
+        if let Some(projectile) = self.projectiles.get(id) {
+            // BulletClass::AI @ 0x00467C3C reads the live firer (+0xB0),
+            // then its +0x84 TechnoType receiver and JumpJet (+0xD94).
+            // Do not cache this on launch: PointerExpired can null the firer.
+            let source_is_jumpjet = rules.is_some_and(|rules| {
+                self.substrate
+                    .entities
+                    .get(projectile.source_id)
+                    .is_some_and(|source| {
+                        self.object_type(source.type_ref, rules)
+                            .is_some_and(|kind| kind.jumpjet)
+                    })
+            });
             // `BulletClass::AI 0x0046699D` reads the GLOBAL frame counter's
             // parity for the half-rate course-locked acceleration ramp, so the
             // Logic slot has to hand the flight loop the current frame.
@@ -299,6 +311,7 @@ impl Simulation {
                     },
                     terrain,
                     &shared_cell_dummy,
+                    source_is_jumpjet,
                     |projectile, candidate| {
                         super::projectile_collides_at(
                             terrain,

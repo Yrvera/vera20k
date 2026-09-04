@@ -397,7 +397,11 @@ use crate::sim::world::Simulation;
 // 122 `origin/feature/phase3-map-spatial-integration`;
 // nothing else claims 123. Whoever resolves a `snapshot.rs` merge conflict
 // here must re-run that survey rather than picking a side.
-const SNAPSHOT_VERSION: u32 = 123;
+// v126 adds the retained homing Inaccurate flag, consumed by BulletClass's
+// final impact-coordinate snap. v123 cannot decode the new guidance shape.
+// Versions 124 and 125 are reserved by the concurrent parasite and audio-lane
+// changes, respectively; this format must not share either version.
+const SNAPSHOT_VERSION: u32 = 126;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3147,9 +3151,11 @@ mod tests {
     /// `origin/feature/phase3-map-spatial-close`, 122
     /// `origin/feature/phase3-map-spatial-integration` — and two branches
     /// sharing one version number defeat the mismatch guard entirely.
+    /// 123 -> 126 adds the retained homing Inaccurate flag; 124 and 125 are
+    /// reserved by the concurrent parasite and audio-lane changes.
     #[test]
-    fn combat_explosion_anim_snapshot_version_is_123() {
-        assert_eq!(super::SNAPSHOT_VERSION, 123);
+    fn projectile_homing_impact_snapshot_version_is_126() {
+        assert_eq!(super::SNAPSHOT_VERSION, 126);
     }
 
     #[test]

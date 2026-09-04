@@ -21,15 +21,10 @@
 //! `DetonationAltitude` crossing, or a target reach all detonate an unarmed
 //! bullet.
 //!
-//! RESIDUAL (GSI-08.06) — a guided bullet that overshoots a fast target has
-//! three native termination rules; two of them are here (the reach test and
-//! the closing-rate heuristic) and one is not: the homing arm's own
-//! `GetAltitude() < 1` ground test at the same site. Trigger: a homing shot
-//! whose launch z sits at or below the terrain it crosses. Player effect: the
-//! missile flies over a hill it should hit. Frequency: only on rising terrain,
-//! since the arm holds its launch z. Downstream risk: it is one of the leak
-//! bounds, so the closing-rate heuristic is the only one left for a missile
-//! that never closes — it does terminate, but after up to a few seconds.
+//! Homing termination reads the OLD ObjectClass height, before committing the
+//! new coordinate (`0x00466DF6`). Ground admission suppresses the arm's target
+//! snap; the common tail then clamps a negative committed height and may snap
+//! a mode-1 fuse to the target's location (`+0x48`, not its aim point `+0x58`).
 //!
 //! RESIDUAL (GSI-08.06) — the ballistic arm's `reached_target` test is
 //! VERA-internal, gamemd equivalent UNCHECKED: native's `ROT < 1` arms
@@ -120,6 +115,9 @@ pub struct ProjectileGuidance {
     pub course_lock_duration: u16,
     pub sidewinder_phase: u8,
     pub airburst: bool,
+    /// `BulletTypeClass+0x2A2`, the common final-snap exclusion at `0x00467CDE`.
+    /// The earlier homing reach snap at `0x00466E22` does not test this flag.
+    pub inaccurate: bool,
     pub very_high: bool,
     pub level: bool,
     /// Flight heading as a math BAM (`0` = +X). Native keeps the direction
@@ -1174,6 +1172,7 @@ impl ProjectileStore {
             |id| target_positions.get(&id).copied(),
             terrain,
             shared_cell_dummy,
+            false,
             collides_at,
             true,
         )
@@ -1186,6 +1185,7 @@ impl ProjectileStore {
         target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
         shared_cell_dummy: &SharedCellDummy,
+        source_is_jumpjet: bool,
         collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
     ) -> Option<ProjectileAdvanceResult> {
         if !self.projectiles.contains_key(&id) {
@@ -1197,6 +1197,7 @@ impl ProjectileStore {
             target_position,
             terrain,
             shared_cell_dummy,
+            source_is_jumpjet,
             collides_at,
             false,
         ))
@@ -1207,9 +1208,10 @@ impl ProjectileStore {
         &mut self,
         ids: &[u64],
         binary_frame: u32,
-        mut target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
+        mut resolve_target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
         shared_cell_dummy: &SharedCellDummy,
+        source_is_jumpjet: bool,
         mut collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
         remove_terminal: bool,
     ) -> ProjectileAdvanceResult {
@@ -1227,7 +1229,7 @@ impl ProjectileStore {
                 // collision, and reached-target decisions.
                 ProjectileTarget::None => ProjectileCoord::new(0, 0, 0),
                 ProjectileTarget::DummyCell => dummy_cell_target_coord(shared_cell_dummy),
-                ProjectileTarget::Entity(target_id) => match target_position(target_id) {
+                ProjectileTarget::Entity(target_id) => match resolve_target_position(target_id) {
                     Some(position) => {
                         if projectile.tracks_target {
                             projectile.last_target_position = position;
@@ -1402,15 +1404,33 @@ impl ProjectileStore {
                     projectile.position.z.saturating_add(projectile.velocity.z),
                 );
 
-                // `HomingTrack` returns the post-step distance to the target
-                // coordinate and the arm detonates on `dist <= |v| * 0.5`,
-                // snapping the impact onto the target coordinate unless the
-                // bullet is `Airburst`.
+                // gamemd-derived: `BulletClass::AI 0x00466DB1..0x00466E6B`.
+                // The +0x1C8 receiver is ObjectClass::GetHeight @ 0x005F5F40
+                // on the OLD object coordinate; HomingTrack has only updated
+                // the stack candidate. Stock persistent (non-Inviso) bullets
+                // retain the constructor's OnBridge=false, so this height is
+                // above terrain, even when the cell contains a bridge.
                 let reached_distance = coord_distance(candidate, target_position);
-                if i64::from(reached_distance) * 2 <= i64::from(next_speed) {
+                let old_height = previous_position.z.wrapping_sub(projectile_ground_z(
+                    terrain,
+                    shared_cell_dummy,
+                    previous_position,
+                ));
+                let (admit_impact, snap_to_target) = homing_impact_admission(
+                    reached_distance,
+                    projectile.velocity,
+                    old_height,
+                    guidance.airburst,
+                    target_position != ProjectileCoord::new(0, 0, 0),
+                );
+                if admit_impact {
                     impact_flag = true;
-                    impact_reason = ProjectileDetonationReason::ReachedTarget;
-                    if !guidance.airburst {
+                    impact_reason = if old_height <= 0 {
+                        ProjectileDetonationReason::Collision
+                    } else {
+                        ProjectileDetonationReason::ReachedTarget
+                    };
+                    if snap_to_target {
                         snap_impact = Some(target_position);
                     }
                 }
@@ -1534,8 +1554,13 @@ impl ProjectileStore {
                 continue;
             }
 
-            let collision_impact =
-                collides_at(projectile, candidate).map(|response| match response {
+            // The homing arm's admitted impact bypasses the post-move probe
+            // (`0x00467BA4..0x00467BD1`). ROT<1 collision has its own earlier
+            // block and retains its existing callback order.
+            let collision_impact = (!(projectile.guidance.is_some() && impact_flag))
+                .then(|| collides_at(projectile, candidate))
+                .flatten()
+                .map(|response| match response {
                     ProjectileCollisionResponse::TargetZClamp(impact) => impact,
                     ProjectileCollisionResponse::SlopeMatrixReflect { impact, velocity } => {
                         projectile.velocity = velocity;
@@ -1546,6 +1571,17 @@ impl ProjectileStore {
                 impact_flag = true;
                 impact_reason = ProjectileDetonationReason::Collision;
                 snap_impact = Some(impact);
+            }
+
+            let mut impact = snap_impact.unwrap_or(candidate);
+            if projectile.guidance.is_some() && impact_flag {
+                // `0x00467BF0..0x00467C06`: the getter and, when negative,
+                // setter both query the committed coordinate before the fuse.
+                // The setter does not rewrite the stack coordinate used below.
+                let floor = projectile_ground_z(terrain, shared_cell_dummy, impact);
+                if impact.z.wrapping_sub(floor) < 0 {
+                    impact.z = projectile_ground_z(terrain, shared_cell_dummy, impact);
+                }
             }
 
             // `ProximityDetector::Check @ 0x004E11F0`. The reference is the
@@ -1560,13 +1596,17 @@ impl ProjectileStore {
                         guidance.fuse_reference
                     });
                 if projectile.arm_frames_remaining == 0 {
-                    let distance = coord_distance(candidate, reference);
+                    let distance = coord_distance(snap_impact.unwrap_or(candidate), reference);
                     let (mode, next_distance) =
                         ranged_fuse_distance_step(distance, projectile.last_distance_half);
                     projectile.last_distance_half = next_distance;
                     fuse_mode = mode;
                 }
             }
+            // `0x00467C3C..0x00467C66`: Bullet+0xB0 is the live firer,
+            // whose type +0xD94 (JumpJet) changes overshoot mode 2 into 1.
+            // Pointer cleanup can clear the source between flight visits.
+            fuse_mode = projectile_fuse_mode(fuse_mode, source_is_jumpjet);
 
             if !impact_flag && fuse_mode == 0 {
                 projectile.position = candidate;
@@ -1591,7 +1631,38 @@ impl ProjectileStore {
                 continue;
             }
 
-            let impact = snap_impact.unwrap_or(candidate);
+            if let Some(guidance) = projectile.guidance {
+                // `0x00467CA9..0x00467E4D`: a mode-1 fuse unconditionally
+                // selects target +0x48 after the Airburst/Inaccurate gates.
+                // Re-read a shared dummy here: earlier ground lookups may
+                // have stamped a different coordinate into that same target.
+                if fuse_mode == 1 && !guidance.airburst && !guidance.inaccurate {
+                    let location = match projectile.target {
+                        ProjectileTarget::Entity(id) => resolve_target_position(id),
+                        ProjectileTarget::Cell { rx, ry } => {
+                            let mut location = cell_target_coord(terrain, rx, ry);
+                            location.z = projectile_ground_z(terrain, shared_cell_dummy, location);
+                            Some(location)
+                        }
+                        ProjectileTarget::DummyCell => {
+                            let mut location = dummy_cell_target_coord(shared_cell_dummy);
+                            let snapshot = shared_cell_dummy.snapshot();
+                            location.z = crate::util::lepton::ground_height_leptons(
+                                snapshot.level as u8,
+                                snapshot.slope_type,
+                                location.x,
+                                location.y,
+                            )
+                            .expect("shared CellClass target must have a supported slope");
+                            Some(location)
+                        }
+                        ProjectileTarget::None => None,
+                    };
+                    if let Some(location) = location {
+                        impact = location;
+                    }
+                }
+            }
             let reason = if impact_flag {
                 impact_reason
             } else {
@@ -1637,6 +1708,63 @@ fn coord_distance(a: ProjectileCoord, b: ProjectileCoord) -> i32 {
     let dy = f64::from(a.y - b.y);
     let dz = f64::from(a.z - b.z);
     (dx * dx + dy * dy + dz * dz).sqrt().trunc() as i32
+}
+
+/// `CellClass::GetGroundHeight @ 0x00578080`: signed /256, fixed-512
+/// allocation lookup, and live shared-dummy fallback, evaluated at the original
+/// lepton XY. The fallback stamp is observable by a retained DummyCell target.
+fn projectile_ground_z(
+    terrain: Option<&ResolvedTerrainGrid>,
+    shared_cell_dummy: &SharedCellDummy,
+    coord: ProjectileCoord,
+) -> i32 {
+    use crate::sim::cell_rect::{CellRef, get_cellclass_fallback_leptons};
+    let (level, slope) = if let Some(terrain) = terrain {
+        match get_cellclass_fallback_leptons(Some(terrain), coord.x, coord.y) {
+            CellRef::Real(cell) => (cell.level, cell.slope_type),
+            CellRef::Dummy { cell } => {
+                let snapshot = cell.snapshot();
+                (snapshot.level as u8, snapshot.slope_type)
+            }
+        }
+    } else {
+        shared_cell_dummy.stamp_coord(coord.x / 256, coord.y / 256);
+        let snapshot = shared_cell_dummy.snapshot();
+        (snapshot.level as u8, snapshot.slope_type)
+    };
+    crate::util::lepton::ground_height_leptons(level, slope, coord.x, coord.y)
+        .expect("projectile ground probe requires a supported CellClass slope")
+}
+
+/// `BulletClass::AI 0x00466DB1..0x00466E6B`, with its already-computed
+/// distance, represented velocity and OLD ObjectClass height as inputs.
+/// Native retains a double vector; upstream VERA flight still quantizes its
+/// components, an open trajectory discrepancy rather than a scalar-speed
+/// substitute at this predicate.
+fn homing_impact_admission(
+    distance: i32,
+    velocity: ProjectileVelocity,
+    old_height: i32,
+    airburst: bool,
+    nonzero_target: bool,
+) -> (bool, bool) {
+    let x = f64::from(velocity.x);
+    let y = f64::from(velocity.y);
+    let z = f64::from(velocity.z);
+    let half_speed = (x * x + y * y + z * z).sqrt() * 0.5;
+    let impact = f64::from(distance) <= half_speed || old_height <= 0;
+    (
+        impact,
+        impact && old_height > 0 && !airburst && nonzero_target,
+    )
+}
+
+fn projectile_fuse_mode(detector_mode: i32, source_is_jumpjet: bool) -> i32 {
+    if source_is_jumpjet && detector_mode == 2 {
+        1
+    } else {
+        detector_mode
+    }
 }
 
 /// `CellClass::GetGroundHeight` at a lepton coordinate, or `None` when the
@@ -1806,6 +1934,104 @@ fn detonation(
 mod tests {
     use super::*;
 
+    #[test]
+    fn homing_impact_admission_matches_executed_retail_vectors() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/projectile_oracle/homing_impact_vectors.json"
+        ))
+        .unwrap();
+        for row in vectors["admissions"].as_array().unwrap() {
+            let (admit, snap) = homing_impact_admission(
+                row["distance"].as_i64().unwrap() as i32,
+                ProjectileVelocity::new(
+                    row["velocity"][0].as_i64().unwrap() as i32,
+                    row["velocity"][1].as_i64().unwrap() as i32,
+                    row["velocity"][2].as_i64().unwrap() as i32,
+                ),
+                row["height"].as_i64().unwrap() as i32,
+                row["airburst"].as_bool().unwrap(),
+                !row["empty_target"].as_bool().unwrap(),
+            );
+            assert_eq!(admit, row["impact"].as_bool().unwrap(), "{row}");
+            let candidate = if snap {
+                [640, 128, 624]
+            } else {
+                [504, 128, 207]
+            };
+            assert_eq!(serde_json::json!(candidate), row["candidate"], "{row}");
+        }
+    }
+
+    #[test]
+    fn homing_impact_handoff_matches_executed_retail_vectors() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/projectile_oracle/homing_impact_vectors.json"
+        ))
+        .unwrap();
+        for row in vectors["handoffs"].as_array().unwrap() {
+            let height = row["height"].as_i64().unwrap() as i32;
+            let mode = row["fuse_mode"].as_i64().unwrap();
+            let mut shot = guided_spawn(4, 0);
+            shot.origin = ProjectileCoord::new(500, 128, 208 + height);
+            shot.speed_leptons_per_frame = 4;
+            shot.initial_target_position = ProjectileCoord::new(640, 128, 208);
+            shot.target = if row["target_present"].as_bool().unwrap() {
+                ProjectileTarget::Entity(42)
+            } else {
+                ProjectileTarget::None
+            };
+            shot.ranged_fuse = true;
+            let guidance = shot.guidance.as_mut().unwrap();
+            guidance.rot = 0; // Keep the externally supplied candidate fixed.
+            guidance.airburst = row["airburst"].as_bool().unwrap();
+            guidance.inaccurate = row["inaccurate"].as_bool().unwrap();
+            guidance.fuse_reference = ProjectileCoord::new(
+                match mode {
+                    1 => 504,
+                    2 => 604,
+                    _ => 4000,
+                },
+                128,
+                208 + height,
+            );
+            let dummy = SharedCellDummy::fresh();
+            dummy.set_level_slope(2, 0);
+            let mut store = ProjectileStore::new();
+            let id = store.spawn(1, shot);
+            store.projectiles.get_mut(&id).unwrap().last_distance_half = 0;
+            let targets = BTreeMap::from([(42, ProjectileCoord::new(640, 128, 208))]);
+            let result = store.advance(0, &targets, None, &dummy, |_, candidate| {
+                Some(ProjectileCollisionResponse::TargetZClamp(candidate))
+            });
+            let impact = result.detonations[0].impact;
+            assert_eq!(
+                serde_json::json!([impact.x, impact.y, impact.z]),
+                row["impact"],
+                "{row}"
+            );
+        }
+    }
+
+    #[test]
+    fn homing_source_fuse_mode_matches_executed_retail_vectors() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/projectile_oracle/homing_impact_vectors.json"
+        ))
+        .unwrap();
+        for row in vectors["source_modes"].as_array().unwrap() {
+            let mode = projectile_fuse_mode(
+                row["detector_mode"].as_i64().unwrap() as i32,
+                row["source_present"].as_bool().unwrap()
+                    && row["source_jumpjet"].as_bool().unwrap(),
+            );
+            assert_eq!(
+                i64::from(mode),
+                row["admitted_mode"].as_i64().unwrap(),
+                "{row}"
+            );
+        }
+    }
+
     fn spawn(target: ProjectileTarget) -> ProjectileSpawn {
         ProjectileSpawn {
             source_id: 7,
@@ -1897,12 +2123,14 @@ mod tests {
     fn guided_projectile_turns_with_persisted_rot_state() {
         let mut store = ProjectileStore::new();
         let mut guided = spawn(ProjectileTarget::Cell { rx: 0, ry: 4 });
+        guided.origin.z = 1; // Steering fixture: above the native ground-impact plane.
         guided.guidance = Some(ProjectileGuidance {
             rot: 4,
             missile_rot_var: SimFixed::from_num(0),
             course_lock_duration: 0,
             sidewinder_phase: 0,
             airburst: false,
+            inaccurate: false,
             very_high: true,
             level: false,
             heading_bam: 0,
@@ -2307,6 +2535,7 @@ mod tests {
 
     fn guided_spawn(max_speed: u16, acceleration: i32) -> ProjectileSpawn {
         let mut spawn = spawn(ProjectileTarget::Entity(42));
+        spawn.origin.z = 1; // Flight/fuse fixtures must not start in ground contact.
         spawn.speed_leptons_per_frame = 1;
         spawn.velocity = ProjectileVelocity::new(1, 0, 0);
         spawn.guidance = Some(ProjectileGuidance {
@@ -2315,6 +2544,7 @@ mod tests {
             course_lock_duration: 0,
             sidewinder_phase: 0,
             airburst: false,
+            inaccurate: false,
             very_high: false,
             level: false,
             heading_bam: 0,
@@ -2342,12 +2572,12 @@ mod tests {
         store.advance(0, &targets, None, &SharedCellDummy::fresh(), |_, _| None);
         let after_one = store.get(id).expect("missile still flying");
         assert_eq!(after_one.speed_leptons_per_frame, 4);
-        assert_eq!(after_one.position, ProjectileCoord::new(4, 0, 0));
+        assert_eq!(after_one.position, ProjectileCoord::new(4, 0, 1));
 
         store.advance(1, &targets, None, &SharedCellDummy::fresh(), |_, _| None);
         let after_two = store.get(id).expect("missile still flying");
         assert_eq!(after_two.speed_leptons_per_frame, 7);
-        assert_eq!(after_two.position, ProjectileCoord::new(11, 0, 0));
+        assert_eq!(after_two.position, ProjectileCoord::new(11, 0, 1));
     }
 
     /// With `CourseLockDuration = 0` and `MaxSpeed < 40` the lock survives, and

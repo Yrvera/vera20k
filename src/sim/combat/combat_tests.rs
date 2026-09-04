@@ -8794,6 +8794,7 @@ fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
                 |_| Some(ground),
                 Some(&terrain),
                 &dummy,
+                false,
                 |_, _| None,
             )
             .expect("the bomb is still in flight");
