@@ -503,9 +503,67 @@ if (BulletTypeClass.ROT < 1 && !BulletTypeClass.Ranged):
 else:
     prox_result = ProximityDetector::Check(&this->ProxDetector, &new_pos)
 
-// Special case: if firer has specific flag (offset 0xD94) and prox_result == 2:
+// Special case: if the LIVE firer's type has JumpJet (+0xD94) and prox_result == 2:
 //   Override to prox_result = 1 (treat overshoot as close-hit)
 ```
+
+### 3.5 Homing ground admission and final coordinate (2026-09-05)
+
+Fresh retail body inspection corrects the ground-contact interpretation. At
+`0x00466DB1..0x00466E6B`, AI admits an impact when the returned homing distance
+is at most half the **double velocity vector's magnitude**, or the **old**
+ObjectClass height is nonpositive. Bullet vtable `0x007E46E4 + 0x1C8` binds
+`ObjectClass::GetHeight @ 0x005F5F40`; it reads the object's still-uncommitted
+location, ground from `0x00578080`, and the object's own OnBridge byte.
+The arm copies its cached target coordinate into the candidate only when height
+is positive, Airburst is false, and that target coordinate is nonzero.
+Inaccurate does not gate this first snap.
+
+At `0x00467BF0..0x00467C06`, an admitted impact whose **committed** height is
+negative invokes `+0x1CC(0)` (`0x005F5FA0`). The setter performs another ground
+lookup and changes ObjectClass location; the stack coordinate passed to the
+proximity detector remains unchanged. At `0x00467C3C..0x00467C66`, a live firer
+at Bullet `+0xB0` supplies type `+0x84`; its JumpJet byte `+0xD94` changes
+detector mode 2 to mode 1. ReadINI `0x007151EC..0x00715200` binds that byte to
+the string `JumpJet` at `0x00843640`. This is the firer, not the target.
+
+The mode-1 tail at `0x00467CA9..0x00467E4D` requires a non-null target and
+neither Airburst nor Inaccurate; it finally copies target `+0x48` through
+Bullet's setter `+0x1B4 @ 0x005F6940`. A CellClass aim point (`+0x58 @ 0x00486890`)
+includes a structural bridge offset, but its location (`+0x48 @ 0x00486840`)
+is the cell center at ground height. A retained shared dummy must be read again
+after the intervening ground lookups, which may stamp its coordinate.
+
+Active path: LogicClass `0x0055AFB0` calls object vtable `+0x5C`, which binds
+Bullet AI at `0x007E4740`. Retail `[HoverMissile]` uses `[AAHeatSeeker2]`
+(`ROT=60`, `Arm=2`, `Ranged=yes`, non-Inviso). Non-Inviso fresh bullets retain
+the base constructor's OnBridge=false: the observed FireAt `+0x8C` propagation
+at `0x006FF08B..0x006FF0B7` is gated on Inviso. Raw native save-image mutations
+are outside this fresh-object proof. Stock JumpJet firers examined use either
+Inviso projectiles or non-Ranged, ROT=0 Ballistic projectiles; generic source
+mode conversion is implemented, but stock homing reachability of that combination
+is not claimed.
+
+Rust production delivery is `SimRuntime::advance_frame -> advance_app_frame ->
+advance_master_frame -> object_ai_visit_one -> ProjectileStore::advance_one ->
+commit_logic_projectile_detonations`. The runtime regression
+`homing_ground_impact_reaches_damage_and_cleanup_through_runtime_frame` checks
+old-height timing, impact-cell wall damage, removal, and live firer cleanup.
+`homing_mode_one_fuse_snaps_to_cell_location_below_bridge_aim_point` checks the
+CellClass receiver distinction. These are Rust regression tests, not native
+whole-frame comparisons.
+
+[The executable oracle](../../tools/projectile_oracle/homing_impact.py) emits
+[retail-derived vectors](../../tools/projectile_oracle/homing_impact_vectors.json)
+for admission, common clamp/final snap, and live-source mode conversion. It runs
+the original instruction ranges and ObjectClass getter/setter bodies with
+controlled external floor and target-coordinate inputs. Its comparison is bounded
+to the recorded inputs; it does not prove the upstream HomingTrack velocity,
+target-coordinate production, bridge-flight trajectory, null-target altitude
+termination, or downstream warhead implementation. Rust still quantizes velocity
+to integer components and lacks native homing pitch integration. GSI-08.07 and
+GSI-08.08 remain open; the extra ballistic target-nearness admission and ordinary
+ground/source collision discrepancies also remain open.
 
 ---
 
@@ -587,17 +645,24 @@ From BulletClass::AI, detonation is triggered when ANY of:
 | Object within 127 leptons | Proximity fuse (non-homing) | 0x004679xx |
 | Out of map bounds | FUN_00568350 returns false | 0x00467Axx |
 | speed < 10.0 AND height <= 9 | Stalled near ground | 0x00467Bxx |
-| speed * 90.0 >= distance | Close enough (homing) | 0x00466Exx |
-| height < 1 | At/below ground (homing) | 0x00466Exx |
+| vector magnitude * 0.5 >= distance | Close enough (homing); see §3.5 | 0x00466DB1..0x00466E05 |
+| old ObjectClass height <= 0 | At/below ground (homing); see §3.5 | 0x00466DF6..0x00466E20 |
 | Target lost + height >= FlightLevel | Lost target, too high | 0x00466Fxx |
 | ApproachSum in [0, 60) for 60+ ticks | No longer closing (homing) | 0x004670xx |
 | Bridge crossing (homing) | Altitude crosses bridge | 0x004671xx |
 | ProximityDetector returns 1 or 2 | Embedded proximity check | 0x00467Cxx |
 | Dropping=yes + HasDropped | Drop bomb behavior | 0x004668xx |
 
-### 4.3 Bounce vs Detonate
+### 4.3 Collision probe and detonation admission
 
-Before detonation, BulletClass::AI calls BounceCheck (0x00468BB0):
+At `0x00467BD1`, AI calls `0x00468BB0` only while its impact flag is clear.
+It commits the returned coordinate buffer through `+0x1B4` and copies the
+boolean result into the impact flag. A true result proceeds through the
+negative committed-height clamp (`+0x1C8 < 0 -> +0x1CC(0)`) and admits the
+detonation tail at `0x00467C70`, independently of the proximity fuse. A false
+result does not itself admit detonation; the fuse can still do so when
+Dropping is false.
+
 ```c
 bool BounceCheck(BulletClass* this, CoordStruct* impact_pos) {
     *impact_pos = this->Location;
@@ -610,7 +675,7 @@ bool BounceCheck(BulletClass* this, CoordStruct* impact_pos) {
         cur_cell = MapClass::Get_CellClass(LastCell)
         firer_house = (this->Owner != 0) ? Owner->HouseClass : 0
         if FUN_004CC360(cur_cell, pos, BulletType, firer_house):
-            return true  // deflect off cliff/wall
+            return true  // admit impact
 
     // 2. Deeply underground
     if GetHeight() <= -4 * cell_size:
@@ -632,12 +697,10 @@ bool BounceCheck(BulletClass* this, CoordStruct* impact_pos) {
         if distance(bullet, target) < 128:
             return true
 
-    return false  // no bounce, proceed to detonate
+    return false  // no impact admitted by this probe
 }
 ```
 
-When BounceCheck returns true, the bullet adjusts position and continues flying
-rather than detonating. The height is clamped to 0 if below ground.
 
 ---
 

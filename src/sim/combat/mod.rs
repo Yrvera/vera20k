@@ -288,14 +288,6 @@ enum ImmediateProjectileReason {
 /// velocity and the native ground clamp, which is the same work as the
 /// `Arcing` solver.
 ///
-/// RESIDUAL (GSI-08.07) — `BulletClass::AI 0x00467CDE` refuses the
-/// detonation-coordinate snap onto the target for an `Inaccurate=` bullet, the
-/// same way it does for `Airburst=`. The homing arm's snap here is gated on
-/// `Airburst` only, because no stock `Inaccurate` projectile has `ROT > 0`
-/// (`[FlakProj]` and `[FlakTProj]` are both `ROT=0`), so the gate is
-/// unreachable in stock data. Trigger: a mod authoring `Inaccurate=yes` with
-/// `ROT`. Player effect: the shot would still snap onto its target. Frequency:
-/// zero in stock. Downstream risk: none.
 fn classify_projectile_delivery(
     weapon: &crate::rules::weapon_type::WeaponType,
     rules: &RuleSet,
@@ -344,6 +336,7 @@ fn classify_projectile_delivery(
                 // not its formula. Keep the raw phase as an explicit live seam.
                 sidewinder_phase: 0,
                 airburst: projectile.airburst,
+                inaccurate: projectile.inaccurate,
                 very_high: projectile.very_high,
                 level: projectile.level,
                 // Replaced at construction with the launch facing.
