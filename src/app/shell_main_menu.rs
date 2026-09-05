@@ -213,7 +213,11 @@ impl crate::app::persistence::options::launcher::LauncherParentOperations
     }
 
     fn queue_then_stop_score_zero(&mut self) {
-        self.state.audio.queue_then_stop_score_zero();
+        let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(
+            self.state,
+            Instant::now(),
+        );
+        self.state.audio.queue_then_stop_score_zero(now_ms);
     }
 
     fn store_sound_volume(&mut self, value: f32) {
@@ -283,19 +287,26 @@ impl App {
     }
 
     fn score_shell_layout(state: &AppState) -> crate::ui::score_shell::ScoreShellLayout {
-        crate::ui::score_shell::compute_layout(state.renderer.gpu.config.width, state.renderer.gpu.config.height)
+        crate::ui::score_shell::compute_layout(
+            state.renderer.gpu.config.width,
+            state.renderer.gpu.config.height,
+        )
     }
 
     pub(super) fn handle_score_shell_mouse_move(state: &mut AppState) {
         let layout = Self::score_shell_layout(state);
-        state.frontend.score_shell_state.continue_hovered =
-            layout.hit_continue(state.match_state.input.cursor_x.round() as i32, state.match_state.input.cursor_y.round() as i32);
+        state.frontend.score_shell_state.continue_hovered = layout.hit_continue(
+            state.match_state.input.cursor_x.round() as i32,
+            state.match_state.input.cursor_y.round() as i32,
+        );
     }
 
     pub(super) fn handle_score_shell_mouse_down(state: &mut AppState) {
         let layout = Self::score_shell_layout(state);
-        let inside =
-            layout.hit_continue(state.match_state.input.cursor_x.round() as i32, state.match_state.input.cursor_y.round() as i32);
+        let inside = layout.hit_continue(
+            state.match_state.input.cursor_x.round() as i32,
+            state.match_state.input.cursor_y.round() as i32,
+        );
         state.frontend.score_shell_state.continue_pressed = inside;
         if inside {
             Self::play_main_menu_button_sound(state);
@@ -307,8 +318,10 @@ impl App {
     /// shell, so there is no cancel path to mirror.
     pub(super) fn handle_score_shell_mouse_up(state: &mut AppState) {
         let layout = Self::score_shell_layout(state);
-        let inside =
-            layout.hit_continue(state.match_state.input.cursor_x.round() as i32, state.match_state.input.cursor_y.round() as i32);
+        let inside = layout.hit_continue(
+            state.match_state.input.cursor_x.round() as i32,
+            state.match_state.input.cursor_y.round() as i32,
+        );
         let activated = state.frontend.score_shell_state.continue_pressed && inside;
         state.frontend.score_shell_state.continue_pressed = false;
         if activated {
@@ -343,8 +356,10 @@ impl App {
 
     fn refresh_single_player_load_state(state: &mut AppState) {
         state.persistence.refresh_save_list_if_dirty();
-        state.frontend.single_player_shell_state.load_saved_game_enabled =
-            !state.persistence.save_list_cache.entries().is_empty();
+        state
+            .frontend
+            .single_player_shell_state
+            .load_saved_game_enabled = !state.persistence.save_list_cache.entries().is_empty();
     }
 
     fn open_single_player_shell(state: &mut AppState) {
@@ -356,8 +371,14 @@ impl App {
         crate::app::frontend::main_menu_shell_render::clear_ra2ts_movie_session(state);
         crate::app::frontend::shell_transition::invalidate_main_menu_dialog_instance(state);
         state.frontend.shell_route = crate::app::shell_route::ShellRoute::SinglePlayer;
-        state.frontend.single_player_shell_state.pressed_owner_draw_button = None;
-        state.frontend.single_player_shell_state.hovered_owner_draw_button = None;
+        state
+            .frontend
+            .single_player_shell_state
+            .pressed_owner_draw_button = None;
+        state
+            .frontend
+            .single_player_shell_state
+            .hovered_owner_draw_button = None;
         state.frontend.single_player_shell_state.hover_started_at = None;
         Self::refresh_single_player_load_state(state);
     }
@@ -369,8 +390,14 @@ impl App {
         crate::app::frontend::main_menu_shell_render::clear_ra2ts_movie_session(state);
         crate::app::frontend::shell_transition::invalidate_main_menu_dialog_instance(state);
         state.frontend.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
-        state.frontend.single_player_shell_state.pressed_owner_draw_button = None;
-        state.frontend.single_player_shell_state.hovered_owner_draw_button = None;
+        state
+            .frontend
+            .single_player_shell_state
+            .pressed_owner_draw_button = None;
+        state
+            .frontend
+            .single_player_shell_state
+            .hovered_owner_draw_button = None;
         state.frontend.single_player_shell_state.hover_started_at = None;
     }
 
@@ -390,7 +417,10 @@ impl App {
         state.frontend.shell_route = crate::app::shell_route::ShellRoute::Skirmish {
             return_to_single_player: true,
         };
-        state.frontend.skirmish_shell_state.pressed_owner_draw_button = None;
+        state
+            .frontend
+            .skirmish_shell_state
+            .pressed_owner_draw_button = None;
         state.frontend.skirmish_shell_last_painted_pressed_button = None;
         Self::ensure_active_cooperative_shell_selection(state);
         // The skirmish dialog (0x102) slides its controls in on first paint like
@@ -409,7 +439,10 @@ impl App {
         state.frontend.skirmish_shell_state.dropdown_scroll_drag = None;
         state.frontend.skirmish_shell_state.dropdown_scroll_press = None;
         state.frontend.skirmish_shell_state.trackbar_drag = None;
-        state.frontend.skirmish_shell_state.pressed_owner_draw_button = None;
+        state
+            .frontend
+            .skirmish_shell_state
+            .pressed_owner_draw_button = None;
         crate::ui::skirmish_shell::blur_player_name_edit(&mut state.frontend.skirmish_shell_state);
         state.frontend.skirmish_shell_last_painted_pressed_button = None;
         state.frontend.skirmish_preview_texture = None;
@@ -460,7 +493,10 @@ impl App {
                 }
             } else {
                 state.frontend.dev_skirmish_shell_enabled = false;
-                state.frontend.skirmish_shell_state.pressed_owner_draw_button = None;
+                state
+                    .frontend
+                    .skirmish_shell_state
+                    .pressed_owner_draw_button = None;
             }
         }
         // Confirm modal can be open over the legacy egui menu too; draw it in
@@ -470,9 +506,13 @@ impl App {
         // Degraded fallback (shell chrome failed to load) has no SHP cursor of
         // its own, so keep the OS cursor visible here rather than hiding it and
         // leaving the egui menu with no pointer at all.
-        state
-            .renderer.egui
-            .end_frame_and_render(&state.renderer.gpu, encoder, view, &state.platform.window, false);
+        state.renderer.egui.end_frame_and_render(
+            &state.renderer.gpu,
+            encoder,
+            view,
+            &state.platform.window,
+            false,
+        );
         if confirm {
             event_loop.exit();
             return Ok(());
@@ -500,7 +540,8 @@ impl App {
     /// English string when the table is absent or missing the key.
     pub(super) fn csf_label(state: &AppState, key: &str, fallback: &str) -> String {
         state
-            .process_assets.csf
+            .process_assets
+            .csf
             .as_ref()
             .map(|csf| csf.text(key).into_owned())
             .unwrap_or_else(|| fallback.to_string())
@@ -630,23 +671,39 @@ impl App {
     /// render path reads. Slice-2/Slice-3 boundary: render is retired off these in
     /// Slice 3, after which the controller is the sole authority.
     fn mirror_shell_controller_to_main_menu(state: &mut AppState) {
-        state.frontend.main_menu_shell_state.pressed_owner_draw_button = state
-            .frontend.shell_controller
+        state
+            .frontend
+            .main_menu_shell_state
+            .pressed_owner_draw_button = state
+            .frontend
+            .shell_controller
             .pressed()
             .and_then(crate::ui::main_menu_shell::MainMenuControlId::from_resource_id);
-        state.frontend.main_menu_shell_state.hovered_owner_draw_button = state
-            .frontend.shell_controller
+        state
+            .frontend
+            .main_menu_shell_state
+            .hovered_owner_draw_button = state
+            .frontend
+            .shell_controller
             .hovered()
             .and_then(crate::ui::main_menu_shell::MainMenuControlId::from_resource_id);
     }
 
     fn mirror_shell_controller_to_single_player(state: &mut AppState) {
-        state.frontend.single_player_shell_state.pressed_owner_draw_button = state
-            .frontend.shell_controller
+        state
+            .frontend
+            .single_player_shell_state
+            .pressed_owner_draw_button = state
+            .frontend
+            .shell_controller
             .pressed()
             .and_then(crate::ui::single_player_shell::SinglePlayerControlId::from_resource_id);
-        state.frontend.single_player_shell_state.hovered_owner_draw_button = state
-            .frontend.shell_controller
+        state
+            .frontend
+            .single_player_shell_state
+            .hovered_owner_draw_button = state
+            .frontend
+            .shell_controller
             .hovered()
             .and_then(crate::ui::single_player_shell::SinglePlayerControlId::from_resource_id);
         state.frontend.single_player_shell_state.hover_started_at =
@@ -662,7 +719,8 @@ impl App {
         let x = state.match_state.input.cursor_x.round() as i32;
         let y = state.match_state.input.cursor_y.round() as i32;
         state
-            .frontend.shell_controller
+            .frontend
+            .shell_controller
             .ensure_active(crate::ui::shell::descriptor::DialogId(0x00E2), false);
         state.frontend.shell_controller.on_pointer_down(x, y, &feed);
         let pressed = state.frontend.shell_controller.pressed().is_some();
@@ -684,7 +742,8 @@ impl App {
         let x = state.match_state.input.cursor_x.round() as i32;
         let y = state.match_state.input.cursor_y.round() as i32;
         state
-            .frontend.shell_controller
+            .frontend
+            .shell_controller
             .ensure_active(crate::ui::shell::descriptor::DialogId(0x00E2), false);
         state.frontend.shell_controller.on_pointer_move(x, y, &feed);
         Self::mirror_shell_controller_to_main_menu(state);
@@ -702,7 +761,8 @@ impl App {
         let x = state.match_state.input.cursor_x.round() as i32;
         let y = state.match_state.input.cursor_y.round() as i32;
         state
-            .frontend.shell_controller
+            .frontend
+            .shell_controller
             .ensure_active(crate::ui::shell::descriptor::DialogId(0x00E2), false);
         let activated = state.frontend.shell_controller.on_pointer_up(x, y, &feed);
         Self::mirror_shell_controller_to_main_menu(state);
@@ -739,7 +799,9 @@ impl App {
         let feed = Self::exit_confirm_modal_feed(state);
         let x = state.match_state.input.cursor_x.round() as i32;
         let y = state.match_state.input.cursor_y.round() as i32;
-        if state.frontend.shell_controller.top_id() != Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
+        if state.frontend.shell_controller.top_id()
+            != Some(crate::ui::shell::descriptor::DialogId(0x0120))
+        {
             return;
         }
         state.frontend.shell_controller.on_pointer_down(x, y, &feed);
@@ -749,7 +811,9 @@ impl App {
         let feed = Self::exit_confirm_modal_feed(state);
         let x = state.match_state.input.cursor_x.round() as i32;
         let y = state.match_state.input.cursor_y.round() as i32;
-        if state.frontend.shell_controller.top_id() != Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
+        if state.frontend.shell_controller.top_id()
+            != Some(crate::ui::shell::descriptor::DialogId(0x0120))
+        {
             return;
         }
         let activated = state.frontend.shell_controller.on_pointer_up(x, y, &feed);
@@ -777,9 +841,13 @@ impl App {
         let feed = Self::single_player_shell_button_feed(&layout);
         let x = state.match_state.input.cursor_x.round() as i32;
         let y = state.match_state.input.cursor_y.round() as i32;
-        let load_enabled = state.frontend.single_player_shell_state.load_saved_game_enabled;
+        let load_enabled = state
+            .frontend
+            .single_player_shell_state
+            .load_saved_game_enabled;
         state
-            .frontend.shell_controller
+            .frontend
+            .shell_controller
             .ensure_active(crate::ui::shell::descriptor::DialogId(0x0100), false);
         // Refresh the Load Saved Game disabled guard before the gesture; the
         // override persists through the matching release (ensure_active only resets
@@ -802,7 +870,8 @@ impl App {
         let x = state.match_state.input.cursor_x.round() as i32;
         let y = state.match_state.input.cursor_y.round() as i32;
         state
-            .frontend.shell_controller
+            .frontend
+            .shell_controller
             .ensure_active(crate::ui::shell::descriptor::DialogId(0x0100), false);
         // Hover path is enable-UNfiltered: a disabled Load Saved Game still
         // hover-tracks and arms its tooltip timer, exactly as before.
@@ -815,9 +884,13 @@ impl App {
         let feed = Self::single_player_shell_button_feed(&layout);
         let x = state.match_state.input.cursor_x.round() as i32;
         let y = state.match_state.input.cursor_y.round() as i32;
-        let load_enabled = state.frontend.single_player_shell_state.load_saved_game_enabled;
+        let load_enabled = state
+            .frontend
+            .single_player_shell_state
+            .load_saved_game_enabled;
         state
-            .frontend.shell_controller
+            .frontend
+            .shell_controller
             .ensure_active(crate::ui::shell::descriptor::DialogId(0x0100), false);
         state.frontend.shell_controller.set_disabled(
             crate::ui::single_player_shell::SinglePlayerControlId::LoadSavedGame0x689.resource_id(),
@@ -861,7 +934,8 @@ impl App {
         if state.frontend.screen != GameScreen::MainMenu || state.frontend.quit_cascade.is_some() {
             return;
         }
-        let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
+        let now_ms =
+            crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
         if let Some(assets) = state.process_assets.manager() {
             state.audio.maintain_main_menu_theme(assets, now_ms);
         }
@@ -871,7 +945,9 @@ impl App {
         let Some(sound_id) = sound_id else {
             return;
         };
-        let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager()) else {
+        let (Some(sfx), Some(assets)) =
+            (&mut state.audio.sfx_player, state.process_assets.manager())
+        else {
             return;
         };
         sfx.play_sound(
@@ -897,7 +973,11 @@ impl App {
                 Self::close_single_player_shell(state);
             }
             SinglePlayerShellAction::LoadSavedGame => {
-                if state.frontend.single_player_shell_state.load_saved_game_enabled {
+                if state
+                    .frontend
+                    .single_player_shell_state
+                    .load_saved_game_enabled
+                {
                     state.match_state.match_presentation.show_save_load_panel = true;
                     state.persistence.invalidate_save_list();
                 }
@@ -957,9 +1037,12 @@ impl App {
         // teardown pops back to it with focus restored. (ensure_active would
         // reset_to-clobber the stack — the prior "0x120 over 0xE2" comment
         // described behavior that never happened.)
-        if state.frontend.shell_controller.top_id() != Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
+        if state.frontend.shell_controller.top_id()
+            != Some(crate::ui::shell::descriptor::DialogId(0x0120))
+        {
             state
-                .frontend.shell_controller
+                .frontend
+                .shell_controller
                 .push(crate::ui::shell::descriptor::DialogId(0x0120), true);
         }
         state.frontend.exit_confirm_modal = Some(modal);
@@ -987,7 +1070,9 @@ impl App {
     /// and mouse close path converges here.
     pub(super) fn close_exit_confirm_modal_from_controller(state: &mut AppState) {
         state.frontend.exit_confirm_modal = None;
-        if state.frontend.shell_controller.top_id() == Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
+        if state.frontend.shell_controller.top_id()
+            == Some(crate::ui::shell::descriptor::DialogId(0x0120))
+        {
             state.frontend.shell_controller.pop();
         }
     }
@@ -1087,7 +1172,8 @@ impl App {
 
         if let Some(mut campaign) = state.frontend.campaign_select.take() {
             let csf = |key: &str, fallback: &str| Self::csf_label(state, key, fallback);
-            let action = dialogs::draw_campaign_select(&state.renderer.egui.ctx, &csf, &mut campaign);
+            let action =
+                dialogs::draw_campaign_select(&state.renderer.egui.ctx, &csf, &mut campaign);
             match action {
                 // The side/difficulty -> scenario mapping and first-mission
                 // launch are not decoded; Back returns to the SP shell.
@@ -1103,10 +1189,12 @@ impl App {
     }
 
     pub(super) fn invalidate_main_menu_movie_if_base_changed(state: &mut AppState) {
-        let movie_base =
-            crate::ui::main_menu_shell::movie_base_for_screen_width(state.renderer.gpu.config.width);
+        let movie_base = crate::ui::main_menu_shell::movie_base_for_screen_width(
+            state.renderer.gpu.config.width,
+        );
         if state
-            .frontend.main_menu_movie_identity
+            .frontend
+            .main_menu_movie_identity
             .is_some_and(|identity| identity.base() != movie_base)
         {
             crate::app::frontend::main_menu_shell_render::clear_ra2ts_movie_session(state);

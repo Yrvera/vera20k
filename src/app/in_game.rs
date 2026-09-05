@@ -15,13 +15,15 @@ impl App {
     /// Hand the scenario RNG cursor back to the offline shell when a match ends.
     pub(super) fn capture_returned_skirmish_rng(state: &mut AppState) {
         let gameplay_rng = state
-            .match_state.sim_runtime
+            .match_state
+            .sim_runtime
             .as_ref()
             .map(|rt| &rt.simulation)
             .map(crate::sim::world::Simulation::clone_scenario_rng);
         if let Some(gameplay_rng) = gameplay_rng
             && state
-                .frontend.offline_skirmish_runtime
+                .frontend
+                .offline_skirmish_runtime
                 .capture_returned_gameplay_rng(gameplay_rng)
         {
             log::info!("Returned gameplay Scenario cursor to the offline shell");
@@ -30,7 +32,8 @@ impl App {
 
     pub(super) fn return_to_main_menu(state: &mut AppState) {
         state.match_state.paused = false;
-        state.match_state.match_presentation.in_game_menu = crate::ui::pause_menu::InGameMenuState::Closed;
+        state.match_state.match_presentation.in_game_menu =
+            crate::ui::pause_menu::InGameMenuState::Closed;
         state.match_state.match_presentation.in_game_options_anchor = None;
         // Persist the deterministic diagnostic log before its owning sim is
         // torn down.
@@ -122,8 +125,16 @@ impl App {
     /// cancels that instead and the machine stays out of it.
     pub(super) fn in_game_menu_owns_escape(state: &AppState) -> bool {
         let in_world_mode_armed = state.match_state.input.targeting_mode.is_some()
-            || state.match_state.match_presentation.sidebar_gadget_state.repair_mode_on
-            || state.match_state.match_presentation.sidebar_gadget_state.sell_mode_on;
+            || state
+                .match_state
+                .match_presentation
+                .sidebar_gadget_state
+                .repair_mode_on
+            || state
+                .match_state
+                .match_presentation
+                .sidebar_gadget_state
+                .sell_mode_on;
         crate::ui::pause_menu::escape_belongs_to_modal_machine(
             state.match_state.match_presentation.in_game_menu,
             in_world_mode_armed,
@@ -140,7 +151,11 @@ impl App {
         if state.match_state.match_presentation.in_game_menu == InGameMenuState::Options {
             crate::app::persistence::options::in_game_options_close(state);
         }
-        let next = state.match_state.match_presentation.in_game_menu.on_escape();
+        let next = state
+            .match_state
+            .match_presentation
+            .in_game_menu
+            .on_escape();
         Self::enter_in_game_menu_state(state, next);
     }
 
@@ -168,7 +183,10 @@ impl App {
         if was_open != will_be_open
             && !crate::app::match_runtime::sim_tick::current_session_mode(state).is_network()
         {
-            let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
+            let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(
+                state,
+                Instant::now(),
+            );
             if will_be_open {
                 state.match_state.scenario_elapsed_clock.pause(now_ms);
             } else {
@@ -185,19 +203,33 @@ impl App {
         if next == InGameMenuState::Options {
             // Reset the transient interaction flags so the drag-gated
             // value-label quirk resets on every open.
-            state.match_state.match_presentation.in_game_options.on_open();
+            state
+                .match_state
+                .match_presentation
+                .in_game_options
+                .on_open();
         }
 
         state.match_state.paused = next.is_open();
         if next.is_open() {
             // Show the OS cursor so the modal is clickable.
-            if state.match_state.match_presentation.software_cursor.is_some() {
+            if state
+                .match_state
+                .match_presentation
+                .software_cursor
+                .is_some()
+            {
                 state.platform.window.set_cursor_visible(true);
             }
         } else {
             // Elapsed modal time must not cause a catch-up frame.
             state.platform.frame_pacer.reset_for_immediate_frame();
-            if state.match_state.match_presentation.software_cursor.is_some() {
+            if state
+                .match_state
+                .match_presentation
+                .software_cursor
+                .is_some()
+            {
                 state.platform.window.set_cursor_visible(false);
             }
         }
@@ -213,9 +245,9 @@ impl App {
 
         let outcome = match state.match_state.match_presentation.in_game_menu {
             InGameMenuState::Closed => ModalOutcome::Stay,
-            InGameMenuState::Menu => {
-                pause_menu::resolve_menu_action(pause_menu::draw_in_game_menu(&state.renderer.egui.ctx))
-            }
+            InGameMenuState::Menu => pause_menu::resolve_menu_action(
+                pause_menu::draw_in_game_menu(&state.renderer.egui.ctx),
+            ),
             InGameMenuState::AbortConfirm => {
                 let leave_label =
                     Self::csf_label(state, ABORT_CONFIRM_LEAVE_KEY, ABORT_CONFIRM_LEAVE_FALLBACK);
@@ -247,7 +279,9 @@ impl App {
     pub(super) fn sync_in_game_menu_with_options_overlay(state: &mut AppState) {
         use crate::ui::pause_menu::InGameMenuState;
 
-        if state.match_state.match_presentation.in_game_menu == InGameMenuState::Options && !state.match_state.paused {
+        if state.match_state.match_presentation.in_game_menu == InGameMenuState::Options
+            && !state.match_state.paused
+        {
             Self::enter_in_game_menu_state(state, InGameMenuState::Menu);
         }
     }
@@ -289,14 +323,16 @@ impl App {
         let local_owner = crate::app::input::commands::preferred_local_owner(state);
         let local_owner_id = local_owner.as_deref().and_then(|owner| {
             state
-                .match_state.sim_runtime
+                .match_state
+                .sim_runtime
                 .as_ref()
                 .map(|rt| &rt.simulation)
                 .and_then(|sim| sim.interner.get(owner))
         });
         let local_outcome_exit_ready = local_owner_id.is_some_and(|owner| {
             state
-                .match_state.sim_runtime
+                .match_state
+                .sim_runtime
                 .as_ref()
                 .map(|rt| &rt.simulation)
                 .and_then(|sim| sim.houses.get(&owner))
@@ -304,7 +340,8 @@ impl App {
                 .is_some_and(|outcome| outcome.exit_ready)
         });
         let executed_owner = state
-            .match_state.sim_runtime
+            .match_state
+            .sim_runtime
             .as_mut()
             .map(|rt| &mut rt.simulation)
             .and_then(|sim| sim.take_executed_exit_owner());
@@ -316,7 +353,9 @@ impl App {
             return;
         }
         if matches!(
-            crate::app::match_runtime::scenario_exit::arbitrate_executed_exit(local_outcome_exit_ready),
+            crate::app::match_runtime::scenario_exit::arbitrate_executed_exit(
+                local_outcome_exit_ready
+            ),
             crate::app::match_runtime::scenario_exit::ExecutedExitDisposition::Outcome
         ) {
             // Main_Game observes the ready victory/loss route first. The EXIT
@@ -335,10 +374,11 @@ impl App {
         // GameExit__BattleControlTerminated @ 0x00686570 starts Theme's fade,
         // then fades the independent audio master, bounds its voice pump to
         // 300 timer buckets, and finally hard-stops audio.
-        let mut scenario_exit = crate::app::match_runtime::scenario_exit::ScenarioExitCascade::start(
-            wall_ms,
-            crate::app::match_runtime::scenario_exit::ScenarioExitDestination::MainMenu,
-        );
+        let mut scenario_exit =
+            crate::app::match_runtime::scenario_exit::ScenarioExitCascade::start(
+                wall_ms,
+                crate::app::match_runtime::scenario_exit::ScenarioExitDestination::MainMenu,
+            );
         // `0x00686570` requests EVA_BattleControlTerminated as an INTERRUPT
         // immediately before waiting for the two simultaneous audio fades.
         if let Some(action) = scenario_exit.take_start_voice_action() {
@@ -380,7 +420,9 @@ impl App {
     /// overlay is hidden — caller checks `show_dev_overlay` before
     /// calling.
     pub(super) fn handle_dev_overlay(state: &mut AppState) {
-        use crate::app::diagnostics::dev_overlay::{DevOverlayAction, DevOverlayInfo, RecentSaveRow};
+        use crate::app::diagnostics::dev_overlay::{
+            DevOverlayAction, DevOverlayInfo, RecentSaveRow,
+        };
 
         // Build the recent-saves snapshot from the existing cache.
         state.persistence.refresh_save_list_if_dirty();
@@ -399,7 +441,9 @@ impl App {
                     .unwrap_or("?")
                     .to_string(),
                 tick: e.header.tick,
-                age_str: crate::app::persistence::save_load_panel::format_timestamp(e.header.save_timestamp),
+                age_str: crate::app::persistence::save_load_panel::format_timestamp(
+                    e.header.save_timestamp,
+                ),
             })
             .collect();
 
@@ -435,7 +479,11 @@ impl App {
         let mut info = DevOverlayInfo {
             sim_speed_tps: state.match_state.sim_speed_tps,
             paused: state.match_state.paused,
-            music_volume: state.audio.music_player.as_ref().map_or(0.5, |p| p.volume()),
+            music_volume: state
+                .audio
+                .music_player
+                .as_ref()
+                .map_or(0.5, |p| p.volume()),
             sfx_volume: state.audio.sfx_player.as_ref().map_or(0.7, |p| p.volume()),
             show_pathgrid: state.diag.debug_show_pathgrid,
             show_cell_grid: state.diag.debug_show_cell_grid,
@@ -449,7 +497,12 @@ impl App {
             } else {
                 1000.0 / state.match_state.sim_speed_tps as f32
             },
-            entity_count: state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or(0, |s| s.entities().len()),
+            entity_count: state
+                .match_state
+                .sim_runtime
+                .as_ref()
+                .map(|rt| &rt.simulation)
+                .map_or(0, |s| s.entities().len()),
             save_name_buf: &mut save_name,
             last_save_tick: state.persistence.last_save_tick,
             last_save_age,
@@ -458,7 +511,10 @@ impl App {
             recent_saves,
         };
 
-        let action = crate::app::diagnostics::dev_overlay::draw_dev_overlay(&state.renderer.egui.ctx, &mut info);
+        let action = crate::app::diagnostics::dev_overlay::draw_dev_overlay(
+            &state.renderer.egui.ctx,
+            &mut info,
+        );
 
         // Restore the (possibly-edited) buffer.
         state.diag.dev_overlay_save_name = save_name;
@@ -476,7 +532,10 @@ impl App {
             }
             DevOverlayAction::ResetGameSpeed => {
                 state.match_state.sim_speed_tps = crate::app::types::default_yr_skirmish_tps();
-                log::info!("Game speed reset to {} tps", state.match_state.sim_speed_tps);
+                log::info!(
+                    "Game speed reset to {} tps",
+                    state.match_state.sim_speed_tps
+                );
             }
             DevOverlayAction::SetMusicVolume(v) => {
                 if let Some(p) = &mut state.audio.music_player {
@@ -512,7 +571,8 @@ impl App {
                 dispatch::toggle_unit_inspector(state);
             }
             DevOverlayAction::ToggleRevealMap => {
-                state.match_state.sandbox_full_visibility = !state.match_state.sandbox_full_visibility;
+                state.match_state.sandbox_full_visibility =
+                    !state.match_state.sandbox_full_visibility;
                 log::info!(
                     "Reveal map: {}",
                     if state.match_state.sandbox_full_visibility {
@@ -559,7 +619,11 @@ impl App {
     /// calls this instead of exiting immediately; `render_frame` drives it to
     /// completion and then exits the event loop.
     pub(super) fn start_quit_cascade(state: &mut AppState) {
-        let start_volume = state.audio.music_player.as_ref().map_or(0.0, |p| p.volume());
+        let start_volume = state
+            .audio
+            .music_player
+            .as_ref()
+            .map_or(0.0, |p| p.volume());
         state.frontend.quit_cascade = Some(crate::app::frontend::quit_cascade::QuitCascade::start(
             Instant::now(),
             start_volume,
@@ -571,16 +635,19 @@ impl App {
             return;
         }
         let poll_voices = state
-            .match_state.scenario_exit
+            .match_state
+            .scenario_exit
             .as_ref()
             .is_some_and(|exit| exit.needs_voice_poll(wall_ms));
         let voices_active = poll_voices
             && state
-                .audio.sfx_player
+                .audio
+                .sfx_player
                 .as_mut()
                 .is_some_and(|sfx| sfx.pump_and_check_voices());
         let tick = state
-            .match_state.scenario_exit
+            .match_state
+            .scenario_exit
             .as_mut()
             .expect("scenario exit remains present")
             .tick(wall_ms, voices_active);
@@ -608,20 +675,20 @@ impl App {
         // ScoreDialog__WndProc @ 0x005C9B10 resolves the literal SCORE theme
         // and starts it immediately on WM_INITDIALOG. Keep this after the
         // hard stop and output-scale restoration so ScoreX begins audible.
-        if let Some(crate::app::match_runtime::scenario_exit::ScenarioExitAudioAction::PlayTheme(theme)) =
-            tick.after_stop
+        if let Some(crate::app::match_runtime::scenario_exit::ScenarioExitAudioAction::PlayTheme(
+            theme,
+        )) = tick.after_stop
             && let Some(assets) = state.process_assets.manager()
         {
-            let _ = state.audio.play_theme(theme, assets);
+            let _ = state.audio.play_theme(theme, assets, wall_ms);
         }
         if !tick.finished {
             return;
         }
 
-        let destination = state
-            .match_state.scenario_exit
-            .as_mut()
-            .and_then(crate::app::match_runtime::scenario_exit::ScenarioExitCascade::take_destination);
+        let destination = state.match_state.scenario_exit.as_mut().and_then(
+            crate::app::match_runtime::scenario_exit::ScenarioExitCascade::take_destination,
+        );
         state.match_state.scenario_exit = None;
         match destination {
             Some(crate::app::match_runtime::scenario_exit::ScenarioExitDestination::Score {
