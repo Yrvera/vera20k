@@ -553,7 +553,7 @@ pub(crate) fn tick_miners(
 }
 
 #[cfg(test)]
-fn tick_miners_test_walk(
+pub(super) fn tick_miners_test_walk(
     sim: &mut Simulation,
     rules: &RuleSet,
     config: &MinerConfig,
@@ -1058,15 +1058,27 @@ fn handle_harvest(
         .capacity_bales
         .saturating_sub(snap.miner.cargo.len() as u16);
 
+    // `UnitClass::Harvest_Ore_Tick` @ 0x0073D450 requests ONE density level
+    // per harvest gate, not the free capacity. Disassembly 0x0073D556..
+    // 0x0073D5A1: `FILD [type+0x800]` (Storage), `CALL GetTotalAmount`,
+    // `FSUBR` (Storage - total), `FCOMP [0x007E2AC8]` (1.0f), `TEST AH,0x41` /
+    // `JNZ` keeps the difference only when it is <= 1.0, otherwise
+    // `FLD [0x007E2AC8]` loads 1.0; then `CALL Math__ftol`, `PUSH EAX`,
+    // `CALL Reduce_Tiberium` @ 0x00480A80. So request = ftol(min(1.0,
+    // Storage - total)). With integer cargo the difference is always >= 1 here
+    // (the full check above already returned), so the request is exactly 1.
+    // `FUN_00522E70` (slave harvest tick) uses the same min(1.0, ..) shape.
+    let request: u16 = empty.min(1);
+
     // Shared CellClass::Reduce_Tiberium boundary: caller owns cargo insertion,
     // while the helper owns overlay/resource/dirty/queue side effects.
     let reduction = match resource_authority {
         ResourceQueryAuthority::OverlayGrid => {
-            sim.reduce_tiberium_at_with_native_context(cell, empty, Some(rules), overlay_registry)
+            sim.reduce_tiberium_at_with_native_context(cell, request, Some(rules), overlay_registry)
         }
         #[cfg(test)]
         ResourceQueryAuthority::LegacyNodesForTests => {
-            sim.reduce_legacy_tiberium_at_for_tests(cell, empty)
+            sim.reduce_legacy_tiberium_at_for_tests(cell, request)
         }
     };
 
@@ -1420,12 +1432,13 @@ pub(crate) fn extract_bale(
     })
 }
 
-/// Drain as many bales from `cell` as fit within `empty_capacity_bales`.
+/// Test-only bulk-drain primitive over the legacy resource-node model.
 ///
-/// Mirrors gamemd's harvester per-tick extraction:
-///   amount    = ftol(Storage - current_load)   // bales requested
-///   extracted = Reduce_Tiberium(amount)        // clamped to cell density
-///   AddAmount(extracted, type)                 // one storage update
+/// This is NOT the harvester's per-gate request: `Harvest_Ore_Tick`
+/// @ 0x0073D450 asks `Reduce_Tiberium` for `ftol(min(1.0, Storage - total))`,
+/// i.e. one density level per gate (see `handle_harvest`). This helper only
+/// exercises `Reduce_Tiberium`'s clamp-to-cell-content behaviour for an
+/// arbitrary request, the way area damage or a test fixture might issue one.
 ///
 /// One call drains `min(empty_capacity_bales, cell_density_levels)` bales
 /// in a single atomic mutation: one `node.remaining` decrement and one
@@ -2202,8 +2215,7 @@ fn issue_stock_miner_drive_move_with_overlay_registry(
                     locomotor.layer,
                     locomotor.phase,
                 );
-                let _ = locomotor
-                    .begin_drive_piggyback_for_teleporter(sim.session.binary_frame);
+                let _ = locomotor.begin_drive_piggyback_for_teleporter(sim.session.binary_frame);
                 snapshot
             })
     } else {

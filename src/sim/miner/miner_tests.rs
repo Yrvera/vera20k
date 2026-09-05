@@ -1316,9 +1316,10 @@ fn local_continuation_after_cell_depletes() {
         miner.harvest_timer.clear();
     }
 
-    // Tick enough to deplete the small cell and search for the next.
-    // harvest_tick_interval=8, so 2 bales takes ~17 ticks, then search triggers.
-    tick_miners_n(&mut sim, &rules, 30);
+    // Tick enough to deplete the small cell and search for the next. One
+    // level per 19-frame gate (Harvest_Ore_Tick @ 0x0073D450 requests
+    // min(1, free)): bales at frames 1 and 20, the empty-cell gate at 39.
+    tick_miners_n(&mut sim, &rules, 40);
 
     let miner = get_miner(&sim, miner_id);
     // After (20,20) depletes, the short-scan continuation must pick (22,20)
@@ -1363,8 +1364,9 @@ fn harvest_continues_to_nearby_ore_when_cell_depletes_partial_cargo() {
         miner.harvest_timer.clear();
     }
 
-    // Tick enough to deplete (20,20) and trigger the continuation scan.
-    tick_miners_n(&mut sim, &rules, 30);
+    // Tick enough to deplete (20,20) and trigger the continuation scan: one
+    // level per 19-frame gate, so the empty-cell gate fires at frame 39.
+    tick_miners_n(&mut sim, &rules, 40);
 
     let miner = get_miner(&sim, miner_id);
     assert!(
@@ -1414,7 +1416,8 @@ fn harvest_returns_when_no_ore_within_short_scan() {
         miner.harvest_timer.clear();
     }
 
-    tick_miners_n(&mut sim, &rules, 30);
+    // One level per 19-frame gate: the empty-cell gate fires at frame 39.
+    tick_miners_n(&mut sim, &rules, 40);
 
     let miner = get_miner(&sim, miner_id);
     assert!(
@@ -5260,7 +5263,9 @@ fn full_dock_cycle_war_miner() {
 }
 
 // ==========================================================================
-// extract_bales_max — bulk-drain primitive (gamemd Harvest_Ore_Tick parity)
+// extract_bales_max — test-only bulk-drain primitive over the legacy node
+// model. It exercises Reduce_Tiberium's clamp for an arbitrary request; the
+// harvester itself requests ONE level per gate (see the per-bite block below).
 // ==========================================================================
 
 #[test]
@@ -5404,21 +5409,105 @@ fn extract_max_node_remaining_zero() {
 }
 
 // ==========================================================================
-// Multi-bale extraction integration tests (parity contract for handle_harvest)
+// Per-bite extraction integration tests (parity contract for handle_harvest)
+//
+// `UnitClass::Harvest_Ore_Tick` @ 0x0073D450 requests
+// `ftol(min(1.0f, Storage - GetTotalAmount()))` from `Reduce_Tiberium`
+// (0x0073D556..0x0073D5A1: FILD Storage, FSUBR, FCOMP 1.0f, FLD 1.0f, ftol),
+// so each 19-frame gate removes ONE density level, never the free capacity.
 // ==========================================================================
 
-/// Drives the full handle_harvest path: a War Miner sitting on an 11-density
-/// ore cell drains the entire cell in a single extraction call, matching
-/// gamemd's Harvest_Ore_Tick.
+/// Minimal stock-shaped tiberium rules plus an overlay registry so a miner
+/// test can run the production `ResourceQueryAuthority::OverlayGrid` path
+/// (real `CellClass::Reduce_Tiberium` shape, including the density-0 overlay).
+fn miner_rules_with_tiberium() -> (RuleSet, crate::map::overlay_types::OverlayTypeRegistry) {
+    let mut text = String::from(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n\
+         0=HARV\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         0=GAREFN\n\
+         [HARV]\n\
+         Name=War Miner\n\
+         Cost=1400\n\
+         Strength=600\n\
+         Speed=4\n\
+         Owner=Americans\n\
+         Harvester=yes\n\
+         Dock=GAREFN\n\
+         [GAREFN]\n\
+         Name=Ore Refinery\n\
+         Foundation=4x3\n\
+         Refinery=yes\n\
+         [Tiberiums]\n0=Riparius\n\
+         [Riparius]\nImage=1\nValue=25\nGrowth=2200\nGrowthPercentage=.06\n\
+         Spread=2200\nSpreadPercentage=.06\n[OverlayTypes]\n",
+    );
+    let mut tiberium_names = Vec::new();
+    for raw_key in (1..=124).filter(|key| *key != 40 && *key != 41) {
+        let name = if (105..=116).contains(&raw_key) {
+            format!("TIB{:02}", raw_key - 104)
+        } else {
+            format!("FILL{raw_key:03}")
+        };
+        text.push_str(&format!("{raw_key}={name}\n"));
+        if name.starts_with("TIB") {
+            tiberium_names.push(name);
+        }
+    }
+    for name in tiberium_names {
+        text.push_str(&format!("[{name}]\nTiberium=yes\n"));
+    }
+    let ini = IniFile::from_str(&text);
+    (
+        RuleSet::from_ini(&ini).expect("miner+tiberium rules"),
+        crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None),
+    )
+}
+
+/// Advance `n` frames driving the production overlay-grid resource authority.
+fn tick_miners_overlay_n(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    registry: &crate::map::overlay_types::OverlayTypeRegistry,
+    n: usize,
+) {
+    let config = MinerConfig::default();
+    let grid = PathGrid::new(64, 64);
+    for _ in 0..n {
+        sim.session.total_sim_ms = sim.session.total_sim_ms.saturating_add(67);
+        sim.session.binary_frame = sim.session.binary_frame.wrapping_add(1);
+        super::miner_system::tick_miners_test_walk(
+            sim,
+            rules,
+            &config,
+            Some(&grid),
+            Some(registry),
+            super::miner_system::ResourceQueryAuthority::OverlayGrid,
+        );
+        crate::sim::movement::tick_movement(
+            &mut sim.substrate.entities,
+            &mut sim.interner,
+            &mut sim.pending_lifecycle_requests,
+        );
+        sim.session.tick += 1;
+    }
+}
+
+/// Drives the full handle_harvest path on the legacy node model: a War Miner
+/// on an 11-density ore cell takes exactly one bale per gate. The first gate
+/// fires on the cleared timer; every later bale waits the native
+/// `HarvesterLoadRate` cadence (`harvest_tick_interval + 1` = 19 frames).
 #[test]
-fn harvester_drains_full_cell_in_one_extraction_tick() {
+fn harvester_takes_one_bale_per_gate_over_eleven_gates() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
+    let config = MinerConfig::default();
+    let gate = usize::from(config.harvest_tick_interval) + 1;
 
     place_ore(&mut sim, 20, 20, 11 * 120);
 
-    // War Miner (capacity 40) on the ore cell, already in Harvest state and
-    // ready to fire (harvest_timer == 0).
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
     {
         let entity = sim
@@ -5434,24 +5523,194 @@ fn harvester_drains_full_cell_in_one_extraction_tick() {
         miner.harvest_timer.clear();
     }
 
-    // Single tick: timer == 0 means extract_bales_max fires immediately and
-    // drains the cell in one call.
+    // Gate 1 fires immediately on the cleared timer: one bale, density 10.
     tick_miners_n(&mut sim, &rules, 1);
+    {
+        let miner = get_miner(&sim, miner_id);
+        assert_eq!(miner.cargo.len(), 1, "first gate removes one level");
+        assert_eq!(miner.state, MinerState::Harvest);
+        assert_eq!(
+            miner.harvest_timer.duration,
+            u32::from(config.harvest_tick_interval) + 1,
+            "success re-arms the native F+19 gate"
+        );
+        let after = sim
+            .production
+            .resource_nodes
+            .get(&(20, 20))
+            .expect("cell still has ore");
+        assert_eq!(after.remaining, 10 * 120, "cell drops by one level");
+    }
+
+    // The frames strictly inside a gate extract nothing.
+    tick_miners_n(&mut sim, &rules, gate - 1);
+    assert_eq!(
+        get_miner(&sim, miner_id).cargo.len(),
+        1,
+        "no extraction before the gate is due"
+    );
+
+    // Gates 2..=11: one bale each, 19 frames apart.
+    for bale in 2..=11usize {
+        tick_miners_n(&mut sim, &rules, 1);
+        let miner = get_miner(&sim, miner_id);
+        assert_eq!(
+            miner.cargo.len(),
+            bale,
+            "gate {bale} yields exactly one bale"
+        );
+        if bale < 11 {
+            assert_eq!(
+                sim.production
+                    .resource_nodes
+                    .get(&(20, 20))
+                    .expect("cell still has ore")
+                    .remaining,
+                (11 - bale as u16) * 120,
+                "cell density tracks bales taken"
+            );
+            tick_miners_n(&mut sim, &rules, gate - 1);
+        }
+    }
 
     let miner = get_miner(&sim, miner_id);
-    assert_eq!(
-        miner.cargo.len(),
-        11,
-        "full cell drained in one extraction call"
-    );
+    assert_eq!(miner.cargo.len(), 11, "11 bales after 11 gates");
+    assert_eq!(miner.state, MinerState::Harvest, "still cutting ore");
+    // The legacy node model removes the node on the last level; the production
+    // overlay path keeps a density-0 overlay instead (covered by
+    // `harvester_clears_density_zero_overlay_without_bale_and_moves_on`).
     assert!(
         sim.production.resource_nodes.get(&(20, 20)).is_none(),
-        "cell removed after full drain"
+        "legacy node removed when its last level is taken"
+    );
+    assert_eq!(
+        sim.session.binary_frame,
+        1 + 10 * gate as u32,
+        "11 gates span 1 + 10 * 19 frames"
+    );
+
+    // Gate 12 finds nothing to cut: no bale, no re-arm, miner moves on
+    // (short scan miss with no refinery -> return path, not Harvest).
+    tick_miners_n(&mut sim, &rules, gate);
+    let miner = get_miner(&sim, miner_id);
+    assert_eq!(miner.cargo.len(), 11, "exhausted cell yields no bale");
+    assert_ne!(miner.state, MinerState::Harvest, "miner leaves the cell");
+}
+
+/// Production overlay path: after the eleventh bite the overlay sits at
+/// density 0 (`Reduce_Tiberium(1)` on data 1 is the partial path, leaving
+/// data 0). The next gate's `Reduce_Tiberium(1)` on data 0 takes the full
+/// removal path and returns 0: the overlay clears, no bale is credited, the
+/// timer is not re-armed, and Mission_Harvest moves the miner on.
+#[test]
+fn harvester_clears_density_zero_overlay_without_bale_and_moves_on() {
+    let (rules, registry) = miner_rules_with_tiberium();
+    let tib01 = registry.id_for_name("TIB01").expect("TIB01");
+    let config = MinerConfig::default();
+    let gate = usize::from(config.harvest_tick_interval) + 1;
+    let cell = (20u16, 20u16);
+    let next = (21u16, 20u16);
+
+    let mut sim = Simulation::new();
+    sim.overlay_grid = Some(OverlayGrid::new(64, 64));
+    {
+        let overlay = sim.overlay_grid.as_mut().expect("overlay grid");
+        overlay.place_overlay(cell.0, cell.1, tib01, 11);
+        // A neighbouring patch so the post-exhaustion short scan has a hit.
+        overlay.place_overlay(next.0, next.1, tib01, 3);
+    }
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, cell.0, cell.1);
+    {
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        entity
+            .mission
+            .set_handler_state(MinerState::Harvest.cursor());
+        miner.target_ore_cell = Some(cell);
+        miner.harvest_timer.clear();
+    }
+
+    let density = |sim: &Simulation| {
+        let overlay = sim.overlay_grid.as_ref().expect("overlay grid");
+        let c = overlay.cell(cell.0, cell.1);
+        (c.overlay_id, c.overlay_data)
+    };
+
+    // Eleven gates: one level each, overlay stays present down to data 0.
+    for bale in 1..=11u8 {
+        tick_miners_overlay_n(&mut sim, &rules, &registry, 1);
+        let miner = get_miner(&sim, miner_id);
+        assert_eq!(
+            miner.cargo.len(),
+            usize::from(bale),
+            "gate {bale}: one bale"
+        );
+        assert_eq!(
+            miner.state,
+            MinerState::Harvest,
+            "gate {bale}: still cutting"
+        );
+        assert_eq!(
+            density(&sim),
+            (Some(tib01), 11 - bale),
+            "gate {bale}: overlay present, one level lower"
+        );
+        assert_eq!(
+            miner.harvest_timer.duration,
+            u32::from(config.harvest_tick_interval) + 1,
+            "gate {bale}: success re-arms F+19"
+        );
+        tick_miners_overlay_n(&mut sim, &rules, &registry, gate - 1);
+        assert_eq!(
+            get_miner(&sim, miner_id).cargo.len(),
+            usize::from(bale),
+            "gate {bale}: nothing between gates"
+        );
+    }
+    assert_eq!(density(&sim), (Some(tib01), 0), "density-0 overlay remains");
+    assert_eq!(
+        sim.session.binary_frame,
+        11 * gate as u32,
+        "11 gates plus 11 waits"
+    );
+
+    // Gate 12: full-removal path on data 0 returns 0 -> overlay cleared, no
+    // bale, miner retargets the neighbouring patch.
+    tick_miners_overlay_n(&mut sim, &rules, &registry, 1);
+    let miner = get_miner(&sim, miner_id);
+    assert_eq!(miner.cargo.len(), 11, "density-0 gate credits nothing");
+    assert_eq!(density(&sim), (None, 0), "density-0 overlay is cleared");
+    assert_eq!(miner.state, MinerState::MoveToOre, "miner moves on");
+    assert_eq!(
+        miner.target_ore_cell,
+        Some(next),
+        "short scan picked the neighbour"
+    );
+    assert_eq!(
+        (
+            sim.overlay_grid
+                .as_ref()
+                .expect("grid")
+                .cell(next.0, next.1)
+                .overlay_id,
+            sim.overlay_grid
+                .as_ref()
+                .expect("grid")
+                .cell(next.0, next.1)
+                .overlay_data
+        ),
+        (Some(tib01), 3),
+        "the neighbouring patch is untouched"
     );
 }
 
-/// One extraction call must not exceed remaining cargo capacity even when
-/// the cell has more density than the miner can hold.
+/// A nearly full miner still takes exactly one level per gate; capacity never
+/// widens the request. 38/40 loaded -> 39 after one gate, cell 11 -> 10.
 #[test]
 fn harvester_caps_extraction_at_remaining_capacity() {
     let mut sim = Simulation::new();
@@ -5485,16 +5744,37 @@ fn harvester_caps_extraction_at_remaining_capacity() {
     tick_miners_n(&mut sim, &rules, 1);
 
     let miner = get_miner(&sim, miner_id);
-    assert_eq!(miner.cargo.len(), 40, "capped at capacity");
+    assert_eq!(miner.cargo.len(), 39, "one level per gate even with 2 free");
     assert_eq!(
         miner.state,
         MinerState::Harvest,
-        "positive filling extraction remains a successful Harvest tick"
+        "positive extraction remains a successful Harvest tick"
     );
     assert_eq!(
         miner.harvest_timer.duration,
         u32::from(config.harvest_tick_interval) + 1,
         "success-reset gate remains due at the native F+19 observation"
+    );
+    let after = sim
+        .production
+        .resource_nodes
+        .get(&(20, 20))
+        .expect("cell still has ore");
+    assert_eq!(after.remaining, 10 * 120, "cell drops to density 10");
+
+    // The next gate takes the fortieth bale: filling is still a success.
+    tick_miners_n(
+        &mut sim,
+        &rules,
+        usize::from(config.harvest_tick_interval) + 1,
+    );
+
+    let miner = get_miner(&sim, miner_id);
+    assert_eq!(miner.cargo.len(), 40, "capped at capacity");
+    assert_eq!(
+        miner.state,
+        MinerState::Harvest,
+        "positive filling extraction remains a successful Harvest tick"
     );
     assert_eq!(
         miner.last_harvest_cell, None,
@@ -5534,7 +5814,8 @@ fn filling_extraction_waits_for_full_gate_before_war_return() {
             .get_mut(miner_id)
             .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
-        for _ in 0..38 {
+        // 39 of 40 loaded: the single-level gate request fills on one bite.
+        for _ in 0..39 {
             miner.cargo.push(CargoBale {
                 resource_type: ResourceType::Ore,
                 value: config.ore_bale_value,
@@ -5667,7 +5948,8 @@ fn chrono_filling_extraction_does_not_warp_before_state2_tick() {
             .get_mut(miner_id)
             .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
-        for _ in 0..18 {
+        // 19 of 20 loaded: the single-level gate request fills on one bite.
+        for _ in 0..19 {
             miner.cargo.push(CargoBale {
                 resource_type: ResourceType::Ore,
                 value: config.ore_bale_value,
@@ -5708,7 +5990,8 @@ fn chrono_filling_extraction_does_not_warp_before_state2_tick() {
             .get(&(63, 63))
             .expect("productive source cell after fill")
             .remaining,
-        9 * 120
+        10 * 120,
+        "one level per gate: the filling bite drops 11 -> 10"
     );
 
     tick_miners_n(&mut sim, &rules, config.harvest_tick_interval as usize);
@@ -5766,7 +6049,7 @@ fn chrono_filling_extraction_does_not_warp_before_state2_tick() {
             .get(&(63, 63))
             .expect("full gate must not reduce the productive cell")
             .remaining,
-        9 * 120
+        10 * 120
     );
 
     tick_miners_n(&mut sim, &rules, 1);
@@ -5817,13 +6100,16 @@ fn harvester_continues_to_short_scan_when_partial_then_empty() {
         miner.harvest_timer.clear();
     }
 
-    // First tick: drain (20, 20) in one extraction → 5 bales. The post-
-    // success branch resets harvest_timer to harvest_tick_interval and the
-    // miner stays in Harvest waiting for the next cycle.
+    // Five gates drain (20, 20): one level per gate (Harvest_Ore_Tick
+    // @ 0x0073D450 requests min(1, free)). Each success re-arms the
+    // harvest_tick_interval + 1 gate and the miner stays in Harvest.
     tick_miners_n(&mut sim, &rules, 1);
+    for _ in 1..5 {
+        tick_miners_n(&mut sim, &rules, config.harvest_tick_interval as usize + 1);
+    }
     {
         let miner = get_miner(&sim, miner_id);
-        assert_eq!(miner.cargo.len(), 5, "5 bales from density-5 cell");
+        assert_eq!(miner.cargo.len(), 5, "5 bales after 5 gates");
         assert_eq!(
             miner.state,
             MinerState::Harvest,
