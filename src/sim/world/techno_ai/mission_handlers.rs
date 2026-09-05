@@ -42,15 +42,12 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // A miner's dispatch is owned by the absorbed Harvest handler, which
         // writes its own epilogue — except on Guard, which the Harvest handler
         // now declines. That is the native split: a vehicle on Guard enters the
-        // harvester Guard override, which layers the slave/refinery checks and
-        // then tail-calls the same FootClass Guard handler every other unit
-        // uses; a vehicle on Harvest enters the Harvest handler. Exactly one of
-        // the two runs, so the timer keeps a single writer.
-        //
-        // RESIDUAL, not modelled: the harvester Guard override's player arm
-        // re-queues Harvest when a Refinery the house owns sits in one of the
-        // eight neighbouring cells, so a retail miner stopped next to its
-        // refinery goes back to work on its own. VERA's stays put.
+        // harvester Guard override (`UnitClass::Mission_Guard @ 0x00740810`,
+        // the human chrono arms live on the Unit Guard arm below), which
+        // layers the slave/refinery checks and then tail-calls the same
+        // FootClass Guard handler every other unit uses; a vehicle on Harvest
+        // enters the Harvest handler. Exactly one of the two runs, so the
+        // timer keeps a single writer.
         if entity.miner.is_some() && mission != Some(MissionType::Guard) {
             return;
         }
@@ -398,7 +395,11 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             // either arm. Player effect: none. Frequency: zero. Downstream
             // risk: the wrong native mapping would be carried straight into any
             // future deploy work; the shape belongs on the Move arm.
-            if input.unit_deploy_begin_active {
+            if harvester_guard_override_requeues_harvest(sim, id, rules) {
+                // `Queue_Mission(10, 0); return 1` at `0x0074092C` /
+                // `0x00740960` — no RNG draw, the Foot body is not reached.
+                MissionHandlerEvaluation::queue(1, MissionType::Harvest)
+            } else if input.unit_deploy_begin_active {
                 MissionHandlerEvaluation::queue(1, MissionType::Harvest)
             } else if input.unit_deploy_reverse_active {
                 MissionHandlerEvaluation::queue(1, MissionType::Unload)
@@ -1274,6 +1275,117 @@ fn evaluate_foot_guard_cadence(
     }
 }
 
+/// The harvester arms of `UnitClass::Mission_Guard @ 0x00740810` (decompiled
+/// 2026-09-05), run ahead of the `FootClass::Mission_Guard @ 0x004D5070`
+/// tail-call for a `Harvester=`/`Weeder=` type (`UnitType+0xE0E`/`+0xE0F`):
+///
+/// - (ii) **AI house** (`HouseClass::IsControlledByHuman @ 0x0050B730`
+///   false): walk the type's `Dock=` list (`Type+0x3EC`, count `+0x3F8`)
+///   and stop at the FIRST entry with `HouseClass::CountOwnedInstances >
+///   0`; there, NOT (`Harvester` `+0xE0E` && `House+0x242`) →
+///   `Queue_Mission(Harvest, 0); return 1`, else `break` (later Dock
+///   entries are not consulted — irrelevant here, the test is
+///   entry-independent). No owned instance of any entry → fall through.
+///   The `+0x242` latch is `HouseState::harvester_no_ore`, written
+///   native-true by the Harvest scan miss and never cleared; the Rust
+///   ownership count is `EntityStore::count_owned_of_type` (see its doc for
+///   the Unlimbo..Limbo vs insert..remove window).
+/// - (iii) **human house && `Teleporter=`** (`UnitType+0xCD4`): walk the 8
+///   neighbour cells (`MapCoord_StepByDir_GetCell`); a building there whose
+///   type has `+0x16BB` (`Refinery=`) and whose owner `+0x21C` is this house
+///   → queue Harvest, return 1. Else `Get_Storage_Percentage() == 1.0` and
+///   the locomotor's `Is_Moving` (ILocomotion slot `+0x10`) true → queue
+///   Harvest, return 1. `TeleportLocomotionClass::Is_Moving @ 0x00718080`
+///   is `byte +0x30 == 1`, true only for the Relocate tick — the
+///   `ready_producer` Teleport producer (`is_moving_now_for`), never "a
+///   teleport state exists". A human WAR miner has no arm here: once on
+///   Guard it stays until a player order.
+///
+/// Neither arm draws RNG. The slave-recall gate (i) ahead of both, the
+/// `DeploysInto` AI arm (iv) and the weeder latch (v) are outside this lane.
+/// A house missing from the registry reads as human (VERA fixtures register
+/// no houses by default).
+fn harvester_guard_override_requeues_harvest(sim: &Simulation, id: u64, rules: &RuleSet) -> bool {
+    let Some(entity) = sim.substrate.entities.get(id) else {
+        return false;
+    };
+    let Some(miner) = entity.miner.as_ref() else {
+        return false;
+    };
+    let Some(unit_type) = sim.object_type(entity.type_ref, rules) else {
+        return false;
+    };
+    if !unit_type.harvester {
+        return false;
+    }
+    let human = sim
+        .houses
+        .get(&entity.owner)
+        .is_none_or(|house| house.is_controlled_by_human(sim.session.game_mode_nonzero));
+    if !human {
+        // Arm (ii), `0x00740880..0x0074092C`.
+        let owns_dock = unit_type.dock.iter().any(|dock_type| {
+            sim.interner.get(dock_type).is_some_and(|type_ref| {
+                sim.substrate
+                    .entities
+                    .count_owned_of_type(entity.owner, type_ref)
+                    > 0
+            })
+        });
+        if !owns_dock {
+            return false;
+        }
+        let no_ore = sim
+            .houses
+            .get(&entity.owner)
+            .is_some_and(|house| house.harvester_no_ore);
+        return !(unit_type.harvester && no_ore);
+    }
+    if !unit_type.teleporter {
+        return false;
+    }
+    let (rx, ry) = (i32::from(entity.position.rx), i32::from(entity.position.ry));
+    for (dx, dy) in NEIGHBOUR_8 {
+        let (Ok(cx), Ok(cy)) = (u16::try_from(rx + dx), u16::try_from(ry + dy)) else {
+            continue;
+        };
+        let Some(cell) = sim.substrate.occupancy.get(cx, cy) else {
+            continue;
+        };
+        let own_refinery = cell
+            .blockers(crate::sim::movement::locomotor::MovementLayer::Ground)
+            .any(|sid| {
+                sim.substrate.entities.get(sid).is_some_and(|building| {
+                    building.category == EntityCategory::Structure
+                        && !building.dying
+                        && building.owner == entity.owner
+                        && sim
+                            .object_type(building.type_ref, rules)
+                            .is_some_and(|obj| obj.refinery)
+                })
+            });
+        if own_refinery {
+            return true;
+        }
+    }
+    // `Is_Moving` on the teleport locomotor: the Relocate tick only.
+    miner.is_full()
+        && crate::sim::movement::ready_producer::is_moving_now_for(entity, sim.session.binary_frame)
+}
+
+/// `MapCoord_StepByDir_GetCell(dir)` for dir 0..8 — the eight neighbours in
+/// facing order starting north, clockwise. Only membership matters here.
+const NEIGHBOUR_8: [(i32, i32); 8] = [
+    (0, -1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+    (0, 1),
+    (-1, 1),
+    (-1, 0),
+    (-1, -1),
+];
+
 /// The un-overridden `MissionClass` handler's return value, in frames.
 ///
 /// Every base mission stub in the original is the same two instructions —
@@ -1623,4 +1735,319 @@ fn attack_target_is_stale(sim: &Simulation, id: u64) -> bool {
         .entities
         .get(*target_id)
         .is_some_and(|target| !target.dying && target.is_alive())
+}
+
+#[cfg(test)]
+mod harvester_guard_override_tests {
+    use super::*;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::miner::{CargoBale, Miner, MinerConfig, MinerKind, ResourceType};
+    use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+    use crate::sim::movement::teleport_movement::{TeleportPhase, TeleportState};
+    use crate::sim::occupancy::CellListInsertion;
+
+    const MINER_ID: u64 = 1;
+    const REFINERY_ID: u64 = 2;
+    const REFINERY_NW: (u16, u16) = (10, 10);
+
+    fn rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n0=HARV\n1=CMIN\n[AircraftTypes]\n\
+             [BuildingTypes]\n0=GAREFN\n\
+             [HARV]\nHarvester=yes\nDock=GAREFN\nSpeed=4\n\
+             [CMIN]\nHarvester=yes\nTeleporter=yes\nDock=GAREFN\nSpeed=4\n\
+             [GAREFN]\nFoundation=4x3\nRefinery=yes\n",
+        ))
+        .expect("guard override rules")
+    }
+
+    fn spawn_refinery(sim: &mut Simulation, owner: &str) {
+        let owner = sim.interner.intern(owner);
+        let type_ref = sim.interner.intern("GAREFN");
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
+            REFINERY_ID,
+            REFINERY_NW.0,
+            REFINERY_NW.1,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 900,
+                max: 900,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        ge.lifecycle.in_limbo = false;
+        sim.substrate.entities.insert(ge);
+        for y in REFINERY_NW.1..REFINERY_NW.1 + 3 {
+            for x in REFINERY_NW.0..REFINERY_NW.0 + 4 {
+                sim.substrate.occupancy.add(
+                    x,
+                    y,
+                    REFINERY_ID,
+                    MovementLayer::Ground,
+                    None,
+                    CellListInsertion::AppendBuilding,
+                );
+            }
+        }
+    }
+
+    /// A miner of `kind` at `cell`, committed to Guard with a due timer.
+    fn spawn_guard_miner(sim: &mut Simulation, kind: MinerKind, cell: (u16, u16)) {
+        let owner = sim.interner.intern("Americans");
+        let type_name = match kind {
+            MinerKind::Chrono => "CMIN",
+            _ => "HARV",
+        };
+        let type_ref = sim.interner.intern(type_name);
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
+            MINER_ID,
+            cell.0,
+            cell.1,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 400,
+                max: 400,
+            },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        ge.locomotor = Some(LocomotorState::for_test_kind(match kind {
+            MinerKind::Chrono => LocomotorKind::Teleport,
+            _ => LocomotorKind::Drive,
+        }));
+        ge.miner = Some(Miner::new(kind, &MinerConfig::default(), 0));
+        sim.substrate.entities.insert(ge);
+        sim.mission_assign_exact(MINER_ID, MissionId::from_known(MissionType::Guard), 0)
+            .expect("assign Guard");
+    }
+
+    fn fill_cargo(sim: &mut Simulation) {
+        let entity = sim.substrate.entities.get_mut(MINER_ID).expect("miner");
+        let miner = entity.miner.as_mut().expect("miner");
+        let capacity = miner.capacity_bales;
+        miner.cargo = (0..capacity)
+            .map(|_| CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            })
+            .collect();
+    }
+
+    fn dispatch(sim: &mut Simulation, rules: &RuleSet) {
+        dispatch_supported_foot_mission_cadence(
+            sim,
+            MINER_ID,
+            rules,
+            super::super::ObjectAiCtx {
+                path_grid: None,
+                overlay_registry: None,
+                terrain_spawner_cells: None,
+                miner_config: None,
+            },
+        );
+    }
+
+    fn queued(sim: &Simulation) -> Option<MissionType> {
+        sim.substrate
+            .entities
+            .get(MINER_ID)
+            .expect("miner")
+            .mission
+            .queued()
+            .known()
+    }
+
+    /// Arm (iii), neighbour refinery: `0x00740922..0x0074092C`.
+    #[test]
+    fn chrono_miner_on_guard_beside_its_own_refinery_requeues_harvest() {
+        let rules = rules();
+        let mut sim = Simulation::new();
+        spawn_refinery(&mut sim, "Americans");
+        // (14, 11) touches footprint cell (13, 11).
+        spawn_guard_miner(&mut sim, MinerKind::Chrono, (14, 11));
+
+        let scenario_before = sim.rng_state().scenario;
+        dispatch(&mut sim, &rules);
+
+        assert_eq!(queued(&sim), Some(MissionType::Harvest));
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.mission.dispatch_timer().delay(), 1, "return 1");
+        assert_eq!(
+            sim.rng_state().scenario,
+            scenario_before,
+            "the Foot Guard body (and its draw) is never reached"
+        );
+    }
+
+    #[test]
+    fn chrono_miner_beside_another_houses_refinery_stays_on_guard() {
+        let rules = rules();
+        let mut sim = Simulation::new();
+        spawn_refinery(&mut sim, "Russians");
+        spawn_guard_miner(&mut sim, MinerKind::Chrono, (14, 11));
+
+        dispatch(&mut sim, &rules);
+
+        assert_eq!(queued(&sim), None, "`building+0x21C == this->Owner` fails");
+    }
+
+    fn set_teleport_phase(sim: &mut Simulation, phase: TeleportPhase) {
+        sim.substrate
+            .entities
+            .get_mut(MINER_ID)
+            .expect("miner")
+            .teleport_state = Some(TeleportState {
+            phase,
+            target_rx: 14,
+            target_ry: 11,
+            being_warped_ticks: 30,
+        });
+    }
+
+    /// Arm (iii), second test: full storage and the teleport locomotor's
+    /// `Is_Moving` (`0x00718080`: `+0x30 == 1`, the Relocate tick only) →
+    /// Harvest; full-but-idle and the post-warp ChronoDelay phase both fall
+    /// through.
+    #[test]
+    fn full_chrono_miner_mid_warp_requeues_harvest_away_from_any_refinery() {
+        let rules = rules();
+        let mut sim = Simulation::new();
+        spawn_refinery(&mut sim, "Americans");
+        spawn_guard_miner(&mut sim, MinerKind::Chrono, (40, 40));
+        fill_cargo(&mut sim);
+        // Full but not moving: falls through to the Foot Guard body.
+        dispatch(&mut sim, &rules);
+        assert_eq!(queued(&sim), None);
+
+        // A teleport state that is NOT the Relocate tick is not `Is_Moving`.
+        set_teleport_phase(&mut sim, TeleportPhase::ChronoDelay);
+        sim.session.binary_frame += 40;
+        dispatch(&mut sim, &rules);
+        assert_eq!(
+            queued(&sim),
+            None,
+            "the post-warp chrono delay is not the locomotor's moving flag"
+        );
+
+        set_teleport_phase(&mut sim, TeleportPhase::Relocate);
+        sim.session.binary_frame += 40;
+        dispatch(&mut sim, &rules);
+        assert_eq!(queued(&sim), Some(MissionType::Harvest));
+    }
+
+    /// An empty chrono miner on the Relocate tick has no arm: storage must
+    /// read 100% first.
+    #[test]
+    fn empty_chrono_miner_mid_warp_stays_on_guard() {
+        let rules = rules();
+        let mut sim = Simulation::new();
+        spawn_refinery(&mut sim, "Americans");
+        spawn_guard_miner(&mut sim, MinerKind::Chrono, (40, 40));
+        set_teleport_phase(&mut sim, TeleportPhase::Relocate);
+
+        dispatch(&mut sim, &rules);
+
+        assert_eq!(queued(&sim), None);
+    }
+
+    fn register_house(sim: &mut Simulation, is_human: bool) {
+        let owner = sim.interner.intern("Americans");
+        sim.houses.insert(
+            owner,
+            crate::sim::house_state::HouseState::new(owner, 0, None, is_human, 0, 10),
+        );
+    }
+
+    /// Arm (ii): AI house, owns a `Dock=` instance, `House+0x242` clear →
+    /// `Queue_Mission(Harvest, 0); return 1` (`0x0074092C`), no RNG draw.
+    #[test]
+    fn ai_war_miner_on_guard_requeues_harvest_while_house_no_ore_latch_is_clear() {
+        let rules = rules();
+        let mut sim = Simulation::new();
+        register_house(&mut sim, false);
+        spawn_refinery(&mut sim, "Americans");
+        spawn_guard_miner(&mut sim, MinerKind::War, (40, 40));
+
+        let scenario_before = sim.rng_state().scenario;
+        dispatch(&mut sim, &rules);
+
+        assert_eq!(queued(&sim), Some(MissionType::Harvest));
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.mission.dispatch_timer().delay(), 1, "return 1");
+        assert_eq!(sim.rng_state().scenario, scenario_before);
+    }
+
+    /// Arm (ii) with `Harvester=yes && House+0x242` set → `break`, the Foot
+    /// Guard body runs instead.
+    #[test]
+    fn ai_war_miner_on_guard_stays_when_house_no_ore_latch_is_set() {
+        let rules = rules();
+        let mut sim = Simulation::new();
+        register_house(&mut sim, false);
+        let owner = sim.interner.intern("Americans");
+        sim.houses.get_mut(&owner).expect("house").harvester_no_ore = true;
+        spawn_refinery(&mut sim, "Americans");
+        spawn_guard_miner(&mut sim, MinerKind::War, (40, 40));
+
+        dispatch(&mut sim, &rules);
+
+        assert_eq!(queued(&sim), None);
+    }
+
+    /// Arm (ii) needs `CountOwnedInstances > 0` for some `Dock=` entry.
+    #[test]
+    fn ai_war_miner_on_guard_without_a_dock_instance_stays_on_guard() {
+        let rules = rules();
+        let mut sim = Simulation::new();
+        register_house(&mut sim, false);
+        spawn_guard_miner(&mut sim, MinerKind::War, (40, 40));
+
+        dispatch(&mut sim, &rules);
+
+        assert_eq!(queued(&sim), None);
+    }
+
+    /// A human house never enters arm (ii): a war miner parks.
+    #[test]
+    fn human_war_miner_on_guard_with_latch_clear_stays_on_guard() {
+        let rules = rules();
+        let mut sim = Simulation::new();
+        register_house(&mut sim, true);
+        spawn_refinery(&mut sim, "Americans");
+        spawn_guard_miner(&mut sim, MinerKind::War, (40, 40));
+
+        dispatch(&mut sim, &rules);
+
+        assert_eq!(queued(&sim), None);
+    }
+
+    /// A human WAR miner has no arm in `UnitClass::Mission_Guard`: parked is
+    /// parked until a player order.
+    #[test]
+    fn war_miner_on_guard_beside_its_refinery_stays_on_guard() {
+        let rules = rules();
+        let mut sim = Simulation::new();
+        spawn_refinery(&mut sim, "Americans");
+        spawn_guard_miner(&mut sim, MinerKind::War, (14, 11));
+        fill_cargo(&mut sim);
+
+        dispatch(&mut sim, &rules);
+
+        assert_eq!(queued(&sim), None);
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.mission.current().known(), Some(MissionType::Guard));
+    }
 }

@@ -30,6 +30,15 @@
 //! slave-host preamble's Rate epilogue — Slave hosts are dispatched by
 //! `slave_miner.rs`, never through this handler.
 //!
+//! Guard hand-offs (`UnitClass::Mission_Harvest @ 0x0073E5E0`): the preamble
+//! queues Guard when the house owns no instance of any `Dock=` type, and
+//! state 4 (105 frames after a scan miss) queues Guard after moving the
+//! miner off a refinery cell — both `Queue_Mission(5, 0)`, promoted by the
+//! host's Ready-to-Commence step. A miner on Guard is no longer dispatched
+//! here; the harvester Guard override's chrono arms
+//! (`techno_ai/mission_handlers.rs`) or a player order (`Command::HarvestCell`
+//! → `mission_assign_exact(Harvest)`, `Command::MinerReturn`) put it back.
+//!
 //! Dispatch gating residual: the host dispatches on Miner-component presence
 //! plus "the committed mission is not Guard", not strictly on
 //! `current == Harvest`. Guard is gated because the Stop command force-assigns

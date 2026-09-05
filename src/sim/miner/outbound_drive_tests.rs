@@ -318,6 +318,37 @@ fn spawn_stock_miner(
     id
 }
 
+/// An owned `Dock=` instance with no cell mark and no LogicVector slot: the
+/// Harvest preamble (`0x0073E5E0`) queues Guard for a house that owns no
+/// instance of any `Dock=` type, and these outbound fixtures never return.
+fn spawn_inert_dock_instance(sim: &mut Simulation) {
+    const INERT_DOCK_ID: u64 = 900;
+    let owner_id = sim.interner.intern("Americans");
+    let type_id = sim.interner.intern("GAREFN");
+    let mut ge = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
+        INERT_DOCK_ID,
+        1,
+        1,
+        0,
+        0,
+        owner_id,
+        crate::sim::components::Health {
+            current: 900,
+            max: 900,
+        },
+        type_id,
+        crate::map::entities::EntityCategory::Structure,
+        0,
+        5,
+        false,
+    );
+    ge.lifecycle.in_limbo = false;
+    sim.substrate.entities.insert(ge);
+    if sim.substrate.next_stable_object_id <= INERT_DOCK_ID {
+        sim.substrate.next_stable_object_id = INERT_DOCK_ID + 1;
+    }
+}
+
 fn spawn_stock_refinery(
     sim: &mut Simulation,
     oracle: &OutboundContractOracle,
@@ -524,6 +555,7 @@ fn production_stock_miners_use_drive_command_for_adjacent_ore() {
         let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
         install_world(&mut sim, &oracle, &grid, &[target], &[target], true);
         let entity_id = spawn_stock_miner(&mut sim, &oracle, type_id, kind);
+        spawn_inert_dock_instance(&mut sim);
         let start_position = position_tuple(&sim, entity_id);
         arm_search(&mut sim, entity_id);
         let rng_before_search = sim.rng_state();
@@ -670,6 +702,7 @@ fn production_harv_outbound_drive_uses_rule_profile() {
     let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
     install_world(&mut sim, &oracle, &grid, &[target], &[target], true);
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
+    spawn_inert_dock_instance(&mut sim);
     arm_search(&mut sim, entity_id);
     let rng_before = sim.rng_state();
     // Scan, Set_Destination and the Rate epilogue are one dispatch: one draw.
@@ -1100,6 +1133,7 @@ fn production_cmin_outbound_drive_keeps_teleport_primary() {
     let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
     install_world(&mut sim, &oracle, &grid, &[target], &[target], true);
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "CMIN", MinerKind::Chrono);
+    spawn_inert_dock_instance(&mut sim);
     arm_search(&mut sim, entity_id);
     let rng_before = sim.rng_state();
 
@@ -1184,6 +1218,7 @@ fn production_cmin_failed_outbound_issue_restores_locomotor_exactly() {
     grid.set_blocked(target.0, target.1, false);
     install_world(&mut sim, &oracle, &grid, &[target], &[target], false);
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "CMIN", MinerKind::Chrono);
+    spawn_inert_dock_instance(&mut sim);
     arm_search(&mut sim, entity_id);
     let rng_before = sim.rng_state();
     let scenario_after_scan = scenario_after_one_epilogue_draw(&mut sim);
@@ -1242,6 +1277,7 @@ fn production_harv_navcom_without_movement_target_is_not_reissued() {
     // cell is staged mid-test below so it can tempt a scan that must not run.
     install_world(&mut sim, &oracle, &grid, &[original], &[original], true);
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
+    spawn_inert_dock_instance(&mut sim);
     arm_search(&mut sim, entity_id);
 
     // One dispatch acquires `original` and takes NavCom ownership.
@@ -1310,6 +1346,7 @@ fn production_harv_navcom_defers_removed_target_revalidation() {
     // place mid-test below, after the NavCom is already owned.
     install_world(&mut sim, &oracle, &grid, &[original], &[original], true);
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
+    spawn_inert_dock_instance(&mut sim);
     arm_search(&mut sim, entity_id);
 
     // One dispatch acquires `original` and takes NavCom ownership.
@@ -1373,6 +1410,7 @@ fn production_cmin_arrival_clears_navcom_same_tick_and_releases_drive() {
     let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
     install_world(&mut sim, &oracle, &grid, &[target], &[target], true);
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "CMIN", MinerKind::Chrono);
+    spawn_inert_dock_instance(&mut sim);
     arm_search(&mut sim, entity_id);
 
     // The scan dispatch installs the outbound command.

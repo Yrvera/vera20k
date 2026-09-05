@@ -40,6 +40,19 @@ pub struct EntityStore {
     /// returns `&[]`, identical to a fresh rebuild. Deterministic iteration via
     /// BTreeMap key order + sorted Vecs.
     by_owner: BTreeMap<crate::sim::intern::InternedId, Vec<u64>>,
+    /// Per-(owner, type) instance count over the stored entities — the O(1)
+    /// answer `HouseClass::CountOwnedInstances @ 0x0049FAE0` gives from its
+    /// per-house per-type counter array. Maintained incrementally next to
+    /// `by_owner` (`insert`/`remove`/`change_owner`) and rebuilt with it.
+    /// Counts every stored entity of the type, limbo and dying included; see
+    /// [`Self::count_owned_of_type`] for the native-vs-Rust window.
+    by_owner_type: BTreeMap<
+        (
+            crate::sim::intern::InternedId,
+            crate::sim::intern::InternedId,
+        ),
+        u32,
+    >,
 }
 
 impl EntityStore {
@@ -48,6 +61,7 @@ impl EntityStore {
         Self {
             entities: BTreeMap::new(),
             by_owner: BTreeMap::new(),
+            by_owner_type: BTreeMap::new(),
         }
     }
 
@@ -57,10 +71,13 @@ impl EntityStore {
     pub fn insert(&mut self, entity: GameEntity) -> u64 {
         let id = entity.stable_id;
         let owner = entity.owner;
+        let type_ref = entity.type_ref;
         if let Some(old) = self.entities.insert(id, entity) {
             self.index_remove(old.owner, id);
+            self.type_count_remove(old.owner, old.type_ref);
         }
         self.index_add(owner, id);
+        self.type_count_add(owner, type_ref);
         id
     }
 
@@ -70,8 +87,32 @@ impl EntityStore {
         let removed = self.entities.remove(&stable_id);
         if let Some(ref e) = removed {
             self.index_remove(e.owner, stable_id);
+            self.type_count_remove(e.owner, e.type_ref);
         }
         removed
+    }
+
+    /// Stored instances of `type_ref` owned by `owner` — O(1).
+    ///
+    /// Native `HouseClass::CountOwnedInstances @ 0x0049FAE0` reads the
+    /// house's per-type counter array (`House+0x4`/`+0x8`, grown on demand
+    /// and zero-filled), which counts an object from Unlimbo until Limbo.
+    /// This count runs from `insert` until `remove` instead, so it differs
+    /// only at the edges: a stored-but-in-limbo entity counts here (native
+    /// excludes it; production structures sit in limbo only inside the spawn
+    /// call that reveals or discards them, so no dispatch observes the gap),
+    /// while a dying structure counts in both until it leaves the store /
+    /// Limbos. Storage-order/type-index details of the native array are not
+    /// modelled; only the `> 0` test and the count itself are consumed.
+    pub fn count_owned_of_type(
+        &self,
+        owner: crate::sim::intern::InternedId,
+        type_ref: crate::sim::intern::InternedId,
+    ) -> u32 {
+        self.by_owner_type
+            .get(&(owner, type_ref))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Clear all RadioClass-style live contacts involving `stable_id`.
@@ -164,16 +205,40 @@ impl EntityStore {
     /// (callers own that, because count semantics differ by transfer kind).
     /// No-op if the entity is absent or already owned by `new_owner`.
     pub fn change_owner(&mut self, stable_id: u64, new_owner: crate::sim::intern::InternedId) {
-        let old_owner = match self.entities.get_mut(&stable_id) {
+        let (old_owner, type_ref) = match self.entities.get_mut(&stable_id) {
             Some(e) if e.owner != new_owner => {
                 let old = e.owner;
                 e.owner = new_owner;
-                old
+                (old, e.type_ref)
             }
             _ => return,
         };
         self.index_remove(old_owner, stable_id);
         self.index_add(new_owner, stable_id);
+        self.type_count_remove(old_owner, type_ref);
+        self.type_count_add(new_owner, type_ref);
+    }
+
+    fn type_count_add(
+        &mut self,
+        owner: crate::sim::intern::InternedId,
+        type_ref: crate::sim::intern::InternedId,
+    ) {
+        *self.by_owner_type.entry((owner, type_ref)).or_insert(0) += 1;
+    }
+
+    /// Drop the entry when it reaches zero so the map matches a fresh rebuild.
+    fn type_count_remove(
+        &mut self,
+        owner: crate::sim::intern::InternedId,
+        type_ref: crate::sim::intern::InternedId,
+    ) {
+        if let Some(count) = self.by_owner_type.get_mut(&(owner, type_ref)) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.by_owner_type.remove(&(owner, type_ref));
+            }
+        }
     }
 
     /// Insert `id` into its owner bucket at the sorted (ascending) position.
@@ -200,8 +265,13 @@ impl EntityStore {
     /// Called after deserialization or any bulk mutation that bypasses insert/remove.
     pub fn rebuild_owner_index(&mut self) {
         self.by_owner.clear();
+        self.by_owner_type.clear();
         for (&id, entity) in &self.entities {
             self.by_owner.entry(entity.owner).or_default().push(id);
+            *self
+                .by_owner_type
+                .entry((entity.owner, entity.type_ref))
+                .or_insert(0) += 1;
         }
         // BTreeMap iteration is already sorted by key; Vecs are sorted because
         // entities BTreeMap iterates in ascending stable_id order.
@@ -220,6 +290,7 @@ impl<'de> serde::Deserialize<'de> for EntityStore {
         let mut store = Self {
             entities,
             by_owner: BTreeMap::new(),
+            by_owner_type: BTreeMap::new(),
         };
         store.rebuild_owner_index();
         Ok(store)
@@ -509,6 +580,56 @@ mod tests {
         // Unknown owner returns empty slice.
         let unknown = interner.intern("Yuri");
         assert_eq!(store.ids_for_owner(unknown), &[] as &[u64]);
+    }
+
+    #[test]
+    fn per_owner_type_count_tracks_insert_remove_change_owner_and_rebuild() {
+        use crate::sim::intern::StringInterner;
+        let mut interner = StringInterner::new();
+        let americans = interner.intern("Americans");
+        let soviets = interner.intern("Russians");
+        let refinery = interner.intern("GAREFN");
+        let tank = interner.intern("HTNK");
+        let mut store = EntityStore::new();
+
+        let mut e1 = GameEntity::test_default(1, "GAREFN", "Americans", 5, 5);
+        e1.owner = americans;
+        e1.type_ref = refinery;
+        let mut e2 = GameEntity::test_default(2, "GAREFN", "Americans", 6, 6);
+        e2.owner = americans;
+        e2.type_ref = refinery;
+        let mut e3 = GameEntity::test_default(3, "HTNK", "Americans", 7, 7);
+        e3.owner = americans;
+        e3.type_ref = tank;
+        store.insert(e1);
+        store.insert(e2);
+        store.insert(e3);
+        assert_eq!(store.count_owned_of_type(americans, refinery), 2);
+        assert_eq!(store.count_owned_of_type(americans, tank), 1);
+        assert_eq!(store.count_owned_of_type(soviets, refinery), 0);
+
+        store.change_owner(2, soviets);
+        assert_eq!(store.count_owned_of_type(americans, refinery), 1);
+        assert_eq!(store.count_owned_of_type(soviets, refinery), 1);
+
+        store.remove(1);
+        assert_eq!(store.count_owned_of_type(americans, refinery), 0);
+        assert!(!store.by_owner_type.contains_key(&(americans, refinery)));
+
+        // Re-inserting an existing id retires the old entry's count first.
+        let mut e2b = GameEntity::test_default(2, "HTNK", "Russians", 6, 6);
+        e2b.owner = soviets;
+        e2b.type_ref = tank;
+        store.insert(e2b);
+        assert_eq!(store.count_owned_of_type(soviets, refinery), 0);
+        assert_eq!(store.count_owned_of_type(soviets, tank), 1);
+
+        let before = store.by_owner_type.clone();
+        store.rebuild_owner_index();
+        assert_eq!(
+            store.by_owner_type, before,
+            "rebuild reproduces the incremental map"
+        );
     }
 
     #[test]

@@ -18,7 +18,7 @@
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::BaleDepositEvent;
-use crate::sim::miner::{MinerConfig, MinerState, RefineryDockPhase, ResourceType};
+use crate::sim::miner::{MinerConfig, MinerKind, MinerState, RefineryDockPhase, ResourceType};
 use crate::sim::mission::MissionType;
 use crate::sim::movement;
 use crate::sim::movement::facing_class::FacingClass;
@@ -1068,6 +1068,44 @@ fn phase_mission_enter(
             bus_enter_dock(sim, snap.entity_id, ref_sid);
             sync_dock_facing(sim, rules, snap);
             snap.miner.dock_phase = RefineryDockPhase::FaceSync;
+        }
+        schedule_enter_retry(sim, rules, snap);
+        return;
+    }
+
+    // A war miner now reaches Mission_Enter from up to `HarvesterTooFarDistance`
+    // (5 cells) out — the state-2 HELLO handoff at `0x0073EE51` — not from
+    // adjacency. Native Mission_Enter drives to the CAN_DOCK cell through the
+    // ordinary pathfinder; VERA's direct move below is a straight line that
+    // ignores the grid, which is only safe from a neighbouring cell. Path to
+    // the `QueueingCell` first (it sits beside the pad on stock refineries)
+    // and take the direct step from there. VERA-internal shape, gamemd
+    // equivalent UNCHECKED beyond "the pathfinder gets it there". Chrono keeps
+    // its existing shape: its inbound leg is the teleport locomotor's.
+    //
+    // Residual (VERA-internal): the hop assumes the `QueueingCell` is
+    // adjacent to the accepted CAN_DOCK cell, which holds for every stock
+    // refinery (art `QueueingCell=4,1` beside the pad). A modded refinery
+    // whose `QueueingCell` is NOT adjacent to the pad loops here: the miner
+    // reaches the queue cell, is still not adjacent to `accepted_cell`, and
+    // is routed back to the queue cell on every enter retry, never taking
+    // the direct step. Trigger: modded art only; stock play never hits it.
+    // Effect: that miner never docks. Fix belongs with the native
+    // pathfinder-driven Mission_Enter drive, not here.
+    if !moving
+        && snap.miner.kind == MinerKind::War
+        && !is_adjacent_or_at((snap.rx, snap.ry), accepted_cell)
+    {
+        if let Some(grid) = path_grid {
+            issue_move_if_idle(
+                sim,
+                rules,
+                grid,
+                snap.entity_id,
+                wait_queue,
+                snap.speed,
+                overlay_registry,
+            );
         }
         schedule_enter_retry(sim, rules, snap);
         return;

@@ -1811,8 +1811,16 @@ impl Simulation {
                 // Clear in-progress movement so the miner re-paths to the new target.
                 e.movement_target = None;
                 // Commit the Harvest mission and the MoveToOre cursor of
-                // record (same shape as MinerReturn above; UNCHECKED native
-                // command mission shape, legacy behavior preserved).
+                // record. Native (EventClass::Execute MEGAMISSION,
+                // disassembled 2026-09-05): the client's mission byte passes
+                // through `FootClass 0x004DF0E0` (vtable `+0x4A4`, unchanged
+                // unless 0x1D) into `Queue_Mission(mission, 0)` at
+                // `0x004C73B9`, then clears SuspendedNavCom/SuspendedTarCom.
+                // VERA assigns instead of queueing — the miner therefore
+                // leaves Guard on this frame rather than at the host's next
+                // Ready-to-Commence step (a one-frame shape difference,
+                // VERA-internal). This is the production path that returns a
+                // war miner parked on Guard by the Harvest idle tail to work.
                 let now = self.session.binary_frame;
                 let _ = self.mission_assign_exact(
                     *entity_id,
