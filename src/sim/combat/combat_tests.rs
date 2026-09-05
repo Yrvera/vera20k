@@ -6614,7 +6614,13 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
                 &target_positions,
                 None,
                 &restored_shared_cell_dummy,
-                |_, _| None,
+                |_, _| {
+                    Some(
+                        crate::sim::projectile::ProjectileCollisionResponse::TargetZClamp(
+                            target_positions[&2],
+                        ),
+                    )
+                },
             )
             .detonations;
         if !detonations.is_empty() {
@@ -6624,7 +6630,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
     assert_eq!(
         detonations.len(),
         1,
-        "resumed projectile should reach target"
+        "resumed projectile must deliver the supplied world admission"
     );
 
     entities.remove(1);
@@ -8795,7 +8801,7 @@ fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
                 Some(&terrain),
                 &dummy,
                 false,
-                |_, _| None,
+                |_, _, _| None,
             )
             .expect("the bomb is still in flight");
         assert!(
@@ -8804,14 +8810,12 @@ fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
         );
         if let Some(detonation) = step.detonations.first() {
             assert_eq!(detonation.projectile_id, id);
-            // The only reachable terminator on this arm: `DetonationAltitude`
-            // is 20000 and the bomb is descending, and there is no bridge and
-            // no fuse — so this is the floor probe, native's `GetAltitude() < 0`
-            // over a level-0 cell.
-            assert!(
-                detonation.impact.z < 0,
-                "the bomb detonates below the level-0 floor, at {}",
-                detonation.impact.z
+            // The descending bomb admits at the floor probe: 467350..467368.
+            // The common admitted-impact clamp at 467BF0..467C06 then moves
+            // its final coordinate to the floor before the damage handoff.
+            assert_eq!(
+                detonation.impact.z, 0,
+                "the below-floor admission hands damage off at the level-0 floor"
             );
             return;
         }

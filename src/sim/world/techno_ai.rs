@@ -49,10 +49,7 @@ impl Simulation {
             .retain(|_, linked_wave_id| *linked_wave_id != wave_id);
     }
 
-    pub(crate) fn wave_update_context(
-        &self,
-        wave_id: u64,
-    ) -> crate::sim::wave::WaveUpdateContext {
+    pub(crate) fn wave_update_context(&self, wave_id: u64) -> crate::sim::wave::WaveUpdateContext {
         use crate::sim::combat::TargetKind;
         use crate::sim::projectile::ProjectileCoord;
 
@@ -72,32 +69,25 @@ impl Simulation {
             ProjectileCoord::new(
                 i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
                 i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
-                crate::sim::combat::object_world_z_leptons(
-                    entity,
-                    self.resolved_terrain.as_ref(),
-                ),
+                crate::sim::combat::object_world_z_leptons(entity, self.resolved_terrain.as_ref()),
             )
         });
         let owner_current_target = owner
             .and_then(|entity| entity.attack_target.as_ref())
             .map(|attack| attack.target);
         let target_position = match wave.target_ref {
-            Some(TargetKind::Entity(target_id)) => self
-                .substrate
-                .entities
-                .get(target_id)
-                .map(|entity| {
+            Some(TargetKind::Entity(target_id)) => {
+                self.substrate.entities.get(target_id).map(|entity| {
                     ProjectileCoord::new(
-                        i32::from(entity.position.rx) * 256
-                            + entity.position.sub_x.to_num::<i32>(),
-                        i32::from(entity.position.ry) * 256
-                            + entity.position.sub_y.to_num::<i32>(),
+                        i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
+                        i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
                         crate::sim::combat::object_world_z_leptons(
                             entity,
                             self.resolved_terrain.as_ref(),
                         ),
                     )
-                }),
+                })
+            }
             Some(TargetKind::Cell(rx, ry)) => Some(self.wave_cell_target_position(rx, ry)),
             None => None,
         };
@@ -193,7 +183,6 @@ impl Simulation {
         }
         self.mission_host_promote(id, self.session.binary_frame, rules);
     }
-
 
     /// One `VoxelAnimClass::AI @ 0x00749F30` LogicVector slot.
     ///
@@ -292,38 +281,35 @@ impl Simulation {
             let entities = &self.substrate.entities;
             let interner = &self.interner;
             let house_alliances = &self.house_alliances;
+            let collision_world = super::projectile_collision::ProjectileCollisionWorld {
+                terrain,
+                dummy: &shared_cell_dummy,
+                occupancy,
+                entities,
+                interner,
+                alliances: house_alliances,
+                overlays: overlay_grid,
+                overlay_registry: ctx.overlay_registry,
+                rules,
+                map_size: self
+                    .playfield_bounds
+                    .zip(self.playfield_size_height)
+                    .map(|(bounds, height)| (bounds.base, height)),
+            };
             let result = self
                 .projectiles
                 .advance_one(
                     id,
                     binary_frame,
                     |target_id| {
-                        let target = entities
-                            .get(target_id)
-                            .filter(|entity| entity.is_alive() && !entity.dying)?;
-                        Some(crate::sim::projectile::ProjectileCoord::new(
-                            i32::from(target.position.rx) * 256
-                                + target.position.sub_x.to_num::<i32>(),
-                            i32::from(target.position.ry) * 256
-                                + target.position.sub_y.to_num::<i32>(),
-                            crate::sim::combat::object_world_z_leptons(target, terrain),
-                        ))
+                        collision_world
+                            .target_aim(crate::sim::projectile::ProjectileTarget::Entity(target_id))
                     },
                     terrain,
                     &shared_cell_dummy,
                     source_is_jumpjet,
-                    |projectile, candidate| {
-                        super::projectile_collides_at(
-                            terrain,
-                            occupancy,
-                            entities,
-                            interner,
-                            house_alliances,
-                            overlay_grid,
-                            ctx.overlay_registry,
-                            projectile,
-                            candidate,
-                        )
+                    |projectile, candidate, phase| {
+                        collision_world.collide(projectile, candidate, phase)
                     },
                 )
                 .expect("projectile remained present for its Logic slot");
@@ -587,10 +573,9 @@ fn veterancy_promotion_step(sim: &mut Simulation, id: u64, rules: &RuleSet) {
         return;
     };
     entity.elite_flash_frames = entity.elite_flash_frames.saturating_sub(1);
-    let Some(promotion) = crate::sim::combat::veterancy::sample_promotion(
-        entity,
-        rules.general.elite_flash_timer,
-    ) else {
+    let Some(promotion) =
+        crate::sim::combat::veterancy::sample_promotion(entity, rules.general.elite_flash_timer)
+    else {
         return;
     };
     let owner = entity.owner;
@@ -604,14 +589,13 @@ fn veterancy_promotion_step(sim: &mut Simulation, id: u64, rules: &RuleSet) {
         }
     };
     let sound_id = sound.map(|name| sim.interner.intern(name));
-    sim.sound_events
-        .push(super::SimSoundEvent::UnitPromoted {
-            owner,
-            sound_id,
-            elite,
-            rx,
-            ry,
-        });
+    sim.sound_events.push(super::SimSoundEvent::UnitPromoted {
+        owner,
+        sound_id,
+        elite,
+        rx,
+        ry,
+    });
     refresh_mover_speed_after_promotion(sim, id, rules);
 }
 

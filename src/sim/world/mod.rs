@@ -17,6 +17,7 @@ pub mod edge_cell;
 mod lifecycle;
 mod load_object_lifecycle;
 mod logic_vector;
+mod projectile_collision;
 mod substrate;
 mod techno_ai;
 pub(crate) mod techno_ai_cloak;
@@ -106,9 +107,8 @@ use crate::sim::pathfinding::zone_map::ZoneGrid;
 use crate::sim::power_system::{self, PowerState};
 use crate::sim::production::{self, ProductionState};
 use crate::sim::projectile::{
-    Projectile, ProjectileBridgeCrossing, ProjectileCellObstacle, ProjectileCollisionResponse,
-    ProjectileCoord, projectile_bridge_crossing, projectile_cell_obstacle,
-    projectile_slope_reflect,
+    Projectile, ProjectileBridgeCrossing, ProjectileCollisionResponse,
+    ProjectileCoord, projectile_bridge_crossing,
 };
 use crate::sim::radar::{RadarEventQueue, RadarEventType};
 use crate::sim::rng::{SimRng, SimRngLogicalState, SimRngLogicalView};
@@ -137,138 +137,6 @@ fn shp_vehicle_counter_admitted(tube_active_at_entry: bool) -> bool {
 struct ActiveVisionStructures {
     spy_sat_owners: Vec<InternedId>,
     gap_generators: Vec<(InternedId, u16, u16, i32)>,
-}
-
-/// Bounded `BulletClass::AI` terrain collision admission.
-///
-/// The verified `Level` path uses the current canonical cell's water identity;
-/// this engine's resolved terrain owns that identity directly. Cliff and
-/// elevation trajectory kernels remain explicitly outside this straight-flight
-/// port rather than being guessed from cell levels.
-fn projectile_collides_at(
-    terrain: Option<&ResolvedTerrainGrid>,
-    occupancy: &OccupancyGrid,
-    entities: &EntityStore,
-    interner: &crate::sim::intern::StringInterner,
-    house_alliances: &HouseAllianceMap,
-    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
-    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    projectile: &Projectile,
-    candidate: ProjectileCoord,
-) -> Option<ProjectileCollisionResponse> {
-    let policy = projectile.collision;
-    if !policy.level_non_water && !policy.subject_to_walls && !policy.native_cell_collision {
-        return None;
-    }
-    let Ok(rx) = u16::try_from(candidate.x.div_euclid(256)) else {
-        return policy
-            .level_non_water
-            .then_some(ProjectileCollisionResponse::TargetZClamp(candidate));
-    };
-    let Ok(ry) = u16::try_from(candidate.y.div_euclid(256)) else {
-        return policy
-            .level_non_water
-            .then_some(ProjectileCollisionResponse::TargetZClamp(candidate));
-    };
-
-    if policy.level_non_water
-        && !terrain
-            .and_then(|grid| grid.cell(rx, ry))
-            .is_some_and(|cell| cell.is_water)
-    {
-        return Some(ProjectileCollisionResponse::TargetZClamp(candidate));
-    }
-    // `ConnectsToOverlay` is currently represented only by the parsed wall
-    // connectivity family; no unrelated overlay flag is substituted.
-    let overlay_connected = overlay_grid
-        .and_then(|grid| grid.cell(rx, ry).overlay_id)
-        .and_then(|overlay_id| overlay_registry.and_then(|registry| registry.flags(overlay_id)))
-        .is_some_and(|flags| flags.wall);
-    if policy.subject_to_walls && overlay_connected {
-        return Some(ProjectileCollisionResponse::TargetZClamp(candidate));
-    }
-    if !policy.native_cell_collision {
-        return None;
-    }
-
-    // Named location: `BulletClass::Update @ 0x004674ae..0x00467778`.
-    let candidate_cell = terrain.and_then(|grid| grid.cell(rx, ry))?;
-    let floor_z = crate::sim::cell_kernel::cell_floor_height(
-        candidate_cell.level,
-        candidate_cell.slope_type,
-        candidate.x,
-        candidate.y,
-    )
-    .ok()?;
-    let previous_rx = u16::try_from(projectile.position.x / 256).ok();
-    let previous_ry = u16::try_from(projectile.position.y / 256).ok();
-    let previous_has_bridge = previous_rx
-        .zip(previous_ry)
-        .and_then(|(x, y)| terrain.and_then(|grid| grid.cell(x, y)))
-        .is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
-    let candidate_has_bridge = candidate_cell.bridge_facts.has_structural_bridge();
-    let bridge_surface =
-        floor_z.saturating_add(crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS);
-    let crossing = if previous_has_bridge || candidate_has_bridge {
-        projectile_bridge_crossing(projectile.position.z, candidate.z, bridge_surface)
-    } else {
-        ProjectileBridgeCrossing::None
-    };
-
-    let building_id = occupancy.first_building_on_layer(rx, ry, MovementLayer::Ground);
-    let building_is_target = matches!(projectile.target, crate::sim::projectile::ProjectileTarget::Entity(id) if Some(id) == building_id);
-    let target_owner = match projectile.target {
-        crate::sim::projectile::ProjectileTarget::Entity(id) => entities.get(id).map(|e| e.owner),
-        crate::sim::projectile::ProjectileTarget::Cell { .. }
-        | crate::sim::projectile::ProjectileTarget::None
-        | crate::sim::projectile::ProjectileTarget::DummyCell => None,
-    };
-    let building_owner = building_id.and_then(|id| entities.get(id)).map(|e| e.owner);
-    let allied = target_owner
-        .zip(building_owner)
-        .is_some_and(|(target, building)| {
-            let target = interner.resolve(target).to_ascii_uppercase();
-            let building = interner.resolve(building).to_ascii_uppercase();
-            target == building
-                || house_alliances
-                    .get(&target)
-                    .is_some_and(|allies| allies.contains(&building))
-        });
-    // The two raw Building exemptions have closed predicates but no represented
-    // runtime producer yet. Keeping them false is an explicit residual, not a
-    // guessed mapping to an unrelated ObjectType flag.
-    let obstacle = projectile_cell_obstacle(
-        candidate.z,
-        floor_z,
-        building_id,
-        overlay_connected,
-        building_is_target,
-        false,
-        false,
-        allied,
-    );
-    if crossing == ProjectileBridgeCrossing::None && obstacle == ProjectileCellObstacle::None {
-        return None;
-    }
-
-    let impact_z = if crossing == ProjectileBridgeCrossing::None {
-        floor_z
-    } else {
-        bridge_surface
-    };
-    let impact = ProjectileCoord::new(candidate.x, candidate.y, impact_z);
-    match projectile.target {
-        crate::sim::projectile::ProjectileTarget::Entity(_) => {
-            Some(ProjectileCollisionResponse::TargetZClamp(impact))
-        }
-        crate::sim::projectile::ProjectileTarget::Cell { .. }
-        | crate::sim::projectile::ProjectileTarget::None
-        | crate::sim::projectile::ProjectileTarget::DummyCell => {
-            let velocity =
-                projectile_slope_reflect(projectile.velocity, candidate_cell.slope_type)?;
-            Some(ProjectileCollisionResponse::SlopeMatrixReflect { impact, velocity })
-        }
-    }
 }
 
 /// Result of one deterministic simulation tick.

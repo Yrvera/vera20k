@@ -1372,6 +1372,9 @@ pub struct ResolvedTerrainGrid {
     /// Presentation consumers use this for `NO_TILE` cells while
     /// `ResolvedTerrainCell::final_tile_index` retains the sentinel for sim.
     clear_tile_id: u16,
+    /// Active theater WaterSet cumulative tile base (global AA0738), not the
+    /// sticky Fill cache. ReadTheater545150 resets to -1; Lunar also uses -1.
+    projectile_water_set_base: i32,
     /// Active theater tile registry length. Positive out-of-range ids present
     /// as ClearTile while their stored semantic id remains untouched.
     tile_registry_len: Option<usize>,
@@ -1453,6 +1456,7 @@ impl ResolvedTerrainGrid {
             native_tube_indices,
             tube_native_ids,
             clear_tile_id: 0,
+            projectile_water_set_base: -1,
             tile_registry_len: None,
             bridge_set_start: None,
             wood_bridge_set_start: None,
@@ -1468,6 +1472,15 @@ impl ResolvedTerrainGrid {
 
     pub fn width(&self) -> u16 {
         self.width
+    }
+
+    pub(crate) fn projectile_water_set_base(&self) -> i32 {
+        self.projectile_water_set_base
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_projectile_water_set_base(&mut self, base: i32) {
+        self.projectile_water_set_base = base;
     }
 
     pub(crate) fn current_tile_radar_metadata(
@@ -3150,6 +3163,9 @@ impl ResolvedTerrainGrid {
                 native_tube_indices: Vec::new(),
                 tube_native_ids: Vec::new(),
                 clear_tile_id,
+                projectile_water_set_base: theater_data
+                    .and_then(|td| td.rmg_tiles.water_set)
+                    .map_or(-1, i32::from),
                 tile_registry_len: theater_data.map(|td| td.lookup.len()),
                 bridge_set_start: theater_data.and_then(|td| {
                     td.bridge_set
@@ -3928,6 +3944,9 @@ impl ResolvedTerrainGrid {
             native_tube_indices,
             tube_native_ids,
             clear_tile_id,
+            projectile_water_set_base: theater_data
+                .and_then(|td| td.rmg_tiles.water_set)
+                .map_or(-1, i32::from),
             tile_registry_len: theater_data.map(|td| td.lookup.len()),
             bridge_set_start: theater_data.and_then(|td| {
                 td.bridge_set
@@ -5660,6 +5679,105 @@ mod tests {
             automatic_tube_bases: [-1; 4],
             cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
             rmg_tiles: crate::map::theater::RmgTileKeys::default(),
+        }
+    }
+
+    #[test]
+    fn projectile_level_uses_loaded_theater_interval_through_runtime() {
+        use crate::sim::projectile::*;
+        use crate::sim::runtime::SimRuntime;
+        use crate::sim::world::{Simulation, TickLane};
+        let ini=b"[General]\nWaterSet=1\n[TileSet0000]\nTilesInSet=1\nFileName=wet\nSetName=Water\n[TileSet0001]\nTilesInSet=14\nFileName=band\nSetName=Clear\n";
+        let palette = [0u8; 768];
+        let wet = gsi_04_02_last_tiles_tmp_bytes(2, [1, 2, 3], [4, 5, 6]);
+        let dry = gsi_04_02_last_tiles_tmp_bytes(0, [1, 2, 3], [4, 5, 6]);
+        let (directory, mut assets) = gsi_04_02_asset_manager_with_loose_tmps(&[
+            ("temperatmd.ini", ini),
+            ("isotem.pal", &palette),
+            ("unittem.pal", &palette),
+            ("temperat.pal", &palette),
+            ("wet01.tem", &wet),
+            ("band01.tem", &dry),
+        ]);
+        let empty_mix = gsi_04_04_mix_bytes("fixture.bin", b"fixture");
+        for name in ["temperat.mix", "tem.mix", "isotemmd.mix", "isotemp.mix"] {
+            directory.write(name, &empty_mix);
+        }
+        let theater = crate::map::theater::load_theater(&mut assets, "TEMPERATE")
+            .expect("production theater loader");
+        assert_eq!(theater.rmg_tiles.water_set, Some(1));
+        for (tile, semantic_water, admit) in [(0, true, true), (1, false, false)] {
+            let map = make_map(
+                vec![MapCell {
+                    rx: 3,
+                    ry: 3,
+                    tile_index: tile,
+                    sub_tile: 0,
+                    z: 0,
+                }],
+                Vec::new(),
+                Vec::new(),
+            );
+            let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+            let mut draw = || 0u32;
+            let mut selector = cache.begin_load(&mut draw);
+            let mut fill = |_: u32, _: u32| 0u32;
+            let mut grid = ResolvedTerrainGrid::build_with_variant_selector(
+                &map,
+                Some(&theater),
+                Some(&assets),
+                None,
+                None,
+                None,
+                false,
+                0,
+                &mut fill,
+                &mut selector,
+            );
+            assert_eq!(grid.projectile_water_set_base(), 1);
+            assert_eq!(grid.cell(3, 3).unwrap().is_water, semantic_water);
+            assert_eq!(grid.cell(3, 3).unwrap().final_tile_index, tile);
+            let mut sim = Simulation::new();
+            sim.install_playfield_from_map_header(&map.header);
+            grid.bind_shared_cell_dummy(sim.shared_cell_dummy.clone());
+            sim.resolved_terrain = Some(grid);
+            let key = sim.interner.intern("TEST");
+            sim.admit_projectile(
+                100,
+                ProjectileSpawn {
+                    source_id: 999,
+                    origin: ProjectileCoord::new(896, 896, 500),
+                    target: ProjectileTarget::None,
+                    initial_target_position: ProjectileCoord::new(1408, 896, 0),
+                    payload: ProjectilePayload {
+                        base_damage: 0,
+                        warhead: key,
+                        weapon: key,
+                        owner: key,
+                    },
+                    speed_leptons_per_frame: 16,
+                    velocity: ProjectileVelocity::new(16, 0, 0),
+                    trajectory: ProjectileTrajectory::Ballistic { gravity: 0 },
+                    guidance: None,
+                    visual: ProjectileVisualState::new(0, 0, 0),
+                    arm_frames: 0,
+                    fuse_frames: None,
+                    ranged_fuse: false,
+                    tracks_target: false,
+                    target_expiry: TargetExpiryPolicy::Expire,
+                    collision: ProjectileCollisionPolicy {
+                        level_non_water: true,
+                        ..ProjectileCollisionPolicy::NONE
+                    },
+                },
+            );
+            let mut runtime = SimRuntime::from_simulation(sim);
+            let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+            assert_eq!(
+                runtime.simulation.projectiles.get(100).is_none(),
+                admit,
+                "tile{tile}: semantic water is not the native Level predicate"
+            );
         }
     }
 

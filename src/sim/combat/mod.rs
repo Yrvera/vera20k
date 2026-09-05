@@ -276,18 +276,10 @@ enum ImmediateProjectileReason {
 /// two Scenario RNG draws are missing from that path, so the draw sequence
 /// differs from native for those six weapons.
 ///
-/// RESIDUAL (GSI-08.06) — the `ROT < 1, Vertical = no` arm subtracts
-/// `Rules.Gravity` from `v.z` on EVERY frame (`0x00467402`..`0x00467429`),
-/// `Arcing=` is not consulted there, and the position integrates as
-/// `pos += ftol(v)`. VERA's `Straight` arm still walks toward the target
-/// coordinate with no gravity. Trigger: a non-`Arcing`, non-`Inviso`, `ROT=0`
-/// projectile. Player effect: those shots fly flat instead of dropping.
-/// Frequency: four stock projectiles across five weapons (`Sonic`, `Cannon2`,
-/// `ASWVirt`, `PulsPr`); every common shell is `Arcing` and every common gun is
-/// `Inviso`. Downstream risk: converting it means giving the arm a real launch
-/// velocity and the native ground clamp, which is the same work as the
-/// `Arcing` solver.
-///
+/// Ordinary `ROT < 1, Vertical = no` AI subtracts gravity every visit
+/// (467402..467429), independently of `Arcing`. Production gives all such
+/// persistent shots the ordinary gravity/collision arm. Native binary64
+/// launch and velocity quantization remain open in the projectile owner.
 fn classify_projectile_delivery(
     weapon: &crate::rules::weapon_type::WeaponType,
     rules: &RuleSet,
@@ -315,6 +307,12 @@ fn classify_projectile_delivery(
             level_non_water: projectile.level,
             subject_to_walls: projectile.subject_to_walls,
             native_cell_collision: projectile.rot <= 0 && !projectile.vertical,
+            subject_to_cliffs: projectile.subject_to_cliffs,
+            flak_scatter: projectile.flak_scatter,
+            anti_air: projectile.aa,
+            airburst: projectile.airburst,
+            inaccurate: projectile.inaccurate,
+            elasticity_bits: projectile.elasticity.to_bits(),
         },
         ballistic,
         vertical: projectile.vertical.then_some(projectile.detonation_altitude),
@@ -410,6 +408,7 @@ mod projectile_delivery_tests {
                     level_non_water: false,
                     subject_to_walls: true,
                     native_cell_collision: true,
+                    ..ProjectileCollisionPolicy::NONE
                 },
                 ballistic: false,
                 vertical: None,
@@ -4937,6 +4936,12 @@ fn emit_projectile_shrapnel(
                 level_non_water: child_projectile.level,
                 subject_to_walls: child_projectile.subject_to_walls,
                 native_cell_collision: child_projectile.rot <= 0,
+                subject_to_cliffs: child_projectile.subject_to_cliffs,
+                flak_scatter: child_projectile.flak_scatter,
+                anti_air: child_projectile.aa,
+                airburst: child_projectile.airburst,
+                inaccurate: child_projectile.inaccurate,
+                elasticity_bits: child_projectile.elasticity.to_bits(),
             },
         });
     }
@@ -8090,6 +8095,7 @@ pub(crate) fn resolve_attacker_fire(
         // scattered delta, clamp the launch speed to half the straight-line
         // distance, and only then force a homing or vertical shot to one
         // lepton per frame.
+        let frozen_target_position = impact;
         let delta = (
             impact.x - origin.x,
             impact.y - origin.y,
@@ -8119,24 +8125,8 @@ pub(crate) fn resolve_attacker_fire(
         .sqrt())
         .trunc() as i32;
         let mut launch_speed = weapon.speed.min(launch_distance / 2).max(0);
-        // RESIDUAL (VERA-internal consequence of an otherwise native clamp,
-        // gamemd equivalent UNCHECKED at this separation): the integer `dist/2`
-        // makes `launch_speed` 0 at exactly 1 lepton of muzzle-to-target
-        // separation. Native reaches 0 there too, but its `ROT < 1` non-Vertical
-        // arm then subtracts `Rules.Gravity` every frame at `0x00467402` and the
-        // bullet falls out on the ground probe. VERA's `Straight` arm has no
-        // gravity (recorded separately), so `step_toward(pos, target, 0)`
-        // returns `pos`, `candidate == target_position` is never true, and the
-        // only other removals — target loss and off-grid — cannot fire for a
-        // live on-map target: the projectile never terminates and stays in a
-        // hashed store. Trigger: a `Straight`, non-guided projectile fired at a
-        // target exactly 1 lepton away. Player effect: an invisible immortal
-        // entry in deterministic state, growing one per such shot. Frequency:
-        // effectively zero — 1/256th of a cell of separation, and only for the
-        // four stock projectiles that take the `Straight` arm (`Sonic`,
-        // `Cannon2`, `ASWVirt`, `PulsPr`). Downstream risk: unbounded store
-        // growth and a diverging hash if it ever fires; giving the `Straight`
-        // arm its native gravity closes both this and residual 2 at once.
+        // A zero launch speed still enters the ordinary gravity/collision
+        // arm. Exact native binary64 launch arithmetic remains unresolved.
         // `0x006FEA36`..`0x006FEA4C`: a `ROT > 0` or `Vertical` bullet from a
         // firer with `RadialFireSegments == 0` — every stock firer except the
         // Aegis Cruiser — launches at one lepton per frame, and the weapon's
@@ -8195,7 +8185,7 @@ pub(crate) fn resolve_attacker_fire(
         let velocity = if ballistic {
             ballistic_launch_velocity(origin, impact, launch_speed, gravity, false)
                 .unwrap_or(ProjectileVelocity::new(0, 0, 0))
-        } else if vertical.is_some() {
+        } else if vertical.is_some() || guidance.is_none() {
             let horizontal = SimFixed::from_num(launch_speed)
                 * crate::sim::movement::homing_movement::cos_bam(launch_pitch_bam);
             ProjectileVelocity::new(
@@ -8241,7 +8231,7 @@ pub(crate) fn resolve_attacker_fire(
             source_id: snap.stable_id,
             origin,
             target,
-            initial_target_position: impact,
+            initial_target_position: frozen_target_position,
             payload: ProjectilePayload {
                 base_damage,
                 warhead: interner.intern(&warhead.id),
@@ -8258,7 +8248,7 @@ pub(crate) fn resolve_attacker_fire(
                     heading_bam: launch_heading_bam,
                     pitch_bam: launch_pitch_bam,
                 },
-                None if ballistic => ProjectileTrajectory::Ballistic { gravity },
+                None if ballistic || guidance.is_none() => ProjectileTrajectory::Ballistic { gravity },
                 None => ProjectileTrajectory::Straight,
             },
             guidance,

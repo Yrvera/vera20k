@@ -34,7 +34,7 @@ The live-input prerequisites for the approved Spark collision adapter are closed
 The adapter must not approximate these inputs:
 
 - ground height uses a signed cell conversion, a flattened 512-stride lookup, the active-retail 104-lepton Cell scalar, and one of 20 slope records;
-- Spark queries a 3x4 `f32` matrix by the candidate cell's slope byte, including identity for slope 0 and an all-zero matrix for slopes 17-20;
+- Spark queries a 3x4 `f32` matrix by the candidate cell's slope byte, including identity for slope 0 and slopes 17-20;
 - the structural bridge test is the live `CellClass+0x140 & 0x100` bit, not the presence of a bridge overlay or a generic deck height;
 - high-bridge collapse clears `0x100`, and engineer repair does **not** restore it—an active native quirk;
 - `Gravity` is an `i32` rule with constructor default 3 and stock override 6, while `ColorSpeed` is stored as the exact `f64` widening of an INI-parsed `f32`;
@@ -188,7 +188,7 @@ The clamp occurs before adding base; final conversion chops toward zero. Let `L 
 | 19 | `0` | `0` | `0` | `L/2` | `L/2` |
 | 20 | `0` | `0` | `L` | `L/2` | `-L/2` |
 
-Ground slopes 17-20 therefore all add exactly 52 leptons, independent of local X/Y. This does **not** imply that their VXL/Spark reflection matrices are identity; §4 shows they are zero.
+Ground slopes 17-20 therefore all add exactly 52 leptons, independent of local X/Y. Their VXL/Spark reflection matrices are independently initialized to identity (§4).
 
 Evidence: Ghidra disassembly `0x0047B3ED..0x0047BA8E` for record initialization and `0x0047BA94..0x0047BB58` for the evaluation/clamp/return path. `FUN_006D6AD0` independently confirms that slope is read as the unsigned byte at `CellClass+0x11C` with no clamp.
 
@@ -196,15 +196,15 @@ Evidence: Ghidra disassembly `0x0047B3ED..0x0047BA8E` for record initialization 
 
 ### 4.1 Initialization and lookup
 
-`VXL_MasterLighting_Init @ 0x00754CB0` is the sole active startup owner. It initializes entry 0 to identity and calls `Matrix3x4_BuildFromRotateXAndFacing @ 0x005AE6F0` for entries 1-16. Entries 17-20 receive no write and remain zero-filled BSS.
+`VXL_MasterLighting_Init @ 0x00754CB0` is the sole active startup owner. It initializes entry 0 to identity and calls `Matrix3x4_BuildFromRotateXAndFacing @ 0x005AE6F0` for entries 1-16. The initializer tail at `0x00755852..0x00755875` calls identity builder `0x005AE860` on `0x00B454B8`, `0x00B454E8`, `0x00B45518`, and `0x00B45548`, initializing entries 17-20 to identity.
 
 `VXL_GetFacingMatrix @ 0x007559B0` computes `0x00B45188 + slope * 0x30` and copies 12 dwords. It has no range check, remap, flat-cell early-out, or fallback. Spark passes the candidate terrain slope byte directly, so:
 
 - slope 0 returns the initialized identity entry;
 - slopes 1-16 return initialized rotations;
-- slopes 17-20 return twelve zero `f32` values.
+- slopes 17-20 return initialized identity matrices.
 
-Evidence: fresh Ghidra `decompile_function` and `disassemble_function` on `0x00754CB0`, `0x005AE6F0`, and `0x007559B0`; `read_memory(address="0x00B454B8", length=192)` confirms zero-backed slots 17-20 in the executable image, and the init body contains no writer to them.
+Evidence: fresh Ghidra `decompile_function` and `disassemble_function` on `0x00754CB0`, `0x005AE6F0`, and `0x007559B0`; the complete original initializer, including its tail, is executed by `tools/projectile_oracle/ordinary_collision.py`. Static PE zero bytes do not describe the initialized runtime table.
 
 ### 4.2 VXL height and tilt derivation
 
@@ -230,21 +230,28 @@ Rows below are row-major 3x4 matrices. Zero translation columns are retained bec
 | Slope | Twelve `f32` bit patterns |
 |---:|---|
 | 0 | `3F800000 00000000 00000000 00000000 00000000 3F800000 00000000 00000000 00000000 00000000 3F800000 00000000` |
-| 1 | `3F5F3969 BAAF51EF BEFAA753 00000000 3AC90FD5 3F7FFFEC 250A3D28 00000000 3EFAA73F BA44DCE1 3F5F397A 00000000` |
-| 2 | `3F7FFFEC BAC90FD5 248A3D28 00000000 3AAF51EF 3F5F3969 3EFAA753 00000000 BA44DCE1 BEFAA73F 3F5F397A 00000000` |
-| 3 | `3F5F3969 BAAF51EF 3EFAA753 00000000 3AC90FD5 3F7FFFEC A48A3D28 00000000 BEFAA73F 3A44DCE1 3F5F397A 00000000` |
+| 1 | `3F5F3968 BAAF51EE BEFAA753 00000000 3AC90FD4 3F7FFFEC 250A3D28 00000000 3EFAA73F BA44DCE0 3F5F397A 00000000` |
+| 2 | `3F7FFFEC BAC90FD4 248A3D28 00000000 3AAF51EE 3F5F3968 3EFAA753 00000000 BA44DCE0 BEFAA73F 3F5F397A 00000000` |
+| 3 | `3F5F3968 BAAF51EE 3EFAA753 00000000 3AC90FD4 3F7FFFEC A48A3D28 00000000 BEFAA73F 3A44DCE0 3F5F397A 00000000` |
 | 4 | `3F800000 00000000 00000000 00000000 00000000 3F5F397A BEFAA753 00000000 00000000 3EFAA753 3F5F397A 00000000` |
-| 5 and 9 | `3F773916 3D06934B BE83D956 00000000 3D12B5D0 3F77322F 3E83D956 00000000 3E83A585 BE840D13 3F6E6B6D 00000000` |
-| 6 and 10 | `3F77322F BD12B5D0 3E83D956 00000000 BD06934B 3F773916 3E83D956 00000000 BE840D13 BE83A585 3F6E6B6D 00000000` |
-| 7 and 11 | `3F773916 3D06934B 3E83D956 00000000 3D12B5D0 3F77322F BE83D956 00000000 BE83A585 3E840D13 3F6E6B6D 00000000` |
-| 8 and 12 | `3F77322F BD12B5D0 BE83D956 00000000 BD06934B 3F773916 BE83D956 00000000 3E840D13 3E83A585 3F6E6B6D 00000000` |
-| 13 | `3F6FA319 3D80294B BEB13D26 00000000 3D860AD1 3F6F963A 3EB13D26 00000000 3EB0F77F BEB182B2 3F5F397A 00000000` |
-| 14 | `3F6F963A BD860AD1 3EB13D26 00000000 BD80294B 3F6FA319 3EB13D26 00000000 BEB182B2 BEB0F77F 3F5F397A 00000000` |
-| 15 | `3F6FA319 3D80294B 3EB13D26 00000000 3D860AD1 3F6F963A BEB13D26 00000000 BEB0F77F 3EB182B2 3F5F397A 00000000` |
-| 16 | `3F6F963A BD860AD1 BEB13D26 00000000 BD80294B 3F6FA319 BEB13D26 00000000 3EB182B2 3EB0F77F 3F5F397A 00000000` |
-| 17-20 | `00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000` |
+| 5 | `3F773916 3D06934A BE83D955 00000000 3D12B5D0 3F77322F 3E83D955 00000000 3E83A584 BE840D12 3F6E6B6D 00000000` |
+| 6 | `3F77322F BD12B5D0 3E83D955 00000000 BD06934A 3F773916 3E83D955 00000000 BE840D12 BE83A584 3F6E6B6D 00000000` |
+| 7 | `3F773916 3D06934A 3E83D955 00000000 3D12B5D0 3F77322F BE83D955 00000000 BE83A584 3E840D12 3F6E6B6D 00000000` |
+| 8 | `3F77322F BD12B5D0 BE83D955 00000000 BD06934A 3F773916 BE83D955 00000000 3E840D12 3E83A584 3F6E6B6D 00000000` |
+| 9 | `3F773916 3D06934A BE83D955 00000000 3D12B5D0 3F77322F 3E83D955 00000000 3E83A584 BE840D12 3F6E6B6D 00000000` |
+| 10 | `3F77322F BD12B5D0 3E83D955 00000000 BD06934A 3F773916 3E83D955 00000000 BE840D12 BE83A584 3F6E6B6D 00000000` |
+| 11 | `3F773916 3D06934A 3E83D955 00000000 3D12B5D0 3F77322F BE83D955 00000000 BE83A584 3E840D12 3F6E6B6D 00000000` |
+| 12 | `3F77322F BD12B5D0 BE83D955 00000000 BD06934A 3F773916 BE83D955 00000000 3E840D12 3E83A584 3F6E6B6D 00000000` |
+| 13 | `3F6FA319 3D80294A BEB13D26 00000000 3D860AD0 3F6F963A 3EB13D26 00000000 3EB0F77E BEB182B2 3F5F397A 00000000` |
+| 14 | `3F6F963A BD860AD0 3EB13D26 00000000 BD80294A 3F6FA319 3EB13D26 00000000 BEB182B2 BEB0F77E 3F5F397A 00000000` |
+| 15 | `3F6FA319 3D80294A 3EB13D26 00000000 3D860AD0 3F6F963A BEB13D26 00000000 BEB0F77E 3EB182B2 3F5F397A 00000000` |
+| 16 | `3F6F963A BD860AD0 BEB13D26 00000000 BD80294A 3F6FA319 BEB13D26 00000000 3EB182B2 3EB0F77E 3F5F397A 00000000` |
+| 17 | `3F800000 00000000 00000000 00000000 00000000 3F800000 00000000 00000000 00000000 00000000 3F800000 00000000` |
+| 18 | `3F800000 00000000 00000000 00000000 00000000 3F800000 00000000 00000000 00000000 00000000 3F800000 00000000` |
+| 19 | `3F800000 00000000 00000000 00000000 00000000 3F800000 00000000 00000000 00000000 00000000 3F800000 00000000` |
+| 20 | `3F800000 00000000 00000000 00000000 00000000 3F800000 00000000 00000000 00000000 00000000 3F800000 00000000` |
 
-The table was mechanically replayed from the retail PE's instruction sequence and lookup-table bytes. It is suitable as an implementation golden for the native-derived table builder or as the direct constant table. It is not a Rust-vs-Rust parity certificate; the reference bytes come from `gamemd.exe`.
+The table is captured by executing the original CRT precision setup, WinMain rounding control, cached-control-word initializer, VXL scalar/tilt initializers, and complete `0x00754CB0` body. `WinMain 0x006BBFB7..0x006BBFC9` selects chop rounding and caches it at `0x00822D80`; the CRT selects 53-bit precision. The ambient arithmetic mode is `0x0E7F` (reserved bit 6 does not affect the captured words). Earlier replay values with a different rounding chronology are superseded. It is suitable as an implementation golden for the native-derived table builder or as the direct constant table. It is not a Rust-vs-Rust parity certificate; the reference bytes come from `gamemd.exe`.
 
 ## 5. Structural bridge bit lifecycle
 
@@ -341,7 +348,7 @@ Do not hardcode the conditional as always true or invent a stock LaserFence obje
 
 ### 9.1 Zero-additional-information pass
 
-After resolving the opening ledger, a second pass revisited all direct callees and writers for the ground wrapper, slope-table initializer/lookup, bridge structural bit, and the two rules fields. It added no new in-scope mechanism. The last newly material fact before that zero-add pass was the distinction between slope-0 identity and slope-17-20 zero matrices for Spark's unconditional lookup.
+After resolving the opening ledger, a second pass revisited all direct callees and writers for the ground wrapper, slope-table initializer/lookup, bridge structural bit, and the two rules fields. It added no new in-scope mechanism. The last newly material fact before that zero-add pass was the initialized slope-table values. A later complete initializer audit corrected the former zero-row claim and floating-point chronology; the prior zero-add pass did not establish those claims.
 
 ### 9.2 Cold spot-checks
 
@@ -354,7 +361,7 @@ After resolving the opening ledger, a second pass revisited all direct callees a
 |---|---|
 | What if a candidate X/Y axis is negative or individually outside 0-511? | Native conversion truncates toward zero and only the flattened index is validated; current Rust reproduces valid aliases and routes misses through the shared dummy. |
 | What if a collapsed high bridge is repaired by an engineer? | Its overlays/attributes are repaired, but structural `0x100` is not restored; Spark no longer applies the 416-lepton bridge plane there. |
-| What if the terrain slope is 0 or 17-20? | Slope 0 returns identity. Slopes 17-20 return zero matrices even though their ground contribution is 52. |
+| What if the terrain slope is 0 or 17-20? | Slope 0 returns identity. Slopes 17-20 return identity matrices while their independent ground contribution is 52. |
 | What if `.13` is stored through `SimFixed` because the visual result seems close? | That changes the native `f64` input and is DRIFT; retain `0x3FC0A3D700000000`. |
 | What if independently owned Cell/VXL globals are assumed numerically different? | Wrong: active runtime capture proves both level scalars are 104; Spark composes its independently owned 416 structural offset over Cell ground. |
 | What if stock maps never use a discovered edge? | Trigger frequency affects priority, not parity. Every valid stock slope 0-20 and bridge lifecycle state must retain the listed mechanism. |
@@ -369,7 +376,7 @@ After resolving the opening ledger, a second pass revisited all direct callees a
 | G03 | RESOLVED | Low-byte X/Y affine record, clamp to `[0,max]`, add base, chop. |
 | G04 | RESOLVED | All 20 records are listed in §3.3. |
 | G05 | RESOLVED | Native dummy routing is known and current Rust routes Spark through the shared substrate; the former typed-unavailable gap was closed by `4c71b488`. |
-| M01 | RESOLVED | `VXL_MasterLighting_Init` writes identity 0 and rotations 1-16; 17-20 remain BSS zero. |
+| M01 | RESOLVED | `VXL_MasterLighting_Init` writes identity 0 and rotations 1-16; 17-20 are initialized to identity at755852..755875. |
 | M02 | RESOLVED | Exact `f32` bits are listed in §4.3. |
 | M03 | RESOLVED | Direct `slope*0x30` copy; no clamp or fallback. |
 | B01 | RESOLVED | Structural slots are anchor, forward-1, forward-2, opposite. |
@@ -432,7 +439,7 @@ shared-dummy row is completed by `4c71b488`; later review coverage is in
 | Verified requirement | Current Rust state | Required delta | Acceptance test |
 |---|---|---|---|
 | Exact valid-cell coordinate selection and ground formula | Historical pre-`4c71b488`: `cell_rect` owned the substrate while Spark returned typed unavailable at the dummy boundary | Completed in `4c71b488` without changing valid flattened aliases | Retained boundary/alias fixtures plus shared-dummy level, slope, coordinate, transcript, and hash coverage |
-| Exact candidate slope matrix | No Spark world table; renderer table is not authoritative for collision and treats unsupported slopes differently | Add native-derived matrix source using §4.3 bits or exact table builder; 0 identity, 17-20 zero | Compare all 21×12 raw `f32` bits to §4.3 |
+| Exact candidate slope matrix | No Spark world table; renderer table is not authoritative for collision and treats unsupported slopes differently | Add native-derived matrix source using §4.3 bits or exact table builder; 0 and17-20 identity | Compare all 21×12 raw `f32` bits to §4.3 |
 | Live structural bit | Static bridge facts and runtime `deck_present` exist separately | Query static structural AND runtime state exactly as §5.3 | Intact true; collapsed false; repaired-after-collapse remains false; forward-3/extra false |
 | Candidate building/wall facts | Occupancy and overlay grids exist | Read in verified list order; preserve typed failure at unavailable terrain boundary | Multiple-object list ordering; accepted building; rejected non-building; wall overlay ID |
 | Gravity width/default | Missing from `GeneralRules` | Parse signed `i32`, fallback 3, stock 6; supply native `f32` bits | Missing key gives 3; stock gives bits `0x40C00000` |
@@ -453,7 +460,7 @@ Historical implementation surface and integration seam:
 1. `VOXEL_SLOPE_TILT_SYSTEM.md`:
    - replace analytic corner/edge tilt constants with §4.2's lookup-derived values;
    - replace “entry 0 is BSS zero and never read” with “master init writes identity to entry 0; Spark directly queries it for flat candidate cells”;
-   - retain the verified statement that entries 17-20 remain zero.
+   - record the complete initializer tail that sets entries17-20 to identity.
 2. `BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md` lines 1477-1481:
    - replace the claim that `RecalcAttributes` re-derives `0x80/0x100/0x400` with §5.2's no-restore result.
 
