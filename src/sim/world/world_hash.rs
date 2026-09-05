@@ -781,6 +781,9 @@ impl Simulation {
             projectile.position.x.hash(hasher);
             projectile.position.y.hash(hasher);
             projectile.position.z.hash(hasher);
+            projectile.launch_origin.hash(hasher);
+            projectile.launch_target.hash(hasher);
+            projectile.previous_cell.hash(hasher);
             hash_projectile_target(projectile.target, hasher);
             projectile.last_target_position.x.hash(hasher);
             projectile.last_target_position.y.hash(hasher);
@@ -803,6 +806,12 @@ impl Simulation {
             projectile.collision.level_non_water.hash(hasher);
             projectile.collision.subject_to_walls.hash(hasher);
             projectile.collision.native_cell_collision.hash(hasher);
+            projectile.collision.subject_to_cliffs.hash(hasher);
+            projectile.collision.flak_scatter.hash(hasher);
+            projectile.collision.anti_air.hash(hasher);
+            projectile.collision.airburst.hash(hasher);
+            projectile.collision.inaccurate.hash(hasher);
+            projectile.collision.elasticity_bits.hash(hasher);
         }
     }
 

@@ -346,6 +346,16 @@ pub fn reflect_slope_vector(
     probe_velocity: [NativeF32Bits; 3],
     slope_matrix: [NativeF32Bits; 12],
 ) -> Result<[NativeF32Bits; 3], SparkKernelError> {
+    reflect_slope_vector_with_elasticity(probe_velocity, slope_matrix, NativeF32Bits::ONE)
+}
+
+/// Shared original matrix path: Spark uses scalar one; ordinary
+/// Bullet AI4676FE..46771C supplies its BulletType Elasticity narrowed to f32.
+pub(crate) fn reflect_slope_vector_with_elasticity(
+    probe_velocity: [NativeF32Bits; 3],
+    slope_matrix: [NativeF32Bits; 12],
+    elasticity: NativeF32Bits,
+) -> Result<[NativeF32Bits; 3], SparkKernelError> {
     let axis_probe = [
         probe_velocity[0],
         negate_f32(probe_velocity[1])?,
@@ -354,9 +364,9 @@ pub fn reflect_slope_vector(
     let inverse = inverse_orthonormal_matrix(slope_matrix)?;
     let inverse_result = matrix_vector(inverse, axis_probe)?;
     let mut local = [
-        multiply_store_f32(inverse_result[0], NativeF32Bits::ONE)?,
-        multiply_store_f32(inverse_result[1], NativeF32Bits::ONE)?,
-        multiply_store_f32(inverse_result[2], NativeF32Bits::ONE)?,
+        multiply_store_f32(inverse_result[0], elasticity)?,
+        multiply_store_f32(inverse_result[1], elasticity)?,
+        multiply_store_f32(inverse_result[2], elasticity)?,
     ];
     local[2] = negate_f32(local[2])?;
     let mut reflected = matrix_vector(slope_matrix, local)?;

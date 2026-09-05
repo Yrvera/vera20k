@@ -43,7 +43,7 @@ use super::{
     RevealPosition, RevealRequest, Simulation,
 };
 
-fn insert_entity(sim: &mut Simulation, stable_id: u64, category: EntityCategory) {
+pub(super) fn insert_entity(sim: &mut Simulation, stable_id: u64, category: EntityCategory) {
     let owner = sim.interner.intern("Americans");
     let type_ref = sim.interner.intern("TEST");
     let mut entity = GameEntity::new_at_frame_zero_for_test(
@@ -247,7 +247,7 @@ fn common_raw_request(rx: u16, ry: u16, z: u8, sub_x: i32, sub_y: i32) -> Reveal
     }
 }
 
-fn common_raw_terrain_cell(
+pub(super) fn common_raw_terrain_cell(
     rx: u16,
     ry: u16,
     level: u8,
@@ -324,7 +324,7 @@ fn common_raw_terrain_cell(
     }
 }
 
-fn install_common_raw_terrain(
+pub(super) fn install_common_raw_terrain(
     sim: &mut Simulation,
     width: u16,
     height: u16,
@@ -3652,7 +3652,7 @@ fn lifecycle_authority_set_logic_order_for_test_synchronizes_all_membership_flag
     sim.debug_assert_logic_membership_consistent();
 }
 
-fn gsi_05_02_projectile(source_id: u64, fuse_frames: Option<u16>) -> ProjectileSpawn {
+pub(super) fn gsi_05_02_projectile(source_id: u64, fuse_frames: Option<u16>) -> ProjectileSpawn {
     ProjectileSpawn {
         source_id,
         origin: ProjectileCoord::new(0, 0, 0),
@@ -4657,12 +4657,12 @@ fn gsi_04_01_cell_target_uses_live_structural_bit_when_runtime_unwalkable() {
 
     assert!(sim.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
 
-    assert_eq!(sim.pending_projectile_detonations.len(), 1);
-    assert_eq!(sim.pending_projectile_detonations[0].impact, center);
-    assert_eq!(
-        sim.pending_projectile_detonations[0].reason,
-        crate::sim::projectile::ProjectileDetonationReason::ReachedTarget
-    );
+    // The actual Bullet visit consumes the live Cell target coordinate even
+    // though runtime bridge walkability is false. Being stationary at that
+    // target is not an admission: old height is 416, above both native tail
+    // gates (4677D3: <208; 467B68: <10).
+    assert!(sim.pending_projectile_detonations.is_empty());
+    assert_eq!(sim.projectiles.get(projectile_id).unwrap().position, center);
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 **Program:** gamemd.exe
 **Date:** 2026-04-06
-**Confidence:** High (verified from binary decompilation of all key functions)
+**Evidence scope:** Sections 1.1-1.3 below were reread against active bodies and callers for the Phase 6 collision slice. Other historical sections are not a whole-row parity certificate.
 **Complements:** `BULLET_CLASS_LAYOUT_GHIDRA_REPORT.md`, `BULLET_CLASS_AI_GHIDRA_REPORT.md`
 
 This report fills the gaps in the existing BulletClass documentation by providing
@@ -13,99 +13,37 @@ shrapnel spawning, with actual formulas extracted from decompilation.
 
 ## 1. Trajectory Calculation
 
-### 1.1 Arcing Trajectory (Arcing=yes, ROT<=0)
+### 1.1 Ordinary collision admission (`ROT < 1`, `Vertical=no`)
 
-**Ballistic projectiles** (tank shells, lobbed warheads). No course correction.
+The active AI branch selector is `4668D1` (`ROT`) then `4671D0` (`Vertical`). `Arcing` does not select an AI arm. Ordinary AI subtracts gravity at `467402..467429`, adds scratch velocity as doubles through `46B960`, and retains both the double candidate and its `ftol` integer coordinate.
 
-**Per-tick update:**
-```
-1. Read velocity: VelX (0xE8), VelY (0xF0), VelZ (0xF8) — three doubles
-2. speed = sqrt(VelX^2 + VelY^2 + VelZ^2)
-3. If speed < 8.0: flag as arrived, detonate
-4. Apply gravity: VelZ -= Gravity
-   - Gravity = Rules.Gravity (RulesClass+0x16B8, default 6)
-   - If Floater=yes: Gravity = FUN_0048ACF0() (variable gravity)
-5. Convert velocity to position delta (ftol each component)
-6. new_pos = old_pos + delta
-```
+`467494..4677D3` obtains the integer candidate's floor and checks structural bridge bit `0x100` on candidate and old cells. Bridge crossing compares the integer coordinates against `floor+416`. The ordinary floor/contact band instead compares the **double** candidate Z: `floor <= Z < floor+150`. In that band, it checks the first ground-list building (`47C520`), otherwise hard-overlay helper `480510(-1,-1)`, whose accepted raw IDs are 2, 26, and 243. Building exemptions are the live source identity, LaserFence with stage at least 8, virtual `+80` (resolved Undeploy type with 1x1 foundation), and the source house's directional alliance with the selected building (`4F9A90`).
 
-**Ground collision (non-Vertical):**
-```
-ground_height = CellClass::GetGroundHeight(new_pos) + DAT_0089de64
-if new_pos.Z < ground_height:
-    Check for building in cell:
-        - Skip if building is firer's target (pass-through)
-        - Skip if building has 7+ occupants and "GarrisonImmune" flag
-        - Skip if building.IsImmune()
-        - Skip if building is ally of firer
-        - Otherwise: detonate on building
-    If no building hit:
-        Adjust Z to ground_height - 100 (non-bridge) or bridge_height - 20
-        Perform bounce reflection (see section 5)
-```
+The local at stack `+64` is **source** (`Bullet+B0`, loaded at `467417`), not the target. Below-floor/contact-band admission with a live source does not itself set impact; a structural bridge crossing does. With no source, contact admits impact and performs the reflection transform. Descending bridge contact sets Z to the deck, ascending contact to deck-20. Otherwise only `Z > floor-100` clamps to floor; deeper candidates retain their Z.
 
-**Bridge collision:**
-```
-bridge_height = ground_height + DAT_0089de64  (bridge plane altitude)
-if (cell_flags & 0x100) != 0:  // cell has bridge
-    if old_Z was above bridge_height and new_Z is at/below: crossed bridge -> detonate
-    if old_Z was below bridge_height and new_Z is at/above: crossed bridge -> detonate
-```
+The reflection path `467666..467778` converts `(vx,-vy,vz)` to `f32`, transforms by the inverse slope matrix, multiplies all three local components by the `f32` Elasticity value, negates local Z, transforms back, then negates world Y. Result components are widened to doubles. The matrix table is initialized by the complete original `754CB0` startup body; slopes 17-20 are identity. See [corrected matrix evidence](PARTICLE_SPARK_LIVE_COLLISION_INPUTS_GHIDRA_REPORT.md#4-exact-spark-slope-matrices).
 
-**Bounce reflection (arcing, no firer target):**
-Uses rotation matrices to reflect velocity off terrain normal:
-```
-1. facing_matrix = VXL_GetFacingMatrix(cell)      // 0x007559B0
-2. inverse_matrix = FUN_005AFC20(facing_matrix)    // matrix inverse
-3. Transform velocity to terrain-local space via FUN_0043A0B0
-4. local_vel = matrix_multiply(inverse, velocity)  // FUN_005AF4D0
-5. local_vel.Z = -local_vel.Z * Elasticity         // FUN_0043A0D0
-6. velocity = matrix_multiply(facing_matrix, local_vel)
-7. Continue with reflected velocity
-```
+### 1.2 Ordinary tail and common delivery
 
-### 1.2 Straight Trajectory (Arcing=no, ROT<=0)
+`4677D3..467B7A` first admits a non-Vertical shot in its frozen launch-target cell, or sharing that cell's first building, when its **old** height is below 208. These paths set the near-target bit. Otherwise `47C3D0(0,0,ground,null)` selects the nearest eligible Techno by low-byte XY distance, preserving linked-list order on ties. Its `+14 bit0` test excludes Terrain: Abstract constructor `410170` clears the low bits, Object `5F3900` sets bit1, and only Techno `6F2B40` sets bit0 at `6F322F`; Terrain constructors `71BB90/71BDF0` do not.
 
-**Straight-line projectiles.** Velocity is integrated directly.
+Nearest selection calls virtual `+48` (Building `447AC0` returns foundation center), but the subsequent ordinary distance/snap reads the selected object's raw `+9C` fields directly. Distance below 128 admits unless the object is the source or allied from the source house's direction; Inaccurate suppresses the raw-coordinate snap. No-nearby-object fallthrough checks the native Size diamond (`568350`), expiring off-map shots without damage. Only subsequent non-Vertical fallthrough commits scratch velocity; speed below 10 with old height below 10 admits. Earlier returns preserve the persistent velocity at tail entry. Vertical has already committed its ramp into Bullet +E8/+F0/+F8 at `4672A3..4672B4`; `467AB0` skips scratch copyback and retains that post-ramp velocity on every tail outcome.
 
-**Per-tick speed ramping:**
-```
-current_speed = sqrt(VelX^2 + VelY^2 + VelZ^2)
-if current_speed < target_speed:
-    new_speed = current_speed + Acceleration  (BulletTypeClass offset 0x2D0)
-    // No cap check; acceleration adds until >= target
-if velocity == (0,0,0):
-    VelX = 100.0  // prevent stuck bullet (0x40590000 IEEE)
-// Normalize and scale:
-scale = new_speed / current_speed
-VelX *= scale; VelY *= scale; VelZ *= scale
-```
+After committing the candidate at `467B9E`, any clear impact flag enters common probe `468BB0`, independent of trajectory. `4CC360` receives frozen origin/target cells, previous packed cell, candidate, bullet type, and source house. It checks the effective-level cliff rise or current wall; wall alliance is directional **wall owner to source house**. The remaining geometry uses candidate-cell center distance at most 85, otherwise major-axis comparisons can requery the same packed candidate and repeat the admission. Cell pointers remain live across ordered queries, including shared dummy aliases.
 
-**Position update:**
-```
-delta.X = ftol(VelX)
-delta.Y = ftol(VelY)
-delta.Z = ftol(VelZ)
-new_pos = old_pos + delta
-```
+Other shared admissions are height at most -416; FlakScatter below live target aim with negative height; Level outside the active theater's `[WaterSet, WaterSet+14)` tile interval (`4867E0`); and AA within 128 of a target whose actual virtual `+54` admits. Base `5F6B90` requires cell-marked and height at least 208. Aircraft `41B920` instead uses Rocket locomotor phases 3-5 for Rules V3RocketType/DMislType. Distance `5F6360` uses virtual `+48` positions, then subtracts `(foundation_width+foundation_height)*64` for buildings and clamps at zero. Techno `+58` redispatches `+48` through `410540`; Cell aim retains its separate bridge offset.
 
-**Detonation checks (straight):**
-```
-if new_pos.Z > DetonationAltitude (BulletTypeClass offset 0x2BC): detonate
-if GetHeight() < 0: detonate
-Bridge crossing check: same as arcing
-```
+The common negative-height clamp follows admission, while the fuse still receives the pre-clamp candidate. Final target adjustment (`467CA9..467E53`) requires mode1 or the near-target bit, a target, and neither Airburst nor Inaccurate. It averages target/candidate Z with signed integer division **before** subtracting target Z, applies the native approximate square root and integer conversion, divides distance by three for near-target, and snaps to virtual `+48` if mode1 or within `max(128,2*|velocity|)`. This is an adjustment after admission, not a separate reached-target expiry rule.
 
-### 1.3 Vertical Trajectory (Vertical=yes)
+### 1.3 Delivered boundary, exclusions, and remaining work
 
-For V3 rocket descending phase. Subset of arcing path:
-```
-1. Apply gravity: VelZ -= Gravity
-2. Simple linear movement
-3. if new_pos.Z > DetonationAltitude: detonate
-4. if new_pos.Z < ground_height: detonate
-5. Bridge crossing: detonate
-```
+The production route is `SimRuntime::advance_frame` through the normal master frame and Logic visitor into `world::techno_ai::object_ai_visit_one`, `ProjectileStore::advance_one`, and `ProjectileCollisionWorld`; admitted impacts commit damage and retire the Bullet in that Logic slot. `ordinary_and_shared_admission_deliver_damage_in_runtime_logic_slot` exercises ordinary source-null contact, shared wall contact, and the live-source floor nonadmission on a MapHeader Size diamond.
+
+`tools/projectile_oracle/ordinary_collision.py` executes ordinary geometry (including fractional candidates), reflection helpers and complete matrix initialization, the ordinary tail, original nearest selector, and final handoff ranges. Tail vectors explicitly hook supplied world results; final-handoff vectors supply floor/target getters. Geometry and nearest vectors execute their receivers. `shared_collision.py` executes `468BB0` and all reached cell, house, height, target and cliff/wall receivers with an observation-only hook. Synthetic leaf worlds are controlled inputs, not retail map reproductions.
+
+LaserFence has no active retail authored type in the inspected rules/mode/map text corpus; its constructor/parser are the only established field writers. AlliedWallTransparency is false in active retail data, excluding the unowned-wall negative house-index read. Authored true with a valid owner has additional directional fixture coverage; true with no owner remains unverified. The normal dummy tile is DWORD `0xFFFF` from `47BBF0`: ordinary map loading excludes/reconstructs it, and the runtime tile writer's Size gate matches allocation. Corrupted/external save state is outside these exclusions.
+
+**Open:** launch arithmetic, current integer persistent velocity, and resulting candidate production are not certified. The collision boundary carries the supplied double candidate and its integer query coordinate separately, but reflection's precise returned doubles are currently quantized by the production velocity representation. The matrix/transform is an executed prerequisite, not completed fractional trajectory delivery. These residuals keep the projectile row and Phase 6 open. Vertical launch/motion producer behavior and downstream damage are not re-certified by this bounded collision work.
 
 ### 1.4 Inaccurate Projectiles
 

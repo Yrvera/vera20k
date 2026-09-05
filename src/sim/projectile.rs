@@ -26,15 +26,17 @@
 //! snap; the common tail then clamps a negative committed height and may snap
 //! a mode-1 fuse to the target's location (`+0x48`, not its aim point `+0x58`).
 //!
-//! RESIDUAL (GSI-08.06) — the ballistic arm's `reached_target` test is
-//! VERA-internal, gamemd equivalent UNCHECKED: native's `ROT < 1` arms
-//! terminate only on the ground clamp, the wall/building probe and the fuse,
-//! and its `0x00467CEC` "snap onto the target when within `max(128, 2|v|)`" is
-//! a coordinate adjustment applied AFTER detonation is already admitted, not a
-//! reason to detonate. Trigger: every arcing shell. Player effect: a shell can
-//! detonate one frame early, in the air, instead of on the ground at its
-//! landing point. Frequency: continuous for `Arcing` weapons. Downstream risk:
-//! it partly cancels the new launch scatter for `[FlakTProj]`.
+//! Ordinary admission (467494..467B7A) and the common probe (468BB0/4CC360)
+//! read production world state through world::projectile_collision. Final
+//! target adjustment (467CEC) runs only after admission. There is no separate
+//! distance-to-target expiry rule for ordinary shots.
+//!
+//! RESIDUAL (GSI-08.06): upstream launch/candidate generation and persistent
+//! velocity still quantize native binary64 state into integer leptons. Native
+//! collision comparisons are covered for supplied candidates; fractional
+//! trajectories can reach different candidates or velocity boundaries. This
+//! keeps the complete projectile row open. Terrain is excluded by the
+//! nearest selector's Techno identity test (47C427, constructor6F322F).
 
 use std::collections::BTreeMap;
 
@@ -340,13 +342,10 @@ pub(crate) fn cell_target_coord(
                     },
                 )
         })
-        // A Cell target may legitimately name a cell with no allocated
-        // CellClass: `MapClass::Get_CellClass @ 0x005657A0` answers those with
-        // the shared dummy at `0x00ABDC50`. A `CellClass` is `0x148` bytes and
-        // holds `Level` at `+0x11B` and `SlopeIndex` at `+0x11C`; all `0x148` bytes of
-        // the dummy read zero, so native takes level 0 and slope 0 there and
-        // lands on floor height 0 as well. Headless store tests reach the same
-        // arm by having no map substrate.
+        // Mapless store fixtures use a flat cell. Production misses retain
+        // ProjectileTarget::DummyCell and use its live level/slope/bridge
+        // fields through dummy_cell_target_coord; the native dummy is not
+        // all-zero (its ctor initializes tile+38 to DWORD0xFFFF, for example).
         .unwrap_or(0);
     ProjectileCoord::new(x, y, z)
 }
@@ -429,19 +428,9 @@ pub enum TargetExpiryPolicy {
 /// That is why the flag is narrowed on `!vertical` — not because a `Vertical`
 /// bullet skips every terrain test.
 ///
-/// RESIDUAL (GSI-08.08) — the shared post-move probe `FUN_00468BB0` is not
-/// modelled for ANY trajectory. `BulletClass::AI 0x00467BD1` calls it for every
-/// bullet whose impact flag is still clear (`0x00467BA4 MOV AL,[ESP+0x18] /
-/// TEST AL,AL / JNZ 0x00467BF0` — there is no `Vertical` or `ROT` test), and it
-/// detonates on `SubjectToCliffs`/`SubjectToWalls` cliff geometry
-/// (`FUN_004CC360`), on an altitude below `DAT_0089DE70 * -4`, on descending
-/// past an `AA` target, on the `Level` water branch, and on closing within
-/// `0x80` of an air target. Trigger: any bullet crossing a cliff, or an `AA`
-/// shot passing its target. Player effect: those shots keep flying where native
-/// would have detonated them. Frequency: zero for the two `Vertical` stock
-/// projectiles (`[BlimpBombP]`/`[BlimpBombPE]` author none of the gating keys);
-/// otherwise cliff-crossing shots on hilly maps. Downstream risk: none beyond
-/// the impact coordinate.
+/// Shared probe 468BB0 runs for every trajectory when its impact flag remains
+/// clear. Production resolves cliff/wall cells, live Flak target aim, the
+/// theater WaterSet tile interval, and the target's actual +54/+48 receivers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProjectileCollisionPolicy {
     /// `BulletTypeClass::Level`: detonate after entering a non-water cell.
@@ -450,6 +439,13 @@ pub struct ProjectileCollisionPolicy {
     pub subject_to_walls: bool,
     /// Ordinary non-guided `BulletClass::Update` floor/bridge/content probe.
     pub native_cell_collision: bool,
+    pub subject_to_cliffs: bool,
+    pub flak_scatter: bool,
+    pub anti_air: bool,
+    pub airburst: bool,
+    pub inaccurate: bool,
+    /// BulletType +2C8, retained as exact binary64 bits for Eq/hash/save.
+    pub elasticity_bits: u64,
 }
 
 impl ProjectileCollisionPolicy {
@@ -457,6 +453,12 @@ impl ProjectileCollisionPolicy {
         level_non_water: false,
         subject_to_walls: false,
         native_cell_collision: false,
+        subject_to_cliffs: false,
+        flak_scatter: false,
+        anti_air: false,
+        airburst: false,
+        inaccurate: false,
+        elasticity_bits: 0x3fe8_0000_0000_0000,
     };
 }
 
@@ -527,33 +529,98 @@ pub enum ProjectileCollisionResponse {
         impact: ProjectileCoord,
         velocity: ProjectileVelocity,
     },
+    /// Ordinary pre-commit AI 467494..467B7A, including its early returns.
+    Ordinary {
+        candidate: ProjectileCoord,
+        velocity: ProjectileVelocity,
+        impact: bool,
+        near_target: bool,
+        left_map: bool,
+    },
 }
 
-/// Named location: `BulletClass::Update @ 0x00467720`, null-target collision tail.
-/// The exact Cell slope matrices are shared with the proved Spark behavior-3 table.
-pub fn projectile_slope_reflect(
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ProjectileCollisionPhase {
+    Ordinary {
+        /// Native Bullet+E8 at tail entry: pre-scratch for ordinary, post-ramp for Vertical.
+        persistent_velocity: ProjectileVelocity,
+        motion: ProjectileCollisionMotion,
+    },
+    Shared,
+    TargetLocation,
+}
+
+/// Ordinary AI compares its binary64 candidate before ftol; the bridge and
+/// cell lookups separately consume the integer coordinate (467494..4677D3).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProjectileCollisionMotion {
+    pub candidate: [crate::util::native_x87::NativeF64Bits; 3],
+    pub velocity: [crate::util::native_x87::NativeF64Bits; 3],
+}
+
+impl ProjectileCollisionMotion {
+    pub fn from_integer(candidate: ProjectileCoord, velocity: ProjectileVelocity) -> Self {
+        use crate::util::native_x87::NativeF64Bits;
+        Self {
+            candidate: [candidate.x, candidate.y, candidate.z]
+                .map(|value| NativeF64Bits::from_bits(f64::from(value).to_bits())),
+            velocity: [velocity.x, velocity.y, velocity.z]
+                .map(|value| NativeF64Bits::from_bits(f64::from(value).to_bits())),
+        }
+    }
+
+    pub fn candidate_coord(&self) -> ProjectileCoord {
+        let [x, y, z] = Self::quantized(self.candidate);
+        ProjectileCoord::new(x, y, z)
+    }
+
+    pub fn quantized(values: [crate::util::native_x87::NativeF64Bits; 3]) -> [i32; 3] {
+        use crate::util::native_x87::X87Chop53;
+        values.map(|value| {
+            X87Chop53::ftol_i64(X87Chop53::load_f64(value).expect("finite collision input"))
+                .expect("representable collision coordinate") as i32
+        })
+    }
+}
+
+/// Original Bullet AI467666..467778: inverse slope, Elasticity scalar,
+/// negate LOCAL Z, forward slope, negate world Y. Native stores every matrix
+/// intermediate as chopped f32 and retains resulting doubles until copyback.
+pub(crate) fn projectile_slope_reflect_with_elasticity(
     velocity: ProjectileVelocity,
     slope_type: u8,
+    elasticity_bits: u64,
 ) -> Option<ProjectileVelocity> {
+    let input =
+        ProjectileCollisionMotion::from_integer(ProjectileCoord::new(0, 0, 0), velocity).velocity;
+    let reflected = projectile_slope_reflect_double(input, slope_type, elasticity_bits)?;
+    let [x, y, z] = ProjectileCollisionMotion::quantized(reflected);
+    Some(ProjectileVelocity::new(x, y, z))
+}
+
+pub(crate) fn projectile_slope_reflect_double(
+    velocity: [crate::util::native_x87::NativeF64Bits; 3],
+    slope_type: u8,
+    elasticity_bits: u64,
+) -> Option<[crate::util::native_x87::NativeF64Bits; 3]> {
+    use crate::util::native_x87::{NativeF64Bits, X87Chop53};
     let matrix = crate::sim::particles::spark_world::slope_matrix(slope_type).ok()?;
-    let m = matrix.map(|value| f32::from_bits(value.bits()));
-    let axis = [velocity.x as f32, -(velocity.y as f32), velocity.z as f32];
-    let local = [
-        m[0] * axis[0] + m[4] * axis[1] + m[8] * axis[2],
-        m[1] * axis[0] + m[5] * axis[1] + m[9] * axis[2],
-        m[2] * axis[0] + m[6] * axis[1] + m[10] * axis[2],
-    ];
-    let local = [local[0], -local[1], local[2]];
-    let reflected = [
-        m[0] * local[0] + m[1] * local[1] + m[2] * local[2],
-        m[4] * local[0] + m[5] * local[1] + m[6] * local[2],
-        m[8] * local[0] + m[9] * local[1] + m[10] * local[2],
-    ];
-    Some(ProjectileVelocity::new(
-        reflected[0].trunc() as i32,
-        (-reflected[1]).trunc() as i32,
-        reflected[2].trunc() as i32,
-    ))
+    let mut vector = [crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO; 3];
+    for (out, input) in vector.iter_mut().zip(velocity) {
+        *out = X87Chop53::store_f32(X87Chop53::load_f64(input).ok()?).ok()?;
+    }
+    let elasticity =
+        X87Chop53::store_f32(X87Chop53::load_f64(NativeF64Bits::from_bits(elasticity_bits)).ok()?)
+            .ok()?;
+    let reflected = crate::sim::particles::spark::reflect_slope_vector_with_elasticity(
+        vector, matrix, elasticity,
+    )
+    .ok()?;
+    Some(
+        reflected.map(|value| {
+            NativeF64Bits::from_bits(f64::from(f32::from_bits(value.bits())).to_bits())
+        }),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1000,6 +1067,12 @@ pub struct Projectile {
     pub in_logic_vector: bool,
     pub source_id: u64,
     pub position: ProjectileCoord,
+    /// Bullet +134 and +140 are captured by Fire 4686A5/468722 and never
+    /// replaced by the live homing target or proximity detector reference.
+    pub launch_origin: ProjectileCoord,
+    pub launch_target: ProjectileCoord,
+    /// Bullet+14C: packed committed cell from Fire or the preceding AI tail.
+    pub previous_cell: (i16, i16),
     pub target: ProjectileTarget,
     pub last_target_position: ProjectileCoord,
     pub payload: ProjectilePayload,
@@ -1126,6 +1199,9 @@ impl ProjectileStore {
                 in_logic_vector: false,
                 source_id: spawn.source_id,
                 position: spawn.origin,
+                launch_origin: spawn.origin,
+                launch_target: spawn.initial_target_position,
+                previous_cell: ((spawn.origin.x / 256) as i16, (spawn.origin.y / 256) as i16),
                 target: spawn.target,
                 last_target_position: spawn.initial_target_position,
                 payload: spawn.payload,
@@ -1163,7 +1239,7 @@ impl ProjectileStore {
         target_positions: &BTreeMap<u64, ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
         shared_cell_dummy: &SharedCellDummy,
-        collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
+        mut collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
     ) -> ProjectileAdvanceResult {
         let ids: Vec<u64> = self.projectiles.keys().copied().collect();
         self.advance_selected(
@@ -1173,7 +1249,11 @@ impl ProjectileStore {
             terrain,
             shared_cell_dummy,
             false,
-            collides_at,
+            |projectile, candidate, phase| match phase {
+                ProjectileCollisionPhase::Ordinary { .. } => None,
+                ProjectileCollisionPhase::Shared => collides_at(projectile, candidate),
+                ProjectileCollisionPhase::TargetLocation => None,
+            },
             true,
         )
     }
@@ -1186,7 +1266,11 @@ impl ProjectileStore {
         terrain: Option<&ResolvedTerrainGrid>,
         shared_cell_dummy: &SharedCellDummy,
         source_is_jumpjet: bool,
-        collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
+        collides_at: impl FnMut(
+            &Projectile,
+            ProjectileCoord,
+            ProjectileCollisionPhase,
+        ) -> Option<ProjectileCollisionResponse>,
     ) -> Option<ProjectileAdvanceResult> {
         if !self.projectiles.contains_key(&id) {
             return None;
@@ -1212,7 +1296,11 @@ impl ProjectileStore {
         terrain: Option<&ResolvedTerrainGrid>,
         shared_cell_dummy: &SharedCellDummy,
         source_is_jumpjet: bool,
-        mut collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
+        mut collides_at: impl FnMut(
+            &Projectile,
+            ProjectileCoord,
+            ProjectileCollisionPhase,
+        ) -> Option<ProjectileCollisionResponse>,
         remove_terminal: bool,
     ) -> ProjectileAdvanceResult {
         let mut result = ProjectileAdvanceResult::default();
@@ -1323,6 +1411,7 @@ impl ProjectileStore {
             }
 
             let previous_position = projectile.position;
+            let previous_velocity = projectile.velocity;
             // Native `local_198` — set by any arm that hits something. It is
             // the only value besides the fuse that admits a detonation.
             let mut impact_flag = false;
@@ -1334,8 +1423,10 @@ impl ProjectileStore {
             // `vtable+0x124(2)` and `ObjectClass::UnInit` with NO detonation.
             let mut left_the_map = false;
             let mut snap_impact: Option<ProjectileCoord> = None;
+            let mut near_target = false;
 
-            let candidate = if let Some(mut guidance) = projectile.guidance {
+            let mut ordinary_motion = None;
+            let mut candidate = if let Some(mut guidance) = projectile.guidance {
                 // ---- ARM C, `BulletClass::AI 0x004668D9`..`0x00466A33` ----
                 // The speed ramp runs before any steering. `Bullet+0x110` is
                 // MaxSpeed; the current magnitude is `ftol(|v|)`, which native
@@ -1480,11 +1571,22 @@ impl ProjectileStore {
                     }
                     ProjectileTrajectory::Ballistic { gravity } => {
                         projectile.velocity.z = projectile.velocity.z.saturating_sub(gravity);
-                        ProjectileCoord::new(
-                            projectile.position.x.saturating_add(projectile.velocity.x),
-                            projectile.position.y.saturating_add(projectile.velocity.y),
-                            projectile.position.z.saturating_add(projectile.velocity.z),
-                        )
+                        use crate::util::native_x87::X87Chop53;
+                        let mut motion = ProjectileCollisionMotion::from_integer(
+                            projectile.position,
+                            projectile.velocity,
+                        );
+                        for (position, velocity) in motion.candidate.iter_mut().zip(motion.velocity)
+                        {
+                            *position = X87Chop53::store_f64(X87Chop53::add(
+                                X87Chop53::load_f64(*position).expect("finite position"),
+                                X87Chop53::load_f64(velocity).expect("finite velocity"),
+                            ))
+                            .expect("finite ordinary candidate");
+                        }
+                        let candidate = motion.candidate_coord();
+                        ordinary_motion = Some(motion);
+                        candidate
                     }
                     // ---- ARM A, `BulletClass::AI 0x004671E0`..`0x00467390` ----
                     ProjectileTrajectory::Vertical {
@@ -1539,14 +1641,40 @@ impl ProjectileStore {
                 }
             };
 
-            // `FUN_00568350(newCoord) == 0` -> terminal reason 2. Only the
-            // `ROT < 1` arms run this probe in native, so a homing bullet is
-            // never silently removed for leaving the map.
+            // Both ROT<1 arms enter the ordinary cell/nearest/map/slow tail.
+            // Early returns preserve Bullet+E8 at tail entry. Ordinary scratch
+            // gravity/reflection commits only at 467AB2; Vertical already
+            // committed its ramp at 4672A3..4672B4 and skips that copyback.
             if projectile.guidance.is_none()
-                && let Some(grid) = terrain
-                && !coord_is_on_grid(grid, candidate)
+                && let Some(ProjectileCollisionResponse::Ordinary {
+                    candidate: selected,
+                    velocity,
+                    impact,
+                    near_target: near,
+                    left_map,
+                }) = collides_at(
+                    projectile,
+                    candidate,
+                    ProjectileCollisionPhase::Ordinary {
+                        persistent_velocity: if matches!(
+                            projectile.trajectory,
+                            ProjectileTrajectory::Vertical { .. }
+                        ) {
+                            projectile.velocity
+                        } else {
+                            previous_velocity
+                        },
+                        motion: ordinary_motion.unwrap_or_else(|| {
+                            ProjectileCollisionMotion::from_integer(candidate, projectile.velocity)
+                        }),
+                    },
+                )
             {
-                left_the_map = true;
+                candidate = selected;
+                projectile.velocity = velocity;
+                impact_flag |= impact;
+                near_target = near;
+                left_the_map = left_map;
             }
 
             if left_the_map {
@@ -1554,17 +1682,27 @@ impl ProjectileStore {
                 continue;
             }
 
-            // The homing arm's admitted impact bypasses the post-move probe
-            // (`0x00467BA4..0x00467BD1`). ROT<1 collision has its own earlier
-            // block and retains its existing callback order.
-            let collision_impact = (!(projectile.guidance.is_some() && impact_flag))
-                .then(|| collides_at(projectile, candidate))
+            // 467B9E commits the selected candidate before the shared probe.
+            // Every admitted impact bypasses 468BB0, irrespective of ROT.
+            let selected_candidate = snap_impact.unwrap_or(candidate);
+            projectile.position = selected_candidate;
+            let collision_impact = (!impact_flag)
+                .then(|| {
+                    collides_at(
+                        projectile,
+                        selected_candidate,
+                        ProjectileCollisionPhase::Shared,
+                    )
+                })
                 .flatten()
                 .map(|response| match response {
                     ProjectileCollisionResponse::TargetZClamp(impact) => impact,
                     ProjectileCollisionResponse::SlopeMatrixReflect { impact, velocity } => {
                         projectile.velocity = velocity;
                         impact
+                    }
+                    ProjectileCollisionResponse::Ordinary { .. } => {
+                        unreachable!("ordinary response during shared probe")
                     }
                 });
             if let Some(impact) = collision_impact {
@@ -1574,7 +1712,7 @@ impl ProjectileStore {
             }
 
             let mut impact = snap_impact.unwrap_or(candidate);
-            if projectile.guidance.is_some() && impact_flag {
+            if impact_flag {
                 // `0x00467BF0..0x00467C06`: the getter and, when negative,
                 // setter both query the committed coordinate before the fuse.
                 // The setter does not rewrite the stack coordinate used below.
@@ -1596,7 +1734,7 @@ impl ProjectileStore {
                         guidance.fuse_reference
                     });
                 if projectile.arm_frames_remaining == 0 {
-                    let distance = coord_distance(snap_impact.unwrap_or(candidate), reference);
+                    let distance = coord_distance(selected_candidate, reference);
                     let (mode, next_distance) =
                         ranged_fuse_distance_step(distance, projectile.last_distance_half);
                     projectile.last_distance_half = next_distance;
@@ -1610,34 +1748,53 @@ impl ProjectileStore {
 
             if !impact_flag && fuse_mode == 0 {
                 projectile.position = candidate;
-                let reached_target = match projectile.trajectory {
-                    ProjectileTrajectory::Ballistic { .. } => {
-                        candidate.z <= target_position.z
-                            && squared_horizontal_distance(candidate, target_position)
-                                <= i64::from(projectile.speed_leptons_per_frame).pow(2)
-                    }
-                    ProjectileTrajectory::Straight if projectile.guidance.is_none() => {
-                        candidate == target_position
-                    }
-                    ProjectileTrajectory::Straight | ProjectileTrajectory::Vertical { .. } => false,
-                };
-                if reached_target {
-                    result.detonations.push(detonation(
-                        projectile,
-                        candidate,
-                        ProjectileDetonationReason::ReachedTarget,
-                    ));
-                }
+                projectile.previous_cell = ((candidate.x / 256) as i16, (candidate.y / 256) as i16);
                 continue;
             }
 
-            if let Some(guidance) = projectile.guidance {
+            {
                 // `0x00467CA9..0x00467E4D`: a mode-1 fuse unconditionally
                 // selects target +0x48 after the Airburst/Inaccurate gates.
                 // Re-read a shared dummy here: earlier ground lookups may
                 // have stamped a different coordinate into that same target.
-                if fuse_mode == 1 && !guidance.airburst && !guidance.inaccurate {
+                let airburst = projectile
+                    .guidance
+                    .map_or(projectile.collision.airburst, |g| g.airburst);
+                let inaccurate = projectile
+                    .guidance
+                    .map_or(projectile.collision.inaccurate, |g| g.inaccurate);
+                if (fuse_mode == 1 || near_target) && !airburst && !inaccurate {
+                    // +58 is fetched even in the unconditional mode-one arm.
+                    let aim = match projectile.target {
+                        ProjectileTarget::Entity(id) => match collides_at(
+                            projectile,
+                            selected_candidate,
+                            ProjectileCollisionPhase::TargetLocation,
+                        ) {
+                            Some(ProjectileCollisionResponse::TargetZClamp(location)) => {
+                                Some(location)
+                            }
+                            _ => resolve_target_position(id),
+                        },
+                        ProjectileTarget::Cell { rx, ry } => {
+                            Some(cell_target_coord(terrain, rx, ry))
+                        }
+                        ProjectileTarget::DummyCell => {
+                            Some(dummy_cell_target_coord(shared_cell_dummy))
+                        }
+                        ProjectileTarget::None => None,
+                    };
+                    let snap = aim.is_some_and(|aim| {
+                        projectile_final_snap_admitted(
+                            selected_candidate,
+                            aim,
+                            projectile.velocity,
+                            fuse_mode,
+                            near_target,
+                        )
+                    });
                     let location = match projectile.target {
+                        _ if !snap => None,
                         ProjectileTarget::Entity(id) => resolve_target_position(id),
                         ProjectileTarget::Cell { rx, ry } => {
                             let mut location = cell_target_coord(terrain, rx, ry);
@@ -1668,6 +1825,7 @@ impl ProjectileStore {
             } else {
                 ProjectileDetonationReason::Fuse
             };
+            projectile.position = impact;
             result
                 .detonations
                 .push(detonation(projectile, impact, reason));
@@ -1703,17 +1861,18 @@ pub fn ranged_fuse_distance_step(distance_fistp: i32, last_distance: i32) -> (i3
 /// `Math__ftol(sqrt(dx*dx + dy*dy + dz*dz))` — the truncating straight-line
 /// lepton distance native uses for the proximity fuse, the homing reach test
 /// and the closing-rate accumulator.
-fn coord_distance(a: ProjectileCoord, b: ProjectileCoord) -> i32 {
-    let dx = f64::from(a.x - b.x);
-    let dy = f64::from(a.y - b.y);
-    let dz = f64::from(a.z - b.z);
-    (dx * dx + dy * dy + dz * dz).sqrt().trunc() as i32
+pub(crate) fn coord_distance(a: ProjectileCoord, b: ProjectileCoord) -> i32 {
+    native_vector_magnitude([
+        a.x.wrapping_sub(b.x),
+        a.z.wrapping_sub(b.z),
+        a.y.wrapping_sub(b.y),
+    ]) as i32
 }
 
 /// `CellClass::GetGroundHeight @ 0x00578080`: signed /256, fixed-512
 /// allocation lookup, and live shared-dummy fallback, evaluated at the original
 /// lepton XY. The fallback stamp is observable by a retained DummyCell target.
-fn projectile_ground_z(
+pub(crate) fn projectile_ground_z(
     terrain: Option<&ResolvedTerrainGrid>,
     shared_cell_dummy: &SharedCellDummy,
     coord: ProjectileCoord,
@@ -1748,10 +1907,7 @@ fn homing_impact_admission(
     airburst: bool,
     nonzero_target: bool,
 ) -> (bool, bool) {
-    let x = f64::from(velocity.x);
-    let y = f64::from(velocity.y);
-    let z = f64::from(velocity.z);
-    let half_speed = (x * x + y * y + z * z).sqrt() * 0.5;
+    let half_speed = projectile_velocity_magnitude(velocity) * 0.5;
     let impact = f64::from(distance) <= half_speed || old_height <= 0;
     (
         impact,
@@ -1765,6 +1921,51 @@ fn projectile_fuse_mode(detector_mode: i32, source_is_jumpjet: bool) -> i32 {
     } else {
         detector_mode
     }
+}
+
+/// Common Bullet AI 467CEC..467E35. The midpoint's signed division occurs
+/// before subtracting target Z; replacing it with `(candidate-target)/2`
+/// differs on odd signed coordinates. The near-target bit divides the
+/// integer distance by three, and only then compares with max(128, 2|v|).
+pub(crate) fn projectile_final_snap_admitted(
+    candidate: ProjectileCoord,
+    target_aim: ProjectileCoord,
+    velocity: ProjectileVelocity,
+    fuse_mode: i32,
+    near_target: bool,
+) -> bool {
+    let midpoint = target_aim.z.wrapping_add(candidate.z) / 2;
+    let distance = coord_distance(
+        ProjectileCoord::new(candidate.x, candidate.y, midpoint),
+        target_aim,
+    );
+    let distance = if near_target { distance / 3 } else { distance };
+    fuse_mode == 1
+        || f64::from(distance) <= (projectile_velocity_magnitude(velocity) * 2.0).max(128.0)
+}
+
+pub(crate) fn projectile_velocity_magnitude(velocity: ProjectileVelocity) -> f64 {
+    native_vector_magnitude([velocity.x, velocity.y, velocity.z])
+}
+
+fn native_vector_magnitude(ordered_components: [i32; 3]) -> f64 {
+    use crate::util::native_x87::NativeF64Bits;
+    projectile_velocity_magnitude_double(
+        ordered_components.map(|value| NativeF64Bits::from_bits(f64::from(value).to_bits())),
+    )
+}
+
+pub(crate) fn projectile_velocity_magnitude_double(
+    components: [crate::util::native_x87::NativeF64Bits; 3],
+) -> f64 {
+    use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
+    let terms = components.map(|component| {
+        let value = X87Chop53::load_f64(component).expect("finite velocity");
+        X87Chop53::mul(value, value)
+    });
+    let squared = X87Chop53::add(X87Chop53::add(terms[0], terms[1]), terms[2]);
+    let bits = sqrt_approx_f32(squared).expect("finite represented projectile vector");
+    f64::from(f32::from_bits(bits.bits()))
 }
 
 /// `CellClass::GetGroundHeight` at a lepton coordinate, or `None` when the
@@ -2224,7 +2425,10 @@ mod tests {
             &BTreeMap::new(),
             None,
             &SharedCellDummy::fresh(),
-            |_, _| None,
+            |projectile, candidate| {
+                (projectile.id == first)
+                    .then_some(ProjectileCollisionResponse::TargetZClamp(candidate))
+            },
         );
 
         assert_eq!(
@@ -2746,10 +2950,104 @@ mod tests {
     }
 
     #[test]
-    fn flat_slope_uses_native_axis_reflection_order() {
-        assert_eq!(
-            projectile_slope_reflect(ProjectileVelocity::new(10, 20, 30), 0),
-            Some(ProjectileVelocity::new(10, -20, 30))
-        );
+    fn native_common_final_handoff_near_target_vectors() {
+        let oracle: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/projectile_oracle/ordinary_collision_vectors.json"
+        ))
+        .unwrap();
+        for row in oracle["final_handoffs"].as_array().unwrap() {
+            let coord = |key: &str| {
+                ProjectileCoord::new(
+                    row[key][0].as_i64().unwrap() as i32,
+                    row[key][1].as_i64().unwrap() as i32,
+                    row[key][2].as_i64().unwrap() as i32,
+                )
+            };
+            let v = coord("velocity");
+            let mode = row["mode"].as_i64().unwrap() as i32;
+            let near = row["near_target"].as_bool().unwrap();
+            let actual = (mode == 1 || near)
+                && !row["airburst"].as_bool().unwrap()
+                && !row["inaccurate"].as_bool().unwrap()
+                && row["target_present"].as_bool().unwrap()
+                && projectile_final_snap_admitted(
+                    coord("candidate"),
+                    coord("target_aim"),
+                    ProjectileVelocity::new(v.x, v.y, v.z),
+                    mode,
+                    near,
+                );
+            assert_eq!(
+                actual,
+                row["result"] == row["target_location"],
+                "native finalhandoff: {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_slope_matrix_and_elastic_reflection_vectors() {
+        let oracle: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/projectile_oracle/ordinary_collision_vectors.json"
+        ))
+        .unwrap();
+        for (slope, row) in oracle["slope_matrices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            let actual = crate::sim::particles::spark_world::slope_matrix(slope as u8).unwrap();
+            for (actual, expected) in actual.into_iter().zip(row.as_array().unwrap()) {
+                assert_eq!(
+                    u64::from(actual.bits()),
+                    expected.as_u64().unwrap(),
+                    "slope {slope}"
+                );
+            }
+        }
+        for row in oracle["reflections"].as_array().unwrap() {
+            let components: Vec<i32> = row["velocity"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_i64().unwrap() as i32)
+                .collect();
+            use crate::util::native_x87::{NativeF64Bits, X87Chop53};
+            let matrix = crate::sim::particles::spark_world::slope_matrix(
+                row["slope"].as_u64().unwrap() as u8,
+            )
+            .unwrap();
+            let vector = std::array::from_fn(|i| {
+                X87Chop53::store_f32(X87Chop53::load_i32(components[i])).unwrap()
+            });
+            let elasticity = X87Chop53::store_f32(
+                X87Chop53::load_f64(NativeF64Bits::from_bits(
+                    row["elasticity"].as_f64().unwrap().to_bits(),
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+            let reflected = crate::sim::particles::spark::reflect_slope_vector_with_elasticity(
+                vector, matrix, elasticity,
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::json!(reflected.map(|value| value.bits())),
+                row["result_f32_bits"],
+                "native f32 reflection: {row}"
+            );
+            let actual = projectile_slope_reflect_with_elasticity(
+                ProjectileVelocity::new(components[0], components[1], components[2]),
+                row["slope"].as_u64().unwrap() as u8,
+                row["elasticity"].as_f64().unwrap().to_bits(),
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::json!([actual.x, actual.y, actual.z]),
+                row["quantized_result"],
+                "{row}"
+            );
+        }
     }
 }

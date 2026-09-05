@@ -401,7 +401,9 @@ use crate::sim::world::Simulation;
 // final impact-coordinate snap. v123 cannot decode the new guidance shape.
 // Versions 124 and 125 are reserved by the concurrent parasite and audio-lane
 // changes, respectively; this format must not share either version.
-const SNAPSHOT_VERSION: u32 = 126;
+// v128 retains Bullet launch/previous-cell collision inputs and policy.
+// Renderer owns v127.
+const SNAPSHOT_VERSION: u32 = 128;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3154,8 +3156,8 @@ mod tests {
     /// 123 -> 126 adds the retained homing Inaccurate flag; 124 and 125 are
     /// reserved by the concurrent parasite and audio-lane changes.
     #[test]
-    fn projectile_homing_impact_snapshot_version_is_126() {
-        assert_eq!(super::SNAPSHOT_VERSION, 126);
+    fn projectile_collision_snapshot_version_is_128() {
+        assert_eq!(super::SNAPSHOT_VERSION, 128);
     }
 
     #[test]
