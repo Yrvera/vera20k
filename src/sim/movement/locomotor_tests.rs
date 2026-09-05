@@ -142,6 +142,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         insignificant: false,
         to_protect: false,
         harvester: false,
+        spawned: false,
         refinery: false,
         weeder: false,
         bib: false,

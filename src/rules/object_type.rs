@@ -582,6 +582,12 @@ pub struct ObjectType {
     /// Whether this unit is a resource harvester (Harvester=yes in rules.ini).
     /// Data-driven replacement for hardcoded type ID string checks.
     pub harvester: bool,
+    /// `Spawned=` (`TechnoTypeClass+0xD54`): this type is a carrier/launcher
+    /// child (Hornet, V3/Dreadnought missile). `TechnoTypeClass::ReadINI`
+    /// reads key `"Spawned"` (`0x008437D8`) at `0x00714E7D..0x00714E91`.
+    /// `TechnoClass::Death_Announcement @ 0x004D98C0` (`0x004D98DD`) stays
+    /// silent for such types.
+    pub spawned: bool,
     /// Whether this structure accepts ore/gem delivery (Refinery=yes in rules.ini).
     pub refinery: bool,
     /// Native BuildingType `Weeder=` classification. ExitObject dispatch tests
@@ -1695,6 +1701,7 @@ impl ObjectType {
             insignificant: section.get_bool("Insignificant").unwrap_or(false),
             to_protect: section.get_bool("ToProtect").unwrap_or(false),
             harvester: section.get_bool("Harvester").unwrap_or(false),
+            spawned: section.get_bool("Spawned").unwrap_or(false),
             refinery: section.get_bool("Refinery").unwrap_or(false),
             weeder: section.get_bool("Weeder").unwrap_or(false),
             bib: section.get_bool("Bib").unwrap_or(false),

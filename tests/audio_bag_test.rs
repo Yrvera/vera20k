@@ -230,7 +230,7 @@ fn test_sound_registry_with_real_soundmd() {
 #[ignore] // Requires RA2_DIR (retail game files)
 fn test_eva_registry_with_real_evamd() {
     use vera20k::rules::ini_parser::IniFile;
-    use vera20k::rules::sound_ini::EvaRegistry;
+    use vera20k::rules::sound_ini::{EvaRegistry, EvaSide};
 
     let assets = AssetManager::new(Path::new(&ra2_dir())).expect("AssetManager");
 
@@ -247,9 +247,9 @@ fn test_eva_registry_with_real_evamd() {
     );
 
     // Test faction-specific lookup.
-    let allied = registry.get("EVA_ConstructionComplete", "Allied");
-    let soviet = registry.get("EVA_ConstructionComplete", "Russian");
-    let yuri = registry.get("EVA_ConstructionComplete", "Yuri");
+    let allied = registry.get("EVA_ConstructionComplete", EvaSide::Allied);
+    let soviet = registry.get("EVA_ConstructionComplete", EvaSide::Russian);
+    let yuri = registry.get("EVA_ConstructionComplete", EvaSide::Yuri);
     println!(
         "EVA_ConstructionComplete: Allied={:?}, Russian={:?}, Yuri={:?}",
         allied, soviet, yuri
@@ -258,8 +258,8 @@ fn test_eva_registry_with_real_evamd() {
     assert_eq!(soviet, Some("csof048"));
     assert_eq!(yuri, Some("cyur048"));
 
-    let unit_allied = registry.get("EVA_UnitReady", "Allied");
-    let unit_soviet = registry.get("EVA_UnitReady", "Russian");
+    let unit_allied = registry.get("EVA_UnitReady", EvaSide::Allied);
+    let unit_soviet = registry.get("EVA_UnitReady", EvaSide::Russian);
     assert_eq!(unit_allied, Some("ceva062"));
     assert_eq!(unit_soviet, Some("csof062"));
 }

@@ -6806,10 +6806,19 @@ fn gsi_08_05_non_inviso_projectile_advances_scenario_rng_by_the_reload_jitter() 
     );
 
     assert_eq!(scenario_rng.logical_state(), expected_rng.logical_state());
-    assert!(result.explosion_effects.is_empty(), "non-Inviso Speed=0 still creates a persistent native shot");
+    assert!(
+        result.explosion_effects.is_empty(),
+        "non-Inviso Speed=0 still creates a persistent native shot"
+    );
     assert_eq!(result.projectile_spawns.len(), 1);
     let target = result.projectile_spawns[0].initial_target_position;
-    assert_eq!((target.x, target.y), (i32::from(target_coord.0) * 256 + target_coord.2.to_num::<i32>(), i32::from(target_coord.1) * 256 + target_coord.3.to_num::<i32>()));
+    assert_eq!(
+        (target.x, target.y),
+        (
+            i32::from(target_coord.0) * 256 + target_coord.2.to_num::<i32>(),
+            i32::from(target_coord.1) * 256 + target_coord.3.to_num::<i32>()
+        )
+    );
 }
 
 #[test]
@@ -7670,17 +7679,21 @@ fn deployed_desolator_self_irradiates_and_refires_below_third() {
 }
 
 #[test]
-fn under_attack_events_fire_for_enemy_hit_structures_and_miners_only() {
-    // The Phase-4 damage-apply producer: an enemy-damaged Structure emits a
-    // base ping, an enemy-damaged harvester a miner ping; same-owner damage
-    // and plain-unit victims emit nothing.
+fn under_attack_events_fire_for_sourced_structures_and_harvester_types() {
+    // The damage-apply producer, per `BuildingClass::ReceiveDamage @
+    // 0x00442230` (sourced, non-zero result, `Insignificant=` clear — no
+    // attacker-house test) and `UnitClass::ReceiveDamage 0x007384B9`
+    // (`Harvester=` type flag, any source).
     let rules = RuleSet::from_ini(&IniFile::from_str(
         "[InfantryTypes]\n0=E1\n\n\
-         [VehicleTypes]\n0=HARV\n\n\
+         [VehicleTypes]\n0=HARV\n1=MTNK\n\n\
          [AircraftTypes]\n\n\
-         [BuildingTypes]\n0=CAGAS\n\n\
+         [BuildingTypes]\n0=CAGAS\n1=CATREE\n2=YAREFN\n\n\
          [CAGAS]\nStrength=800\nArmor=wood\n\n\
+         [CATREE]\nStrength=800\nArmor=wood\nInsignificant=yes\n\n\
+         [YAREFN]\nStrength=800\nArmor=wood\nUndeploysInto=HARV\nResourceGatherer=yes\n\n\
          [HARV]\nStrength=1000\nArmor=heavy\nSpeed=4\nHarvester=yes\n\n\
+         [MTNK]\nStrength=1000\nArmor=heavy\nSpeed=4\n\n\
          [E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
          [M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\
          [SA]\nVerses=100%,100%,100%,90%,70%,25%,100%,25%,25%,0%,0%\n",
@@ -7716,36 +7729,176 @@ fn under_attack_events_fire_for_enemy_hit_structures_and_miners_only() {
     assert_eq!(result.under_attack_events.len(), 1, "structure hit pings");
     let ev = &result.under_attack_events[0];
     assert!(!ev.miner);
+    assert!(ev.structure);
     assert_eq!(ev.owner, test_intern("Defender"));
     assert_eq!((ev.rx, ev.ry), (8, 5));
 
-    // Enemy-owned harvester (Miner component) → miner ping.
-    let mut harv = make_entity_owned(10, "HARV", 8, 5, 1000, "Defender");
-    harv.miner = Some(crate::sim::miner::Miner::new(
-        crate::sim::miner::MinerKind::War,
-        &crate::sim::miner::MinerConfig::default(),
-        7,
-    ));
+    // `Harvester=` vehicle → miner ping (the type flag, `UnitType+0xE0E`,
+    // not the Rust miner component).
+    let harv = make_entity_owned(10, "HARV", 8, 5, 1000, "Defender");
     let result = run_attack(harv);
     assert_eq!(result.under_attack_events.len(), 1, "harvester hit pings");
     assert!(result.under_attack_events[0].miner);
+    assert!(!result.under_attack_events[0].structure);
 
-    // SAME-owner structure damage → no ping (owner-differs hostility gate).
+    // SAME-owner structure damage → still pings: `BuildingClass::
+    // ReceiveDamage` never compares the source's house before
+    // `NotifyUnderAttack` (force-fire on an own building announces).
     let mut friendly = make_entity_owned(10, "CAGAS", 8, 5, 800, "Attacker");
     friendly.category = EntityCategory::Structure;
     let result = run_attack(friendly);
+    assert_eq!(result.under_attack_events.len(), 1, "own-fire pings");
+    assert_eq!(result.under_attack_events[0].owner, test_intern("Attacker"));
+
+    // `Insignificant=yes` building → `BuildingType+0x232` skip.
+    let mut prop = make_entity_owned(10, "CATREE", 8, 5, 800, "Defender");
+    prop.category = EntityCategory::Structure;
+    let result = run_attack(prop);
     assert!(
         result.under_attack_events.is_empty(),
-        "same-owner damage never pings"
+        "insignificant buildings never ping"
     );
 
-    // Enemy plain unit (no miner, not a structure) → no ping.
-    let plain = make_entity_owned(10, "HARV", 8, 5, 1000, "Defender");
+    // Deployed slave miner (`UndeploysInto=` + `ResourceGatherer=yes`
+    // building) → the ore-miner line through the building path.
+    let mut slave = make_entity_owned(10, "YAREFN", 8, 5, 800, "Defender");
+    slave.category = EntityCategory::Structure;
+    let result = run_attack(slave);
+    assert_eq!(result.under_attack_events.len(), 1);
+    assert!(result.under_attack_events[0].miner);
+    assert!(result.under_attack_events[0].structure);
+
+    // Plain vehicle (not `Harvester=`, not a structure) → no ping.
+    let plain = make_entity_owned(10, "MTNK", 8, 5, 1000, "Defender");
     let result = run_attack(plain);
     assert!(
         result.under_attack_events.is_empty(),
         "plain unit hits do not ping"
     );
+}
+
+/// `TechnoClass::Death_Announcement @ 0x004D98C0` inputs: a damage kill of a
+/// non-building emits one `UnitLostEvent`; a `Spawned=` type (`0x004D98DD`)
+/// and a building (no `+0x3B8` caller in `BuildingClass`) emit none.
+#[test]
+fn unit_lost_events_come_from_damage_kills_of_unspawned_non_buildings() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\n\
+         [VehicleTypes]\n0=MTNK\n\n\
+         [AircraftTypes]\n0=HORNET\n\n\
+         [BuildingTypes]\n0=CAGAS\n\n\
+         [CAGAS]\nStrength=10\nArmor=wood\n\n\
+         [MTNK]\nStrength=10\nArmor=heavy\nSpeed=4\n\n\
+         [HORNET]\nStrength=10\nArmor=light\nSpeed=4\nSpawned=yes\n\n\
+         [E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
+         [M60]\nDamage=250\nROF=20\nRange=5\nWarhead=SA\n\n\
+         [SA]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("rules parse");
+
+    let mut main_rng = SimRng::new(1);
+    let mut run_kill = |victim: GameEntity| -> CombatTickResult {
+        let mut store = EntityStore::new();
+        store.insert(victim);
+        let mut attacker = make_infantry_entity(1, "E1", 5, 5, 125);
+        attacker.owner = test_intern("Attacker");
+        store.insert(attacker);
+        let mut interner = test_interner();
+        issue_attack_command(&mut store, 1, 10, None, &interner);
+        tick_combat(
+            &mut store,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            &mut BTreeMap::new(),
+            0,
+            100,
+            0,
+            &mut main_rng,
+        )
+    };
+
+    let tank = make_entity_owned(10, "MTNK", 8, 5, 10, "Defender");
+    let result = run_kill(tank);
+    assert_eq!(result.unit_lost_events.len(), 1, "vehicle kill announces");
+    assert_eq!(result.unit_lost_events[0].owner, test_intern("Defender"));
+    assert_eq!(
+        (result.unit_lost_events[0].rx, result.unit_lost_events[0].ry),
+        (8, 5)
+    );
+
+    let mut hornet = make_entity_owned(10, "HORNET", 8, 5, 10, "Defender");
+    hornet.category = EntityCategory::Aircraft;
+    let result = run_kill(hornet);
+    assert!(
+        result.unit_lost_events.is_empty(),
+        "Spawned= types are silent"
+    );
+
+    let mut shack = make_entity_owned(10, "CAGAS", 8, 5, 10, "Defender");
+    shack.category = EntityCategory::Structure;
+    let result = run_kill(shack);
+    assert!(
+        result.unit_lost_events.is_empty(),
+        "buildings have no Death_Announcement caller"
+    );
+}
+
+/// `UnitClass::ReceiveDamage @ 0x00737C90`: `0x00737D69 CMP EAX,4` splits the
+/// result. The `Harvester=` ping (`0x007384B9..0x00738530`) lives only in the
+/// `result != 4` arm; a killing blow takes the death arm, where only
+/// `Death_Announcement` (`+0x3B8`) speaks. So a one-shot miner kill is "Unit
+/// lost" alone, never "Ore miner under attack" as well.
+#[test]
+fn harvester_killing_blow_announces_unit_lost_without_the_miner_ping() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\n\
+         [VehicleTypes]\n0=HARV\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n\n\
+         [HARV]\nStrength=1000\nArmor=heavy\nSpeed=4\nHarvester=yes\n\n\
+         [E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
+         [M60]\nDamage=250\nROF=20\nRange=5\nWarhead=SA\n\n\
+         [SA]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("rules parse");
+
+    let mut main_rng = SimRng::new(1);
+    let mut run_attack = |victim: GameEntity| -> CombatTickResult {
+        let mut store = EntityStore::new();
+        store.insert(victim);
+        let mut attacker = make_infantry_entity(1, "E1", 5, 5, 125);
+        attacker.owner = test_intern("Attacker");
+        store.insert(attacker);
+        let mut interner = test_interner();
+        issue_attack_command(&mut store, 1, 10, None, &interner);
+        tick_combat(
+            &mut store,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            &mut BTreeMap::new(),
+            0,
+            100,
+            0,
+            &mut main_rng,
+        )
+    };
+
+    // Non-lethal hit: the `result != 4` arm pings and nothing dies.
+    let result = run_attack(make_entity_owned(10, "HARV", 8, 5, 1000, "Defender"));
+    assert_eq!(result.under_attack_events.len(), 1, "survivor hit pings");
+    assert!(result.under_attack_events[0].miner);
+    assert!(result.unit_lost_events.is_empty(), "nothing died");
+
+    // One-shot kill: result 4 skips the ping; only the death arm speaks.
+    let result = run_attack(make_entity_owned(10, "HARV", 8, 5, 10, "Defender"));
+    assert!(
+        result.under_attack_events.is_empty(),
+        "a killing blow never reaches the miner ping"
+    );
+    assert_eq!(result.unit_lost_events.len(), 1, "the kill announces once");
+    assert_eq!(result.unit_lost_events[0].owner, test_intern("Defender"));
 }
 
 /// Build one ObjectType straight from an INI body, so the `Cost=` parse feeding
@@ -8949,7 +9102,10 @@ fn gsi_05_14_a_dying_building_uses_its_own_debris_anims() {
         .collect();
     let own: usize = names.iter().filter(|n| n.starts_with("DBRI-WM")).count();
     // `MinDebris=3`, `MaxDebris=4` pins the budget at 3 with no draw.
-    assert_eq!(own, 3, "the whole budget comes from DebrisAnims=: {names:?}");
+    assert_eq!(
+        own, 3,
+        "the whole budget comes from DebrisAnims=: {names:?}"
+    );
     assert!(
         !names.iter().any(|n| n.starts_with("DBRIS")),
         "the Rules MetallicDebris arm must not also fire: {names:?}"

@@ -74,6 +74,7 @@ pub mod docking;
 pub mod aircraft;
 
 // --- Vision, fog of war, power ---
+pub mod house_eva; // HouseClass::Update EVA advice timers (funds nag, low power)
 pub mod power_system;
 pub mod superweapon;
 pub mod vision;

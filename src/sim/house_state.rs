@@ -53,6 +53,53 @@ impl HouseDifficulty {
     }
 }
 
+/// Native `TimerStruct {Start, TimerPtr, Duration}` as `HouseClass::Update`
+/// reads its EVA advice timers (`+0x57D4` funds, `+0x57BC` speak).
+///
+/// Expiry test from `0x004F8B3C..0x004F8B63`: `Start == -1` → expired iff
+/// `Duration == 0`; otherwise expired iff `now - Start >= Duration`. Re-arm
+/// (`0x004F8BD0..0x004F8BE1`) stores `Start = now`, `Duration = value`.
+/// `HouseClass::Constructor 0x004F5D2F/0x004F5D35` starts both timers at the
+/// construction frame with `Duration = 1` (`0x004F5CD0 MOV EAX,1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct HouseFrameTimer {
+    /// Frame the timer was armed at; `-1` is the native "never started".
+    pub start_frame: i64,
+    /// Armed duration in frames.
+    pub duration: i32,
+}
+
+impl Default for HouseFrameTimer {
+    fn default() -> Self {
+        Self::at_construction(0)
+    }
+}
+
+impl HouseFrameTimer {
+    /// The constructor state: armed at `frame` for one frame.
+    pub const fn at_construction(frame: i64) -> Self {
+        Self {
+            start_frame: frame,
+            duration: 1,
+        }
+    }
+
+    /// `0x004F8B4E..0x004F8B63`.
+    pub const fn expired(&self, now: i64) -> bool {
+        if self.start_frame == -1 {
+            self.duration == 0
+        } else {
+            now - self.start_frame >= self.duration as i64
+        }
+    }
+
+    /// `0x004F8BD0..0x004F8BE1`: `Start = now`, `Duration = duration`.
+    pub const fn arm(&mut self, now: i64, duration: i32) {
+        self.start_frame = now;
+        self.duration = duration;
+    }
+}
+
 /// Accepted native HouseClass match result whose SavourDelay still owns the
 /// scenario's deterministic frame lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -407,6 +454,18 @@ pub struct HouseState {
     /// Persisted and hashed (schema v132).
     #[serde(default)]
     pub harvester_no_ore: bool,
+    /// Native `HouseClass+0x57D4`: the `EVA_InsufficientFunds` nag timer
+    /// (`HouseClass::Update 0x004F8B3C..0x004F8C53`). Only the local player's
+    /// house reaches that block natively; here every human house runs it and
+    /// the app keeps the local filter. Persisted and hashed (schema v133).
+    #[serde(default)]
+    pub eva_funds_timer: HouseFrameTimer,
+    /// Native `[0x00A8F040]`, the `EVA_LowPower` one-shot guard
+    /// (`0x004F8D02` test, `0x004F8D61` set, `0x004F8DAB` clear). It is a
+    /// process global gated behind `this == PlayerPtr`, so one flag per human
+    /// house is the same state. Persisted and hashed (schema v133).
+    #[serde(default)]
+    pub eva_low_power_guard: bool,
 }
 
 impl HouseState {
@@ -545,6 +604,8 @@ impl HouseState {
             strategy_emergency: HouseStrategyEmergencyState::default(),
             ai_activation: HouseAiActivationLatches::default(),
             harvester_no_ore: false,
+            eva_funds_timer: HouseFrameTimer::default(),
+            eva_low_power_guard: false,
         }
     }
 }

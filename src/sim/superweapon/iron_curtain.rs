@@ -51,14 +51,22 @@ pub fn launch(
 
     // 3. Apply effect per entity.
     for id in &target_ids {
+        let mut killed = false;
         if let Some(entity) = sim.substrate.entities.get_mut(*id) {
             if entity.category == EntityCategory::Infantry {
-                // IronCurtain kills infantry (matches binary override).
+                // `InfantryClass::IronCurtain @ 0x00522632`: `ReceiveDamage`
+                // (`+0x16C`) with the type's full `Strength=` and `C4Warhead=`,
+                // so the kill runs the normal death branch including
+                // `Death_Announcement` (`+0x3B8`, "Unit lost").
                 entity.health.current = 0;
                 entity.dying = true;
+                killed = true;
             } else {
                 apply_invulnerability(entity, current_frame, duration, InvulnKind::IronCurtain);
             }
+        }
+        if killed {
+            sim.announce_unit_lost_at_death_site(rules, *id);
         }
     }
 
@@ -150,6 +158,46 @@ mod tests {
         assert_eq!(e.health.current, 0);
         assert!(e.dying);
         assert!(e.invulnerability.is_none());
+    }
+
+    /// `InfantryClass::IronCurtain @ 0x00522632` kills through `ReceiveDamage`
+    /// (`+0x16C`, `C4Warhead=`), so the death reaches `Death_Announcement`
+    /// (`+0x3B8`): a human owner hears "Unit lost", deduped by the radar
+    /// type-7 window (`0x004D98FE`, 8 cells / 200 frames) across the grid.
+    #[test]
+    fn ic_infantry_kill_announces_unit_lost_once_per_radar_window() {
+        use crate::sim::house_state::HouseState;
+
+        let rules = test_rules();
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        sim.houses.insert(
+            owner,
+            HouseState::new(owner, 0, Some(owner), true, 5_000, 10),
+        );
+        sim.session.house_order.push(owner);
+        spawn(&mut sim, 1, "E1", 10, 10, EntityCategory::Infantry);
+        spawn(&mut sim, 2, "E1", 11, 11, EntityCategory::Infantry);
+        spawn(&mut sim, 3, "MTNK", 9, 9, EntityCategory::Unit);
+        let sw_test = sim.interner.intern("SWTEST");
+        assert!(launch(&mut sim, &rules, owner, 10, 10, sw_test));
+
+        let lost: Vec<InternedId> = sim
+            .sound_events
+            .iter()
+            .filter_map(|event| match event {
+                SimSoundEvent::UnitLost { owner } => Some(*owner),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lost,
+            vec![owner],
+            "two infantry kills in one 3x3 grid announce exactly once"
+        );
+        assert!(sim.substrate.entities.get(1).unwrap().dying);
+        assert!(sim.substrate.entities.get(2).unwrap().dying);
+        assert!(!sim.substrate.entities.get(3).unwrap().dying);
     }
 
     #[test]

@@ -414,7 +414,11 @@ use crate::sim::world::Simulation;
 // (set by `UnitClass::Mission_Harvest` state 0, never cleared). A v131 save
 // would restore it clear for a house whose harvester had already exhausted
 // its scan, and the state hash folds it.
-const SNAPSHOT_VERSION: u32 = 132;
+// v133 persists the `HouseClass+0x57D4` funds-nag timer and the `[0xA8F040]`
+// low-power guard on `HouseState` (`HouseClass::Update 0x004F8B3C..0x004F8DAB`).
+// A v132 save would restore the timer at its constructor value and the guard
+// clear, re-announcing "Low power" on load; the state hash folds both.
+const SNAPSHOT_VERSION: u32 = 133;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3178,9 +3182,11 @@ mod tests {
     /// 130 -> 131 persists the session `TiberiumGrows`/`TiberiumSpreads`
     /// flag bits and the `OreGrowthConfig` growth-reload selector.
     /// 131 -> 132 persists the `HouseClass+0x242` harvester no-ore latch.
+    /// 132 -> 133 persists the `HouseClass+0x57D4` funds-nag timer and the
+    /// `[0xA8F040]` low-power guard.
     #[test]
-    fn house_harvester_no_ore_snapshot_version_is_132() {
-        assert_eq!(super::SNAPSHOT_VERSION, 132);
+    fn house_eva_advice_snapshot_version_is_133() {
+        assert_eq!(super::SNAPSHOT_VERSION, 133);
     }
 
     #[test]
@@ -4564,6 +4570,42 @@ mod tests {
             .expect("v132 house latch snapshot")
             .sim;
         assert!(restored.houses[&owner].harvester_no_ore);
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    /// `HouseClass+0x57D4` and the low-power guard ride the House block in
+    /// the native save; a v133 snapshot carries them and the restored hash
+    /// still matches.
+    #[test]
+    fn house_eva_advice_state_roundtrips_at_v133() {
+        let mut sim = Simulation::with_seed(0x57D4);
+        let owner = sim.interner.intern("Americans");
+        let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, true, 5_000, 10);
+        house.eva_funds_timer = crate::sim::house_state::HouseFrameTimer {
+            start_frame: 1_234,
+            duration: 2_880,
+        };
+        house.eva_low_power_guard = true;
+        sim.houses.insert(owner, house);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "house_eva_advice", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let restored = GameSnapshot::load(&bytes)
+            .expect("v133 house EVA snapshot")
+            .sim;
+        assert_eq!(
+            restored.houses[&owner].eva_funds_timer,
+            crate::sim::house_state::HouseFrameTimer {
+                start_frame: 1_234,
+                duration: 2_880,
+            }
+        );
+        assert!(restored.houses[&owner].eva_low_power_guard);
         assert_eq!(restored.state_hash(), expected_hash);
     }
 

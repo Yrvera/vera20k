@@ -742,6 +742,15 @@ pub struct GeneralRules {
     /// MessageDelay (retail `.6`). The exact native minutes→ticks binding is
     /// untraced (plan deferred item); the driver converts minutes→ms.
     pub message_delay_minutes: f32,
+    /// `[AudioVisual] SpeakDelay=` in MINUTES (retail `2`): the EVA advice
+    /// repeat interval. `RulesClass::ReadAudioVisual` reads key
+    /// `"SpeakDelay"` (`0x0083A270`) through `INIClass::ReadDouble @
+    /// 0x005283D0` into `Rules+0x16A8` (`0x0066B646 FSTP double`);
+    /// `RulesClass::Constructor 0x006674BA` zero-fills it, so a missing key is
+    /// `0.0`. `HouseClass::Update` re-arms its funds/low-power timers to
+    /// `SpeedNormalize(ftol(SpeakDelay * 900.0))` (`0x004F8BB4..0x004F8BCB`,
+    /// `0x007E27F8` = `900.0`).
+    pub speak_delay_minutes: f64,
     /// Sound event for opening shell combo boxes from [AudioVisual] GUIComboOpenSound.
     pub gui_combo_open_sound: Option<String>,
     /// Sound event for closing shell combo boxes from [AudioVisual] GUIComboCloseSound.
@@ -1278,6 +1287,7 @@ impl Default for GeneralRules {
             gui_tab_sound: None,
             incoming_message_sound: None,
             message_delay_minutes: 0.6,
+            speak_delay_minutes: 0.0,
             gui_combo_open_sound: None,
             gui_combo_close_sound: None,
             bunker_walls_down_sound: None,
@@ -2113,6 +2123,9 @@ impl GeneralRules {
             message_delay_minutes: audio_visual
                 .and_then(|s| s.get_f32("MessageDelay"))
                 .unwrap_or(0.6),
+            speak_delay_minutes: audio_visual
+                .and_then(|s| s.get_f64("SpeakDelay"))
+                .unwrap_or(0.0),
             gui_combo_open_sound: audio_visual
                 .and_then(|s| s.get("GUIComboOpenSound"))
                 .map(str::trim)
