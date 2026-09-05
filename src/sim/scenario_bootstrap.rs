@@ -30,7 +30,7 @@ use crate::sim::world::{PlacementEvidence, Simulation};
 use crate::skirmish_launch::{
     LaunchCountry, LaunchStartPosition, LaunchTeam, PreFillHouseRoster, SkirmishLaunchSession,
 };
-use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
+use crate::util::native_x87::{NativeF64Bits, X87Chop53, sqrt_approx_f32};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NativeStartBounds {
@@ -1571,16 +1571,49 @@ pub(crate) fn populate_launch_houses(
     }
 }
 
+/// Bit pattern of the `0.01` double at `0x007E3808` read by
+/// `ScenarioClass__Post_Map_Init @ 0x00686A52` (`FMUL qword [0x007E3808]`).
+const NATIVE_AI_CM_PERCENT_MULTIPLIER_BITS: u64 = 0x3F84_7AE1_47AE_147B;
+
+/// gamemd-derived AI opening grant: `ftol(MultiplayerAICM[diff] * 0.01 * money)`.
+///
+/// Active YR `ScenarioClass__Post_Map_Init @ 0x00686A52..0x00686A6B`:
+/// `FILD MultiplayerAICM[house+0x184]; FMUL qword [0x007E3808] (0.01);
+/// FIMUL money; CALL Math__ftol @ 0x007C5F00`. The process control word is
+/// `0x0E7F` (RC = chop, PC = 53): `WinMain @ 0x006BBFC1` calls
+/// `_controlfp(0x300, 0x300)` (`_RC_CHOP`) and `0x007C5EE4` captures the word
+/// at `0x00822D80` for `ftol`. Both multiplies therefore truncate toward zero at
+/// 53 bits and the final conversion truncates; plain f64 round-to-nearest
+/// differs (e.g. `3 * 0.01 * 100` chops to 2, not 3). `Math__ftol` returns the
+/// low dword of `FISTP qword`, so the i64 result is narrowed with `as i32`; an
+/// out-of-range operand stores the x87 integer indefinite (low dword 0).
+pub(crate) fn native_ai_opening_grant(coefficient: i32, money: i32) -> i32 {
+    let percent = X87Chop53::load_f64(NativeF64Bits::from_bits(
+        NATIVE_AI_CM_PERCENT_MULTIPLIER_BITS,
+    ))
+    .expect("0.01 is a finite normal double");
+    let scaled = X87Chop53::mul(X87Chop53::load_i32(coefficient), percent);
+    let product = X87Chop53::mul(scaled, X87Chop53::load_i32(money));
+    X87Chop53::ftol_i64(product).map_or(0, |value| value as i32)
+}
+
 /// Apply the generated skirmish AI opening-credit grant at the Post_Map_Init handoff.
 ///
-/// Active YR `ScenarioClass__Post_Map_Init @ 0x00686890` visits each non-human,
-/// non-`MultiplayPassive` house, calls the secondary vslot body at `0x004F6990`,
-/// then passes its result to `HouseClass__Add_Credits @ 0x004F9950`. Generated
-/// stock Battle houses have no stored resources at this point, so the returned
-/// amount is their current balance and each participating AI finishes with twice
-/// the lobby-selected credits. The AI-owner list keeps this launch-only helper
-/// away from special and nonparticipant houses without recreating native pointers.
-pub(crate) fn apply_skirmish_ai_opening_credits(sim: &mut Simulation) {
+/// Active YR `ScenarioClass__Post_Map_Init @ 0x00686890`, loop `0x006869BE..
+/// 0x00686A7E`: for each house with `+0x1EC == 0` (not human) whose HouseType
+/// `+0x1A6 == 0` (not `MultiplayPassive`), it calls the house secondary vslot
+/// `+0x18` (`0x004F6990`: `ftol(storage_total * factor + credits)`, storage is
+/// empty for generated Battle houses so this is the current balance), then
+/// computes [`native_ai_opening_grant`] and passes the result to
+/// `HouseClass__Add_Credits @ 0x004F9950`. Stock `MultiplayerAICM=400,0,0`
+/// therefore gives a Hard AI 5x its balance and leaves Normal/Easy unchanged.
+///
+/// Sequencing: `Generate_Starting_Units @ 0x005D6D80` is called earlier in the
+/// same function (`0x00686937`), so the balance multiplied here already carries
+/// the leftover starting-unit budget credited by `seed_starting_extra_units`
+/// (pure integer arithmetic on the native side: `CDQ/SAR/IDIV` budget thirds
+/// and integer cost subtraction, no x87 involvement).
+pub(crate) fn apply_skirmish_ai_opening_credits(sim: &mut Simulation, rules: &RuleSet) {
     for ai in &sim.ai_players {
         let Some(house) = sim.houses.get_mut(&ai.owner) else {
             continue;
@@ -1588,8 +1621,14 @@ pub(crate) fn apply_skirmish_ai_opening_credits(sim: &mut Simulation) {
         if house.is_human || house.multiplay_passive {
             continue;
         }
-        let opening_grant = house.credits;
-        house.credits += opening_grant;
+        let coefficient = rules
+            .general
+            .multiplayer_ai_cm
+            .get(house.difficulty.table_index())
+            .copied()
+            .unwrap_or(0);
+        let grant = native_ai_opening_grant(coefficient, house.credits);
+        house.credits = house.credits.wrapping_add(grant);
     }
 }
 
@@ -1925,6 +1964,24 @@ fn seed_starting_extra_units_with_overlay_registry(
             );
             spawned += 1;
             spent = spent.wrapping_add(candidate.cost);
+        }
+        // gamemd-derived: `MultiplayerGameMode__Generate_Starting_Units @
+        // 0x005D6D80` hands each non-MultiplayPassive house its own copy of the
+        // budget by reference; the extra-unit callback (`0x005D70F0`) subtracts
+        // each placed unit's cost at `0x005D73EF..0x005D73F3`, and the caller
+        // then reads the remainder at `0x005D6F91` and, when it is still > 0,
+        // calls `HouseClass__Add_Credits @ 0x004F9950` (`0x005D6F99..0x005D6F9C`).
+        // Human houses are included; the starting MCV is not charged.
+        let remaining = budget.wrapping_sub(spent);
+        if remaining > 0
+            && let Some(house) = crate::sim::house_state::house_state_for_owner_mut(
+                &mut sim.houses,
+                &slot.owner_name,
+                &sim.interner,
+            )
+            && !house.multiplay_passive
+        {
+            house.credits = house.credits.wrapping_add(remaining);
         }
     }
 
@@ -2497,6 +2554,38 @@ pub(crate) fn initialize_map_roster_houses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// x87 chop (cw `0x0E7F`) versus f64 round-to-nearest for the AI opening
+    /// grant: `3 * 0.01` chops just below `0.03`, `* 100` chops just below `3.0`,
+    /// and `Math__ftol` truncates to 2 where `((3.0 * 0.01) * 100.0) as i32`
+    /// gives 3. The stock `400,0,0 x 10000` case agrees under both modes.
+    #[test]
+    fn native_ai_opening_grant_chops_where_round_to_nearest_differs() {
+        assert_eq!(
+            ((3.0_f64 * 0.01) * 100.0) as i32,
+            3,
+            "round-to-nearest baseline"
+        );
+        assert_eq!(
+            native_ai_opening_grant(3, 100),
+            2,
+            "chop at 53 bits then ftol"
+        );
+        assert_eq!(native_ai_opening_grant(3, 200), 5);
+        assert_eq!(
+            native_ai_opening_grant(400, 10_000),
+            40_000,
+            "stock Hard AI"
+        );
+        assert_eq!(native_ai_opening_grant(0, 10_000), 0, "stock Normal/Easy");
+        assert_eq!(native_ai_opening_grant(7, 12_345), 864);
+        assert_eq!(native_ai_opening_grant(400, 0), 0);
+        assert_eq!(
+            native_ai_opening_grant(-100, 10_000),
+            -10_000,
+            "negative chops toward zero"
+        );
+    }
     use crate::map::bridge_facts::BridgeCellFacts;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, zone_class};
     use crate::rules::ini_parser::IniFile;

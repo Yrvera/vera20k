@@ -1107,19 +1107,31 @@ mod tests {
         );
     }
 
+    /// gamemd-derived: `ScenarioClass__Post_Map_Init @ 0x006869BE..0x00686A7E`
+    /// grants `ftol(MultiplayerAICM[difficulty] * 0.01 * Available_Money)` to
+    /// every non-human, non-MultiplayPassive house. Stock `400,0,0` makes a
+    /// Hard AI open with 5x its balance; Normal and Easy add 0.
     #[test]
-    fn gsi_03_17_post_map_init_doubles_only_participating_nonpassive_ai_credits() {
+    fn gsi_09_01_post_map_init_grants_multiplayer_ai_cm_percent_by_difficulty() {
         let mut session = test_session();
-        let passive_ai = SkirmishAiSlot {
-            color_index: 3,
-            ..session.opponents[0].clone()
-        };
-        session.opponents.push(passive_ai);
+        session.opponents[0].difficulty = AiDifficulty::Hard;
+        for (color_index, difficulty) in [
+            (3, AiDifficulty::Hard),
+            (4, AiDifficulty::Normal),
+            (5, AiDifficulty::Easy),
+        ] {
+            session.opponents.push(SkirmishAiSlot {
+                color_index,
+                difficulty,
+                ..session.opponents[0].clone()
+            });
+        }
         let mut sim = Simulation::new();
         sim.session.game_options = session
             .options
             .to_game_options(session.opponents.len() as i32);
-        let rules = test_standard_launch_rules();
+        let mut rules = test_standard_launch_rules();
+        rules.general.multiplayer_ai_cm = vec![400, 0, 0];
         populate_launch_houses(&mut sim, &normalized_launch_slots(&session), &rules);
         populate_special_houses(&mut sim, &HouseRoster::default(), &rules);
 
@@ -1141,18 +1153,49 @@ mod tests {
             HouseState::new(observer, 0, None, false, 10_000, 10),
         );
 
-        apply_skirmish_ai_opening_credits(&mut sim);
+        apply_skirmish_ai_opening_credits(&mut sim, &rules);
 
         let credits = |owner: &str| {
             crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
                 .map(|house| house.credits)
         };
         assert_eq!(credits("Player"), Some(10_000));
-        assert_eq!(credits("Computer1"), Some(20_000));
-        assert_eq!(credits("Computer2"), Some(10_000));
+        assert_eq!(credits("Computer1"), Some(50_000), "Hard: +400%");
+        assert_eq!(
+            credits("Computer2"),
+            Some(10_000),
+            "passive Hard AI skipped"
+        );
+        assert_eq!(credits("Computer3"), Some(10_000), "Normal: +0%");
+        assert_eq!(credits("Computer4"), Some(10_000), "Easy: +0%");
         assert_eq!(credits("Neutral"), Some(10_000));
         assert_eq!(credits("Special"), Some(10_000));
         assert_eq!(credits("Observer"), Some(10_000));
+    }
+
+    /// The x87 product is chopped by `Math__ftol @ 0x007C5F00`; a missing list
+    /// entry (empty constructor vector at `0x00667034`) grants nothing.
+    #[test]
+    fn gsi_09_01_ai_opening_grant_truncates_and_tolerates_missing_entries() {
+        let mut session = test_session();
+        session.opponents[0].difficulty = AiDifficulty::Hard;
+        let mut sim = Simulation::new();
+        sim.session.game_options = session
+            .options
+            .to_game_options(session.opponents.len() as i32);
+        let mut rules = test_standard_launch_rules();
+        populate_launch_houses(&mut sim, &normalized_launch_slots(&session), &rules);
+        let ai = sim.interner.get("Computer1").expect("AI house");
+        sim.houses.get_mut(&ai).expect("AI house").credits = 12_345;
+
+        rules.general.multiplayer_ai_cm = Vec::new();
+        apply_skirmish_ai_opening_credits(&mut sim, &rules);
+        assert_eq!(sim.houses[&ai].credits, 12_345);
+
+        // 7 * 0.01 * 12345 = 864.15... -> 864 under chop.
+        rules.general.multiplayer_ai_cm = vec![7, 0, 0];
+        apply_skirmish_ai_opening_credits(&mut sim, &rules);
+        assert_eq!(sim.houses[&ai].credits, 12_345 + 864);
     }
 
     #[test]
@@ -2255,6 +2298,96 @@ mod tests {
             .count();
         assert_eq!(player_units, 5);
         assert_eq!(ai_units, 4);
+
+        // gamemd-derived leftover budget (`Generate_Starting_Units @
+        // 0x005D6F91..0x005D6F9C`): budget = ((3/2 + 500) / 3) * 2 = 334.
+        // Player spends 3xMTNK + E1 = 600 (remainder < 0, nothing credited);
+        // Computer1 has no infantry, stops at 3xHTNK = 300 and is credited 34.
+        let credits = |owner: &str| {
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .map(|house| house.credits)
+        };
+        assert_eq!(credits("Player"), Some(10_000));
+        assert_eq!(credits("Computer1"), Some(10_034));
+    }
+
+    /// A budget spent exactly credits nothing (`TEST EAX,EAX; JLE` at
+    /// `0x005D6F95`): budget = ((3/2 + 300) / 3) * 3 = 300, and each house
+    /// places 2 vehicles + 1 infantry = 300.
+    #[test]
+    fn gsi_09_01_exactly_spent_starting_budget_credits_nothing() {
+        let mut sim = Simulation::new();
+        let mut session = test_session();
+        session.options.unit_count = 3;
+        let terrain = test_terrain(64, 64);
+        let starts = test_launch_starts();
+        let map = test_map_with_starts(&starts);
+        let ini = IniFile::from_str(
+            "[General]\nBaseUnit=AMCV,SMCV,PCV\n\
+             [VehicleTypes]\n1=AMCV\n2=SMCV\n3=MTNK\n4=HTNK\n\
+             [InfantryTypes]\n1=E1\n\
+             [AMCV]\nOwner=Americans\nCost=1000\nTechLevel=1\nAllowedToStartInMultiplayer=yes\n\
+             [SMCV]\nOwner=Russians\nCost=1000\nTechLevel=1\nAllowedToStartInMultiplayer=yes\n\
+             [MTNK]\nOwner=Americans\nCost=100\nTechLevel=1\nAllowedToStartInMultiplayer=yes\n\
+             [HTNK]\nOwner=Russians\nCost=100\nTechLevel=1\nAllowedToStartInMultiplayer=yes\n\
+             [E1]\nOwner=Americans,Russians\nCost=100\nTechLevel=1\nAllowedToStartInMultiplayer=yes\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("exact-budget rules parse");
+
+        let result = apply_explicit_skirmish_launch_session(
+            &mut sim,
+            &map,
+            &roster_with_neutral_and_playable(),
+            &rules,
+            &test_height_map(),
+            &terrain,
+            &launch_descriptor(&session),
+        );
+
+        assert_eq!(result.spawned_mcvs, 2);
+        assert_eq!(sim.entities().len(), 8);
+        let credits = |owner: &str| {
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .map(|house| house.credits)
+        };
+        assert_eq!(credits("Player"), Some(10_000));
+        assert_eq!(credits("Computer1"), Some(10_000));
+    }
+
+    /// `Post_Map_Init` calls `Generate_Starting_Units` at `0x00686937` before
+    /// the AI grant loop at `0x006869BE`, so the Hard multiplier applies to the
+    /// balance that already includes the credited leftover budget.
+    #[test]
+    fn gsi_09_01_ai_grant_multiplies_post_leftover_balance() {
+        let mut sim = Simulation::new();
+        let mut session = test_session();
+        session.options.unit_count = 2;
+        session.opponents[0].difficulty = AiDifficulty::Hard;
+        let terrain = test_terrain(64, 64);
+        let starts = test_launch_starts();
+        let map = test_map_with_starts(&starts);
+        let mut rules = test_starting_unit_rules();
+        rules.general.multiplayer_ai_cm = vec![400, 0, 0];
+
+        let result = apply_explicit_skirmish_launch_session(
+            &mut sim,
+            &map,
+            &roster_with_neutral_and_playable(),
+            &rules,
+            &test_height_map(),
+            &terrain,
+            &launch_descriptor(&session),
+        );
+        assert_eq!(result.spawned_mcvs, 2);
+
+        apply_skirmish_ai_opening_credits(&mut sim, &rules);
+
+        let credits = |owner: &str| {
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .map(|house| house.credits)
+        };
+        assert_eq!(credits("Player"), Some(10_000));
+        assert_eq!(credits("Computer1"), Some((10_000 + 34) * 5));
     }
 
     /// gamemd-derived: active YR

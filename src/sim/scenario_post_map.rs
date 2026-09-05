@@ -157,7 +157,7 @@ impl Simulation {
             {
                 skirmish_order[1] = Some(ScenarioPostMapStep::AiOpeningCredits);
             }
-            crate::sim::scenario_bootstrap::apply_skirmish_ai_opening_credits(self);
+            crate::sim::scenario_bootstrap::apply_skirmish_ai_opening_credits(self, input.rules);
             #[cfg(test)]
             {
                 skirmish_order[2] = Some(ScenarioPostMapStep::LaunchAlliances);
@@ -773,7 +773,9 @@ mod tests {
         assert!(output.navigation_published);
         assert!(sim.path_grid().is_some());
         assert_eq!(sim.houses[&player].credits, 5_000);
-        assert_eq!(sim.houses[&computer].credits, 10_000);
+        // The fixture AI is Easy and the fixture rules carry no MultiplayerAICM
+        // entry for it, so Post_Map_Init adds ftol(0 * 0.01 * 5000) = 0.
+        assert_eq!(sim.houses[&computer].credits, 5_000);
         assert_eq!(
             output.crates,
             Some(CratePlacement {
