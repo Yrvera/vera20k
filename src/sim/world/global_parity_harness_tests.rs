@@ -140,12 +140,18 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// Re-baselined for TechnoClass::TechnoClass @ 0x006F2B90: seven authored
 /// Technos now consume the raw Scenario words stored at 0x006F3254. Only
 /// Scenario moves; Main and MapGen plus tick-for-tick record/replay remain exact.
+/// Re-baselined 2026-09-05 for GSI-09.03 harvest bite size: `Harvest_Ore_Tick`
+/// @ 0x0073D450 requests `ftol(min(1.0f, Storage - total))` = one density level
+/// per 19-frame gate (was the whole free capacity, draining a cell per gate).
+/// The harness harvester fills ~36 gates later, so its return/dock Scenario
+/// draws land on different frames. Only Scenario moves; Main and MapGen plus
+/// tick-for-tick record/replay remain exact.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
     // MERGE 2026-08-03: both branches re-baselined these independently (dev:
     // passive acquire + spawner; foundations: Move cadence + hashed runtime
     // state). Neither side's values describe the merged tree; re-derived below
     // from the merged tree's own output in the same merge commit.
-    0x9DB0_43D6_9BD1_1E15,
+    0x78D4_8215_F590_AB97,
     0x39F3_258B_A550_EB7C,
     0x1CE8_1848_7043_6163,
 );
@@ -378,8 +384,14 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // `RandomRanged(0, 99)` at `0x006F8525` is unreachable in YR). Record/replay
 // tick equality holds. This is a target-choice shift, and all seven constants
 // below move with it.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x6E92_18AD_F5CF_5012;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xCDC7_F8DD_5AF5_5593;
+// Re-baselined 2026-09-05 for GSI-09.03 harvest bite size (see
+// `FINAL_STREAM_STATES`): `Harvest_Ore_Tick` @ 0x0073D450 takes one density
+// level per gate, so the harness harvester fills ~36 gates later and its
+// return/dock/deposit state at tick 599 differs. Behavior-bearing: Scenario
+// moved, Main/MapGen and record/replay equality unchanged; all seven
+// constants move together.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xC467_8EF0_3664_24FA;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xA29B_3C73_7B6F_2CA3;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -557,16 +569,20 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xCDC7_F8DD_5AF5_5593;
 // Merge 2026-09-02: main's veterancy re-baseline and its queue-store re-baseline
 // both moved these constants, so the three historical probes below are main's
 // composed measurement, unchanged by this branch.
-const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x6FC0_BCE7_AD42_E8B6;
-const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x82BD_A5B8_3197_9895;
-const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x0EC1_BD97_FBEB_370C;
+// Re-baselined 2026-09-05 for GSI-09.03 harvest bite size (behavior-bearing,
+// see `FINAL_STREAM_STATES`); the historical probes move with the final hash.
+const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0xEFB6_42C2_FED9_0621;
+const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x9742_EF1A_3F12_09CE;
+const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xCFDB_4BEB_46CB_4F5D;
 // Re-baselined 2026-09-02 for v117's disguise-detect folds (FogState's
 // `CellClass+0xAC[house]` counter plane and the cached `DetectDisguiseRange=`
 // deposit radius). The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved. The three RNG stream pins are unchanged.
-const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x9C5D_0EDF_4B4E_8C49;
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x429A_FF90_A953_055E;
+const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xC161_8558_C9E6_DD47;
+// Re-baselined 2026-09-05 for GSI-09.03 harvest bite size (one density level
+// per Harvest_Ore_Tick gate, 0x0073D450); see `FINAL_STREAM_STATES`.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xCDD5_6F8D_8B28_E750;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
