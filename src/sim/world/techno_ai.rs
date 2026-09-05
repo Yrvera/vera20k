@@ -554,6 +554,17 @@ fn techno_ai_shell(
             }
             drop_unsensed_cloaked_target_step(sim, id);
             mission_counter_step(sim, id);
+            // The Aircraft Unload slot `0x004151E0` (vtable `+0x23C`), the one
+            // aircraft mission handler absorbed so far; timer-gated inside.
+            if let Some(rules) = rules {
+                crate::sim::transport_unload::dispatch_aircraft_unload(
+                    sim,
+                    id,
+                    rules,
+                    ctx.path_grid,
+                    ctx.overlay_registry,
+                );
+            }
         }
     }
 }
@@ -1013,6 +1024,10 @@ fn unit_techno_bracket(
     if let Some(rules) = rules {
         dispatch_supported_foot_mission_cadence(sim, id, rules, ctx);
     }
+    // A transport turning in place for its Unload reads its hull
+    // `PrimaryFacing.Current()` every frame; the movement tick only turns
+    // objects that hold a movement target, so the idle turn is advanced here.
+    crate::sim::transport_unload::refresh_idle_hull_turn(sim, id);
     // Passive / opportunity target acquisition sits between mission dispatch
     // and the second IsAlive guard, before the object's own locomotion.
     passive_acquire_step(sim, id, rules, ctx);

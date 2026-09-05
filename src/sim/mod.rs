@@ -110,6 +110,7 @@ pub mod radiation;
 // --- Passengers, transport, slaves ---
 pub mod parity_digest;
 pub mod passenger;
+pub mod transport_unload;
 pub mod slave_miner;
 pub mod spawn_manager;
 mod spawn_manager_tests;

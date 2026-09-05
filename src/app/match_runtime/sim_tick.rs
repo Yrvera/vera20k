@@ -1179,6 +1179,12 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         sound_id: sim.interner.resolve(deploy_sound_id).to_string(),
                         source: Some(sound_source_at_cell(rx, ry)),
                     },
+                    SimSoundEvent::LeaveTransport { sound_id, rx, ry } => {
+                        GameSoundEvent::LeaveTransport {
+                            sound_id: sim.interner.resolve(sound_id).to_string(),
+                            source: Some(sound_source_at_cell(rx, ry)),
+                        }
+                    }
                     SimSoundEvent::EntityUndeployed {
                         undeploy_sound_id,
                         rx,

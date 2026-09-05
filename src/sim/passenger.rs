@@ -2,7 +2,9 @@
 //!
 //! Handles infantry entering transports (Passengers>0), building garrisons
 //! (CanBeOccupied=yes), IFV weapon swapping (Gunner=yes), and passenger
-//! death on transport destruction.
+//! death on transport destruction. Vehicle/aircraft unloading is the Unload
+//! mission handler in `crate::sim::transport_unload`; only garrison eviction
+//! stays on the per-tick `OrderIntent::Unloading` path here.
 //!
 //! ## Original engine reference
 //! The original engine uses a linked-list at offsets +0x1D0/+0x1CC for passenger
@@ -32,10 +34,16 @@ use crate::util::lepton;
 /// Passenger cargo state, attached as `Option<PassengerCargo>` on transport entities.
 ///
 /// Tracks which entities are currently inside this transport/garrison.
-/// Passengers are stored as a Vec of stable_ids for deterministic ordering.
+/// Passengers are stored as a Vec of stable_ids in native CargoClass list
+/// order: index 0 is the list HEAD. `CargoClass::AddPassenger @ 0x004733A0`
+/// PREPENDS (`passenger->next = head; head = passenger`, `0x004733FA`..
+/// `0x00473400`) and `CargoClass::RemoveFirstPassenger @ 0x00473430` pops the
+/// head, so every native consumer — transport unload, paradrop, sell eject —
+/// releases the LAST boarded passenger first.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PassengerCargo {
-    /// Stable IDs of entities currently inside, in boarding order (FIFO unload).
+    /// Stable IDs of entities currently inside, head first: the most recently
+    /// boarded passenger sits at index 0 (LIFO unload).
     pub passengers: Vec<u64>,
     /// `Size=` captured for each entry in `passengers`, at the same index.
     ///
@@ -79,13 +87,14 @@ impl PassengerCargo {
         self.count() < self.capacity && (self.size_limit == 0 || passenger_size <= self.size_limit)
     }
 
-    /// Add a passenger. Returns false if full or too large.
+    /// Add a passenger at the list head (`CargoClass::AddPassenger @
+    /// 0x004733A0` prepends). Returns false if full or too large.
     pub fn board(&mut self, stable_id: u64, passenger_size: u32) -> bool {
         if !self.can_accept(passenger_size) {
             return false;
         }
-        self.passengers.push(stable_id);
-        self.passenger_sizes.push(passenger_size);
+        self.passengers.insert(0, stable_id);
+        self.passenger_sizes.insert(0, passenger_size);
         self.total_size += passenger_size;
         true
     }
@@ -96,8 +105,8 @@ impl PassengerCargo {
     /// limbo-created infantry; it is driven by `*ParaDropNum`, not by PDPLANE's
     /// `Passengers=` or `SizeLimit=`.
     pub fn board_forced(&mut self, stable_id: u64, passenger_size: u32) {
-        self.passengers.push(stable_id);
-        self.passenger_sizes.push(passenger_size);
+        self.passengers.insert(0, stable_id);
+        self.passenger_sizes.insert(0, passenger_size);
         self.total_size += passenger_size;
     }
 
@@ -113,7 +122,8 @@ impl PassengerCargo {
         }
     }
 
-    /// Remove and return the first passenger and its recorded size.
+    /// Remove and return the list HEAD (the most recently boarded passenger)
+    /// and its recorded size — `CargoClass::RemoveFirstPassenger @ 0x00473430`.
     pub fn unload_first(&mut self) -> Option<(u64, u32)> {
         if self.passengers.is_empty() {
             None
@@ -125,7 +135,8 @@ impl PassengerCargo {
         }
     }
 
-    /// Restore a failed FIFO unload at the cargo head.
+    /// Restore a failed head-pop at the cargo head (the native failure path
+    /// re-runs `AddPassenger`, which prepends).
     pub fn restore_front(&mut self, stable_id: u64, passenger_size: u32) {
         self.passengers.insert(0, stable_id);
         self.passenger_sizes.insert(0, passenger_size);
@@ -384,16 +395,20 @@ const NEIGHBORS: [(i16, i16); 8] = [
 /// the transport's cell. If so, execute boarding. If the transport is
 /// destroyed or full, cancel boarding.
 ///
-/// Phase B: For transports with `OrderIntent::Unloading`, eject one
-/// passenger per tick to an adjacent unoccupied cell. Clear the order
-/// when all passengers are out.
+/// Phase B: For `CanBeOccupied=` buildings with `OrderIntent::Unloading`,
+/// eject one occupant per tick to an adjacent unoccupied cell. Clear the
+/// order when all occupants are out.
+///
+/// Vehicle and aircraft transports do NOT unload here: their Unload is a
+/// mission handler (`crate::sim::transport_unload`, the `Passengers > 0`
+/// branch of `UnitClass::Mission_Unload @ 0x0073D630`) dispatched from the
+/// per-object AI host on the `[Unload] Rate` cadence.
+///
 /// Returns `true` if any entity's ownership changed this tick (garrison
 /// transfer or revert), signalling that the sprite atlas needs a rebuild.
 pub fn tick_passenger_system(sim: &mut Simulation, rules: &RuleSet) -> bool {
     let order = sim.live_object_order_snapshot();
-    let boarding_changed = tick_boarding_and_garrison_reconciliation_in_order(sim, rules, &order);
-    let unloading_changed = tick_unloading(sim, rules);
-    boarding_changed || unloading_changed
+    tick_boarding_and_garrison_reconciliation_in_order(sim, rules, &order)
 }
 
 /// Local surrogate for gamemd's live object-vector walk for the garrison owner slice.
@@ -624,7 +639,11 @@ fn reconcile_civilian_garrison_owner_for_building(
                 Some((
                     building.type_ref,
                     building.owner,
-                    cargo.passengers.first().copied(),
+                    // The FIRST occupant to enter: the cargo list is head-first
+                    // (`AddPassenger` prepends), so the earliest entry is the
+                    // tail. VERA-internal ownership rule, gamemd equivalent
+                    // UNCHECKED; preserved unchanged across the LIFO change.
+                    cargo.passengers.last().copied(),
                     cargo.is_empty(),
                     !cargo.is_empty()
                         && is_at_or_below_red_hp(
@@ -656,7 +675,7 @@ fn reconcile_civilian_garrison_owner_for_building(
                 let cargo = building.passenger_role.cargo()?;
                 Some((
                     building.owner,
-                    cargo.passengers.first().copied(),
+                    cargo.passengers.last().copied(),
                     cargo.is_empty(),
                 ))
             })
@@ -893,7 +912,9 @@ fn is_can_be_occupied_unloading_transport(
         .is_some_and(|obj| obj.can_be_occupied)
 }
 
-fn reveal_unloaded_passenger(
+/// Reveal a cargo passenger at an exit cell. The passenger's `sub_cell` and
+/// `facing` must already be written by the caller; its role is cleared here.
+pub(crate) fn reveal_unloaded_passenger(
     sim: &mut Simulation,
     transport_id: u64,
     passenger_id: u64,
@@ -934,7 +955,7 @@ fn reveal_unloaded_passenger(
     )
 }
 
-fn restore_unloaded_passenger_after_reveal_failure(
+pub(crate) fn restore_unloaded_passenger_after_reveal_failure(
     sim: &mut Simulation,
     rules: &RuleSet,
     transport_id: u64,
@@ -1091,157 +1112,6 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
             t.order_intent = None;
         }
     }
-}
-
-fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
-    // Snapshot transports that are unloading — must collect fully before mutating.
-    let keys: Vec<u64> = sim.substrate.entities.keys_sorted();
-    let unload_snapshot: Vec<u64> = keys
-        .iter()
-        .filter_map(|&id| {
-            let e = sim.substrate.entities.get(id)?;
-            if matches!(e.order_intent, Some(OrderIntent::Unloading)) {
-                Some(id)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    for transport_id in unload_snapshot {
-        if is_can_be_occupied_unloading_transport(sim, rules, transport_id) {
-            continue;
-        }
-
-        let (trx, try_, tz) = match sim.substrate.entities.get(transport_id) {
-            Some(e) => (e.position.rx, e.position.ry, e.position.z),
-            None => continue,
-        };
-
-        // Collect occupied cell positions (skip transported/dying entities).
-        let occupied_cells: Vec<(u16, u16)> = {
-            let all_keys: Vec<u64> = sim.substrate.entities.keys_sorted();
-            all_keys
-                .iter()
-                .filter_map(|&eid| {
-                    let e = sim.substrate.entities.get(eid)?;
-                    if !e.passenger_role.is_inside_transport() && !e.dying && e.is_alive() {
-                        Some((e.position.rx, e.position.ry))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-
-        // Find an adjacent free cell for the passenger to exit to.
-        // Simple search: first unoccupied neighbor in 8 directions.
-        let exit_cell = NEIGHBORS.iter().find_map(|&(dx, dy)| {
-            let nx = trx as i16 + dx;
-            let ny = try_ as i16 + dy;
-            if nx < 0 || ny < 0 {
-                return None;
-            }
-            let (nx, ny) = (nx as u16, ny as u16);
-            let occupied = occupied_cells.iter().any(|&(ox, oy)| ox == nx && oy == ny);
-            if occupied { None } else { Some((nx, ny)) }
-        });
-
-        let Some((exit_rx, exit_ry)) = exit_cell else {
-            // No free cell — skip this tick, try again next tick.
-            continue;
-        };
-
-        // Pop the first passenger from the cargo.
-        let passenger = sim
-            .substrate
-            .entities
-            .get_mut(transport_id)
-            .and_then(|t| t.passenger_role.cargo_mut())
-            .and_then(|cargo| cargo.unload_first());
-
-        let Some((pax_id, pax_size)) = passenger else {
-            // Cargo empty — clear unload order.
-            if let Some(t) = sim.substrate.entities.get_mut(transport_id) {
-                t.order_intent = None;
-            }
-            continue;
-        };
-
-        let pax_type_str = sim
-            .substrate
-            .entities
-            .get(pax_id)
-            .map(|e| sim.interner.resolve(e.type_ref).to_string())
-            .unwrap_or_default();
-        let reveal_outcome =
-            reveal_unloaded_passenger(sim, transport_id, pax_id, exit_rx, exit_ry, tz);
-        if !matches!(reveal_outcome, RevealOutcome::Revealed { .. }) {
-            restore_unloaded_passenger_after_reveal_failure(
-                sim,
-                rules,
-                transport_id,
-                pax_id,
-                pax_size,
-                reveal_outcome,
-            );
-            continue;
-        }
-
-        // Scatter: issue a short move to a random adjacent cell so ejected
-        // infantry flee the building footprint (gamemd mission 0xF / Scatter).
-        let scatter_speed = scatter_speed_for_passenger(sim, rules, pax_id, &pax_type_str);
-        let start_dir = sim.scatter_rng().next_u32() as usize % 8;
-        for i in 0..8 {
-            let (dx, dy) = NEIGHBORS[(start_dir + i) % 8];
-            let sx = exit_rx as i32 + dx as i32;
-            let sy = exit_ry as i32 + dy as i32;
-            if sx >= 0 && sy >= 0 {
-                let dest = (sx as u16, sy as u16);
-                let occupied = occupied_cells
-                    .iter()
-                    .any(|&(ox, oy)| ox == dest.0 && oy == dest.1);
-                if !occupied {
-                    movement::issue_direct_move(
-                        &mut sim.substrate.entities,
-                        pax_id,
-                        dest,
-                        scatter_speed,
-                    );
-                    break;
-                }
-            }
-        }
-
-        // When the transport is empty, clear any passenger-driven weapon override
-        // (covers both Gunner=yes IFV swap and open-topped passenger weapon).
-        let is_empty = sim
-            .substrate
-            .entities
-            .get(transport_id)
-            .and_then(|t| t.passenger_role.cargo())
-            .is_some_and(|c| c.is_empty());
-        if is_empty {
-            if let Some(t) = sim.substrate.entities.get_mut(transport_id) {
-                t.weapon_override = None;
-            }
-        }
-
-        // If cargo is now empty, clear the unload order. Civilian garrison owner
-        // revert is deferred to the building reconciliation turn.
-        let cargo_empty = sim
-            .substrate
-            .entities
-            .get(transport_id)
-            .and_then(|t| t.passenger_role.cargo())
-            .is_some_and(|c| c.is_empty());
-        if cargo_empty {
-            if let Some(t) = sim.substrate.entities.get_mut(transport_id) {
-                t.order_intent = None;
-            }
-        }
-    }
-    false
 }
 
 #[cfg(test)]
@@ -1519,25 +1389,30 @@ ConditionYellow=50%
         assert!(cargo.disembark(101));
         assert_eq!(cargo.count(), 2);
         assert_eq!(cargo.total_size, 2);
-        assert_eq!(cargo.passengers, vec![100, 102]);
+        // Head-first list order: the last boarded sits at index 0.
+        assert_eq!(cargo.passengers, vec![102, 100]);
         assert_eq!(cargo.passenger_sizes, vec![1, 1]);
 
         // Disembarking non-existent ID returns false
         assert!(!cargo.disembark(999));
     }
 
+    /// `CargoClass::AddPassenger @ 0x004733A0` prepends and
+    /// `RemoveFirstPassenger @ 0x00473430` pops the head: the last boarded
+    /// passenger leaves first.
     #[test]
-    fn test_unload_first_fifo() {
+    fn test_unload_first_is_lifo_head_pop() {
         let mut cargo = PassengerCargo::new(5, 0);
         cargo.board(100, 1);
         cargo.board(101, 2);
         cargo.board(102, 3);
 
-        assert_eq!(cargo.unload_first(), Some((100, 1)));
-        assert_eq!(cargo.total_size, 5);
-        assert_eq!(cargo.unload_first(), Some((101, 2)));
-        assert_eq!(cargo.total_size, 3);
+        assert_eq!(cargo.passengers, vec![102, 101, 100]);
         assert_eq!(cargo.unload_first(), Some((102, 3)));
+        assert_eq!(cargo.total_size, 3);
+        assert_eq!(cargo.unload_first(), Some((101, 2)));
+        assert_eq!(cargo.total_size, 1);
+        assert_eq!(cargo.unload_first(), Some((100, 1)));
         assert_eq!(cargo.total_size, 0);
         assert_eq!(cargo.unload_first(), None);
         assert!(cargo.is_empty());
@@ -1550,11 +1425,11 @@ ConditionYellow=50%
         cargo.board(100, 3);
         cargo.board(101, 1);
 
-        let entry = cargo.unload_first().expect("front passenger");
+        let entry = cargo.unload_first().expect("head passenger");
         cargo.restore_front(entry.0, entry.1);
 
-        assert_eq!(cargo.passengers, vec![100, 101]);
-        assert_eq!(cargo.passenger_sizes, vec![3, 1]);
+        assert_eq!(cargo.passengers, vec![101, 100]);
+        assert_eq!(cargo.passenger_sizes, vec![1, 3]);
         assert_eq!(cargo.total_size, 4);
     }
 

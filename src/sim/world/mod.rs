@@ -294,6 +294,15 @@ pub enum SimSoundEvent {
         rx: u16,
         ry: u16,
     },
+    /// A transport placed an ejected passenger — `UnitClass::Mission_Unload @
+    /// 0x0073D630` plays the transport type's `LeaveTransportSound=`
+    /// (`+0x568`) through `VocClass::PlayAtCoord` at the TRANSPORT's own
+    /// coordinate (`0x0073DC28`..`0x0073DC67`), once per placed passenger.
+    LeaveTransport {
+        sound_id: InternedId,
+        rx: u16,
+        ry: u16,
+    },
     /// A miner docked at a refinery — play the building's deploy sound.
     /// The app layer should select the healthy or damaged sound variant
     /// based on the refinery's health ratio vs ConditionYellow.

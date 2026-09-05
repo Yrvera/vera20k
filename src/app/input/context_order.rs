@@ -695,6 +695,16 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                 if let Some(target) = hover.as_ref() {
                     if selected_ids.contains(&target.stable_id) {
                         if let Some(entity) = sim.entities().get(target.stable_id) {
+                            // Self-click on a loaded transport → unload.
+                            if let Some(cmd) = super::transport_orders::transport_unload_command(
+                                entity,
+                                resources
+                                    .rules
+                                    .object(sim.interner.resolve(entity.type_ref)),
+                            ) {
+                                queued.push(CommandEnvelope::new(owner_id, execute_tick, cmd));
+                                return finish_order(state, queued, speaker_id);
+                            }
                             if entity.category == EntityCategory::Structure {
                                 let obj = Some(&resources.rules)
                                     .and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
@@ -1029,6 +1039,11 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                 Some(Command::ToggleInfantryDeploy {
                                     entity_id: target.stable_id,
                                 })
+                            } else if let Some(cmd) =
+                                super::transport_orders::transport_unload_command(entity, obj)
+                            {
+                                // Loaded transport → unload passengers.
+                                Some(cmd)
                             } else {
                                 // MCV → ConYard
                                 if obj.map_or(false, |o| o.deploys_into.is_some() || o.deployer) {

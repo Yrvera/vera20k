@@ -192,9 +192,16 @@ impl MissionCom {
         self.handler_state = value;
     }
 
+    /// Handler-owned `+0xB8 = 1` write. `UnitClass::Mission_Unload` state 4
+    /// (`0x0073DCC7`) sets it immediately after its `Queue_Mission(Guard)`
+    /// cleared it, so the queued Guard promotes past the moving-defer gate.
+    pub(crate) fn set_movement_bypass_latch(&mut self) {
+        self.movement_bypass_latch = 1;
+    }
+
     #[cfg(test)]
     pub(super) fn set_movement_bypass_after_verified_queue(&mut self) {
-        self.movement_bypass_latch = 1;
+        self.set_movement_bypass_latch();
     }
 }
 

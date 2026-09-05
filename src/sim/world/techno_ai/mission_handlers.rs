@@ -378,6 +378,26 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
                 queue,
             }
         }
+        // The transport branch of `UnitClass::Mission_Unload @ 0x0073D630`
+        // (`Type+0x5E0 Passengers > 0`, gate `0x0073D6EC`). The handler owns
+        // its side effects and every return value — the `return 10` / `return
+        // 1` early exits and the `[Unload] Rate + RandomRanged(0, 2)`
+        // epilogue — so it is committed as a plain cadence here. The refinery
+        // (`Harvester=`), `DeploysInto=` and `IsSimpleDeployer=` branches of
+        // the same slot are other lanes and fall through to the default arm.
+        (EntityCategory::Unit, Some(MissionType::Unload))
+            if sim.substrate.entities.get(id).is_some_and(|entity| {
+                crate::sim::transport_unload::is_vehicle_transport_type(sim, entity, rules)
+            }) =>
+        {
+            MissionHandlerEvaluation::cadence(crate::sim::transport_unload::unit_mission_unload(
+                sim,
+                rules,
+                ctx.path_grid,
+                ctx.overlay_registry,
+                id,
+            ))
+        }
         (EntityCategory::Unit, Some(MissionType::Guard)) => {
             // **VERA-internal, gamemd equivalent UNCHECKED — this mapping is
             // wrong and the arm is dead.** The "three byte latches, then
