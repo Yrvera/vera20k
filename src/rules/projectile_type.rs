@@ -133,6 +133,9 @@ pub struct ProjectileType {
     pub shrapnel_weapon: Option<String>,
     /// SHP/VXL image used for the in-flight projectile.
     pub image: Option<String>,
+    /// ObjectType+236, loaded from ART before BulletRead clears a missing Image.
+    /// FireAt 6FED2F uses this flag for its native launch-pitch branch.
+    pub voxel: bool,
     /// Animation played as a trail behind the projectile (anim type name, art Image section).
     pub trailer: Option<String>,
 }
@@ -244,6 +247,9 @@ impl ProjectileType {
             airburst_weapon: section.get("AirburstWeapon").map(|s| s.trim().to_string()),
             shrapnel_weapon: section.get("ShrapnelWeapon").map(|s| s.trim().to_string()),
             image: section.get("Image").map(|s| s.trim().to_string()),
+            voxel: image_section
+                .and_then(|s| s.get_bool("Voxel"))
+                .unwrap_or(false),
             trailer: image_section
                 .and_then(|s| s.get("Trailer"))
                 .map(|s| s.trim().to_string()),
@@ -255,6 +261,53 @@ impl ProjectileType {
 mod tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
+
+    #[test]
+    fn projectile_voxel_art_binding_preserves_explicit_image_and_absent_keys() {
+        use crate::rules::{art_data::ArtRegistry, ruleset::RuleSet};
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=UNIT\n[UNIT]\nPrimary=GUN\n[GUN]\nProjectile=SHOT\n[SHOT]\nImage=OTHER\n",
+        );
+        let mut rules = RuleSet::from_ini(&ini).unwrap();
+        rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(
+            "[SHOT]\nVoxel=yes\n[OTHER]\nImage=SHOT\n",
+        )));
+        assert!(
+            !rules.projectile("SHOT").unwrap().voxel,
+            "explicit Image never falls back or follows ART redirects"
+        );
+        rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(
+            "[OTHER]\nVoxel=yes\n",
+        )));
+        assert!(rules.projectile("SHOT").unwrap().voxel);
+        rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(
+            "[OTHER]\nHeight=3\n",
+        )));
+        assert!(
+            rules.projectile("SHOT").unwrap().voxel,
+            "absent key retains the loaded ObjectType value"
+        );
+        rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(
+            "[OTHER]\nVoxel=no\n",
+        )));
+        assert!(!rules.projectile("SHOT").unwrap().voxel);
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=UNIT\n[UNIT]\nPrimary=GUN\n[GUN]\nProjectile=SHOT\n[SHOT]\n",
+        );
+        let mut rules = RuleSet::from_ini(&ini).unwrap();
+        rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(
+            "[SHOT]\nVoxel=yes\n",
+        )));
+        let projectile = rules.projectile("SHOT").unwrap();
+        assert!(
+            projectile.voxel,
+            "fresh ObjectType image defaults to its ID before BulletRead"
+        );
+        assert_eq!(
+            projectile.image, None,
+            "the later Bullet rendering name remains empty"
+        );
+    }
 
     #[test]
     fn test_parse_aa_projectile() {

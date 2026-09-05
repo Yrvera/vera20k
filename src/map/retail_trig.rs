@@ -527,3 +527,37 @@ pub fn global_acos() -> Option<&'static AcosTable> {
 pub fn wave_tables_available() -> bool {
     global().is_some() && global_acos().is_some()
 }
+
+/// Shared exact production sine/Acos access for Wave and projectile math.
+/// Headless tests retain the existing Wave synthetic fixture fallback; parity
+/// fixtures must install/load the retail tables and verify their hashes.
+pub(crate) fn required_math_tables() -> (&'static TrigTable, &'static AcosTable) {
+    if let (Some(trig), Some(acos)) = (
+        global(),
+        global_acos(),
+    ) {
+        return (trig, acos);
+    }
+
+    #[cfg(test)]
+    {
+        use std::sync::OnceLock;
+        static TEST_TABLES: OnceLock<(TrigTable, AcosTable)> = OnceLock::new();
+        let tables = TEST_TABLES.get_or_init(|| {
+            let exact = std::env::var_os("RA2_DIR")
+                .and_then(|dir| {
+                    std::fs::read(std::path::PathBuf::from(dir).join("gamemd.exe")).ok()
+                })
+                .and_then(|image| {
+                    let trig = TrigTable::from_executable(&image).ok()?;
+                    let acos = AcosTable::from_executable(&image).ok()?;
+                    (trig.matches_retail() && acos.matches_retail()).then_some((trig, acos))
+                });
+            exact.unwrap_or_else(|| (TrigTable::synthetic(), AcosTable::synthetic()))
+        });
+        return (&tables.0, &tables.1);
+    }
+
+    #[cfg(not(test))]
+    panic!("verified gamemd sine/Acos tables were not installed before native math");
+}

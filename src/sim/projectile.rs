@@ -31,12 +31,14 @@
 //! target adjustment (467CEC) runs only after admission. There is no separate
 //! distance-to-target expiry rule for ordinary shots.
 //!
-//! RESIDUAL (GSI-08.06): upstream launch/candidate generation and persistent
-//! velocity still quantize native binary64 state into integer leptons. Native
-//! collision comparisons are covered for supplied candidates; fractional
-//! trajectories can reach different candidates or velocity boundaries. This
-//! keeps the complete projectile row open. Terrain is excluded by the
-//! nearest selector's Techno identity test (47C427, constructor6F322F).
+//! Ordinary and Vertical flight retain one binary64 velocity authority.
+//! `launch` owns the native scalar FireAt math; combat resolves its receivers.
+//! RESIDUAL (GSI-08.06/07): FLH/pivot slope translation, directed Building
+//! heading, scatter, homing launch/steering, shrapnel launch and active
+//! NukeMaker child production remain open. Those producers can still change the inputs delivered to this exact
+//! motion/collision consumer; the complete projectile row remains open.
+
+pub(crate) mod launch;
 
 use std::collections::BTreeMap;
 
@@ -60,26 +62,51 @@ pub struct ProjectileCoord {
     pub z: i32,
 }
 
-/// Integer velocity committed by `BulletClass::AI`, in leptons per frame.
+/// Native Bullet +E8/+F0/+F8 binary64 velocity, in leptons per frame.
+///
+/// Fire 468691 copies all six DWORDs, ordinary AI 467AB2 copies its scratch
+/// doubles back, and Vertical 4672A3 scales this same persistent vector.
+/// Integer coordinates are projections of this authority, never a second state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ProjectileVelocity {
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
+    pub x: crate::util::native_x87::NativeF64Bits,
+    pub y: crate::util::native_x87::NativeF64Bits,
+    pub z: crate::util::native_x87::NativeF64Bits,
 }
 
 impl ProjectileVelocity {
     pub const fn new(x: i32, y: i32, z: i32) -> Self {
-        Self { x, y, z }
+        use crate::util::native_x87::NativeF64Bits;
+        // Every signed i32 is exactly representable as binary64.
+        Self {
+            x: NativeF64Bits::from_bits((x as f64).to_bits()),
+            y: NativeF64Bits::from_bits((y as f64).to_bits()),
+            z: NativeF64Bits::from_bits((z as f64).to_bits()),
+        }
+    }
+
+    pub const fn from_native(components: [crate::util::native_x87::NativeF64Bits; 3]) -> Self {
+        Self {
+            x: components[0],
+            y: components[1],
+            z: components[2],
+        }
+    }
+
+    pub const fn native(self) -> [crate::util::native_x87::NativeF64Bits; 3] {
+        [self.x, self.y, self.z]
+    }
+
+    pub fn integer_projection(self) -> ProjectileCoord {
+        let [x, y, z] = ProjectileCollisionMotion::quantized(self.native());
+        ProjectileCoord::new(x, y, z)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ProjectileTrajectory {
     Straight,
-    Ballistic {
-        gravity: i32,
-    },
+    Ballistic,
     /// gamemd-derived: `BulletClass::AI @ 0x004666E0`, the `ROT < 1 &&
     /// Vertical` arm entered at `0x004671E0`. No gravity is applied there and
     /// the launch direction is never changed — only the magnitude ramps by
@@ -88,16 +115,12 @@ pub enum ProjectileTrajectory {
     /// (`+0x2BC`, read at `0x00467334`), a negative altitude, or a bridge-deck
     /// crossing.
     ///
-    /// The direction is kept as the launch (yaw, pitch) BAM pair rather than
-    /// as an integer velocity: native renormalises a *double* velocity vector
-    /// every frame, and at the 1-lepton launch magnitude an integer vector
-    /// would quantise the direction away.
+    /// Direction lives only in the persistent binary64 velocity. The native
+    /// ramp normalizes and scales that vector in place at 4672A3..4672B4.
     Vertical {
         detonation_altitude: i32,
         acceleration: i32,
         max_speed: i32,
-        heading_bam: u16,
-        pitch_bam: u16,
     },
 }
 
@@ -444,6 +467,8 @@ pub struct ProjectileCollisionPolicy {
     pub anti_air: bool,
     pub airburst: bool,
     pub inaccurate: bool,
+    /// BulletType +295: 48ACF0 multiplies live Rules gravity by binary64 0.5.
+    pub floater: bool,
     /// BulletType +2C8, retained as exact binary64 bits for Eq/hash/save.
     pub elasticity_bits: u64,
 }
@@ -458,6 +483,7 @@ impl ProjectileCollisionPolicy {
         anti_air: false,
         airburst: false,
         inaccurate: false,
+        floater: false,
         elasticity_bits: 0x3fe8_0000_0000_0000,
     };
 }
@@ -559,13 +585,12 @@ pub(crate) struct ProjectileCollisionMotion {
 }
 
 impl ProjectileCollisionMotion {
-    pub fn from_integer(candidate: ProjectileCoord, velocity: ProjectileVelocity) -> Self {
+    pub fn from_coordinate(candidate: ProjectileCoord, velocity: ProjectileVelocity) -> Self {
         use crate::util::native_x87::NativeF64Bits;
         Self {
             candidate: [candidate.x, candidate.y, candidate.z]
                 .map(|value| NativeF64Bits::from_bits(f64::from(value).to_bits())),
-            velocity: [velocity.x, velocity.y, velocity.z]
-                .map(|value| NativeF64Bits::from_bits(f64::from(value).to_bits())),
+            velocity: velocity.native(),
         }
     }
 
@@ -591,11 +616,10 @@ pub(crate) fn projectile_slope_reflect_with_elasticity(
     slope_type: u8,
     elasticity_bits: u64,
 ) -> Option<ProjectileVelocity> {
-    let input =
-        ProjectileCollisionMotion::from_integer(ProjectileCoord::new(0, 0, 0), velocity).velocity;
+    let input = ProjectileCollisionMotion::from_coordinate(ProjectileCoord::new(0, 0, 0), velocity)
+        .velocity;
     let reflected = projectile_slope_reflect_double(input, slope_type, elasticity_bits)?;
-    let [x, y, z] = ProjectileCollisionMotion::quantized(reflected);
-    Some(ProjectileVelocity::new(x, y, z))
+    Some(ProjectileVelocity::from_native(reflected))
 }
 
 pub(crate) fn projectile_slope_reflect_double(
@@ -1248,6 +1272,7 @@ impl ProjectileStore {
             |id| target_positions.get(&id).copied(),
             terrain,
             shared_cell_dummy,
+            crate::rules::ruleset::GeneralRules::default().gravity,
             false,
             |projectile, candidate, phase| match phase {
                 ProjectileCollisionPhase::Ordinary { .. } => None,
@@ -1265,6 +1290,7 @@ impl ProjectileStore {
         target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
         shared_cell_dummy: &SharedCellDummy,
+        rules_gravity: i32,
         source_is_jumpjet: bool,
         collides_at: impl FnMut(
             &Projectile,
@@ -1281,6 +1307,7 @@ impl ProjectileStore {
             target_position,
             terrain,
             shared_cell_dummy,
+            rules_gravity,
             source_is_jumpjet,
             collides_at,
             false,
@@ -1295,6 +1322,7 @@ impl ProjectileStore {
         mut resolve_target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
         shared_cell_dummy: &SharedCellDummy,
+        rules_gravity: i32,
         source_is_jumpjet: bool,
         mut collides_at: impl FnMut(
             &Projectile,
@@ -1481,18 +1509,22 @@ impl ProjectileStore {
                 );
                 let yaw = step_toward_bam_inclusive(guidance.heading_bam, desired_yaw, turn_word);
                 guidance.heading_bam = yaw;
-                projectile.velocity.x =
-                    (SimFixed::from_num(next_speed) * cos_bam(yaw)).to_num::<i32>();
-                projectile.velocity.y =
-                    (SimFixed::from_num(next_speed) * sin_bam(yaw)).to_num::<i32>();
+                let horizontal_velocity = ProjectileVelocity::new(
+                    (SimFixed::from_num(next_speed) * cos_bam(yaw)).to_num::<i32>(),
+                    (SimFixed::from_num(next_speed) * sin_bam(yaw)).to_num::<i32>(),
+                    0,
+                );
+                projectile.velocity.x = horizontal_velocity.x;
+                projectile.velocity.y = horizontal_velocity.y;
                 projectile.speed_leptons_per_frame =
                     next_speed.clamp(0, i32::from(u16::MAX)) as u16;
                 guidance.frames_elapsed = guidance.frames_elapsed.wrapping_add(1);
 
+                let step = projectile.velocity.integer_projection();
                 let candidate = ProjectileCoord::new(
-                    projectile.position.x.saturating_add(projectile.velocity.x),
-                    projectile.position.y.saturating_add(projectile.velocity.y),
-                    projectile.position.z.saturating_add(projectile.velocity.z),
+                    projectile.position.x.wrapping_add(step.x),
+                    projectile.position.y.wrapping_add(step.y),
+                    projectile.position.z.wrapping_add(step.z),
                 );
 
                 // gamemd-derived: `BulletClass::AI 0x00466DB1..0x00466E6B`.
@@ -1569,21 +1601,13 @@ impl ProjectileStore {
                         );
                         candidate
                     }
-                    ProjectileTrajectory::Ballistic { gravity } => {
-                        projectile.velocity.z = projectile.velocity.z.saturating_sub(gravity);
-                        use crate::util::native_x87::X87Chop53;
-                        let mut motion = ProjectileCollisionMotion::from_integer(
+                    ProjectileTrajectory::Ballistic => {
+                        let motion = ordinary_motion_candidate(
                             projectile.position,
                             projectile.velocity,
+                            rules_gravity,
+                            projectile.collision.floater,
                         );
-                        for (position, velocity) in motion.candidate.iter_mut().zip(motion.velocity)
-                        {
-                            *position = X87Chop53::store_f64(X87Chop53::add(
-                                X87Chop53::load_f64(*position).expect("finite position"),
-                                X87Chop53::load_f64(velocity).expect("finite velocity"),
-                            ))
-                            .expect("finite ordinary candidate");
-                        }
                         let candidate = motion.candidate_coord();
                         ordinary_motion = Some(motion);
                         candidate
@@ -1593,30 +1617,18 @@ impl ProjectileStore {
                         detonation_altitude,
                         acceleration,
                         max_speed,
-                        heading_bam,
-                        pitch_bam,
                     } => {
-                        // `0x00467211`: the ramp uses the truncated integer
-                        // magnitude and applies NO clamp on the crossing frame,
-                        // so the magnitude may overshoot MaxSpeed once.
-                        let current_speed = i32::from(projectile.speed_leptons_per_frame);
-                        let next_speed = if current_speed < max_speed {
-                            current_speed + acceleration
-                        } else {
-                            current_speed
-                        };
+                        projectile.velocity =
+                            vertical_velocity_ramp(projectile.velocity, acceleration, max_speed);
+                        // This legacy display/cache field is not the ramp's authority.
                         projectile.speed_leptons_per_frame =
-                            next_speed.clamp(0, i32::from(u16::MAX)) as u16;
-                        let horizontal = SimFixed::from_num(next_speed) * cos_bam(pitch_bam);
-                        projectile.velocity = ProjectileVelocity::new(
-                            (horizontal * cos_bam(heading_bam)).to_num::<i32>(),
-                            (horizontal * sin_bam(heading_bam)).to_num::<i32>(),
-                            (SimFixed::from_num(next_speed) * sin_bam(pitch_bam)).to_num::<i32>(),
-                        );
+                            projectile_velocity_magnitude(projectile.velocity)
+                                .clamp(0.0, f64::from(u16::MAX)) as u16;
+                        let step = projectile.velocity.integer_projection();
                         let candidate = ProjectileCoord::new(
-                            projectile.position.x.saturating_add(projectile.velocity.x),
-                            projectile.position.y.saturating_add(projectile.velocity.y),
-                            projectile.position.z.saturating_add(projectile.velocity.z),
+                            projectile.position.x.wrapping_add(step.x),
+                            projectile.position.y.wrapping_add(step.y),
+                            projectile.position.z.wrapping_add(step.z),
                         );
                         // `0x00467334`: `DetonationAltitude` is compared
                         // against the new WORLD z, not against an altitude
@@ -1625,14 +1637,23 @@ impl ProjectileStore {
                         // this arm at all.
                         if candidate.z > detonation_altitude {
                             impact_flag = true;
-                        } else if terrain_floor_z(terrain, candidate.x, candidate.y)
-                            .is_some_and(|floor| candidate.z < floor)
+                        } else if previous_position.z.wrapping_sub(projectile_ground_z(
+                            terrain,
+                            shared_cell_dummy,
+                            previous_position,
+                        )) < 0
                         {
                             impact_flag = true;
-                        } else if let Some(surface) =
-                            bridge_surface_z(terrain, previous_position, candidate)
-                            && projectile_bridge_crossing(previous_position.z, candidate.z, surface)
-                                != ProjectileBridgeCrossing::None
+                        } else if let Some(surface) = bridge_surface_z(
+                            terrain,
+                            shared_cell_dummy,
+                            previous_position,
+                            candidate,
+                        ) && projectile_bridge_crossing(
+                            previous_position.z,
+                            candidate.z,
+                            surface,
+                        ) != ProjectileBridgeCrossing::None
                         {
                             impact_flag = true;
                         }
@@ -1665,7 +1686,10 @@ impl ProjectileStore {
                             previous_velocity
                         },
                         motion: ordinary_motion.unwrap_or_else(|| {
-                            ProjectileCollisionMotion::from_integer(candidate, projectile.velocity)
+                            ProjectileCollisionMotion::from_coordinate(
+                                candidate,
+                                projectile.velocity,
+                            )
                         }),
                     },
                 )
@@ -1675,6 +1699,12 @@ impl ProjectileStore {
                 impact_flag |= impact;
                 near_target = near;
                 left_the_map = left_map;
+            } else if projectile.guidance.is_none()
+                && let Some(motion) = ordinary_motion
+            {
+                // Mapless store callbacks can omit the world tail; its normal
+                // fallthrough commits the scratch here without a second owner.
+                projectile.velocity = ProjectileVelocity::from_native(motion.velocity);
             }
 
             if left_the_map {
@@ -1897,9 +1927,9 @@ pub(crate) fn projectile_ground_z(
 
 /// `BulletClass::AI 0x00466DB1..0x00466E6B`, with its already-computed
 /// distance, represented velocity and OLD ObjectClass height as inputs.
-/// Native retains a double vector; upstream VERA flight still quantizes its
-/// components, an open trajectory discrepancy rather than a scalar-speed
-/// substitute at this predicate.
+/// The persistent velocity retains native double components. The current
+/// integer XY homing producer remains an open trajectory discrepancy; this
+/// predicate reads the vector rather than substituting a cached scalar speed.
 fn homing_impact_admission(
     distance: i32,
     velocity: ProjectileVelocity,
@@ -1944,8 +1974,199 @@ pub(crate) fn projectile_final_snap_admitted(
         || f64::from(distance) <= (projectile_velocity_magnitude(velocity) * 2.0).max(128.0)
 }
 
+/// Live Rules +16B8, with the Type +295 Floater override (4671B9/48ACF0).
+pub(crate) fn projectile_gravity(
+    rules_gravity: i32,
+    floater: bool,
+) -> crate::util::native_x87::NativeF64Bits {
+    use crate::util::native_x87::{NativeF64Bits, X87Chop53};
+    let gravity = X87Chop53::load_i32(rules_gravity);
+    let gravity = if floater {
+        X87Chop53::mul(gravity, X87Chop53::load_f64(NativeF64Bits::HALF).unwrap())
+    } else {
+        gravity
+    };
+    X87Chop53::store_f64(gravity).expect("finite Rules gravity")
+}
+
+/// Ordinary 46718F..467494: live gravity scratch, double coordinate sums,
+/// then a separate integer projection. Persistent velocity commits in the tail.
+fn ordinary_motion_candidate(
+    position: ProjectileCoord,
+    velocity: ProjectileVelocity,
+    rules_gravity: i32,
+    floater: bool,
+) -> ProjectileCollisionMotion {
+    use crate::util::native_x87::X87Chop53;
+    let mut motion = ProjectileCollisionMotion::from_coordinate(position, velocity);
+    // 4671B9/48ACF0 select live gravity, then 467415/467429
+    // store the subtraction only in the ordinary scratch.
+    let gravity = projectile_gravity(rules_gravity, floater);
+    motion.velocity[2] = X87Chop53::store_f64(X87Chop53::sub(
+        X87Chop53::load_f64(motion.velocity[2]).expect("finite velocity"),
+        X87Chop53::load_f64(gravity).expect("finite gravity"),
+    ))
+    .expect("finite gravity-adjusted velocity");
+    for (position, velocity) in motion.candidate.iter_mut().zip(motion.velocity) {
+        *position = X87Chop53::store_f64(X87Chop53::add(
+            X87Chop53::load_f64(*position).expect("finite position"),
+            X87Chop53::load_f64(velocity).expect("finite velocity"),
+        ))
+        .expect("finite ordinary candidate");
+    }
+    motion
+}
+
+#[cfg(test)]
+#[test]
+fn original_ordinary_repeated_live_gravity_preserves_both_coordinate_versions() {
+    use crate::util::native_x87::NativeF64Bits;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../tools/projectile_oracle/ordinary_motion.json"
+    ))
+    .unwrap();
+    for (index, row) in rows.iter().enumerate() {
+        let mut velocity = ProjectileVelocity::from_native(std::array::from_fn(|i| {
+            NativeF64Bits::from_bits(
+                u64::from_str_radix(row["input_bits"][i].as_str().unwrap(), 16).unwrap(),
+            )
+        }));
+        let o = &row["origin"];
+        let mut position = ProjectileCoord::new(
+            o[0].as_i64().unwrap() as i32,
+            o[1].as_i64().unwrap() as i32,
+            o[2].as_i64().unwrap() as i32,
+        );
+        for (frame, expected) in row["frames"].as_array().unwrap().iter().enumerate() {
+            let motion = ordinary_motion_candidate(
+                position,
+                velocity,
+                row["gravity_sequence"][frame].as_i64().unwrap() as i32,
+                row["floater"].as_bool().unwrap(),
+            );
+            for (name, values) in [
+                ("bits", motion.velocity),
+                ("candidate_bits", motion.candidate),
+            ] {
+                let actual = values.map(|v| format!("{:016x}", v.bits()));
+                let expected_bits: Vec<_> = expected[name]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap())
+                    .collect();
+                assert_eq!(
+                    actual.as_slice(),
+                    expected_bits.as_slice(),
+                    "native ordinary row{index} frame{frame} {name}"
+                );
+            }
+            let expected_position: [i32; 3] =
+                std::array::from_fn(|i| expected["candidate"][i].as_i64().unwrap() as i32);
+            position = motion.candidate_coord();
+            assert_eq!(
+                [position.x, position.y, position.z],
+                expected_position,
+                "native ordinary row{index} frame{frame}"
+            );
+            velocity = ProjectileVelocity::from_native(motion.velocity);
+        }
+    }
+}
+
+/// Vertical AI 4671E0..4672B4 scales Bullet+E8 in place. The first magnitude
+/// uses (x*x+y*y)+z*z; the denominator uses (z*z+y*y)+x*x. Each native store
+/// and the approximate sqrt's f32 return are retained explicitly.
+fn vertical_velocity_ramp(
+    velocity: ProjectileVelocity,
+    acceleration: i32,
+    max_speed: i32,
+) -> ProjectileVelocity {
+    use crate::util::native_x87::{NativeF64Bits, X87Chop53};
+    let speed = X87Chop53::ftol_i64(
+        X87Chop53::load_f64(NativeF64Bits::from_bits(
+            projectile_velocity_magnitude(velocity).to_bits(),
+        ))
+        .unwrap(),
+    )
+    .expect("finite native Vertical speed conversion") as i32;
+    if speed >= max_speed {
+        return velocity;
+    }
+    let next_speed = speed.wrapping_add(acceleration);
+    let mut components = velocity.native();
+    if components
+        .iter()
+        .all(|component| component.bits() & 0x7fff_ffff_ffff_ffff == 0)
+    {
+        components[0] = NativeF64Bits::from_bits(100.0f64.to_bits());
+    }
+    let denominator =
+        projectile_velocity_magnitude_double([components[2], components[1], components[0]]);
+    let scale = X87Chop53::div(
+        X87Chop53::load_i32(next_speed),
+        X87Chop53::load_f64(NativeF64Bits::from_bits(denominator.to_bits())).unwrap(),
+    )
+    .expect("nonzero native Vertical denominator");
+    ProjectileVelocity::from_native(components.map(|component| {
+        X87Chop53::store_f64(X87Chop53::mul(
+            scale,
+            X87Chop53::load_f64(component).expect("finite Vertical velocity"),
+        ))
+        .expect("finite ramped Vertical velocity")
+    }))
+}
+
+#[cfg(test)]
+#[test]
+fn original_vertical_repeated_motion_preserves_binary64_and_integer_add_order() {
+    use crate::util::native_x87::NativeF64Bits;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../tools/projectile_oracle/vertical_motion.json"
+    ))
+    .unwrap();
+    for (index, row) in rows.iter().enumerate() {
+        let mut velocity = ProjectileVelocity::from_native(std::array::from_fn(|i| {
+            NativeF64Bits::from_bits(
+                u64::from_str_radix(row["input_bits"][i].as_str().unwrap(), 16).unwrap(),
+            )
+        }));
+        let mut position: [i32; 3] =
+            std::array::from_fn(|i| row["origin"][i].as_i64().unwrap() as i32);
+        for (frame, expected) in row["frames"].as_array().unwrap().iter().enumerate() {
+            velocity = vertical_velocity_ramp(
+                velocity,
+                row["acceleration"].as_i64().unwrap() as i32,
+                row["maximum"].as_i64().unwrap() as i32,
+            );
+            let step = velocity.integer_projection();
+            for (position, step) in position.iter_mut().zip([step.x, step.y, step.z]) {
+                *position = position.wrapping_add(step);
+            }
+            let actual_bits = velocity.native().map(|v| format!("{:016x}", v.bits()));
+            let expected_bits: Vec<_> = expected["bits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert_eq!(
+                actual_bits.as_slice(),
+                expected_bits.as_slice(),
+                "native Vertical row{index} frame{frame}"
+            );
+            let expected_position: [i32; 3] =
+                std::array::from_fn(|i| expected["candidate"][i].as_i64().unwrap() as i32);
+            assert_eq!(
+                position, expected_position,
+                "native Vertical row{index} frame{frame}"
+            );
+        }
+    }
+}
+
 pub(crate) fn projectile_velocity_magnitude(velocity: ProjectileVelocity) -> f64 {
-    native_vector_magnitude([velocity.x, velocity.y, velocity.z])
+    projectile_velocity_magnitude_double(velocity.native())
 }
 
 fn native_vector_magnitude(ordered_components: [i32; 3]) -> f64 {
@@ -1968,40 +2189,29 @@ pub(crate) fn projectile_velocity_magnitude_double(
     f64::from(f32::from_bits(bits.bits()))
 }
 
-/// `CellClass::GetGroundHeight` at a lepton coordinate, or `None` when the
-/// coordinate has no allocated CellClass (headless fixtures and off-map).
-fn terrain_floor_z(terrain: Option<&ResolvedTerrainGrid>, x: i32, y: i32) -> Option<i32> {
-    let rx = u16::try_from(x.div_euclid(256)).ok()?;
-    let ry = u16::try_from(y.div_euclid(256)).ok()?;
-    let cell = terrain?.cell(rx, ry)?;
-    crate::util::lepton::ground_height_leptons(cell.level, cell.slope_type, x, y).ok()
-}
-
-/// The bridge deck height for `BulletClass::AI`'s crossing test: the ground
-/// height plus `DAT_0089DE64`, admitted only when either the previous or the
-/// new cell carries the structural bridge bit (`CellClass+0x140 & 0x100`).
+/// Vertical AI 467371..4673C2 queries candidate floor first, then candidate
+/// Cell, then old Cell only if needed. The floor always belongs to candidate.
 fn bridge_surface_z(
     terrain: Option<&ResolvedTerrainGrid>,
+    shared_cell_dummy: &SharedCellDummy,
     previous: ProjectileCoord,
     candidate: ProjectileCoord,
 ) -> Option<i32> {
-    let grid = terrain?;
+    use crate::sim::cell_rect::{CellRef, get_cellclass_fallback_leptons};
+    let floor = projectile_ground_z(terrain, shared_cell_dummy, candidate);
     let structural = |coord: ProjectileCoord| -> bool {
-        let (Ok(rx), Ok(ry)) = (
-            u16::try_from(coord.x.div_euclid(256)),
-            u16::try_from(coord.y.div_euclid(256)),
-        ) else {
-            return false;
+        let cell = if terrain.is_some() {
+            get_cellclass_fallback_leptons(terrain, coord.x, coord.y)
+        } else {
+            shared_cell_dummy.stamp_coord(coord.x / 256, coord.y / 256);
+            CellRef::Dummy {
+                cell: shared_cell_dummy.clone(),
+            }
         };
-        grid.cell(rx, ry).is_some_and(|cell| {
-            cell.bridge_facts.raw_flags & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL != 0
-        })
+        cell.bridge_flags_0x1180() & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL != 0
     };
-    if !structural(previous) && !structural(candidate) {
-        return None;
-    }
-    terrain_floor_z(terrain, candidate.x, candidate.y)
-        .map(|floor| floor + crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32)
+    (structural(candidate) || structural(previous))
+        .then(|| floor.wrapping_add(crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32))
 }
 
 /// `FUN_00568350`: whether the coordinate is still inside the playfield.
@@ -2027,59 +2237,6 @@ fn horizontal_distance(a: ProjectileCoord, b: ProjectileCoord) -> i32 {
         .min(i64::from(i32::MAX)) as i32
 }
 
-/// YR `sub_47F9B0`: closed-form arcing launch solver. Runtime stores only the
-/// resulting integer velocity, keeping subsequent simulation fixed/integer.
-pub fn ballistic_launch_velocity(
-    origin: ProjectileCoord,
-    target: ProjectileCoord,
-    speed: i32,
-    gravity: i32,
-    high_arc: bool,
-) -> Option<ProjectileVelocity> {
-    if speed <= 0 || gravity < 0 {
-        return None;
-    }
-    let dx = f64::from(target.x - origin.x);
-    let dy = f64::from(target.y - origin.y);
-    let dz = f64::from(target.z - origin.z);
-    let range = dx.hypot(dy);
-    let speed_f = f64::from(speed);
-    let gravity_f = f64::from(gravity);
-    let angle = if dz > 0.0 {
-        std::f64::consts::FRAC_PI_4
-    } else {
-        let speed2 = speed_f * speed_f;
-        let discriminant =
-            speed2 * speed2 - 2.0 * speed2 * dz * gravity_f - gravity_f * gravity_f * range * range;
-        let denominator = 2.0
-            * (if range == 0.0 {
-                1.0
-            } else {
-                dz * dz / (range * range) + 1.0
-            });
-        if discriminant < 0.0 || denominator == 0.0 {
-            return None;
-        }
-        let numerator = speed2 - dz * gravity_f
-            + if high_arc {
-                -discriminant.sqrt()
-            } else {
-                discriminant.sqrt()
-            };
-        if numerator < 0.0 {
-            return None;
-        }
-        ((numerator / denominator).sqrt() / speed_f).asin()
-    };
-    let horizontal_speed = speed_f * angle.cos();
-    let facing = dy.atan2(dx);
-    Some(ProjectileVelocity::new(
-        (horizontal_speed * facing.cos()).trunc() as i32,
-        (horizontal_speed * facing.sin()).trunc() as i32,
-        (speed_f * angle.sin()).trunc() as i32,
-    ))
-}
-
 /// YR `BulletClass_GetAnimFrame` @ 0x00468000.
 pub fn projectile_shp_frame(projectile: &Projectile) -> u8 {
     if projectile.visual.anim_low != 0 || projectile.visual.anim_high != 0 {
@@ -2089,7 +2246,8 @@ pub fn projectile_shp_frame(projectile: &Projectile) -> u8 {
         28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5,
         4, 3, 2, 1, 0, 31, 30, 29,
     ];
-    let angle = f64::from(-projectile.velocity.y).atan2(f64::from(projectile.velocity.x));
+    let angle = (-f64::from_bits(projectile.velocity.y.bits()))
+        .atan2(f64::from_bits(projectile.velocity.x.bits()));
     let word =
         (((angle - std::f64::consts::FRAC_PI_2) * -10430.06004058427).trunc() as i32) & 0xffff;
     let bucket = ((((word as u32 >> 10) + 1) >> 1) & 31) as usize;
@@ -2355,7 +2513,10 @@ mod tests {
         let guided = store
             .get(id)
             .expect("guided projectile survives first turn");
-        assert!(guided.velocity.y > 0, "ROT turns toward the +Y target");
+        assert!(
+            f64::from_bits(guided.velocity.y.bits()) > 0.0,
+            "ROT turns toward the +Y target"
+        );
         assert_eq!(guided.guidance.unwrap().frames_elapsed, 1);
     }
 
@@ -2550,19 +2711,6 @@ mod tests {
 
         assert_eq!(restored.state_hash(), expected_hash);
         assert_eq!(restored.projectiles.len(), 1);
-    }
-
-    #[test]
-    fn ballistic_launch_matches_closed_re_vectors() {
-        let origin = ProjectileCoord::new(0, 0, 0);
-        let velocity =
-            ballistic_launch_velocity(origin, ProjectileCoord::new(500, 0, 0), 100, 6, false)
-                .unwrap();
-        assert_eq!(velocity, ProjectileVelocity::new(15, 0, 98));
-        assert!(
-            ballistic_launch_velocity(origin, ProjectileCoord::new(5000, 0, 0), 10, 6, false)
-                .is_none()
-        );
     }
 
     #[test]
@@ -2818,13 +2966,12 @@ mod tests {
         let mut store = ProjectileStore::new();
         let mut vertical = spawn(ProjectileTarget::Cell { rx: 0, ry: 0 });
         vertical.speed_leptons_per_frame = 1;
+        vertical.velocity = ProjectileVelocity::new(0, 0, 1);
         vertical.origin = ProjectileCoord::new(0, 0, 0);
         vertical.trajectory = ProjectileTrajectory::Vertical {
             detonation_altitude: 10,
             acceleration: 1,
             max_speed: 50,
-            heading_bam: 0,
-            pitch_bam: 0x4000,
         };
         let id = store.spawn(1, vertical);
 
@@ -2844,7 +2991,27 @@ mod tests {
                     "the arm ends only once z passes DetonationAltitude"
                 );
                 assert_eq!(detonation.impact.x, 0, "no horizontal drift straight up");
-                assert_eq!(heights, vec![2, 5, 9], "1 + 1, then +3, then +4");
+                let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+                    "../../tools/projectile_oracle/vertical_motion.json"
+                ))
+                .unwrap();
+                let row = rows
+                    .iter()
+                    .find(|row| {
+                        row["origin"] == serde_json::json!([0, 0, 0]) && row["maximum"] == 50
+                    })
+                    .unwrap();
+                let expected: Vec<i32> = row["frames"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|frame| frame["candidate"][2].as_i64().unwrap() as i32)
+                    .take_while(|&z| z <= 10)
+                    .collect();
+                assert_eq!(
+                    heights, expected,
+                    "native successive ramp and integer projections"
+                );
                 return;
             }
             heights.push(store.get(id).expect("still climbing").position.z);
@@ -3044,8 +3211,11 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                serde_json::json!([actual.x, actual.y, actual.z]),
-                row["quantized_result"],
+                actual.native().map(|value| value.bits()),
+                std::array::from_fn::<_, 3, _>(|i| f64::from(f32::from_bits(
+                    row["result_f32_bits"][i].as_u64().unwrap() as u32
+                ))
+                .to_bits()),
                 "{row}"
             );
         }

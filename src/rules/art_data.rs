@@ -47,6 +47,8 @@ pub struct ArtEntry {
     pub frame_height: u16,
     /// Render as VXL+HVA model (true) or SHP sprite (false).
     pub voxel: bool,
+    /// Preserve an absent Voxel key for ObjectType's retained-default reader.
+    pub authored_voxel: Option<bool>,
     /// Optional voxel turret/barrel forward/backward alignment tweak.
     pub turret_offset: i32,
     /// Extra Y pixel offset for sprite rendering.
@@ -1157,6 +1159,7 @@ impl ArtRegistry {
                     frame_width: 30,
                     frame_height: 30,
                     voxel,
+                    authored_voxel: section.get_bool("Voxel"),
                     turret_offset,
                     y_draw_offset,
                     x_draw_offset,

@@ -142,8 +142,6 @@ mod tests {
                     detonation_altitude: 1000,
                     acceleration: 1,
                     max_speed: 20,
-                    heading_bam: 0,
-                    pitch_bam: 0,
                 };
             }
             sim.projectiles.spawn(100, spawn);
@@ -153,7 +151,7 @@ mod tests {
                 candidate,
                 projectile.velocity,
                 projectile.velocity,
-                ProjectileCollisionMotion::from_integer(candidate, projectile.velocity).velocity,
+                ProjectileCollisionMotion::from_coordinate(candidate, projectile.velocity).velocity,
                 false,
             );
             let ProjectileCollisionResponse::Ordinary {
@@ -432,16 +430,17 @@ mod tests {
         sim.install_playfield_from_map_header(&header);
         // Match the native Size allocation diamond, not an allocated
         // rectangular fixture: 565C10 and 568350 share these predicates.
-        let cells = (0u16..24)
+        let extent = width.saturating_add(height).max(24);
+        let cells = (0u16..extent)
             .flat_map(|y| {
-                (0u16..24).map(move |x| {
+                (0u16..extent).map(move |x| {
                     super::super::lifecycle_tests::common_raw_terrain_cell(x, y, 0, false)
                 })
             })
             .collect();
-        let allocated = (0i32..24)
+        let allocated = (0i32..i32::from(extent))
             .flat_map(|y| {
-                (0i32..24).filter_map(move |x| {
+                (0i32..i32::from(extent)).filter_map(move |x| {
                     (i32::from(width) < x + y
                         && x - y < i32::from(width)
                         && y - x < i32::from(width)
@@ -450,7 +449,7 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
-        let mut terrain = ResolvedTerrainGrid::from_cells(24, 24, cells);
+        let mut terrain = ResolvedTerrainGrid::from_cells(extent, extent, cells);
         terrain.test_set_native_allocated_cells(&allocated);
         terrain.bind_shared_cell_dummy(sim.shared_cell_dummy.clone());
         sim.resolved_terrain = Some(terrain);
@@ -461,7 +460,7 @@ mod tests {
         use crate::rules::ini_parser::IniFile;
         use crate::sim::runtime::SimRuntime;
         let ini = IniFile::from_str(
-            "[VehicleTypes]\n0=TEST\n[TEST]\nStrength=100\n[Warheads]\n0=WALLWH\n[WALLWH]\nWall=yes\nCellSpread=0\nPercentAtMax=1\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n[OverlayTypes]\n0=WALL\n[WALL]\nWall=yes\nStrength=1\n",
+            "[General]\nVeteranRatio=3.0\n[AudioVisual]\nGravity=6\n[VehicleTypes]\n0=TEST\n[TEST]\nStrength=100\n[Warheads]\n0=WALLWH\n[WALLWH]\nWall=yes\nCellSpread=0\nPercentAtMax=1\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n[OverlayTypes]\n0=WALL\n[WALL]\nWall=yes\nStrength=1\n",
         );
         let art = IniFile::from_str("[WALL]\nDamageLevels=4\n");
         for (source_present, shared_wall) in [(false, false), (true, false), (true, true)] {
@@ -483,7 +482,7 @@ mod tests {
             shot.origin = ProjectileCoord::new(5 * 256 + 128, 5 * 256 + 128, 1);
             shot.initial_target_position = ProjectileCoord::new(8 * 256 + 128, 5 * 256 + 128, 0);
             shot.velocity = ProjectileVelocity::new(16, 0, 0);
-            shot.trajectory = ProjectileTrajectory::Ballistic { gravity: 6 };
+            shot.trajectory = ProjectileTrajectory::Ballistic;
             shot.collision.subject_to_walls = shared_wall;
             shot.arm_frames = 5;
             shot.payload = crate::sim::projectile::ProjectilePayload {
@@ -529,6 +528,248 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires RA2_DIR with verified gamemd.exe math tables"]
+    fn runtime_fireat_fractional_velocity_survives_live_gravity_and_snapshot() {
+        use crate::rules::art_data::ArtRegistry;
+        use crate::rules::ini_parser::IniFile;
+        use crate::sim::combat::AttackTarget;
+        use crate::sim::runtime::SimRuntime;
+        use crate::sim::snapshot::GameSnapshot;
+        let tables = crate::map::retail_trig::required_math_tables();
+        assert!(tables.0.matches_retail() && tables.1.matches_retail());
+        for voxel in [false, true] {
+            let ini = IniFile::from_str(&format!(
+                "[General]\nVeteranRatio=3.0\n[AudioVisual]\nGravity=6\n[VehicleTypes]\n0=TEST\n1=VICTIM\n[TEST]\nStrength=300\nArmor=heavy\nPrimary=GUN\n[VICTIM]\nStrength=300\nArmor=heavy\n[GUN]\nDamage=10\nROF=100\nRange=10\nSpeed=100\nProjectile=SHOT\nWarhead=WH\n[SHOT]\nImage=BULLET\nArcing={}\nVertical={}\nAA=yes\nDetonationAltitude=2000\n[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+                if voxel { "no" } else { "yes" },
+                if voxel { "yes" } else { "no" },
+            ));
+            let make_rules = || {
+                let mut rules = RuleSet::from_ini(&ini).unwrap();
+                rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(&format!(
+                    "[BULLET]\nVoxel={}\n",
+                    if voxel { "yes" } else { "no" }
+                ))));
+                rules
+            };
+            let mut sim = Simulation::new();
+            install_native_size_terrain(&mut sim, 16, 16);
+            let terrain_template = sim.resolved_terrain.as_ref().unwrap().clone();
+            sim.install_resolved_terrain_for_new_map(terrain_template.clone());
+            sim.overlay_grid = Some(
+                crate::sim::overlay_grid::OverlayGrid::new_with_retained_wall_plane(
+                    terrain_template.width(),
+                    terrain_template.height(),
+                ),
+            );
+            let source = sim.allocate_stable_id();
+            let target = sim.allocate_stable_id();
+            let z = if voxel { 1000 } else { 100 };
+            place(
+                &mut sim,
+                source,
+                ProjectileCoord::new(3200, 3200, z),
+                EntityCategory::Unit,
+            );
+            place(
+                &mut sim,
+                target,
+                ProjectileCoord::new(3700, 3200, z - if voxel { 300 } else { 0 }),
+                EntityCategory::Unit,
+            );
+            let target_type = sim.interner.intern("VICTIM");
+            let enemy = sim.interner.intern("Russians");
+            let victim = sim.substrate.entities.get_mut(target).unwrap();
+            victim.type_ref = target_type;
+            victim.owner = enemy;
+            assert!(matches!(sim.reveal(source), RevealOutcome::Revealed { .. }));
+            assert!(matches!(sim.reveal(target), RevealOutcome::Revealed { .. }));
+            // Reveal commits the coarse map coordinate; install the supplied
+            // admitted raw XYZ afterward, matching the native oracle receiver.
+            sim.substrate
+                .entities
+                .get_mut(source)
+                .unwrap()
+                .position
+                .exact_z_leptons = Some(z);
+            sim.substrate
+                .entities
+                .get_mut(target)
+                .unwrap()
+                .position
+                .exact_z_leptons = Some(z - if voxel { 300 } else { 0 });
+            assert!(sim.substrate.entities.get(source).unwrap().in_playfield);
+            assert!(sim.substrate.entities.get(target).unwrap().in_playfield);
+            let firer = sim.substrate.entities.get_mut(source).unwrap();
+            firer.facing = 64;
+            firer.attack_target = Some(AttackTarget::new(target));
+            let mut runtime = SimRuntime::from_simulation(sim);
+            runtime.resources.rules = make_rules();
+            let output = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+            assert_eq!(
+                runtime.simulation.projectiles.len(),
+                1,
+                "normal runtime FireAt must create one projectile, voxel={voxel}, fire_events={:?}, attack={:?}, logic={:?}",
+                output.fire_events,
+                runtime.simulation.substrate.entities.get(source).map(|e| (
+                    &e.attack_target,
+                    e.lifecycle,
+                    e.in_playfield,
+                    e.mission.current()
+                )),
+                runtime.simulation.live_object_order_snapshot()
+            );
+            let (&id, shot) = runtime.simulation.projectiles.iter().next().unwrap();
+            let data = if voxel {
+                include_str!("../../../tools/projectile_oracle/voxel_launch.json")
+            } else {
+                include_str!("../../../tools/projectile_oracle/fireat_launch.json")
+            };
+            let rows: Vec<Value> = serde_json::from_str(data).unwrap();
+            let expected = rows
+                .iter()
+                .find(|row| {
+                    row["delta"] == serde_json::json!([500, 0, if voxel { -300 } else { 0 }])
+                        && row["speed"] == 100
+                        && if voxel {
+                            row["voxel"] == true && row["vertical"] == true
+                        } else {
+                            row["arcing"] == true
+                                && row["lobber"] == false
+                                && row["floater"] == false
+                        }
+                })
+                .unwrap();
+            let expected_bits: Vec<_> = expected["bits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert_eq!(
+                shot.velocity
+                    .native()
+                    .map(|v| format!("{:016x}", v.bits()))
+                    .as_slice(),
+                expected_bits.as_slice()
+            );
+            assert_eq!(
+                shot.position,
+                ProjectileCoord::new(3200, 3200, z),
+                "new projectile waits until the next Logic visit"
+            );
+            if voxel {
+                continue;
+            }
+            runtime
+                .simulation
+                .substrate
+                .entities
+                .get_mut(source)
+                .unwrap()
+                .attack_target = None;
+            let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+            let snapshot = GameSnapshot::save(&runtime.simulation, 0, 0, "native motion", 0);
+            let mut restored = GameSnapshot::load(&snapshot).unwrap().sim;
+            restored.restore_after_snapshot_load().unwrap();
+            assert_eq!(
+                restored.projectiles.get(id).unwrap().velocity,
+                runtime.simulation.projectiles.get(id).unwrap().velocity
+            );
+            assert_eq!(
+                restored.projectiles.get(id),
+                runtime.simulation.projectiles.get(id)
+            );
+            let hash = restored.state_hash();
+            let velocity = restored.projectiles.get(id).unwrap().velocity;
+            restored.projectiles.get_mut(id).unwrap().velocity.x =
+                crate::util::native_x87::NativeF64Bits::from_bits(velocity.x.bits() ^ 1);
+            assert_ne!(
+                restored.state_hash(),
+                hash,
+                "one binary64 ULP remains hash-visible"
+            );
+            restored.projectiles.get_mut(id).unwrap().velocity = velocity;
+            assert_eq!(restored.state_hash(), hash);
+            // The real load contract rebuilds skipped map caches and native
+            // overlay/Tiberium authority. Scenario RNG and Tiberium timers have
+            // their own load resets, so compare the delivered Bullet state rather
+            // than claiming whole-world identity across those resets.
+            restored.rebuild_caches_after_load(
+                terrain_template,
+                crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+                Vec::new(),
+                Vec::new(),
+                std::collections::BTreeMap::new(),
+            );
+            restored
+                .restore_map_authority_after_snapshot_load(
+                    &make_rules(),
+                    &runtime.resources.overlay_registry,
+                )
+                .unwrap();
+            let mut resumed = SimRuntime::from_simulation(restored);
+            resumed.resources.rules = make_rules();
+            let rows: Vec<Value> = serde_json::from_str(include_str!(
+                "../../../tools/projectile_oracle/ordinary_motion.json"
+            ))
+            .unwrap();
+            let row = rows
+                .iter()
+                .find(|row| {
+                    row["origin"] == serde_json::json!([3200, 3200, 100])
+                        && row["input_bits"][0] == "4058b4d922000000"
+                        && row["floater"] == false
+                        && row["gravity_sequence"] == serde_json::json!([6, 3, 1, 0, -1, 2, 5, 6])
+                })
+                .unwrap();
+            for frame in 0..3 {
+                if frame != 0 {
+                    for runtime in [&mut runtime, &mut resumed] {
+                        runtime.resources.rules.general.gravity =
+                            row["gravity_sequence"][frame].as_i64().unwrap() as i32;
+                        let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+                    }
+                }
+                let shot = runtime
+                    .simulation
+                    .projectiles
+                    .get(id)
+                    .expect("ordinary source shot survives these visits");
+                let expected = &row["frames"][frame];
+                let expected_bits: Vec<_> = expected["bits"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap())
+                    .collect();
+                assert_eq!(
+                    shot.velocity
+                        .native()
+                        .map(|v| format!("{:016x}", v.bits()))
+                        .as_slice(),
+                    expected_bits.as_slice(),
+                    "runtime native motion frame {frame}"
+                );
+                assert_eq!(
+                    [shot.position.x, shot.position.y, shot.position.z],
+                    std::array::from_fn::<_, 3, _>(
+                        |i| expected["candidate"][i].as_i64().unwrap() as i32
+                    )
+                );
+                assert_eq!(
+                    shot.position,
+                    resumed.simulation.projectiles.get(id).unwrap().position,
+                    "snapshot continuation frame {frame}"
+                );
+                assert_eq!(
+                    shot.velocity,
+                    resumed.simulation.projectiles.get(id).unwrap().velocity
+                );
+            }
+        }
+    }
+
+    #[test]
     fn vertical_projectile_keeps_post_ramp_velocity_across_runtime_visits() {
         use crate::sim::runtime::SimRuntime;
         let mut sim = Simulation::new();
@@ -543,23 +784,51 @@ mod tests {
             detonation_altitude: 1000,
             acceleration: 10,
             max_speed: 100,
-            heading_bam: 0,
-            pitch_bam: 0,
         };
         sim.admit_projectile(100, shot);
         let mut runtime = SimRuntime::from_simulation(sim);
-        // Native 4672A3..4672B4 commits the ramp before 467AB0 skips
-        // scratch copyback. The first row is the critic's native execution.
-        for (x, speed) in [(651, 11), (672, 21), (703, 31)] {
+        // Original successive visits preserve the binary64 ramp, including
+        // the approximate normalization's fractional bits after the first visit.
+        let rows: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../tools/projectile_oracle/vertical_motion.json"
+        ))
+        .unwrap();
+        let row = rows
+            .iter()
+            .find(|row| {
+                row["origin"] == serde_json::json!([640, 640, 5]) && row["acceleration"] == 10
+            })
+            .unwrap();
+        for expected in row["frames"].as_array().unwrap().iter().take(3) {
             let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
             let projectile = runtime
                 .simulation
                 .projectiles
                 .get(100)
-                .expect("post-ramp speed must survive the ordinary slow-admission gate");
-            assert_eq!(projectile.position, ProjectileCoord::new(x, 640, 5));
-            assert_eq!(projectile.velocity, ProjectileVelocity::new(speed, 0, 0));
-            assert_eq!(i32::from(projectile.speed_leptons_per_frame), speed);
+                .expect("post-ramp speed survives the ordinary tail");
+            let candidate = &expected["candidate"];
+            assert_eq!(
+                projectile.position,
+                ProjectileCoord::new(
+                    candidate[0].as_i64().unwrap() as i32,
+                    candidate[1].as_i64().unwrap() as i32,
+                    candidate[2].as_i64().unwrap() as i32
+                )
+            );
+            let expected_bits: Vec<_> = expected["bits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert_eq!(
+                projectile
+                    .velocity
+                    .native()
+                    .map(|v| format!("{:016x}", v.bits()))
+                    .as_slice(),
+                expected_bits.as_slice()
+            );
             assert!(runtime.simulation.pending_projectile_detonations.is_empty());
         }
     }
@@ -569,7 +838,7 @@ mod tests {
         use crate::rules::ini_parser::IniFile;
         use crate::sim::runtime::SimRuntime;
         let ini = IniFile::from_str(
-            "[VehicleTypes]\n0=TEST\n[TEST]\nStrength=100\n[Warheads]\n0=WALLWH\n[WALLWH]\nWall=yes\nCellSpread=0\nPercentAtMax=1\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n[OverlayTypes]\n0=WALL\n[WALL]\nWall=yes\nStrength=1\n",
+            "[General]\nVeteranRatio=3.0\n[AudioVisual]\nGravity=0\n[VehicleTypes]\n0=TEST\n[TEST]\nStrength=100\n[Warheads]\n0=WALLWH\n[WALLWH]\nWall=yes\nCellSpread=0\nPercentAtMax=1\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n[OverlayTypes]\n0=WALL\n[WALL]\nWall=yes\nStrength=1\n",
         );
         let art = IniFile::from_str("[WALL]\nDamageLevels=4\n");
         let mut sim = Simulation::new();
@@ -592,7 +861,7 @@ mod tests {
         shot.origin = ProjectileCoord::new(1408, 1408, 5);
         shot.initial_target_position = ProjectileCoord::new(1408, 1408, 0);
         shot.velocity = ProjectileVelocity::new(16, 0, 0);
-        shot.trajectory = ProjectileTrajectory::Ballistic { gravity: 0 };
+        shot.trajectory = ProjectileTrajectory::Ballistic;
         shot.payload = crate::sim::projectile::ProjectilePayload {
             base_damage: 1,
             warhead: sim.interner.intern("WALLWH"),
@@ -616,6 +885,58 @@ mod tests {
             overlays.cell(6, 5).overlay_data,
             0x10,
             "final target coordinate receives damage immediately"
+        );
+        assert!(runtime.simulation.pending_projectile_detonations.is_empty());
+    }
+
+    #[test]
+    fn reflected_fractional_motion_reaches_runtime_impact_and_removal() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::sim::runtime::SimRuntime;
+        use crate::util::native_x87::NativeF64Bits;
+        let ini = IniFile::from_str(
+            "[General]\nVeteranRatio=3.0\n[AudioVisual]\nGravity=0\n[Warheads]\n0=WALLWH\n[WALLWH]\nWall=yes\nCellSpread=0\nPercentAtMax=1\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n[OverlayTypes]\n0=WALL\n[WALL]\nWall=yes\nStrength=1\n",
+        );
+        let art = IniFile::from_str("[WALL]\nDamageLevels=4\n");
+        let mut sim = Simulation::new();
+        install_native_size_terrain(&mut sim, 8, 8);
+        let mut overlays = crate::sim::overlay_grid::OverlayGrid::new(24, 24);
+        overlays.place_overlay(5, 5, 0, 0);
+        sim.overlay_grid = Some(overlays);
+        let mut shot = gsi_05_02_projectile(999, None);
+        shot.target = ProjectileTarget::None;
+        shot.origin = ProjectileCoord::new(1388, 1405, 5);
+        shot.initial_target_position = ProjectileCoord::new(2000, 1408, 0);
+        shot.velocity = ProjectileVelocity::from_native(
+            [20.0f64, 3.0, -5.5].map(|v| NativeF64Bits::from_bits(v.to_bits())),
+        );
+        shot.trajectory = ProjectileTrajectory::Ballistic;
+        shot.payload = crate::sim::projectile::ProjectilePayload {
+            base_damage: 1,
+            warhead: sim.interner.intern("WALLWH"),
+            weapon: sim.interner.intern("MISSING"),
+            owner: sim.interner.intern("Americans"),
+        };
+        sim.admit_projectile(100, shot);
+        let mut runtime = SimRuntime::from_simulation(sim);
+        runtime.resources.rules = RuleSet::from_ini(&ini).unwrap();
+        assert_eq!(runtime.resources.rules.general.gravity, 0);
+        runtime.resources.overlay_registry =
+            crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, Some(&art));
+        // Native geometry fixtures establish the source-less fractional-below-floor
+        // admission and Z=0 selection. Exact reflected stores have their own
+        // original-byte comparisons; this checks the real AI-to-damage delivery.
+        let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+        assert!(runtime.simulation.projectiles.get(100).is_none());
+        assert_eq!(
+            runtime
+                .simulation
+                .overlay_grid
+                .as_ref()
+                .unwrap()
+                .cell(5, 5)
+                .overlay_data,
+            0x10
         );
         assert!(runtime.simulation.pending_projectile_detonations.is_empty());
     }
@@ -890,12 +1211,11 @@ impl ProjectileCollisionWorld<'_> {
         persistent_velocity: ProjectileVelocity,
     ) -> ProjectileCollisionResponse {
         let (motion, impact) = self.ordinary_geometry(projectile, motion);
-        let [x, y, z] = ProjectileCollisionMotion::quantized(motion.velocity);
         self.ordinary_tail(
             projectile,
             motion.candidate_coord(),
             persistent_velocity,
-            ProjectileVelocity::new(x, y, z),
+            ProjectileVelocity::from_native(motion.velocity),
             motion.velocity,
             impact,
         )
@@ -1066,7 +1386,7 @@ impl ProjectileCollisionWorld<'_> {
                         velocity = persistent_velocity;
                     }
                     if crate::sim::projectile::projectile_velocity_magnitude_double(if vertical {
-                        ProjectileCollisionMotion::from_integer(candidate, persistent_velocity)
+                        ProjectileCollisionMotion::from_coordinate(candidate, persistent_velocity)
                             .velocity
                     } else {
                         native_velocity

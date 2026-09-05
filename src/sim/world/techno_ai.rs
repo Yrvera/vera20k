@@ -307,6 +307,10 @@ impl Simulation {
                     },
                     terrain,
                     &shared_cell_dummy,
+                    rules.map_or_else(
+                        || crate::rules::ruleset::GeneralRules::default().gravity,
+                        |rules| rules.general.gravity,
+                    ),
                     source_is_jumpjet,
                     |projectile, candidate, phase| {
                         collision_world.collide(projectile, candidate, phase)

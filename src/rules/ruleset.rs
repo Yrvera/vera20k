@@ -3644,13 +3644,13 @@ impl RuleSet {
     }
 
     /// Compatibility identity for processed rules plus the resolved animation,
-    /// effect-frame, terrain-spawner frame, and smudge-selection inputs bound
-    /// to this ruleset.
+    /// effect-frame, terrain-spawner frame, smudge-selection and projectile
+    /// launch ART inputs bound to this ruleset.
     /// Other asset-derived simulation inputs are added by later ownership
     /// slices and are not claimed by this hash yet.
     pub fn simulation_config_hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        b"rules-simulation-config-v4".hash(&mut hasher);
+        b"rules-simulation-config-v5".hash(&mut hasher);
         self.source_ini_hash.hash(&mut hasher);
         self.animation_sequences.hash(&mut hasher);
         self.effect_assets.hash(&mut hasher);
@@ -3674,7 +3674,38 @@ impl RuleSet {
             })
             .collect::<BTreeMap<_, _>>();
         smudge_anim_inputs.hash(&mut hasher);
+        // These effective ART values feed ordinary FireAt after load. Hash
+        // consumed values in canonical type order, not ART insertion order,
+        // authored-key presence, or unrelated presentation metadata.
+        b"art-projectile-launch-config-v1".hash(&mut hasher);
+        self.projectiles
+            .iter()
+            .map(|(id, projectile)| (id.to_ascii_uppercase(), projectile.voxel))
+            .collect::<BTreeMap<_, _>>()
+            .hash(&mut hasher);
+        self.object_list
+            .iter()
+            .filter(|object| object.category == ObjectCategory::Building)
+            .map(|object| {
+                (
+                    object.id.to_ascii_uppercase(),
+                    self.building_launch_height(object),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+            .hash(&mut hasher);
         hasher.finish()
+    }
+
+    /// FireAt's Building Height input: native BuildingRead4610D8..461101
+    /// reads ART[effective Image].Height, retaining constructor default2 for
+    /// fresh missing data. Explicit Image does not fall back to type ID.
+    /// Stock reload equivalence is bounded by the retail Image census; arbitrary
+    /// image-changing reload history remains an open producer contract.
+    pub(crate) fn building_launch_height(&self, object: &ObjectType) -> i32 {
+        self.art_registry
+            .get(&object.image)
+            .map_or(2, |art| art.height)
     }
 
     /// Whether a country/house type has `MultiplayPassive=true`.
@@ -3906,6 +3937,16 @@ impl RuleSet {
     /// Without this, all buildings would be 1x1 which breaks placement and rendering.
     pub fn merge_art_data(&mut self, art: &crate::rules::art_data::ArtRegistry) {
         self.art_registry = art.clone();
+        // ObjectRead 5F933B/5F962E precedes BulletRead 46C1E8. On a fresh
+        // type the Object image defaults to its ID, even though Bullet's later
+        // missing-Image read clears its separate rendering name. An explicit
+        // Image never falls back to the type ID or follows ART Image redirects.
+        for projectile in self.projectiles.values_mut() {
+            let image = projectile.image.as_deref().unwrap_or(&projectile.id);
+            if let Some(voxel) = art.get(image).and_then(|entry| entry.authored_voxel) {
+                projectile.voxel = voxel;
+            }
+        }
         let ai_base_spacing = self.ai_base_spacing;
         let mut patched: u32 = 0;
         let mut dock_patched: u32 = 0;
@@ -7221,6 +7262,81 @@ ZAdjust=-10
             first.simulation_config_hash(),
             second.simulation_config_hash()
         );
+    }
+
+    #[test]
+    fn simulation_config_hash_covers_effective_projectile_launch_art_and_load() {
+        use crate::rules::art_data::ArtRegistry;
+        use crate::sim::snapshot::{GameSnapshot, SnapshotError};
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=UNIT\n[UNIT]\nPrimary=GUN\n[GUN]\nProjectile=SHOT\n[SHOT]\nImage=SHOTART\n[BuildingTypes]\n0=BUILD\n[BUILD]\nImage=BUILDART\n",
+        );
+        let make = |art: &str| {
+            let mut rules = RuleSet::from_ini(&ini).unwrap();
+            rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(art)));
+            rules
+        };
+        let first = make("[SHOTART]\nVoxel=yes\n[BUILDART]\nHeight=4\n[UNUSED]\nHeight=9\n");
+        let reordered =
+            make("[UNUSED]\nHeight=200\nVoxel=yes\n[BUILDART]\nHeight=4\n[SHOTART]\nVoxel=yes\n");
+        let voxel_changed = make("[SHOTART]\nVoxel=no\n[BUILDART]\nHeight=4\n");
+        let height_changed = make("[SHOTART]\nVoxel=yes\n[BUILDART]\nHeight=5\n");
+        assert!(first.projectile("SHOT").unwrap().voxel);
+        assert_eq!(
+            first.building_launch_height(first.object("BUILD").unwrap()),
+            4
+        );
+        assert_eq!(
+            first.simulation_config_hash(),
+            reordered.simulation_config_hash(),
+            "canonical consumed inputs ignore ART section order and unused metadata"
+        );
+        for changed in [&voxel_changed, &height_changed] {
+            assert_eq!(first.source_ini_hash(), changed.source_ini_hash());
+            assert_ne!(
+                first.simulation_config_hash(),
+                changed.simulation_config_hash()
+            );
+        }
+        let absent = make("[UNUSED]\nHeight=999\n");
+        let explicit_default = make("[SHOTART]\nVoxel=no\n[BUILDART]\nHeight=2\n");
+        assert_eq!(
+            absent.simulation_config_hash(),
+            explicit_default.simulation_config_hash(),
+            "authored presence alone is not a consumed launch input"
+        );
+        let mut retained = make("[SHOTART]\nVoxel=yes\n[BUILDART]\nHeight=4\n");
+        retained.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(
+            "[BUILDART]\nHeight=4\n",
+        )));
+        assert_eq!(
+            first.simulation_config_hash(),
+            retained.simulation_config_hash(),
+            "hash the retained effective ProjectileType value after an absent Voxel key"
+        );
+        let sim = crate::sim::world::Simulation::new();
+        let bytes =
+            GameSnapshot::save_validated(&sim, 11, first.simulation_config_hash(), "launch ART", 0);
+        assert!(
+            GameSnapshot::load_validated(
+                &bytes,
+                11,
+                reordered.simulation_config_hash(),
+                &sim.session.map_name
+            )
+            .is_ok()
+        );
+        for changed in [&voxel_changed, &height_changed] {
+            assert!(matches!(
+                GameSnapshot::load_validated(
+                    &bytes,
+                    11,
+                    changed.simulation_config_hash(),
+                    &sim.session.map_name
+                ),
+                Err(SnapshotError::RulesMismatch { .. })
+            ));
+        }
     }
 
     #[test]
