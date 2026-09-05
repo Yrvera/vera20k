@@ -103,6 +103,12 @@ or recursive `mod.rs`. Coordinate snapshot versions/rebaselines; exclude others'
 
 ## Knowledge and guidance
 
+Internet documentation lookup is allowed without routine approval. For uncertain
+or version-sensitive library/API behavior (e.g. wgpu), consult official docs,
+specifications or upstream source matching the version in use; cite consequential
+findings near the implementation or review. Validate the production behavior too;
+library documentation does not establish gamemd parity.
+
 Use source and `research-index`; ranked results are not exhaustive. Verify index
 worktree provenance. Tracked research/plans belong in the task checkout; requested
 research documents need no accompanying code. Avoid unsolicited reports or permanent
