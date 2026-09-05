@@ -1020,16 +1020,27 @@ pub struct ParachuteAnim {
     pub elapsed_frames: u16,
 }
 
-/// Emitted by the refinery dock state machine for one successful dump-gate
-/// whole-slot drain. The authoritative master-frame tail consumes it to arm
-/// SpecialAnim slot 10 and spawn particle systems at the refinery smoke offsets
-/// before the returned state hash. The queue itself is transient and serde-skipped.
+/// Emitted by the refinery dock state machine for EVERY due dump gate of
+/// `UnitClass::Mission_Unload @ 0x0073D630` state 3 (`HarvesterDumpRate × 900
+/// <= unit+0xF8`, `0x0073E355..0x0073E374`), including the final gate that finds
+/// no cargo. The authoritative master-frame tail consumes it to spawn the
+/// refinery smoke burst (`BuildingClass` vtable+0x468 → `0x00459900`, fired
+/// first on each gate at `0x0073E37E`), start SpecialAnim slot 10 only while
+/// none is live (`building+0x584 == NULL`, `0x0073E384`), and cut the running
+/// SpecialAnim on the empty gate (`ClearAnimSlot(0xA)`, `0x0073E530`) before
+/// the returned state hash. The queue itself is transient and serde-skipped.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BaleDepositEvent {
     /// Refinery stable_id where the bale was deposited.
     pub building_id: u64,
     /// Sim tick when this event was emitted (for ordering / debugging).
     pub tick: u64,
+    /// One StorageClass slot drained on this gate (credits were paid;
+    /// `0x0073E4A2..0x0073E4DA`).
+    pub drained: bool,
+    /// The gate found no cargo (`FindFirstNonEmptySlot == -1`,
+    /// `0x0073E4DC..0x0073E534`): state 3 → 4 and the SpecialAnim is cut.
+    pub empty: bool,
 }
 
 /// Emitted by the tank-bunker lifecycle when the walls rise (install) or fall
