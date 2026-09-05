@@ -265,6 +265,10 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         theater: map.header.theater.clone(),
         game_mode_nonzero: true,
         no_damage: false,
+        // Skirmish start forces `TiberiumGrows|TiberiumSpreads` (`OR 0xC0`
+        // at `0x005E74CD`), copied into the scenario at `0x00687C23`.
+        tiberium_grows_flag: true,
+        tiberium_spreads_flag: true,
         map_width: scenario_cell_extent,
         map_height: scenario_cell_extent,
         local_left: map.header.local_left as u16,

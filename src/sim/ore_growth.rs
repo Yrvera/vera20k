@@ -2,10 +2,13 @@
 //!
 //! The active YR per-type queues read and write `OverlayGrid` directly. The
 //! older scan/reservoir path remains only for tests without native registries.
-//! All tuning comes from INI files:
-//! - rules.ini [General]: GrowthRate, TiberiumGrows, TiberiumSpreads
-//! - map INI [Basic]: TiberiumGrowthEnabled
-//! - map INI [SpecialFlags]: TiberiumGrows, TiberiumSpreads
+//! Native gates (see [`OreGrowthConfig::resolve`]):
+//! - map INI [Basic] `TiberiumGrowthEnabled` (`ScenarioClass+0x34A6`) gates
+//!   both per-type drivers;
+//! - `ScenarioClass` flags bits `0x40`/`0x80` (`TiberiumGrows`/
+//!   `TiberiumSpreads`): forced on at every skirmish/multiplayer start, read
+//!   from the map `[SpecialFlags]` only in GameMode 0;
+//! - rules.ini [General] `GrowthRate` drives only the legacy scan fallback.
 //!
 //! ## Algorithm (matching RA1 MapClass::Logic)
 //! 1. Incremental scan: each tick processes a fraction of the map
@@ -67,7 +70,13 @@ const GROWTH_BATCH_MIN: u32 = 5;
 const GROWTH_BATCH_MAX: u32 = 50;
 const SPREAD_BATCH_MIN: u32 = 5;
 const SPREAD_BATCH_MAX: u32 = 25;
-const TIMER_MULTIPLIER_PPM: u32 = 1_000_000;
+/// `GrowthDriver_AllTypes @ 0x00722CA9`: the `0.3` double at `0x007E5138`
+/// (bytes `33 33 33 33 33 33 D3 3F`) loaded when `ScenarioClass` flags bit
+/// `0x40` (`TiberiumGrows`) is set.
+const NATIVE_GROWTH_RELOAD_FAST_MULTIPLIER_BITS: u64 = 0x3FD3_3333_3333_3333;
+/// `0x00722CB1`: the `1.0` double at `0x007E1718` (`00 .. F0 3F`) loaded
+/// when the bit is clear.
+const NATIVE_GROWTH_RELOAD_UNIT_MULTIPLIER_BITS: u64 = 0x3FF0_0000_0000_0000;
 const SPREAD_GERMINATION_DENSITY: u8 = 3;
 
 /// 8 adjacent directions for spread: N, NE, E, SE, S, SW, W, NW.
@@ -82,36 +91,55 @@ const ADJACENT_OFFSETS: [(i32, i32); 8] = [
     (-1, -1),
 ];
 
-/// Effective ore growth configuration resolved from merged INI sources.
-///
-/// Constructed once at map load. The resolution order is:
-/// map [SpecialFlags] > map [Basic] > rules.ini [General]
-/// All flags must be true for growth/spread to be active.
+/// Effective ore growth configuration resolved once at map load.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OreGrowthConfig {
-    /// Whether ore cells grow denser over time.
+    /// `ScenarioClass+0x34A6` (`[Basic] TiberiumGrowthEnabled`, default 1 from
+    /// `Set_Defaults @ 0x00683848`, read at `Read_INI_Basic @ 0x0068A57A`):
+    /// the entry gate of both `GrowthDriver_AllTypes @ 0x00722C48` and
+    /// `SpreadDriver_AllTypes @ 0x007221B8`, and of `CanGrowTiberium`.
     pub grows: bool,
-    /// Whether rich ore spreads to adjacent empty cells.
+    /// `ScenarioClass` flags bit `0x80` (`TiberiumSpreads`): the
+    /// `CellClass::CanSpreadTiberium @ 0x00483690` gate.
     pub spreads: bool,
+    /// `ScenarioClass` flags bit `0x40` (`TiberiumGrows`): selects the
+    /// `Growth * 0.3` growth-timer reload (`0x00722CA4`).
+    #[serde(default)]
+    pub tiberium_grows_flag: bool,
     /// Seconds per full map growth scan cycle (from GrowthRate= in minutes, converted
     /// to integer seconds at config construction to avoid f32 in the tick path).
     pub growth_rate_seconds: u32,
 }
 
 impl OreGrowthConfig {
-    /// Resolve effective config from rules.ini [General] + map [Basic] + map [SpecialFlags].
+    /// Resolve the native gates for this session.
     ///
-    /// Resolution: each flag must be true at ALL levels to be enabled.
-    /// GrowthRate comes only from rules.ini (not overridable per-map).
-    pub fn from_ini(
+    /// `[Basic] TiberiumGrowthEnabled` is read in every game mode. The
+    /// `TiberiumGrows`/`TiberiumSpreads` flag bits come from the session when
+    /// GameMode != 0 (`Full_Init @ 0x00687C23` overwrites the scenario dword
+    /// with the session dword every skirmish/multiplayer start forces to
+    /// `| 0xC0`) and from the map `[SpecialFlags]` only in GameMode 0
+    /// (`0x006B8CA0`, default = the pre-existing bit; VERA keeps `true` there,
+    /// gamemd's pre-read campaign default UNCHECKED). `[General]
+    /// TiberiumGrows/TiberiumSpreads` have no gamemd reader (the only readers of
+    /// those key strings are `[SpecialFlags]` I/O at `0x006B8B30`/`0x006B8CA0`
+    /// and `[MultiplayerDialogSettings]` at `0x006720AA`) and no longer gate.
+    /// GrowthRate comes only from rules.ini (legacy scan fallback).
+    pub fn resolve(
         general: &GeneralRules,
         basic: &BasicSection,
         special_flags: &SpecialFlagsSection,
+        session: &crate::sim::scenario_session::ScenarioSession,
     ) -> Self {
-        let grows = general.tiberium_grows
-            && basic.tiberium_growth_enabled.unwrap_or(true)
-            && special_flags.tiberium_grows.unwrap_or(true);
-        let spreads = general.tiberium_spreads && special_flags.tiberium_spreads.unwrap_or(true);
+        let grows = basic.tiberium_growth_enabled.unwrap_or(true);
+        let (tiberium_grows_flag, spreads) = if session.game_mode_nonzero {
+            (session.tiberium_grows_flag, session.tiberium_spreads_flag)
+        } else {
+            (
+                special_flags.tiberium_grows.unwrap_or(true),
+                special_flags.tiberium_spreads.unwrap_or(true),
+            )
+        };
         let growth_rate_minutes = general.growth_rate_minutes.max(0.01);
         // Convert f32 minutes → integer seconds at the INI boundary via
         // fixed-point to avoid platform-dependent f32 multiplication rounding.
@@ -120,15 +148,17 @@ impl OreGrowthConfig {
             (rate_fixed * SimFixed::from_num(60)).to_num::<i32>().max(1) as u32;
 
         log::info!(
-            "OreGrowthConfig: grows={}, spreads={}, rate={}s",
+            "OreGrowthConfig: grows={}, spreads={}, tiberium_grows_flag={}, rate={}s",
             grows,
             spreads,
+            tiberium_grows_flag,
             growth_rate_seconds,
         );
 
         Self {
             grows,
             spreads,
+            tiberium_grows_flag,
             growth_rate_seconds,
         }
     }
@@ -138,9 +168,36 @@ impl OreGrowthConfig {
         Self {
             grows: false,
             spreads: false,
+            tiberium_grows_flag: false,
             growth_rate_seconds: 300, // 5 minutes
         }
     }
+}
+
+/// `TiberiumClass::GrowthDriver_AllTypes @ 0x00722C40`, reload at
+/// `0x00722C9E..0x00722CE3`: after `GrowthProcessor` returns, `FLD` the `0.3`
+/// double (`ScenarioClass` flags `& 0x40`) or `1.0`, `FILD` the `Growth=`
+/// int (`TiberiumClass+0xA8`), `FMUL`, then `Math::ftol @ 0x007C5F00`
+/// (`FISTP qword`), storing the low dword into the timer duration
+/// (`TiberiumClass+0x124`).
+///
+/// Rounding: `WinMain @ 0x006BBFC1` calls `_controlfp(_RC_CHOP, _MCW_RC)`
+/// (`0x300, 0x300`) and `0x007C5EE4` then captures that control word
+/// (`0x0E7F`: 53-bit precision, round toward zero) for `ftol`, so both the
+/// multiply and the conversion truncate. Stock `Growth=2200` therefore reloads
+/// to **659** (2200 x 0.3 chops just below 660), `Growth=10000` to 2999.
+pub(crate) fn native_growth_timer_reload(growth: u32, tiberium_grows_flag: bool) -> u32 {
+    let multiplier_bits = if tiberium_grows_flag {
+        NATIVE_GROWTH_RELOAD_FAST_MULTIPLIER_BITS
+    } else {
+        NATIVE_GROWTH_RELOAD_UNIT_MULTIPLIER_BITS
+    };
+    let multiplier = X87Chop53::load_f64(NativeF64Bits::from_bits(multiplier_bits))
+        .expect("retail reload multipliers are finite normals");
+    let product = X87Chop53::mul(X87Chop53::load_i32(growth as i32), multiplier);
+    // `|growth| <= i32::MAX` and the multiplier is at most 1.0, so the
+    // conversion cannot overflow; native keeps EAX (the low dword).
+    X87Chop53::ftol_i64(product).map_or(0, |value| value as u32)
 }
 
 /// Queued ore growth cell inserted by native-style AddToGrowthQueue callers.
@@ -744,10 +801,12 @@ impl OreGrowthState {
         current_frame: u32,
         growth_enabled: bool,
         spread_enabled: bool,
+        tiberium_grows_flag: bool,
         mut radar_dirty_cells: Option<&mut Vec<(u16, u16)>>,
         mut radar_dirty_generation: Option<&mut u64>,
         mut tactical_dirty_cells: Option<&mut Vec<(u16, u16)>>,
     ) -> NativeGrowthProcessStats {
+        // `0x00722C48`: `ScenarioClass+0x34A6` gates the whole driver.
         if !growth_enabled {
             return NativeGrowthProcessStats::default();
         }
@@ -785,9 +844,10 @@ impl OreGrowthState {
                 self.native_tiberium.classes.get_mut(type_id.0 as usize),
                 tiberium_types.get(type_id),
             ) {
+                // `0x00722C9E..0x00722CE3`: see `native_growth_timer_reload`.
                 class.growth_timer = NativeTiberiumTimer {
                     start_frame: current_frame,
-                    interval: scaled_timer_interval(ty.growth, TIMER_MULTIPLIER_PPM),
+                    interval: native_growth_timer_reload(ty.growth, tiberium_grows_flag),
                 };
             }
         }
@@ -1071,9 +1131,12 @@ impl OreGrowthState {
                 self.native_tiberium.classes.get_mut(type_id.0 as usize),
                 tiberium_types.get(type_id),
             ) {
+                // `SpreadDriver_AllTypes @ 0x00722205..0x00722227`: the raw
+                // `Spread=` int (`TiberiumClass+0x9C`) reloads the timer; no
+                // multiplier and no flag test on this driver.
                 class.spread_timer = NativeTiberiumTimer {
                     start_frame: current_frame,
-                    interval: scaled_timer_interval(ty.spread, TIMER_MULTIPLIER_PPM),
+                    interval: ty.spread,
                 };
             }
         }
@@ -1715,11 +1778,6 @@ fn native_timer_due(timer: NativeTiberiumTimer, current_frame: u32) -> bool {
     current_frame.wrapping_sub(timer.start_frame) >= timer.interval
 }
 
-fn scaled_timer_interval(base: u32, multiplier_ppm: u32) -> u32 {
-    ((u64::from(base) * u64::from(multiplier_ppm)) / TIMER_MULTIPLIER_PPM as u64)
-        .min(u64::from(u32::MAX)) as u32
-}
-
 fn priority_f32(entry: &NativeTiberiumQueueEntry) -> f32 {
     f32::from_bits(entry.priority_bits)
 }
@@ -2166,6 +2224,7 @@ mod tests {
         OreGrowthConfig {
             grows,
             spreads,
+            tiberium_grows_flag: false,
             growth_rate_seconds: 1, // Very fast for testing
         }
     }
@@ -3039,6 +3098,7 @@ SpreadPercentage=.06
             100,
             true,
             true,
+            false,
             Some(&mut radar_dirty),
             Some(&mut radar_generation),
             Some(&mut tactical_dirty),
@@ -3074,6 +3134,123 @@ SpreadPercentage=.06
             "the native overlay path does not maintain a duplicate ResourceNode stock"
         );
         assert_eq!(rng.logical_state(), expected_rng.logical_state());
+    }
+
+    /// `GrowthDriver_AllTypes @ 0x00722C9E..0x00722CE3` under the chop control
+    /// word `0x0E7F`: `ftol(2200 * 0.3)` is 659, not 660, because the 53-bit
+    /// truncated product sits one ulp below 660; `Growth=10000` gives 2999.
+    /// Without flags bit `0x40` the raw `Growth=` reloads.
+    #[test]
+    fn gsi_09_04_growth_reload_is_chopped_growth_times_point_three_when_flag_set() {
+        assert_eq!(native_growth_timer_reload(2200, true), 659);
+        assert_eq!(native_growth_timer_reload(10000, true), 2999);
+        assert_eq!(native_growth_timer_reload(2200, false), 2200);
+        assert_eq!(native_growth_timer_reload(10000, false), 10000);
+        assert_eq!(native_growth_timer_reload(0, true), 0);
+        assert_eq!(native_growth_timer_reload(1, true), 0);
+        // `10 * 0.3` chops one ulp below 3.0, so the truncating `ftol` gives 2.
+        assert_eq!(native_growth_timer_reload(10, true), 2);
+    }
+
+    /// The driver fires on frame 0 (due timers), reloads to 659, and fires
+    /// again on frames 659 and 1318 in skirmish; the same `Growth=2200` type
+    /// without the flag reloads to 2200 and does not refire inside 1400 frames.
+    #[test]
+    fn gsi_09_04_growth_driver_fires_at_native_skirmish_cadence() {
+        let (_ini, overlay_registry, tiberium_types) = tiberium_rebuild_fixture();
+        let riparius = TiberiumTypeId(0);
+        assert_eq!(tiberium_types.get(riparius).unwrap().growth, 2200);
+        let mut nodes = BTreeMap::new();
+        let mut run = |tiberium_grows_flag: bool| -> Vec<u32> {
+            let mut overlay_grid = OverlayGrid::new(8, 8);
+            let mut state = make_state(8, 8);
+            state.reset_native_tiberium_classes(tiberium_types.len(), 0);
+            let mut rng = SimRng::new(3);
+            let mut fired = Vec::new();
+            for frame in 0..1400u32 {
+                let before = state.native_tiberium_state().classes[0].growth_timer;
+                state.tick_native_growth_driver(
+                    &mut overlay_grid,
+                    &overlay_registry,
+                    &tiberium_types,
+                    None,
+                    &BTreeSet::new(),
+                    None,
+                    &mut nodes,
+                    &mut rng,
+                    frame,
+                    true,
+                    true,
+                    tiberium_grows_flag,
+                    None,
+                    None,
+                    None,
+                );
+                let after = state.native_tiberium_state().classes[0].growth_timer;
+                if after != before || frame == 0 {
+                    assert_eq!(after.start_frame, frame);
+                    fired.push(frame);
+                }
+            }
+            let interval = state.native_tiberium_state().classes[0]
+                .growth_timer
+                .interval;
+            assert_eq!(
+                interval,
+                native_growth_timer_reload(2200, tiberium_grows_flag)
+            );
+            fired
+        };
+
+        assert_eq!(run(true), vec![0, 659, 1318]);
+        assert_eq!(run(false), vec![0]);
+    }
+
+    /// `OreGrowthConfig::resolve`: GameMode != 0 takes the session bits and
+    /// ignores the map `[SpecialFlags]` keys (never read there, `0x006B8CA0`);
+    /// GameMode 0 reads the map keys; `[General] TiberiumGrows/TiberiumSpreads`
+    /// gate nothing; `[Basic] TiberiumGrowthEnabled` gates in every mode.
+    #[test]
+    fn gsi_09_04_config_resolves_flag_bits_from_session_in_nonzero_game_mode() {
+        use crate::map::basic::{BasicSection, SpecialFlagsSection};
+        use crate::rules::ini_parser::IniFile;
+        use crate::sim::scenario_session::{ScenarioDescriptor, ScenarioSession};
+
+        let general = crate::rules::ruleset::RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nTiberiumGrows=no\nTiberiumSpreads=no\n",
+        ))
+        .expect("rules")
+        .general;
+        assert!(!general.tiberium_grows && !general.tiberium_spreads);
+        let map_off = SpecialFlagsSection {
+            tiberium_grows: Some(false),
+            tiberium_spreads: Some(false),
+            ..SpecialFlagsSection::default()
+        };
+        let basic = BasicSection::default();
+
+        let skirmish = ScenarioSession::from_descriptor(&ScenarioDescriptor {
+            game_mode_nonzero: true,
+            tiberium_grows_flag: true,
+            tiberium_spreads_flag: true,
+            ..ScenarioDescriptor::default()
+        });
+        let config = OreGrowthConfig::resolve(&general, &basic, &map_off, &skirmish);
+        assert!(config.grows && config.spreads && config.tiberium_grows_flag);
+
+        let campaign = ScenarioSession::from_descriptor(&ScenarioDescriptor::default());
+        let config = OreGrowthConfig::resolve(&general, &basic, &map_off, &campaign);
+        assert!(config.grows && !config.spreads && !config.tiberium_grows_flag);
+        let config =
+            OreGrowthConfig::resolve(&general, &basic, &SpecialFlagsSection::default(), &campaign);
+        assert!(config.grows && config.spreads && config.tiberium_grows_flag);
+
+        let basic_off = BasicSection {
+            tiberium_growth_enabled: Some(false),
+            ..BasicSection::default()
+        };
+        let config = OreGrowthConfig::resolve(&general, &basic_off, &map_off, &skirmish);
+        assert!(!config.grows && config.spreads && config.tiberium_grows_flag);
     }
 
     /// `GrowthProcessor @ 0x00722F00`: seed 9 draws five attempts, and with
@@ -3721,6 +3898,7 @@ SpreadPercentage=.06
         let config = OreGrowthConfig {
             grows: true,
             spreads: false,
+            tiberium_grows_flag: false,
             growth_rate_seconds: 1,
         };
         let mut state = make_state(10, 10);
@@ -3755,6 +3933,7 @@ SpreadPercentage=.06
         let slow = OreGrowthConfig {
             grows: true,
             spreads: false,
+            tiberium_grows_flag: false,
             growth_rate_seconds: 6000, // 100 minutes
         };
         let mut state_slow = make_state(100, 100);
