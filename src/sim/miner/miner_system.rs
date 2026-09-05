@@ -36,6 +36,7 @@ use crate::sim::intern::InternedId;
 
 use crate::sim::production::foundation_dimensions;
 use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
+use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 
 /// Object-coordinate Z of one object in leptons: the terrain ground height for
 /// its cell (level plus slope), the bridge deck offset when it stands on a
@@ -81,12 +82,59 @@ fn object_coordinate_z(
             .unwrap_or(0)
 }
 
-/// Compare object-coordinate distance in leptons against `threshold_cells * 256`.
-/// Strict `>` — a miner exactly at the threshold still uses the close radio path.
-/// Used by both CMIN (`ChronoHarvTooFarDistance=50`) and HARV
-/// (`HarvesterTooFarDistance=5`); caller picks the kind-appropriate threshold.
+/// `BuildingClass::GetCoords @ 0x00447AC0` (object vtable +0x48) X/Y, read
+/// from the disassembly 2026-09-05: `out.x = [this+0x9C] + (W-1)*128`,
+/// `out.y = [this+0xA0] + (H-1)*128`, `out.z = [this+0xA4]` unchanged, with
+/// `W = BuildingTypeClass::GetFoundationWidth @ 0x0045EC90` and
+/// `H = GetFoundationHeight(0) @ 0x0045ECA0`. `+0x9C` is the NW foundation
+/// cell's coordinate, so the result is the footprint centre: offset 0 for a
+/// 1x1, (384, 256) leptons for a 4x3 refinery. Both the `FUN_004DEE80`
+/// candidate ranking and the Mission_Harvest state-2 too-far test consume
+/// this point, so they share this one formula. Z is not touched here: the
+/// building's stored coordinate Z belongs to its NW cell, which is what
+/// `object_coordinate_z` resolves for the entity.
+fn building_get_coords_xy(
+    entity: &crate::sim::game_entity::GameEntity,
+    foundation_w: u16,
+    foundation_h: u16,
+) -> (i64, i64) {
+    let x = i64::from(entity.position.rx) * 256
+        + entity.position.sub_x.to_num::<i64>()
+        + (i64::from(foundation_w.max(1)) - 1) * 128;
+    let y = i64::from(entity.position.ry) * 256
+        + entity.position.sub_y.to_num::<i64>()
+        + (i64::from(foundation_h.max(1)) - 1) * 128;
+    (x, y)
+}
+
+/// Native too-far test: `ftol(Sqrt_Approx(d²)) > threshold_cells * 256` is far;
+/// `<=` (`JLE @ 0x0073EC19` / `JG @ 0x0073EE4B`) keeps the close radio path.
+/// Used by both CMIN (`ChronoHarvTooFarDistance`, Rules+0xD7C) and HARV
+/// (`HarvesterTooFarDistance`, Rules+0xD78); caller picks the kind-appropriate
+/// threshold. Native shifts the raw Rules int (`SHL EDX,8`) with no clamp; the
+/// `.max(1)` lives in `MinerConfig::from_general_rules` (VERA-internal, gamemd
+/// equivalent UNCHECKED for a 0 threshold).
+///
+/// `UnitClass::Mission_Harvest @ 0x0073E5E0` state 2 subtracts the candidate's
+/// `GetCoords` (vtable +0x48 = `BuildingClass::GetCoords @ 0x00447AC0`, the
+/// foundation centre — see `building_get_coords_xy`) from the miner's
+/// `GetCoords`, so the X/Y side is measured to the footprint centre, not the
+/// NW cell. Z: native uses the building's stored coordinate Z (`+0xA4`,
+/// unchanged by GetCoords), which is its NW/origin cell; Rust resolves the
+/// refinery's `object_coordinate_z` at that same NW cell.
+///
+/// Distance, read from the disassembly at `0x0073EBB1..0x0073EC19` (HARV) and
+/// `0x0073EDE3..0x0073EE4B` (CMIN), identical in both: the three integer
+/// differences are `FILD`ed first and squared on the x87 stack, summed as
+/// `(dz*dz + dy*dy) + dx*dx`, `FSTP double`, then `Sqrt_Approx @ 0x004CAC40`
+/// (`FSTP float` under the chop control word, 14-bit mantissa table at
+/// `0x008650BC`) and `ftol @ 0x007C5F00` (`FISTP qword`, truncating). The
+/// table lookup rounds down, so the integer verdict is NOT `d² > (T*256)²`:
+/// d = 1281 -> 1280.9995 -> 1280 (close), 1282 far; d = 12801 -> 12800.64 ->
+/// 12800 (close), 12802 far. Rust reproduces that exact sequence.
 fn return_exceeds_too_far_threshold(
     sim: &Simulation,
+    rules: &RuleSet,
     miner_sid: u64,
     refinery_sid: u64,
     threshold_cells: u16,
@@ -99,19 +147,37 @@ fn return_exceeds_too_far_threshold(
 
     let miner_x = i64::from(miner.position.rx) * 256 + miner.position.sub_x.to_num::<i64>();
     let miner_y = i64::from(miner.position.ry) * 256 + miner.position.sub_y.to_num::<i64>();
-    let refinery_x =
+    let refinery_nw_x =
         i64::from(refinery.position.rx) * 256 + refinery.position.sub_x.to_num::<i64>();
-    let refinery_y =
+    let refinery_nw_y =
         i64::from(refinery.position.ry) * 256 + refinery.position.sub_y.to_num::<i64>();
+    // Same by-name lookup as `find_docking_bay`; a type the sim's interner
+    // never produced (foreign-interner fixtures) degrades to a 1x1 footprint.
+    let (w, h) = sim
+        .interner
+        .try_resolve(refinery.type_ref)
+        .and_then(|name| rules.object_case_insensitive(name))
+        .map(|obj| foundation_dimensions(&obj.foundation))
+        .unwrap_or((1, 1));
+    let (refinery_x, refinery_y) = building_get_coords_xy(refinery, w, h);
     let miner_z = object_coordinate_z(sim, miner, miner_x, miner_y);
-    let refinery_z = object_coordinate_z(sim, refinery, refinery_x, refinery_y);
+    let refinery_z = object_coordinate_z(sim, refinery, refinery_nw_x, refinery_nw_y);
 
-    let dx = miner_x - refinery_x;
-    let dy = miner_y - refinery_y;
-    let dz = miner_z - refinery_z;
-    let distance_sq = dx * dx + dy * dy + dz * dz;
-    let threshold = i64::from(threshold_cells.max(1)) * 256;
-    Some(distance_sq > threshold * threshold)
+    let dx = X87Chop53::load_i32(i32::try_from(miner_x - refinery_x).ok()?);
+    let dy = X87Chop53::load_i32(i32::try_from(miner_y - refinery_y).ok()?);
+    let dz = X87Chop53::load_i32(i32::try_from(miner_z - refinery_z).ok()?);
+    // `(dz*dz + dy*dy) + dx*dx` in the native x87 operand order, then the
+    // table sqrt and the truncating ftol. Every step is finite for map-sized
+    // coordinates; a domain error is treated as "no decision" like a missing
+    // entity rather than panicking the sim.
+    let distance_sq = X87Chop53::add(
+        X87Chop53::add(X87Chop53::mul(dz, dz), X87Chop53::mul(dy, dy)),
+        X87Chop53::mul(dx, dx),
+    );
+    let root = sqrt_approx_f32(distance_sq).ok()?;
+    let distance = X87Chop53::ftol_i64(X87Chop53::load_f32(root).ok()?).ok()?;
+    let threshold = i64::from(threshold_cells) * 256;
+    Some(distance > threshold)
 }
 
 #[cfg(test)]
@@ -121,6 +187,86 @@ mod gsi_04_03b_tests {
     use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::movement::locomotor::LocomotorState;
+
+    fn empty_rules() -> RuleSet {
+        RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str("")).expect("empty rules")
+    }
+
+    /// Mission_Harvest state 2 measures to `BuildingClass::GetCoords @
+    /// 0x00447AC0` = the foundation centre. For a 4x3 refinery that is
+    /// (+384, +256) leptons from the NW cell, which flips the 5-cell
+    /// `HarvesterTooFarDistance` verdict on either side of the building.
+    #[test]
+    fn too_far_threshold_measures_to_the_foundation_centre() {
+        let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[BuildingTypes]\n0=GAREFN\n[GAREFN]\nFoundation=4x3\nRefinery=yes\n",
+        ))
+        .expect("refinery rules");
+        let mut sim = Simulation::new();
+        let refinery_type = sim.interner.intern("GAREFN");
+        let harv_type = sim.interner.intern("HARV");
+        let mut refinery = GameEntity::test_default(2, "GAREFN", "Allies", 10, 10);
+        refinery.type_ref = refinery_type;
+        refinery.category = EntityCategory::Structure;
+        sim.substrate.entities.insert(refinery);
+
+        // East of the building: NW distance is sqrt(37) cells (far), centre
+        // distance is 4.5 cells (x = 4224 vs centre 3072, dy = 0; within 5)
+        // -> native keeps the narrow result.
+        let mut east = GameEntity::test_default(1, "HARV", "Allies", 16, 11);
+        east.type_ref = harv_type;
+        sim.substrate.entities.insert(east);
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, &rules, 1, 2, 5),
+            Some(false),
+            "east side: centre offset pulls a NW-far miner inside the threshold"
+        );
+
+        // West of the building: NW distance is sqrt(17) cells (near), centre
+        // distance is sqrt(30.25) cells (beyond 5) -> native falls to wide.
+        let mut west = GameEntity::test_default(3, "HARV", "Allies", 6, 11);
+        west.type_ref = harv_type;
+        sim.substrate.entities.insert(west);
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, &rules, 3, 2, 5),
+            Some(true),
+            "west side: centre offset pushes a NW-near miner beyond the threshold"
+        );
+
+        // Without a known foundation the offset is zero (1x1 fallback).
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, &empty_rules(), 3, 2, 5),
+            Some(false)
+        );
+    }
+
+    /// `Sqrt_Approx`'s 14-bit table rounds down, so with
+    /// `HarvesterTooFarDistance=5` (1280 leptons) d = 1281 truncates to 1280
+    /// (close) and only d = 1282 reads as far. 1x1 fallback, dy = dz = 0.
+    #[test]
+    fn too_far_threshold_follows_sqrt_approx_table_edge() {
+        let mut sim = Simulation::new();
+        let mut refinery = GameEntity::test_default(2, "GAREFN", "Allies", 0, 0);
+        refinery.position.sub_x = SimFixed::from_num(0);
+        refinery.position.sub_y = SimFixed::from_num(0);
+        sim.substrate.entities.insert(refinery);
+        let mut miner = GameEntity::test_default(1, "HARV", "Allies", 5, 0);
+        miner.position.sub_x = SimFixed::from_num(1);
+        miner.position.sub_y = SimFixed::from_num(0);
+        sim.substrate.entities.insert(miner);
+
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, &empty_rules(), 1, 2, 5),
+            Some(false),
+            "d = 1281 leptons: Sqrt_Approx yields 1280.9995, ftol 1280, close"
+        );
+        sim.substrate.entities.get_mut(1).unwrap().position.sub_x = SimFixed::from_num(2);
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, &empty_rules(), 1, 2, 5),
+            Some(true),
+            "d = 1282 leptons is the first far distance"
+        );
+    }
 
     fn sloped_cell() -> ResolvedTerrainCell {
         ResolvedTerrainCell {
@@ -192,18 +338,21 @@ mod gsi_04_03b_tests {
         sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(1, 1, vec![sloped_cell()]));
 
         assert_eq!(
-            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            return_exceeds_too_far_threshold(&sim, &empty_rules(), 1, 2, 1),
             Some(true),
             "255 horizontal leptons plus the slope Z delta exceeds one cell"
         );
 
         sim.substrate.entities.get_mut(1).unwrap().position.sub_x = SimFixed::from_num(0);
         sim.substrate.entities.get_mut(2).unwrap().position.sub_x = SimFixed::from_num(0);
-        assert_eq!(return_exceeds_too_far_threshold(&sim, 1, 2, 1), Some(false));
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, &empty_rules(), 1, 2, 1),
+            Some(false)
+        );
 
         sim.substrate.entities.get_mut(1).unwrap().on_bridge = true;
         assert_eq!(
-            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            return_exceeds_too_far_threshold(&sim, &empty_rules(), 1, 2, 1),
             Some(true),
             "OnBridge coordinate Z contributes the full deck offset"
         );
@@ -214,7 +363,7 @@ mod gsi_04_03b_tests {
         locomotor.altitude = SimFixed::from_num(300);
         miner.locomotor = Some(locomotor);
         assert_eq!(
-            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            return_exceeds_too_far_threshold(&sim, &empty_rules(), 1, 2, 1),
             Some(true),
             "locomotor altitude contributes to raw object-coordinate Z"
         );
@@ -237,11 +386,14 @@ mod gsi_04_03b_tests {
         // the slope contribution. With no grid to resolve, each object degrades
         // to level-only Z: dz = 0, so 255 horizontal leptons stay inside one
         // cell — and the decision is still made rather than refused.
-        assert_eq!(return_exceeds_too_far_threshold(&sim, 1, 2, 1), Some(false));
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, &empty_rules(), 1, 2, 1),
+            Some(false)
+        );
 
         sim.substrate.entities.get_mut(2).unwrap().position.z = 3;
         assert_eq!(
-            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            return_exceeds_too_far_threshold(&sim, &empty_rules(), 1, 2, 1),
             Some(true),
             "the fallback Z is position.z * LEPTONS_PER_LEVEL, not a dropped term"
         );
@@ -1198,13 +1350,7 @@ fn handle_return(
     }
 
     let Some(ref_sid) = snap.miner.reserved_refinery else {
-        if let Some((rsid, _dock)) = find_nearest_refinery(
-            sim,
-            rules,
-            sim.interner.resolve(snap.owner),
-            sim.interner.resolve(snap.type_id),
-            (snap.rx, snap.ry),
-        ) {
+        if let Some(rsid) = select_return_refinery(sim, rules, config, snap) {
             snap.miner.reserved_refinery = Some(rsid);
             if try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, rsid) {
                 return;
@@ -1377,13 +1523,7 @@ fn handle_forced_return(
     }
 
     if snap.miner.reserved_refinery.is_none() {
-        if let Some((rsid, _dock)) = find_nearest_refinery(
-            sim,
-            rules,
-            sim.interner.resolve(snap.owner),
-            sim.interner.resolve(snap.type_id),
-            (snap.rx, snap.ry),
-        ) {
+        if let Some(rsid) = select_return_refinery(sim, rules, config, snap) {
             snap.miner.reserved_refinery = Some(rsid);
             if try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, rsid) {
                 return;
@@ -1486,13 +1626,7 @@ fn begin_return(
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
-    if let Some((rsid, _dock)) = find_nearest_refinery(
-        sim,
-        rules,
-        sim.interner.resolve(snap.owner),
-        sim.interner.resolve(snap.type_id),
-        (snap.rx, snap.ry),
-    ) {
+    if let Some(rsid) = select_return_refinery(sim, rules, config, snap) {
         snap.miner.reserved_refinery = Some(rsid);
         if try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, rsid) {
             return;
@@ -1539,6 +1673,7 @@ fn try_begin_close_return_radio(
 
     match return_exceeds_too_far_threshold(
         sim,
+        rules,
         snap.entity_id,
         ref_sid,
         config.too_far_threshold_chrono,
@@ -1615,6 +1750,7 @@ fn try_issue_chrono_far_return_teleport(
 
     if !return_exceeds_too_far_threshold(
         sim,
+        rules,
         snap.entity_id,
         ref_sid,
         config.too_far_threshold_chrono,
@@ -1676,6 +1812,7 @@ fn try_issue_standard_far_return_drive(
 
     if !return_exceeds_too_far_threshold(
         sim,
+        rules,
         snap.entity_id,
         ref_sid,
         config.too_far_threshold_standard,
@@ -1736,57 +1873,288 @@ fn emit_chrono_warp_sounds(
     }
 }
 
-/// Find the nearest friendly refinery. Returns (stable_id, dock_cell).
+/// Refinery selection for a full miner: `UnitClass::Mission_Harvest @
+/// 0x0073E5E0` state 2 (FINDING_HOME), decompiled 2026-09-05.
 ///
-/// TibSun legacy: checks alliance (not just same-owner), building health,
-/// and construction state. Matches original `BuildingClass::CanDock` guards.
-fn find_nearest_refinery(
+/// Native ordering: a *narrow* `Find_Docking_Bay(Type->Dock, 0, wide=0)` pass
+/// runs first, and its result is used only when it lies within the kind's
+/// too-far distance (`HarvesterTooFarDistance` @ Rules+0xD78 for HARV,
+/// `ChronoHarvTooFarDistance` @ Rules+0xD7C when the unit type's Teleporter
+/// byte +0xCD4 is set; both x256 leptons, compared against the 3-D
+/// `GetCoords` distance, where the building side is `BuildingClass::GetCoords
+/// @ 0x00447AC0` = foundation centre — see `return_exceeds_too_far_threshold`)
+/// — the miner then radios HELLO(2) to it. Otherwise
+/// (candidate too far, HELLO refused, or no candidate) a *wide* pass runs
+/// bracketed by `g_MapEditorMode++ / --` (`0x00A8E7AC`) with `wide=1`, and
+/// that result is the far-return destination. The wide pass admits
+/// refineries whose contact slots are full. Native then gates the drive on
+/// distance (0x0073ECD0: `CMP EAX,0x300; JG`): a non-Teleporter miner already
+/// within 768 leptons of the wide-pass result gets NO destination and idles in
+/// state 2 until a contact slot frees; Rust has no 0x300 gate and its dock FSM
+/// parks the miner nearby instead (VERA-internal, gamemd equivalent UNCHECKED
+/// beyond the compare; player-visible effect is the idle spot, small). There is no Teleporter branch
+/// inside selection: chrono miners run the same two passes, only the
+/// threshold differs (0x0073E5E0 case 2, `+0xCD4` selects Rules+0xD7C).
+///
+/// VERA-internal residuals: (1) the chosen refinery stays in
+/// `reserved_refinery` until the return completes, where gamemd re-runs both
+/// passes on every state-2 dispatch, so a miner beside an occupied refinery
+/// does not re-pick a second free one inside the close radius (visible only
+/// with two refineries within HarvesterTooFarDistance); (2) the narrow
+/// candidate is returned before HELLO — gamemd falls through to the wide pass
+/// when HELLO(2) is refused, VERA's later `hello_or_wait` re-probes instead.
+fn select_return_refinery(
     sim: &Simulation,
     rules: &RuleSet,
-    owner: &str,
-    harvester_type_id: &str,
-    from: (u16, u16),
-) -> Option<(u64, (u16, u16))> {
-    let mut best: Option<(u32, u64, u16, u16)> = None;
-    for entity in sim.substrate.entities.values() {
-        let e_owner = sim.interner.resolve(entity.owner);
-        let e_type = sim.interner.resolve(entity.type_ref);
-        if entity.category != EntityCategory::Structure
-            // TibSun legacy: accept allied refineries, not just same-owner.
-            || !crate::map::houses::are_houses_friendly(
-                &sim.house_alliances,
-                owner,
-                e_owner,
-            )
-            || !rules.is_refinery_type(e_type)
-            || !rules.harvester_can_dock_at(harvester_type_id, e_type)
-            // Death animations keep the building entity around, but gamemd
-            // calls UndockUnit from damage/sell paths before accepting more cargo.
-            || entity.dying
-            // FactoryClass retains the constructed product in limbo until delivery.
-            || entity.lifecycle.in_limbo
-            // TibSun legacy: skip dead buildings (CanDock checks HP > 0).
-            || entity.health.current == 0
-            // TibSun legacy: skip buildings under construction (CanDock rejects mission 0x13).
-            || entity.building_up.is_some()
-        {
-            continue;
-        }
-        let obj = rules.object_case_insensitive(e_type);
-        let (w, h) = obj
-            .map(|o| foundation_dimensions(&o.foundation))
-            .unwrap_or((1, 1));
-        let qc = obj.and_then(|o| o.queueing_cell);
-        let dock = refinery_dock_cell(entity.position.rx, entity.position.ry, w, h, qc);
-        let dx = i64::from(dock.0) - i64::from(from.0);
-        let dy = i64::from(dock.1) - i64::from(from.1);
-        let dist_sq = (dx * dx + dy * dy) as u32;
-        match best {
-            Some((d, _, _, _)) if dist_sq >= d => {}
-            _ => best = Some((dist_sq, entity.stable_id, dock.0, dock.1)),
+    config: &MinerConfig,
+    snap: &MinerSnapshot,
+) -> Option<u64> {
+    let threshold = match snap.miner.kind {
+        MinerKind::Chrono => config.too_far_threshold_chrono,
+        MinerKind::War | MinerKind::Slave => config.too_far_threshold_standard,
+    };
+    if let Some(sid) = find_docking_bay(sim, rules, snap, false)
+        && return_exceeds_too_far_threshold(sim, rules, snap.entity_id, sid, threshold)
+            == Some(false)
+    {
+        return Some(sid);
+    }
+    find_docking_bay(sim, rules, snap, true)
+}
+
+/// One `FootClass::Find_Docking_Bay @ 0x004DF040` pass: for each `Dock=`
+/// type in list order, `FUN_004DEE80` scans the miner's OWN house's
+/// building list (`Owner @ TechnoClass+0x21C` → vector at House+0x6C, count
+/// at +0x78). Allies are never candidates, so a miner never deposits into an
+/// ally's wallet. Rust's `ids_for_owner` is ascending stable_id = creation
+/// order, which matches the native vector order for buildings that never
+/// changed hands (`DynamicVectorClass::Remove` shifts later entries down and
+/// preserves relative order). Tie-only residual: a captured building is
+/// natively removed from the old owner's list and appended to the new
+/// owner's, so it sorts LAST among that house's refineries, while Rust keeps
+/// it at its creation id. Order only decides equal-distance ties (strict `<`
+/// below), so this is visible only when a captured refinery and an original
+/// one sit at exactly the same centre distance; list-append semantics are
+/// deliberately not modelled.
+///
+/// Per-candidate gates in native order:
+/// - non-null and `+0x81 == 0` (`ObjectClass::InLimbo`), type == Dock type
+///   (`+0x520`); the whole scan returns null when the house owns no instance
+///   of that type (`HouseClass::CountOwnedInstances` at 0x004DEEA5);
+/// - narrow pass only (`wide != 1`, 0x004DEF02): `FUN_0065ADF0` on the
+///   building with the miner as argument (0x004DEF09) — a free `Contacts[]`
+///   slot (`+0xE4`, count `+0xE8`) or the miner already tracked. `+0xE8` is
+///   written only by the `RadioClass` ctor (0x0065A764, = 1) and destructor;
+///   no `BuildingClass` writer sets it from `NumberOfDocks=`. Rust derives the
+///   slot capacity from `NumberOfDocks` (VERA-internal, gamemd equivalent
+///   UNCHECKED beyond `+0xE8 == 1` at construction; stock refineries are
+///   `NumberOfDocks=1`, so the derivation is inert for stock play);
+/// - `MapClass::Can_Reach_Zone` from the miner's cell to the building's
+///   `GetCoords` cell (skipped when `WhatAmI() == Aircraft(2)`, never a
+///   miner) — see `refinery_zone_reachable`;
+/// - `Receive_Radio(0xF)` must return 1 — see `refinery_accepts_can_load`;
+/// - distance `FUN_005F6500`: `dx² + dy²` in leptons between both objects'
+///   `GetCoords` (Z ignored); replace when `best == -1 || d < best` (strict,
+///   so ties keep the earlier Dock type / earlier-created building) or when
+///   the candidate is the primary factory (`TechnoClass+0x3D3`). VERA has no
+///   primary designation for refineries, so that override is absent here.
+fn find_docking_bay(
+    sim: &Simulation,
+    rules: &RuleSet,
+    snap: &MinerSnapshot,
+    wide: bool,
+) -> Option<u64> {
+    let miner = sim.substrate.entities.get(snap.entity_id)?;
+    let harvester = rules.object_case_insensitive(sim.interner.resolve(snap.type_id))?;
+    let miner_x = i64::from(miner.position.rx) * 256 + miner.position.sub_x.to_num::<i64>();
+    let miner_y = i64::from(miner.position.ry) * 256 + miner.position.sub_y.to_num::<i64>();
+    let unit_mz = miner
+        .locomotor
+        .as_ref()
+        .map(|loc| loc.movement_zone)
+        .unwrap_or(MovementZone::Normal);
+
+    let mut best: Option<(i64, u64)> = None;
+    for dock_type in &harvester.dock {
+        for &sid in sim.substrate.entities.ids_for_owner(snap.owner) {
+            let Some(entity) = sim.substrate.entities.get(sid) else {
+                continue;
+            };
+            if entity.category != EntityCategory::Structure {
+                continue;
+            }
+            let e_type = sim.interner.resolve(entity.type_ref);
+            if !e_type.eq_ignore_ascii_case(dock_type) || entity.lifecycle.in_limbo {
+                continue;
+            }
+            // gamemd removes a dead building from the house list through
+            // Limbo; VERA keeps the entity through its death animation.
+            if entity.dying || entity.health.current == 0 {
+                continue;
+            }
+            let Some(obj) = rules.object_case_insensitive(e_type) else {
+                continue;
+            };
+            let capacity = usize::from(obj.number_of_docks.max(1));
+            if !wide
+                && !sim
+                    .production
+                    .dock_reservations
+                    .would_admit(sid, snap.entity_id, capacity)
+            {
+                continue;
+            }
+            let (w, h) = foundation_dimensions(&obj.foundation);
+            let dock = refinery_dock_cell(
+                entity.position.rx,
+                entity.position.ry,
+                w,
+                h,
+                obj.queueing_cell,
+            );
+            if !refinery_zone_reachable(sim, miner, unit_mz, (snap.rx, snap.ry), dock) {
+                continue;
+            }
+            if !refinery_accepts_can_load(
+                sim,
+                harvester,
+                unit_mz,
+                entity,
+                obj,
+                snap.entity_id,
+                capacity,
+                wide,
+            ) {
+                continue;
+            }
+            // `BuildingClass::GetCoords @ 0x00447AC0`: foundation centre, the
+            // same point the state-2 too-far test measures to.
+            let (centre_x, centre_y) = building_get_coords_xy(entity, w, h);
+            let dx = miner_x - centre_x;
+            let dy = miner_y - centre_y;
+            let dist_sq = dx * dx + dy * dy;
+            match best {
+                Some((d, _)) if dist_sq >= d => {}
+                _ => best = Some((dist_sq, sid)),
+            }
         }
     }
-    best.map(|(_, sid, dx, dy)| (sid, (dx, dy)))
+    best.map(|(_, sid)| sid)
+}
+
+/// `BuildingClass::Receive_Radio @ 0x0043C2D0` case 0xF (CAN_LOAD) as seen by
+/// a `Harvester=yes` unit probing a `Refinery=yes` building (disassembly
+/// 0x0043C2F8..0x0043C6EF, 2026-09-05). Returns true for native result 1.
+///
+/// - `HouseClass::Is_Ally` on the building owner → 0 (always passes here:
+///   the scanner only offers own-house buildings);
+/// - current mission Construction (0x12) or Selling (0x13) → 10;
+/// - `+0x534 == 0` → 10. `+0x534` is the current BState, written by
+///   `BuildingClass::GrandOpening @ 0x00447780` (`+0x538` is the queued one);
+///   0 = BSTATE_CONSTRUCTION. Rust: `building_up` (construction) and
+///   `building_down` (sell/deconstruct) cover both mission and BState gates;
+/// - narrow pass (`g_MapEditorMode == 0`, 0x0043C35A): no free/own contact
+///   slot (`FUN_0065ADF0`) → 10 unless the type is `UnitAbsorb=`/
+///   `InfantryAbsorb=` (+0x16AE/+0x16AF, never a stock refinery). Same probe
+///   the scanner already applied;
+/// - unit `MovementZone != Amphibious(5)` and `Naval=` (TechnoType+0xCCE)
+///   differs between unit and building → 10;
+/// - unit `BalloonHover=` (TechnoType+0xD6A, `TechnoTypeClass::ReadINI`
+///   0x00714DA9) → 10;
+/// - `+0x660 == 0` → 10 (0x0043C422). Writers (instruction scan
+///   `mov [..+0x660]`): `BuildingClass` ctor 0x0043B882 = 1, `ReadFromINI`
+///   0x0044FC49 = 1, `GoOnline @ 0x00452260` = 1, `GoOffline @ 0x00452360`
+///   = 0 (callers: `EventClass::Execute` 0x004C6D9A power toggle,
+///   `TriggerAction::Execute` 0x006DDFB9, `ReadFromINI` 0x0044FD23), plus
+///   0x004521C0 = 0 / 0x00452210 = 1 called only from `TemporalClass`
+///   InitiateWarp / DetachFromTarget / ClearWarpingOutOnTarget (their
+///   "Start/StopCloaking" labels are unverified). So it is the player/
+///   trigger TogglePower latch plus a temporal-warp clear, not house low
+///   power. VERA carries neither state and stock refineries are not
+///   toggleable: gate EXCLUDED (residual: a refinery being chrono-erased is
+///   still selectable here);
+/// - 0x0043C43B..0x0043C453: unless the type is `UnitAbsorb=`/`InfantryAbsorb=`
+///   (+0x16AE/+0x16AF) the `JZ 0x0043C4F8` at 0x0043C453 jumps straight past
+///   the absorber-only block, so for a refinery NEITHER the `CaptureManager`
+///   test (`+0x2BC` → `FUN_004722C0`, 0x0043C4A0) NOR the passenger-count /
+///   `SizeLimit=` block (0x0043C4C2: `[+0x114]+1 > Type+0x5E0`, `Size` vs
+///   +0x388) is reached. They are not gates on this path and Rust models
+///   neither;
+/// - 0x0043C4F8..0x0043C64F, tested before the Refinery branch: +0x16AD → 1,
+///   +0x16AB (`+0x0070FB50` unit probe then radio 0x23), +0x16A9 (WhatAmI 1/2
+///   then radio 0x23), +0x16C2/+0x16C1 (only for `WhatAmI() == 0xF`), +0x16CB
+///   (interface query through `[unit+0x4]`). All six bytes are zero for a
+///   stock refinery type, so
+///   control falls through to the Refinery test;
+/// - `Refinery=yes` (BuildingType+0x16B3) and the unit is a UnitClass with
+///   `Harvester=yes` (UnitType+0xE0E): return 1 when `g_MapEditorMode != 0`
+///   (wide pass, 0x0043C675) or `+0x118 == 0` (0x0043C682). `+0x118` is
+///   `PassengersClass::FirstPassenger` (`PassengersClass` at +0x114: case
+///   0xE compares `[+0x114] + 1` against Type+0x5E0; `CargoClass::AddPassenger
+///   @ 0x004733A0` is always entered via `LEA ECX,[this+0x114]`;
+///   `TechnoClass` ctor zeroes +0x118 at 0x006F2B8D). None of AddPassenger's
+///   15 call sites is a BuildingClass refinery path or the harvester unload
+///   FSM (`UnitClass::Mission_Unload @ 0x0073D630`; its 0x0073DC78 call
+///   re-adds a popped passenger to the unit's own cargo), so a stock
+///   refinery's +0x118 stays 0 and this "bay" gate is INERT for stock play:
+///   the narrow-pass occupancy gate is the `Contacts[]` probe alone. Rust
+///   therefore applies no `on_pad` gate here;
+/// - otherwise 0.
+#[allow(clippy::too_many_arguments)]
+fn refinery_accepts_can_load(
+    sim: &Simulation,
+    harvester: &crate::rules::object_type::ObjectType,
+    unit_mz: MovementZone,
+    refinery: &crate::sim::game_entity::GameEntity,
+    refinery_type: &crate::rules::object_type::ObjectType,
+    miner_sid: u64,
+    capacity: usize,
+    wide: bool,
+) -> bool {
+    if refinery.building_up.is_some() || refinery.building_down.is_some() {
+        return false;
+    }
+    if !wide
+        && !sim
+            .production
+            .dock_reservations
+            .would_admit(refinery.stable_id, miner_sid, capacity)
+    {
+        return false;
+    }
+    if unit_mz != MovementZone::Amphibious && harvester.naval != refinery_type.naval {
+        return false;
+    }
+    if harvester.balloon_hover {
+        return false;
+    }
+    refinery_type.refinery && harvester.harvester
+}
+
+/// `MapClass::Can_Reach_Zone` gate of the scanner `FUN_004DEE80`, called
+/// natively with the unit type's MovementZone, the miner's cell and the
+/// building's `GetCoords` cell. VERA's zone map marks building footprints
+/// `ZONE_INVALID`, so the probe targets the refinery's dock cell and its 8
+/// neighbours instead of the foundation centre — VERA-internal
+/// approximation, gamemd equivalent UNCHECKED for the exact probed cell.
+/// Without a zone grid or a valid miner anchor the gate is skipped, as the
+/// ore-scan filter does.
+fn refinery_zone_reachable(
+    sim: &Simulation,
+    miner: &crate::sim::game_entity::GameEntity,
+    mz: MovementZone,
+    miner_cell: (u16, u16),
+    dock: (u16, u16),
+) -> bool {
+    let Some(zone_grid) = sim.zone_grid.as_ref() else {
+        return true;
+    };
+    let Some(anchor) = effective_zone_cell(zone_grid, mz, miner_cell.0, miner_cell.1) else {
+        return true;
+    };
+    let layer = miner.movement_layer_or_ground();
+    zone_grid.can_reach(mz, anchor, layer, dock, layer)
+        || ore_reachable(zone_grid, mz, layer, anchor, dock)
 }
 
 /// Resolve a refinery's dock cell from its stable_id.

@@ -1,7 +1,12 @@
 //! Refinery dock contact management.
 //!
 //! A refinery admits up to `NumberOfDocks` miners into its `Contacts[]` list
-//! (capacity-1 for a stock refinery). gamemd stores **no** wait-queue: a denied
+//! (capacity-1 for a stock refinery). The `NumberOfDocks` capacity source is
+//! VERA-internal: natively the slot count `RadioClass+0xE8` is written only by
+//! the `RadioClass` ctor (0x0065A764, = 1) and destructor, never from
+//! `NumberOfDocks=` (gamemd equivalent UNCHECKED beyond `+0xE8 == 1` at
+//! construction; stock refineries are `NumberOfDocks=1`, so it is inert).
+//! gamemd stores **no** wait-queue: a denied
 //! miner re-probes on demand and whichever re-probing miner wins a freed slot
 //! docks next (V3). State lives in `ProductionState.dock_reservations` and is a
 //! transitional mirror of the radio-bus `Contacts`/`dock_entered_with` state,
@@ -71,6 +76,19 @@ impl RefineryDockContacts {
         self.contacts
             .get(&refinery_sid)
             .is_some_and(|contacts| contacts.contains(&miner_sid))
+    }
+
+    /// Read-only contact-slot probe: `RadioClass` helper `FUN_0065ADF0`
+    /// (gamemd.exe), which walks `Contacts[0..+0xE8)` at `+0xE4` and answers
+    /// true when a slot holds null or already holds the caller. The refinery
+    /// scanner `FUN_004DEE80` and `BuildingClass::Receive_Radio @ 0x0043C2D0`
+    /// case 0xF both consult it before any HELLO is sent, so selection must
+    /// ask without mutating. Capacity floors at 1 like `hello_or_wait`; the
+    /// `NumberOfDocks`-derived capacity callers pass is VERA-internal (native
+    /// `+0xE8` is fixed at 1 by the `RadioClass` ctor — see the module doc).
+    pub fn would_admit(&self, refinery_sid: u64, miner_sid: u64, capacity: usize) -> bool {
+        self.has_contact(refinery_sid, miner_sid)
+            || self.contacts.get(&refinery_sid).map_or(0, Vec::len) < capacity.max(1)
     }
 
     pub fn link_on_pad(&mut self, refinery_sid: u64, miner_sid: u64) {
@@ -361,5 +379,19 @@ mod tests {
             ContactAdmission::Accepted
         );
         assert!(contacts.has_contact(100, 2));
+    }
+
+    #[test]
+    fn would_admit_free_slot_tracked_and_saturated() {
+        let mut c = RefineryDockContacts::default();
+        assert!(c.would_admit(1, 10, 1), "empty refinery admits");
+        assert_eq!(c.hello_or_wait(1, 11, 1), ContactAdmission::Accepted);
+        assert!(
+            !c.would_admit(1, 10, 1),
+            "saturated refinery rejects a stranger"
+        );
+        assert!(c.would_admit(1, 11, 1), "already-tracked miner is admitted");
+        assert!(c.would_admit(1, 10, 2), "capacity 2 leaves a free slot");
+        assert!(c.would_admit(2, 10, 0), "capacity floors at 1");
     }
 }
