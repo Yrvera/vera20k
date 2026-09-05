@@ -921,6 +921,14 @@ pub struct GameEntity {
     /// recovers above `ConditionYellow`.
     #[serde(default)]
     pub damage_smoke_system_id: Option<u64>,
+    /// `UnitClass+0x6E4`: the number of passengers a transport's Unload keeps
+    /// aboard. Written by `UnitClass::Mission_Unload @ 0x0073D630` state 0
+    /// (`0x0073D830`/`0x0073D83C`: a `TurretCount > 0` transport keeps one
+    /// unless it carries exactly one) and read by state 3's
+    /// `cargo > keep` gate (`0x0073D8C3`). Zero for every other object.
+    /// Hashed only when non-zero (see `world_hash`).
+    #[serde(default)]
+    pub transport_unload_keep_count: u32,
     /// Debug event log — records movement/state transitions for the inspector panel.
     /// Only allocated when debug inspector is active (X hotkey). Not included in state hashing.
     #[serde(skip)]
@@ -1266,6 +1274,7 @@ impl GameEntity {
             object_is_falling_down: 0,
             damage_particle_live_until: 0,
             damage_smoke_system_id: None,
+            transport_unload_keep_count: 0,
             debug_log: None,
         }
     }

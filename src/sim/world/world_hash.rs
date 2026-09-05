@@ -1808,6 +1808,13 @@ impl Simulation {
                         passenger_size.hash(hasher);
                     }
                     cargo.total_size.hash(hasher);
+                    // `UnitClass+0x6E4` keep-count, written only by a
+                    // transport's own Unload state 0. Folded only when set so
+                    // objects that never unloaded (every pinned harness
+                    // object) keep their v-schema bytes.
+                    if entity.transport_unload_keep_count != 0 {
+                        entity.transport_unload_keep_count.hash(hasher);
+                    }
                 }
                 crate::sim::passenger::PassengerRole::Boarding {
                     target_transport_id,

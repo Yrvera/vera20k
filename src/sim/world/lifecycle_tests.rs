@@ -2348,7 +2348,9 @@ fn lifecycle_authority_transport_uninits_passengers_in_cargo_order_before_carrie
     sim.lifecycle_test_events.clear();
 
     sim.uninit(1);
-    assert_eq!(sim.substrate.pending_delete, vec![2, 3, 1]);
+    // Cargo list order is head-first: `CargoClass::AddPassenger @ 0x004733A0`
+    // prepends, so the passenger boarded last (3) is walked first.
+    assert_eq!(sim.substrate.pending_delete, vec![3, 2, 1]);
     let notify_order = sim
         .lifecycle_test_events
         .iter()
@@ -2357,7 +2359,7 @@ fn lifecycle_authority_transport_uninits_passengers_in_cargo_order_before_carrie
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(notify_order, vec![2, 3, 1]);
+    assert_eq!(notify_order, vec![3, 2, 1]);
     assert!(matches!(
         sim.substrate.entities.get(2).unwrap().passenger_role,
         PassengerRole::None

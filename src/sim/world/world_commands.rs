@@ -1780,10 +1780,58 @@ impl Simulation {
                 if !has_passengers {
                     return false;
                 }
-                if let Some(e) = self.substrate.entities.get_mut(*transport_id) {
-                    e.order_intent = Some(OrderIntent::Unloading);
+                let category = self
+                    .substrate
+                    .entities
+                    .get(*transport_id)
+                    .map(|t| t.category);
+                match category {
+                    Some(crate::map::entities::EntityCategory::Structure) => {
+                        // Garrison eviction stays on the per-tick order path.
+                        if let Some(e) = self.substrate.entities.get_mut(*transport_id) {
+                            e.order_intent = Some(OrderIntent::Unloading);
+                        }
+                        true
+                    }
+                    Some(crate::map::entities::EntityCategory::Unit)
+                    | Some(crate::map::entities::EntityCategory::Aircraft) => {
+                        // Vehicle/aircraft transports unload through the Unload
+                        // mission (`UnitClass::Mission_Unload @ 0x0073D630`
+                        // transport branch; Aircraft slot `0x004151E0`).
+                        let Some(rules) = rules else { return false };
+                        let is_transport = self
+                            .substrate
+                            .entities
+                            .get(*transport_id)
+                            .and_then(|t| self.object_type(t.type_ref, rules))
+                            .is_some_and(|obj| obj.passengers > 0);
+                        if !is_transport || !self.order_actor_admits(*transport_id) {
+                            return false;
+                        }
+                        if category == Some(crate::map::entities::EntityCategory::Aircraft) {
+                            // Aircraft readiness has no live transition-latch
+                            // producer, so a queued mission would never
+                            // promote; commit through Assign.
+                            let now = self.session.binary_frame;
+                            let _ = self.mission_assign_exact(
+                                *transport_id,
+                                crate::sim::mission::MissionId::from_known(MissionType::Unload),
+                                now,
+                            );
+                        } else {
+                            self.queue_megamission_with_teardown(
+                                *transport_id,
+                                MissionType::Unload,
+                                DockTeardown::All,
+                            );
+                        }
+                        if let Some(e) = self.substrate.entities.get_mut(*transport_id) {
+                            e.order_intent = None;
+                        }
+                        true
+                    }
+                    _ => false,
                 }
-                true
             }
             Command::HarvestCell {
                 entity_id,

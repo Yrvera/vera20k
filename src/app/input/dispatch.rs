@@ -2292,7 +2292,13 @@ fn queue_deploy_undeploy_for_selected(state: &mut AppState) {
                     }
                 }
                 _ => {
-                    if obj.map_or(false, |o| o.deploys_into.is_some()) {
+                    // A loaded transport (APC, Flak Track, IFV, BFRT, LCAC,
+                    // Nighthawk) unloads on the deploy key.
+                    if let Some(cmd) =
+                        super::transport_orders::transport_unload_command(entity, obj)
+                    {
+                        commands.push(cmd);
+                    } else if obj.map_or(false, |o| o.deploys_into.is_some()) {
                         commands.push(Command::DeployMcv { entity_id });
                     }
                 }

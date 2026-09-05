@@ -448,6 +448,13 @@ pub struct ObjectType {
     pub deploy_sound: Option<String>,
     /// Sound ID played when this unit undeploys.
     pub undeploy_sound: Option<String>,
+    /// `LeaveTransportSound=` — `TechnoTypeClass+0x568`. Read in
+    /// `TechnoTypeClass::ReadINI` right after `EnterTransportSound=`
+    /// (`+0x564`, key push at `0x00713432`); played by
+    /// `UnitClass::Mission_Unload @ 0x0073D630` at the transport's own
+    /// coordinate (`0x0073DC28`..`0x0073DC67`) once an ejected passenger has
+    /// been placed.
+    pub leave_transport_sound: Option<String>,
     /// Sound played at the destination cell when this unit warps in
     /// (chrono teleport arrival).
     pub chrono_in_sound: Option<String>,
@@ -1648,6 +1655,11 @@ impl ObjectType {
             crush_sound: section.get("CrushSound").map(|s| s.to_string()),
             deploy_sound: section.get("DeploySound").map(|s| s.to_string()),
             undeploy_sound: section.get("UndeploySound").map(|s| s.to_string()),
+            leave_transport_sound: section
+                .get("LeaveTransportSound")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             chrono_in_sound: section.get("ChronoInSound").map(|s| s.to_string()),
             chrono_out_sound: section.get("ChronoOutSound").map(|s| s.to_string()),
             has_turret: section.get_bool("Turret").unwrap_or(false),
