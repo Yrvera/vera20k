@@ -10,8 +10,12 @@ use crate::assets::asset_manager::AssetManager;
 use crate::audio::music::MusicPlayer;
 use crate::audio::sfx::SfxPlayer;
 use crate::audio::theme::{
-    MusicOutputState, PreparedTrack, ThemeAction, ThemeGates, ThemeRuntime,
+    MusicOutputState, PreparedTrack, ThemeAction, ThemeAllowContext, ThemeGates, ThemeRuntime,
 };
+
+/// `AudioSystem__Pump @ 0x00406F70` runs its services only when more than
+/// 0x21 ms elapsed since the previous pass.
+const THEME_POLL_GATE_MS: u64 = 0x21;
 use crate::rules::sound_ini::{EvaRegistry, SoundRegistry};
 
 pub(crate) const fn derive_launcher_audio_available(
@@ -68,6 +72,8 @@ fn apply_theme_action_to_output(
 pub(crate) struct AppAudioRuntime {
     /// Always-present device-independent Theme owner.
     pub(crate) theme: ThemeRuntime,
+    /// Last wall time the Theme AI ran (the audio pump's own > 33 ms gate).
+    pub(crate) last_theme_poll_ms: Option<u64>,
     /// Background music player (rodio). `None` when audio output is disabled
     /// or initialization failed.
     pub(crate) music_player: Option<MusicPlayer>,
@@ -125,11 +131,20 @@ impl AppAudioRuntime {
         self.update_theme(assets, wall_ms);
         let gates = self.theme_gates();
         let physical = self.music_output_state();
-        let action = self.theme.play_menu_theme(assets, gates, physical);
+        let action = self.theme.play_menu_theme(assets, gates, physical, wall_ms);
         self.apply_theme_action(action);
     }
 
+    /// `ThemeClass::AI @ 0x007209D0` as driven by `AudioSystem__Pump @
+    /// 0x00406F70`: every screen, rate-gated to more than 33 ms.
     pub(crate) fn update_theme(&mut self, assets: &AssetManager, wall_ms: u64) {
+        if self
+            .last_theme_poll_ms
+            .is_some_and(|last| wall_ms.saturating_sub(last) <= THEME_POLL_GATE_MS)
+        {
+            return;
+        }
+        self.last_theme_poll_ms = Some(wall_ms);
         let gates = self.theme_gates();
         let physical = self.music_output_state();
         if physical == MusicOutputState::Finished
@@ -141,21 +156,31 @@ impl AppAudioRuntime {
         self.apply_theme_action(action);
     }
 
-    pub(crate) fn play_theme(&mut self, track: &str, assets: &AssetManager) -> bool {
+    /// `Play_Song(From_Name(track))`.
+    pub(crate) fn play_theme(&mut self, track: &str, assets: &AssetManager, wall_ms: u64) -> bool {
         let gates = self.theme_gates();
         let physical = self.music_output_state();
-        let action = self.theme.play_track(track, assets, gates, physical);
+        let action = self
+            .theme
+            .play_track(track, assets, gates, physical, wall_ms);
         let logical_started = action.start.is_some();
         self.apply_theme_action(action);
         logical_started
     }
 
+    /// Start_Scenario tail: seed the presentation shuffle stream, pin the
+    /// local player's side, then `Stop(1)` / `Queue_Song([Basic] Theme)`.
     pub(crate) fn request_scenario_theme(
         &mut self,
         requested_section: Option<&str>,
         assets: &AssetManager,
+        match_seed: u32,
+        context: ThemeAllowContext,
+        resolve_side: impl Fn(&str) -> Option<i32>,
         wall_ms: u64,
     ) {
+        self.theme.initialize_catalog(assets);
+        self.theme.begin_scenario(match_seed, context, resolve_side);
         let gates = self.theme_gates();
         let physical = self.music_output_state();
         let action =
@@ -164,20 +189,36 @@ impl AppAudioRuntime {
         self.apply_theme_action(action);
     }
 
+    /// `Main_Tick @ 0x0055D360` head rule while a scenario runs.
+    pub(crate) fn main_tick_theme(&mut self, in_game_music: bool, wall_ms: u64) {
+        let gates = self.theme_gates();
+        let physical = self.music_output_state();
+        let action = self
+            .theme
+            .main_tick(in_game_music, gates, physical, wall_ms);
+        self.apply_theme_action(action);
+    }
+
     pub(crate) fn cancel_scenario_theme_request(&mut self) {
         let action = self.theme.cancel_scenario_theme_request();
         self.apply_theme_action(action);
     }
 
+    /// `ThemeClass::Stop(fade=0)`.
     pub(crate) fn stop_theme(&mut self) {
-        let action = self.theme.stop(self.theme_gates());
+        let gates = self.theme_gates();
+        let physical = self.music_output_state();
+        let action = self.theme.stop(gates, false, physical, 0);
         self.apply_theme_action(action);
     }
 
-    pub(crate) fn queue_then_stop_score_zero(&mut self) {
+    /// Launcher ScoreVolume zero (`0x0055FAA0`): `Queue(cur)` then `Stop(0)`.
+    pub(crate) fn queue_then_stop_score_zero(&mut self, wall_ms: u64) {
         let gates = self.theme_gates();
         let physical = self.music_output_state();
-        let action = self.theme.queue_then_stop_score_zero(gates, physical);
+        let action = self
+            .theme
+            .queue_then_stop_score_zero(gates, physical, wall_ms);
         self.apply_theme_action(action);
     }
 }
@@ -221,6 +262,42 @@ mod tests {
         assert!(derive_launcher_audio_available(true, true, false));
         assert!(derive_launcher_audio_available(true, false, true));
         assert!(derive_launcher_audio_available(true, true, true));
+    }
+
+    fn empty_assets(label: &str) -> AssetManager {
+        let dir = std::env::temp_dir().join(format!(
+            "vera20k-audio-runtime-{}-{label}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("test asset dir");
+        AssetManager::from_loose_root_for_test(&dir)
+    }
+
+    /// `AudioSystem__Pump @ 0x00406F70` services `ThemeClass::AI` only when
+    /// more than 0x21 ms passed; the owner carries that gate itself so the
+    /// unconditional per-frame pump (`frame.rs`, outside every screen gate)
+    /// reaches AI on the menu, loading and score screens alike.
+    #[test]
+    fn theme_poll_carries_the_audio_pump_rate_gate_independent_of_screen() {
+        let assets = empty_assets("poll-gate");
+        let mut runtime = AppAudioRuntime {
+            theme: ThemeRuntime::default(),
+            last_theme_poll_ms: None,
+            music_player: None,
+            sfx_player: None,
+            sound_registry: SoundRegistry::default(),
+            audio_indices: Vec::new(),
+            audio_indices_enabled: false,
+            launcher_audio_available: true,
+            theme_startup_suppressed: false,
+            eva_registry: EvaRegistry::default(),
+        };
+        runtime.update_theme(&assets, 100);
+        assert_eq!(runtime.last_theme_poll_ms, Some(100));
+        runtime.update_theme(&assets, 133);
+        assert_eq!(runtime.last_theme_poll_ms, Some(100), "33 ms is not > 0x21");
+        runtime.update_theme(&assets, 134);
+        assert_eq!(runtime.last_theme_poll_ms, Some(134));
     }
 
     #[test]

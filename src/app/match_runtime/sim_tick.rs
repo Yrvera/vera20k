@@ -735,6 +735,17 @@ pub(crate) fn monotonic_frame_pacer_ms(state: &AppState, now: Instant) -> u64 {
 /// "menu open is not really a pause" carve-out here; that would be a
 /// regression against the binary.
 pub(crate) fn pump_audio_service(state: &mut AppState, now_ms: u64) {
+    // `AudioSystem__Pump @ 0x00406F70` reaches `ThemeClass__AI @ 0x007209D0`
+    // on every screen (menu, loading, in-game, pause, score, inactive window);
+    // the Theme owner carries the pump's own > 33 ms gate. While the loading
+    // job holds the process asset-manager lease, the poll goes through the
+    // leased manager so the looping LOADING theme keeps being serviced.
+    if let Some(assets) = crate::app::loading::pump::audio_service_asset_manager(
+        &state.process_assets,
+        state.frontend.loading_session.as_ref(),
+    ) {
+        state.audio.update_theme(assets, now_ms);
+    }
     let paused = state.match_state.paused;
     let registry = &state.audio.sound_registry;
     let audio_indices = &state.audio.audio_indices;
@@ -1118,11 +1129,14 @@ fn advance_in_game_runtime_mode(
     // keep running behind a pause, an open menu and a loading screen alike.
     // Pause is expressed separately, by suspending the events and stopping the
     // playing channels (`GamePause::Enter @ 0x00406F00`).
+    // `ThemeClass::AI` itself runs from `pump_audio_service` on every screen;
+    // only `Main_Tick @ 0x0055D360`'s scenario-running head rule (retained ==
+    // -1 -> `Queue_Song(-2)`; `InGameMusic == 0` -> `Stop(1)` + `Queue(-3)`)
+    // belongs to the in-game frame.
     let music_now_ms = monotonic_frame_pacer_ms(state, Instant::now());
     crate::app::presentation::building_anim::drain_sound_events(state);
-    if let Some(assets) = state.process_assets.manager() {
-        state.audio.update_theme(assets, music_now_ms);
-    }
+    let in_game_music = state.persistence.options_profile.in_game_music;
+    state.audio.main_tick_theme(in_game_music, music_now_ms);
     if decision.tactical_mutation {
         crate::app::input::camera::update_camera(state);
         update_building_placement_preview(state);
@@ -1261,75 +1275,60 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         anim_id,
                         sound_id,
                         world,
-                    } => {
-                        GameSoundEvent::AnimationStarted {
-                            anim_id,
-                            sound_id: sim.interner.resolve(sound_id).to_string(),
-                            source: Some(anim_world_sound_source(world)),
-                        }
-                    }
+                    } => GameSoundEvent::AnimationStarted {
+                        anim_id,
+                        sound_id: sim.interner.resolve(sound_id).to_string(),
+                        source: Some(anim_world_sound_source(world)),
+                    },
                     SimSoundEvent::AnimationStopped {
                         anim_id,
                         stop_sound_id,
                         world,
-                    } => {
-                        GameSoundEvent::AnimationStopped {
-                            anim_id,
-                            stop_sound_id: stop_sound_id
-                                .map(|id| sim.interner.resolve(id).to_string()),
-                            source: Some(anim_world_sound_source(world)),
-                        }
-                    }
+                    } => GameSoundEvent::AnimationStopped {
+                        anim_id,
+                        stop_sound_id: stop_sound_id.map(|id| sim.interner.resolve(id).to_string()),
+                        source: Some(anim_world_sound_source(world)),
+                    },
                     SimSoundEvent::WeaponFired {
                         report_sound_id,
                         rx,
                         ry,
-                    } => {
-                        GameSoundEvent::WeaponFired {
-                            sound_id: sim.interner.resolve(report_sound_id).to_string(),
-                            source: Some(sound_source_at_cell(rx, ry)),
-                        }
-                    }
+                    } => GameSoundEvent::WeaponFired {
+                        sound_id: sim.interner.resolve(report_sound_id).to_string(),
+                        source: Some(sound_source_at_cell(rx, ry)),
+                    },
                     SimSoundEvent::EntityDied {
                         die_sound_id,
                         rx,
                         ry,
-                    } => {
-                        GameSoundEvent::EntityDestroyed {
-                            sound_id: sim.interner.resolve(die_sound_id).to_string(),
-                            source: Some(sound_source_at_cell(rx, ry)),
-                        }
-                    }
+                    } => GameSoundEvent::EntityDestroyed {
+                        sound_id: sim.interner.resolve(die_sound_id).to_string(),
+                        source: Some(sound_source_at_cell(rx, ry)),
+                    },
                     SimSoundEvent::EntityCrushed {
                         crush_sound_id,
                         rx,
                         ry,
-                    } => {
-                        GameSoundEvent::EntityCrushed {
-                            sound_id: sim.interner.resolve(crush_sound_id).to_string(),
-                            source: Some(sound_source_at_cell(rx, ry)),
-                        }
-                    }
+                    } => GameSoundEvent::EntityCrushed {
+                        sound_id: sim.interner.resolve(crush_sound_id).to_string(),
+                        source: Some(sound_source_at_cell(rx, ry)),
+                    },
                     SimSoundEvent::EntityDeployed {
                         deploy_sound_id,
                         rx,
                         ry,
-                    } => {
-                        GameSoundEvent::EntityDeployed {
-                            sound_id: sim.interner.resolve(deploy_sound_id).to_string(),
-                            source: Some(sound_source_at_cell(rx, ry)),
-                        }
-                    }
+                    } => GameSoundEvent::EntityDeployed {
+                        sound_id: sim.interner.resolve(deploy_sound_id).to_string(),
+                        source: Some(sound_source_at_cell(rx, ry)),
+                    },
                     SimSoundEvent::EntityUndeployed {
                         undeploy_sound_id,
                         rx,
                         ry,
-                    } => {
-                        GameSoundEvent::EntityUndeployed {
-                            sound_id: sim.interner.resolve(undeploy_sound_id).to_string(),
-                            source: Some(sound_source_at_cell(rx, ry)),
-                        }
-                    }
+                    } => GameSoundEvent::EntityUndeployed {
+                        sound_id: sim.interner.resolve(undeploy_sound_id).to_string(),
+                        source: Some(sound_source_at_cell(rx, ry)),
+                    },
                     SimSoundEvent::DockDeploy { .. } => {
                         // UNCHECKED residual, deliberately silent. This variant
                         // has no producer: nothing in `sim/` pushes it, and
@@ -1686,12 +1685,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
-                    SimSoundEvent::C4Planted { rx, ry } => {
-                        GameSoundEvent::C4Planted {
-                            sound_id: "SealPlaceBomb".to_string(),
-                            source: Some(sound_source_at_cell(rx, ry)),
-                        }
-                    }
+                    SimSoundEvent::C4Planted { rx, ry } => GameSoundEvent::C4Planted {
+                        sound_id: "SealPlaceBomb".to_string(),
+                        source: Some(sound_source_at_cell(rx, ry)),
+                    },
                     SimSoundEvent::RefineryExitSfx { rx, ry } => {
                         // Positional SFX from [AudioVisual] BunkerWallsDownSound.
                         // Skip when rules don't configure the sound (matches
