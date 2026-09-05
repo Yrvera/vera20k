@@ -1488,6 +1488,10 @@ impl MapLoadInitial {
             theater: map_data.header.theater.clone(),
             game_mode_nonzero: true,
             no_damage: false,
+            // Skirmish start forces `TiberiumGrows|TiberiumSpreads` (`OR 0xC0`
+            // at `0x005E74CD`), copied into the scenario at `0x00687C23`.
+            tiberium_grows_flag: true,
+            tiberium_spreads_flag: true,
             map_width: resolved_terrain.width(),
             map_height: resolved_terrain.height(),
             local_left: map_data.header.local_left as u16,
@@ -2269,6 +2273,10 @@ pub(crate) fn load_map_from_initial(
         // Campaign/editor reads `[SpecialFlags] Inert=`. Nonzero game modes
         // replace active SpecialFlags from session staging.
         no_damage: false,
+        // Skirmish start forces `TiberiumGrows|TiberiumSpreads` (`OR 0xC0`
+        // at `0x005E74CD`), copied into the scenario at `0x00687C23`.
+        tiberium_grows_flag: true,
+        tiberium_spreads_flag: true,
         // Native Resize constructs a square cell-array extent of SizeW+SizeH.
         map_width: scenario_cell_extent,
         map_height: scenario_cell_extent,

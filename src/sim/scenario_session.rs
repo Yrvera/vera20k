@@ -175,6 +175,19 @@ pub struct ScenarioDescriptor {
     /// Native `ScenarioClass` flags bit `0x20`. The shared direct and area
     /// damage entries return before any receiver or terrain mutation while set.
     pub no_damage: bool,
+    /// Native `ScenarioClass` flags bit `0x40` (`[SpecialFlags] TiberiumGrows`,
+    /// bit layout from the writer `0x006B8B30`). Every skirmish/multiplayer
+    /// start forces it on (`OR 0xC0` at `0x005E74CD` on the ordinary skirmish
+    /// path, `0x005B6ACF`/`0x005B7326`/`0x005BB209` on the network/modem
+    /// paths; `Full_Init @ 0x00687C23` copies the session dword into the
+    /// scenario when GameMode != 0). Its only reader is the growth driver's
+    /// timer reload (`0x00722CA4`: `Growth * 0.3` when set, `* 1.0` when not).
+    /// Campaign (GameMode 0) reads the map key instead (`0x006B8CA0`).
+    pub tiberium_grows_flag: bool,
+    /// Native `ScenarioClass` flags bit `0x80` (`TiberiumSpreads`), forced on
+    /// by the same skirmish/multiplayer sites. Gates
+    /// `CellClass::CanSpreadTiberium @ 0x00483690`.
+    pub tiberium_spreads_flag: bool,
     /// Map-authored global-light profiles plus their tick-zero mutable state.
     pub lighting: ScenarioLightingState,
     /// Authoritative map bounds in the CANONICAL CELL-ARRAY frame (max cell
@@ -205,6 +218,8 @@ impl ScenarioDescriptor {
             seed: header.seed,
             map_name: header.scenario_name(),
             no_damage: header.special_flags & 0x20 != 0,
+            tiberium_grows_flag: header.special_flags & 0x40 != 0,
+            tiberium_spreads_flag: header.special_flags & 0x80 != 0,
             ..Self::default()
         }
     }
@@ -233,6 +248,13 @@ pub struct ScenarioSession {
     /// Persisted native `ScenarioClass` flags bit `0x20`.
     #[serde(default)]
     pub no_damage: bool,
+    /// Persisted native `ScenarioClass` flags bit `0x40` (`TiberiumGrows`);
+    /// see the descriptor field of the same name.
+    #[serde(default)]
+    pub tiberium_grows_flag: bool,
+    /// Persisted native `ScenarioClass` flags bit `0x80` (`TiberiumSpreads`).
+    #[serde(default)]
+    pub tiberium_spreads_flag: bool,
     /// Persistent fixed-integer global-light configuration and transition state.
     pub lighting: ScenarioLightingState,
     /// Authoritative map bounds in the canonical cell-array frame (max cell
@@ -288,6 +310,13 @@ impl ScenarioSession {
         // the native ScenarioFlags 0x20 state lockstep-visible.
         if s.no_damage {
             b"scenario-no-damage-v1".hash(hasher);
+        }
+        // Same legacy-preserving shape for the `0x40`/`0x80` tiberium bits.
+        if s.tiberium_grows_flag {
+            b"scenario-tiberium-grows-v1".hash(hasher);
+        }
+        if s.tiberium_spreads_flag {
+            b"scenario-tiberium-spreads-v1".hash(hasher);
         }
         (s.map_width, s.map_height).hash(hasher);
         (s.local_left, s.local_top, s.local_width, s.local_height).hash(hasher);
@@ -357,6 +386,8 @@ impl ScenarioSession {
             theater: desc.theater.clone(),
             game_mode_nonzero: desc.game_mode_nonzero,
             no_damage: desc.no_damage,
+            tiberium_grows_flag: desc.tiberium_grows_flag,
+            tiberium_spreads_flag: desc.tiberium_spreads_flag,
             lighting: desc.lighting,
             map_width: desc.map_width,
             map_height: desc.map_height,
@@ -631,5 +662,41 @@ mod tests {
             .sim;
         assert!(restored.session.no_damage);
         assert_eq!(restored.state_hash(), inert.state_hash());
+    }
+
+    /// The `0x40`/`0x80` `TiberiumGrows`/`TiberiumSpreads` bits reach the
+    /// session from the descriptor and the native replay header, are
+    /// lockstep-visible, and survive a snapshot.
+    #[test]
+    fn gsi_09_04_tiberium_flag_bits_roundtrip_and_change_hash() {
+        let mut header = crate::sim::replay::NativeReplayHeader::new(0x1234_5678, "skirmish.map");
+        header.special_flags = 0xC0;
+        let descriptor = ScenarioDescriptor::from_native_replay_header(&header);
+        assert!(descriptor.tiberium_grows_flag);
+        assert!(descriptor.tiberium_spreads_flag);
+        assert!(!descriptor.no_damage);
+
+        let mut forced = Simulation::from_descriptor(&descriptor);
+        assert!(forced.session.tiberium_grows_flag && forced.session.tiberium_spreads_flag);
+        let clear = Simulation::from_descriptor(&ScenarioDescriptor {
+            tiberium_grows_flag: false,
+            tiberium_spreads_flag: false,
+            ..descriptor.clone()
+        });
+        assert_ne!(forced.state_hash(), clear.state_hash());
+        let grows_only = Simulation::from_descriptor(&ScenarioDescriptor {
+            tiberium_spreads_flag: false,
+            ..descriptor.clone()
+        });
+        assert_ne!(forced.state_hash(), grows_only.state_hash());
+        assert_ne!(clear.state_hash(), grows_only.state_hash());
+
+        forced.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let bytes = crate::sim::snapshot::GameSnapshot::save(&forced, 1, 2, "skirmish.map", 0);
+        let restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
+            .expect("snapshot load")
+            .sim;
+        assert!(restored.session.tiberium_grows_flag && restored.session.tiberium_spreads_flag);
+        assert_eq!(restored.state_hash(), forced.state_hash());
     }
 }

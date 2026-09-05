@@ -850,8 +850,12 @@ pub(crate) fn initialize_native_tiberium_queues(
     overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
     native_rect: (u16, u16),
 ) -> Option<crate::sim::ore_growth::NativeTiberiumRebuildStats> {
-    sim.production.ore_growth_config =
-        crate::sim::ore_growth::OreGrowthConfig::from_ini(&rules.general, basic, special_flags);
+    sim.production.ore_growth_config = crate::sim::ore_growth::OreGrowthConfig::resolve(
+        &rules.general,
+        basic,
+        special_flags,
+        &sim.session,
+    );
     let (width, height) = overlay_grid
         .map(|grid| (grid.width(), grid.height()))
         .or_else(|| {
@@ -892,8 +896,8 @@ pub(crate) fn initialize_native_tiberium_queues(
                 &rules.tiberium_types,
                 sim.resolved_terrain.as_ref(),
                 &source_object_cells,
-                basic.tiberium_growth_enabled.unwrap_or(true),
-                rules.general.tiberium_spreads && special_flags.tiberium_spreads.unwrap_or(true),
+                sim.production.ore_growth_config.grows,
+                sim.production.ore_growth_config.spreads,
                 sim.session.binary_frame,
                 native_rect,
             ),

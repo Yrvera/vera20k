@@ -3950,6 +3950,7 @@ impl Simulation {
                     self.session.binary_frame,
                     self.production.ore_growth_config.grows,
                     self.production.ore_growth_config.spreads,
+                    self.production.ore_growth_config.tiberium_grows_flag,
                     Some(&mut self.radar_terrain_dirty_cells),
                     Some(&mut self.radar_terrain_dirty_generation),
                     Some(&mut self.tactical_dirty_cells),

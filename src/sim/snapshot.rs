@@ -406,7 +406,11 @@ use crate::sim::world::Simulation;
 // direction and captured gravity, and retains the Floater policy.
 // v130 replaces the visit counter with the signed frame-anchored Bullet Arm timer
 // and retains Dropping so Check runs before detector-only admission is suppressed.
-const SNAPSHOT_VERSION: u32 = 130;
+// v131 persists the `ScenarioClass` flags bits `0x40`/`0x80` (`TiberiumGrows`/
+// `TiberiumSpreads`) on the session and the growth-driver reload selector on
+// `OreGrowthConfig`. A v130 skirmish save would restore them clear and reload the
+// growth timer at the raw `Growth=` instead of `ftol(Growth * 0.3)`.
+const SNAPSHOT_VERSION: u32 = 131;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -1624,7 +1628,9 @@ impl Simulation {
         // already-restored global frame with duration zero. Only C4/CC gates
         // AI through Check (4E11F0); retain the saved reference/watermark.
         for (_, projectile) in self.projectiles.iter_mut() {
-            projectile.arm_timer.start(self.session.binary_frame as i32, 0);
+            projectile
+                .arm_timer
+                .start(self.session.binary_frame as i32, 0);
         }
         self.substrate.entities.rebuild_owner_index();
         self.rebuild_logic_membership();
@@ -2052,6 +2058,7 @@ mod tests {
             sim.production.ore_growth_config = OreGrowthConfig {
                 grows: true,
                 spreads: true,
+                tiberium_grows_flag: false,
                 growth_rate_seconds: 1,
             };
             sim.production.ore_growth_state = OreGrowthState::new(size, size);
@@ -3164,9 +3171,11 @@ mod tests {
     /// sharing one version number defeat the mismatch guard entirely.
     /// 123 -> 126 adds the retained homing Inaccurate flag; 124 and 125 are
     /// reserved by the concurrent parasite and audio-lane changes.
+    /// 130 -> 131 persists the session `TiberiumGrows`/`TiberiumSpreads`
+    /// flag bits and the `OreGrowthConfig` growth-reload selector.
     #[test]
-    fn projectile_frame_timer_snapshot_version_is_130() {
-        assert_eq!(super::SNAPSHOT_VERSION, 130);
+    fn tiberium_flag_bits_snapshot_version_is_131() {
+        assert_eq!(super::SNAPSHOT_VERSION, 131);
     }
 
     #[test]

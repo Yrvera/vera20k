@@ -72,10 +72,11 @@ impl Simulation {
         let tiberium_queues = if input.tiberium_queues_preinitialized {
             None
         } else if let Some(overlay_grid) = self.overlay_grid.as_ref() {
-            self.production.ore_growth_config = crate::sim::ore_growth::OreGrowthConfig::from_ini(
+            self.production.ore_growth_config = crate::sim::ore_growth::OreGrowthConfig::resolve(
                 &input.rules.general,
                 input.basic,
                 input.special_flags,
+                &self.session,
             );
             self.production.ore_growth_state =
                 crate::sim::ore_growth::OreGrowthState::new(input.map_width, input.map_height);
@@ -101,18 +102,18 @@ impl Simulation {
                         &input.rules.tiberium_types,
                         self.resolved_terrain.as_ref(),
                         &source_object_cells,
-                        input.basic.tiberium_growth_enabled.unwrap_or(true),
-                        input.rules.general.tiberium_spreads
-                            && input.special_flags.tiberium_spreads.unwrap_or(true),
+                        self.production.ore_growth_config.grows,
+                        self.production.ore_growth_config.spreads,
                         self.session.binary_frame,
                         (input.map_width, input.map_height),
                     ),
             )
         } else {
-            self.production.ore_growth_config = crate::sim::ore_growth::OreGrowthConfig::from_ini(
+            self.production.ore_growth_config = crate::sim::ore_growth::OreGrowthConfig::resolve(
                 &input.rules.general,
                 input.basic,
                 input.special_flags,
+                &self.session,
             );
             self.production.ore_growth_state =
                 crate::sim::ore_growth::OreGrowthState::new(input.map_width, input.map_height);
