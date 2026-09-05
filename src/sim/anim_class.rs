@@ -1123,25 +1123,20 @@ impl Simulation {
                 .current_frame
                 .wrapping_add(anim.runtime.frame_step);
 
-            if config.ping_pong && anim_at_boundary(anim, &config) {
-                anim.runtime.frame_step = anim.runtime.frame_step.wrapping_neg();
-                return;
-            }
-            if !anim_at_boundary(anim, &config) {
-                return;
-            }
-            if anim.runtime.loop_remaining != 0 && anim.runtime.loop_remaining != u8::MAX {
-                anim.runtime.loop_remaining = anim.runtime.loop_remaining.saturating_sub(1);
-            }
-            if anim.runtime.loop_remaining != 0 {
-                reset_to_loop_start(anim, &config);
-                random_loop_delay = config.random_loop_delay;
-            } else if let Some(next) = config.next.clone() {
-                action = VisitAction::Next(next);
-            } else if config.make_infantry != -1 {
-                action = VisitAction::DestroyAfterMakeInfantryClear;
-            } else {
-                action = VisitAction::Destroy;
+            match advance_anim_boundary(anim, &config) {
+                AnimBoundary::Continue | AnimBoundary::Bounce => return,
+                AnimBoundary::Loop => {
+                    random_loop_delay = config.random_loop_delay;
+                }
+                AnimBoundary::Complete => {
+                    action = if let Some(next) = config.next.clone() {
+                        VisitAction::Next(next)
+                    } else if config.make_infantry != -1 {
+                        VisitAction::DestroyAfterMakeInfantryClear
+                    } else {
+                        VisitAction::Destroy
+                    };
+                }
             }
         }
 
@@ -1838,30 +1833,63 @@ fn trailer_cadence_matches(binary_frame: u64, separation: i32) -> bool {
     separation == 1 || (separation > 1 && (binary_frame as i32) % separation == 0)
 }
 
-fn anim_at_boundary(anim: &AnimObject, config: &AnimTypeRuntimeConfig) -> bool {
-    if anim.runtime.frame_step >= 0 {
-        let limit = if anim.runtime.loop_remaining < 2 {
-            anim.effective_end
-        } else {
-            anim.effective_loop_end.wrapping_sub(config.start)
-        };
-        anim.runtime.current_frame >= limit
-    } else {
-        let limit = if anim.runtime.loop_remaining < 2 {
-            config.start
-        } else {
-            config.loop_start.wrapping_sub(config.start)
-        };
-        anim.runtime.current_frame <= limit
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnimBoundary {
+    Continue,
+    Bounce,
+    Loop,
+    Complete,
 }
 
-fn reset_to_loop_start(anim: &mut AnimObject, config: &AnimTypeRuntimeConfig) {
-    if anim.runtime.frame_step >= 0 && !anim.runtime.constructor_reverse && !config.reverse {
-        anim.runtime.current_frame = config.loop_start.wrapping_sub(config.start);
-    } else {
-        anim.runtime.current_frame = anim.effective_loop_end;
+/// Native AnimClass::AI committed-frame tail, 0x0042468C..0x004247B1.
+/// Native boundary/reset goldens: tools/anim_oracle/boundary.json. The direction
+/// flags select the reverse endpoint and reset; the signed frame step does not.
+fn advance_anim_boundary(anim: &mut AnimObject, config: &AnimTypeRuntimeConfig) -> AnimBoundary {
+    let stage = anim.runtime.current_frame;
+    let last_loop = anim.runtime.loop_remaining <= 1;
+    let loop_end = anim.effective_loop_end.wrapping_sub(config.start);
+
+    // 0x0042468C..0x004246DC: ping-pong has its own lower-end equality test,
+    // returns immediately after NEG, and does not consume a loop.
+    if config.ping_pong
+        && if last_loop {
+            stage >= anim.effective_end || stage == 0
+        } else {
+            stage >= loop_end || stage == config.start
+        }
+    {
+        anim.runtime.frame_step = anim.runtime.frame_step.wrapping_neg();
+        return AnimBoundary::Bounce;
     }
+
+    let reverse = config.reverse || anim.runtime.constructor_reverse;
+    let upper_end = if last_loop {
+        anim.effective_end
+    } else {
+        loop_end
+    };
+    // 0x0042470C..0x00424738: Shadow adds the forward LoopEnd-Start boundary
+    // even on the final loop. It does not replace the ordinary End test.
+    if !(stage >= upper_end
+        || (config.shadow && !reverse && stage >= loop_end)
+        || (reverse && stage <= 0))
+    {
+        return AnimBoundary::Continue;
+    }
+    if anim.runtime.loop_remaining != 0 && anim.runtime.loop_remaining != u8::MAX {
+        anim.runtime.loop_remaining -= 1;
+    }
+    if anim.runtime.loop_remaining == 0 {
+        return AnimBoundary::Complete;
+    }
+    // 0x0042477B..0x004247AB: reset from the two reverse flags, independently of
+    // the current (possibly ping-pong-negated) frame step.
+    anim.runtime.current_frame = if reverse {
+        anim.effective_loop_end
+    } else {
+        config.loop_start.wrapping_sub(config.start)
+    };
+    AnimBoundary::Loop
 }
 
 #[cfg(test)]
@@ -2043,6 +2071,196 @@ mod tests {
             terrain_attached: false,
             draw_runtime: AnimDrawRuntime::default(),
         }
+    }
+
+    #[test]
+    fn native_anim_boundary_and_reset_vectors() {
+        let golden: serde_json::Value =
+            serde_json::from_str(include_str!("../../tools/anim_oracle/boundary.json")).unwrap();
+        let rules = runtime_rules("[TEST]\nEnd=64\n", &[("TEST", 64)]);
+        let mut sim = Simulation::new();
+        let type_id = sim.interner.intern("TEST");
+        let id = sim
+            .spawn_anim_object(&rules, runtime_descriptor(type_id, 0))
+            .unwrap();
+        let template = sim.anim(id).unwrap().clone();
+        let mut config = rules
+            .art_registry
+            .anim_runtime_config("TEST")
+            .unwrap()
+            .clone();
+        let rows = golden["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 13_312);
+        for row in rows {
+            let name = row[0].as_str().unwrap();
+            let bounds = golden["bounds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|bounds| bounds[0].as_str() == Some(name))
+                .unwrap();
+            let mut anim = template.clone();
+            config.start = bounds[1].as_i64().unwrap() as i32;
+            config.loop_start = bounds[2].as_i64().unwrap() as i32;
+            anim.effective_loop_end = bounds[3].as_i64().unwrap() as i32;
+            anim.effective_end = bounds[4].as_i64().unwrap() as i32;
+            anim.runtime.loop_remaining = row[1].as_u64().unwrap() as u8;
+            anim.runtime.current_frame = row[2].as_i64().unwrap() as i32;
+            config.shadow = row[3].as_u64().unwrap() != 0;
+            config.reverse = row[4].as_u64().unwrap() != 0;
+            anim.runtime.constructor_reverse = row[5].as_u64().unwrap() != 0;
+            config.ping_pong = row[6].as_u64().unwrap() != 0;
+            anim.runtime.frame_step = row[7].as_i64().unwrap() as i32;
+            let expected = match row[8].as_str().unwrap() {
+                "continue" => AnimBoundary::Continue,
+                "bounce" => AnimBoundary::Bounce,
+                "boundary_loop" => AnimBoundary::Loop,
+                "boundary_terminal" => AnimBoundary::Complete,
+                other => panic!("unknown native decision {other}"),
+            };
+            assert_eq!(advance_anim_boundary(&mut anim, &config), expected, "{row}");
+            assert_eq!(
+                anim.runtime.frame_step,
+                row[9].as_i64().unwrap() as i32,
+                "{row}"
+            );
+            assert_eq!(
+                anim.runtime.loop_remaining,
+                row[10].as_u64().unwrap() as u8,
+                "{row}"
+            );
+            assert_eq!(
+                anim.runtime.current_frame,
+                row[11].as_i64().unwrap() as i32,
+                "{row}"
+            );
+        }
+    }
+
+    #[test]
+    fn combat_anim_shadow_endpoint_retires_in_runtime_and_survives_restore() {
+        use crate::sim::runtime::{SimResources, SimRuntime};
+        use crate::sim::snapshot::GameSnapshot;
+        use crate::sim::world::TickLane;
+
+        fn run(restore: bool) -> Vec<u64> {
+            // Explicit ART override on the existing combat producer. Bounds
+            // match native stock_FDHD rows; Rate=900/Normalized=no selects one
+            // frame per visit for this fixture. This is not a claim that retail
+            // NAMISL is produced by combat or that its Building host is bound.
+            let rules = runtime_rules(
+                "[TWLT036]\nStart=16\nLoopStart=0\nLoopEnd=32\nEnd=31\nShadow=yes\nRate=900\nNormalized=no\n\n\
+                 [NEIGHBOR]\nEnd=64\nLoopCount=-1\nRate=900\nNormalized=no\n",
+                &[("TWLT036", 64), ("NEIGHBOR", 64)],
+            );
+            // Native load resets Scenario RNG to seed zero. Keep this fixture
+            // on that stream so endpoint continuation is comparable across load.
+            let mut sim = Simulation::with_seed(0);
+            sim.session.map_name = "anim-boundary".to_string();
+            let explosion_type = sim.interner.intern("TWLT036");
+            let neighbor_type = sim.interner.intern("NEIGHBOR");
+            let explosion = sim
+                .spawn_combat_explosion_anim(
+                    &rules,
+                    explosion_type,
+                    7,
+                    9,
+                    crate::util::fixed_math::SIM_ZERO,
+                    crate::util::fixed_math::SIM_ZERO,
+                    0,
+                )
+                .unwrap();
+            let neighbor = sim
+                .spawn_combat_explosion_anim(
+                    &rules,
+                    neighbor_type,
+                    7,
+                    9,
+                    crate::util::fixed_math::SIM_ZERO,
+                    crate::util::fixed_math::SIM_ZERO,
+                    0,
+                )
+                .unwrap();
+            assert_eq!(sim.live_object_order_snapshot(), vec![explosion, neighbor]);
+            assert_eq!(sim.anim(explosion).unwrap().runtime.rate_reload, 1);
+            let mut resources = SimResources::empty();
+            resources.rules = rules;
+            let mut runtime = SimRuntime {
+                simulation: sim,
+                resources,
+            };
+            let mut hashes = Vec::new();
+            for frame in 0..=17 {
+                assert_eq!(runtime.simulation.session.binary_frame, frame);
+                if restore && frame == 8 {
+                    assert_eq!(
+                        runtime.simulation.rng_state().scenario,
+                        Simulation::with_seed(0).rng_state().scenario,
+                        "endpoint fixture has consumed no Scenario RNG"
+                    );
+                    let before = runtime.simulation.state_hash();
+                    let rules_hash = runtime.resources.rules.simulation_config_hash();
+                    let bytes = GameSnapshot::save_validated(
+                        &runtime.simulation,
+                        0x1234,
+                        rules_hash,
+                        "Anim boundary fixture",
+                        0,
+                    );
+                    let mut restored =
+                        GameSnapshot::load_validated(&bytes, 0x1234, rules_hash, "anim-boundary")
+                            .expect("valid live Anim snapshot")
+                            .sim;
+                    restored
+                        .restore_after_snapshot_load()
+                        .expect("live Anim references restore");
+                    restored.retain_in_scenario_process_state_from(&runtime.simulation);
+                    assert_eq!(restored.rng_state(), runtime.simulation.rng_state());
+                    runtime = SimRuntime::rebind_restored(Some(runtime), restored);
+                    assert_eq!(runtime.simulation.state_hash(), before);
+                }
+                let output = runtime.advance_frame(&[], 67, TickLane::Ordinary);
+                assert!(output.tick.frame_committed);
+                if frame < 16 {
+                    assert_eq!(
+                        runtime
+                            .simulation
+                            .anim(explosion)
+                            .unwrap()
+                            .runtime
+                            .current_frame,
+                        frame as i32
+                    );
+                    assert_eq!(
+                        runtime.simulation.live_object_order_snapshot(),
+                        vec![explosion, neighbor]
+                    );
+                } else {
+                    // Native golden stock_FDHD, loop1, stage16, Shadow1,
+                    // reverse0/constructor_reverse0/pingpong0 is terminal.
+                    // The actual live-vector pass removes the first object;
+                    // its shifted neighbor is skipped until the next pass.
+                    assert!(runtime.simulation.anim(explosion).is_none());
+                    assert_eq!(
+                        runtime.simulation.live_object_order_snapshot(),
+                        vec![neighbor]
+                    );
+                }
+                let neighbor_stage = if frame < 16 { frame } else { frame - 1 };
+                assert_eq!(
+                    runtime
+                        .simulation
+                        .anim(neighbor)
+                        .unwrap()
+                        .runtime
+                        .current_frame,
+                    neighbor_stage as i32
+                );
+                hashes.push(runtime.simulation.state_hash());
+            }
+            hashes
+        }
+        assert_eq!(run(false), run(true));
     }
 
     #[test]
