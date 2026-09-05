@@ -726,6 +726,79 @@ fn abort_missing_unload_building(sim: &mut Simulation, snap: &mut MinerSnapshot,
     snap.state = dock_abort_state(snap);
 }
 
+/// Contact-gone abandonment of an unload, `Mission_Unload @ 0x0073DEEB..0x0073DF55`.
+///
+/// Native side effects, in order:
+/// - `vtable+0x484 (0,1)` = `UnitClass::Enter_Idle_Mode @ 0x00738970`. With the
+///   CURRENT mission still Unload (`+0xAC == 0x10`) its final
+///   `Assign_Mission` is skipped (`0x00738D0x` gate excludes 0x19/0xB/0x10/9),
+///   and the harvester branch bails on `In_Radio_Contact` anyway; the
+///   `FootClass` base (`0x004D82B0`) only drops target/destination. No mission
+///   is assigned here — NOT a Harvest resume.
+/// - `+0x6D1 = 0`: the unload-active latch (and with it the UnloadingClass
+///   image) is cleared.
+/// - locomotor `Is_Moving` → `vtable+0x500` (`0x004D55C0` → locomotor
+///   `Stop_Moving`).
+/// - `Is_Ready_To_Commence` → `Commence`: only an already QUEUED mission is
+///   promoted (fieldwise no-op on an empty queue).
+/// - `return 1`: the unit stays in Unload and re-dispatches next frame, repeating
+///   this until something queues a mission for it.
+///
+/// Rust keeps the miner parked in `Pivoting` with the latch cleared, re-checking
+/// every frame; a promoted queued mission leaves the dock sequence through the
+/// same zeroed handler cursor the state-4 exit uses, and releases the miner's
+/// live contact and radio-bus slot exactly as that exit does.
+///
+/// Residual (VERA-internal, gamemd equivalent UNCHECKED beyond the dispatch
+/// order): native runs the `In_Radio_Contact` check at `0x0073DEE7` BEFORE the
+/// `+0xBC` state dispatch, so states 3 (dumping) and 4 (exit) abandon the unload
+/// on contact loss as well. Rust asks only at `Pivoting`; `Unloading` and
+/// `Departing` never re-check. No production path currently drops a contact
+/// without also resetting the dock phase (`interrupt_docked_miners`,
+/// `abort_invalid_refinery`, `abort_missing_unload_building`), so the gap has
+/// no trigger today; a future contact-drop that leaves the phase in place would
+/// let the drain continue one gate longer than native.
+fn abort_unload_contact_lost(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_sid: u64) {
+    if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
+        // Enter_Idle_Mode base: drop target/destination; +0x500: Stop_Moving.
+        entity.facing_target = None;
+        entity.movement_target = None;
+        entity.drive_track = None;
+        entity.forced_drive_track = None;
+        // +0x6D1 = 0 drops the UnloadingClass image with the latch.
+        entity.display_type_override = None;
+    }
+    snap.miner.dock_pivot_facing = None;
+    clear_unload_cluster(snap);
+
+    let now = sim.session.binary_frame;
+    let commenced = matches!(sim.mission_commence_exact(snap.entity_id, now), Ok(true));
+    if commenced {
+        // Commence zeroed the handler cursor (== SearchOre); the dock
+        // bookkeeping goes with it, as on the state-4 exit: registry slot and
+        // pad, radio-bus BREAK, and the miner's live-contact mirror.
+        sim.production
+            .dock_reservations
+            .cancel_miner(ref_sid, snap.entity_id);
+        bus_break(sim, snap.entity_id, ref_sid);
+        clear_refinery_contact(sim, snap.entity_id, ref_sid);
+        snap.miner.reserved_refinery = None;
+        snap.miner.dock_queued = false;
+        snap.miner.dock_phase = RefineryDockPhase::Approach;
+        clear_enter_retry(snap);
+        clear_mission_deploy_delay(snap);
+        snap.miner.exit_cell = None;
+        if snap.miner.is_full() {
+            snap.miner.target_ore_cell = None;
+        }
+        snap.state = MinerState::SearchOre;
+        return;
+    }
+    // `return 1`: re-dispatch next frame, still in the Unload-equivalent.
+    schedule_mission_deploy_delay(snap, now, 1);
+    snap.miner.dock_phase = RefineryDockPhase::Pivoting;
+}
+
 // ---------------------------------------------------------------------------
 // Main dock sequence handler
 // ---------------------------------------------------------------------------
@@ -1155,6 +1228,19 @@ fn phase_pivoting(
         return;
     }
 
+    // `0x0073DEE0`: every harvester-branch Unload dispatch first asks
+    // `RadioClass::In_Radio_Contact` (0x0065AE30, any non-null entry in the
+    // `+0xE4`×`+0xE8` contact array; mislabeled `PathType__Has_Valid_Steps`)
+    // BEFORE the facing gate. Contacts gone → the unload is abandoned.
+    if !sim
+        .production
+        .dock_reservations
+        .has_contact(ref_sid, snap.entity_id)
+    {
+        abort_unload_contact_lost(sim, snap, ref_sid);
+        return;
+    }
+
     if sync_dock_facing(sim, rules, snap) {
         // Mission 0x10 has reached its facing gate. Radio 0x15 only queued
         // that mission; unload-active effects begin here.
@@ -1299,11 +1385,15 @@ fn phase_unloading(
             }
         }
 
-        // One deposit event per slot drain — drives one SpecialAnim play
-        // and one smoke-particle spawn per slot.
+        // One deposit event per due dump gate. Native fires the refinery smoke
+        // burst (vtable+0x468, `0x0073E37E`) and the `+0x584 == NULL` SpecialAnim
+        // start (`0x0073E384..0x0073E3BA`) BEFORE it looks at the cargo, so the
+        // gate that drains a slot and the gate that finds nothing both emit.
         sim.bale_events.push(BaleDepositEvent {
             building_id: unload_building_id,
             tick: sim.session.tick,
+            drained: true,
+            empty: false,
         });
 
         snap.miner.unload_accumulator = 0;
@@ -1315,7 +1405,22 @@ fn phase_unloading(
     // returned -1, so stock Mission_Deploy_Building state 3 advances to
     // state 4. Do not seed another dump-gate cooldown here; the due
     // mission-deploy delay and accumulator gate have already fired.
-    snap.miner.home_refinery = mission_deploy_unload_building(sim, snap.entity_id);
+    //
+    // This gate still ran the smoke burst and the SpecialAnim-start check
+    // (`0x0073E37E..0x0073E3BA`), then `0x0073E4DC..0x0073E534`: slot-8
+    // ProductionAnim (stock GAREFN/NAREFN define none → no-op), `+0xBC = 4`,
+    // and `ClearAnimSlot(0xA)` while `+0x584` is still alive — the SpecialAnim
+    // is cut, not played out.
+    let unload_building = mission_deploy_unload_building(sim, snap.entity_id);
+    if let Some(building_id) = unload_building {
+        sim.bale_events.push(BaleDepositEvent {
+            building_id,
+            tick: sim.session.tick,
+            drained: false,
+            empty: true,
+        });
+    }
+    snap.miner.home_refinery = unload_building;
     schedule_mission_deploy_delay(snap, sim.session.binary_frame, 1);
     snap.miner.dock_phase = RefineryDockPhase::Departing;
 }

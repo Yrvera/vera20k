@@ -190,7 +190,9 @@ pub enum RefineryDockPhase {
     Pivoting,
     /// Per-slot deposit pulse. Each timer crossing (HarvesterDumpRate × 900
     /// = 14.4 ticks) drains one StorageClass slot — all bales of one
-    /// resource type at once — and emits a single BaleDepositEvent.
+    /// resource type at once — and emits one BaleDepositEvent per due gate
+    /// (`drained` on a slot drain, `empty` on the final no-cargo gate; the
+    /// refinery smoke burst fires on both, `0x0073E37E`).
     /// Slot order matches gamemd: Ore (slot 0) first, Gems (slot 1) second.
     /// On the first empty-slot gate after the last drain: transition to
     /// Departing for the stock state-4 cleanup.

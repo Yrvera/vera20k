@@ -5,8 +5,11 @@
 //! render the resulting entity components and particle systems without writing
 //! back into `Simulation`.
 //!
-//! Refinery provenance: `Mission_Deploy_Building @ 0x0073D630` reaches the
-//! due dump-gate particle emitter at `0x00459900`; see
+//! Refinery provenance: `UnitClass::Mission_Unload @ 0x0073D630` state 3 reaches
+//! the due dump-gate particle emitter through `BuildingClass` vtable+0x468
+//! (`0x007E4324` → `0x00459900`) on every due gate, starts SpecialAnim slot 10
+//! only while `+0x584 == NULL`, and cuts it with `ClearAnimSlot(0xA)` on the
+//! empty gate; see `consume_bale_events` and
 //! `docs/research/miner/REFINERY_DOCK_ANIM_SLOTS_GHIDRA_REPORT.md`. This slice
 //! preserves the existing Rust crane and bunker slot projections; their exact
 //! native trigger selection remains UNCHECKED here.
@@ -25,7 +28,7 @@ use super::Simulation;
 /// refinery bales reset their Special animation and spawn smoke, tank-bunker
 /// events apply their ordered wall animations, and only then do all active
 /// overlays receive this frame's logic visit.
-pub(super) fn finalize(
+pub(crate) fn finalize(
     sim: &mut Simulation,
     placed_building_owners: &[InternedId],
     frame_committed: bool,
@@ -181,6 +184,45 @@ fn trigger_crane_anim(sim: &mut Simulation, rules: &RuleSet, art: &ArtRegistry, 
     }
 }
 
+/// The `damaged` argument of the dump-gate `SetAnimSlotImage(10, damaged, 0, 0)`
+/// call: `Mission_Unload @ 0x0073E38E..0x0073E3AF` calls
+/// `ObjectClass::GetHealthRatio (0x005F5C60)` and `FCOMP`s it against
+/// `Rules+0x1700` — the `[General] ConditionYellow` ratio (`RulesClass::ReadINI`
+/// reads the "ConditionYellow" string at `0x0083A370`, loads the default from
+/// `+0x1700` at `0x0066B36A` and `FSTP`s the result back to `+0x1700` at
+/// `0x0066B37F`; ConditionRed follows at `+0x1708`). `damaged = ratio <=
+/// ConditionYellow`. Integer math keeps the sim float-free.
+fn at_or_below_condition_yellow(current: u16, max: u16, condition_yellow_x1000: i64) -> bool {
+    let current_x1000 = current as i64 * 1000;
+    let threshold_x1000 = max.max(1) as i64 * condition_yellow_x1000;
+    current_x1000 <= threshold_x1000
+}
+
+/// Refinery-side presentation of `Mission_Unload` state 3 dump gates
+/// (`0x0073E37A..0x0073E3BF`, `0x0073E4DC..0x0073E534`), one event per gate:
+///
+/// 1. `vtable+0x468` (`0x00459900`): for each non-zero
+///    `RefinerySmokeOffsetOne..Four` (`type+0x7CC/0x7D8/0x7E4/0x7F0`) a new
+///    `RefinerySmokeParticleSystem` (`type+0x774`) at building coord + offset.
+///    Fires on EVERY due gate, the empty one included.
+/// 2. `SetAnimSlotImage(10, damaged, 0, 0)` ONLY while `building+0x584 == NULL`
+///    (`0x0073E384`): a running SpecialAnim is never restarted.
+///    `SetAnimSlotImage @ 0x00451750` with `damaged != 0` reads ONLY the
+///    slot-local damaged name (`type + slot*0x44 + 0xF5C`, slot 10 =
+///    `SpecialAnimDamaged`) and returns without creating anything when it is
+///    empty — there is NO fallback to the base `SpecialAnim` (`+0xF4C`).
+///    Retail artmd.ini GAREFN/NAREFN define `SpecialAnim` but no
+///    `SpecialAnimDamaged`, so a yellow/red stock refinery unloads with smoke
+///    only.
+/// 3. Empty gate: `ClearAnimSlot(0xA)` while `+0x584` is alive (`0x0073E526..
+///    0x0073E534`) — the SpecialAnim is cut. (Slot-8 ProductionAnim is
+///    undefined for stock refineries, so its `SetAnimSlotImage` is a no-op.)
+///
+/// Follow-up (not implemented here): at `LAB_0073E539`, after a SUCCESSFUL
+/// drain, `unit+0x5A4 != 0 && queued mission ∉ {-1, 10}` (a player redirect
+/// mid-unload) also runs slot-8 `SetAnimSlotImage`, sets state 4 and
+/// `ClearAnimSlot(10)` on that gate. Rust cuts the SpecialAnim only on the
+/// empty gate; a mid-unload redirect currently lets it run until then.
 fn consume_bale_events(sim: &mut Simulation, rules: &RuleSet, art: &ArtRegistry) {
     if sim.bale_events.is_empty() {
         return;
@@ -188,7 +230,13 @@ fn consume_bale_events(sim: &mut Simulation, rules: &RuleSet, art: &ArtRegistry)
 
     struct PreparedBale {
         building_id: u64,
+        empty: bool,
+        /// (name, loop_start, loop_end, start_frame, rate) of the variant this
+        /// gate would start.
         special_anim: Option<(String, u16, u16, u16, u16)>,
+        /// Every name the SpecialAnim slot can hold (base + Damaged variant),
+        /// for the live-slot test and the empty-gate cut.
+        special_slot_names: Vec<String>,
         particle_spawns: Vec<(
             crate::rules::particle_system_type::ParticleSystemTypeId,
             glam::IVec3,
@@ -208,23 +256,54 @@ fn consume_bale_events(sim: &mut Simulation, rules: &RuleSet, art: &ArtRegistry)
             let Some(art_entry) = art.resolve_metadata_entry(type_name, &object.image) else {
                 continue;
             };
+            let damaged = at_or_below_condition_yellow(
+                building.health.current,
+                building.health.max,
+                rules.general.condition_yellow_x1000,
+            );
 
-            let special_anim = art_entry.building_anims.iter().find_map(|anim| {
-                if !matches!(anim.kind, BuildingAnimKind::Special)
-                    || anim.loop_end <= anim.loop_start
-                {
+            let special_config = art_entry
+                .building_anims
+                .iter()
+                .find(|anim| matches!(anim.kind, BuildingAnimKind::Special));
+            let special_slot_names: Vec<String> = special_config
+                .map(|config| {
+                    let mut names = vec![config.anim_type.to_uppercase()];
+                    if let Some(variant) = &config.damaged_variant {
+                        names.push(variant.anim_type.to_uppercase());
+                    }
+                    names
+                })
+                .unwrap_or_default();
+            let special_anim = special_config.and_then(|config| {
+                let (name, loop_start, loop_end, start_frame) =
+                    match (damaged, &config.damaged_variant) {
+                        (true, Some(variant)) => (
+                            variant.anim_type.as_str(),
+                            variant.loop_start,
+                            variant.loop_end,
+                            variant.start_frame.max(variant.loop_start),
+                        ),
+                        // `SetAnimSlotImage(…, damaged=1)` reads only `+0xF5C`
+                        // (SpecialAnimDamaged) and creates nothing when it is
+                        // empty; no fallback to the base SpecialAnim.
+                        (true, None) => return None,
+                        (false, _) => (
+                            config.anim_type.as_str(),
+                            config.loop_start,
+                            config.loop_end,
+                            config.start_frame.max(config.loop_start),
+                        ),
+                    };
+                if loop_end <= loop_start {
                     return None;
                 }
                 Some((
-                    anim.anim_type.to_uppercase(),
-                    anim.loop_start,
-                    anim.loop_end,
-                    anim.start_frame.max(anim.loop_start),
-                    building_anim_rate_logic_frames(
-                        art,
-                        &anim.anim_type,
-                        Some(&sim.session.game_options),
-                    ),
+                    name.to_uppercase(),
+                    loop_start,
+                    loop_end,
+                    start_frame,
+                    building_anim_rate_logic_frames(art, name, Some(&sim.session.game_options)),
                 ))
             });
 
@@ -245,7 +324,9 @@ fn consume_bale_events(sim: &mut Simulation, rules: &RuleSet, art: &ArtRegistry)
             }
             prepared.push(PreparedBale {
                 building_id: event.building_id,
+                empty: event.empty,
                 special_anim,
+                special_slot_names,
                 particle_spawns,
             });
         }
@@ -253,28 +334,51 @@ fn consume_bale_events(sim: &mut Simulation, rules: &RuleSet, art: &ArtRegistry)
     };
 
     for event in prepared {
-        if let Some((anim_name, loop_start, loop_end, start_frame, rate)) = event.special_anim {
-            let anim_type = sim.interner.intern(&anim_name);
-            let new_state = AnimOverlayState {
-                anim_type,
-                frame: start_frame,
-                loop_start,
-                loop_end,
-                rate_logic_frames: u32::from(rate),
-                elapsed_logic_frames: 0,
-                finished: false,
-            };
-            if let Some(building) = sim.entities_mut().get_mut(event.building_id) {
-                if let Some(overlays) = building.building_anim_overlays.as_mut() {
-                    if let Some(existing) = overlays
+        let slot_names: Vec<InternedId> = event
+            .special_slot_names
+            .iter()
+            .map(|name| sim.interner.intern(name))
+            .collect();
+        let new_state =
+            event
+                .special_anim
+                .map(
+                    |(anim_name, loop_start, loop_end, start_frame, rate)| AnimOverlayState {
+                        anim_type: sim.interner.intern(&anim_name),
+                        frame: start_frame,
+                        loop_start,
+                        loop_end,
+                        rate_logic_frames: u32::from(rate),
+                        elapsed_logic_frames: 0,
+                        finished: false,
+                    },
+                );
+        if let Some(building) = sim.entities_mut().get_mut(event.building_id) {
+            let slot_live = building
+                .building_anim_overlays
+                .as_ref()
+                .is_some_and(|overlays| {
+                    overlays
                         .anims
-                        .iter_mut()
-                        .find(|active| active.anim_type == anim_type)
-                    {
-                        *existing = new_state;
-                    } else {
-                        overlays.anims.push(new_state);
+                        .iter()
+                        .any(|active| slot_names.contains(&active.anim_type))
+                });
+            if event.empty {
+                // `ClearAnimSlot(0xA)`: cut whatever the slot holds. (The
+                // `+0x584 == NULL` start that precedes it on this gate would
+                // be cleared in the same dispatch, so it is not materialized.)
+                if slot_live && let Some(overlays) = building.building_anim_overlays.as_mut() {
+                    overlays
+                        .anims
+                        .retain(|active| !slot_names.contains(&active.anim_type));
+                    if overlays.anims.is_empty() {
+                        building.building_anim_overlays = None;
                     }
+                }
+            } else if !slot_live && let Some(new_state) = new_state {
+                // `+0x584 == NULL` → `SetAnimSlotImage(10, …)`.
+                if let Some(overlays) = building.building_anim_overlays.as_mut() {
+                    overlays.anims.push(new_state);
                 } else {
                     building.building_anim_overlays = Some(BuildingAnimOverlays {
                         anims: vec![new_state],
@@ -639,6 +743,8 @@ mod tests {
         sim.bale_events.push(BaleDepositEvent {
             building_id: 41,
             tick: 12,
+            drained: true,
+            empty: false,
         });
 
         let queued_hash = sim.state_hash();
@@ -685,6 +791,126 @@ mod tests {
         assert_eq!(sim.state_hash(), finalized_hash);
     }
 
+    /// Put the building exactly AT the ConditionYellow ratio: the native gate
+    /// is `GetHealthRatio <= Rules+0x1700` (`FCOMP` @ 0x0073E39B), so the
+    /// boundary itself selects the damaged image.
+    fn set_health_at_condition_yellow(sim: &mut Simulation, rules: &RuleSet, building_id: u64) {
+        let building = sim.entities_mut().get_mut(building_id).expect("building");
+        building.health.max = 1000;
+        building.health.current =
+            u16::try_from(rules.general.condition_yellow_x1000).expect("ratio fits");
+    }
+
+    #[test]
+    fn damaged_refinery_without_special_anim_damaged_smokes_but_starts_no_overlay() {
+        // Retail GAREFN/NAREFN: SpecialAnim only, no SpecialAnimDamaged.
+        // `SetAnimSlotImage(10, 1, 0, 0)` reads an empty `+0xF5C` and returns.
+        let rules = refinery_rules_and_art();
+        let mut sim = Simulation::new();
+        insert_building(&mut sim, 41, "GAREFN", 7, 9);
+        set_health_at_condition_yellow(&mut sim, &rules, 41);
+
+        // Ore-only unload: the ore drain gate, then the empty gate.
+        sim.bale_events.push(BaleDepositEvent {
+            building_id: 41,
+            tick: 12,
+            drained: true,
+            empty: false,
+        });
+        finalize(&mut sim, &[], true, Some(&rules));
+        assert_eq!(sim.particle_systems().len(), 1, "drain gate smokes");
+        assert!(
+            sim.entities()
+                .get(41)
+                .expect("refinery")
+                .building_anim_overlays
+                .is_none(),
+            "no SpecialAnimDamaged defined: nothing starts in slot 10"
+        );
+
+        sim.bale_events.push(BaleDepositEvent {
+            building_id: 41,
+            tick: 27,
+            drained: false,
+            empty: true,
+        });
+        finalize(&mut sim, &[], true, Some(&rules));
+        assert_eq!(sim.particle_systems().len(), 2, "empty gate smokes too");
+        assert!(
+            sim.entities()
+                .get(41)
+                .expect("refinery")
+                .building_anim_overlays
+                .is_none(),
+            "empty-gate ClearAnimSlot(0xA) has nothing to cut"
+        );
+        assert!(sim.bale_events.is_empty());
+    }
+
+    #[test]
+    fn damaged_refinery_uses_defined_special_anim_damaged_variant() {
+        let mut rules = refinery_rules_and_art();
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[GAREFN]\n\
+             SpecialAnim=GAREFN_B\n\
+             SpecialAnimDamaged=GAREFN_BD\n\
+             [GAREFN_B]\n\
+             Start=2\n\
+             LoopStart=1\n\
+             LoopEnd=5\n\
+             Rate=300\n\
+             [GAREFN_BD]\n\
+             Start=3\n\
+             LoopStart=2\n\
+             LoopEnd=6\n\
+             Rate=300\n",
+        ));
+        rules.merge_art_data(&art);
+        let mut sim = Simulation::new();
+        insert_building(&mut sim, 41, "GAREFN", 7, 9);
+        set_health_at_condition_yellow(&mut sim, &rules, 41);
+
+        sim.bale_events.push(BaleDepositEvent {
+            building_id: 41,
+            tick: 12,
+            drained: true,
+            empty: false,
+        });
+        finalize(&mut sim, &[], true, Some(&rules));
+
+        let overlays = sim
+            .entities()
+            .get(41)
+            .expect("refinery")
+            .building_anim_overlays
+            .as_ref()
+            .expect("damaged variant starts");
+        assert_eq!(overlays.anims.len(), 1);
+        let overlay = &overlays.anims[0];
+        assert_eq!(sim.interner.resolve(overlay.anim_type), "GAREFN_BD");
+        assert_eq!(overlay.frame, 3);
+        assert_eq!(overlay.loop_start, 2);
+        assert_eq!(overlay.loop_end, 6);
+        assert_eq!(sim.particle_systems().len(), 1);
+
+        // The empty gate cuts the damaged variant like the base one.
+        sim.bale_events.push(BaleDepositEvent {
+            building_id: 41,
+            tick: 27,
+            drained: false,
+            empty: true,
+        });
+        finalize(&mut sim, &[], true, Some(&rules));
+        assert!(
+            sim.entities()
+                .get(41)
+                .expect("refinery")
+                .building_anim_overlays
+                .is_none(),
+            "ClearAnimSlot(0xA) cuts the damaged variant"
+        );
+    }
+
     #[test]
     fn bale_event_waits_for_complete_rules_art_then_drains_once() {
         let rules = refinery_rules_and_art();
@@ -697,6 +923,8 @@ mod tests {
         sim.bale_events.push(BaleDepositEvent {
             building_id: 41,
             tick: 12,
+            drained: true,
+            empty: false,
         });
 
         finalize(&mut sim, &[], true, None);
@@ -721,6 +949,8 @@ mod tests {
         sim.bale_events.push(BaleDepositEvent {
             building_id: 41,
             tick: 12,
+            drained: true,
+            empty: false,
         });
         sim
     }
@@ -776,6 +1006,8 @@ mod tests {
         sim.bale_events.push(BaleDepositEvent {
             building_id: 41,
             tick: 12,
+            drained: true,
+            empty: false,
         });
 
         let output = sim.advance_app_frame(

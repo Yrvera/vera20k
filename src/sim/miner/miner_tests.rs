@@ -4437,12 +4437,19 @@ fn unloading_emits_one_event_per_slot_drain() {
 
     tick_miners_n(&mut sim, &rules, 200);
 
+    let drained: Vec<_> = sim.bale_events.iter().filter(|e| e.drained).collect();
+    assert_eq!(
+        drained.len(),
+        1,
+        "pure-ore cargo must drain in one slot dump = one drain BaleDepositEvent",
+    );
+    assert_eq!(drained[0].building_id, 2);
     assert_eq!(
         sim.bale_events.len(),
-        1,
-        "pure-ore cargo must drain in one slot dump = one BaleDepositEvent",
+        2,
+        "the empty gate that ends state 3 emits its own (smoke-only) event",
     );
-    assert_eq!(sim.bale_events[0].building_id, 2);
+    assert!(sim.bale_events[1].empty && !sim.bale_events[1].drained);
 
     // --- 5 ore + 3 gems = 2 slots → 2 events ---
     let mut sim = Simulation::new();
@@ -4477,9 +4484,14 @@ fn unloading_emits_one_event_per_slot_drain() {
     tick_miners_n(&mut sim, &rules, 200);
 
     assert_eq!(
-        sim.bale_events.len(),
+        sim.bale_events.iter().filter(|e| e.drained).count(),
         2,
-        "ore + gem cargo must produce two BaleDepositEvents (one per slot)",
+        "ore + gem cargo must produce two drain BaleDepositEvents (one per slot)",
+    );
+    assert_eq!(
+        sim.bale_events.len(),
+        3,
+        "two drain gates plus the empty gate",
     );
     for event in &sim.bale_events {
         assert_eq!(event.building_id, 2);
@@ -5235,13 +5247,23 @@ fn full_dock_cycle_war_miner() {
     // 10 bales x ~14 ticks unload, then stock state-4 handoff.
     tick_miners_n(&mut sim, &rules, 400);
 
-    // Bale events: one per slot drain. Pre-loaded with pure ore → 1 slot → 1 event.
+    // Bale events: one per due dump gate. Pure ore → 1 slot drain + the empty
+    // gate that ends state 3 (both fire the refinery smoke burst, 0x0073E37E).
+    let drained = sim.bale_events.iter().filter(|e| e.drained).count();
     assert_eq!(
-        sim.bale_events.len(),
+        drained,
         1,
-        "expected 1 bale event (one slot drain), got {}",
+        "expected 1 slot-drain event, got {} of {}",
+        drained,
         sim.bale_events.len(),
     );
+    assert_eq!(
+        sim.bale_events.len(),
+        2,
+        "expected the drain gate plus the empty gate, got {}",
+        sim.bale_events.len(),
+    );
+    assert!(sim.bale_events[1].empty, "the last gate found no cargo");
 
     // Credits: bale_count * bale_value (no purifier in miner_rules).
     let credits_after = credits_for_owner(&sim, "Americans");
@@ -7819,11 +7841,16 @@ fn harvest_seam_dispatch_matches_miner_fsm() {
     let credits_before = credits_for_owner(&sim, "Americans");
     tick_miners_n(&mut sim, &rules, 400);
 
-    // One slot drain → one bale event; full ore payout (10 × 25).
+    // One slot drain → one drain event (plus the empty gate); full ore payout (10 × 25).
+    assert_eq!(
+        sim.bale_events.iter().filter(|e| e.drained).count(),
+        1,
+        "seam: one slot drain → one drain event"
+    );
     assert_eq!(
         sim.bale_events.len(),
-        1,
-        "seam: one slot drain → one bale event"
+        2,
+        "seam: drain gate plus the empty gate"
     );
     assert_eq!(
         credits_for_owner(&sim, "Americans") - credits_before,
@@ -8884,4 +8911,431 @@ fn refinery_selection_too_far_test_uses_foundation_centre() {
         Some(3),
         "free refinery inside HarvesterTooFarDistance by centre distance must win the narrow pass",
     );
+}
+
+// ---------------------------------------------------------------------------
+// GSI-07.39: refinery-side unload presentation (Mission_Unload state 3 gates)
+// and the contact-gone abandonment at unload start.
+// ---------------------------------------------------------------------------
+
+/// `miner_rules()` plus a refinery smoke particle system and a long-running
+/// SpecialAnim so the overlay is still alive at the next 15-frame gate.
+fn miner_rules_with_refinery_art() -> RuleSet {
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n\
+         0=HARV\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         0=GAREFN\n\
+         [Particles]\n\
+         0=RefSmokeParticle\n\
+         [ParticleSystems]\n\
+         0=RefSmokeSystem\n\
+         [HARV]\n\
+         Name=War Miner\n\
+         Cost=1400\n\
+         Strength=600\n\
+         Armor=heavy\n\
+         Speed=4\n\
+         ROT=5\n\
+         Sight=5\n\
+         TechLevel=1\n\
+         Owner=Americans\n\
+         Harvester=yes\n\
+         Dock=GAREFN\n\
+         [GAREFN]\n\
+         Name=Ore Refinery\n\
+         Image=GAREFN\n\
+         Cost=2000\n\
+         Strength=900\n\
+         Armor=wood\n\
+         TechLevel=1\n\
+         Owner=Americans\n\
+         Foundation=4x3\n\
+         Refinery=yes\n\
+         RefinerySmokeParticleSystem=RefSmokeSystem\n\
+         RefinerySmokeOffsetOne=10,-20,30\n\
+         [RefSmokeParticle]\n\
+         BehavesLike=Smoke\n\
+         MaxEC=10\n\
+         MaxDC=4\n\
+         StartStateAI=0\n\
+         EndStateAI=10\n\
+         StateAIAdvance=4\n\
+         [RefSmokeSystem]\n\
+         BehavesLike=Smoke\n\
+         HoldsWhat=RefSmokeParticle\n\
+         Spawns=yes\n\
+         ParticleCap=10\n\
+         SpawnFrames=1\n\
+         Lifetime=200\n",
+    );
+    let mut rules = RuleSet::from_ini(&ini).expect("miner rules with refinery art");
+    let art = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
+        "[GAREFN]\n\
+         SpecialAnim=GAREFNOR\n\
+         [GAREFNOR]\n\
+         Start=0\n\
+         LoopStart=0\n\
+         LoopEnd=200\n\
+         Rate=100\n",
+    ));
+    rules.merge_art_data(&art);
+    rules
+}
+
+/// Miner on the pad facing East, `MissionQueued`, with the given cargo and a
+/// registry contact (the HELLO admission the dock FSM reads).
+fn spawn_queued_unload_miner(sim: &mut Simulation, cargo: &[(ResourceType, u16)]) -> u64 {
+    spawn_refinery(sim, 2, 10, 10);
+    let miner_id = spawn_miner(sim, 1, MinerKind::War, 13, 11);
+    {
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
+        entity.movement_target = None;
+        entity.facing = 0x40;
+        let miner = entity.miner.as_mut().expect("miner component");
+        for (resource_type, value) in cargo {
+            miner.cargo.push(CargoBale {
+                resource_type: *resource_type,
+                value: *value,
+            });
+        }
+        entity.mission.set_handler_state(MinerState::Dock.cursor());
+        miner.dock_phase = RefineryDockPhase::MissionQueued;
+        miner.reserved_refinery = Some(2);
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+    // The frame tail's smoke spawn registers the particle system in the live
+    // object order; once that order is non-empty `tick_miners` walks only it,
+    // so both fixture objects must be members too.
+    for id in [2, miner_id] {
+        sim.substrate.logic.try_push(id).expect("logic slot");
+        sim.substrate
+            .entities
+            .get_mut(id)
+            .expect("fixture entity")
+            .in_logic_vector = true;
+    }
+    miner_id
+}
+
+/// Per-tick observation of the refinery presentation: smoke system count and
+/// whether the SpecialAnim slot is live after this tick's frame tail.
+struct UnloadPresentationTrace {
+    smoke_count: Vec<usize>,
+    slot_live: Vec<bool>,
+}
+
+fn trace_unload_presentation(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    ticks: usize,
+) -> UnloadPresentationTrace {
+    let special = sim.interner.intern("GAREFNOR");
+    let mut trace = UnloadPresentationTrace {
+        smoke_count: Vec::with_capacity(ticks),
+        slot_live: Vec::with_capacity(ticks),
+    };
+    for _ in 0..ticks {
+        tick_miners_n(sim, rules, 1);
+        // The authoritative frame tail that consumes the bale events.
+        crate::sim::world::building_anim::finalize(sim, &[], true, Some(rules));
+        trace.smoke_count.push(sim.particle_systems().len());
+        trace.slot_live.push(
+            sim.substrate
+                .entities
+                .get(2)
+                .expect("refinery")
+                .building_anim_overlays
+                .as_ref()
+                .is_some_and(|o| o.anims.iter().any(|a| a.anim_type == special)),
+        );
+    }
+    trace
+}
+
+/// Ticks at which the SpecialAnim slot went absent → live (a `SetAnimSlotImage(10)`).
+fn slot_starts(trace: &UnloadPresentationTrace) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut prev = false;
+    for (i, live) in trace.slot_live.iter().enumerate() {
+        if *live && !prev {
+            starts.push(i + 1);
+        }
+        prev = *live;
+    }
+    starts
+}
+
+/// Ticks at which the smoke count rose (one refinery burst per due gate).
+fn smoke_bursts(trace: &UnloadPresentationTrace) -> Vec<usize> {
+    let mut bursts = Vec::new();
+    let mut prev = 0usize;
+    for (i, count) in trace.smoke_count.iter().enumerate() {
+        if *count > prev {
+            bursts.push(i + 1);
+        }
+        prev = *count;
+    }
+    bursts
+}
+
+/// Ore-only cargo: two due gates (ore drain, then the empty gate). Native
+/// `0x0073E37E` fires the vtable+0x468 smoke burst on both, starts the
+/// SpecialAnim once (`+0x584 == NULL`), and `ClearAnimSlot(0xA)` cuts it on the
+/// empty gate ~15 frames after it started.
+#[test]
+fn ore_only_unload_smokes_twice_and_cuts_special_anim_on_empty_gate() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules_with_refinery_art();
+    let miner_id = spawn_queued_unload_miner(&mut sim, &[(ResourceType::Ore, 25); 5]);
+
+    let trace = trace_unload_presentation(&mut sim, &rules, 60);
+
+    let bursts = smoke_bursts(&trace);
+    assert_eq!(
+        bursts.len(),
+        2,
+        "ore-only: one smoke burst per due gate (ore drain + empty gate), got {bursts:?}"
+    );
+    assert_eq!(
+        *trace.smoke_count.last().expect("trace"),
+        2,
+        "two RefinerySmokeParticleSystem instances (one offset defined)"
+    );
+    let starts = slot_starts(&trace);
+    assert_eq!(
+        starts.len(),
+        1,
+        "SpecialAnim starts exactly once, got starts at {starts:?}"
+    );
+    assert_eq!(
+        starts[0], bursts[0],
+        "SpecialAnim starts on the first (ore) gate"
+    );
+    let gap = bursts[1] - bursts[0];
+    assert!(
+        (14..=16).contains(&gap),
+        "empty gate follows the drain by one HarvesterDumpRate×900 gate (~15 frames), got {gap}"
+    );
+    assert!(
+        trace.slot_live[bursts[1] - 2],
+        "SpecialAnim still live the tick before the empty gate (not played out)"
+    );
+    assert!(
+        !trace.slot_live[bursts[1] - 1],
+        "empty gate cuts the SpecialAnim (ClearAnimSlot 0xA @ 0x0073E534)"
+    );
+    assert!(
+        !trace.slot_live.last().expect("trace"),
+        "SpecialAnim stays cleared after the unload"
+    );
+    assert!(get_miner(&sim, miner_id).cargo.is_empty(), "cargo drained");
+}
+
+/// Ore + gem cargo: three due gates (ore, gem, empty). Smoke ×3; the
+/// SpecialAnim started on the ore gate is still alive on the gem gate, so
+/// `+0x584 != NULL` skips the restart (`0x0073E38C`), and the empty gate cuts it.
+#[test]
+fn ore_and_gem_unload_smokes_thrice_and_starts_special_anim_once() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules_with_refinery_art();
+    let mut cargo = vec![(ResourceType::Ore, 25u16); 5];
+    cargo.extend([(ResourceType::Gem, 50u16); 3]);
+    let miner_id = spawn_queued_unload_miner(&mut sim, &cargo);
+
+    let trace = trace_unload_presentation(&mut sim, &rules, 80);
+
+    let bursts = smoke_bursts(&trace);
+    assert_eq!(
+        bursts.len(),
+        3,
+        "ore+gem: one smoke burst per due gate (ore, gem, empty), got {bursts:?}"
+    );
+    assert_eq!(*trace.smoke_count.last().expect("trace"), 3);
+    for pair in bursts.windows(2) {
+        let gap = pair[1] - pair[0];
+        assert!(
+            (14..=16).contains(&gap),
+            "gates are one HarvesterDumpRate×900 apart (~15 frames), got {gap} in {bursts:?}"
+        );
+    }
+    let starts = slot_starts(&trace);
+    assert_eq!(
+        starts,
+        vec![bursts[0]],
+        "SpecialAnim starts on the ore gate only; the gem gate finds +0x584 live and does not restart"
+    );
+    assert!(
+        trace.slot_live[bursts[1] - 1],
+        "SpecialAnim is live through the gem gate"
+    );
+    assert!(
+        !trace.slot_live[bursts[2] - 1],
+        "empty gate cuts the SpecialAnim"
+    );
+    assert!(get_miner(&sim, miner_id).cargo.is_empty());
+}
+
+/// Contact gone between MissionQueued and unload start (`0x0073DEE0`):
+/// `In_Radio_Contact` false → `Enter_Idle_Mode(0,1)` (no mission assigned
+/// while the current mission is Unload), `+0x6D1 = 0`, Stop_Moving, Commence of
+/// a queued mission only, `return 1`. The miner abandons the unload without
+/// depositing and parks, re-dispatching each frame, until a mission is queued.
+#[test]
+fn contact_gone_at_unload_start_abandons_unload_without_deposit() {
+    use crate::sim::mission::{MissionId, MissionType};
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules_with_refinery_art();
+    let capacity = {
+        let m = Miner::new(MinerKind::War, &MinerConfig::default(), 0);
+        m.capacity_bales as usize
+    };
+    let cargo = vec![(ResourceType::Ore, 25u16); capacity];
+    let miner_id = spawn_queued_unload_miner(&mut sim, &cargo);
+    let credits_before = credits_for_owner(&sim, "Americans");
+
+    // Tick 1: MissionQueued → Pivoting (radio 0x15 only queued mission 0x10).
+    tick_miners_n(&mut sim, &rules, 1);
+    assert_eq!(
+        get_miner(&sim, miner_id).dock_phase,
+        RefineryDockPhase::Pivoting
+    );
+
+    // Seed the bus/live-contact shadow the HELLO path would have left so the
+    // exit's release is observable: refinery radio slot + miner mirror.
+    crate::sim::miner::miner_dock_sequence::bus_hello(&mut sim, miner_id, 2, 1, true);
+    sim.substrate
+        .entities
+        .get_mut(miner_id)
+        .expect("miner")
+        .mark_live_contact_with(2);
+    assert!(
+        sim.substrate
+            .entities
+            .get(2)
+            .expect("refinery")
+            .radio_contacts
+            .contains(miner_id)
+    );
+
+    // The refinery drops the contact before the Unload dispatch runs.
+    sim.production
+        .dock_reservations
+        .release_contact(2, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 40);
+    crate::sim::world::building_anim::finalize(&mut sim, &[], true, Some(&rules));
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(m.cargo.len(), capacity, "no slot drained without a contact");
+    assert_eq!(
+        credits_for_owner(&sim, "Americans"),
+        credits_before,
+        "no deposit credited"
+    );
+    assert!(sim.bale_events.is_empty(), "no dump-gate event emitted");
+    assert!(
+        sim.particle_systems().is_empty(),
+        "no refinery smoke burst without a contact"
+    );
+    assert!(!m.unload_active, "+0x6D1 unload latch cleared");
+    assert_eq!(
+        m.dock_phase,
+        RefineryDockPhase::Pivoting,
+        "parked in the Unload-equivalent, re-dispatching each frame"
+    );
+    assert_eq!(m.state, MinerState::Dock);
+    let entity = sim.substrate.entities.get(miner_id).expect("miner");
+    assert_eq!(
+        entity.display_type_override, None,
+        "UnloadingClass image dropped with the latch"
+    );
+    assert!(entity.movement_target.is_none(), "Stop_Moving");
+
+    // A queued mission is what ends the loop: Is_Ready_To_Commence → Commence
+    // promotes it and the dock sequence is left through the zeroed cursor.
+    let now = sim.session.binary_frame;
+    sim.mission_queue_exact(
+        miner_id,
+        MissionId::from_known(MissionType::Harvest),
+        0,
+        now,
+        &crate::sim::mission::authority::EntityReadyInputProvider,
+    )
+    .expect("miner exists");
+    tick_miners_n(&mut sim, &rules, 1);
+    let m = get_miner(&sim, miner_id);
+    assert_ne!(
+        m.state,
+        MinerState::Dock,
+        "commenced mission leaves the dock"
+    );
+    assert_eq!(m.dock_phase, RefineryDockPhase::Approach);
+    assert_eq!(m.reserved_refinery, None);
+    assert_eq!(m.cargo.len(), capacity, "cargo still intact");
+    // The exit releases the contact the way the state-4 exit does: bus BREAK
+    // and the miner's live-contact mirror both drop.
+    let entity = sim.substrate.entities.get(miner_id).expect("miner");
+    assert!(
+        !entity.has_live_contact_with(2),
+        "commenced exit clears the miner's live contact"
+    );
+    assert_eq!(
+        entity.dock_entered_with, None,
+        "bus BREAK clears dock_entered_with"
+    );
+    assert!(
+        !sim.substrate
+            .entities
+            .get(2)
+            .expect("refinery")
+            .radio_contacts
+            .contains(miner_id),
+        "bus BREAK frees the refinery radio slot"
+    );
+    assert!(!sim.production.dock_reservations.has_contact(2, miner_id));
+}
+
+/// Retail GAREFN/NAREFN define `SpecialAnim` but no `SpecialAnimDamaged`.
+/// `SetAnimSlotImage(10, damaged=1, …) @ 0x00451750` reads only the slot-local
+/// damaged name (`+0xF5C`) and creates nothing when it is empty, so a refinery
+/// at/below ConditionYellow (`GetHealthRatio <= Rules+0x1700`, `0x0073E39B`)
+/// unloads with the smoke bursts only.
+#[test]
+fn damaged_refinery_ore_only_unload_smokes_twice_without_special_anim() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules_with_refinery_art();
+    let miner_id = spawn_queued_unload_miner(&mut sim, &[(ResourceType::Ore, 25); 5]);
+    {
+        let refinery = sim.substrate.entities.get_mut(2).expect("refinery");
+        refinery.health.max = 1000;
+        refinery.health.current =
+            u16::try_from(rules.general.condition_yellow_x1000).expect("ratio fits");
+    }
+
+    let trace = trace_unload_presentation(&mut sim, &rules, 60);
+
+    let bursts = smoke_bursts(&trace);
+    assert_eq!(
+        bursts.len(),
+        2,
+        "damaged refinery still smokes on both due gates, got {bursts:?}"
+    );
+    assert_eq!(*trace.smoke_count.last().expect("trace"), 2);
+    assert!(
+        slot_starts(&trace).is_empty(),
+        "no SpecialAnimDamaged defined: slot 10 never starts"
+    );
+    assert!(
+        trace.slot_live.iter().all(|live| !live),
+        "base SpecialAnim is never used as a fallback"
+    );
+    assert!(get_miner(&sim, miner_id).cargo.is_empty(), "cargo drained");
 }
