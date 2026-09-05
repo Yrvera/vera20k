@@ -1666,17 +1666,31 @@ fn chrono_return_within_too_far_threshold_uses_close_radio_path() {
 }
 
 // ==========================================================================
-// Chrono close/far return radio threshold pins.
+// Chrono close/far return radio threshold pins. The distance is measured to
+// `BuildingClass::GetCoords @ 0x00447AC0` = the 4x3 foundation centre: NW
+// (10, 10) -> centre (3072, 2944) leptons, i.e. the centre of cell (12, 11).
+// A miner in cell (62, 11) with sub_x = 0 sits at x = 15872, exactly 50 cells
+// (12800 leptons) east of that point with dy = dz = 0. Native runs
+// `ftol(Sqrt_Approx(d²)) <= 50*256`; the `Sqrt_Approx @ 0x004CAC40` table
+// rounds down, so d = 12801 -> 12800.64 -> 12800 is still close and d = 12802
+// is the first far distance.
 // ==========================================================================
 #[test]
-fn chrono_return_at_exact_too_far_threshold_uses_close_radio_path() {
+fn chrono_return_at_sqrt_approx_too_far_edge_uses_close_radio_path() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let config = MinerConfig::from_general_rules(&rules.general);
     let grid = PathGrid::new(96, 96);
 
     spawn_refinery(&mut sim, 2, 10, 10);
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 60, 10);
+    // 12801 leptons: one past the exact threshold, inside the table edge.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 62, 11);
+    sim.substrate
+        .entities
+        .get_mut(miner_id)
+        .expect("miner entity")
+        .position
+        .sub_x = crate::util::fixed_math::SimFixed::from_num(1);
 
     {
         let entity = sim
@@ -1700,7 +1714,7 @@ fn chrono_return_at_exact_too_far_threshold_uses_close_radio_path() {
     let miner = entity.miner.as_ref().expect("miner component");
     assert!(
         entity.teleport_state.is_none(),
-        "strict > threshold means exactly 50 cells is still the close radio path"
+        "12801 leptons truncates to 12800 through Sqrt_Approx: still the close radio path"
     );
     assert_eq!(entity.miner_state().unwrap(), MinerState::Dock);
     assert_eq!(miner.dock_phase, RefineryDockPhase::MissionEnter);
@@ -1715,7 +1729,14 @@ fn chrono_return_over_too_far_threshold_uses_queueingcell_teleport() {
     let grid = PathGrid::new(96, 96);
 
     spawn_refinery(&mut sim, 2, 10, 10);
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 61, 10);
+    // 12802 leptons: the first distance Sqrt_Approx + ftol reads as > 12800.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 62, 11);
+    sim.substrate
+        .entities
+        .get_mut(miner_id)
+        .expect("miner entity")
+        .position
+        .sub_x = crate::util::fixed_math::SimFixed::from_num(2);
 
     {
         let entity = sim
@@ -8517,5 +8538,350 @@ fn stop_does_not_force_guard_on_a_non_miner() {
         tank.mission.current().known(),
         Some(MissionType::Guard),
         "the Guard force-assign is the ore-miner arm only"
+    );
+}
+
+// ==========================================================================
+// GSI-09.05 refinery selection: Mission_Harvest @ 0x0073E5E0 state 2 →
+// Find_Docking_Bay @ 0x004DF040 → FUN_004DEE80 (own-house scan) →
+// Receive_Radio(0xF) @ 0x0043C2D0. The narrow pass (free contact slot) is
+// used only inside the kind's too-far distance; otherwise the wide pass
+// (g_MapEditorMode++) picks the nearest own refinery regardless. A docked
+// miner occupies its refinery through Contacts[] (HELLO) — the +0x118
+// passenger gate of case 0xF is inert for stock refineries.
+// ==========================================================================
+
+/// Fill the miner and park its cursor on ReturnToRefinery with no
+/// reservation, so the next dispatch runs refinery selection.
+fn fill_and_return(sim: &mut Simulation, miner_id: u64) {
+    let entity = sim
+        .substrate
+        .entities
+        .get_mut(miner_id)
+        .expect("miner entity");
+    let miner = entity.miner.as_mut().expect("miner component");
+    for _ in 0..miner.capacity_bales {
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+    }
+    miner.reserved_refinery = None;
+    entity
+        .mission
+        .set_handler_state(MinerState::ReturnToRefinery.cursor());
+}
+
+/// Put a live occupant into a refinery's `Contacts[]` (HELLO accepted) and
+/// optionally onto its pad. The occupant is a plain alive unit entity (no
+/// miner component) so `cleanup_dead` keeps the contact and the occupant's
+/// own dispatch cannot release it.
+fn occupy_refinery(sim: &mut Simulation, refinery_sid: u64, occupant_sid: u64, on_pad: bool) {
+    let owner_id = sim.interner.intern("Americans");
+    let type_id = sim.interner.intern("HARV");
+    let mut ge = GameEntity::new_at_frame_zero_for_test(
+        occupant_sid,
+        40,
+        40,
+        0,
+        0,
+        owner_id,
+        Health {
+            current: 600,
+            max: 600,
+        },
+        type_id,
+        EntityCategory::Unit,
+        0,
+        5,
+        true,
+    );
+    ge.lifecycle.in_limbo = false;
+    sim.substrate.entities.insert(ge);
+    if sim.substrate.next_stable_object_id <= occupant_sid {
+        sim.substrate.next_stable_object_id = occupant_sid + 1;
+    }
+    assert_eq!(
+        sim.production
+            .dock_reservations
+            .hello_or_wait(refinery_sid, occupant_sid, 1),
+        crate::sim::miner::miner_dock::ContactAdmission::Accepted,
+    );
+    if on_pad {
+        sim.production
+            .dock_reservations
+            .link_on_pad(refinery_sid, occupant_sid);
+    }
+}
+
+/// `FUN_004DEE80` walks only the owner house's building list (House+0x6C):
+/// a nearer refinery of another house is never a return target.
+#[test]
+fn refinery_selection_ignores_other_house_refinery() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
+    spawn_structure_owned(&mut sim, 2, "GAREFN", "French", 7, 10);
+    spawn_refinery(&mut sim, 3, 30, 10);
+    fill_and_return(&mut sim, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    assert_eq!(
+        get_miner(&sim, miner_id).reserved_refinery,
+        Some(3),
+        "own-house refinery must win over a nearer foreign one",
+    );
+}
+
+/// An ALLIED house's nearer refinery is ignored too: the scan reads
+/// `Owner+0x6C`, never an ally's list (the old Rust accepted allies).
+#[test]
+fn refinery_selection_ignores_nearer_allied_refinery() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    sim.house_alliances
+        .entry("AMERICANS".to_string())
+        .or_default()
+        .insert("FRENCH".to_string());
+    sim.house_alliances
+        .entry("FRENCH".to_string())
+        .or_default()
+        .insert("AMERICANS".to_string());
+    assert!(crate::map::houses::are_houses_friendly(
+        &sim.house_alliances,
+        "Americans",
+        "French"
+    ));
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
+    spawn_structure_owned(&mut sim, 2, "GAREFN", "French", 7, 10);
+    spawn_refinery(&mut sim, 3, 30, 10);
+    fill_and_return(&mut sim, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    assert_eq!(
+        get_miner(&sim, miner_id).reserved_refinery,
+        Some(3),
+        "own-house refinery must win over a nearer allied one",
+    );
+}
+
+/// With only another house's refinery on the map the scan finds nothing:
+/// the miner does not convoy to (and pay) the other house.
+#[test]
+fn refinery_selection_with_only_foreign_refinery_finds_nothing() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
+    spawn_structure_owned(&mut sim, 2, "GAREFN", "French", 7, 10);
+    fill_and_return(&mut sim, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(m.reserved_refinery, None);
+    assert_eq!(m.state, MinerState::WaitNoOre);
+}
+
+/// Narrow pass inside HarvesterTooFarDistance (5 cells): the nearer refinery
+/// with a docked miner (holding its single `Contacts[]` slot and the pad;
+/// `FUN_0065ADF0` false → scanner skip / Receive_Radio 0xF returns 10) loses
+/// to the farther free one.
+#[test]
+fn refinery_selection_narrow_pass_skips_docked_refinery_within_close_radius() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
+    spawn_refinery(&mut sim, 2, 6, 10);
+    spawn_refinery(&mut sim, 3, 8, 10);
+    occupy_refinery(&mut sim, 2, 99, true);
+    fill_and_return(&mut sim, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    assert_eq!(
+        get_miner(&sim, miner_id).reserved_refinery,
+        Some(3),
+        "docked near refinery must lose to the farther free refinery",
+    );
+}
+
+/// A pad link WITHOUT a contact slot is not a native gate: case 0xF's
+/// `+0x118` (FirstPassenger) is never set by the stock refinery unload path
+/// (no `CargoClass::AddPassenger @ 0x004733A0` caller there), so the nearer
+/// refinery still wins.
+#[test]
+fn refinery_selection_pad_link_alone_does_not_reject() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
+    spawn_refinery(&mut sim, 2, 6, 10);
+    spawn_refinery(&mut sim, 3, 8, 10);
+    sim.production.dock_reservations.link_on_pad(2, 99);
+    fill_and_return(&mut sim, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    assert_eq!(get_miner(&sim, miner_id).reserved_refinery, Some(2));
+}
+
+/// Same as the docked case for a HARV: full `Contacts[]` alone (no pad link)
+/// rejects the nearer refinery in the narrow pass.
+#[test]
+fn refinery_selection_narrow_pass_skips_full_contacts_for_harv() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
+    spawn_refinery(&mut sim, 2, 6, 10);
+    spawn_refinery(&mut sim, 3, 8, 10);
+    occupy_refinery(&mut sim, 2, 99, false);
+    fill_and_return(&mut sim, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    assert_eq!(get_miner(&sim, miner_id).reserved_refinery, Some(3));
+}
+
+/// Narrow pass: full `Contacts[]` (`FUN_0065ADF0` false) rejects the nearer
+/// refinery; chrono miners use ChronoHarvTooFarDistance (50 cells) so the
+/// farther free refinery is still a narrow-pass HELLO target.
+#[test]
+fn refinery_selection_narrow_pass_skips_full_contacts_for_chrono() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 5, 10);
+    spawn_refinery(&mut sim, 2, 8, 10);
+    spawn_refinery(&mut sim, 3, 20, 10);
+    occupy_refinery(&mut sim, 2, 99, false);
+    fill_and_return(&mut sim, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    assert_eq!(
+        get_miner(&sim, miner_id).reserved_refinery,
+        Some(3),
+        "saturated near refinery must lose to the farther free one",
+    );
+}
+
+/// The narrow result is only used inside the too-far distance. A HARV whose
+/// only free refinery is 15 cells away falls to the wide pass, which picks
+/// the nearest own refinery even with a miner docked (drive up and wait).
+#[test]
+fn refinery_selection_wide_pass_when_free_refinery_is_beyond_too_far() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
+    spawn_refinery(&mut sim, 2, 8, 10);
+    spawn_refinery(&mut sim, 3, 20, 10);
+    occupy_refinery(&mut sim, 2, 99, true);
+    fill_and_return(&mut sim, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    assert_eq!(
+        get_miner(&sim, miner_id).reserved_refinery,
+        Some(2),
+        "beyond HarvesterTooFarDistance the wide pass takes the nearest refinery",
+    );
+}
+
+/// Wide fallback: every own refinery saturated and occupied still yields the
+/// nearest one; the miner keeps returning instead of idling.
+#[test]
+fn refinery_selection_wide_pass_falls_back_to_occupied_refinery() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    occupy_refinery(&mut sim, 2, 99, true);
+    fill_and_return(&mut sim, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(m.reserved_refinery, Some(2));
+    assert_ne!(m.state, MinerState::WaitNoOre);
+}
+
+/// A miner already in a refinery's `Contacts[]` passes the narrow probe at
+/// capacity (`FUN_0065ADF0` matches the caller), so it is not evicted to a
+/// farther refinery.
+#[test]
+fn refinery_selection_keeps_already_tracked_refinery() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
+    spawn_refinery(&mut sim, 2, 6, 10);
+    spawn_refinery(&mut sim, 3, 8, 10);
+    assert_eq!(
+        sim.production
+            .dock_reservations
+            .hello_or_wait(2, miner_id, 1),
+        crate::sim::miner::miner_dock::ContactAdmission::Accepted,
+    );
+    fill_and_return(&mut sim, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    assert_eq!(get_miner(&sim, miner_id).reserved_refinery, Some(2));
+}
+
+/// `Can_Reach_Zone` gate of `FUN_004DEE80`: a nearer refinery in a zone the
+/// miner cannot reach is skipped in both passes.
+#[test]
+fn refinery_selection_skips_unreachable_zone_refinery() {
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    // Wall down column x=12 splits the 32x32 map into two zones.
+    let mut grid = PathGrid::new(32, 32);
+    for y in 0..32 {
+        grid.set_blocked(12, y, true);
+    }
+    sim.zone_grid = Some(ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32));
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
+    // Nearer, but across the wall (dock cell (17, 11)).
+    spawn_refinery(&mut sim, 2, 14, 10);
+    // Farther, same side (dock cell (5, 23)).
+    spawn_refinery(&mut sim, 3, 2, 22);
+    fill_and_return(&mut sim, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    assert_eq!(
+        get_miner(&sim, miner_id).reserved_refinery,
+        Some(3),
+        "unreachable-zone refinery must be skipped for the reachable one",
+    );
+}
+
+/// The state-2 too-far test measures to `BuildingClass::GetCoords @
+/// 0x00447AC0` = the foundation centre, not the NW cell. Miner at (16, 12);
+/// refinery 2 at NW (10, 10) is occupied, refinery 3 at NW (10, 13) is free.
+/// Centre distances (cells²): 2 -> 21.25 (dx = 1152, dy = 256), 3 -> 24.25
+/// (dx = 1152, dy = -512 -> 1,589,248 leptons²) — both inside 5² = 25, so the
+/// narrow pass keeps refinery 3. Measured to the NW cell, refinery 3 would be
+/// sqrt(37) away (too far), the wide pass would run and hand the miner the
+/// nearer, occupied refinery 2 instead.
+#[test]
+fn refinery_selection_too_far_test_uses_foundation_centre() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 16, 12);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    spawn_refinery(&mut sim, 3, 10, 13);
+    occupy_refinery(&mut sim, 2, 99, true);
+    fill_and_return(&mut sim, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    assert_eq!(
+        get_miner(&sim, miner_id).reserved_refinery,
+        Some(3),
+        "free refinery inside HarvesterTooFarDistance by centre distance must win the narrow pass",
     );
 }

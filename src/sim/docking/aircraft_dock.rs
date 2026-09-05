@@ -19,7 +19,7 @@
 //! Both call into `AirfieldDocks` for pad allocation.
 //!
 //! Uses the two-phase snapshot pattern from `building_dock.rs` and follows
-//! the `find_nearest_refinery()` approach from `miner_system.rs`.
+//! the own-house refinery ranking in `miner_system.rs` (`find_docking_bay`).
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/, sim/components, sim/air_movement,
