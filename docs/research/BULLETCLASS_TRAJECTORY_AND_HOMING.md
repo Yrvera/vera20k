@@ -55,11 +55,60 @@ Non-Arcing Voxel pitch reads parameter-target and source virtual `+48` Z, choosi
 
 For directed ordinary launch (`ROT!=0 || Dropping`), Unit `+308` selects live turret facing only when Type.Turret is set, otherwise live hull facing; Infantry uses hull and Aircraft uses turret. Dropping then replaces the launch origin with source `+48`, retaining the delta already calculated from FLH. Building `+308` has separate target/pixel-offset/quantization producers and remains open. Stock RadialFireSegments has one positive type, AEGIS=10; both selected Medusa weapons use ROT=20, excluding radial spread from the bounded ordinary launch consumer by active data.
 
-Native save/load preserves these bits: Bullet virtual `+30` resolves through `7E4714` to `46B540`, which returns size `160` hex. Save `46AFB0→410320` and Load `46AE70→5F5E80→410380` write/read that full object size. Subsequent pointer/timer fixups do not reconstruct velocity. This is a velocity-only preservation proof: Load calls `46B640` for timers B8/C4, replacing their start frame with current `A8ED84` and duration with zero. Rust timer-load equivalence remains open; an unchanged Rust Projectile round trip is not a native timer certificate. The active save group `67E013→6802F0` enumerates Bullet registry `A8ED40`, requests its same-object IPersistStream receiver, and invokes OleSaveToStream. The matching load group reads count at `67F118` and invokes OleLoadFromStream at `67F138`; both groups have the same position among 21 consecutive object groups immediately before raw registry `A83D50`. WinMain registers Bullet GUID `7E96E0` with factory `6C4FC0`; factory `6C5090` invokes constructor `466380`, whose vtable supplies Load/Save above. Rust uses `NativeF64Bits` components and snapshot version 129, including the Floater policy and removing duplicate Vertical direction/captured gravity. Rules compatibility hash v5 includes canonical effective Projectile Voxel and Building Height, using the same Height resolver as combat. ART order, absent-versus-explicit defaults, and unused presentation fields do not substitute for those consumed values.
+Native save/load preserves these bits: Bullet virtual `+30` resolves through `7E4714` to `46B540`, which returns size `160` hex. Save `46AFB0→410320` and Load `46AE70→5F5E80→410380` write/read that full object size. Subsequent pointer/timer fixups do not reconstruct velocity. This is a velocity-only preservation proof: Load calls `46B640` for timers B8/C4, replacing their start frame with current `A8ED84` and duration with zero. The separate timer lifecycle is established in §1.3b; an unchanged raw Rust Projectile round trip alone is not a native load certificate. The active save group `67E013→6802F0` enumerates Bullet registry `A8ED40`, requests its same-object IPersistStream receiver, and invokes OleSaveToStream. The matching load group reads count at `67F118` and invokes OleLoadFromStream at `67F138`; both groups have the same position among 21 consecutive object groups immediately before raw registry `A83D50`. WinMain registers Bullet GUID `7E96E0` with factory `6C4FC0`; factory `6C5090` invokes constructor `466380`, whose vtable supplies Load/Save above. Snapshot 129 introduced Rust `NativeF64Bits` components and the Floater policy while removing duplicate Vertical direction/captured gravity; current snapshot 130 also stores the timer and Dropping authority described below. Rules compatibility hash v5 includes canonical effective Projectile Voxel and Building Height, using the same Height resolver as combat. ART order, absent-versus-explicit defaults, and unused presentation fields do not substitute for those consumed values.
 
 Executable comparisons in `tools/projectile_oracle/` cover FireAt through actual BulletFire (`fireat_launch`, `voxel_launch`, `building_pitch`, `directed_launch`, `arc_second_probe`), isolated solver domains (`arc_domain`), and repeated ordinary/Vertical motion (`ordinary_motion`, `vertical_motion`). World/receiver inputs and any leaf hooks are explicit in each generator. Motion fixtures carry input bits as hex as well as human-readable decimals, preventing JSON float parsing from changing the supplied native state. These tests do not emulate a complete retail scenario.
 
 **Open:** upstream FLH/pivot slope and locomotor translation, directed Building heading, scatter arithmetic, homing launch/steering and pitch, shrapnel launch math/target coordinates, and active NukeMaker child production remain unclosed. NukeMaker's actual `46B310` path creates literal NukePayload; the current Rust dispatch still logs without creating that child. Its original launch includes tiny nonzero XY and Z=-1 with separate Speed=10, and its spawn Z uses the parent DetonationAltitude. Downstream warhead completeness is separate. These residuals keep GSI-08.06/07/08 and Phase 6 open; exact supplied-input math alone is a prerequisite, not a whole-row certificate.
+
+### 1.3b Bullet proximity timers and save/load
+
+`Fire 468A3F..468A93` calls the target's virtual `+2C` WhatAmI. Aircraft's
+`7E22A4 + 2C → 41C180` returns 2 and selects Arm zero, independent of altitude.
+Other targets and null use the signed `BulletType+2F0` value parsed from the
+literal `Arm` at `81B168` (`46BF14..46BF21`). This is an identity test, not a
+GetLayer/ground-target test. Both ordinary FireAt and shrapnel production now
+resolve that policy before admission; unimplemented producers remain open.
+
+The sole `4E1130` caller is Fire `468A93`. It starts detector `+0/+8`
+(Bullet B8/C0) with `max(Arm, INT_MAX)`, hence INT_MAX, and detector `+C/+14`
+(Bullet C4/CC) with Arm. Both starts use global frame `A8ED84`. `Check 4E11F0`,
+called only at AI `467C35` under ROT>0 or Ranged, consumes only C4/CC. Its
+signed wrapping frame difference, start=-1 sentinel and exact zero admission
+match the shared Rust `CdTimer`. Collision impact admission bypasses Arm. Init evaluates `(dx²+dz²)+dy²`;
+Check evaluates `(dx²+dy²)+dz²`. The scoped Rust kernels preserve those
+orders and the low DWORD of native ftol, including extreme signed coordinates.
+Dropping (`Type+29C`, literal `81B0DC`, parser `46C069..46C07A`) still
+calls Check under ROT>0 or Ranged. Its saved watermark may change before
+detector-only admission is suppressed; collision admission retains the detector
+mode. Both production producers use ROT>0 or Ranged for this consumption gate.
+
+`Load 46AE70` reads the full object and then invokes `46B640` on B8 and C4;
+the helper replaces each start with the current frame and duration with zero.
+The global reader `67F9C0` restores frame at `67FA1F`; content loader calls it
+at `67E8B5`, before Bullet's stream group at `67F118/67F138`. Thus positive
+Arm becomes immediately eligible after load. Reference D0/D4/D8, watermark DC,
+and binary64 velocity survive. A failed first stream read returns before resets.
+The original first timer has no demonstrated expiry/lifetime consumer: the
+Bullet bodies, embedded detector calls and inherited CRC `5F6250` do not test
+B8/C0. Rust's test-only synthetic fuse is not that native timer.
+
+Rust snapshot 130 stores the single signed frame timer, hashes it, captures
+`session.binary_frame` at actual projectile admission, evaluates the live frame
+at the Logic visit, and re-anchors to zero duration during validated restoration.
+The native generator `tools/projectile_oracle/load_timers.py` executes Fire's
+late producer, concrete target identity receivers, Save, global frame read,
+Load and Check in 877 controlled cases, plus 4,385 original AI admission
+visits; IStream and pointer-registry leaves
+are supplied. This establishes timer/body behavior, not a complete saved retail
+scenario replay. Runtime regression compares an un-loaded positive-Arm shot
+with its restored counterpart through normal Logic and immediate damage/removal.
+The native same-pass scheduling frontier remains open: the native forward
+Logic walk reloads its count and can visit appended objects; the current
+ordinary Rust FireAt batch delays new bullets until the next frame. The new
+frame timer does not certify scheduler equivalence. Stock Dropping is authored
+on V3AirburstP, but its incoming weapon reachability remains unresolved. All
+broader projectile row residuals in §1.3a remain open.
 
 ### 1.4 Inaccurate Projectiles
 

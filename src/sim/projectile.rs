@@ -462,6 +462,8 @@ pub struct ProjectileCollisionPolicy {
     pub subject_to_walls: bool,
     /// Ordinary non-guided `BulletClass::Update` floor/bridge/content probe.
     pub native_cell_collision: bool,
+    /// Dropping suppresses detector-only admission, after Check runs and may update its watermark.
+    pub dropping: bool,
     pub subject_to_cliffs: bool,
     pub flak_scatter: bool,
     pub anti_air: bool,
@@ -478,6 +480,7 @@ impl ProjectileCollisionPolicy {
         level_non_water: false,
         subject_to_walls: false,
         native_cell_collision: false,
+        dropping: false,
         subject_to_cliffs: false,
         flak_scatter: false,
         anti_air: false,
@@ -1070,8 +1073,8 @@ pub struct ProjectileSpawn {
     /// Present only for a `BulletTypeClass::ROT` guided flight.
     pub guidance: Option<ProjectileGuidance>,
     pub visual: ProjectileVisualState,
-    /// A projectile may not detonate until this many frames have elapsed.
-    pub arm_frames: u16,
+    /// Signed proximity-only delay supplied to Fire; impacts bypass this gate.
+    pub arm_frames: i32,
     /// Optional fuse duration; zero means the fuse detonates on this advance.
     pub fuse_frames: Option<u16>,
     /// `ROT > 0 || Ranged` admits the native closest-approach fuse helper.
@@ -1105,7 +1108,8 @@ pub struct Projectile {
     pub trajectory: ProjectileTrajectory,
     pub guidance: Option<ProjectileGuidance>,
     pub visual: ProjectileVisualState,
-    pub arm_frames_remaining: u16,
+    /// Bullet+C4/CC: global frame anchor and signed proximity delay.
+    pub arm_timer: crate::sim::timer::CdTimer,
     pub fuse_frames_remaining: Option<u16>,
     pub ranged_fuse: bool,
     pub last_distance_half: i32,
@@ -1215,7 +1219,12 @@ impl ProjectileStore {
     // AbstractClass::AssignUniqueID @ 0x00410230 obtains this identity from
     // ScenarioClass::NextUniqueID @ 0x0068BCB0; the store never owns a second
     // allocator.
+    #[cfg(test)]
     pub fn spawn(&mut self, id: u64, spawn: ProjectileSpawn) -> u64 {
+        self.spawn_at(id, 0, spawn)
+    }
+
+    pub(crate) fn spawn_at(&mut self, id: u64, binary_frame: u32, spawn: ProjectileSpawn) -> u64 {
         self.projectiles.insert(
             id,
             Projectile {
@@ -1234,13 +1243,19 @@ impl ProjectileStore {
                 trajectory: spawn.trajectory,
                 guidance: spawn.guidance,
                 visual: spawn.visual,
-                arm_frames_remaining: spawn.arm_frames,
+                arm_timer: crate::sim::timer::CdTimer::started(
+                    binary_frame as i32,
+                    spawn.arm_frames,
+                ),
                 fuse_frames_remaining: spawn.fuse_frames,
                 ranged_fuse: spawn.ranged_fuse,
                 // `ProximityDetector::Setup @ 0x004E1130` seeds `+0x24` with
                 // the FULL launch distance from the bullet to its reference
                 // coordinate, not the halved form `Check` writes afterwards.
-                last_distance_half: coord_distance(spawn.origin, spawn.initial_target_position),
+                last_distance_half: proximity_initial_distance(
+                    spawn.origin,
+                    spawn.initial_target_position,
+                ),
                 tracks_target: spawn.tracks_target,
                 target_expiry: spawn.target_expiry,
                 collision: spawn.collision,
@@ -1389,54 +1404,6 @@ impl ProjectileStore {
             // YR BulletClass::Update @ 0x004666e0 advances the image bytes
             // before entering the trajectory portion of BulletClass::AI.
             projectile.visual.advance();
-
-            // The arm gate is a WALL-CLOCK frame delta, not a count of AI
-            // visits: `ProximityDetector::Setup @ 0x004E1130` stores
-            // `g_CurrentFrameCounter` into detector `+0x0C` at launch and
-            // `ProximityDetector::Check @ 0x004E11F0` admits the fuse on
-            // `Arm (+0x14) <= g_CurrentFrameCounter - [+0x0C]`. VERA admits a
-            // projectile only AFTER the live-object pass
-            // (`World::advance_tick` -> `tick_combat_with_fatal_lifecycle` ->
-            // `Simulation::admit_projectile`, `world/mod.rs`; the follow-up
-            // tail walk `visit_combat_appended_wave_tail` visits Waves only),
-            // so a projectile's first `advance_one` runs on the tick after
-            // launch, where the native delta is already 1. Decrementing at the
-            // top of the frame therefore reproduces `Arm <= elapsed` on every
-            // frame — and it does so whether or not native's LogicClass pass
-            // also runs a launch-frame `BulletClass::AI`, because that question
-            // changes how many AI visits precede a frame, not the frame delta.
-            // Nothing else consults `Arm`: the detonation admission at
-            // `BulletClass::AI 0x00467C70` never tests it.
-            //
-            // One exception to "only AFTER the live-object pass", noted for
-            // accuracy rather than as a defect: shrapnel children are admitted
-            // from INSIDE the walk — `object_ai_visit_one` calls
-            // `commit_logic_projectile_detonations` (`world/techno_ai.rs`) and
-            // `for_each_live_object` reloads the length each iteration — so
-            // such a child IS visited in its own launch tick, where a
-            // decrement-at-top would arm it one frame early. Inert in stock:
-            // the only `ShrapnelWeapon=` chains are
-            // `SuperCometFragment`/`TeslaFragment`/`CometFragment` ->
-            // `[SuperSmallCometP]`/`[SmallTeslaP]`/`[SmallCometP]`, all
-            // `Inviso=yes` with no `Ranged=` and no `Arm=`, so no shrapnel child
-            // carries a fuse and this counter never runs for one.
-            //
-            // RESIDUAL (VERA-internal, gamemd equivalent UNCHECKED): native's
-            // `LogicClass::PerTickUpdate @ 0x0055AFB0` object loop reloads its
-            // count after every `vtable+0x5C` callback and
-            // `LogicClass::RegisterObject @ 0x0055BAA0` tail-appends, so a
-            // bullet fired from an earlier index MAY take a launch-frame AI
-            // that VERA skips; the Ghidra plate comment on `BulletClass::AI`
-            // records same-pass execution of a concrete appended object as
-            // UNCHECKED. Trigger: every persistent projectile. Player effect:
-            // the shot's whole flight is one frame behind native, so it lands
-            // one frame late — at the new 1-4 leptons/frame launch speed that
-            // is a few leptons of travel. Frequency: every tracked shot.
-            // Downstream risk: deterministic state only; the arm gate above is
-            // unaffected because it is keyed on the frame counter.
-            if projectile.arm_frames_remaining > 0 {
-                projectile.arm_frames_remaining -= 1;
-            }
 
             let previous_position = projectile.position;
             let previous_velocity = projectile.velocity;
@@ -1754,8 +1721,8 @@ impl ProjectileStore {
 
             // `ProximityDetector::Check @ 0x004E11F0`. The reference is the
             // coordinate frozen at launch, the Arm counter gates this result
-            // and nothing else, and `Dropping=` suppresses it entirely at
-            // `0x00467C78` — folded into `ranged_fuse` at construction.
+            // and nothing else. Dropping suppresses only detector-driven admission
+            // after Check, preserving its watermark and collision-side result.
             let mut fuse_mode = 0;
             if projectile.ranged_fuse {
                 let reference = projectile
@@ -1763,8 +1730,8 @@ impl ProjectileStore {
                     .map_or(projectile.last_target_position, |guidance| {
                         guidance.fuse_reference
                     });
-                if projectile.arm_frames_remaining == 0 {
-                    let distance = coord_distance(selected_candidate, reference);
+                if projectile.arm_timer.expired(binary_frame as i32) {
+                    let distance = proximity_check_distance(selected_candidate, reference);
                     let (mode, next_distance) =
                         ranged_fuse_distance_step(distance, projectile.last_distance_half);
                     projectile.last_distance_half = next_distance;
@@ -1776,7 +1743,7 @@ impl ProjectileStore {
             // Pointer cleanup can clear the source between flight visits.
             fuse_mode = projectile_fuse_mode(fuse_mode, source_is_jumpjet);
 
-            if !impact_flag && fuse_mode == 0 {
+            if !projectile_impact_admitted(impact_flag, fuse_mode, projectile.collision.dropping) {
                 projectile.position = candidate;
                 projectile.previous_cell = ((candidate.x / 256) as i16, (candidate.y / 256) as i16);
                 continue;
@@ -1875,8 +1842,12 @@ impl ProjectileStore {
     }
 }
 
-/// YR ranged/ROT helper at `BulletClass::AI`: 0 continues, 1 is within the
-/// 0x20 half-distance threshold, and 2 has passed closest approach nearby.
+/// AI 467C70..467C84 preserves Check state even when Dropping suppresses admission.
+fn projectile_impact_admitted(impact: bool, detector_mode: i32, dropping: bool) -> bool {
+    impact || (!dropping && detector_mode != 0)
+}
+
+/// Detector result: 0 continues, 1 is within 0x20 half-distance, 2 passed nearby.
 pub fn ranged_fuse_distance_step(distance_fistp: i32, last_distance: i32) -> (i32, i32) {
     let distance_half = (distance_fistp - (distance_fistp >> 31)) >> 1;
     if distance_half < 0x20 {
@@ -1897,6 +1868,16 @@ pub(crate) fn coord_distance(a: ProjectileCoord, b: ProjectileCoord) -> i32 {
         a.z.wrapping_sub(b.z),
         a.y.wrapping_sub(b.y),
     ]) as i32
+}
+
+/// Detector Init 4E11A9 evaluates (dx²+dz²)+dy², then returns ftol's low DWORD.
+fn proximity_initial_distance(a: ProjectileCoord, b: ProjectileCoord) -> i32 {
+    crate::util::native_x87::distance_3d_leptons([a.x, a.z, a.y], [b.x, b.z, b.y])
+}
+
+/// Detector Check 4E1241 instead evaluates (dx²+dy²)+dz².
+fn proximity_check_distance(a: ProjectileCoord, b: ProjectileCoord) -> i32 {
+    crate::util::native_x87::distance_3d_leptons([a.x, a.y, a.z], [b.x, b.y, b.z])
 }
 
 /// `CellClass::GetGroundHeight @ 0x00578080`: signed /256, fixed-512
@@ -2730,6 +2711,107 @@ mod tests {
         projectile.visual.advance();
         assert_eq!(projectile.visual.runtime_frame, 2);
         assert_eq!(projectile.visual.runtime_countdown, 3);
+    }
+
+    #[test]
+    fn projectile_load_timers_match_original_fire_save_load_and_check() {
+        use crate::sim::timer::CdTimer;
+        let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../tools/projectile_oracle/load_timers.json"
+        ))
+        .unwrap();
+        assert_eq!(rows.len(), 877);
+        for row in rows {
+            let produced = &row["produced"]["arm"];
+            let mut timer = CdTimer::from_raw(
+                produced[0].as_i64().unwrap() as i32,
+                produced[1].as_i64().unwrap() as i32,
+            );
+            let now = row["saved_frame"].as_u64().unwrap() as i32;
+            let point = |name: &str| {
+                let xyz = &row[name];
+                ProjectileCoord::new(
+                    xyz[0].as_i64().unwrap() as i32,
+                    xyz[1].as_i64().unwrap() as i32,
+                    xyz[2].as_i64().unwrap() as i32,
+                )
+            };
+            let distance = proximity_check_distance(point("candidate"), point("reference"));
+            let initial_watermark = proximity_initial_distance(point("origin"), point("reference"));
+            assert_eq!(
+                i64::from(initial_watermark),
+                row["produced"]["watermark"].as_i64().unwrap()
+            );
+            let (mode, watermark) = if timer.expired(now) {
+                ranged_fuse_distance_step(distance, initial_watermark)
+            } else {
+                (0, initial_watermark)
+            };
+            assert_eq!(
+                i64::from(mode),
+                row["before_mode"].as_i64().unwrap(),
+                "{row}"
+            );
+            assert_eq!(
+                i64::from(watermark),
+                row["before"]["watermark"].as_i64().unwrap(),
+                "{row}"
+            );
+            if !row["failed_load"].as_bool().unwrap() {
+                timer.start(now, 0);
+            }
+            assert_eq!(
+                i64::from(timer.start_frame()),
+                row["loaded"]["arm"][0].as_i64().unwrap()
+            );
+            assert_eq!(
+                i64::from(timer.duration()),
+                row["loaded"]["arm"][1].as_i64().unwrap()
+            );
+            let (mode, watermark) = if timer.expired(now) {
+                ranged_fuse_distance_step(distance, watermark)
+            } else {
+                (0, watermark)
+            };
+            assert_eq!(
+                i64::from(mode),
+                row["after_mode"].as_i64().unwrap(),
+                "{row}"
+            );
+            assert_eq!(
+                i64::from(watermark),
+                row["after"]["watermark"].as_i64().unwrap(),
+                "{row}"
+            );
+            for admission in row["admission"].as_array().unwrap() {
+                let mut mode = 0;
+                let mut distance_mark = row["loaded"]["watermark"].as_i64().unwrap() as i32;
+                if (admission["rot"].as_i64().unwrap() > 0 || admission["ranged"] == true)
+                    && timer.expired(now)
+                {
+                    (mode, distance_mark) = ranged_fuse_distance_step(distance, distance_mark);
+                }
+                assert_eq!(
+                    i64::from(mode),
+                    admission["mode"].as_i64().unwrap(),
+                    "{row}"
+                );
+                assert_eq!(
+                    i64::from(distance_mark),
+                    admission["watermark"].as_i64().unwrap(),
+                    "{row}"
+                );
+                assert_eq!(
+                    projectile_impact_admitted(
+                        admission["impact"] == true,
+                        mode,
+                        admission["dropping"] == true
+                    ),
+                    admission["detonate"] == true,
+                    "{row}"
+                );
+            }
+        }
     }
 
     #[test]

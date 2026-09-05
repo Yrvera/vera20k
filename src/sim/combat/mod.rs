@@ -178,6 +178,18 @@ impl UnitFacingUpdate {
     }
 }
 
+/// Fire 468A49 dispatches target WhatAmI (+2C); Aircraft's 41C180
+/// returns 2 and selects zero Arm independently of current altitude/layer.
+fn projectile_arm_delay(arm: i32, target: ProjectileTarget, entities: &EntityStore) -> i32 {
+    if matches!(target, ProjectileTarget::Entity(id)
+        if entities.get(id).is_some_and(|entity| entity.category == EntityCategory::Aircraft))
+    {
+        0
+    } else {
+        arm
+    }
+}
+
 /// Explicitly classified delivery decision at weapon fire.
 ///
 /// Unsupported projectile behaviors intentionally remain on the established
@@ -185,7 +197,7 @@ impl UnitFacingUpdate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProjectileDelivery {
     Persistent {
-        arm_frames: u16,
+        arm_frames: i32,
         tracks_target: bool,
         collision: ProjectileCollisionPolicy,
         ballistic: bool,
@@ -298,12 +310,13 @@ fn classify_projectile_delivery(
     // participates.
     let ballistic = projectile.arcing;
     ProjectileDelivery::Persistent {
-        arm_frames: projectile.arm.max(0).min(u16::MAX as i32) as u16,
+        arm_frames: projectile.arm,
         tracks_target: projectile.rot > 0,
         collision: ProjectileCollisionPolicy {
             level_non_water: projectile.level,
             subject_to_walls: projectile.subject_to_walls,
             native_cell_collision: projectile.rot <= 0 && !projectile.vertical,
+            dropping: projectile.dropping,
             subject_to_cliffs: projectile.subject_to_cliffs,
             flak_scatter: projectile.flak_scatter,
             anti_air: projectile.aa,
@@ -4923,15 +4936,16 @@ fn emit_projectile_shrapnel(
                 child_projectile.anim_high as u8,
                 child_projectile.anim_rate as u8,
             ),
-            arm_frames: child_projectile.arm.clamp(0, i32::from(u16::MAX)) as u16,
+            arm_frames: projectile_arm_delay(child_projectile.arm, target, entities),
             fuse_frames: None,
-            ranged_fuse: child_projectile.ranged,
+            ranged_fuse: child_projectile.rot > 0 || child_projectile.ranged,
             tracks_target: false,
             target_expiry: TargetExpiryPolicy::DetonateAtLastKnown,
             collision: ProjectileCollisionPolicy {
                 level_non_water: child_projectile.level,
                 subject_to_walls: child_projectile.subject_to_walls,
                 native_cell_collision: child_projectile.rot <= 0,
+                dropping: child_projectile.dropping,
                 subject_to_cliffs: child_projectile.subject_to_cliffs,
                 flak_scatter: child_projectile.flak_scatter,
                 anti_air: child_projectile.aa,
@@ -8291,15 +8305,12 @@ pub(crate) fn resolve_attacker_fire(
                 },
                 guidance,
                 visual,
-                arm_frames,
+                arm_frames: projectile_arm_delay(arm_frames, target, entities),
                 fuse_frames: None,
-                // `BulletClass::AI 0x00467C1C`: the fuse runs when `ROT > 0` or
-                // `Ranged=`. `Dropping=` (`0x00467C78`) then discards its result
-                // outright, which is equivalent to never admitting the fuse — the
-                // detector's running minimum feeds nothing else.
-                ranged_fuse: (tracks_target
-                    || projectile_type.is_some_and(|projectile| projectile.ranged))
-                    && !projectile_type.is_some_and(|projectile| projectile.dropping),
+                // AI 467C0C calls Check for ROT>0 or Ranged even when
+                // Dropping later suppresses detector-only admission.
+                ranged_fuse: tracks_target
+                    || projectile_type.is_some_and(|projectile| projectile.ranged),
                 tracks_target,
                 target_expiry: TargetExpiryPolicy::DetonateAtLastKnown,
                 collision,
