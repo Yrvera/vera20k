@@ -384,6 +384,29 @@ pub struct HouseState {
     /// directly enter House CRC.
     #[serde(default)]
     pub ai_activation: HouseAiActivationLatches,
+    /// Native `HouseClass+0x242`: "a harvester of this house found no ore".
+    ///
+    /// Exhaustive instruction census (`search_instructions` operand `+0x242]`,
+    /// 1,164,209 instructions, 4 hits, 2026-09-05):
+    /// - `HouseClass__Constructor` `0x004F5771` writes BL (= 0);
+    /// - `UnitClass::Mission_Harvest @ 0x0073E5E0` writes 1 at `0x0073E911`
+    ///   on the state-0 scan-miss path (no ore in `TiberiumLongScan`, no
+    ///   destination, no archive) when the type is `Harvester=yes`;
+    /// - `UnitClass::Mission_Guard @ 0x00740810` reads it at `0x00740922` —
+    ///   the AI-house arm re-queues Harvest only while it is clear;
+    /// - `HouseClass__AI_Choose_Unit` reads it at `0x004FEB7B` (AI harvester
+    ///   production bias).
+    ///
+    /// No clearing writer exists anywhere: once set it stays set for the rest
+    /// of the match (save/load carries the raw House block). The
+    /// `Mission_Guard` arm (ii) reader is implemented
+    /// (`techno_ai/mission_handlers.rs`, AI houses only); the
+    /// `AI_Choose_Unit` reader belongs to the deferred AI lane, which is why
+    /// AI-house miners take a VERA-internal re-scan bridge instead of the
+    /// native Guard park (`miner_system::handle_going_to_idle`).
+    /// Persisted and hashed (schema v132).
+    #[serde(default)]
+    pub harvester_no_ore: bool,
 }
 
 impl HouseState {
@@ -521,6 +544,7 @@ impl HouseState {
             economy: Economy::default(),
             strategy_emergency: HouseStrategyEmergencyState::default(),
             ai_activation: HouseAiActivationLatches::default(),
+            harvester_no_ore: false,
         }
     }
 }

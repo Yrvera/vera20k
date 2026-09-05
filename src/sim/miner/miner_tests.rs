@@ -212,6 +212,41 @@ fn spawn_structure_owned(
     }
 }
 
+/// An owned `Dock=` instance far from the action, with no occupancy and no
+/// LogicVector slot: the Harvest preamble (`0x0073E5E0`) queues Guard for a
+/// house that owns no instance of any `Dock=` type, so fixtures that only
+/// exercise the scan/harvest states still need one on the books.
+fn spawn_inert_dock_instance(sim: &mut Simulation) {
+    const INERT_DOCK_ID: u64 = 900;
+    if sim.substrate.entities.get(INERT_DOCK_ID).is_some() {
+        return;
+    }
+    let owner_id = sim.interner.intern("Americans");
+    let type_id = sim.interner.intern("GAREFN");
+    let mut ge = GameEntity::new_at_frame_zero_for_test(
+        INERT_DOCK_ID,
+        60,
+        60,
+        0,
+        0,
+        owner_id,
+        Health {
+            current: 900,
+            max: 900,
+        },
+        type_id,
+        EntityCategory::Structure,
+        0,
+        5,
+        false,
+    );
+    ge.lifecycle.in_limbo = false;
+    sim.substrate.entities.insert(ge);
+    if sim.substrate.next_stable_object_id <= INERT_DOCK_ID {
+        sim.substrate.next_stable_object_id = INERT_DOCK_ID + 1;
+    }
+}
+
 fn occupy_structure_cells(
     sim: &mut Simulation,
     sid: u64,
@@ -633,7 +668,7 @@ fn war_miner_does_not_teleport() {
 // Test 7: Dock queuing — only one miner at a refinery at a time
 // ==========================================================================
 #[test]
-fn return_close_enough_to_refinery_enters_dock() {
+fn return_within_too_far_distance_hands_off_to_enter_on_the_same_dispatch() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let config = MinerConfig::default();
@@ -666,10 +701,14 @@ fn return_close_enough_to_refinery_enters_dock() {
     let grid = PathGrid::new(276, 276);
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
 
+    // Inside `HarvesterTooFarDistance`, state 2 sends HELLO on this same
+    // dispatch (`0x0073EE51`) and the accepted reply is the Enter hand-off —
+    // no approach phase, no adjacency requirement.
     let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
     let miner = entity.miner.as_ref().expect("miner component");
     assert_eq!(entity.miner_state().unwrap(), MinerState::Dock);
-    assert_eq!(miner.dock_phase, RefineryDockPhase::Approach);
+    assert_eq!(miner.dock_phase, RefineryDockPhase::MissionEnter);
+    assert!(sim.production.dock_reservations.has_contact(99, miner_id));
 }
 
 #[test]
@@ -2432,16 +2471,16 @@ fn search_ore_becomes_wait_when_empty() {
 }
 
 // ==========================================================================
-// Test 14: the no-ore park sits out the whole wait, then re-searches
+// Test 14: the no-ore park sits out the whole wait, then queues Guard
 // ==========================================================================
-/// The park must stay recoverable. gamemd's scan-miss return carries the whole
-/// 105-frame wait as the dispatch delay itself, so the frame the wait expires
-/// *is* the next dispatch and that dispatch is the exit. VERA keeps a re-search
-/// exit there rather than gamemd's queue-off-Harvest handoff (VERA-internal, see
-/// `miner_system::handle_wait_no_ore`), so what this pins is: no early rescan
-/// while the gate is closed, and a live miner on the far side of it.
+/// gamemd's scan-miss return carries the whole 105-frame wait as the dispatch
+/// delay itself, so the frame the wait expires *is* the next dispatch, and
+/// that dispatch is `Mission_Harvest` state 4 (`miner_system::
+/// handle_going_to_idle`): `Queue_Mission(Guard, 0)` plus the Rate epilogue,
+/// with no re-scan. What this pins is: nothing happens early, and the exit is
+/// the Guard queue on the exact expiry frame.
 #[test]
-fn wait_no_ore_rescans_after_cooldown() {
+fn wait_no_ore_queues_guard_when_the_wait_expires() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let config = MinerConfig::default();
@@ -2499,39 +2538,39 @@ fn wait_no_ore_rescans_after_cooldown() {
         "the 105-frame wait is not shortened by ore appearing during it"
     );
 
-    // The expiry frame is the next dispatch, and that dispatch is the exit.
+    // The expiry frame is the next dispatch, and that dispatch is gamemd's
+    // state 4: `Queue_Mission(Guard, 0)` and the Rate epilogue — never a
+    // re-scan, whatever grew during the wait.
     tick_miners_n(&mut sim, &rules, 1);
     assert_eq!(sim.session.binary_frame, start_frame + wait);
+    let entity = sim.substrate.entities.get(miner_id).expect("miner");
     assert_eq!(
-        get_miner(&sim, miner_id).state,
-        MinerState::SearchOre,
-        "the park exits on the frame the wait expires, not a cadence later"
+        entity.mission.queued().known(),
+        Some(crate::sim::mission::MissionType::Guard),
+        "the wait expiring is the Guard hand-off, on that exact frame"
+    );
+    assert_eq!(entity.miner_state(), Some(MinerState::WaitNoOre));
+    assert_eq!(
+        entity.miner.as_ref().expect("miner").target_ore_cell,
+        None,
+        "state 4 does not look at the ore that appeared during the wait",
     );
 
-    // The exit itself takes the default Rate epilogue, so the re-search runs on
-    // the following Harvest dispatch — one whole epilogue window later at most.
+    // Until the host promotes the queue, every further dispatch re-runs
+    // state 4 on the Rate cadence — still no scan.
     let base = super::miner_dock_sequence::mission_base_frames(
         &rules,
         crate::sim::mission::MissionType::Harvest,
         super::miner_system::HARVEST_RATE_FALLBACK_FRAMES,
     );
-    // + the RandomRanged(0, 2) ceiling the epilogue adds on top of the base.
     tick_miners_n(
         &mut sim,
         &rules,
         usize::from(base) + super::miner_system::RATE_EPILOGUE_JITTER_MAX_FRAMES as usize,
     );
     let m = get_miner(&sim, miner_id);
-    assert_ne!(
-        m.state,
-        MinerState::WaitNoOre,
-        "the park must be recoverable, not a terminal state",
-    );
-    assert_eq!(
-        m.target_ore_cell,
-        Some((20, 20)),
-        "the re-search must pick the ore that appeared during the wait",
-    );
+    assert_eq!(m.state, MinerState::WaitNoOre);
+    assert_eq!(m.target_ore_cell, None);
 }
 
 // ==========================================================================
@@ -2608,7 +2647,7 @@ fn harvester_uses_dock_list_for_refinery_selection() {
 }
 
 #[test]
-fn harvester_waits_when_no_dock_compatible_refinery_exists() {
+fn harvester_queues_guard_when_no_dock_compatible_refinery_exists() {
     let mut sim = Simulation::new();
     let rules = dock_rules();
     let miner_id = sim
@@ -2634,9 +2673,21 @@ fn harvester_waits_when_no_dock_compatible_refinery_exists() {
 
     tick_miners_n(&mut sim, &rules, 1);
 
+    // No owned instance of any `Dock=` type: the Harvest preamble queues
+    // Guard before the state switch, so selection never runs.
     let miner = get_miner(&sim, miner_id);
     assert_eq!(miner.reserved_refinery, None);
-    assert_eq!(miner.state, MinerState::WaitNoOre);
+    assert_eq!(miner.state, MinerState::ReturnToRefinery);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(miner_id)
+            .expect("miner")
+            .mission
+            .queued()
+            .known(),
+        Some(crate::sim::mission::MissionType::Guard)
+    );
 }
 
 // ==========================================================================
@@ -3222,6 +3273,8 @@ fn unreachable_ore_filtered_out() {
     use std::collections::BTreeMap;
 
     let mut sim = Simulation::new();
+
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
 
     // Build a 16x16 path grid with an impassable wall column at x=8 that
@@ -3275,6 +3328,8 @@ fn reachable_ore_picked_over_closer_unreachable() {
     use std::collections::BTreeMap;
 
     let mut sim = Simulation::new();
+
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
 
     // 16x16 grid with an impassable wall column at x=8.
@@ -3328,6 +3383,8 @@ fn harvester_on_tiberium_falls_back_to_neighbor_zone() {
     use std::collections::BTreeMap;
 
     let mut sim = Simulation::new();
+
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
 
     // 16x16 grid. Wall column at x=8 splits LEFT and RIGHT zones.
@@ -5276,10 +5333,22 @@ fn full_dock_cycle_war_miner() {
     );
 
     let entity = sim.substrate.entities.get(miner_id).expect("entity");
+    // The Mission_Deploy state-4 hand-off itself installs no exit move, but
+    // with no ore on the map the following scan misses and, 105 frames
+    // later, Mission_Harvest state 4 finds the miner on a refinery cell and
+    // sets `FUN_00703590`'s nearby passable cell as its destination before
+    // queueing Guard — so by now the miner has stepped off the pad.
+    let inside_footprint =
+        (10..14).contains(&entity.position.rx) && (10..13).contains(&entity.position.ry);
+    assert!(
+        !inside_footprint,
+        "the Harvest idle tail moved the miner off the refinery footprint, got {:?}",
+        (entity.position.rx, entity.position.ry)
+    );
     assert_eq!(
-        (entity.position.rx, entity.position.ry),
-        (13, 11),
-        "stock state-4 handoff should not force a queue-cell exit move"
+        entity.mission.queued().known(),
+        Some(crate::sim::mission::MissionType::Guard),
+        "state 4 queued Guard behind the exit move"
     );
     assert!(entity.forced_drive_track.is_none());
 
@@ -5545,6 +5614,7 @@ fn tick_miners_overlay_n(
 #[test]
 fn harvester_takes_one_bale_per_gate_over_eleven_gates() {
     let mut sim = Simulation::new();
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
     let config = MinerConfig::default();
     let gate = usize::from(config.harvest_tick_interval) + 1;
@@ -5655,6 +5725,8 @@ fn harvester_clears_density_zero_overlay_without_bale_and_moves_on() {
     let next = (21u16, 20u16);
 
     let mut sim = Simulation::new();
+
+    spawn_inert_dock_instance(&mut sim);
     sim.overlay_grid = Some(OverlayGrid::new(64, 64));
     {
         let overlay = sim.overlay_grid.as_mut().expect("overlay grid");
@@ -5757,6 +5829,7 @@ fn harvester_clears_density_zero_overlay_without_bale_and_moves_on() {
 #[test]
 fn harvester_caps_extraction_at_remaining_capacity() {
     let mut sim = Simulation::new();
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
     let config = MinerConfig::default();
 
@@ -6120,6 +6193,7 @@ fn chrono_filling_extraction_does_not_warp_before_state2_tick() {
 #[test]
 fn harvester_continues_to_short_scan_when_partial_then_empty() {
     let mut sim = Simulation::new();
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
     let config = MinerConfig::default();
 
@@ -7095,6 +7169,8 @@ fn scan_skips_tree_blocked_ore_cell() {
     use std::collections::BTreeMap;
 
     let mut sim = Simulation::new();
+
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
 
     // 32×32 all-passable grid except for one tree on the would-be best ore
@@ -7148,6 +7224,8 @@ fn scan_skips_cell_occupied_by_other_miner() {
     use std::collections::BTreeMap;
 
     let mut sim = Simulation::new();
+
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
 
     let grid = PathGrid::new(32, 32);
@@ -7209,6 +7287,8 @@ fn scan_ring_0_allows_harvesters_own_cell() {
     use std::collections::BTreeMap;
 
     let mut sim = Simulation::new();
+
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
 
     let grid = PathGrid::new(32, 32);
@@ -7316,6 +7396,8 @@ fn move_to_ore_avoids_tree_blocked_cell_from_start() {
     use std::collections::BTreeMap;
 
     let mut sim = Simulation::new();
+
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
 
     let mut grid = PathGrid::new(32, 32);
@@ -7372,6 +7454,8 @@ fn move_to_ore_holds_target_while_destination_is_held() {
     use std::collections::BTreeMap;
 
     let mut sim = Simulation::new();
+
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
 
     let mut grid = PathGrid::new(32, 32);
@@ -7506,6 +7590,8 @@ fn move_to_ore_rescans_and_rejects_blocked_cell_once_destination_clears() {
     use std::collections::BTreeMap;
 
     let mut sim = Simulation::new();
+
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
 
     let mut grid = PathGrid::new(32, 32);
@@ -7592,6 +7678,8 @@ fn move_to_ore_target_stable_when_world_unchanged() {
     const POISON_TARGET: (u16, u16) = (16, 12);
 
     let mut sim = Simulation::new();
+
+    spawn_inert_dock_instance(&mut sim);
     let rules = miner_rules();
 
     let grid = PathGrid::new(32, 32);
@@ -8323,6 +8411,7 @@ fn coordinate_runtime_trace_miner_arrival_and_extraction_four_directions() {
 
     for (label, start, behind) in approaches {
         let mut sim = Simulation::new();
+        spawn_inert_dock_instance(&mut sim);
         let rules = miner_rules();
         place_ore(&mut sim, target.0, target.1, 120);
         place_ore(&mut sim, behind.0, behind.1, 120);
@@ -8697,7 +8786,7 @@ fn refinery_selection_ignores_nearer_allied_refinery() {
 /// With only another house's refinery on the map the scan finds nothing:
 /// the miner does not convoy to (and pay) the other house.
 #[test]
-fn refinery_selection_with_only_foreign_refinery_finds_nothing() {
+fn refinery_selection_with_only_foreign_refinery_queues_guard() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
@@ -8706,9 +8795,21 @@ fn refinery_selection_with_only_foreign_refinery_finds_nothing() {
 
     tick_miners_n(&mut sim, &rules, 1);
 
+    // The other house's refinery is not an owned dock instance either: the
+    // preamble queues Guard and selection never runs.
     let m = get_miner(&sim, miner_id);
     assert_eq!(m.reserved_refinery, None);
-    assert_eq!(m.state, MinerState::WaitNoOre);
+    assert_eq!(m.state, MinerState::ReturnToRefinery);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(miner_id)
+            .expect("miner")
+            .mission
+            .queued()
+            .known(),
+        Some(crate::sim::mission::MissionType::Guard)
+    );
 }
 
 /// Narrow pass inside HarvesterTooFarDistance (5 cells): the nearer refinery

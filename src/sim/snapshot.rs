@@ -410,7 +410,11 @@ use crate::sim::world::Simulation;
 // `TiberiumSpreads`) on the session and the growth-driver reload selector on
 // `OreGrowthConfig`. A v130 skirmish save would restore them clear and reload the
 // growth timer at the raw `Growth=` instead of `ftol(Growth * 0.3)`.
-const SNAPSHOT_VERSION: u32 = 131;
+// v132 persists the `HouseClass+0x242` harvester no-ore latch on `HouseState`
+// (set by `UnitClass::Mission_Harvest` state 0, never cleared). A v131 save
+// would restore it clear for a house whose harvester had already exhausted
+// its scan, and the state hash folds it.
+const SNAPSHOT_VERSION: u32 = 132;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3173,9 +3177,10 @@ mod tests {
     /// reserved by the concurrent parasite and audio-lane changes.
     /// 130 -> 131 persists the session `TiberiumGrows`/`TiberiumSpreads`
     /// flag bits and the `OreGrowthConfig` growth-reload selector.
+    /// 131 -> 132 persists the `HouseClass+0x242` harvester no-ore latch.
     #[test]
-    fn tiberium_flag_bits_snapshot_version_is_131() {
-        assert_eq!(super::SNAPSHOT_VERSION, 131);
+    fn house_harvester_no_ore_snapshot_version_is_132() {
+        assert_eq!(super::SNAPSHOT_VERSION, 132);
     }
 
     #[test]
@@ -4536,6 +4541,30 @@ mod tests {
         assert_eq!(restored_due, original_due);
         assert_eq!(restored.session.lighting, original.session.lighting);
         assert_eq!(restored.state_hash(), original.state_hash());
+    }
+
+    /// `HouseClass+0x242` rides the raw House block in the native save; a
+    /// v132 snapshot carries it and the restored hash still matches.
+    #[test]
+    fn house_harvester_no_ore_latch_roundtrips_at_v132() {
+        let mut sim = Simulation::with_seed(0x242);
+        let owner = sim.interner.intern("Americans");
+        let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, true, 5_000, 10);
+        house.harvester_no_ore = true;
+        sim.houses.insert(owner, house);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "house_no_ore_latch", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let restored = GameSnapshot::load(&bytes)
+            .expect("v132 house latch snapshot")
+            .sim;
+        assert!(restored.houses[&owner].harvester_no_ore);
+        assert_eq!(restored.state_hash(), expected_hash);
     }
 
     #[test]

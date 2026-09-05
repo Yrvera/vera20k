@@ -23,6 +23,8 @@ use crate::sim::miner::{
     CargoBale, Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase, ResourceNode,
     ResourceType,
 };
+use crate::sim::mission::authority::EntityReadyInputProvider;
+use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::movement;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::OccupancyGrid;
@@ -751,6 +753,30 @@ pub(super) fn process_miner_with_resource_authority(
         return;
     }
 
+    // `UnitClass::Mission_Harvest @ 0x0073E5E0` preamble (decompiled
+    // 2026-09-05): after the non-harvester (`return 0x1C2`) and slave-host
+    // exits, the handler walks the type's `Dock=` list (`Type+0x3EC`, count
+    // `+0x3F8`) and enters its state switch only for the FIRST dock type with
+    // `HouseClass::CountOwnedInstances > 0`. When no entry has one — the
+    // house lost its last refinery, or the type lists no `Dock=` at all — it
+    // falls out of the loop to `Queue_Mission(Guard, 0); return 1`. The
+    // `IsControlledByHuman` test at the head only decides whether the
+    // `+0x3F8 == 0` case takes the same Guard queue early or reaches it
+    // through the empty loop; both houses end on Guard, so the human test is
+    // inert and not modelled.
+    //
+    // The `Dock` cursor is exempt: past the state-3 hand-off its phases run
+    // under native Mission_Enter / Mission_Deploy (the miner is no longer
+    // dispatched through Mission_Harvest there), and those handlers carry no
+    // dock-ownership preamble — a mind-controlled miner still finishes
+    // unloading into the refinery it entered. VERA dispatches the Dock
+    // cursor from this handler for structural reasons only.
+    if snap.state != MinerState::Dock && !house_owns_dock_instance(sim, rules, snap) {
+        queue_guard_from_harvest(sim, snap);
+        snap.dispatch_delay = DISPATCH_NEXT_FRAME;
+        return;
+    }
+
     let state_before = format!("{:?}", snap.state);
     match snap.state {
         MinerState::SearchOre => handle_search_ore(
@@ -803,9 +829,19 @@ pub(super) fn process_miner_with_resource_authority(
             arm_rate_epilogue(sim, rules, snap);
         }
         MinerState::WaitNoOre => {
-            handle_wait_no_ore(snap, sim.session.binary_frame);
-            // Native idle state falls straight into the default epilogue.
-            arm_rate_epilogue(sim, rules, snap);
+            if handle_going_to_idle(
+                sim,
+                rules,
+                config,
+                path_grid,
+                overlay_registry,
+                snap,
+                resource_authority,
+            ) {
+                // Native state 4 has no `return 1` exit: every dispatch falls
+                // into the default Rate epilogue (`0x0073EF97`).
+                arm_rate_epilogue(sim, rules, snap);
+            }
         }
         MinerState::ForcedReturn => {
             handle_forced_return(sim, rules, config, path_grid, overlay_registry, snap);
@@ -1026,19 +1062,32 @@ fn handle_search_ore(
             }
         }
         ScanOutcome::NoOre => {
-            // Native: no ore, no owner destination, no archive parks the
-            // handler in the idle state and returns the fixed 105-frame wait
-            // directly — bypassing the Rate epilogue, so no RNG draw. The
-            // dispatch delay carries the wait; the internal rescan gate is
-            // armed to the same expiry (the gate fires inclusively at
-            // start + duration), so the two never double-count. What runs when
-            // the wait expires — and how far it is from gamemd's own idle tail
-            // — is documented on `handle_wait_no_ore`.
+            // `0x0073E8EE..0x0073E91C`: no ore, no destination, no archive
+            // writes state 4, `Techno+0x3D0 = 1` and, for a `Harvester=yes`
+            // type, `House+0x242 = 1`, then returns the fixed 105-frame wait
+            // directly — bypassing the Rate epilogue, so no RNG draw. What
+            // runs when the wait expires is `handle_going_to_idle`.
+            //
+            // `+0x3D0` is not carried on the entity: its only in-handler
+            // reader is the state-4 RepairBay probe, whose outcome the same
+            // dispatch overwrites (see `handle_going_to_idle`), and state 4 is
+            // reachable from this arm alone, where the byte is always 1. Its
+            // other readers (`BuildingClass::MissionRepairAndProduce`
+            // `0x0044C4BC`, AI-house only) are outside this lane.
             snap.state = MinerState::WaitNoOre;
+            // `rescan_cooldown` is no longer read by the idle state (native
+            // state 4 has no internal gate); it stays armed for snapshot/hash
+            // continuity of the persisted `Miner` block.
             snap.miner.rescan_cooldown.arm(
                 sim.session.binary_frame,
                 u32::from(config.rescan_cooldown_ticks),
             );
+            if let Some(house) = sim.houses.get_mut(&snap.owner) {
+                // `MOV byte ptr [ECX+0x242], 1` at `0x0073E911`, gated on
+                // `UnitType+0xE0E` (`Harvester=yes`) — true for every kind
+                // dispatched here (slave hosts never reach this handler).
+                house.harvester_no_ore = true;
+            }
             snap.dispatch_delay = i32::from(config.rescan_cooldown_ticks);
         }
     }
@@ -1377,9 +1426,11 @@ fn handle_return(
             ) {
                 return;
             }
-        } else {
-            snap.state = MinerState::WaitNoOre;
         }
+        // No bay from either pass (the house still owns a dock instance, or
+        // the preamble would already have queued Guard): native state 2 sets
+        // no destination and leaves through the Rate epilogue, re-running the
+        // whole selection on the next dispatch. Stay put.
         return;
     };
 
@@ -1435,6 +1486,11 @@ fn handle_return(
         return;
     }
 
+    // Fallback contact test. With the close-return radio now covering every
+    // kind inside its too-far distance and the far paths covering the rest,
+    // this arm is reached only when the distance decision itself is
+    // unavailable (refinery dying / off-grid coordinates); it is kept as the
+    // VERA-internal safety net, gamemd equivalent UNCHECKED.
     let at_dock = (snap.rx, snap.ry) == dock;
     let contact = if snap.miner.kind == MinerKind::Chrono {
         at_dock
@@ -1474,35 +1530,184 @@ fn handle_return(
     }
 }
 
-/// The idle cursor gamemd's Harvest handler parks in when its bounded ore scan
-/// found nothing — gamemd's only entry into this cursor. The scan-miss
-/// return carries the whole 105-frame wait as the dispatch delay, so gamemd's
-/// body has no internal gate of its own; the wait expiring *is* the next
-/// dispatch. VERA's `rescan_cooldown` anchor mirrors that same expiry, so the
-/// gate below never adds a second wait on top of it.
+/// `UnitClass::Mission_Harvest @ 0x0073E5E0` state 4 (GOING-TO-IDLE), the
+/// cursor the scan-miss return parks in — gamemd's only entry into it. The
+/// miss return carries the whole 105-frame wait as the dispatch delay, so the
+/// body has no internal gate; the wait expiring *is* this dispatch. Body
+/// (decompiled 2026-09-05, `0x0073EEA6..0x0073EF71`):
 ///
-/// UNIMPLEMENTED NATIVE TAIL, recorded rather than half-built: gamemd's body
-/// queues the miner off Harvest onto the mission whose handler is the
-/// harvester Guard override, and that override is the half that brings the
-/// miner back — its player arm re-queues Harvest when a refinery the house
-/// owns sits in one of the eight neighbouring cells, which is exactly where a
-/// refinery's own free miner stands. VERA does not model that arm (the
-/// residual is recorded at the Unit Guard dispatch arm in
-/// `sim/world/techno_ai.rs`), so queueing the handoff from here would strand
-/// the miner for the rest of the match instead of cycling it. Until the
-/// override's harvester arm exists, this keeps VERA's own re-search exit:
-/// VERA-internal, gamemd equivalent UNCHECKED. It reproduces the retry cadence
-/// a miner parked beside its refinery shows in gamemd and never loses the
-/// unit; it diverges for a miner parked *away* from any refinery, which gamemd
-/// leaves sitting on Guard while this keeps re-scanning every 105 frames.
+/// 1. `if Techno+0x3D0` (always 1 here, set by the miss return):
+///    `Find_Docking_Bay(Rules+0x850 [General]RepairBay=, 0, 1)` →
+///    `Queue_Mission(Hunt 0xF, 0)` when null else `Queue_Mission(Repair 0x14,
+///    0)`. **Inert, EXCLUDED**: `MissionClass::Queue_Mission @ 0x005B35E0`
+///    only overwrites `QueuedMission` (no Commence — `commence_now` is 0 and
+///    the guard `current == Wait && mission == Guard || current == Selling`
+///    never holds on Harvest), and step 3 below queues Guard over it in the
+///    same dispatch. `Find_Docking_Bay @ 0x004DF040` → `FootClass::
+///    Find_Nearest_Dock_Of_Type @ 0x004DEE80` is a pure scan (no radio, no
+///    reservation; `g_MapEditorMode` untouched on this call), so neither the
+///    probe nor the overwritten queue has an observable effect. Stock
+///    `RepairBay=GADEPT,NADEPT,CAOUTP` exists, but the branch outcome is dead
+///    either way.
+/// 2. `Look_up_building_in_cell(own cell)`: a building whose type has
+///    `+0x16BB` (`Refinery=`) or `+0x16BC` (weeder dock, no stock type) set →
+///    `Set_Destination(FUN_00703590(building))` — `Find_Nearby_Passable_Cell`
+///    seeded at the building's `GetCoords` cell (foundation centre) for the
+///    unit's movement zone. Ownership is not tested.
+/// 3. `Queue_Mission(Guard 5, 0)`; fall into the Rate epilogue.
 ///
-/// The other entries into this cursor (no live refinery, from the return and
-/// forced-return handlers) are VERA-internal as well and share the same exit.
-fn handle_wait_no_ore(snap: &mut MinerSnapshot, now: u32) {
-    if !snap.miner.rescan_cooldown.due(now) {
-        return;
+/// The queued Guard is promoted by the per-object AI host's
+/// Ready-to-Commence step; while the miner is still driving off the refinery
+/// the promotion defers and this state simply re-runs (re-queueing Guard is
+/// idempotent). Once on Guard the Harvest handler is no longer dispatched;
+/// what brings a miner back is `UnitClass::Mission_Guard @ 0x00740810` (the
+/// chrono arms in `techno_ai/mission_handlers.rs`) or a player order
+/// (`Command::HarvestCell` / `MinerReturn`, EventClass MEGAMISSION →
+/// `Queue_Mission(mission, 0)` at `0x004C73B9`). A human war miner therefore
+/// parks on Guard until re-ordered — native behaviour.
+///
+/// Step 2's cell search is VERA-internal in detail (the native range/flag
+/// arguments of `Find_Nearby_Passable_Cell` are not modelled; the same
+/// `find_nearby_passable_cell_with_index` helper the return staging uses
+/// stands in), gamemd equivalent UNCHECKED beyond the seed cell.
+///
+/// **Non-human houses take a VERA-internal bridge instead, gamemd equivalent
+/// = AI lane (`AI_Choose_Unit` 0x004FEB7B / `Mission_Guard` arm ii)
+/// UNCHECKED.** Natively an AI miner parked on Guard is brought back by
+/// `UnitClass::Mission_Guard` arm (ii), which re-queues Harvest only while
+/// `House+0x242` is clear — and the scan miss that led here has just set it,
+/// with no clearing writer. What keeps a native AI economy alive after that
+/// is house/team logic (`AI_Choose_Unit` reading `+0x242`, team recruitment),
+/// none of which VERA runs yet (`sim/ai.rs` never issues `HarvestCell`/
+/// `MinerReturn` and skips harvesters). Until that lane lands, an AI-house
+/// miner does not park: state 4 drops straight back into the state-0 scan,
+/// which on a miss re-arms the same fixed 105-frame wait (the pre-Guard-park
+/// perpetual re-scan cadence, `House+0x242` still written native-true on
+/// every miss). Returns whether the caller must run the Rate epilogue —
+/// false on the bridge, whose exit is the scan's own.
+fn handle_going_to_idle(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    snap: &mut MinerSnapshot,
+    resource_authority: ResourceQueryAuthority,
+) -> bool {
+    let human = sim
+        .houses
+        .get(&snap.owner)
+        .is_none_or(|house| house.is_controlled_by_human(sim.session.game_mode_nonzero));
+    if !human {
+        snap.state = MinerState::SearchOre;
+        handle_search_ore(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            resource_authority,
+        );
+        return false;
     }
-    snap.state = MinerState::SearchOre;
+    if let Some(grid) = path_grid
+        && let Some(refinery_sid) = refinery_building_in_cell(sim, rules, (snap.rx, snap.ry))
+        && let Some(exit) = building_nearby_passable_cell(sim, rules, refinery_sid, grid)
+    {
+        issue_move_if_idle(
+            sim,
+            Some(rules),
+            grid,
+            snap.entity_id,
+            exit,
+            snap.speed,
+            overlay_registry,
+        );
+    }
+    queue_guard_from_harvest(sim, snap);
+    true
+}
+
+/// `Queue_Mission(Guard, 0)` from inside the Harvest handler (preamble and
+/// state 4). No Commence: the host's Ready-to-Commence step promotes it.
+fn queue_guard_from_harvest(sim: &mut Simulation, snap: &MinerSnapshot) {
+    let now = sim.session.binary_frame;
+    let _ = sim.mission_queue_exact(
+        snap.entity_id,
+        MissionId::from_known(MissionType::Guard),
+        0,
+        now,
+        &EntityReadyInputProvider,
+    );
+}
+
+/// `HouseClass::CountOwnedInstances > 0` for at least one entry of the
+/// harvester type's `Dock=` list, as the Harvest preamble loop tests it.
+///
+/// Reads the store's O(1) per-(owner, type) count
+/// (`EntityStore::count_owned_of_type`), the analogue of the native per-house
+/// per-type counter array `CountOwnedInstances @ 0x0049FAE0` indexes. Native
+/// counts an instance from Unlimbo until Limbo, so a refinery still under
+/// construction and a dying one both count; the Rust count spans store
+/// insert..remove and so agrees on both (the earlier `!in_limbo && !dying &&
+/// health > 0` scan excluded the dying case — a mismatch, now removed). A
+/// `Dock=` name the interner has never seen has no instances. A miner whose
+/// type is unknown to the rules cannot evaluate the list and reads as "owns
+/// one" (fixture tolerance; no production type lacks a rules entry).
+fn house_owns_dock_instance(sim: &Simulation, rules: &RuleSet, snap: &MinerSnapshot) -> bool {
+    let Some(harvester) = rules.object_case_insensitive(sim.interner.resolve(snap.type_id)) else {
+        return true;
+    };
+    harvester.dock.iter().any(|dock_type| {
+        sim.interner.get(dock_type).is_some_and(|type_ref| {
+            sim.substrate
+                .entities
+                .count_owned_of_type(snap.owner, type_ref)
+                > 0
+        })
+    })
+}
+
+/// `Look_up_building_in_cell` for the state-4 refinery test: the structure
+/// occupying `cell` whose type is `Refinery=yes` (BuildingType `+0x16BB`).
+/// Any owner qualifies, as native tests only the type flag.
+fn refinery_building_in_cell(sim: &Simulation, rules: &RuleSet, cell: (u16, u16)) -> Option<u64> {
+    let occupancy = sim.substrate.occupancy.get(cell.0, cell.1)?;
+    occupancy.blockers(MovementLayer::Ground).find(|&sid| {
+        sim.substrate.entities.get(sid).is_some_and(|entity| {
+            entity.category == EntityCategory::Structure
+                && !entity.dying
+                && sim
+                    .object_type(entity.type_ref, rules)
+                    .is_some_and(|obj| obj.refinery)
+        })
+    })
+}
+
+/// `FUN_00703590`: `Find_Nearby_Passable_Cell` seeded at the building's
+/// `GetCoords` cell (`BuildingClass::GetCoords @ 0x00447AC0` = NW +
+/// `((W-1)*128, (H-1)*128)` leptons, cell = coord >> 8).
+fn building_nearby_passable_cell(
+    sim: &Simulation,
+    rules: &RuleSet,
+    building_sid: u64,
+    grid: &PathGrid,
+) -> Option<(u16, u16)> {
+    let building = sim.substrate.entities.get(building_sid)?;
+    let (w, h) = sim
+        .object_type(building.type_ref, rules)
+        .map(|obj| foundation_dimensions(&obj.foundation))
+        .unwrap_or((1, 1));
+    let (x, y) = building_get_coords_xy(building, w, h);
+    super::miner_dock_sequence::find_nearby_passable_cell_with_index(
+        (x >> 8) as i32,
+        (y >> 8) as i32,
+        grid,
+        Some(&sim.substrate.occupancy),
+        super::miner_dock_sequence::EXIT_SEARCH_MAX_RADIUS,
+        u64::from(sim.session.binary_frame),
+    )
 }
 
 fn handle_forced_return(
@@ -1529,11 +1734,8 @@ fn handle_forced_return(
                 return;
             }
         } else {
-            snap.state = MinerState::WaitNoOre;
-            snap.miner.rescan_cooldown.arm(
-                sim.session.binary_frame,
-                u32::from(config.rescan_cooldown_ticks),
-            );
+            // VERA-internal cursor: keep retrying the selection on the Rate
+            // cadence, the way native state 2 does with no bay.
             return;
         }
     }
@@ -1648,7 +1850,10 @@ fn begin_return(
         }
         snap.state = MinerState::ReturnToRefinery;
     } else {
-        snap.state = MinerState::WaitNoOre;
+        // No bay this dispatch: native state 2 sets nothing and retries on
+        // the next Rate-epilogue dispatch. (A house with no dock instance at
+        // all never gets here — the preamble queues Guard first.)
+        snap.state = MinerState::ReturnToRefinery;
     }
 }
 
@@ -1661,23 +1866,25 @@ fn try_begin_close_return_radio(
     snap: &mut MinerSnapshot,
     ref_sid: u64,
 ) -> bool {
-    // Close-radio HELLO + state=Dock fast-path is currently chrono-only.
-    // HARV close path uses the existing adjacency-based contact check in
-    // `handle_return`. The binary sends HELLO at HarvesterTooFarDistance
-    // (5 cells) for HARV too, but generalizing the close-radio path here
-    // surfaced a phase_mission_enter direct-move limitation that needs a
-    // deeper fix; see 2026-05-24 audit follow-up.
-    if snap.miner.kind != MinerKind::Chrono {
-        return false;
-    }
+    // `UnitClass::Mission_Harvest @ 0x0073E5E0` state 2, the close-return
+    // radio (decompiled 2026-09-05, HARV branch `0x0073EBB1..0x0073EE68`,
+    // CMIN branch `0x0073EDE3..0x0073EE4B`): with no NavCom, the narrow
+    // `Find_Docking_Bay(Dock, 0, 0)` result within the kind's too-far
+    // distance (`HarvesterTooFarDistance` Rules+0xD78 for HARV,
+    // `ChronoHarvTooFarDistance` Rules+0xD7C for a `Teleporter=` type, both
+    // x256 leptons against the 3-D `GetCoords` distance) gets
+    // `Transmit_Radio(HELLO=2, bay)` on THAT dispatch (`0x0073EE51`); a reply
+    // of 1 writes state 3, whose next dispatch is `Queue_Mission(Enter, 0);
+    // return 1`. So a war miner hands off to Mission_Enter up to 5 cells out,
+    // never on adjacency. Both kinds share the shape; only the threshold
+    // differs.
+    let threshold = match snap.miner.kind {
+        MinerKind::Chrono => config.too_far_threshold_chrono,
+        MinerKind::War => config.too_far_threshold_standard,
+        MinerKind::Slave => return false,
+    };
 
-    match return_exceeds_too_far_threshold(
-        sim,
-        rules,
-        snap.entity_id,
-        ref_sid,
-        config.too_far_threshold_chrono,
-    ) {
+    match return_exceeds_too_far_threshold(sim, rules, snap.entity_id, ref_sid, threshold) {
         Some(false) => {}
         Some(true) | None => return false,
     }
@@ -1698,43 +1905,104 @@ fn try_begin_close_return_radio(
         admission == ContactAdmission::Accepted,
     );
 
-    if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
-        entity.movement_target = None;
-    }
-
-    snap.state = MinerState::Dock;
-    snap.miner.dock_queued = admission != ContactAdmission::Accepted;
     if admission == ContactAdmission::Accepted {
+        if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
+            entity.movement_target = None;
+        }
+        snap.state = MinerState::Dock;
+        snap.miner.dock_queued = false;
         // G5: the accepted close-return HELLO queues Mission_Enter via the
         // Harvest epilogue; arm the retry so the first CAN_DOCK waits the
         // ~14-16f cadence (and draws the RandomRanged(0,2) the dispatch
         // consumes), instead of an always-due next-tick collapse.
         super::miner_dock_sequence::schedule_enter_retry(sim, rules, snap);
         snap.miner.dock_phase = RefineryDockPhase::MissionEnter;
-    } else {
-        snap.miner.dock_enter_retry.clear();
-        snap.miner.dock_phase = RefineryDockPhase::Approach;
+        return true;
     }
 
-    if admission != ContactAdmission::Accepted {
-        if let Some(staging) = chrono_return_staging_cell_for_sid(sim, rules, ref_sid, path_grid)
-            && !is_adjacent_or_at((snap.rx, snap.ry), staging)
-            && let Some(grid) = path_grid
-        {
-            issue_move_if_idle(
-                sim,
-                Some(rules),
-                grid,
-                snap.entity_id,
-                staging,
-                snap.speed,
-                overlay_registry,
-            );
+    // HELLO refused (`0x0073EE68` falls through): the wide pass
+    // `Find_Docking_Bay(Dock, 0, 1)` under `g_MapEditorMode++`, and when its
+    // bay is farther than 0x300 leptons (`CMP EAX,0x300; JG` @ 0x0073ECD0)
+    // OR the type is a Teleporter, the staging destination = bay NW cell +
+    // `QueueingCell` (`BuildingType+0x1618/+0x161C`) through
+    // `Find_Nearby_Passable_Cell`; otherwise no destination — the state
+    // simply re-runs on the next Rate dispatch.
+    //
+    // **VERA-internal, gamemd equivalent UNCHECKED — staging seed.** Rust
+    // seeds the staging cell from the already-selected narrow-pass `ref_sid`
+    // where native re-runs `Find_Docking_Bay(Dock, 0, 1)` (the WIDE pass,
+    // no free-contact-slot gate) and seeds from THAT bay. The two differ
+    // only when the house owns two refineries of the Dock type within the
+    // 5-cell (`HarvesterTooFarDistance`) close radius and the nearer one's
+    // slot is taken: native stages beside the other refinery, Rust beside
+    // the refused one. Player effect: a miner waiting on the wrong side of a
+    // twin-refinery cluster for one Rate dispatch. Frequency: rare (needs
+    // two own refineries inside 5 cells with the nearer slot busy).
+    // Downstream risk: none beyond the wait position; the next HELLO retry
+    // re-selects.
+    match snap.miner.kind {
+        MinerKind::Chrono => {
+            // Chrono keeps its existing Dock/Approach re-HELLO cadence and
+            // staging drive (adjacency guard is VERA-internal; native sets
+            // the destination unconditionally for a Teleporter).
+            if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
+                entity.movement_target = None;
+            }
+            snap.state = MinerState::Dock;
+            snap.miner.dock_queued = true;
+            snap.miner.dock_enter_retry.clear();
+            snap.miner.dock_phase = RefineryDockPhase::Approach;
+            if let Some(staging) =
+                chrono_return_staging_cell_for_sid(sim, rules, ref_sid, path_grid)
+                && !is_adjacent_or_at((snap.rx, snap.ry), staging)
+                && let Some(grid) = path_grid
+            {
+                issue_move_if_idle(
+                    sim,
+                    Some(rules),
+                    grid,
+                    snap.entity_id,
+                    staging,
+                    snap.speed,
+                    overlay_registry,
+                );
+            }
         }
+        MinerKind::War => {
+            // Stay in state 2 (ReturnToRefinery) and retry HELLO every Rate
+            // dispatch; beyond 3 cells drive to the staging cell first.
+            snap.state = MinerState::ReturnToRefinery;
+            snap.miner.dock_queued = true;
+            if return_exceeds_too_far_threshold(
+                sim,
+                rules,
+                snap.entity_id,
+                ref_sid,
+                REFUSED_HELLO_STAGING_CELLS,
+            ) == Some(true)
+                && let Some(staging) =
+                    chrono_return_staging_cell_for_sid(sim, rules, ref_sid, path_grid)
+                && let Some(grid) = path_grid
+            {
+                let _ = issue_stock_miner_drive_move_with_overlay_registry(
+                    sim,
+                    rules,
+                    grid,
+                    snap.entity_id,
+                    staging,
+                    overlay_registry,
+                );
+            }
+        }
+        MinerKind::Slave => {}
     }
 
     true
 }
+
+/// `0x0073ECD0`: a non-Teleporter miner whose refused-HELLO wide-pass bay is
+/// within `0x300` leptons (3 cells) gets no staging destination.
+const REFUSED_HELLO_STAGING_CELLS: u16 = 3;
 
 fn try_issue_chrono_far_return_teleport(
     sim: &mut Simulation,
@@ -2824,8 +3092,68 @@ mod harvest_scan_dispatch_tests {
         RuleSet::from_ini(&ini).expect("scan rules")
     }
 
-    /// A War Miner parked at `cell` with the Harvest cursor on the search state.
+    const REFINERY_ID: u64 = 2;
+    /// NW cell of the fixture refinery (4x3 footprint, occupancy marked).
+    const REFINERY_NW: (u16, u16) = (50, 50);
+
+    /// A War Miner parked at `cell` with the Harvest cursor on the search
+    /// state, plus the owned refinery the Harvest preamble requires (a house
+    /// with no `Dock=` instance is queued straight onto Guard) and the
+    /// owning house registered so `House+0x242` has somewhere to land.
     fn spawn_search_miner(sim: &mut Simulation, cell: (u16, u16)) {
+        spawn_search_miner_without_refinery(sim, cell);
+        spawn_owned_refinery(sim, REFINERY_NW);
+        register_house(sim);
+    }
+
+    fn register_house(sim: &mut Simulation) {
+        let owner = sim.interner.intern("Americans");
+        sim.houses.insert(
+            owner,
+            crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10),
+        );
+    }
+
+    fn spawn_owned_refinery(sim: &mut Simulation, nw: (u16, u16)) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("GAREFN");
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
+            REFINERY_ID,
+            nw.0,
+            nw.1,
+            0,
+            0,
+            owner,
+            Health {
+                current: 900,
+                max: 900,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        ge.lifecycle.in_limbo = false;
+        sim.substrate.entities.insert(ge);
+        for y in nw.1..nw.1 + 3 {
+            for x in nw.0..nw.0 + 4 {
+                sim.substrate.occupancy.add(
+                    x,
+                    y,
+                    REFINERY_ID,
+                    MovementLayer::Ground,
+                    None,
+                    crate::sim::occupancy::CellListInsertion::AppendBuilding,
+                );
+            }
+        }
+        if sim.substrate.next_stable_object_id <= REFINERY_ID {
+            sim.substrate.next_stable_object_id = REFINERY_ID + 1;
+        }
+    }
+
+    fn spawn_search_miner_without_refinery(sim: &mut Simulation, cell: (u16, u16)) {
         let owner = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("HARV");
         let mut ge = GameEntity::new_at_frame_zero_for_test(
@@ -3013,95 +3341,412 @@ mod harvest_scan_dispatch_tests {
         );
     }
 
-    /// The park must stay recoverable. gamemd's idle tail hands the miner to
-    /// the harvester Guard override, whose player arm puts it straight back on
-    /// Harvest beside its own refinery; VERA has the handoff's destination but
-    /// not that return arm, so a miner queued off Harvest here would never come
-    /// back. A refinery's free miner that misses its first scan is the concrete
-    /// case — a 1400-credit unit lost for the match if this regresses.
+    /// `0x0073E5E0` state 0 miss → state 4 → 105 frames → `Queue_Mission(Guard)`
+    /// (`House+0x242` written on the miss), never a re-scan of its own. Once
+    /// promoted, the Harvest handler is no longer dispatched for the miner.
     #[test]
-    fn the_park_re_searches_after_the_wait_instead_of_retiring_the_miner() {
+    fn scan_miss_waits_105_frames_then_queues_guard_and_latches_the_house() {
         let rules = scan_rules();
         let config = MinerConfig::from_rules(&rules);
         let grid = PathGrid::new(64, 64);
         let mut sim = Simulation::new();
         spawn_search_miner(&mut sim, (10, 10));
+        let owner = sim.interner.intern("Americans");
+        assert!(!sim.houses[&owner].harvester_no_ore);
 
         tick_miners(&mut sim, &rules, &config, Some(&grid));
-        assert_eq!(
-            sim.substrate
-                .entities
-                .get(MINER_ID)
-                .expect("miner")
-                .miner_state(),
-            Some(MinerState::WaitNoOre)
+        {
+            let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+            assert_eq!(entity.miner_state(), Some(MinerState::WaitNoOre));
+            assert_eq!(entity.mission.dispatch_timer().delay(), 105);
+            assert_eq!(entity.mission.queued().known(), None);
+        }
+        assert!(
+            sim.houses[&owner].harvester_no_ore,
+            "`MOV [House+0x242], 1` at 0x0073E911 lands on the scan miss"
         );
 
-        // Ore appears inside the scan radius while the miner is parked.
+        // Ore appears inside the scan radius while the miner waits: gamemd's
+        // state 4 never looks.
         seed_ore(&mut sim, (10, 14));
-
-        // The idle state's own dispatch, one full wait later, runs the exit.
-        sim.session.binary_frame += u32::from(config.rescan_cooldown_ticks);
+        sim.session.binary_frame += 105;
+        let scenario_before = sim.rng_state().scenario;
         tick_miners(&mut sim, &rules, &config, Some(&grid));
 
         let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.mission.queued().known(), Some(MissionType::Guard));
         assert_eq!(
-            entity.mission.queued().known(),
-            None,
-            "nothing may queue the miner off Harvest while the Guard override's \
-             harvester return arm is unmodelled"
-        );
-        assert_ne!(
             entity.miner_state(),
             Some(MinerState::WaitNoOre),
-            "the park must be recoverable, not a terminal state"
+            "state 4 re-runs until Guard commences; no return to the scan"
+        );
+        assert_eq!(entity.miner.as_ref().expect("miner").target_ore_cell, None);
+        assert!(
+            entity.movement_target.is_none(),
+            "not on a refinery cell: no exit drive"
+        );
+        assert_ne!(
+            sim.rng_state().scenario,
+            scenario_before,
+            "state 4 always leaves through the Rate epilogue draw"
+        );
+
+        // The host's Ready-to-Commence step promotes the queued Guard.
+        let now = sim.session.binary_frame;
+        sim.mission_host_promote(MINER_ID, now, &rules);
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.mission.current().known(), Some(MissionType::Guard));
+
+        // On Guard the Harvest dispatch declines the miner: the ore stays
+        // untouched and no destination appears.
+        sim.session.binary_frame += 200;
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.mission.current().known(), Some(MissionType::Guard));
+        assert_eq!(entity.miner.as_ref().expect("miner").target_ore_cell, None);
+        assert!(entity.movement_target.is_none());
+        assert!(
+            sim.houses[&owner].harvester_no_ore,
+            "no clearing writer exists for House+0x242"
         );
     }
 
+    /// VERA-internal AI bridge (gamemd equivalent = AI lane, UNCHECKED): a
+    /// non-human house's miner never parks. The state-4 dispatch re-enters
+    /// the state-0 scan, so ore that appeared during the wait is taken, and a
+    /// second miss re-arms the same 105-frame wait with `House+0x242` still
+    /// written native-true.
     #[test]
-    fn idling_for_want_of_a_refinery_keeps_the_re_search_exit() {
+    fn ai_house_miner_keeps_rescanning_after_a_no_ore_miss() {
+        let rules = scan_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let grid = PathGrid::new(64, 64);
+        let mut sim = Simulation::new();
+        spawn_search_miner_without_refinery(&mut sim, (10, 10));
+        spawn_owned_refinery(&mut sim, REFINERY_NW);
+        let owner = sim.interner.intern("Americans");
+        sim.houses.insert(
+            owner,
+            crate::sim::house_state::HouseState::new(owner, 0, None, false, 0, 10),
+        );
+
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+        {
+            let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+            assert_eq!(entity.miner_state(), Some(MinerState::WaitNoOre));
+            assert_eq!(entity.mission.dispatch_timer().delay(), 105);
+        }
+        assert!(sim.houses[&owner].harvester_no_ore);
+
+        // Second miss: back through the scan, another 105-frame wait, no
+        // Guard queue.
+        sim.session.binary_frame += 105;
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+        {
+            let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+            assert_eq!(entity.mission.queued().known(), None, "no Guard park");
+            assert_eq!(entity.miner_state(), Some(MinerState::WaitNoOre));
+            assert_eq!(entity.mission.dispatch_timer().delay(), 105);
+        }
+
+        // Ore appears: the next re-scan finds it.
+        seed_ore(&mut sim, (10, 14));
+        sim.session.binary_frame += 105;
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.mission.queued().known(), None);
+        assert_eq!(entity.miner_state(), Some(MinerState::MoveToOre));
+        assert_eq!(
+            entity.miner.as_ref().expect("miner").target_ore_cell,
+            Some((10, 14))
+        );
+        assert!(
+            sim.houses[&owner].harvester_no_ore,
+            "the bridge does not invent a clearing writer"
+        );
+    }
+
+    /// Preamble: no owned instance of any `Dock=` type → `Queue_Mission(Guard,
+    /// 0); return 1` before the state switch, ore or no ore.
+    #[test]
+    fn house_without_a_dock_instance_queues_guard_before_scanning() {
+        let rules = scan_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let grid = PathGrid::new(64, 64);
+        let mut sim = Simulation::new();
+        spawn_search_miner_without_refinery(&mut sim, (10, 10));
+        register_house(&mut sim);
+        seed_ore(&mut sim, (10, 14));
+
+        let scenario_before = sim.rng_state().scenario;
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.mission.queued().known(), Some(MissionType::Guard));
+        assert_eq!(entity.mission.dispatch_timer().delay(), DISPATCH_NEXT_FRAME);
+        assert_eq!(
+            entity.miner.as_ref().expect("miner").target_ore_cell,
+            None,
+            "the switch (and its scan) is never entered"
+        );
+        assert_eq!(
+            sim.rng_state().scenario,
+            scenario_before,
+            "return 1, no draw"
+        );
+        let owner = sim.interner.intern("Americans");
+        assert!(!sim.houses[&owner].harvester_no_ore);
+    }
+
+    /// State 4 on a refinery cell: `Set_Destination(FUN_00703590(building))`
+    /// before the Guard queue — the miner drives off the pad it unloaded on.
+    #[test]
+    fn idle_tail_drives_a_miner_off_the_refinery_cell_before_guard() {
+        let rules = scan_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let grid = PathGrid::new(64, 64);
+        let mut sim = Simulation::new();
+        // Standing on the stock pad cell (NW + (3, 1)) inside the footprint.
+        let pad = (REFINERY_NW.0 + 3, REFINERY_NW.1 + 1);
+        spawn_search_miner(&mut sim, pad);
+
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+        sim.session.binary_frame += 105;
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.mission.queued().known(), Some(MissionType::Guard));
+        let goal = entity
+            .movement_target
+            .as_ref()
+            .and_then(|m| m.final_goal.or_else(|| m.path.last().copied()))
+            .expect("exit destination set from the refinery cell");
+        let inside = (REFINERY_NW.0..REFINERY_NW.0 + 4).contains(&goal.0)
+            && (REFINERY_NW.1..REFINERY_NW.1 + 3).contains(&goal.1);
+        assert!(
+            !inside,
+            "exit cell {goal:?} must be a passable cell outside the footprint"
+        );
+    }
+
+    /// The production re-order path: a war miner parked on Guard goes back to
+    /// work only through a player order. `Command::HarvestCell` (the right
+    /// click on ore) is the MEGAMISSION Harvest assignment
+    /// (`Queue_Mission(mission, 0)` @ 0x004C73B9 natively; VERA assigns
+    /// Harvest + the MoveToOre cursor), after which the Harvest dispatch gate
+    /// re-engages.
+    #[test]
+    fn player_harvest_order_returns_a_parked_war_miner_to_work() {
         let rules = scan_rules();
         let config = MinerConfig::from_rules(&rules);
         let grid = PathGrid::new(64, 64);
         let mut sim = Simulation::new();
         spawn_search_miner(&mut sim, (10, 10));
-        // Full cargo with no refinery on the map drives the return handler into
-        // the idle cursor. That entry is VERA-internal with no gamemd
-        // counterpart, and it shares the scan-miss park's re-search exit.
-        {
-            let entity = sim.substrate.entities.get_mut(MINER_ID).expect("miner");
-            entity
-                .mission
-                .set_handler_state(MinerState::ReturnToRefinery.cursor());
-            let miner = entity.miner.as_mut().expect("miner");
-            let capacity = miner.capacity_bales;
-            miner.cargo = (0..capacity)
-                .map(|_| CargoBale {
-                    resource_type: ResourceType::Ore,
-                    value: 25,
-                })
-                .collect();
-        }
 
         tick_miners(&mut sim, &rules, &config, Some(&grid));
+        sim.session.binary_frame += 105;
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+        let now = sim.session.binary_frame;
+        sim.mission_host_promote(MINER_ID, now, &rules);
         assert_eq!(
             sim.substrate
                 .entities
                 .get(MINER_ID)
                 .expect("miner")
-                .miner_state(),
-            Some(MinerState::WaitNoOre)
+                .mission
+                .current()
+                .known(),
+            Some(MissionType::Guard)
         );
 
-        sim.session.binary_frame += u32::from(config.rescan_cooldown_ticks);
+        seed_ore(&mut sim, (10, 14));
+        let applied = sim.apply_command(
+            "Americans",
+            &crate::sim::command::Command::HarvestCell {
+                entity_id: MINER_ID,
+                target_rx: 10,
+                target_ry: 14,
+            },
+            Some(&rules),
+            Some(&grid),
+            &std::collections::BTreeMap::new(),
+        );
+        assert!(applied);
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.mission.current().known(), Some(MissionType::Harvest));
+        assert_eq!(entity.miner_state(), Some(MinerState::MoveToOre));
+
+        // The Harvest handler dispatches again and drives to the ordered cell.
+        sim.session.binary_frame += 1;
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.mission.current().known(), Some(MissionType::Harvest));
+        assert_eq!(
+            entity
+                .movement_target
+                .as_ref()
+                .and_then(|m| m.final_goal.or_else(|| m.path.last().copied())),
+            Some((10, 14)),
+            "the dispatch gate re-engaged and the MoveToOre cursor drove to the order"
+        );
+    }
+
+    /// A full War Miner at `cell` with the finding-home cursor, its refinery at
+    /// (10, 10): the fixture for the state-2 return contact.
+    fn spawn_returning_war_miner(sim: &mut Simulation, cell: (u16, u16)) {
+        spawn_search_miner_without_refinery(sim, cell);
+        spawn_owned_refinery(sim, (10, 10));
+        register_house(sim);
+        let entity = sim.substrate.entities.get_mut(MINER_ID).expect("miner");
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
+        let miner = entity.miner.as_mut().expect("miner");
+        let capacity = miner.capacity_bales;
+        miner.cargo = (0..capacity)
+            .map(|_| CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            })
+            .collect();
+    }
+
+    /// State 2, HARV: the narrow bay within `HarvesterTooFarDistance` gets
+    /// HELLO on the same dispatch (`0x0073EE51`) and the accepted reply hands
+    /// off to the Enter sequence 4.5 cells out — before any adjacency.
+    #[test]
+    fn war_miner_hello_at_four_cells_hands_off_to_enter_before_adjacency() {
+        let rules = scan_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let grid = PathGrid::new(64, 64);
+        let mut sim = Simulation::new();
+        // Refinery centre = (3072, 2944) leptons; cell (16, 11) is 1152
+        // leptons (4.5 cells) east of it.
+        spawn_returning_war_miner(&mut sim, (16, 11));
+
         tick_miners(&mut sim, &rules, &config, Some(&grid));
 
         let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
-        assert_eq!(
-            entity.mission.queued().known(),
-            None,
-            "the VERA-internal no-refinery park queues no mission either"
+        let miner = entity.miner.as_ref().expect("miner");
+        assert_eq!(miner.reserved_refinery, Some(REFINERY_ID));
+        assert_eq!(entity.miner_state(), Some(MinerState::Dock));
+        assert_eq!(miner.dock_phase, RefineryDockPhase::MissionEnter);
+        assert!(!miner.dock_queued);
+        assert!(
+            sim.production
+                .dock_reservations
+                .has_contact(REFINERY_ID, MINER_ID),
+            "HELLO accepted on the same dispatch"
         );
-        assert_eq!(entity.miner_state(), Some(MinerState::SearchOre));
+        assert_eq!((entity.position.rx, entity.position.ry), (16, 11));
+        assert!(
+            !is_adjacent_or_at(
+                (16, 11),
+                refinery_dock_for_sid(&sim, &rules, REFINERY_ID).unwrap()
+            ),
+            "the hand-off happened without adjacency to the CAN_DOCK cell"
+        );
+    }
+
+    const BLOCKER_ID: u64 = 99;
+
+    /// A live non-miner vehicle that can hold the refinery's contact slot
+    /// (the dead-reservation sweep keeps contacts only for live objects).
+    fn spawn_slot_holder(sim: &mut Simulation) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("MTNK");
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
+            BLOCKER_ID,
+            30,
+            30,
+            0,
+            0,
+            owner,
+            Health {
+                current: 300,
+                max: 300,
+            },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        ge.lifecycle.in_limbo = false;
+        sim.substrate.entities.insert(ge);
+        assert!(
+            sim.production
+                .dock_reservations
+                .try_reserve(REFINERY_ID, BLOCKER_ID)
+        );
+    }
+
+    /// Refused HELLO, HARV farther than 0x300 leptons from the bay: drive to
+    /// the `QueueingCell` staging cell and stay in state 2 (retry every Rate
+    /// dispatch).
+    #[test]
+    fn refused_hello_beyond_three_cells_stages_the_war_miner_and_keeps_state_two() {
+        let rules = scan_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let grid = PathGrid::new(64, 64);
+        let mut sim = Simulation::new();
+        spawn_returning_war_miner(&mut sim, (16, 11));
+        // Another object holds the refinery's single contact slot.
+        spawn_slot_holder(&mut sim);
+
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        let miner = entity.miner.as_ref().expect("miner");
+        assert_eq!(entity.miner_state(), Some(MinerState::ReturnToRefinery));
+        assert!(miner.dock_queued);
+        assert!(
+            !sim.production
+                .dock_reservations
+                .has_contact(REFINERY_ID, MINER_ID)
+        );
+        let goal = entity
+            .movement_target
+            .as_ref()
+            .and_then(|m| m.final_goal.or_else(|| m.path.last().copied()))
+            .expect("4.5 cells out: Set_Destination(staging)");
+        let staging = chrono_return_staging_cell_for_sid(&sim, &rules, REFINERY_ID, Some(&grid))
+            .expect("staging cell");
+        assert_eq!(goal, staging);
+    }
+
+    /// Refused HELLO, HARV within 0x300 leptons: no destination at all; the
+    /// state re-runs (and re-HELLOs) on the next Rate dispatch.
+    #[test]
+    fn refused_hello_within_three_cells_sets_no_destination() {
+        let rules = scan_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let grid = PathGrid::new(64, 64);
+        let mut sim = Simulation::new();
+        // Cell (14, 11): 640 leptons (2.5 cells) east of the centre.
+        spawn_returning_war_miner(&mut sim, (14, 11));
+        spawn_slot_holder(&mut sim);
+
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.miner_state(), Some(MinerState::ReturnToRefinery));
+        assert!(
+            entity.movement_target.is_none(),
+            "`CMP EAX,0x300; JG` not taken"
+        );
+
+        // Slot frees: the next dispatch's HELLO is accepted and hands off.
+        sim.production
+            .dock_reservations
+            .cancel_miner(REFINERY_ID, BLOCKER_ID);
+        sim.session.binary_frame += 20;
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.miner_state(), Some(MinerState::Dock));
+        assert_eq!(
+            entity.miner.as_ref().expect("miner").dock_phase,
+            RefineryDockPhase::MissionEnter
+        );
     }
 }

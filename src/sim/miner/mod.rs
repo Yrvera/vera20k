@@ -260,7 +260,9 @@ pub struct MinerConfig {
     /// Too-far threshold for Chrono Miners (much larger because they teleport back)
     /// (ChronoHarvTooFarDistance).
     pub too_far_threshold_chrono: u16,
-    /// Ticks to wait before re-scanning in WaitNoOre state.
+    /// The fixed handler return of the state-0 scan miss (`return 0x69` at
+    /// `0x0073E91C`): frames until the GOING-TO-IDLE state (`WaitNoOre`)
+    /// dispatches and queues Guard. Not an INI value.
     pub rescan_cooldown_ticks: u8,
 }
 

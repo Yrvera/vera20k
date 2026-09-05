@@ -439,7 +439,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, true,
         )
     }
 
@@ -451,7 +451,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -463,7 +463,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -473,7 +473,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_spark_dummy_level_slope_v107(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, false, false,
-            false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -484,7 +484,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_naval_build_const_v109(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -495,7 +495,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_v110(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, false, false, false, false, false, false, false,
+            true, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -504,7 +504,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_center_v111(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, false, false, false, false, false, false,
+            true, true, false, false, false, false, false, false, false,
         )
     }
 
@@ -513,7 +513,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_deploy_latches_v112(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, false, false, false, false, false,
+            true, true, true, false, false, false, false, false, false,
         )
     }
 
@@ -523,7 +523,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_update_activation_v113(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, false, false, false, false,
+            true, true, true, true, false, false, false, false, false,
         )
     }
 
@@ -532,7 +532,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_crate_authority_v114(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, false, false, false,
+            true, true, true, true, true, false, false, false, false,
         )
     }
 
@@ -544,7 +544,17 @@ impl Simulation {
     pub(crate) fn state_hash_without_disguise_detect_v117(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true, true, false,
+            true, true, true, true, true, true, true, false, false,
+        )
+    }
+
+    /// Test-only provenance probe for the schema-v132 `HouseClass+0x242`
+    /// harvester no-ore latch fold. It reconstructs the committed v117 layout.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_house_harvester_no_ore_v132(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, false,
         )
     }
 
@@ -554,7 +564,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_wall_runtime_v115(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true, false, false,
+            true, true, true, true, true, true, false, false, false,
         )
     }
 
@@ -582,6 +592,7 @@ impl Simulation {
         include_crate_authority_v114: bool,
         include_wall_runtime_v115: bool,
         include_disguise_detect_v117: bool,
+        include_house_harvester_no_ore_v132: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -634,6 +645,7 @@ impl Simulation {
             include_base_plan_center_v111,
             include_house_deploy_latches_v112,
             include_house_update_activation_v113,
+            include_house_harvester_no_ore_v132,
         );
         if include_terminal_score_v46 {
             self.hash_terminal_score_snapshot(&mut hasher);
@@ -881,6 +893,7 @@ impl Simulation {
         include_base_plan_center_v111: bool,
         include_house_deploy_latches_v112: bool,
         include_house_update_activation_v113: bool,
+        include_house_harvester_no_ore_v132: bool,
     ) {
         for (owner, house) in &self.houses {
             owner.hash(hasher);
@@ -964,6 +977,11 @@ impl Simulation {
             }
             house.base_reservation.hash(hasher);
             house.waypoint_edge.hash(hasher);
+            if include_house_harvester_no_ore_v132 {
+                // `HouseClass+0x242`, the sticky harvester no-ore latch — a
+                // raw House byte in the native save block and lockstep CRC.
+                house.harvester_no_ore.hash(hasher);
+            }
         }
     }
 
@@ -3054,6 +3072,31 @@ mod rally_hash_tests {
         assert_eq!(
             baseline.state_hash_without_base_plan_center_v111(),
             changed.state_hash_without_base_plan_center_v111()
+        );
+    }
+
+    /// `HouseClass+0x242` (the sticky harvester no-ore latch) is folded once,
+    /// under the v132 flag only.
+    #[test]
+    fn house_harvester_no_ore_affects_only_current_v132_hash_schema() {
+        use crate::sim::house_state::HouseState;
+
+        fn fixture(latched: bool) -> Simulation {
+            let mut sim = Simulation::new();
+            let owner = sim.interner.intern("Americans");
+            let mut house = HouseState::new(owner, 0, Some(owner), true, 0, 10);
+            house.harvester_no_ore = latched;
+            sim.houses.insert(owner, house);
+            sim
+        }
+
+        let baseline = fixture(false);
+        let latched = fixture(true);
+
+        assert_ne!(baseline.state_hash(), latched.state_hash());
+        assert_eq!(
+            baseline.state_hash_without_house_harvester_no_ore_v132(),
+            latched.state_hash_without_house_harvester_no_ore_v132()
         );
     }
 
