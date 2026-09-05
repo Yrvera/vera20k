@@ -103,11 +103,14 @@ or recursive `mod.rs`. Coordinate snapshot versions/rebaselines; exclude others'
 
 ## Knowledge and guidance
 
-Internet documentation lookup is allowed without routine approval. For uncertain
-or version-sensitive library/API behavior (e.g. wgpu), consult official docs,
-specifications or upstream source matching the version in use; cite consequential
-findings near the implementation or review. Validate the production behavior too;
-library documentation does not establish gamemd parity.
+Internet documentation lookup is allowed without routine approval. Resolve uncertain
+technical behavior using authoritative references, specifications and upstream source;
+match library/API documentation to the version in use. Graphics work requires both
+API knowledge (e.g. wgpu) and rendering principles: visibility/depth, blending,
+color/palette math, projection/sampling, GPU execution and performance. Cite
+consequential findings near the implementation or review. Validate affected production
+output and performance with appropriate captures, GPU readbacks or profiling;
+documentation and CPU-only tests alone do not establish rendered gamemd parity.
 
 Use source and `research-index`; ranked results are not exhaustive. Verify index
 worktree provenance. Tracked research/plans belong in the task checkout; requested
