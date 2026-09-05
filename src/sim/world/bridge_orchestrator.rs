@@ -1300,14 +1300,23 @@ fn blow_up_bridge_cell_fallout(
     ry: u16,
     c4_inf_death: u8,
 ) {
-    kill_ground_occupants_at(sim, rx, ry, c4_inf_death);
+    kill_ground_occupants_at(sim, rules, rx, ry, c4_inf_death);
     drop_in_bridge_deck_entities(sim, rx, ry);
     let mut one_cell = BTreeSet::new();
     one_cell.insert((rx, ry));
     spawn_bridge_debris(sim, rules, &one_cell);
 }
 
-fn kill_ground_occupants_at(sim: &mut Simulation, rx: u16, ry: u16, c4_inf_death: u8) {
+/// `CellClass::BlowUpBridge @ 0x0047DDAE`: every ground occupant takes
+/// `ReceiveDamage` (`+0x16C`) with its own HP and `C4Warhead=`, so the kill
+/// runs the normal death branch including `Death_Announcement` (`+0x3B8`).
+fn kill_ground_occupants_at(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    rx: u16,
+    ry: u16,
+    c4_inf_death: u8,
+) {
     use crate::sim::animation::death_sequence_for_inf_death;
     let death_seq = death_sequence_for_inf_death(c4_inf_death);
     let victims: Vec<u64> = sim
@@ -1341,6 +1350,7 @@ fn kill_ground_occupants_at(sim: &mut Simulation, rx: u16, ry: u16, c4_inf_death
                 anim.switch_to(seq);
             }
         }
+        sim.announce_unit_lost_at_death_site(rules, id);
     }
 }
 
@@ -3624,7 +3634,7 @@ mod tests {
         air.on_bridge = false;
         sim.substrate.entities.insert(air);
 
-        kill_ground_occupants_at(&mut sim, 5, 5, 1);
+        kill_ground_occupants_at(&mut sim, &rules_with_voxel_max(0), 5, 5, 1);
 
         let g = sim.substrate.entities.get(1).expect("ground unit present");
         assert_eq!(g.health.current, 0, "ground occupant is force-killed");
@@ -3636,5 +3646,72 @@ mod tests {
             "aircraft overflying the collapse cell must NOT be killed"
         );
         assert!(!a.dying, "aircraft not flagged dying");
+    }
+
+    /// `CellClass::BlowUpBridge @ 0x0047DDAE` kills each ground occupant
+    /// through `ReceiveDamage` (`+0x16C`, `C4Warhead=`), so the deaths reach
+    /// `Death_Announcement` (`+0x3B8`): a human owner hears "Unit lost" once
+    /// per radar type-7 window (`0x004D98FE`); an AI owner hears nothing.
+    #[test]
+    fn bridge_collapse_kill_announces_unit_lost_once_per_radar_window() {
+        use crate::sim::house_state::HouseState;
+        use crate::sim::world::SimSoundEvent;
+
+        let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[VehicleTypes]\n0=MTNK\n[MTNK]\nStrength=300\nArmor=heavy\n",
+        ))
+        .expect("rules parse");
+        let mut sim = Simulation::new();
+        let human = sim.interner.intern("Americans");
+        let ai = sim.interner.intern("Russians");
+        sim.houses.insert(
+            human,
+            HouseState::new(human, 0, Some(human), true, 5_000, 10),
+        );
+        sim.houses
+            .insert(ai, HouseState::new(ai, 0, Some(ai), false, 5_000, 10));
+        sim.session.house_order.push(human);
+        sim.session.house_order.push(ai);
+
+        let mtnk = sim.interner.intern("MTNK");
+        for (id, owner) in [(1u64, human), (2, human), (3, ai)] {
+            let unit = GameEntity::new_at_frame_zero_for_test(
+                id,
+                5,
+                5,
+                0,
+                64,
+                owner,
+                Health {
+                    current: 256,
+                    max: 256,
+                },
+                mtnk,
+                crate::map::entities::EntityCategory::Unit,
+                0,
+                5,
+                true,
+            );
+            sim.substrate.entities.insert(unit);
+        }
+
+        kill_ground_occupants_at(&mut sim, &rules, 5, 5, 1);
+
+        let lost: Vec<_> = sim
+            .sound_events
+            .iter()
+            .filter_map(|event| match event {
+                SimSoundEvent::UnitLost { owner } => Some(*owner),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lost,
+            vec![human],
+            "two human kills in one cell announce once; the AI kill is silent"
+        );
+        for id in 1..=3 {
+            assert!(sim.substrate.entities.get(id).unwrap().dying);
+        }
     }
 }

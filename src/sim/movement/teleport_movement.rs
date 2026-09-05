@@ -605,6 +605,7 @@ mod tests {
             insignificant: false,
             to_protect: false,
             harvester: false,
+            spawned: false,
             refinery: false,
             weeder: false,
             bib: false,

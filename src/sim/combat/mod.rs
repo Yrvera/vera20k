@@ -1645,18 +1645,72 @@ pub struct CombatTickResult {
     /// apply site. Drained by the world into BaseUnderAttack/MinerUnderAttack
     /// radar events + the local player's EVA dispatch.
     pub under_attack_events: Vec<UnderAttackEvent>,
+    /// `Death_Announcement` inputs from this tick's damage kills; the world
+    /// applies the human-owner gate and the radar type-7 dedupe.
+    pub unit_lost_events: Vec<UnitLostEvent>,
 }
 
 /// A "your asset is being shot" ping: a Structure or harvester took damage
-/// from a different house this tick.
+/// this tick.
+///
+/// Native has two producers and neither tests the attacker's house:
+/// `BuildingClass::ReceiveDamage @ 0x00442230` calls
+/// `HouseClass::NotifyUnderAttack` when the source is non-null, the damage
+/// result is non-zero and `BuildingType+0x232 Insignificant` is clear (after
+/// a victim `vtbl+0x80` pre-check whose identity is not pinned and is not
+/// modelled); own-fire on an own building announces. `UnitClass::ReceiveDamage 0x007384B9..0x00738530` pings a
+/// `Harvester=` unit on any non-zero, non-fatal result with or without a
+/// source.
 #[derive(Debug, Clone, Copy)]
 pub struct UnderAttackEvent {
     pub rx: u16,
     pub ry: u16,
     /// The VICTIM's owner — the player whose radar/EVA should react.
     pub owner: InternedId,
-    /// True when the victim is a harvester (miner ping), else a base structure.
+    /// True for the ore-miner line: a `Harvester=` unit, or (via
+    /// `NotifyUnderAttack 0x004F9491..0x004F94A3`) a building whose type has
+    /// `UndeploysInto=` and `ResourceGatherer=yes` — the deployed slave miner.
     pub miner: bool,
+    /// True when produced by the building path, which is the only one that
+    /// reaches `NotifyUnderAttack`'s ally branch.
+    pub structure: bool,
+}
+
+/// `TechnoClass::Death_Announcement @ 0x004D98C0` input: a non-building
+/// techno was killed at a `ReceiveDamage` kill site (`AircraftClass
+/// 0x00416613`, infantry `0x005180F4`, `UnitClass 0x00737DC9/0x00737E39/
+/// 0x00737E68`, all vtable slot `+0x3B8`) and its type is not `Spawned=`.
+/// The world applies the owner-is-human gate and the radar type-7 dedupe.
+#[derive(Debug, Clone, Copy)]
+pub struct UnitLostEvent {
+    pub rx: u16,
+    pub ry: u16,
+    pub owner: InternedId,
+}
+
+/// The `Death_Announcement` (`+0x3B8`) input for one death site.
+///
+/// Every native caller sits in a non-building `ReceiveDamage` override
+/// (`BuildingClass` has none), and `0x004D98DD` skips `Spawned=` types.
+/// Shared by the damage kill loop and the non-damage death sites that
+/// natively route through `+0x16C` (`ReceiveDamage`) with `C4Warhead=`:
+/// `InfantryClass::IronCurtain 0x00522632` and `CellClass::BlowUpBridge
+/// 0x0047DDAE`. Paths that natively skip `ReceiveDamage` (crush
+/// `0x007416A0` → `RecordKill` only, `AircraftClass::Enter_Idle_Mode
+/// 0x004179FD/0x00417B88` → `Crash` slot `+0x3DC`, the off-playfield
+/// `UnInit` at `AircraftClass::AI 0x00414F93/0x00414FD1`) must not call it.
+pub(crate) fn death_announcement_event(
+    obj: &crate::rules::object_type::ObjectType,
+    category: EntityCategory,
+    rx: u16,
+    ry: u16,
+    owner: InternedId,
+) -> Option<UnitLostEvent> {
+    (category != EntityCategory::Structure && !obj.spawned).then_some(UnitLostEvent {
+        rx,
+        ry,
+        owner,
+    })
 }
 
 /// Exact ObjectClass-style world Z for effect and projectile coordinates.
@@ -1967,6 +2021,9 @@ pub(crate) struct DeathEffects {
     pub(crate) smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
     pub(crate) rad_detonations: Vec<crate::sim::radiation::RadDetonation>,
     pub(crate) under_attack_events: Vec<UnderAttackEvent>,
+    /// `Death_Announcement` inputs from this tick's damage kills; the world
+    /// applies the human-owner gate and the radar type-7 dedupe.
+    pub(crate) unit_lost_events: Vec<UnitLostEvent>,
     #[cfg(test)]
     pub(crate) receiver_stage_trace: Vec<ReceiverStageTrace>,
 }
@@ -2320,6 +2377,7 @@ impl DeathEffects {
         self.rad_detonations.append(&mut other.rad_detonations);
         self.under_attack_events
             .append(&mut other.under_attack_events);
+        self.unit_lost_events.append(&mut other.unit_lost_events);
         #[cfg(test)]
         self.receiver_stage_trace
             .append(&mut other.receiver_stage_trace);
@@ -2590,6 +2648,7 @@ fn handle_entity_deaths(
     let mut concrete_smudge_plans: Vec<ConcreteDeathSmudgePlan> = Vec::new();
     let mut rad_detonations: Vec<crate::sim::radiation::RadDetonation> = Vec::new();
     let mut under_attack_events: Vec<UnderAttackEvent> = Vec::new();
+    let mut unit_lost_events: Vec<UnitLostEvent> = Vec::new();
     let mut structure_destroyed: bool = false;
     for &dead_id in dead_entities {
         // ReceiveDamage enters the death helper exactly once at the fatal
@@ -2653,6 +2712,15 @@ fn handle_entity_deaths(
                     ry,
                     &mut death_sounds,
                 );
+                // `TechnoClass::Death_Announcement @ 0x004D98C0` runs at the
+                // Aircraft/Infantry/Unit `ReceiveDamage` kill sites (vtable
+                // `+0x3B8`; `BuildingClass` has none) and skips `Spawned=`
+                // types at `0x004D98DD`. Its owner gate (`0x0050B6F0`) and
+                // the `CreateRadarEvent(7)` dedupe (`0x004D98FE`) need the
+                // house table and radar queue, which the world owns.
+                if let Some(event) = death_announcement_event(obj, category, rx, ry, owner) {
+                    unit_lost_events.push(event);
+                }
                 // gamemd-derived: the debris block of
                 // `TechnoClass::ReceiveDamage @ 0x00701900`
                 // (`0x00702281`..`0x0070256C`). It sits BELOW the two death
@@ -3023,6 +3091,7 @@ fn handle_entity_deaths(
             death_sounds.append(&mut nested.death_sounds);
             smudge_spawn_requests.append(&mut nested.smudge_spawn_requests);
             rad_detonations.append(&mut nested.rad_detonations);
+            unit_lost_events.append(&mut nested.unit_lost_events);
             #[cfg(test)]
             receiver_stage_trace.append(&mut nested.receiver_stage_trace);
             under_attack_events.append(&mut pings);
@@ -3126,6 +3195,7 @@ fn handle_entity_deaths(
         smudge_spawn_requests,
         rad_detonations,
         under_attack_events,
+        unit_lost_events,
         #[cfg(test)]
         receiver_stage_trace,
     }
@@ -4470,14 +4540,55 @@ fn commit_damage_events_with_isolation(
                     rules.general.condition_yellow_x1000,
                 );
             }
-            if damage > 0 && attacker_owner.is_some_and(|ao| ao != target.owner) {
-                let miner = target.miner.is_some();
-                if miner || target.category == EntityCategory::Structure {
+            // Neither native ping survives the killing blow.
+            // `UnitClass::ReceiveDamage @ 0x00737C90`: `0x00737D69 CMP EAX,4`
+            // sends result 4 to the death branch (`+0x3B8`
+            // `Death_Announcement`, `Death_Explosion`); the `Harvester=` ping
+            // (`0x007384B9..0x00738530`) sits only in the `result != 4` arm.
+            // `BuildingClass::ReceiveDamage @ 0x00442230`: case 4 calls
+            // `DestructionEffects` (slot `+0x4EC` = `0x004415F0`, which never
+            // writes `+0x90`) and then, for the stock timer (`+0x530` = 8),
+            // `ObjectClass::UnInit` (`0x005F65F0`, clears `IsAlive +0x90` at
+            // `0x005F6625`), so the `0x00442905` re-test returns 4 before
+            // `NotifyUnderAttack`. RESIDUAL: `DestructionEffects` arms a zero
+            // timer for `BuildingType+0xD15` types and a building whose
+            // current mission is Selling (0x13), leaving `IsAlive` set and the
+            // ping live on their killing blow; neither is modelled here (walls
+            // are overlay mutations, a sold building dying is rare).
+            if damage > 0
+                && !became_fatal
+                && let Some(obj) = rules.object(interner.resolve(target.type_ref))
+            {
+                // `BuildingClass::ReceiveDamage @ 0x00442230`: with a non-null
+                // source, a non-zero damage result and `Insignificant=` clear,
+                // `HouseClass::NotifyUnderAttack` runs — there is no
+                // attacker-house test on that path, so a force-fired own
+                // building announces. (Both native sites first test the
+                // victim's `vtbl+0x80` predicate; its identity is not pinned
+                // here and is not modelled — VERA-internal, gamemd equivalent
+                // UNCHECKED.) `NotifyUnderAttack
+                // 0x004F9491..0x004F94A3` routes a building whose type has
+                // `UndeploysInto=` and `ResourceGatherer=yes` (the deployed
+                // slave miner) to the ore-miner line.
+                //
+                // `UnitClass::ReceiveDamage 0x007384B9..0x00738530`: a
+                // `Harvester=` unit pings on any non-zero non-fatal result,
+                // with or without a source.
+                let ping = if target.category == EntityCategory::Structure {
+                    (attacker_owner.is_some() && !obj.insignificant).then_some((
+                        obj.undeploys_into.is_some() && obj.resource_gatherer,
+                        true,
+                    ))
+                } else {
+                    obj.harvester.then_some((true, false))
+                };
+                if let Some((miner, structure)) = ping {
                     under_attack_events.push(UnderAttackEvent {
                         rx: target.position.rx,
                         ry: target.position.ry,
                         owner: target.owner,
                         miner,
+                        structure,
                     });
                 }
             }
@@ -5801,6 +5912,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             smudge_spawn_requests: Vec::new(),
             unit_facing: Vec::new(),
             under_attack_events: Vec::new(),
+            unit_lost_events: Vec::new(),
         };
     }
 
@@ -6844,6 +6956,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
         smudge_spawn_requests,
         unit_facing,
         under_attack_events,
+        unit_lost_events: death.unit_lost_events,
     }
 }
 

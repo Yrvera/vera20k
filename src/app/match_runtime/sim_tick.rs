@@ -13,9 +13,6 @@ use std::time::Instant;
 use crate::app::AppState;
 use crate::app::input::commands::{preferred_local_owner, preferred_local_owner_name};
 
-/// Minimum ticks between under-attack EVA voice lines (~30 s at 67 ms/tick).
-/// The native per-house attack-voice repeat delay is UNVERIFIED-pending-trace.
-const EVA_UNDER_ATTACK_COOLDOWN_TICKS: u64 = 450;
 /// Chance in 100 that a techno speaks its `VoiceFeedback=` line on the
 /// half-strength crossing. `TechnoClass::ReceiveDamage @ 0x007026BD
 /// CMP EAX,0x1E ; JGE` against `RandomRanged(0, 99)` — the cue speaks for a
@@ -153,111 +150,6 @@ fn replay_flush_facts(state: &AppState) -> (u64, u64) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     (session_tick, now)
-}
-
-/// App-side producers for the high-frequency EVA state cues the sim emits no
-/// events for yet: "Low power", "Insufficient funds", "Unit lost".
-///
-/// Each cue is edge-detected against the previous frame's state (the
-/// `AppState.eva_*` trackers) so it fires once per transition; the voice
-/// queue's same-cue dedupe is the repeat suppressor while a cue is already
-/// playing/queued. Native VoxClass priority tiers and re-announce cadence
-/// remain a later parity surface (the queue bridge in `audio/sfx.rs` says the
-/// same) — this wires the producers only.
-fn announce_local_state_evas(state: &mut AppState) {
-    let Some(owner) = crate::app::input::commands::preferred_local_owner_name(state) else {
-        return;
-    };
-    // Read phase (immutable sim borrow): compute this frame's states and the
-    // newly-dying set; commit to the trackers after the borrow ends.
-    let (low_power, funds_stalled, current_dying, newly_dying) = {
-        let Some(sim) = state
-            .match_state
-            .sim_runtime
-            .as_ref()
-            .map(|rt| &rt.simulation)
-        else {
-            return;
-        };
-        let owner_id = sim.interner.get(&owner);
-        let low_power = owner_id
-            .and_then(|id| sim.power_states.get(&id))
-            .is_some_and(|p| p.is_low_power);
-        // Underfunded stall: any local factory holding an active object.
-        let funds_stalled = owner_id.is_some_and(|id| {
-            sim.production
-                .factory_shadow
-                .iter_insertion_ordered()
-                .iter()
-                .any(|f| f.owner == id && f.on_hold && f.object.is_some())
-        });
-        // Local mobile entities currently in their death sequence. Structures
-        // have their own radar/EVA surface (not wired here); instant removals
-        // that never set `dying` (e.g. crush) are a known miss until the sim
-        // emits a death event.
-        let current_dying: Vec<u64> = owner_id
-            .map(|id| {
-                sim.entities()
-                    .values()
-                    .filter(|e| {
-                        e.dying
-                            && e.owner == id
-                            && e.category != crate::map::entities::EntityCategory::Structure
-                    })
-                    .map(|e| e.stable_id)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let newly_dying: Vec<u64> = current_dying
-            .iter()
-            .copied()
-            .filter(|id| {
-                !state
-                    .match_state
-                    .match_audio
-                    .eva_announced_dying
-                    .contains(id)
-            })
-            .collect();
-        (low_power, funds_stalled, current_dying, newly_dying)
-    };
-
-    let mut cues: Vec<&'static str> = Vec::new();
-    if low_power && !state.match_state.match_audio.eva_low_power_active {
-        cues.push("EVA_LowPower");
-    }
-    state.match_state.match_audio.eva_low_power_active = low_power;
-    if funds_stalled && !state.match_state.match_audio.eva_funds_stalled {
-        cues.push("EVA_InsufficientFunds");
-    }
-    state.match_state.match_audio.eva_funds_stalled = funds_stalled;
-    if !newly_dying.is_empty() {
-        cues.push("EVA_UnitLost");
-    }
-    // Prune despawned corpses, then record this frame's announcements.
-    state
-        .match_state
-        .match_audio
-        .eva_announced_dying
-        .retain(|id| current_dying.contains(id));
-    state
-        .match_state
-        .match_audio
-        .eva_announced_dying
-        .extend(newly_dying);
-
-    // Each is a `VoxClass::PlayEVA(name, -1)`; the entry's own `Type=` and
-    // `Priority=` route it (`EVA_LowPower` QUEUE IMPORTANT,
-    // `EVA_InsufficientFunds` STANDARD NORMAL, `EVA_UnitLost` STANDARD
-    // IMPORTANT on stock data).
-    for cue in cues {
-        state.match_state.match_audio.sound_events.push(
-            crate::audio::events::GameSoundEvent::Eva {
-                event: cue.to_string(),
-                type_override: None,
-            },
-        );
-    }
 }
 
 /// Drive the app-owned Vox wait after serialized HouseState reaches its exact
@@ -1054,9 +946,6 @@ fn advance_in_game_runtime_mode(
             };
             state.platform.frame_pacer.record_admitted_frame(now_ms);
         }
-        // High-frequency EVA state cues (low power / insufficient funds /
-        // unit lost) — app-side edge detection over sim state.
-        announce_local_state_evas(state);
         let garrison_flash_elapsed_ticks = state
             .match_state
             .sim_runtime
@@ -1774,25 +1663,11 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         if !eva_allowed || !is_local {
                             continue;
                         }
-                        // Repeat cooldown across both cue kinds (the native
-                        // per-house attack-voice delay is UNVERIFIED — see the
-                        // field doc on AppState).
-                        if sim.session.tick
-                            < state
-                                .match_state
-                                .match_audio
-                                .eva_under_attack_block_until_tick
-                        {
-                            continue;
-                        }
-                        state
-                            .match_state
-                            .match_audio
-                            .eva_under_attack_block_until_tick =
-                            sim.session.tick + EVA_UNDER_ATTACK_COOLDOWN_TICKS;
                         // `HouseClass::NotifyUnderAttack 0x004F94FB/0x004F95B3`,
                         // `UnitClass::ReceiveDamage 0x00738530`: `PlayEVA` type
                         // -1 (stock entries STANDARD NORMAL → pending slot).
+                        // The radar accept (`CreateRadarEvent`, folded into
+                        // `eva_allowed` sim-side) is native's only rate limit.
                         let cue = if miner {
                             "EVA_OreMinerUnderAttack"
                         } else {
@@ -1810,6 +1685,63 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             state.match_state.match_audio.sound_events.push(siren);
                         }
                         continue;
+                    }
+                    SimSoundEvent::AllyUnderAttack { owner } => {
+                        // `NotifyUnderAttack 0x004F95AE..0x004F95CF`: the ally
+                        // line for the LOCAL listener, then the same siren
+                        // tail as the base line.
+                        let owner_str = sim.interner.resolve(owner);
+                        if !local_owner_name
+                            .as_deref()
+                            .is_some_and(|l| l.eq_ignore_ascii_case(owner_str))
+                        {
+                            continue;
+                        }
+                        state
+                            .match_state
+                            .match_audio
+                            .sound_events
+                            .push(GameSoundEvent::Eva {
+                                event: "EVA_OurAllyIsUnderAttack".to_string(),
+                                type_override: None,
+                            });
+                        if let Some(siren) = base_under_attack_siren(false, &resources.rules) {
+                            state.match_state.match_audio.sound_events.push(siren);
+                        }
+                        continue;
+                    }
+                    SimSoundEvent::UnitLost { owner } => {
+                        // `TechnoClass::Death_Announcement 0x004D9911`:
+                        // `PlayEVA("EVA_UnitLost", -1)` for the local owner
+                        // once the sim's Spawned and radar type-7 gates passed.
+                        let owner_str = sim.interner.resolve(owner);
+                        if !local_owner_name
+                            .as_deref()
+                            .is_some_and(|l| l.eq_ignore_ascii_case(owner_str))
+                        {
+                            continue;
+                        }
+                        GameSoundEvent::Eva {
+                            event: "EVA_UnitLost".to_string(),
+                            type_override: None,
+                        }
+                    }
+                    SimSoundEvent::HouseEva { owner, event } => {
+                        // `HouseClass::Update 0x004F8BA0` / `0x004F8D14`:
+                        // `PlayEVA(name, -1)` — the entry's own `Type=` and
+                        // `Priority=` route it (stock: `EVA_InsufficientFunds`
+                        // STANDARD NORMAL, `EVA_LowPower` QUEUE IMPORTANT).
+                        let owner_str = sim.interner.resolve(owner);
+                        if !local_owner_name
+                            .as_deref()
+                            .is_some_and(|l| l.eq_ignore_ascii_case(owner_str))
+                        {
+                            continue;
+                        }
+                        GameSoundEvent::Eva {
+                            event: event.to_string(),
+                            type_override: None,
+                        }
                     }
                     SimSoundEvent::WorldEffectStarted {
                         sound_id,

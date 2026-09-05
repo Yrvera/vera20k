@@ -32,6 +32,8 @@ mod gsi_04_18_tests;
 #[cfg(test)]
 mod house_ai_activation_tests;
 #[cfg(test)]
+mod eva_dispatch_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
 mod team_script_vm_tests;
@@ -361,6 +363,21 @@ pub enum SimSoundEvent {
         miner: bool,
         eva_allowed: bool,
     },
+    /// `HouseClass::NotifyUnderAttack @ 0x004F93E0`, non-local branch
+    /// (`0x004F955D..0x004F95B3`): a building of a house that lists `owner`
+    /// (a human house) as its ally took sourced damage and
+    /// `CreateRadarEvent(0x10, cell)` accepted. `EVA_OurAllyIsUnderAttack`
+    /// plus the `BaseUnderAttackSound` siren, both for `owner`.
+    AllyUnderAttack { owner: InternedId },
+    /// `TechnoClass::Death_Announcement @ 0x004D98C0` fired for a unit of
+    /// `owner` (a human house): not `Spawned=`, and `CreateRadarEvent(7, cell)`
+    /// accepted (8-cell, 200-frame dedupe). App plays `EVA_UnitLost` for the
+    /// local owner.
+    UnitLost { owner: InternedId },
+    /// One of the `HouseClass::Update` advice lines
+    /// (`EVA_InsufficientFunds` `0x004F8BA0`, `EVA_LowPower` `0x004F8D14`)
+    /// for a human house; `event` is the `evamd.ini` section name.
+    HouseEva { owner: InternedId, event: &'static str },
     /// A superweapon fired. `sw_type` is the interned `[SuperWeaponTypes]`
     /// section name of the launched weapon — the discriminator the app layer
     /// needs to pick the cue, and the same object gamemd switches on.
@@ -2994,7 +3011,32 @@ impl Simulation {
                 ry,
             });
         }
-        for event in under_attack_events {
+        self.dispatch_under_attack_events(&under_attack_events);
+        self.dispatch_unit_lost_events(&effects.unit_lost_events);
+        debug_assert!(effects.smudge_spawn_requests.is_empty());
+        self.pending_smudge_requests
+            .append(&mut effects.smudge_spawn_requests);
+    }
+
+    /// `HouseClass::NotifyUnderAttack @ 0x004F93E0` for one damaged asset,
+    /// plus the `UnitClass::ReceiveDamage 0x00738530` harvester ping.
+    ///
+    /// The victim's own line: the radar diamond (type 4 miner / type 3 base,
+    /// `0x004F94E4`/`0x004F9544`) is enqueued for the victim house and its
+    /// accept result rides along as `eva_allowed`; the app keeps the
+    /// local-player voice filter. The ally line (`0x004F955D..0x004F95B3`,
+    /// building path only): every *other* human house that the victim house
+    /// lists in its own ally bitfield (`House+0x5788`, read at `0x004F9450`
+    /// through `IsAlliedWith`'s one-way rule) hears
+    /// `EVA_OurAllyIsUnderAttack` behind `CreateRadarEvent(0x10, cell)`,
+    /// unless the victim's country is `MultiplayPassive=` in a non-campaign
+    /// mode (`0x004F945D..0x004F9472`). Native has no other rate limit.
+    pub(crate) fn dispatch_under_attack_events(
+        &mut self,
+        events: &[crate::sim::combat::UnderAttackEvent],
+    ) {
+        let game_mode_nonzero = self.session.game_mode_nonzero;
+        for event in events {
             let event_type = if event.miner {
                 RadarEventType::HarvesterUnderAttack
             } else {
@@ -3010,10 +3052,112 @@ impl Simulation {
                 miner: event.miner,
                 eva_allowed,
             });
+            if !event.structure {
+                continue;
+            }
+            let victim_passive = self
+                .houses
+                .get(&event.owner)
+                .is_some_and(|house| house.multiplay_passive);
+            if game_mode_nonzero && victim_passive {
+                continue;
+            }
+            let victim_name = self.interner.resolve(event.owner).to_string();
+            let listeners: Vec<InternedId> = self
+                .session
+                .house_order
+                .iter()
+                .copied()
+                .filter(|&listener| {
+                    listener != event.owner
+                        && self
+                            .houses
+                            .get(&listener)
+                            .is_some_and(|house| house.is_human)
+                        && crate::map::houses::is_allied_with(
+                            &self.house_alliances,
+                            &victim_name,
+                            self.interner.resolve(listener),
+                        )
+                })
+                .collect();
+            for listener in listeners {
+                if self.radar_events.push_owned(
+                    RadarEventType::AllyUnderAttack,
+                    event.rx,
+                    event.ry,
+                    Some(listener),
+                ) {
+                    self.sound_events
+                        .push(SimSoundEvent::AllyUnderAttack { owner: listener });
+                }
+            }
         }
-        debug_assert!(effects.smudge_spawn_requests.is_empty());
-        self.pending_smudge_requests
-            .append(&mut effects.smudge_spawn_requests);
+    }
+
+    /// `TechnoClass::Death_Announcement @ 0x004D98C0` for this tick's damage
+    /// kills: owner passes `HouseClass::IsHumanPlayer @ 0x0050B6F0`
+    /// (`0x004D98CA`; the local player natively, every human house here with
+    /// the app filtering), then `CreateRadarEvent(7, cell)` (`0x004D98FE`,
+    /// 8-cell / 200-frame dedupe) gates `EVA_UnitLost` (`0x004D9911`).
+    pub(crate) fn dispatch_unit_lost_events(
+        &mut self,
+        events: &[crate::sim::combat::UnitLostEvent],
+    ) {
+        let game_mode_nonzero = self.session.game_mode_nonzero;
+        for event in events {
+            let human = self
+                .houses
+                .get(&event.owner)
+                .is_some_and(|house| house.is_controlled_by_human(game_mode_nonzero));
+            if !human {
+                continue;
+            }
+            if self.radar_events.push_owned(
+                RadarEventType::UnitLost,
+                event.rx,
+                event.ry,
+                Some(event.owner),
+            ) {
+                self.sound_events.push(SimSoundEvent::UnitLost {
+                    owner: event.owner,
+                });
+            }
+        }
+    }
+
+    /// `Death_Announcement` for a death site outside the damage kill loop
+    /// that natively still enters `ReceiveDamage` (`+0x16C`) with
+    /// `C4Warhead=` and so reaches `+0x3B8`: `InfantryClass::IronCurtain
+    /// 0x00522632` and `CellClass::BlowUpBridge 0x0047DDAE`. Applies the same
+    /// `Spawned=` gate ([`crate::sim::combat::death_announcement_event`]),
+    /// owner gate and radar type-7 dedupe as the damage kills. Call it for
+    /// each victim after its HP reached zero at the site.
+    pub(crate) fn announce_unit_lost_at_death_site(
+        &mut self,
+        rules: &crate::rules::ruleset::RuleSet,
+        stable_id: u64,
+    ) {
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
+            return;
+        };
+        let Some(obj) = self
+            .interner
+            .try_resolve(entity.type_ref)
+            .and_then(|type_name| rules.object(type_name))
+        else {
+            return;
+        };
+        let event = crate::sim::combat::death_announcement_event(
+            obj,
+            entity.category,
+            entity.position.rx,
+            entity.position.ry,
+            entity.owner,
+        );
+        if let Some(event) = event {
+            self.dispatch_unit_lost_events(&[event]);
+        }
     }
 
     /// Borrow all three logical RNG objects without exposing mutation.
@@ -7298,6 +7442,11 @@ impl Simulation {
                 rules,
                 &self.interner,
             );
+            // --- Phase 4.1: HouseClass::Update EVA advice ---
+            // DEPENDS ON: this tick's power totals and the house wallets.
+            // PRODUCES: `SimSoundEvent::HouseEva` (funds nag / low power) and
+            //   the per-house timer/guard state folded by the hash.
+            crate::sim::house_eva::tick_house_eva(self, rules);
             // --- Phase 4.5: Superweapons ---
             // DEPENDS ON: power state (suspend/resume gating).
             // PRODUCES: world_effects (bolt anims), damage to entities, sound_events.
@@ -7669,23 +7818,8 @@ impl Simulation {
             // Player-asset damage pings: owner-scoped radar diamond + EVA
             // dispatch (voice gated app-side to the local player; the queue's
             // dedup result rides along as `eva_allowed`, BridgeRepaired-style).
-            for ev in &combat_result.under_attack_events {
-                let event_type = if ev.miner {
-                    RadarEventType::HarvesterUnderAttack
-                } else {
-                    RadarEventType::BaseUnderAttack
-                };
-                let eva_allowed =
-                    self.radar_events
-                        .push_owned(event_type, ev.rx, ev.ry, Some(ev.owner));
-                self.sound_events.push(SimSoundEvent::UnderAttack {
-                    rx: ev.rx,
-                    ry: ev.ry,
-                    owner: ev.owner,
-                    miner: ev.miner,
-                    eva_allowed,
-                });
-            }
+            self.dispatch_under_attack_events(&combat_result.under_attack_events);
+            self.dispatch_unit_lost_events(&combat_result.unit_lost_events);
             // Production commits every request at its native producer. The
             // vectors remain only on hookless combat fixtures; a live world
             // request here would be an ordering regression.

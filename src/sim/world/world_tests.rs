@@ -1723,7 +1723,19 @@ fn gsi_04_07_damage_fatal_transport_lifecycle_brackets_nested_death_weapon() {
         fatal.interner.resolve(nested_fatal.killed_by.unwrap()),
         "Soviet"
     );
-    assert_eq!(result.under_attack_events.len(), 2);
+    // Only the surviving listener (30) pings. The nested-fatal building (31)
+    // takes `BuildingClass::ReceiveDamage` case 4, whose stock 8-frame timer
+    // runs `ObjectClass::UnInit` (`0x005F6625` clears `IsAlive +0x90`) before
+    // the `0x00442905` re-test, so `NotifyUnderAttack` never runs for it.
+    assert_eq!(result.under_attack_events.len(), 1);
+    assert_eq!(
+        (
+            result.under_attack_events[0].rx,
+            result.under_attack_events[0].ry
+        ),
+        (8, 5)
+    );
+    assert!(result.under_attack_events[0].structure);
     assert!(!fatal.substrate.occupancy.contains_entity(8, 5, 10));
     let attacker = fatal.substrate.entities.get(20).unwrap();
     assert!(!attacker.radio_contacts.contains(10));
@@ -5830,8 +5842,7 @@ fn phase14_drive_move_command_preserves_fractions_until_scheduled_visit() {
         assert_eq!(drive.target_speed_fraction, SIM_ONE);
         assert_eq!(drive.current_speed_fraction, expected_current);
         let raw_stage = (movement_speed / SimFixed::from_num(15)).to_num::<i32>();
-        let expected_owner =
-            (SimFixed::from_num(raw_stage) * expected_current).to_num::<i32>();
+        let expected_owner = (SimFixed::from_num(raw_stage) * expected_current).to_num::<i32>();
         assert_eq!(drive.owner_current_speed, expected_owner);
     }
 }
@@ -7686,6 +7697,17 @@ fn crusher_does_not_freeze_in_front_of_infantry() {
         );
         let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), None, 100);
 
+        // Make the victim's house human so a stray "Unit lost" would be
+        // audible: a crush is `RecordKill` + `UnInit` (`0x007416A0`), never
+        // `ReceiveDamage`, so `Death_Announcement` (`+0x3B8`) must stay silent.
+        if let Some(house) = sim
+            .interner
+            .get(infantry_owner)
+            .and_then(|id| sim.houses.get_mut(&id))
+        {
+            house.is_human = true;
+        }
+
         let mut series: Vec<(bool, (u16, u16))> = Vec::new();
         let mut arrived_at: Option<u64> = None;
         let mut entered_blocker_cell: Option<u64> = None;
@@ -7750,6 +7772,17 @@ fn crusher_does_not_freeze_in_front_of_infantry() {
             arrived_at.is_some(),
             "crusher never reached (16,10) with enemy_infantry={enemy_infantry}: {}",
             stacking_motion_state(&sim, tank)
+        );
+        // `sim.sound_events` accumulates until the app drains it, so the whole
+        // run is visible here.
+        let unit_lost_lines = sim
+            .sound_events
+            .iter()
+            .filter(|event| matches!(event, SimSoundEvent::UnitLost { .. }))
+            .count();
+        assert_eq!(
+            unit_lost_lines, 0,
+            "a crush kill must not announce \"Unit lost\" (enemy_infantry={enemy_infantry})"
         );
     }
 }

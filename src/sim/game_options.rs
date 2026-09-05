@@ -114,17 +114,30 @@ impl GameOptions {
 
     /// Scale a normalized animation delay through the currently stored speed.
     pub fn normalized_anim_delay(&self, delay: u16) -> u16 {
-        if delay == 0 {
+        self.speed_normalize(i32::from(delay)) as u16
+    }
+
+    /// `GameOptionsClass::SpeedNormalize @ 0x005FB2E0` (receiver `0xA8EB60`,
+    /// `[this]` = the stored speed index): `0 -> 0`; `1..=4` index the 4x8
+    /// table at `0x00832CEC` (`[value*8 + speed]`); otherwise
+    /// `(value << 3) / (speed + 1)` (`0x005FB2FC..0x005FB301`, signed IDIV).
+    ///
+    /// The frame pacer admits one sim tick per `stored_speed * 16 ms` bucket
+    /// (`app::types::tps_for_game_speed`), the same clock native's
+    /// `FrameTimer` runs on, so dividing a frame count by `speed + 1` here
+    /// reproduces native wall-clock cadence at every stored index.
+    pub fn speed_normalize(&self, value: i32) -> i32 {
+        if value == 0 {
             return 0;
         }
         let speed = usize::try_from(self.game_speed)
             .ok()
             .filter(|speed| *speed < 8)
             .expect("stored game speed must be in 0..=7");
-        if delay < 5 {
-            return NORMALIZED_DELAY_SHORT[usize::from(delay - 1)][speed];
+        if (1..5).contains(&value) {
+            return i32::from(NORMALIZED_DELAY_SHORT[(value - 1) as usize][speed]);
         }
-        ((u32::from(delay) << 3) / (speed as u32 + 1)) as u16
+        value.wrapping_shl(3) / (speed as i32 + 1)
     }
 
     /// Override the per-match defaults from a merged rules INI's
