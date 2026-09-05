@@ -5757,7 +5757,7 @@ mod tests {
                     },
                     speed_leptons_per_frame: 16,
                     velocity: ProjectileVelocity::new(16, 0, 0),
-                    trajectory: ProjectileTrajectory::Ballistic { gravity: 0 },
+                    trajectory: ProjectileTrajectory::Ballistic,
                     guidance: None,
                     visual: ProjectileVisualState::new(0, 0, 0),
                     arm_frames: 0,

@@ -98,7 +98,7 @@ use crate::sim::projectile::{
     ProjectileCollisionPolicy, ProjectileCoord, ProjectileDetonation, ProjectileGuidance,
     ProjectilePayload, ProjectileSpawn, ProjectileTarget, ProjectileTrajectory, ProjectileVelocity,
     ProjectileVisualState, SpecialDetonationAction, SpecialDetonationFlags, SpecialDetonationTarget,
-    TargetExpiryPolicy, ballistic_launch_velocity, projectile_next_cluster_coord,
+    TargetExpiryPolicy, projectile_next_cluster_coord,
     projectile_random_shrapnel_cell, projectile_shrapnel_count,
     projectile_special_detonation_action,
 };
@@ -210,7 +210,6 @@ enum ImmediateProjectileReason {
     NoProjectile,
     MissingProjectileType,
     Invisible,
-    InstantSpeed,
 }
 
 /// Which delivery path a weapon's shot takes.
@@ -278,8 +277,9 @@ enum ImmediateProjectileReason {
 ///
 /// Ordinary `ROT < 1, Vertical = no` AI subtracts gravity every visit
 /// (467402..467429), independently of `Arcing`. Production gives all such
-/// persistent shots the ordinary gravity/collision arm. Native binary64
-/// launch and velocity quantization remain open in the projectile owner.
+/// persistent shots the ordinary gravity/collision arm. Scalar FireAt math
+/// retains binary64 velocity; upstream FLH/pivot and homing producers remain
+/// explicitly bounded in their owners.
 fn classify_projectile_delivery(
     weapon: &crate::rules::weapon_type::WeaponType,
     rules: &RuleSet,
@@ -293,13 +293,10 @@ fn classify_projectile_delivery(
     if projectile.inviso {
         return ProjectileDelivery::Immediate(ImmediateProjectileReason::Invisible);
     }
-    if weapon.speed <= 0 {
-        return ProjectileDelivery::Immediate(ImmediateProjectileReason::InstantSpeed);
-    }
     // `BulletClass::AI @ 0x004666E0` selects an arm exactly twice: `ROT < 1` at
     // `0x004668D1`, then `Vertical` (`+0x2C0`) at `0x004671D0`. Nothing else
     // participates.
-    let ballistic = !projectile.vertical && (projectile.arcing || weapon.lobber);
+    let ballistic = projectile.arcing;
     ProjectileDelivery::Persistent {
         arm_frames: projectile.arm.max(0).min(u16::MAX as i32) as u16,
         tracks_target: projectile.rot > 0,
@@ -312,6 +309,7 @@ fn classify_projectile_delivery(
             anti_air: projectile.aa,
             airburst: projectile.airburst,
             inaccurate: projectile.inaccurate,
+            floater: projectile.floater,
             elasticity_bits: projectile.elasticity.to_bits(),
         },
         ballistic,
@@ -322,7 +320,7 @@ fn classify_projectile_delivery(
         // `0x006FE6AD` and everything else the plain arm at `0x006FE7FE`.
         launch_scatter_is_flak: (projectile.inaccurate && projectile.arcing)
             .then_some(projectile.flak_scatter && !projectile.inviso),
-        guidance: (!ballistic && !projectile.vertical && projectile.rot > 0).then_some(
+        guidance: (projectile.rot > 0).then_some(
             ProjectileGuidance {
                 rot: projectile.rot,
                 missile_rot_var: rules.general.missile_rot_var,
@@ -4678,6 +4676,9 @@ fn projectile_impact_cell(impact: ProjectileCoord) -> (u16, u16, SimFixed, SimFi
     )
 }
 
+// RESIDUAL (GSI-08.08): this existing child producer still rounds host-math
+// components to integers. The shared binary64 state migration does not certify
+// its angle, target coordinate getter, or native launch arithmetic.
 fn shrapnel_launch_velocity(
     origin: ProjectileCoord,
     target: ProjectileCoord,
@@ -4873,11 +4874,6 @@ fn emit_projectile_shrapnel(
         targets.push((target, Some(initial_target_position)));
     }
 
-    let gravity = if child_projectile.floater {
-        rules.general.gravity / 2
-    } else {
-        rules.general.gravity
-    };
     for (target, captured_target_coord) in targets {
         let target_coord = if let Some(captured) = captured_target_coord {
             captured
@@ -4917,10 +4913,10 @@ fn emit_projectile_shrapnel(
             },
             speed_leptons_per_frame: child_weapon.speed.clamp(1, i32::from(u16::MAX)) as u16,
             velocity: shrapnel_launch_velocity(detonation.impact, target_coord, child_weapon.speed),
-            // `BulletClass::Shrapnel @ 0x0046a310` supplies an explicit
-            // 45-degree launch vector. The existing velocity/gravity flight
-            // state is the represented constructor for that native handoff.
-            trajectory: ProjectileTrajectory::Ballistic { gravity },
+            // Child launch owner: BulletClass::Shrapnel @ 0x0046A310.
+            // The upstream vector producer remains open; flight now uses the
+            // same persistent binary64 state and live gravity consumer.
+            trajectory: ProjectileTrajectory::Ballistic,
             guidance: None,
             visual: ProjectileVisualState::new(
                 child_projectile.anim_low as u8,
@@ -4941,6 +4937,7 @@ fn emit_projectile_shrapnel(
                 anti_air: child_projectile.aa,
                 airburst: child_projectile.airburst,
                 inaccurate: child_projectile.inaccurate,
+                floater: child_projectile.floater,
                 elasticity_bits: child_projectile.elasticity.to_bits(),
             },
         });
@@ -8072,7 +8069,7 @@ pub(crate) fn resolve_attacker_fire(
                 )
             })
             .unwrap_or((0, 0, 0));
-        let origin = ProjectileCoord::new(
+        let mut origin = ProjectileCoord::new(
             i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>() + flh_delta.0,
             i32::from(snap.pos_ry) * 256 + snap.sub_y.to_num::<i32>() + flh_delta.1,
             origin_world_z_leptons + flh_delta.2,
@@ -8081,15 +8078,6 @@ pub(crate) fn resolve_attacker_fire(
             .projectile
             .as_deref()
             .and_then(|projectile_id| rules.projectile(projectile_id));
-        let gravity = projectile_type
-            .map(|projectile| {
-                if projectile.floater {
-                    rules.general.gravity / 2
-                } else {
-                    rules.general.gravity
-                }
-            })
-            .unwrap_or(0);
         // `TechnoClass::FireAt` step order, `0x006FE663`..`0x006FEA52`:
         // resolve the target delta, scatter it, recompute the facing from the
         // scattered delta, clamp the launch speed to half the straight-line
@@ -8112,160 +8100,211 @@ pub(crate) fn resolve_attacker_fire(
             ),
             None => delta,
         };
-        let impact = ProjectileCoord::new(
-            origin.x + delta.0,
-            origin.y + delta.1,
-            origin.z + delta.2,
+        let impact =
+            ProjectileCoord::new(origin.x + delta.0, origin.y + delta.1, origin.z + delta.2);
+        use crate::sim::projectile::launch::{
+            FireAtLaunch, FireAtLaunchResult, fireat_launch, high_arc_root,
+        };
+        let raw_source = ProjectileCoord::new(
+            i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>(),
+            i32::from(snap.pos_ry) * 256 + snap.sub_y.to_num::<i32>(),
+            origin_world_z_leptons,
         );
-        // `0x006FE9FB`..`0x006FEA00`: `if (dist / 2 < speed) speed = dist / 2`,
-        // applied to EVERY launch before the homing/vertical override.
-        let launch_distance = ((f64::from(delta.0) * f64::from(delta.0)
-            + f64::from(delta.1) * f64::from(delta.1)
-            + f64::from(delta.2) * f64::from(delta.2))
-        .sqrt())
-        .trunc() as i32;
-        let mut launch_speed = weapon.speed.min(launch_distance / 2).max(0);
-        // A zero launch speed still enters the ordinary gravity/collision
-        // arm. Exact native binary64 launch arithmetic remains unresolved.
-        // `0x006FEA36`..`0x006FEA4C`: a `ROT > 0` or `Vertical` bullet from a
-        // firer with `RadialFireSegments == 0` — every stock firer except the
-        // Aegis Cruiser — launches at one lepton per frame, and the weapon's
-        // `Speed=` is stored as `Bullet+0x110` instead. For `ROT > 0` this is
-        // belt-and-braces anyway: `BulletClass::Fire @ 0x00468B2C`
-        // renormalises the vector to magnitude 1.0 whatever the launch speed
-        // was, which is why the Aegis exception has no stock effect and is
-        // deliberately not modelled here.
-        if guidance.is_some() || vertical.is_some() {
-            launch_speed = 1;
+        // 70D590 reads the source's live current target, independently of the
+        // FireAt parameter and the scattered launch delta.
+        let current_target = entities
+            .get(snap.stable_id)
+            .and_then(|source| source.attack_target.as_ref())
+            .map(|attack| attack.target);
+        let target_location = |target: TargetKind| -> Option<ProjectileCoord> {
+            match target {
+                TargetKind::Entity(id) => entities.get(id).map(|entity| {
+                    let (rx, ry, sx, sy) = target_coords(entity, Some(rules), interner);
+                    ProjectileCoord::new(
+                        i32::from(rx) * 256 + sx.to_num::<i32>(),
+                        i32::from(ry) * 256 + sy.to_num::<i32>(),
+                        object_world_z_leptons(entity, terrain.as_deref()),
+                    )
+                }),
+                TargetKind::Cell(rx, ry) => {
+                    use crate::sim::cell_rect::{CellRef, get_cellclass_fallback};
+                    let cell =
+                        get_cellclass_fallback(terrain.as_deref(), i32::from(rx), i32::from(ry));
+                    let (x, y, level, slope) = match cell {
+                        CellRef::Real(cell) => (
+                            i32::from(cell.rx as i16),
+                            i32::from(cell.ry as i16),
+                            cell.level,
+                            cell.slope_type,
+                        ),
+                        CellRef::Dummy { cell } => {
+                            let cell = cell.snapshot();
+                            (
+                                cell.coord.0,
+                                cell.coord.1,
+                                cell.level as u8,
+                                cell.slope_type,
+                            )
+                        }
+                    };
+                    let x = x * 256 + 128;
+                    let y = y * 256 + 128;
+                    Some(ProjectileCoord::new(
+                        x,
+                        y,
+                        crate::util::lepton::ground_height_leptons(level, slope, x, y)
+                            .expect("native target cell slope"),
+                    ))
+                }
+            }
+        };
+        let flh_origin_z = origin.z;
+        // 6FE947..6FE98A: directed launches read virtual+308, then
+        // Dropping replaces only the launch origin via source+48. The delta
+        // was already computed from FLH and must not be recomputed here.
+        let directed_heading = projectile_type
+            .filter(|projectile| projectile.dropping || projectile.rot != 0)
+            .map(|_| {
+                let source = entities.get(snap.stable_id);
+                let hull = source.map_or(body_facing16, |source| {
+                    crate::sim::movement::turret::hull_facing_16(source, binary_frame)
+                });
+                match snap.category {
+                    EntityCategory::Unit if obj.has_turret => source
+                        .and_then(|source| source.barrel_facing.as_ref())
+                        .map_or(0, |facing| facing.current(binary_frame)),
+                    EntityCategory::Unit | EntityCategory::Infantry => hull,
+                    EntityCategory::Aircraft => source
+                        .and_then(|source| source.barrel_facing.as_ref())
+                        .map_or(0, |facing| facing.current(binary_frame)),
+                    // RESIDUAL: Building +308 (44D7D0/43ED40) has current-target,
+                    // pixel-offset and quantization producers beyond this owner.
+                    // Ordinary stock reachability of a directed Building projectile
+                    // is not established; its input producer remains open.
+                    EntityCategory::Structure => aim_facing16,
+                }
+            });
+        if projectile_type.is_some_and(|projectile| projectile.dropping) {
+            origin = target_location(TargetKind::Entity(snap.stable_id))
+                .expect("live native dropping source");
         }
-        // The aim facing IS the launch direction for a homing bullet
-        // (`0x006FDD50` takes the turret/body facing whenever
-        // `ROT != 0 || Dropping`); everything else points at the target delta.
-        // `heading_bam` is the math-BAM form of that facing.
-        //
-        // RESIDUAL (VERA-internal, gamemd equivalent UNCHECKED for the two
-        // uncovered shapes): VERA's condition is `rot > 0 && !ballistic &&
-        // !vertical`, native's is `ROT != 0 || Dropping`. The two disagree only
-        // for an `Arcing`+`ROT>0` projectile or a `Dropping`+`ROT==0` one, and
-        // stock `rulesmd.ini` authors neither — every `Vertical` stock
-        // projectile has no `ROT=` and no `Dropping=`, so native takes the
-        // `atan2` delta heading for them exactly as VERA does here. Trigger: a
-        // mod authoring either shape. Frequency: zero in stock.
-        let launch_heading_bam = if guidance.is_some() {
-            aim_facing16.wrapping_sub(0x4000)
+        let current_target_coord = (ballistic && !weapon.lobber)
+            .then(|| current_target.and_then(target_location))
+            .flatten();
+        // The scalar launch consumer receives the source +300 Z. Stock
+        // Building +300 preserves raw Z; Infantry delegates its FLH getter.
+        // Unit/Aircraft use the transformed zero-vector pivot. The existing
+        // flat FLH/pivot producer still lacks locomotor slope translation.
+        let pivot_z = if snap.category == EntityCategory::Infantry {
+            flh_origin_z
         } else {
-            crate::sim::movement::homing_movement::atan2_bam(
-                SimFixed::from_num(delta.1),
-                SimFixed::from_num(delta.0),
-            )
+            raw_source.z
         };
-        if let Some(guidance) = guidance.as_mut() {
-            guidance.heading_bam = launch_heading_bam;
-            guidance.fuse_reference = impact;
-        }
-        // `0x006FEB..`: the launch pitch. `Arcing` uses the solver below;
-        // otherwise a level `0x3FFF` unless the vertical separation exceeds
-        // 200 leptons, where native calls `FUN_004CB3D0(dZ - 20, max(dist,
-        // 0.05))`. VERA-internal: that helper's identity is UNCHECKED, so the
-        // pitch is taken as the geometric elevation of the same two arguments.
-        let launch_pitch_bam = if delta.2.abs() > 200 {
-            let horizontal = ((f64::from(delta.0) * f64::from(delta.0)
-                + f64::from(delta.1) * f64::from(delta.1))
-            .sqrt())
-            .max(0.05);
-            crate::sim::movement::homing_movement::atan2_bam(
-                SimFixed::from_num(delta.2 - 20),
-                SimFixed::from_num(horizontal.trunc() as i32),
-            )
-        } else {
-            0
-        };
-        // The root-selector argument remains ABI-ambiguous in the closed RE;
-        // use the proved ordinary (+root) path rather than inferring Lobber.
-        let velocity = if ballistic {
-            ballistic_launch_velocity(origin, impact, launch_speed, gravity, false)
-                .unwrap_or(ProjectileVelocity::new(0, 0, 0))
-        } else if vertical.is_some() || guidance.is_none() {
-            let horizontal = SimFixed::from_num(launch_speed)
-                * crate::sim::movement::homing_movement::cos_bam(launch_pitch_bam);
-            ProjectileVelocity::new(
-                (horizontal * crate::sim::movement::homing_movement::cos_bam(launch_heading_bam))
-                    .to_num::<i32>(),
-                (horizontal * crate::sim::movement::homing_movement::sin_bam(launch_heading_bam))
-                    .to_num::<i32>(),
-                (SimFixed::from_num(launch_speed)
-                    * crate::sim::movement::homing_movement::sin_bam(launch_pitch_bam))
-                .to_num::<i32>(),
-            )
-        } else if guidance.is_some() {
-            // RESIDUAL (GSI-08.06): the homing arm here is two-dimensional —
-            // `BulletClass::HomingTrack` owns the native pitch control and is
-            // not ported, so the launch pitch is dropped and the bullet keeps
-            // its launch z. Trigger: a homing shot at a target more than 200
-            // leptons above or below the muzzle. Player effect: the missile
-            // flies flat and detonates at the target's horizontal position
-            // instead of climbing to it. Frequency: cliff and building-roof
-            // engagements. Downstream risk: none beyond the impact z.
-            ProjectileVelocity::new(
-                (SimFixed::from_num(launch_speed)
-                    * crate::sim::movement::homing_movement::cos_bam(launch_heading_bam))
-                .to_num::<i32>(),
-                (SimFixed::from_num(launch_speed)
-                    * crate::sim::movement::homing_movement::sin_bam(launch_heading_bam))
-                .to_num::<i32>(),
-                0,
-            )
-        } else {
-            ProjectileVelocity::new(0, 0, 0)
-        };
-        let visual = projectile_type
-            .map(|projectile| {
-                ProjectileVisualState::new(
-                    projectile.anim_low as u8,
-                    projectile.anim_high as u8,
-                    projectile.anim_rate as u8,
-                )
+        let voxel = projectile_type.is_some_and(|projectile| projectile.voxel);
+        let building_pitch_height = (!ballistic && !voxel && delta.2.wrapping_abs() > 200)
+            .then(|| current_target)
+            .flatten()
+            .and_then(|target| match target {
+                TargetKind::Entity(id) => entities.get(id),
+                TargetKind::Cell(_, _) => None,
             })
-            .unwrap_or_else(|| ProjectileVisualState::new(0, 0, 0));
-        out.projectile_spawns.push(ProjectileSpawn {
-            source_id: snap.stable_id,
-            origin,
-            target,
-            initial_target_position: frozen_target_position,
-            payload: ProjectilePayload {
-                base_damage,
-                warhead: interner.intern(&warhead.id),
-                weapon: interner.intern(selected.weapon_id),
-                owner: snap.owner,
-            },
-            speed_leptons_per_frame: launch_speed.clamp(0, i32::from(u16::MAX)) as u16,
+            .filter(|target| target.category == EntityCategory::Structure)
+            .and_then(|target| rules.object(interner.resolve(target.type_ref)))
+            .map(|target_type| {
+                rules.building_launch_height(target_type)
+                    .wrapping_mul(200)
+                    .wrapping_sub(pivot_z)
+            });
+        let launch = if let Some(guidance) = guidance.as_mut() {
+            // Homing's launch/steering producer remains open. Its integer XY
+            // output is widened into the same authoritative binary64 state.
+            let heading_bam = aim_facing16.wrapping_sub(0x4000);
+            guidance.heading_bam = heading_bam;
+            guidance.fuse_reference = impact;
+            Some(FireAtLaunchResult {
+                velocity: ProjectileVelocity::new(
+                    crate::sim::movement::homing_movement::cos_bam(heading_bam).to_num::<i32>(),
+                    crate::sim::movement::homing_movement::sin_bam(heading_bam).to_num::<i32>(),
+                    0,
+                ),
+                speed: 1,
+            })
+        } else {
+            fireat_launch(FireAtLaunch {
+                delta: ProjectileCoord::new(delta.0, delta.1, delta.2),
+                speed: weapon.speed,
+                vertical: vertical.is_some(),
+                heading: directed_heading,
+                arcing: ballistic,
+                gravity: crate::sim::projectile::projectile_gravity(
+                    rules.general.gravity,
+                    collision.floater,
+                ),
+                high_root: high_arc_root(weapon.lobber, raw_source, current_target_coord),
+                voxel_downward: (!ballistic && voxel).then(|| {
+                    target_location(snap.target)
+                        .expect("live native FireAt target")
+                        .z
+                        < raw_source.z
+                }),
+                building_pitch_height,
+            })
+        };
+        // 6FF000/6FF93C destroys a failed launch, then rejoins the remaining
+        // FireAt effects at6FF749. Do not manufacture a stationary projectile
+        // or return before the common fire-event/burst bookkeeping below.
+        if let Some(FireAtLaunchResult {
             velocity,
-            trajectory: match vertical {
-                Some(detonation_altitude) => ProjectileTrajectory::Vertical {
-                    detonation_altitude,
-                    acceleration,
-                    max_speed: weapon.speed,
-                    heading_bam: launch_heading_bam,
-                    pitch_bam: launch_pitch_bam,
+            speed: launch_speed,
+        }) = launch
+        {
+            let visual = projectile_type
+                .map(|projectile| {
+                    ProjectileVisualState::new(
+                        projectile.anim_low as u8,
+                        projectile.anim_high as u8,
+                        projectile.anim_rate as u8,
+                    )
+                })
+                .unwrap_or_else(|| ProjectileVisualState::new(0, 0, 0));
+            out.projectile_spawns.push(ProjectileSpawn {
+                source_id: snap.stable_id,
+                origin,
+                target,
+                initial_target_position: frozen_target_position,
+                payload: ProjectilePayload {
+                    base_damage,
+                    warhead: interner.intern(&warhead.id),
+                    weapon: interner.intern(selected.weapon_id),
+                    owner: snap.owner,
                 },
-                None if ballistic || guidance.is_none() => ProjectileTrajectory::Ballistic { gravity },
-                None => ProjectileTrajectory::Straight,
-            },
-            guidance,
-            visual,
-            arm_frames,
-            fuse_frames: None,
-            // `BulletClass::AI 0x00467C1C`: the fuse runs when `ROT > 0` or
-            // `Ranged=`. `Dropping=` (`0x00467C78`) then discards its result
-            // outright, which is equivalent to never admitting the fuse — the
-            // detector's running minimum feeds nothing else.
-            ranged_fuse: (tracks_target
-                || projectile_type.is_some_and(|projectile| projectile.ranged))
-                && !projectile_type.is_some_and(|projectile| projectile.dropping),
-            tracks_target,
-            target_expiry: TargetExpiryPolicy::DetonateAtLastKnown,
-            collision,
-        });
+                speed_leptons_per_frame: launch_speed.clamp(0, i32::from(u16::MAX)) as u16,
+                velocity,
+                trajectory: match vertical {
+                    Some(detonation_altitude) => ProjectileTrajectory::Vertical {
+                        detonation_altitude,
+                        acceleration,
+                        max_speed: weapon.speed,
+                    },
+                    None if ballistic || guidance.is_none() => ProjectileTrajectory::Ballistic,
+                    None => ProjectileTrajectory::Straight,
+                },
+                guidance,
+                visual,
+                arm_frames,
+                fuse_frames: None,
+                // `BulletClass::AI 0x00467C1C`: the fuse runs when `ROT > 0` or
+                // `Ranged=`. `Dropping=` (`0x00467C78`) then discards its result
+                // outright, which is equivalent to never admitting the fuse — the
+                // detector's running minimum feeds nothing else.
+                ranged_fuse: (tracks_target
+                    || projectile_type.is_some_and(|projectile| projectile.ranged))
+                    && !projectile_type.is_some_and(|projectile| projectile.dropping),
+                tracks_target,
+                target_expiry: TargetExpiryPolicy::DetonateAtLastKnown,
+                collision,
+            });
+        }
     } else {
         let impact_z = attack_impact_z(snap.target, entities, terrain.as_deref());
         let air_impact = attack_air_impact(

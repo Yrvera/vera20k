@@ -4544,7 +4544,7 @@ fn gsi_05_04_ground_source_and_target_retarget_before_removal_without_expiry() {
         cell_target
     );
     assert!(
-        sim.projectiles.get(projectile_id).unwrap().velocity.y > 0,
+        f64::from_bits(sim.projectiles.get(projectile_id).unwrap().velocity.y.bits()) > 0.0,
         "allocated Cell target remains at (9,11) despite the unrelated dummy stamp"
     );
 }
@@ -4988,7 +4988,7 @@ fn gsi_04_01_unallocated_expiry_retains_live_dummy_identity_for_bullet_ai() {
     assert_eq!(dummy.snapshot().coord, (20, -1));
     assert!(sim.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
     assert!(
-        sim.projectiles.get(projectile_id).unwrap().velocity.y < 0,
+        f64::from_bits(sim.projectiles.get(projectile_id).unwrap().velocity.y.bits()) < 0.0,
         "guided Bullet must steer toward the later south-negative dummy stamp"
     );
 }
@@ -5103,7 +5103,7 @@ fn gsi_05_04_high_flying_source_and_target_become_explicit_null() {
     let advanced = restored.projectiles.get(projectile_id).unwrap();
     assert_eq!(advanced.target, ProjectileTarget::None);
     assert!(
-        advanced.velocity.y < 0,
+        f64::from_bits(advanced.velocity.y.bits()) < 0.0,
         "guided Bullet AI steers toward native null's zero CoordStruct, not its cached target"
     );
 }

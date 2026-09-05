@@ -43,7 +43,23 @@ The production route is `SimRuntime::advance_frame` through the normal master fr
 
 LaserFence has no active retail authored type in the inspected rules/mode/map text corpus; its constructor/parser are the only established field writers. AlliedWallTransparency is false in active retail data, excluding the unowned-wall negative house-index read. Authored true with a valid owner has additional directional fixture coverage; true with no owner remains unverified. The normal dummy tile is DWORD `0xFFFF` from `47BBF0`: ordinary map loading excludes/reconstructs it, and the runtime tile writer's Size gate matches allocation. Corrupted/external save state is outside these exclusions.
 
-**Open:** launch arithmetic, current integer persistent velocity, and resulting candidate production are not certified. The collision boundary carries the supplied double candidate and its integer query coordinate separately, but reflection's precise returned doubles are currently quantized by the production velocity representation. The matrix/transform is an executed prerequisite, not completed fractional trajectory delivery. These residuals keep the projectile row and Phase 6 open. Vertical launch/motion producer behavior and downstream damage are not re-certified by this bounded collision work.
+### 1.3a Binary64 motion and scalar launch boundary
+
+`Bullet+E8/+F0/+F8` is one persistent vector of doubles. Fire `468691..4686A0` copies the supplied six DWORDs. Ordinary AI copies it to scratch, reads live signed Rules gravity (`4671B9`), halves that value as a double for `Floater` (`48ACF0`), stores the scratch-Z subtraction at `467429`, and adds the vector to integer Location as doubles through `46B960`. Only the coordinate query is converted to integers. The ordinary tail decides whether to copy scratch back; its earlier returns preserve the original persistent bits.
+
+Vertical AI compares `ftol(Sqrt_Approx((x²+y²)+z²))` to MaxSpeed, adds Acceleration without clamping, substitutes X=100 only for an all-zero vector, and normalizes with the distinct denominator order `(z²+y²)+x²`. It stores each persistent component at `4672A3..4672B4`. Its candidate converts each velocity component to an integer **before** wrapping integer addition to Location (`4672EA..467326`); ordinary AI converts the double sum instead. Vertical checks the old Bullet height at `467350`, then candidate floor and candidate/old bridge flags in that order.
+
+The original FireAt scalar body `6FE8EE..6FF014` clips speed to half the native approximate distance, handles the native heading/pitch table conversions and normalization, and calls `48A8D0`/`48A9D0` only for **Arcing**. `Lobber` selects the other solver root through `70D590`; that helper also compares source raw Location against its live current target's virtual `+48`. It does not use the scattered FLH delta for this decision. `48A9D0` returns a fixed stored angle for positive height and otherwise uses the original approximate square root and Acos-table reader `4CADB0`. The old Rust `47F9B0` solver identity was false: that address belongs to Cell rendering. When the first solver succeeds but its range+1 probe fails, the wrapper still compares a tiny positive stack residue; the predecessor return address bounds it below every valid table-derived angle, so the original FireAt context negates the first angle. Solver failure destroys the Bullet at `6FF93C` and rejoins the remaining FireAt effects; it does not create a zero-velocity shot.
+
+Non-Arcing Voxel pitch reads parameter-target and source virtual `+48` Z, choosing word `8000` below and `4000` otherwise. The Cell receiver supplies ground Z, independently of `+58` bridge aim. ObjectRead loads Voxel from the effective ART section before BulletRead clears a missing Image. Fresh ObjectType image defaults to its type ID; explicit Image has no fallback or ART Image redirect. Missing Voxel retains the loaded flag. Non-Voxel large-height pitch uses a live source `+300` pivot when the current target is a Building, substituting `BuildingType.Height*200-pivotZ`; the bias is zero below absolute height **20**, otherwise 20. Unit/Aircraft `+300` uses a transformed zero-vector pivot, Infantry delegates its FLH getter, and active stock Building paths preserve raw Z. `BarrelAnimIsVoxel` is absent from the inspected retail corpus, excluding the Building branch that transforms Z.
+
+For directed ordinary launch (`ROT!=0 || Dropping`), Unit `+308` selects live turret facing only when Type.Turret is set, otherwise live hull facing; Infantry uses hull and Aircraft uses turret. Dropping then replaces the launch origin with source `+48`, retaining the delta already calculated from FLH. Building `+308` has separate target/pixel-offset/quantization producers and remains open. Stock RadialFireSegments has one positive type, AEGIS=10; both selected Medusa weapons use ROT=20, excluding radial spread from the bounded ordinary launch consumer by active data.
+
+Native save/load preserves these bits: Bullet virtual `+30` resolves through `7E4714` to `46B540`, which returns size `160` hex. Save `46AFB0→410320` and Load `46AE70→5F5E80→410380` write/read that full object size. Subsequent pointer/timer fixups do not reconstruct velocity. This is a velocity-only preservation proof: Load calls `46B640` for timers B8/C4, replacing their start frame with current `A8ED84` and duration with zero. Rust timer-load equivalence remains open; an unchanged Rust Projectile round trip is not a native timer certificate. The active save group `67E013→6802F0` enumerates Bullet registry `A8ED40`, requests its same-object IPersistStream receiver, and invokes OleSaveToStream. The matching load group reads count at `67F118` and invokes OleLoadFromStream at `67F138`; both groups have the same position among 21 consecutive object groups immediately before raw registry `A83D50`. WinMain registers Bullet GUID `7E96E0` with factory `6C4FC0`; factory `6C5090` invokes constructor `466380`, whose vtable supplies Load/Save above. Rust uses `NativeF64Bits` components and snapshot version 129, including the Floater policy and removing duplicate Vertical direction/captured gravity. Rules compatibility hash v5 includes canonical effective Projectile Voxel and Building Height, using the same Height resolver as combat. ART order, absent-versus-explicit defaults, and unused presentation fields do not substitute for those consumed values.
+
+Executable comparisons in `tools/projectile_oracle/` cover FireAt through actual BulletFire (`fireat_launch`, `voxel_launch`, `building_pitch`, `directed_launch`, `arc_second_probe`), isolated solver domains (`arc_domain`), and repeated ordinary/Vertical motion (`ordinary_motion`, `vertical_motion`). World/receiver inputs and any leaf hooks are explicit in each generator. Motion fixtures carry input bits as hex as well as human-readable decimals, preventing JSON float parsing from changing the supplied native state. These tests do not emulate a complete retail scenario.
+
+**Open:** upstream FLH/pivot slope and locomotor translation, directed Building heading, scatter arithmetic, homing launch/steering and pitch, shrapnel launch math/target coordinates, and active NukeMaker child production remain unclosed. NukeMaker's actual `46B310` path creates literal NukePayload; the current Rust dispatch still logs without creating that child. Its original launch includes tiny nonzero XY and Z=-1 with separate Speed=10, and its spawn Z uses the parent DetonationAltitude. Downstream warhead completeness is separate. These residuals keep GSI-08.06/07/08 and Phase 6 open; exact supplied-input math alone is a prerequisite, not a whole-row certificate.
 
 ### 1.4 Inaccurate Projectiles
 
@@ -498,10 +514,11 @@ the original instruction ranges and ObjectClass getter/setter bodies with
 controlled external floor and target-coordinate inputs. Its comparison is bounded
 to the recorded inputs; it does not prove the upstream HomingTrack velocity,
 target-coordinate production, bridge-flight trajectory, null-target altitude
-termination, or downstream warhead implementation. Rust still quantizes velocity
-to integer components and lacks native homing pitch integration. GSI-08.07 and
-GSI-08.08 remain open; the extra ballistic target-nearness admission and ordinary
-ground/source collision discrepancies also remain open.
+termination, or downstream warhead implementation. Persistent velocity now keeps
+binary64 bits, but the homing producer still forms integer XY and lacks native
+pitch integration. GSI-08.07 and GSI-08.08 remain open. Ordinary collision
+discrepancies are addressed separately in Section 1; this historical homing
+slice does not certify their upstream producers.
 
 ---
 
@@ -892,16 +909,19 @@ if VelX == 0.0 && VelY == 0.0 && VelZ == 0.0:
 
 ---
 
-## 9. TS-Only Code Paths Identified
+## 9. Authored Flags and Reachability Notes
 
-1. **Floater gravity** (FUN_0048ACF0): Used when `Floater=yes`. Only the Trident
-   missile in TS uses this. No YR units have Floater=yes in standard rules. However,
-   the code IS reachable if a mod sets Floater=yes — it is not dead code, just unused
-   by default YR content.
+1. **Floater gravity** (`48ACF0`): Retail `[Lobbed]` authors `Floater=yes`
+   and `[Grenade]` references that projectile. The inspected rules/map/mode
+   corpus found no incoming weapon use of Grenade. That bounds demonstrated
+   active reachability; it does not prove every indirect producer is absent.
+   The native live-gravity half and the resolved Floater consumer are retained.
 
-2. **Dropping behavior** (BulletTypeClass offset 0x29C): The `Dropping=yes` flag
-   appears in the AI flow but no standard YR BulletType uses it. It was used by TS
-   paratrooper bombs. The code is live (not gated) but dormant.
+2. **Dropping behavior** (BulletTypeClass `+29C`): Retail `[V3AirburstP]`
+   authors `Dropping=yes`, referenced by weapon `[V3Airburst]`. The inspected
+   corpus found no incoming weapon use of V3Airburst; indirect reachability
+   remains unproved. Native FireAt reads the directed heading and replaces the
+   origin with source `+48`, retaining the previously computed FLH delta.
 
 3. **Scalable** (BulletTypeClass offset 0x2EC): Read during INI parsing but no
    confirmed runtime usage in BulletClass::AI was found. Likely a TS rendering flag.

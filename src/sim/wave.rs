@@ -897,34 +897,7 @@ fn type0_nonmagnetic_geometry_with_tables(
 }
 
 fn installed_wave_math_tables() -> (&'static TrigTable, &'static AcosTable) {
-    if let (Some(trig), Some(acos)) = (
-        crate::map::retail_trig::global(),
-        crate::map::retail_trig::global_acos(),
-    ) {
-        return (trig, acos);
-    }
-
-    #[cfg(test)]
-    {
-        use std::sync::OnceLock;
-        static TEST_TABLES: OnceLock<(TrigTable, AcosTable)> = OnceLock::new();
-        let tables = TEST_TABLES.get_or_init(|| {
-            let exact = std::env::var_os("RA2_DIR")
-                .and_then(|dir| {
-                    std::fs::read(std::path::PathBuf::from(dir).join("gamemd.exe")).ok()
-                })
-                .and_then(|image| {
-                    let trig = TrigTable::from_executable(&image).ok()?;
-                    let acos = AcosTable::from_executable(&image).ok()?;
-                    (trig.matches_retail() && acos.matches_retail()).then_some((trig, acos))
-                });
-            exact.unwrap_or_else(|| (TrigTable::synthetic(), AcosTable::synthetic()))
-        });
-        return (&tables.0, &tables.1);
-    }
-
-    #[cfg(not(test))]
-    panic!("verified gamemd sine/Acos tables were not installed before type-0 Wave geometry");
+    crate::map::retail_trig::required_math_tables()
 }
 
 fn type0_nonmagnetic_geometry(

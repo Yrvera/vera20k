@@ -47,9 +47,18 @@ fn stored_i32(value: i32) -> X87Value {
 }
 
 fn native_atan2(y: i32, x: i32) -> X87Value {
+    native_atan2_f32(
+        X87Chop53::store_f32(stored_i32(y)).unwrap(),
+        X87Chop53::store_f32(stored_i32(x)).unwrap(),
+    )
+}
+
+/// Original 4CB3D0 finite f32-input kernel. The 4CAE30 double wrapper first
+/// stores each argument as f32, then executes the same table and quadrants.
+pub(crate) fn native_atan2_f32(y: NativeF32Bits, x: NativeF32Bits) -> X87Value {
     let zero = load_f32(NativeF32Bits::POSITIVE_ZERO);
-    let y = stored_i32(y);
-    let x = stored_i32(x);
+    let y = load_f32(y);
+    let x = load_f32(x);
 
     if X87Chop53::compare(x, zero) == X87Ordering::Equal {
         return match X87Chop53::compare(y, zero) {

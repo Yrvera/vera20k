@@ -6806,7 +6806,10 @@ fn gsi_08_05_non_inviso_projectile_advances_scenario_rng_by_the_reload_jitter() 
     );
 
     assert_eq!(scenario_rng.logical_state(), expected_rng.logical_state());
-    assert_eq!(explosion_coord(&result.explosion_effects[0]), target_coord);
+    assert!(result.explosion_effects.is_empty(), "non-Inviso Speed=0 still creates a persistent native shot");
+    assert_eq!(result.projectile_spawns.len(), 1);
+    let target = result.projectile_spawns[0].initial_target_position;
+    assert_eq!((target.x, target.y), (i32::from(target_coord.0) * 256 + target_coord.2.to_num::<i32>(), i32::from(target_coord.1) * 256 + target_coord.3.to_num::<i32>()));
 }
 
 #[test]
@@ -8782,7 +8785,7 @@ fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
         spawn.origin.z
     );
     assert!(
-        spawn.velocity.z < 0,
+        f64::from_bits(spawn.velocity.z.bits()) < 0.0,
         "the launch pitch has to point the bomb DOWN; got {:?}",
         spawn.velocity
     );
@@ -8800,6 +8803,7 @@ fn gsi_08_08_kirov_vertical_bomb_falls_and_detonates() {
                 |_| Some(ground),
                 Some(&terrain),
                 &dummy,
+                rules.general.gravity,
                 false,
                 |_, _, _| None,
             )

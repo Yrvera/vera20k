@@ -402,8 +402,9 @@ use crate::sim::world::Simulation;
 // Versions 124 and 125 are reserved by the concurrent parasite and audio-lane
 // changes, respectively; this format must not share either version.
 // v128 retains Bullet launch/previous-cell collision inputs and policy.
-// Renderer owns v127.
-const SNAPSHOT_VERSION: u32 = 128;
+// v129 stores exact Bullet binary64 velocity, removes duplicate Vertical
+// direction and captured gravity, and retains the Floater policy.
+const SNAPSHOT_VERSION: u32 = 129;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3156,8 +3157,8 @@ mod tests {
     /// 123 -> 126 adds the retained homing Inaccurate flag; 124 and 125 are
     /// reserved by the concurrent parasite and audio-lane changes.
     #[test]
-    fn projectile_collision_snapshot_version_is_128() {
-        assert_eq!(super::SNAPSHOT_VERSION, 128);
+    fn projectile_binary64_motion_snapshot_version_is_129() {
+        assert_eq!(super::SNAPSHOT_VERSION, 129);
     }
 
     #[test]

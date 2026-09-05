@@ -22,10 +22,10 @@
 //! - Part of rules/ — depends only on rules/art_data, sim/animation.
 //! - Does NOT depend on sim/ game logic, render/, or any game module.
 
-use crate::rules::art_data::ArtEntry;
 use crate::rules::animation_sequence::{
     FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet, ShpVehicleCadence,
 };
+use crate::rules::art_data::ArtEntry;
 
 /// Frames per facing the unit type constructor installs before art.ini is read.
 /// An entry that declares `FiringFrames=` but no `WalkFrames=` still gets a walk
@@ -165,6 +165,7 @@ mod tests {
             frame_width: 30,
             frame_height: 30,
             voxel: false,
+            authored_voxel: None,
             turret_offset: 0,
             y_draw_offset: 0,
             x_draw_offset: 0,
