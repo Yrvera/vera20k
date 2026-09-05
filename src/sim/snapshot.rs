@@ -404,7 +404,9 @@ use crate::sim::world::Simulation;
 // v128 retains Bullet launch/previous-cell collision inputs and policy.
 // v129 stores exact Bullet binary64 velocity, removes duplicate Vertical
 // direction and captured gravity, and retains the Floater policy.
-const SNAPSHOT_VERSION: u32 = 129;
+// v130 replaces the visit counter with the signed frame-anchored Bullet Arm timer
+// and retains Dropping so Check runs before detector-only admission is suppressed.
+const SNAPSHOT_VERSION: u32 = 130;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -1618,6 +1620,12 @@ impl Simulation {
         // Rust's native-shaped re-registration order:
         // 1. class registry indexes, 2. Logic slots (including ParticleSystem),
         // 3. CellClass-style lists.
+        // Bullet Load 46AE9C..46AEB0 starts both embedded timers at the
+        // already-restored global frame with duration zero. Only C4/CC gates
+        // AI through Check (4E11F0); retain the saved reference/watermark.
+        for (_, projectile) in self.projectiles.iter_mut() {
+            projectile.arm_timer.start(self.session.binary_frame as i32, 0);
+        }
         self.substrate.entities.rebuild_owner_index();
         self.rebuild_logic_membership();
         self.substrate.occupancy =
@@ -3157,8 +3165,8 @@ mod tests {
     /// 123 -> 126 adds the retained homing Inaccurate flag; 124 and 125 are
     /// reserved by the concurrent parasite and audio-lane changes.
     #[test]
-    fn projectile_binary64_motion_snapshot_version_is_129() {
-        assert_eq!(super::SNAPSHOT_VERSION, 129);
+    fn projectile_frame_timer_snapshot_version_is_130() {
+        assert_eq!(super::SNAPSHOT_VERSION, 130);
     }
 
     #[test]

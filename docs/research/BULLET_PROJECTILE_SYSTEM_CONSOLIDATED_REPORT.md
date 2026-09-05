@@ -389,7 +389,7 @@ BulletClass::Fire(this, target_coord_ptr, velocity_ptr) {
     if (BulletType.Inviso) { ... }
 
     // 10. Arm field -> ProximityDetector (§5.3)
-    int arm = (Target != NULL && Target->GetLayer() == 2) ? 0 : BulletType.Arm;
+    int arm = (Target != NULL && Target->WhatAmI() == 2) ? 0 : BulletType.Arm;
     ProximityDetector::Set(&this->Prox, &SourceCoord, &target_pos, arm, 0x7FFFFFFF);
 
     // 11. Homing velocity normalization (§5.5)
@@ -441,9 +441,9 @@ written. **This is the answer:**
 // In BulletClass::Fire, late in the function:
 int arm;
 if (Target != NULL) {
-    int layer = Target->GetLayer();       // vtable+0x2C
-    if (layer == 2) arm = 0;              // ground-layer target: no arming delay
-    else            arm = BulletType.Arm; // air/sub/building: use configured delay
+    int kind = Target->WhatAmI();          // vtable+0x2C
+    if (kind == 2) arm = 0;               // Aircraft identity: no arming delay
+    else           arm = BulletType.Arm;  // other targets: signed configured delay
 } else {
     arm = BulletType.Arm;
 }
@@ -478,9 +478,12 @@ void Set(this, cur_pos_ptr, ref_ptr, arm_delay, max_life) {
 **Practical meaning:** `Arm=N` in an INI makes the proximity detector return 0
 ("not close enough, keep flying") for the first N ticks after launch, regardless
 of distance to target. This is the engine's equivalent of a weapon arming time.
-Forced to 0 when the target is on the ground layer — so anti-ground projectiles
-with `Arm>0` behave as `Arm=0`. Only air / submarine / building-layer targets
-see the delay.
+Forced to zero for Aircraft identity (`7E22A4+2C → 41C180`, returns 2),
+regardless of altitude. Ground targets do not receive that exception. Load
+resets both embedded timer durations to zero at the already-restored global
+frame; reference and watermark survive. See
+[BULLETCLASS_TRAJECTORY_AND_HOMING.md §1.3b](BULLETCLASS_TRAJECTORY_AND_HOMING.md#13b-bullet-proximity-timers-and-saveload)
+for the original-body oracle and production timer lifecycle.
 
 **Rust impact:** `src/rules/projectile_type.rs:48-49` labels offset 0x2F0 as
 `speed: i32` with comment `read via "Speed" key`. This is **wrong**. The key is

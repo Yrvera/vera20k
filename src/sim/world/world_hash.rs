@@ -797,7 +797,7 @@ impl Simulation {
             projectile.trajectory.hash(hasher);
             projectile.guidance.hash(hasher);
             projectile.visual.hash(hasher);
-            projectile.arm_frames_remaining.hash(hasher);
+            projectile.arm_timer.hash(hasher);
             projectile.fuse_frames_remaining.hash(hasher);
             projectile.ranged_fuse.hash(hasher);
             projectile.last_distance_half.hash(hasher);
@@ -806,6 +806,7 @@ impl Simulation {
             projectile.collision.level_non_water.hash(hasher);
             projectile.collision.subject_to_walls.hash(hasher);
             projectile.collision.native_cell_collision.hash(hasher);
+            projectile.collision.dropping.hash(hasher);
             projectile.collision.subject_to_cliffs.hash(hasher);
             projectile.collision.flak_scatter.hash(hasher);
             projectile.collision.anti_air.hash(hasher);

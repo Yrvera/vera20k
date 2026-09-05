@@ -4344,7 +4344,8 @@ impl Simulation {
         stable_id: u64,
         spawn: crate::sim::projectile::ProjectileSpawn,
     ) -> u64 {
-        self.projectiles.spawn(stable_id, spawn);
+        self.projectiles
+            .spawn_at(stable_id, self.session.binary_frame, spawn);
         let registered = self.register_projectile(stable_id);
         debug_assert!(registered);
         stable_id

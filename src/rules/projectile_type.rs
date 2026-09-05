@@ -104,7 +104,7 @@ pub struct ProjectileType {
     pub course_lock_duration: i32,
     /// Delay in frames between spawning sub-projectiles (read from Image section). (+0x2E4)
     pub spawn_delay: i32,
-    /// Arming delay - frames before the projectile can detonate. (+0x2F0)
+    /// Signed proximity-fuse delay (+0x2F0); collisions bypass it and Aircraft targets use zero.
     pub arm: i32,
     /// Lowest animation frame index for in-flight animation. (+0x2F4)
     pub anim_low: i32,

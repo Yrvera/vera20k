@@ -528,6 +528,265 @@ mod tests {
     }
 
     #[test]
+    fn projectile_load_timer_opens_proximity_in_real_runtime_logic() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::sim::runtime::SimRuntime;
+        use crate::sim::snapshot::GameSnapshot;
+        let ini = IniFile::from_str(
+            "[General]\nVeteranRatio=3.0\n[AudioVisual]\nGravity=6\n[VehicleTypes]\n0=TEST\n[TEST]\nStrength=100\n[Warheads]\n0=WALLWH\n[WALLWH]\nWall=yes\nCellSpread=0\nPercentAtMax=1\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n[OverlayTypes]\n0=WALL\n[WALL]\nWall=yes\nStrength=1\n",
+        );
+        let art = IniFile::from_str("[WALL]\nDamageLevels=4\n");
+        let make_rules = || RuleSet::from_ini(&ini).unwrap();
+        for dropping in [false, true] {
+            let mut sim = Simulation::new();
+            install_native_size_terrain(&mut sim, 16, 16);
+            let terrain = sim.resolved_terrain.as_ref().unwrap().clone();
+            sim.install_resolved_terrain_for_new_map(terrain.clone());
+            let mut overlays = crate::sim::overlay_grid::OverlayGrid::new_with_retained_wall_plane(
+                terrain.width(),
+                terrain.height(),
+            );
+            overlays.place_overlay(12, 12, 0, 0);
+            sim.overlay_grid = Some(overlays);
+            let source = sim.allocate_stable_id();
+            place(
+                &mut sim,
+                source,
+                ProjectileCoord::new(2944, 3200, 0),
+                EntityCategory::Unit,
+            );
+            assert!(matches!(sim.reveal(source), RevealOutcome::Revealed { .. }));
+            sim.session.binary_frame = 100;
+            sim.session.map_name = "TIMER.MAP".into();
+            let mut shot = gsi_05_02_projectile(source, None);
+            shot.target = ProjectileTarget::Cell { rx: 12, ry: 12 };
+            let origin_z = if dropping { 100 } else { 20 };
+            shot.origin = ProjectileCoord::new(3200, 3200, origin_z);
+            shot.collision.dropping = dropping;
+            shot.initial_target_position = ProjectileCoord::new(3200, 3200, 0);
+            // Native Vertical skips the ordinary same-cell/old-height impact,
+            // isolating the proximity timer without disabling world admission.
+            shot.velocity = ProjectileVelocity::new(0, 0, -3);
+            shot.trajectory = ProjectileTrajectory::Vertical {
+                detonation_altitude: 2000,
+                acceleration: 0,
+                max_speed: 3,
+            };
+            shot.arm_frames = 10;
+            shot.ranged_fuse = true;
+            shot.payload.warhead = sim.interner.intern("WALLWH");
+            shot.payload.base_damage = 1;
+            let id = sim.allocate_stable_id();
+            sim.admit_projectile(id, shot);
+            let mut runtime = SimRuntime::from_simulation(sim);
+            runtime.resources.rules = make_rules();
+            runtime.resources.overlay_registry =
+                crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, Some(&art));
+            let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+            let saved = runtime.simulation.projectiles.get(id).unwrap().clone();
+            assert_eq!(saved.arm_timer.start_frame(), 100);
+            assert_eq!(
+                saved
+                    .arm_timer
+                    .remaining(runtime.simulation.session.binary_frame as i32),
+                9
+            );
+            assert_eq!(
+                saved.position,
+                ProjectileCoord::new(3200, 3200, origin_z - 3)
+            );
+            let bytes = GameSnapshot::save(&runtime.simulation, 17, 18, "TIMER.MAP", 0);
+            let mut restored = GameSnapshot::load_validated(&bytes, 17, 18, "TIMER.MAP")
+                .unwrap()
+                .sim;
+            let mut serialized_expected = saved.clone();
+            serialized_expected.in_logic_vector = false;
+            assert_eq!(restored.projectiles.get(id), Some(&serialized_expected));
+            restored.restore_after_snapshot_load().unwrap();
+            let mut expected = saved.clone();
+            expected
+                .arm_timer
+                .start(restored.session.binary_frame as i32, 0);
+            assert_eq!(restored.projectiles.get(id), Some(&expected));
+            let hash = restored.state_hash();
+            restored
+                .projectiles
+                .get_mut(id)
+                .unwrap()
+                .arm_timer
+                .start(restored.session.binary_frame as i32, 1);
+            assert_ne!(
+                restored.state_hash(),
+                hash,
+                "proximity duration is hash authority"
+            );
+            restored.projectiles.get_mut(id).unwrap().arm_timer = expected.arm_timer;
+            restored.projectiles.get_mut(id).unwrap().collision.dropping = !dropping;
+            assert_ne!(
+                restored.state_hash(),
+                hash,
+                "Dropping admission policy is hash authority"
+            );
+            restored.projectiles.get_mut(id).unwrap().collision.dropping = dropping;
+            assert_eq!(restored.state_hash(), hash);
+            assert!(restored.projectiles.get(id).unwrap().in_logic_vector);
+            restored.rebuild_caches_after_load(
+                terrain,
+                crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+                Vec::new(),
+                Vec::new(),
+                std::collections::BTreeMap::new(),
+            );
+            restored
+                .restore_map_authority_after_snapshot_load(
+                    &make_rules(),
+                    &runtime.resources.overlay_registry,
+                )
+                .unwrap();
+            let mut resumed = SimRuntime::from_simulation(restored);
+            resumed.resources.rules = make_rules();
+            resumed.resources.overlay_registry =
+                crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, Some(&art));
+            let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+            let _ = resumed.advance_frame(&[], 16, TickLane::Ordinary);
+            assert!(
+                runtime.simulation.projectiles.get(id).is_some(),
+                "unloaded positive Arm still suppresses the near fuse"
+            );
+            if dropping {
+                let shot = resumed.simulation.projectiles.get(id).unwrap();
+                assert_eq!(
+                    shot.last_distance_half, 47,
+                    "Dropping commits Check's native 94/2 watermark after load"
+                );
+                assert_eq!(
+                    runtime
+                        .simulation
+                        .projectiles
+                        .get(id)
+                        .unwrap()
+                        .last_distance_half,
+                    100
+                );
+                assert_eq!(
+                    resumed
+                        .simulation
+                        .overlay_grid
+                        .as_ref()
+                        .unwrap()
+                        .cell(12, 12)
+                        .overlay_data,
+                    0
+                );
+            } else {
+                assert!(
+                    resumed.simulation.projectiles.get(id).is_none(),
+                    "load-opened fuse retires the projectile in its actual Logic slot"
+                );
+                assert_eq!(
+                    runtime
+                        .simulation
+                        .overlay_grid
+                        .as_ref()
+                        .unwrap()
+                        .cell(12, 12)
+                        .overlay_data,
+                    0
+                );
+                assert_eq!(
+                    resumed
+                        .simulation
+                        .overlay_grid
+                        .as_ref()
+                        .unwrap()
+                        .cell(12, 12)
+                        .overlay_data,
+                    0x10,
+                    "native final cell coordinate reaches synchronous wall damage"
+                );
+            }
+            assert!(resumed.simulation.pending_projectile_detonations.is_empty());
+        }
+    }
+
+    #[test]
+    fn projectile_arm_producer_uses_aircraft_identity_in_runtime_fireat() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::sim::combat::AttackTarget;
+        use crate::sim::runtime::SimRuntime;
+        for arm in [-1, i32::MIN, i32::MAX, 9_999_999, 10] {
+            for aircraft in [false, true] {
+                let ini = IniFile::from_str(&
+                "[General]\nVeteranRatio=3.0\n[VehicleTypes]\n0=TEST\n1=VICTIM\n[AircraftTypes]\n0=AIR\n[TEST]\nStrength=300\nPrimary=GUN\n[VICTIM]\nStrength=300\n[AIR]\nStrength=300\n[GUN]\nDamage=10\nROF=100\nRange=10\nSpeed=100\nProjectile=SHOT\nWarhead=WH\n[SHOT]\nArm=10\nRanged=yes\nAA=yes\nAG=yes\n[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n".replace("Arm=10", &format!("Arm={arm}")));
+                let mut sim = Simulation::new();
+                install_native_size_terrain(&mut sim, 16, 16);
+                let source = sim.allocate_stable_id();
+                let target = sim.allocate_stable_id();
+                place(
+                    &mut sim,
+                    source,
+                    ProjectileCoord::new(3200, 3200, 100),
+                    EntityCategory::Unit,
+                );
+                place(
+                    &mut sim,
+                    target,
+                    ProjectileCoord::new(3700, 3200, 100),
+                    if aircraft {
+                        EntityCategory::Aircraft
+                    } else {
+                        EntityCategory::Unit
+                    },
+                );
+                let type_ref = sim.interner.intern(if aircraft { "AIR" } else { "VICTIM" });
+                let owner = sim.interner.intern("Russians");
+                let victim = sim.substrate.entities.get_mut(target).unwrap();
+                victim.type_ref = type_ref;
+                victim.owner = owner;
+                if aircraft {
+                    // Aircraft object-list membership requires its real Fly
+                    // host; a category-only fixture has no valid receiver.
+                    let mut locomotor =
+                        crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+                            crate::rules::locomotor_type::LocomotorKind::Fly,
+                        );
+                    locomotor.altitude = SimFixed::from_num(100);
+                    locomotor.air_phase = crate::sim::movement::locomotor::AirMovePhase::Cruising;
+                    victim.locomotor = Some(locomotor);
+                }
+                assert!(matches!(sim.reveal(source), RevealOutcome::Revealed { .. }));
+                assert!(matches!(sim.reveal(target), RevealOutcome::Revealed { .. }));
+                for id in [source, target] {
+                    sim.substrate
+                        .entities
+                        .get_mut(id)
+                        .unwrap()
+                        .position
+                        .exact_z_leptons = Some(100);
+                }
+                let firer = sim.substrate.entities.get_mut(source).unwrap();
+                firer.facing = 64;
+                firer.attack_target = Some(AttackTarget::new(target));
+                sim.session.binary_frame = 100;
+                let mut runtime = SimRuntime::from_simulation(sim);
+                runtime.resources.rules = RuleSet::from_ini(&ini).unwrap();
+                let output = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+                assert_eq!(
+                    runtime.simulation.projectiles.len(),
+                    1,
+                    "aircraft={aircraft}, {output:?}"
+                );
+                let (_, shot) = runtime.simulation.projectiles.iter().next().unwrap();
+                assert_eq!(
+                    shot.arm_timer.start_frame(),
+                    100, // Logic ran at frame100; advance_frame increments the clock afterward.
+                );
+                assert_eq!(shot.arm_timer.duration(), if aircraft { 0 } else { arm });
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "requires RA2_DIR with verified gamemd.exe math tables"]
     fn runtime_fireat_fractional_velocity_survives_live_gravity_and_snapshot() {
         use crate::rules::art_data::ArtRegistry;
@@ -670,15 +929,19 @@ mod tests {
             let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
             let snapshot = GameSnapshot::save(&runtime.simulation, 0, 0, "native motion", 0);
             let mut restored = GameSnapshot::load(&snapshot).unwrap().sim;
+            let mut serialized_expected = runtime.simulation.projectiles.get(id).unwrap().clone();
+            serialized_expected.in_logic_vector = false;
+            assert_eq!(restored.projectiles.get(id), Some(&serialized_expected));
             restored.restore_after_snapshot_load().unwrap();
             assert_eq!(
                 restored.projectiles.get(id).unwrap().velocity,
                 runtime.simulation.projectiles.get(id).unwrap().velocity
             );
-            assert_eq!(
-                restored.projectiles.get(id),
-                runtime.simulation.projectiles.get(id)
-            );
+            let mut expected_loaded = runtime.simulation.projectiles.get(id).unwrap().clone();
+            expected_loaded
+                .arm_timer
+                .start(restored.session.binary_frame as i32, 0);
+            assert_eq!(restored.projectiles.get(id), Some(&expected_loaded));
             let hash = restored.state_hash();
             let velocity = restored.projectiles.get(id).unwrap().velocity;
             restored.projectiles.get_mut(id).unwrap().velocity.x =
