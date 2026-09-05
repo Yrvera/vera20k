@@ -640,11 +640,14 @@ impl App {
             .as_ref()
             .is_some_and(|exit| exit.needs_voice_poll(wall_ms));
         let voices_active = poll_voices
-            && state
-                .audio
-                .sfx_player
-                .as_mut()
-                .is_some_and(|sfx| sfx.pump_and_check_voices());
+            && match (&mut state.audio.sfx_player, state.process_assets.manager()) {
+                (Some(sfx), Some(assets)) => sfx.pump_and_check_voices(
+                    &state.audio.sound_registry,
+                    assets,
+                    &state.audio.audio_indices,
+                ),
+                _ => false,
+            };
         let tick = state
             .match_state
             .scenario_exit
@@ -713,24 +716,20 @@ impl App {
     ) {
         match action {
             crate::app::match_runtime::scenario_exit::ScenarioExitVoiceAction::InterruptBattleControlTerminated => {
-                let Some(owner) = state.match_state.local_player_owner.as_deref() else {
+                if state.match_state.local_player_owner.is_none() {
                     log::warn!("Battle-control termination EVA has no pinned local owner");
                     return;
-                };
-                let faction = crate::app::presentation::building_anim::eva_faction_key(owner, &state.match_state.match_presentation.house_roster);
-                let fallback = match faction {
-                    "Russian" => "csof015",
-                    "Yuri" => "cyur015",
-                    _ => "ceva015",
-                };
-                let sound_id = state
-                    .audio.eva_registry
-                    .get("EVA_BattleControlTerminated", faction)
-                    .unwrap_or(fallback)
-                    .to_string();
+                }
+                // `GameExit::BattleControlTerminated 0x00686616`:
+                // `VoxClass::PlayEVA("EVA_BattleControlTerminated", 2)` — the
+                // INTERRUPT override; the entry itself is STANDARD CRITICAL.
+                let eva_side = crate::app::presentation::building_anim::local_eva_side(state);
                 if let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager()) {
-                    let _ = sfx.interrupt_eva_sound(
-                        &sound_id,
+                    let _ = sfx.play_eva(
+                        "EVA_BattleControlTerminated",
+                        Some(crate::rules::sound_ini::EvaType::Interrupt),
+                        &state.audio.eva_registry,
+                        eva_side,
                         &state.audio.sound_registry,
                         assets,
                         &state.audio.audio_indices,

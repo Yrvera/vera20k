@@ -764,33 +764,33 @@ pub(crate) fn load_audio_indices(
     indices
 }
 
-/// Load eva.ini / evamd.ini and build an EvaRegistry.
-/// YR-first: evamd.ini takes precedence, eva.ini fills gaps.
+/// Build the `VoxClass` registry the way `Init_Game @ 0x0052C8A0` does:
+/// `VoxClass::ReadEVAINI @ 0x00753000` on the `EVAMD.INI` CCINI (string
+/// `0x00825DF0`, "Reading EVAMD.INI" `0x00825DFC`) and nothing else. gamemd
+/// never opens `eva.ini`, so an RA2-only section is not a YR line.
 pub(crate) fn load_eva_registry(
     assets: &crate::assets::asset_manager::AssetManager,
+) -> crate::rules::sound_ini::EvaRegistry {
+    build_eva_registry(|name| assets.get(name))
+}
+
+/// The lookup-agnostic half of [`load_eva_registry`].
+pub(crate) fn build_eva_registry(
+    lookup: impl Fn(&str) -> Option<Vec<u8>>,
 ) -> crate::rules::sound_ini::EvaRegistry {
     use crate::rules::ini_parser::IniFile;
     use crate::rules::sound_ini::EvaRegistry;
 
-    let mut registry: Option<EvaRegistry> = None;
-    for name in ["evamd.ini", "eva.ini"] {
-        if let Some(bytes) = assets.get(name) {
-            // EVA INI files from MIX archives may contain non-UTF8 bytes (Windows-1252).
-            let text = String::from_utf8_lossy(&bytes);
-            let ini: IniFile = IniFile::from_str(&text);
-            match &mut registry {
-                None => {
-                    registry = Some(EvaRegistry::from_ini(&ini));
-                    log::info!("Loaded {} for EVA", name);
-                }
-                Some(reg) => {
-                    reg.merge_fallback(&ini);
-                    log::info!("Merged fallback {} for EVA", name);
-                }
-            }
-        }
-    }
-    registry.unwrap_or_default()
+    let Some(bytes) = lookup("evamd.ini") else {
+        log::warn!("Failed to find EVAMD.INI — EVA lines will be silent");
+        return EvaRegistry::default();
+    };
+    // EVA INI files from MIX archives may contain non-UTF8 bytes (Windows-1252).
+    let text = String::from_utf8_lossy(&bytes);
+    let ini: IniFile = IniFile::from_str(&text);
+    let registry = EvaRegistry::from_ini(&ini);
+    log::info!("Loaded evamd.ini for EVA");
+    registry
 }
 
 /// Build overlay classification data for the minimap from map overlay entries.
@@ -850,6 +850,40 @@ pub(crate) fn clear_screen(encoder: &mut wgpu::CommandEncoder, view: &wgpu::Text
         timestamp_writes: None,
         occlusion_query_set: None,
     });
+}
+
+#[cfg(test)]
+mod eva_registry_tests {
+    use super::build_eva_registry;
+    use crate::rules::sound_ini::EvaSide;
+
+    /// `Init_Game @ 0x0052C8A0` reads `EVAMD.INI` only (`0x00825DF0`); an
+    /// `eva.ini` sitting next to it is never opened, so its entries do not
+    /// exist and it cannot override or fill a YR row.
+    #[test]
+    fn eva_registry_reads_evamd_only_and_ignores_eva_ini() {
+        let evamd = "[DialogList]\n0=EVA_UnitLost\n[EVA_UnitLost]\nAllied=ceva064\n";
+        let eva = "[DialogList]\n0=EVA_UnitLost\n1=EVA_Ra2Only\n\
+                   [EVA_UnitLost]\nAllied=old064\nRussian=old064r\n\
+                   [EVA_Ra2Only]\nAllied=ra2only\n";
+        let lookup = |name: &str| -> Option<Vec<u8>> {
+            match name {
+                "evamd.ini" => Some(evamd.as_bytes().to_vec()),
+                "eva.ini" => Some(eva.as_bytes().to_vec()),
+                _ => None,
+            }
+        };
+        let reg = build_eva_registry(lookup);
+        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.get("EVA_UnitLost", EvaSide::Allied), Some("ceva064"));
+        assert_eq!(reg.get("EVA_UnitLost", EvaSide::Russian), None);
+        assert!(reg.entry("EVA_Ra2Only").is_none());
+
+        // Only eva.ini present: nothing is read at all.
+        let reg =
+            build_eva_registry(|name: &str| (name == "eva.ini").then(|| eva.as_bytes().to_vec()));
+        assert!(reg.is_empty());
+    }
 }
 
 #[cfg(test)]

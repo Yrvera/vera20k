@@ -27,7 +27,7 @@
 //!   rules/sound_ini (SoundRegistry for ID→filename mapping).
 //! - Does NOT depend on render/, ui/, sidebar/, sim/.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::num::NonZero;
 
 use rodio::buffer::SamplesBuffer;
@@ -37,7 +37,10 @@ use crate::assets::asset_manager::AssetManager;
 use crate::assets::aud_file;
 use crate::audio::arbiter::{self, ArbiterAction, EntryFacts, EventId, PlayRequest, SoundArbiter};
 use crate::audio::voice_queue::VoiceQueue;
-use crate::rules::sound_ini::{SoundEntry, SoundRegistry, VOLUME_SCALE, control, sound_type};
+use crate::audio::vox::{VoxNode, VoxQueue, VoxRequest};
+use crate::rules::sound_ini::{
+    EvaRegistry, EvaSide, EvaType, SoundEntry, SoundRegistry, VOLUME_SCALE, control, sound_type,
+};
 
 /// How many passes of a sustaining cue are kept queued on its rodio player:
 /// the one that is sounding plus one waiting behind it.
@@ -707,29 +710,6 @@ struct ResolvedPlayback {
     shifts: PlayShifts,
 }
 
-struct QueuedVoice {
-    sound_id: String,
-    decoded: DecodedAudio,
-    /// Sound-entry linear volume only. The current Voice master is applied
-    /// when this cue reaches the dedicated slot, not when it enters the queue.
-    base_linear: i32,
-}
-
-impl QueuedVoice {
-    fn new(sound_id: String, decoded: DecodedAudio, base_linear: i32) -> Self {
-        Self {
-            sound_id,
-            decoded,
-            base_linear,
-        }
-    }
-
-    fn prepare_for_dequeue(self, scales: SfxOutputScales) -> (String, PreparedSfxOutput) {
-        let output = prepare_direct_voice_output(self.decoded, self.base_linear, scales);
-        (self.sound_id, output)
-    }
-}
-
 /// User-controlled master channel for one secondary output.
 ///
 /// gamemd-derived: `OptionsClass::SetDefaults @ 0x005FA350` and
@@ -884,51 +864,6 @@ struct LoopQueue {
     finished: bool,
 }
 
-/// The EVA/speech suspend counter, `g_VoxSuspendDepth (DAT_00b1d428)`.
-///
-/// `GamePause::Enter @ 0x00406F00` calls `VoxClass::PauseEVA @ 0x007535B0`
-/// unconditionally, which raises this counter (`DAT_00b1d428 += 1`) after
-/// pausing the sounding announcement; `GamePause::Exit @ 0x00406F40` calls
-/// `VoxClass::UnpauseEVA @ 0x00753620`, which lowers it with a floor of 0
-/// (`if (d != 0) { d -= 1; if (d < 0) d = 0; }`).
-///
-/// `VoxClass::PlayNextQueued @ 0x00752780` — the dequeue the pump runs every
-/// pass — gates its **entire** body on `DAT_00b1d428 == 0` (read at
-/// `0x007527D5`; `get_xrefs_to 0x00b1d428` shows the only other readers are
-/// `PauseEVA`/`UnpauseEVA`). So a paused game neither finishes the line it is
-/// speaking nor starts the next queued one.
-#[derive(Debug, Clone, Copy, Default)]
-struct VoiceSuspend {
-    depth: i32,
-}
-
-impl VoiceSuspend {
-    /// One `GamePause::Enter`/`Exit` edge.
-    fn set_paused(&mut self, paused: bool) {
-        if paused {
-            self.depth += 1;
-        } else if self.depth != 0 {
-            self.depth = (self.depth - 1).max(0);
-        }
-    }
-
-    /// `VoxClass::PlayNextQueued`'s `DAT_00b1d428 == 0` gate.
-    fn dequeue_allowed(&self) -> bool {
-        self.depth == 0
-    }
-
-    /// `VoxClass::ResetAll @ 0x007535F0` zeroes `DAT_00b1d428` outright
-    /// (`DAT_00b1d428 = 0;`, after stopping the stream and calling
-    /// `VoxClass::ClearAllQueues`) rather than unwinding it pause by pause.
-    /// A reset therefore drops any depth a `GamePause::Enter` had raised —
-    /// native does not touch the game's own pause state here, and neither
-    /// does VERA, so a reset taken while paused leaves the dequeue ungated
-    /// in both. Harmless in both, because the queue is empty by then.
-    fn reset(&mut self) {
-        self.depth = 0;
-    }
-}
-
 /// Manages sound effect playback with separate SFX pool and voice slot.
 ///
 /// Matches the original engine's architecture:
@@ -962,8 +897,12 @@ pub struct SfxPlayer {
     /// semantics (`VoxClass`) are a separate parity surface that owns this
     /// slot, so folding voices into the pool is deferred to it.
     voice_player: Option<LiveSfxOutput>,
-    /// Queued EVA/voice announcements waiting for the dedicated voice slot.
-    queued_voice: VecDeque<QueuedVoice>,
+    /// The EVA announcement queue (`VoxClass`), including the pause depth
+    /// `DAT_00b1d428` and the suspend depth `DAT_00b1d3d8`.
+    vox: VoxQueue,
+    /// An EVA line was started on `voice_player` and its end has not been
+    /// reported to `vox` yet (`StreamPlayer::GetEndTime` stand-in).
+    eva_stream_open: bool,
     /// Sound id currently occupying the dedicated voice slot, when known.
     current_voice_id: Option<String>,
     /// Stable id of the object whose acknowledgement line owns the voice slot,
@@ -985,8 +924,6 @@ pub struct SfxPlayer {
     /// Whether the game is paused, so [`Self::set_paused`] only acts on the
     /// edge the way `GamePause::Enter`/`Exit` do.
     paused: bool,
-    /// `g_VoxSuspendDepth (DAT_00b1d428)`: the EVA/speech suspend counter.
-    voice_suspend: VoiceSuspend,
     /// Presentation-side RNG standing in for `g_MainRng @ 0x00886B88`.
     rng: SfxRng,
 }
@@ -1006,7 +943,8 @@ impl SfxPlayer {
             loops: BTreeMap::new(),
             now_ms: 0,
             voice_player: None,
-            queued_voice: VecDeque::new(),
+            vox: VoxQueue::new(),
+            eva_stream_open: false,
             current_voice_id: None,
             current_voice_owner: None,
             voice_queue: VoiceQueue::new(),
@@ -1015,7 +953,6 @@ impl SfxPlayer {
             output_scale: 1.0,
             focus_output_scale: 1.0,
             paused: false,
-            voice_suspend: VoiceSuspend::default(),
             rng: SfxRng::from_clock(),
         })
     }
@@ -1374,130 +1311,115 @@ impl SfxPlayer {
         }
     }
 
-    /// Queue an EVA-style announcement without interrupting the current voice.
+    /// `VoxClass::PlayEVA @ 0x00752700`: find the entry by name (`stricmp`
+    /// scan of `0xB1D4A4`; a miss becomes `QueueVoice(-1, ..)`, which its
+    /// index guard rejects), then `QueueVoice(index, type_override, -1)` —
+    /// priority is always the entry's own — and `PlayNextQueued`.
     ///
-    /// This is the narrow app-facing bridge for evamd.ini `Type=QUEUE` cues.
-    /// Full native priority tiers and inter-announcement delay remain a later
-    /// VoxClass parity surface.
-    pub fn queue_eva_sound(
+    /// `side` is the session column `VoxClass::SetSide @ 0x007534E0` stored;
+    /// an empty column is a `PlayFile` of `".WAV"`, which fails, so it is
+    /// treated as a miss here. Returns whether the request entered a queue
+    /// (or the pending slot).
+    pub fn play_eva(
         &mut self,
-        sound_id: &str,
+        event: &str,
+        type_override: Option<EvaType>,
+        eva_registry: &EvaRegistry,
+        side: EvaSide,
         registry: &SoundRegistry,
         assets: &AssetManager,
         audio_indices: &[crate::assets::audio_bag::AudioIndex],
     ) -> bool {
-        self.advance_voice_queue();
-
-        if self.current_voice_id.as_deref() == Some(sound_id)
-            || self
-                .queued_voice
-                .iter()
-                .any(|queued| queued.sound_id == sound_id)
-        {
-            return true;
-        }
-
-        let Some(resolved) = self.resolve_any(sound_id, registry, assets, audio_indices) else {
+        let Some(entry) = eva_registry.entry(event) else {
             return false;
         };
-        self.queued_voice.push_back(QueuedVoice::new(
-            sound_id.to_string(),
-            resolved.decoded,
-            resolved.event_linear,
-        ));
-        self.advance_voice_queue();
-        true
+        let Some(sample) = entry.column(side) else {
+            return false;
+        };
+        let effect = self.vox.queue_voice(
+            VoxRequest {
+                event: &entry.name,
+                sample,
+                eva_type: entry.eva_type,
+                priority: entry.priority,
+            },
+            type_override,
+        );
+        if effect.stop_stream {
+            // `StreamPlayer::Stop` (`0x00752480`, type 2 while current): only
+            // the dedicated voice channel; ordinary and animation SFX are
+            // untouched.
+            if let Some(output) = self.voice_player.take() {
+                output.player.stop();
+            }
+            self.current_voice_id = None;
+            self.eva_stream_open = false;
+        }
+        self.advance_voice_queue(registry, assets, audio_indices);
+        effect.inserted
     }
 
-    /// Play a STANDARD EVA cue only if the voice system is currently idle.
-    ///
-    /// Native STANDARD entries are fire-and-forget; when voice playback or a
-    /// queued announcement is active they are not retained for later playback.
-    pub fn play_standard_eva_sound(
-        &mut self,
-        sound_id: &str,
-        registry: &SoundRegistry,
-        assets: &AssetManager,
-        audio_indices: &[crate::assets::audio_bag::AudioIndex],
-    ) -> bool {
-        self.advance_voice_queue();
-        if self
-            .voice_player
+    /// Whether the dedicated voice slot has audio left to play
+    /// (`StreamPlayer::IsPlaying @ 0x00408070` stand-in; VERA serves unit
+    /// acknowledgements from the same slot, so a unit line counts too).
+    fn voice_slot_busy(&self) -> bool {
+        self.voice_player
             .as_ref()
             .is_some_and(|output| !output.player.empty())
-            || !self.queued_voice.is_empty()
-        {
-            return false;
-        }
-
-        let Some(resolved) = self.resolve_any(sound_id, registry, assets, audio_indices) else {
-            return false;
-        };
-        self.play_voice(
-            resolved.decoded,
-            resolved.event_linear,
-            Some(sound_id.to_string()),
-        )
     }
 
-    /// Replace only the dedicated EVA/voice channel with an INTERRUPT cue.
+    /// `VoxClass::PlayNextQueued @ 0x00752760`, the per-pump dequeue.
     ///
-    /// gamemd `VoxClass__QueueVoice @ 0x00752480`, type 2, discards queued
-    /// voice nodes and stops the current voice before starting the new cue.
-    /// Ordinary and animation SFX are deliberately untouched.
-    pub fn interrupt_eva_sound(
+    /// The native gate is `IsPlaying() == 0 && now > GetEndTime() + gap &&
+    /// DAT_00b1d428 == 0` (`0x00752794..0x007527D5`); [`VoxQueue::take_next`]
+    /// owns it. The stream's end time is reported here the first time the
+    /// slot is seen empty after an EVA line started, so the 500 ms gap runs
+    /// from the observed end (a paused line therefore still gets its gap
+    /// after it resumes and finishes).
+    ///
+    /// Then the sample is loaded and started — `StreamPlayer::PlayFile(name,
+    /// 1)` at `0x0075295C`; a failed load drops the node without touching
+    /// the gap (`0x00752963 JZ`), exactly as a missing `.WAV` does natively
+    /// (the stock `Dummy` columns of `EVA_PsychicDominatorActivated`).
+    pub fn advance_voice_queue(
         &mut self,
-        sound_id: &str,
         registry: &SoundRegistry,
         assets: &AssetManager,
         audio_indices: &[crate::assets::audio_bag::AudioIndex],
-    ) -> bool {
-        self.queued_voice.clear();
-        if let Some(output) = self.voice_player.take() {
-            output.player.stop();
+    ) {
+        let busy = self.voice_slot_busy();
+        if !busy {
+            if self.eva_stream_open {
+                self.vox.stream_ended(self.now_ms);
+                self.eva_stream_open = false;
+            }
+            if self.voice_player.is_some() {
+                self.voice_player = None;
+                self.current_voice_id = None;
+            }
         }
-        self.current_voice_id = None;
-
-        let Some(resolved) = self.resolve_any(sound_id, registry, assets, audio_indices) else {
-            return false;
+        let Some(node) = self.vox.take_next(self.now_ms, busy) else {
+            return;
         };
-        self.play_voice(
-            resolved.decoded,
-            resolved.event_linear,
-            Some(sound_id.to_string()),
-        )
+        self.start_eva_node(node, registry, assets, audio_indices);
     }
 
-    /// Starts the next queued EVA cue if the dedicated voice slot is idle.
-    ///
-    /// `VoxClass::PlayNextQueued @ 0x00752780` wraps its whole body in
-    /// `... && (DAT_00b1d428 == 0)` (`0x007527D5`), so while the game is
-    /// paused the queue does not advance and the slot is not even recycled.
-    ///
-    /// VERA tests it first; in native it is the **last** term of the inner
-    /// `if` at `0x007527D5`, after the `StreamPlayer::IsPlaying` poll and the
-    /// end-time comparison. Equivalent, because every term before it is a
-    /// side-effect-free poll and every side effect — the slot recycle
-    /// `DAT_00b1d4c4 + 0x50 = 2` included — sits inside the gate.
-    pub fn advance_voice_queue(&mut self) {
-        if !self.voice_suspend.dequeue_allowed() {
-            return;
-        }
-        if self
-            .voice_player
-            .as_ref()
-            .is_some_and(|output| !output.player.empty())
-        {
-            return;
-        }
-        self.voice_player = None;
-        self.current_voice_id = None;
-
-        let Some(queued) = self.queued_voice.pop_front() else {
+    fn start_eva_node(
+        &mut self,
+        node: VoxNode,
+        registry: &SoundRegistry,
+        assets: &AssetManager,
+        audio_indices: &[crate::assets::audio_bag::AudioIndex],
+    ) {
+        let Some(resolved) = self.resolve_any(&node.sample, registry, assets, audio_indices) else {
+            log::debug!("EVA {} has no sample {}", node.event, node.sample);
             return;
         };
-        let (sound_id, prepared) = queued.prepare_for_dequeue(self.output_scales());
-        self.play_prepared_voice(prepared, Some(sound_id));
+        let sample = node.sample.clone();
+        if self.play_voice(resolved.decoded, resolved.event_linear, Some(sample)) {
+            self.eva_stream_open = true;
+            self.vox.started(node);
+        }
     }
 
     /// Play decoded audio on the dedicated voice slot, cutting off any current voice.
@@ -1603,7 +1525,7 @@ impl SfxPlayer {
         audio_indices: &[crate::assets::audio_bag::AudioIndex],
     ) {
         self.now_ms = now_ms;
-        self.advance_voice_queue();
+        self.advance_voice_queue(registry, assets, audio_indices);
         self.top_up_loop_queues(now_ms, registry, assets, audio_indices);
         self.report_finished_outputs();
         if !self.arbiter.pump_due(now_ms) {
@@ -1811,7 +1733,7 @@ impl SfxPlayer {
     /// The EVA/speech stream is a **second, unconditional** half of the same
     /// edge: `Enter` calls `VoxClass::PauseEVA @ 0x007535B0` (which reaches
     /// `StreamPlayer::Pause` whenever an announcement is sounding, then
-    /// raises [`VoiceSuspend`]) and tail-calls `SpeechSystem::Pause @
+    /// raises the [`VoxQueue`] pause depth) and tail-calls `SpeechSystem::Pause @
     /// 0x00753500` (`StreamPlayer::Pause` again for the speech stream);
     /// `Exit` calls `SpeechSystem::Resume @ 0x00753510` then
     /// `VoxClass::UnpauseEVA @ 0x00753620`. Neither call sits behind the
@@ -1825,7 +1747,7 @@ impl SfxPlayer {
             return;
         }
         self.paused = paused;
-        self.voice_suspend.set_paused(paused);
+        self.vox.set_paused(paused);
         if paused {
             self.arbiter.suspend_all(now_ms);
             for output in self.live.values() {
@@ -1896,8 +1818,13 @@ impl SfxPlayer {
 
     /// Pump the dedicated voice queue once and report whether any voice work
     /// remains, mirroring the poll performed inside native exit wait loops.
-    pub fn pump_and_check_voices(&mut self) -> bool {
-        self.advance_voice_queue();
+    pub fn pump_and_check_voices(
+        &mut self,
+        registry: &SoundRegistry,
+        assets: &AssetManager,
+        audio_indices: &[crate::assets::audio_bag::AudioIndex],
+    ) -> bool {
+        self.advance_voice_queue(registry, assets, audio_indices);
         self.voices_active()
     }
 
@@ -1917,12 +1844,13 @@ impl SfxPlayer {
         if let Some(output) = self.voice_player.take() {
             output.player.stop();
         }
-        self.queued_voice.clear();
         self.current_voice_id = None;
-        // `VoxClass::ResetAll @ 0x007535F0`: stop the stream, clear every
-        // queue, then `DAT_00b1d428 = 0`. The suspend depth is reset here,
-        // not left to unwind on the next pause edge.
-        self.voice_suspend.reset();
+        // `VoxClass::ResetAll @ 0x007535D0`: current entry done, stop the
+        // stream, `ClearAllQueues`, then `DAT_00b1d428 = 0` and
+        // `DAT_00b1d3d8 = 0`. Both depths are reset here, not left to unwind
+        // on the next pause edge.
+        self.vox.reset_all();
+        self.eva_stream_open = false;
     }
 
     /// Get the current SFX master volume.
@@ -1958,19 +1886,17 @@ impl SfxPlayer {
         self.arbiter.busy_channel_count()
     }
 
-    /// Number of queued EVA/voice announcements waiting on the voice slot.
+    /// Number of EVA announcements waiting in the `VoxClass` queues.
     pub fn queued_voice_count(&self) -> usize {
-        self.queued_voice.len()
+        self.vox.queued_count()
     }
 
-    /// Whether any EVA/voice line is still playing or waiting in the voice queue.
-    /// Non-blocking (rodio `Player::empty()` is a poll). Used by the quit cascade
-    /// to wait for trailing voices before tearing down.
+    /// `VoxClass::PumpAndCheckActive @ 0x007529E0`'s answer: the stream is
+    /// playing or a node waits in any queue. Non-blocking (rodio
+    /// `Player::empty()` is a poll). Used by the quit cascade and the
+    /// victory/defeat savour wait.
     pub fn voices_active(&self) -> bool {
-        self.voice_player
-            .as_ref()
-            .is_some_and(|output| !output.player.empty())
-            || !self.queued_voice.is_empty()
+        self.vox.is_active(self.voice_slot_busy())
     }
 }
 
@@ -2867,25 +2793,25 @@ mod tests {
         assert_eq!(full.initial_volume, half);
     }
 
+    /// A queued EVA node carries only the entry and its sample name; the
+    /// sample is resolved and the Voice master applied when `PlayNextQueued`
+    /// starts it, so the scales at dequeue alone decide the startup volume.
     #[test]
     fn options_profile_queued_eva_uses_current_voice_master_at_dequeue() {
-        // QueuedVoice retains no master snapshot. The scales supplied by the
-        // production dequeue seam alone decide the startup volume.
-        let queued_for_voice_enabled_dequeue =
-            QueuedVoice::new("eva-a".to_string(), test_decoded_audio(), 13107);
-        let (sound_id, started_with_voice_enabled) = queued_for_voice_enabled_dequeue
-            .prepare_for_dequeue(test_output_scales(0.0, 1.0, 1.0, 1.0));
-        assert_eq!(sound_id, "eva-a");
+        let started_with_voice_enabled = prepare_direct_voice_output(
+            test_decoded_audio(),
+            13107,
+            test_output_scales(0.0, 1.0, 1.0, 1.0),
+        );
         assert!(
             (started_with_voice_enabled.initial_volume - native_volume_amplitude(13107)).abs()
                 < f32::EPSILON
         );
-
-        let queued_for_voice_muted_dequeue =
-            QueuedVoice::new("eva-b".to_string(), test_decoded_audio(), 13107);
-        let (sound_id, started_with_voice_muted) = queued_for_voice_muted_dequeue
-            .prepare_for_dequeue(test_output_scales(1.0, 0.0, 1.0, 1.0));
-        assert_eq!(sound_id, "eva-b");
+        let started_with_voice_muted = prepare_direct_voice_output(
+            test_decoded_audio(),
+            13107,
+            test_output_scales(1.0, 0.0, 1.0, 1.0),
+        );
         assert_eq!(started_with_voice_muted.initial_volume, 0.0);
     }
 
@@ -3042,61 +2968,5 @@ mod tests {
     fn test_decode_pcm_empty() {
         let samples = decode_pcm(&[], 1, 16);
         assert!(samples.is_empty());
-    }
-
-    /// Pausing stops the EVA/speech stream **and** freezes the announcement
-    /// queue. `GamePause::Enter @ 0x00406F00` calls
-    /// `VoxClass::PauseEVA @ 0x007535B0` unconditionally, which raises
-    /// `DAT_00b1d428`, and `VoxClass::PlayNextQueued @ 0x00752780` refuses to
-    /// dequeue anything while that counter is non-zero (`0x007527D5`).
-    /// `VoxClass::UnpauseEVA @ 0x00753620` lowers it with a floor of 0.
-    ///
-    /// This pins the decision half. The matching `Player::pause()` on
-    /// `voice_player` is device-side and shares residual R7 with the rest of
-    /// the rodio plumbing.
-    #[test]
-    fn pausing_suspends_the_eva_queue_until_every_pause_is_lifted() {
-        let mut suspend = VoiceSuspend::default();
-        assert!(suspend.dequeue_allowed());
-
-        suspend.set_paused(true);
-        assert!(!suspend.dequeue_allowed());
-        suspend.set_paused(true);
-        assert!(!suspend.dequeue_allowed());
-
-        // Native's counter is a depth, not a flag: one resume is not enough.
-        suspend.set_paused(false);
-        assert!(!suspend.dequeue_allowed());
-        suspend.set_paused(false);
-        assert!(suspend.dequeue_allowed());
-
-        // `if (d != 0) { d -= 1; if (d < 0) d = 0; }` — an unmatched resume
-        // never drives the counter negative, so the next pause still blocks.
-        suspend.set_paused(false);
-        assert!(suspend.dequeue_allowed());
-        suspend.set_paused(true);
-        assert!(!suspend.dequeue_allowed());
-    }
-
-    /// `VoxClass::ResetAll @ 0x007535F0` ends with `DAT_00b1d428 = 0`, so a
-    /// reset drops the whole suspend depth at once instead of unwinding it
-    /// one `GamePause::Exit` at a time. `SfxPlayer::stop_all` is VERA's
-    /// analogue and now does the same.
-    #[test]
-    fn a_reset_clears_the_whole_eva_suspend_depth_at_once() {
-        let mut suspend = VoiceSuspend::default();
-        suspend.set_paused(true);
-        suspend.set_paused(true);
-        assert!(!suspend.dequeue_allowed());
-
-        suspend.reset();
-        assert!(suspend.dequeue_allowed());
-
-        // The depth really is zero, not merely decremented: a single resume
-        // afterwards must not underflow, and a single pause must block again.
-        suspend.set_paused(false);
-        assert!(suspend.dequeue_allowed());
-        suspend.set_paused(true);
-        assert!(!suspend.dequeue_allowed());
     }
 }

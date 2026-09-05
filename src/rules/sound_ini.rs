@@ -735,49 +735,205 @@ fn crt_atoi(value: &str) -> i32 {
     signed.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-/// Per-faction sound IDs for a single EVA event (e.g., EVA_ConstructionComplete).
-#[derive(Debug, Clone, Default)]
-struct EvaEntry {
-    allied: Option<String>,
-    russian: Option<String>,
-    yuri: Option<String>,
+/// `VoxClass` entry `Type=` (`VoxClass::ReadINI @ 0x00752DB0`, entry `+0x4C`).
+///
+/// Parsed by `stricmp` in this order: `QUEUE` (`0x008467CC`) -> 1,
+/// `STANDARD` (`0x008467C0`) -> 0, `INTERRUPT` (`0x00816120`) -> 2,
+/// `QUEUED_INTERRUPT` (`0x008467AC`) -> 3. An empty or unknown token keeps the
+/// `VoxClass::ReadEVAINI @ 0x00753000` default of 0 (STANDARD). Routing per
+/// value lives in `VoxClass::InsertIntoQueue @ 0x00752590`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EvaType {
+    #[default]
+    Standard,
+    Queue,
+    Interrupt,
+    QueuedInterrupt,
 }
 
-/// Registry of EVA announcements from eva.ini / evamd.ini.
+impl EvaType {
+    fn parse(token: &str) -> Option<Self> {
+        let token = token.trim();
+        if token.eq_ignore_ascii_case("QUEUE") {
+            Some(Self::Queue)
+        } else if token.eq_ignore_ascii_case("STANDARD") {
+            Some(Self::Standard)
+        } else if token.eq_ignore_ascii_case("INTERRUPT") {
+            Some(Self::Interrupt)
+        } else if token.eq_ignore_ascii_case("QUEUED_INTERRUPT") {
+            Some(Self::QueuedInterrupt)
+        } else {
+            None
+        }
+    }
+}
+
+/// `VoxClass` entry `Priority=` (`VoxClass::ReadINI @ 0x00752DB0`, entry
+/// `+0x48`): `LOW` (`0x008161DC`) -> 0, `NORMAL` (`0x008161D4`) -> 1,
+/// `IMPORTANT` (`0x008467A0`) -> 2, `CRITICAL` (`0x008161C0`) -> 3. The
+/// `ReadEVAINI` default is 1 (NORMAL). Ordering is load-bearing: the pending
+/// slot compares `node.priority < new.priority` (`0x0075264A`) and the four
+/// `Type=QUEUE` lists are indexed by this value (`0x007525F9..0x007525FE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum EvaPriority {
+    Low = 0,
+    #[default]
+    Normal = 1,
+    Important = 2,
+    Critical = 3,
+}
+
+impl EvaPriority {
+    fn parse(token: &str) -> Option<Self> {
+        let token = token.trim();
+        if token.eq_ignore_ascii_case("LOW") {
+            Some(Self::Low)
+        } else if token.eq_ignore_ascii_case("NORMAL") {
+            Some(Self::Normal)
+        } else if token.eq_ignore_ascii_case("IMPORTANT") {
+            Some(Self::Important)
+        } else if token.eq_ignore_ascii_case("CRITICAL") {
+            Some(Self::Critical)
+        } else {
+            None
+        }
+    }
+
+    /// Index into the four `Type=QUEUE` FIFOs (`0xB1D450 + priority * 0xC`).
+    pub fn list_index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The voice column `VoxClass::PlayNextQueued @ 0x00752760` reads for the
+/// session side stored by `VoxClass::SetSide @ 0x007534E0` (`0xB1D4C8`):
+/// `0` -> `Allied=` (`+0x3E`), `1` -> `Russian=` (`+0x35`), anything else ->
+/// `Yuri=` (`+0x2C`) (`0x007528E8..0x007528FE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EvaSide {
+    #[default]
+    Allied,
+    Russian,
+    Yuri,
+}
+
+impl EvaSide {
+    /// `SetSide(-1)` stores 0 (`0x007534E0`); every other value is stored as
+    /// is and only 0/1 select a named column at play time.
+    pub fn from_side_index(side: i32) -> Self {
+        match side {
+            -1 | 0 => Self::Allied,
+            1 => Self::Russian,
+            _ => Self::Yuri,
+        }
+    }
+}
+
+/// One `[DialogList]` entry of evamd.ini (`VoxClass::ReadINI @ 0x00752DB0`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvaEntry {
+    /// The `[DialogList]` value, exact case, used as the entry identity
+    /// (`VoxClass::PlayEVA @ 0x00752700` matches by `stricmp`).
+    pub name: String,
+    /// `Allied=` column (`+0x3E`, `strncpy` 9 bytes). `None` when empty.
+    pub allied: Option<String>,
+    /// `Russian=` column (`+0x35`).
+    pub russian: Option<String>,
+    /// `Yuri=` column (`+0x2C`).
+    pub yuri: Option<String>,
+    /// `Type=` (`+0x4C`), default STANDARD.
+    pub eva_type: EvaType,
+    /// `Priority=` (`+0x48`), default NORMAL.
+    pub priority: EvaPriority,
+    /// `Volume=` (`+0x28`, `ReadDouble` default 1.0). Stored as native does;
+    /// its consumer is outside the queue pipeline (`SetGlobalVolume @
+    /// 0x00752AB0` only stores a clamped byte at `0x00846614`) — carried,
+    /// not applied. gamemd consumer UNCHECKED.
+    pub volume: f32,
+}
+
+impl EvaEntry {
+    fn from_section(name: &str, section: Option<&IniSection>) -> Self {
+        let mut entry = Self {
+            name: name.to_string(),
+            allied: None,
+            russian: None,
+            yuri: None,
+            eva_type: EvaType::Standard,
+            priority: EvaPriority::Normal,
+            volume: 1.0,
+        };
+        // `VoxClass::ReadINI` returns 0 when `FindSectionByName` fails; the
+        // entry keeps its `ReadEVAINI` defaults and empty columns.
+        let Some(section) = section else {
+            return entry;
+        };
+        if let Some(volume) = section
+            .get("Volume")
+            .and_then(|value| value.trim().parse::<f64>().ok())
+        {
+            entry.volume = volume as f32;
+        }
+        if let Some(eva_type) = section.get("Type").and_then(EvaType::parse) {
+            entry.eva_type = eva_type;
+        }
+        if let Some(priority) = section.get("Priority").and_then(EvaPriority::parse) {
+            entry.priority = priority;
+        }
+        // `strncpy(dst, value, 9)` then a forced NUL: at most 8 characters
+        // survive, and an empty value leaves the column empty.
+        let column = |key: &str| -> Option<String> {
+            let value = section.get(key)?.trim();
+            if value.is_empty() {
+                return None;
+            }
+            Some(value.chars().take(8).collect())
+        };
+        entry.allied = column("Allied");
+        entry.russian = column("Russian");
+        entry.yuri = column("Yuri");
+        entry
+    }
+
+    /// The sample name for one side column, `None` when that column is empty.
+    pub fn column(&self, side: EvaSide) -> Option<&str> {
+        match side {
+            EvaSide::Allied => self.allied.as_deref(),
+            EvaSide::Russian => self.russian.as_deref(),
+            EvaSide::Yuri => self.yuri.as_deref(),
+        }
+    }
+}
+
+/// The `VoxClass` entry array (`0xB1D4A4`, count `0xB1D4B0`), built by
+/// `VoxClass::ReadEVAINI @ 0x00753000` from **evamd.ini only** (`Init_Game
+/// @ 0x0052C8A0` hands it the `EVAMD.INI` CCINI, strings `0x00825DF0`,
+/// "Reading EVAMD.INI" `0x00825DFC`; gamemd never opens `eva.ini`).
 ///
-/// Maps EVA event names (e.g., "EVA_ConstructionComplete") to per-faction
-/// audio.bag sound IDs (e.g., Allied="ceva048", Russian="csof048", Yuri="cyur048").
+/// `ReadEVAINI` walks `[DialogList]` by entry index, skips a value that is
+/// already registered (`stricmp` scan), allocates the entry with its defaults
+/// and calls `VoxClass::ReadINI` on the section of the same name.
 #[derive(Debug, Clone, Default)]
 pub struct EvaRegistry {
     entries: HashMap<String, EvaEntry>,
 }
 
 impl EvaRegistry {
-    /// Parse an EvaRegistry from eva.ini / evamd.ini data.
+    /// Parse the registry from evamd.ini data.
     pub fn from_ini(ini: &IniFile) -> Self {
         let mut entries: HashMap<String, EvaEntry> = HashMap::new();
-
-        for name in ini.section_names() {
-            // Only parse EVA_ sections (skip DialogList, etc.).
-            if !name.starts_with("EVA_") {
-                continue;
-            }
-            let Some(section) = ini.section(name) else {
-                continue;
-            };
-
-            let entry = EvaEntry {
-                allied: section.get("Allied").map(|s| s.to_string()),
-                russian: section.get("Russian").map(|s| s.to_string()),
-                yuri: section.get("Yuri").map(|s| s.to_string()),
-            };
-
-            // Only store if at least one faction has a sound.
-            if entry.allied.is_some() || entry.russian.is_some() || entry.yuri.is_some() {
-                entries.insert(name.to_ascii_uppercase(), entry);
+        if let Some(list) = ini.section("DialogList") {
+            for key in list.keys() {
+                let Some(name) = list.get(key).map(str::trim).filter(|n| !n.is_empty()) else {
+                    continue;
+                };
+                let id = name.to_ascii_uppercase();
+                if entries.contains_key(&id) {
+                    continue;
+                }
+                entries.insert(id, EvaEntry::from_section(name, ini.section(name)));
             }
         }
-
         log::info!(
             "EvaRegistry: loaded {} EVA event definitions",
             entries.len()
@@ -785,38 +941,14 @@ impl EvaRegistry {
         Self { entries }
     }
 
-    /// Merge another eva.ini (base RA2) into this registry.
-    /// Only adds entries that don't already exist (YR-first precedence).
-    pub fn merge_fallback(&mut self, ini: &IniFile) {
-        let fallback = EvaRegistry::from_ini(ini);
-        let mut added: usize = 0;
-        for (key, entry) in fallback.entries {
-            if !self.entries.contains_key(&key) {
-                self.entries.insert(key, entry);
-                added += 1;
-            }
-        }
-        if added > 0 {
-            log::info!(
-                "EvaRegistry: merged {} fallback entries (total {})",
-                added,
-                self.entries.len()
-            );
-        }
+    /// `VoxClass::PlayEVA`'s `stricmp` scan: the entry for an event name.
+    pub fn entry(&self, event_name: &str) -> Option<&EvaEntry> {
+        self.entries.get(&event_name.to_ascii_uppercase())
     }
 
-    /// Look up an EVA sound ID by event name and faction key.
-    ///
-    /// `event_name` is e.g., "EVA_ConstructionComplete" (case-insensitive).
-    /// `faction_key` is one of "Allied", "Russian", or "Yuri".
-    pub fn get(&self, event_name: &str, faction_key: &str) -> Option<&str> {
-        let entry = self.entries.get(&event_name.to_ascii_uppercase())?;
-        let sound = match faction_key {
-            "Russian" => entry.russian.as_deref(),
-            "Yuri" => entry.yuri.as_deref(),
-            _ => entry.allied.as_deref(),
-        };
-        sound
+    /// Look up an EVA sample name by event name and side column.
+    pub fn get(&self, event_name: &str, side: EvaSide) -> Option<&str> {
+        self.entry(event_name)?.column(side)
     }
 
     /// Number of EVA event definitions.
@@ -1343,5 +1475,84 @@ mod tests {
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         let entry: &SoundEntry = reg.get("CommentTest").expect("should find entry");
         assert_eq!(entry.sounds, vec!["irocdiea"]);
+    }
+
+    /// `VoxClass::ReadEVAINI @ 0x00753000` walks `[DialogList]` values and
+    /// `VoxClass::ReadINI @ 0x00752DB0` reads `Type=`/`Priority=`/`Volume=`
+    /// and the three columns; defaults are STANDARD / NORMAL / 1.0.
+    #[test]
+    fn eva_registry_carries_type_priority_and_columns_from_dialog_list() {
+        let ini = IniFile::from_str(
+            "[DialogList]\n0=EVA_UnitLost\n1=EVA_LowPower\n2=EVA_Plain\n3=EVA_Missing\n\
+             4=EVA_UnitLost\n\
+             [EVA_UnitLost]\nText=Unit lost.\nRussian=csof064\nAllied=ceva064\nYuri=cyur064\n\
+             Priority= IMPORTANT\n\
+             [EVA_LowPower]\nRussian=csof053\nAllied=ceva053\nYuri=cyur053\nType=queue\n\
+             Priority=Important\nVolume=0.5\n\
+             [EVA_Plain]\nAllied=ceva001\nType=bogus\nPriority=\n\
+             [EVA_NotListed]\nAllied=ceva999\n",
+        );
+        let reg = EvaRegistry::from_ini(&ini);
+        assert_eq!(reg.len(), 4, "duplicate DialogList values register once");
+
+        let lost = reg.entry("eva_unitlost").unwrap();
+        assert_eq!(lost.eva_type, EvaType::Standard);
+        assert_eq!(lost.priority, EvaPriority::Important);
+        assert_eq!(lost.column(EvaSide::Allied), Some("ceva064"));
+        assert_eq!(lost.column(EvaSide::Russian), Some("csof064"));
+        assert_eq!(lost.column(EvaSide::Yuri), Some("cyur064"));
+        assert!((lost.volume - 1.0).abs() < f32::EPSILON);
+
+        let power = reg.entry("EVA_LowPower").unwrap();
+        assert_eq!(power.eva_type, EvaType::Queue, "stricmp: case-insensitive");
+        assert_eq!(power.priority, EvaPriority::Important);
+        assert!((power.volume - 0.5).abs() < f32::EPSILON);
+
+        // Unknown or empty tokens keep the ReadEVAINI defaults.
+        let plain = reg.entry("EVA_Plain").unwrap();
+        assert_eq!(plain.eva_type, EvaType::Standard);
+        assert_eq!(plain.priority, EvaPriority::Normal);
+        assert_eq!(plain.column(EvaSide::Russian), None);
+
+        // A listed name without a section keeps defaults and empty columns.
+        let missing = reg.entry("EVA_Missing").unwrap();
+        assert_eq!(missing.column(EvaSide::Allied), None);
+        // A section that is not in DialogList is not an entry.
+        assert!(reg.entry("EVA_NotListed").is_none());
+        assert_eq!(reg.get("EVA_UnitLost", EvaSide::Russian), Some("csof064"));
+    }
+
+    /// `VoxClass::SetSide @ 0x007534E0` stores the side as is (`-1` → 0);
+    /// `PlayNextQueued 0x007528E8..0x007528FE` selects Allied for 0, Russian
+    /// for 1 and the Yuri column for every other value.
+    #[test]
+    fn eva_side_column_follows_the_native_side_index_select() {
+        assert_eq!(EvaSide::from_side_index(-1), EvaSide::Allied);
+        assert_eq!(EvaSide::from_side_index(0), EvaSide::Allied);
+        assert_eq!(EvaSide::from_side_index(1), EvaSide::Russian);
+        assert_eq!(EvaSide::from_side_index(2), EvaSide::Yuri);
+        assert_eq!(EvaSide::from_side_index(7), EvaSide::Yuri);
+    }
+
+    /// `ReadINI` priority tokens map to the four list indices in the native
+    /// order (`LOW`→0 .. `CRITICAL`→3); `HIGH`/`LOWEST` at `0x008161CC`/
+    /// `0x008161E0` are not consulted by this reader.
+    #[test]
+    fn eva_priority_tokens_match_the_native_parse_table() {
+        assert_eq!(EvaPriority::parse("LOW"), Some(EvaPriority::Low));
+        assert_eq!(EvaPriority::parse("normal"), Some(EvaPriority::Normal));
+        assert_eq!(
+            EvaPriority::parse(" IMPORTANT"),
+            Some(EvaPriority::Important)
+        );
+        assert_eq!(EvaPriority::parse("Critical"), Some(EvaPriority::Critical));
+        assert_eq!(EvaPriority::parse("HIGH"), None);
+        assert_eq!(EvaPriority::Critical.list_index(), 3);
+        assert!(EvaPriority::Low < EvaPriority::Normal);
+        assert_eq!(
+            EvaType::parse("QUEUED_INTERRUPT"),
+            Some(EvaType::QueuedInterrupt)
+        );
+        assert_eq!(EvaType::parse("interrupt"), Some(EvaType::Interrupt));
     }
 }
