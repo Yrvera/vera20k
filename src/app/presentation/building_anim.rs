@@ -38,8 +38,17 @@ pub(crate) use crate::sim::world::building_anim::building_anim_rate_logic_frames
 /// the app-side stand-in for that construction frame — recorded once, the first
 /// logic frame the structure is seen.
 pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState) {
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
-        state.match_state.match_presentation.building_anim_phase_base.clear();
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
+        state
+            .match_state
+            .match_presentation
+            .building_anim_phase_base
+            .clear();
         return;
     };
     let tick = sim.session.tick;
@@ -49,7 +58,14 @@ pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState) {
         .filter(|(_, entity)| entity.category == crate::map::entities::EntityCategory::Structure)
         .map(|(id, _)| id)
         .collect();
-    record_building_anim_phase_bases(&mut state.match_state.match_presentation.building_anim_phase_base, &live, tick);
+    record_building_anim_phase_bases(
+        &mut state
+            .match_state
+            .match_presentation
+            .building_anim_phase_base,
+        &live,
+        tick,
+    );
 }
 
 /// Insert a phase base for every newly seen structure and forget the ones that
@@ -77,11 +93,18 @@ fn record_building_anim_phase_bases(
 /// Falls back to zero for a structure with no recorded base, which renders the
 /// animation's first loop frame rather than an arbitrary one.
 pub(crate) fn building_anim_elapsed_logic_frames(state: &AppState, stable_id: u64) -> u32 {
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
         return 0;
     };
     state
-        .match_state.match_presentation.building_anim_phase_base
+        .match_state
+        .match_presentation
+        .building_anim_phase_base
         .get(&stable_id)
         .map(|base| sim.session.tick.saturating_sub(*base).min(u32::MAX as u64) as u32)
         .unwrap_or(0)
@@ -90,14 +113,28 @@ pub(crate) fn building_anim_elapsed_logic_frames(state: &AppState, stable_id: u6
 /// Tick the sidebar power bar animation (segment-by-segment transition).
 pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     let owner_name = preferred_local_owner_name(state);
-    let (power_produced, power_drained) =
-        match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules(), owner_name.as_deref()) {
-            (Some(sim), Some(rules), Some(owner)) => {
-                production::power_balance_for_owner(sim, rules, owner)
-            }
-            _ => (0, 0),
-        };
-    let theoretical = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), owner_name.as_deref()) {
+    let (power_produced, power_drained) = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        state.rules(),
+        owner_name.as_deref(),
+    ) {
+        (Some(sim), Some(rules), Some(owner)) => {
+            production::power_balance_for_owner(sim, rules, owner)
+        }
+        _ => (0, 0),
+    };
+    let theoretical = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        owner_name.as_deref(),
+    ) {
         (Some(sim), Some(owner)) => production::theoretical_power_for_owner(sim, owner),
         _ => 0,
     };
@@ -111,17 +148,27 @@ pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     let region_top = layout.tabs_y + spec.power_bar_top_y;
     let bar_height_px = (region_bottom - region_top).max(0.0) as i32;
 
-    state.match_state.match_presentation.power_bar_anim.set_max_segments(bar_height_px);
     state
-        .match_state.match_presentation.power_bar_anim
-        .update(power_produced, power_drained, theoretical);
+        .match_state
+        .match_presentation
+        .power_bar_anim
+        .set_max_segments(bar_height_px);
+    state.match_state.match_presentation.power_bar_anim.update(
+        power_produced,
+        power_drained,
+        theoretical,
+    );
     state.match_state.match_presentation.power_bar_anim.tick();
 }
 
 /// Update radar availability from ECS and tick the radar chrome animation.
 pub(crate) fn update_radar_state(state: &mut AppState, dt_ms: f32) {
     let new_has_radar: bool = match (
-        state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation),
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
         state.rules(),
         preferred_local_owner_name(state).as_deref(),
     ) {
@@ -138,28 +185,27 @@ pub(crate) fn update_radar_state(state: &mut AppState, dt_ms: f32) {
     }
 }
 
-/// Map an owner's country name to the EVA faction key used in eva.ini sections.
+/// The EVA voice column for this session — `VoxClass::SetSide @ 0x007534E0`.
 ///
-/// Returns "Allied", "Russian", or "Yuri" for lookup in `EvaRegistry::get()`.
-pub(crate) fn eva_faction_key(
-    owner: &str,
-    house_roster: &crate::map::houses::HouseRoster,
-) -> &'static str {
-    // Find the house's country name from the roster.
-    let country = house_roster
-        .houses
-        .iter()
-        .find(|h| h.name.eq_ignore_ascii_case(owner))
-        .and_then(|h| h.country.as_deref())
-        .unwrap_or(owner);
-
-    // Map country to EVA faction key.
-    // Soviet countries use "Russian" (the key name in eva.ini).
-    match country.to_ascii_lowercase().as_str() {
-        "yuricountry" => "Yuri",
-        "russians" | "confederation" | "africans" | "arabs" => "Russian",
-        _ => "Allied",
-    }
+/// Native stores it once per scenario: `ScenarioClass::Full_Init`
+/// (`0x00687801..0x00687807`) passes `Houses[PlayerIndex]->Type(+0x34)->Side
+/// (+0xBC)` — the local country's `Side=` index — to `InitSideMixFiles @
+/// 0x00534FA0`, which calls `SetSide` first (before its own `2 -> 1` MIX
+/// remap, so a Yuri country keeps the Yuri column). A `PlayerIndex` of `-1`
+/// or out of range passes 0. `EvaSide::from_side_index` is the column select
+/// of `PlayNextQueued` (`0x007528E8..0x007528FE`).
+///
+/// VERA resolves the same value from the local house's `side_index`
+/// (`HouseState`, from `rules.country_side_index`) at consume time; the
+/// local owner is fixed for the match, so this equals a once-stored side.
+pub(crate) fn local_eva_side(state: &AppState) -> crate::rules::sound_ini::EvaSide {
+    use crate::rules::sound_ini::EvaSide;
+    let side_index = preferred_local_owner_name(state).and_then(|owner| {
+        let sim = &state.match_state.sim_runtime.as_ref()?.simulation;
+        crate::sim::house_state::house_state_for_owner(&sim.houses, &owner, &sim.interner)
+            .map(|house| i32::from(house.side_index))
+    });
+    EvaSide::from_side_index(side_index.unwrap_or(0))
 }
 
 /// Drain pending sound events from the queue and play them through the SFX player.
@@ -206,12 +252,15 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
     let local_owner_id = local_owner
         .as_deref()
         .and_then(|name| sim.and_then(|sim| sim.interner.get(name)));
-    let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager()) else {
+    let eva_side = local_eva_side(state);
+    let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager())
+    else {
         return;
     };
     let registry = &state.audio.sound_registry;
     let audio_indices = &state.audio.audio_indices;
-    sfx.advance_voice_queue();
+    let eva_registry = &state.audio.eva_registry;
+    sfx.advance_voice_queue(registry, assets, audio_indices);
 
     // `CellClass+0x12C & 0x18 == 0`: neither explored nor visible. The shroud
     // renderer (`render::shroud_buffer`) blacks out the same cells — never
@@ -256,17 +305,23 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             | GameSoundEvent::UnitAttackOrder { speaker_id, .. } => {
                 sfx.queue_unit_voice(*speaker_id, event.sound_id());
             }
-            // STANDARD EVA cues are fire-and-forget: play only if voice is idle.
-            GameSoundEvent::BuildingReady { .. }
-            | GameSoundEvent::UnitReady { .. }
-            | GameSoundEvent::CannotDeployHere { .. }
-            | GameSoundEvent::OutcomeEva { .. } => {
-                sfx.play_standard_eva_sound(event.sound_id(), registry, assets, audio_indices);
-            }
-            // Garrison EVA cues are evamd.ini Type=QUEUE.
-            GameSoundEvent::StructureGarrisoned { .. }
-            | GameSoundEvent::StructureAbandoned { .. } => {
-                sfx.queue_eva_sound(event.sound_id(), registry, assets, audio_indices);
+            // `VoxClass::PlayEVA @ 0x00752700`: routing (pending slot, the
+            // QUEUE FIFOs, critical/interrupt lists), the same-type duplicate
+            // rule and the 500 ms gap all come from the entry and the
+            // `VoxClass` state in `sfx` — see `audio::vox`.
+            GameSoundEvent::Eva {
+                event: eva_event,
+                type_override,
+            } => {
+                let _ = sfx.play_eva(
+                    eva_event,
+                    *type_override,
+                    eva_registry,
+                    eva_side,
+                    registry,
+                    assets,
+                    audio_indices,
+                );
             }
             // UI events — always full volume (non-positional).
             GameSoundEvent::UiSound { .. } => {
@@ -399,8 +454,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             GameSoundEvent::SuperWeaponActivated {
                 sound_id,
                 source,
-                eva_sound_id,
-                eva_queued,
+                eva_event,
             } => {
                 // `RulesClass::ReadAudioVisual @ 0x006691E0` and
                 // `SuperWeaponTypeClass::ReadINI @ 0x006CEBE5` both store only
@@ -436,32 +490,41 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                         }
                     }
                 }
-                if let Some(eva_sound_id) = eva_sound_id.as_deref().filter(|s| !s.is_empty()) {
-                    if *eva_queued {
-                        let _ = sfx.queue_eva_sound(eva_sound_id, registry, assets, audio_indices);
-                    } else {
-                        sfx.play_standard_eva_sound(eva_sound_id, registry, assets, audio_indices);
-                    }
+                // `VoxClass::PlayEVA(name, -1)` at every `SuperClass::Launch`
+                // site: the entry's own `Type=`/`Priority=` route it.
+                if let Some(eva_event) = eva_event.as_deref().filter(|s| !s.is_empty()) {
+                    let _ = sfx.play_eva(
+                        eva_event,
+                        None,
+                        eva_registry,
+                        eva_side,
+                        registry,
+                        assets,
+                        audio_indices,
+                    );
                 }
             }
             GameSoundEvent::BridgeRepaired {
                 sound_id,
                 source,
-                eva_sound_id,
+                eva_event,
             } => {
                 if !sound_id.is_empty()
                     && let Some(gain) = gain_for(sound_id, *source)
                 {
                     sfx.play_sound_spatial(sound_id, gain, registry, assets, audio_indices);
                 }
-                if let Some(eva_sound_id) = eva_sound_id.as_deref().filter(|s| !s.is_empty()) {
-                    sfx.play_standard_eva_sound(eva_sound_id, registry, assets, audio_indices);
+                if let Some(eva_event) = eva_event.as_deref().filter(|s| !s.is_empty()) {
+                    let _ = sfx.play_eva(
+                        eva_event,
+                        None,
+                        eva_registry,
+                        eva_side,
+                        registry,
+                        assets,
+                        audio_indices,
+                    );
                 }
-            }
-            GameSoundEvent::UnderAttackEva { eva_sound_id } => {
-                // Voice-queued (not immediate): under-attack announcements
-                // wait behind whatever EVA line is currently speaking.
-                let _ = sfx.queue_eva_sound(eva_sound_id, registry, assets, audio_indices);
             }
             // Spatial events — distance volume and pan from the sound's
             // Range/Type/MinVolume against the tactical view.
@@ -533,40 +596,62 @@ fn registry_facts_for_owner(
 pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
     // Phase 1: spawn new flashes from pending fire events.
     let new_flashes: Vec<GarrisonMuzzleFlash> = {
-        let sim = match state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
+        let sim = match state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation)
+        {
             Some(s) => s,
             None => {
-                state.match_state.match_presentation.garrison_muzzle_flashes.clear();
+                state
+                    .match_state
+                    .match_presentation
+                    .garrison_muzzle_flashes
+                    .clear();
                 return;
             }
         };
         let art_reg = match state.rules().map(|rules| &rules.art_registry) {
             Some(a) => a,
             None => {
-                state.match_state.match_presentation.garrison_muzzle_flashes.clear();
+                state
+                    .match_state
+                    .match_presentation
+                    .garrison_muzzle_flashes
+                    .clear();
                 return;
             }
         };
         let rules = match state.rules() {
             Some(r) => r,
             None => {
-                state.match_state.match_presentation.garrison_muzzle_flashes.clear();
+                state
+                    .match_state
+                    .match_presentation
+                    .garrison_muzzle_flashes
+                    .clear();
                 return;
             }
         };
         let frame_counts = state
-            .match_state.match_presentation.sprite_atlas
+            .match_state
+            .match_presentation
+            .sprite_atlas
             .as_ref()
             .map(|atlas| &atlas.active_anim_frame_counts);
         state
-            .match_state.match_presentation.pending_fire_effects
+            .match_state
+            .match_presentation
+            .pending_fire_effects
             .iter()
             .filter_map(|ev| {
                 let anim_name = ev.occupant_anim.as_ref()?;
                 let anim_section = sim.interner.resolve(*anim_name).to_ascii_uppercase();
-                let origin =
-                    crate::app::presentation::fire_effects::resolve_fire_origin_from_sim(sim, rules, art_reg, ev)
-                        .ok()?;
+                let origin = crate::app::presentation::fire_effects::resolve_fire_origin_from_sim(
+                    sim, rules, art_reg, ev,
+                )
+                .ok()?;
                 let runtime_config = art_reg.anim_runtime_config(&anim_section)?;
                 let total_frames =
                     presentation_anim_frame_count(frame_counts, &anim_section).unwrap_or(1);
@@ -589,26 +674,42 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
             })
             .collect()
     };
-    state.match_state.match_presentation.garrison_muzzle_flashes.extend(new_flashes);
+    state
+        .match_state
+        .match_presentation
+        .garrison_muzzle_flashes
+        .extend(new_flashes);
 
     // Phase 2: advance all flashes and remove finished ones. This is fed from
     // completed fixed sim ticks, not render-frame wall time.
     let Some((sim, art_reg)) = state
-        .match_state.sim_runtime
+        .match_state
+        .sim_runtime
         .as_ref()
-        .map(|rt| (&rt.simulation, &rt.resources.rules.art_registry)) else {
-        state.match_state.match_presentation.garrison_muzzle_flashes.clear();
+        .map(|rt| (&rt.simulation, &rt.resources.rules.art_registry))
+    else {
+        state
+            .match_state
+            .match_presentation
+            .garrison_muzzle_flashes
+            .clear();
         return;
     };
     let empty_frame_counts = HashMap::new();
     let frame_counts = state
-        .match_state.match_presentation.sprite_atlas
+        .match_state
+        .match_presentation
+        .sprite_atlas
         .as_ref()
         .map(|atlas| &atlas.active_anim_frame_counts)
         .unwrap_or(&empty_frame_counts);
-    state.match_state.match_presentation.garrison_muzzle_flashes.retain_mut(|flash| {
-        advance_garrison_muzzle_flash(flash, dt_ms, sim, art_reg, frame_counts)
-    });
+    state
+        .match_state
+        .match_presentation
+        .garrison_muzzle_flashes
+        .retain_mut(|flash| {
+            advance_garrison_muzzle_flash(flash, dt_ms, sim, art_reg, frame_counts)
+        });
 }
 
 fn advance_garrison_muzzle_flash(

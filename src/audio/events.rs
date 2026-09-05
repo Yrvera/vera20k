@@ -55,13 +55,17 @@ impl SoundSource {
 /// A sound event produced by the game simulation or UI.
 #[derive(Debug, Clone)]
 pub enum GameSoundEvent {
-    /// Local player's base structure / harvester is under enemy attack — queue
-    /// the EVA voice (no spatial SFX; the radar diamond is sim-side).
-    UnderAttackEva { eva_sound_id: String },
-
-    /// Accepted local HouseClass win/loss transition — play immediately with
-    /// STANDARD Vox semantics and do not persist/reconstruct across load.
-    OutcomeEva { eva_sound_id: String },
+    /// One `VoxClass::PlayEVA @ 0x00752700` call: the `[DialogList]` event
+    /// name and the call site's type override (`-1` = the entry's own
+    /// `Type=`; only `SelectClass::Action` OnHold/Canceled and
+    /// `GameExit::BattleControlTerminated 0x00686616` pass `2`). The side
+    /// column, `Type=`/`Priority=` routing, duplicate rule and the 500 ms gap
+    /// are the consumer's (`SfxPlayer::play_eva` → `audio::vox`). Producers
+    /// gate on the local player before pushing this.
+    Eva {
+        event: String,
+        type_override: Option<crate::rules::sound_ini::EvaType>,
+    },
 
     /// Start/report sound owned by one authoritative animation object.
     AnimationStarted {
@@ -163,44 +167,11 @@ pub enum GameSoundEvent {
         source: Option<SoundSource>,
     },
 
-    /// The `EVA_UnitPromoted` voice that accompanies `UnitPromoted`.
-    UnitPromotedEva { eva_sound_id: String },
-
     /// One-shot positional `[AudioVisual] CloakSound` requested by an accepted
     /// native StartUncloaking arg-zero transition.
     CloakSound {
         sound_id: String,
         source: Option<SoundSource>,
-    },
-
-    /// A building finished construction — play the EVA "Construction complete" or similar.
-    BuildingReady {
-        /// sound.ini ID for the completion announcement.
-        sound_id: String,
-    },
-
-    /// A unit finished training — play the EVA "Unit ready" or similar.
-    UnitReady {
-        /// sound.ini ID for the unit-ready announcement.
-        sound_id: String,
-    },
-
-    /// EVA cue: a deploy command failed placement validation.
-    CannotDeployHere {
-        /// sound.ini ID for the EVA announcement.
-        sound_id: String,
-    },
-
-    /// EVA cue: a friendly building was garrisoned (first occupant entered).
-    StructureGarrisoned {
-        /// sound.ini ID for the EVA announcement.
-        sound_id: String,
-    },
-
-    /// EVA cue: a friendly garrison was abandoned (last occupant left).
-    StructureAbandoned {
-        /// sound.ini ID for the EVA announcement.
-        sound_id: String,
     },
 
     /// Positional SFX from [AudioVisual] BuildingGarrisonedSound — plays at
@@ -254,7 +225,7 @@ pub enum GameSoundEvent {
     /// Positional SFX + EVA cue from a bridge repair triggered by an engineer
     /// entering a `BridgeRepairHut`. Plays the spatial `[BridgeRepaired]`
     /// sound (resolved from `rules.bridge_rules.repair_sound`) at the hut's
-    /// screen position when `sound_id` is non-empty. When `eva_sound_id` is
+    /// screen position when `sound_id` is non-empty. When `eva_event` is
     /// `Some`, the EVA arm plays it as a non-positional cue (gated upstream
     /// on local-human owner).
     BridgeRepaired {
@@ -263,9 +234,9 @@ pub enum GameSoundEvent {
         sound_id: String,
         /// Screen position for spatial audio.
         source: Option<SoundSource>,
-        /// `Some(eva_id)` when the engineer's owner is the local human;
-        /// `None` otherwise.
-        eva_sound_id: Option<String>,
+        /// `Some("EVA_BridgeRepaired")` when the engineer's owner is the
+        /// local human and the radar dedupe allowed it; `None` otherwise.
+        eva_event: Option<String>,
     },
 
     /// Positional sound emitted when a world-effect animation starts.
@@ -360,11 +331,9 @@ pub enum GameSoundEvent {
         sound_id: String,
         /// Target-cell position, or `None` for a non-positional cue.
         source: Option<SoundSource>,
-        /// Resolved per-faction `evamd.ini` sample, or `None` when the case
-        /// plays no EVA line.
-        eva_sound_id: Option<String>,
-        /// The EVA entry's `Type=QUEUE` (true) vs STANDARD (false).
-        eva_queued: bool,
+        /// `evamd.ini` event name for the `VoxClass::PlayEVA` call, or `None`
+        /// when the case plays no EVA line. Routing comes from the entry.
+        eva_event: Option<String>,
     },
 
     /// Generic UI sound (button click, error beep, etc.).
@@ -390,13 +359,8 @@ impl GameSoundEvent {
             | Self::ChronoTeleport { sound_id, .. }
             | Self::UnitPromoted { sound_id, .. }
             | Self::CloakSound { sound_id, .. }
-            | Self::BuildingReady { sound_id }
-            | Self::UnitReady { sound_id }
-            | Self::CannotDeployHere { sound_id }
             | Self::UiSound { sound_id }
             | Self::BaseUnderAttackSfx { sound_id }
-            | Self::StructureGarrisoned { sound_id }
-            | Self::StructureAbandoned { sound_id }
             | Self::BuildingGarrisonedSfx { sound_id, .. }
             | Self::C4Planted { sound_id, .. }
             | Self::RefineryExitSfx { sound_id, .. }
@@ -409,9 +373,9 @@ impl GameSoundEvent {
             | Self::SuperWeaponActivated { sound_id, .. }
             | Self::WorldEffectStarted { sound_id, .. } => sound_id,
             Self::AnimationStopped { stop_sound_id, .. } => stop_sound_id.as_deref().unwrap_or(""),
-            Self::UnderAttackEva { eva_sound_id }
-            | Self::OutcomeEva { eva_sound_id }
-            | Self::UnitPromotedEva { eva_sound_id } => eva_sound_id,
+            // The event name, not a sample: the sample is a per-side column
+            // the `VoxClass` consumer resolves.
+            Self::Eva { event, .. } => event,
         }
     }
 
@@ -643,22 +607,31 @@ mod tests {
         assert_eq!(evt.sound_id(), "VGCannon1");
     }
 
+    /// An EVA event carries the `[DialogList]` name and the call-site type
+    /// override, never a resolved sample; it is non-positional.
     #[test]
-    fn test_structure_garrisoned_sound_id_accessor() {
-        let evt: GameSoundEvent = GameSoundEvent::StructureGarrisoned {
-            sound_id: "ceva107".to_string(),
+    fn eva_event_carries_the_event_name_and_type_override() {
+        let evt: GameSoundEvent = GameSoundEvent::Eva {
+            event: "EVA_StructureGarrisoned".to_string(),
+            type_override: None,
         };
-        assert_eq!(evt.sound_id(), "ceva107");
+        assert_eq!(evt.sound_id(), "EVA_StructureGarrisoned");
         assert_eq!(evt.screen_pos(), None);
-    }
+        assert_eq!(evt.source(), None);
 
-    #[test]
-    fn test_cannot_deploy_here_sound_id_accessor() {
-        let evt = GameSoundEvent::CannotDeployHere {
-            sound_id: "ceva063".to_string(),
+        let evt = GameSoundEvent::Eva {
+            event: "EVA_BattleControlTerminated".to_string(),
+            type_override: Some(crate::rules::sound_ini::EvaType::Interrupt),
         };
-        assert_eq!(evt.sound_id(), "ceva063");
-        assert_eq!(evt.screen_pos(), None);
+        match evt {
+            GameSoundEvent::Eva { type_override, .. } => {
+                assert_eq!(
+                    type_override,
+                    Some(crate::rules::sound_ini::EvaType::Interrupt)
+                );
+            }
+            _ => unreachable!(),
+        }
     }
 
     #[test]
@@ -687,14 +660,14 @@ mod tests {
         let evt = GameSoundEvent::BridgeRepaired {
             sound_id: "BridgeRepaired".to_string(),
             source: Some(SoundSource::new((32.0, 64.0), (1, 2))),
-            eva_sound_id: Some("EVA_BridgeRepaired".to_string()),
+            eva_event: Some("EVA_BridgeRepaired".to_string()),
         };
 
         assert_eq!(evt.sound_id(), "BridgeRepaired");
         assert_eq!(evt.screen_pos(), Some((32.0, 64.0)));
         match evt {
-            GameSoundEvent::BridgeRepaired { eva_sound_id, .. } => {
-                assert_eq!(eva_sound_id.as_deref(), Some("EVA_BridgeRepaired"));
+            GameSoundEvent::BridgeRepaired { eva_event, .. } => {
+                assert_eq!(eva_event.as_deref(), Some("EVA_BridgeRepaired"));
             }
             _ => unreachable!(),
         }

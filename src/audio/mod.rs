@@ -14,3 +14,4 @@ pub mod music;
 pub mod sfx;
 pub(crate) mod theme;
 pub mod voice_queue;
+pub mod vox;

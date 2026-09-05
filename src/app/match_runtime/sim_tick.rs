@@ -222,17 +222,17 @@ fn announce_local_state_evas(state: &mut AppState) {
         (low_power, funds_stalled, current_dying, newly_dying)
     };
 
-    let mut cues: Vec<(&'static str, &'static str)> = Vec::new();
+    let mut cues: Vec<&'static str> = Vec::new();
     if low_power && !state.match_state.match_audio.eva_low_power_active {
-        cues.push(("EVA_LowPower", "ceva053"));
+        cues.push("EVA_LowPower");
     }
     state.match_state.match_audio.eva_low_power_active = low_power;
     if funds_stalled && !state.match_state.match_audio.eva_funds_stalled {
-        cues.push(("EVA_InsufficientFunds", "ceva050"));
+        cues.push("EVA_InsufficientFunds");
     }
     state.match_state.match_audio.eva_funds_stalled = funds_stalled;
     if !newly_dying.is_empty() {
-        cues.push(("EVA_UnitLost", "ceva064"));
+        cues.push("EVA_UnitLost");
     }
     // Prune despawned corpses, then record this frame's announcements.
     state
@@ -246,34 +246,16 @@ fn announce_local_state_evas(state: &mut AppState) {
         .eva_announced_dying
         .extend(newly_dying);
 
-    if cues.is_empty() {
-        return;
-    }
-    let faction = crate::app::presentation::building_anim::eva_faction_key(
-        &owner,
-        &state.match_state.match_presentation.house_roster,
-    );
-    let sound_ids: Vec<String> = cues
-        .iter()
-        .map(|(cue, fallback)| {
-            state
-                .audio
-                .eva_registry
-                .get(cue, faction)
-                .unwrap_or(fallback)
-                .to_string()
-        })
-        .collect();
-    let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager())
-    else {
-        return;
-    };
-    for sound_id in &sound_ids {
-        sfx.queue_eva_sound(
-            sound_id,
-            &state.audio.sound_registry,
-            assets,
-            &state.audio.audio_indices,
+    // Each is a `VoxClass::PlayEVA(name, -1)`; the entry's own `Type=` and
+    // `Priority=` route it (`EVA_LowPower` QUEUE IMPORTANT,
+    // `EVA_InsufficientFunds` STANDARD NORMAL, `EVA_UnitLost` STANDARD
+    // IMPORTANT on stock data).
+    for cue in cues {
+        state.match_state.match_audio.sound_events.push(
+            crate::audio::events::GameSoundEvent::Eva {
+                event: cue.to_string(),
+                type_override: None,
+            },
         );
     }
 }
@@ -316,11 +298,14 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
         );
     }
 
-    let voices_active = state
-        .audio
-        .sfx_player
-        .as_mut()
-        .is_some_and(|sfx| sfx.pump_and_check_voices());
+    let voices_active = match (&mut state.audio.sfx_player, state.process_assets.manager()) {
+        (Some(sfx), Some(assets)) => sfx.pump_and_check_voices(
+            &state.audio.sound_registry,
+            assets,
+            &state.audio.audio_indices,
+        ),
+        _ => false,
+    };
     let finished = state
         .match_state
         .scenario_outcome
@@ -356,27 +341,14 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
     );
 }
 
-fn outcome_eva_entry(
-    kind: crate::sim::house_state::HouseOutcomeKind,
-    faction: &str,
-) -> (&'static str, &'static str) {
-    match (kind, faction) {
-        (crate::sim::house_state::HouseOutcomeKind::Victory, "Russian") => {
-            ("EVA_YouAreVictorious", "csof022")
-        }
-        (crate::sim::house_state::HouseOutcomeKind::Victory, "Yuri") => {
-            ("EVA_YouAreVictorious", "cyur022")
-        }
-        (crate::sim::house_state::HouseOutcomeKind::Victory, _) => {
-            ("EVA_YouAreVictorious", "ceva022")
-        }
-        (crate::sim::house_state::HouseOutcomeKind::Defeat, "Russian") => {
-            ("EVA_YouHaveLost", "csof023")
-        }
-        (crate::sim::house_state::HouseOutcomeKind::Defeat, "Yuri") => {
-            ("EVA_YouHaveLost", "cyur023")
-        }
-        (crate::sim::house_state::HouseOutcomeKind::Defeat, _) => ("EVA_YouHaveLost", "ceva023"),
+/// The outcome line: `HouseClass::Flag_To_Win 0x004FCBA9` plays
+/// `EVA_YouAreVictorious` (`0x00824C2C`) and `Flag_To_Lose 0x004FCDA1`
+/// `EVA_YouHaveLost` (`0x00824C08`), both with `EDX = -1` (the entry's own
+/// type; stock rows are STANDARD NORMAL). The side column is the consumer's.
+fn outcome_eva_event(kind: crate::sim::house_state::HouseOutcomeKind) -> &'static str {
+    match kind {
+        crate::sim::house_state::HouseOutcomeKind::Victory => "EVA_YouAreVictorious",
+        crate::sim::house_state::HouseOutcomeKind::Defeat => "EVA_YouHaveLost",
     }
 }
 
@@ -512,10 +484,9 @@ pub(crate) struct SuperWeaponLaunchCue {
     /// the system, `StormSound`, is not a launch cue at all — see
     /// [`lightning_storm_begin_cue`].
     pub positional: bool,
-    /// `evamd.ini` event name, if the case plays one.
+    /// `evamd.ini` event name, if the case plays one. Every site passes type
+    /// `-1`, so the entry's own `Type=`/`Priority=` route it.
     pub eva_event: Option<&'static str>,
-    /// The `evamd.ini` entry's `Type=QUEUE` (vs the STANDARD default).
-    pub eva_queued: bool,
 }
 
 /// The launch cue table of `SuperClass::Launch @ 0x006CC390`.
@@ -581,19 +552,17 @@ pub(crate) fn superweapon_launch_cue(
         },
         K::PsychicDominator => SuperWeaponLaunchCue {
             sound_id: general.psychic_dominator_activate_sound.clone(),
-            eva_event: Some("EVA_PsychicDominatorActivated"),
             // `evamd.ini [EVA_PsychicDominatorActivated] Type=QUEUE` — and all
             // three of its faction values are `Dummy`, so on retail data the
             // line resolves to a zero-sample entry and is inaudible; only the
             // `[AudioVisual]` cue is heard.
-            eva_queued: true,
+            eva_event: Some("EVA_PsychicDominatorActivated"),
             ..positional
         },
         K::GeneticConverter => SuperWeaponLaunchCue {
             sound_id: general.genetic_mutator_activate_sound.clone(),
-            eva_event: Some("EVA_GeneticMutatorActivated"),
             // `evamd.ini [EVA_GeneticMutatorActivated] Type=QUEUE`.
-            eva_queued: true,
+            eva_event: Some("EVA_GeneticMutatorActivated"),
             ..positional
         },
         K::ForceShield => SuperWeaponLaunchCue {
@@ -1392,22 +1361,17 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                                 },
                             );
                         }
-                        let faction = crate::app::presentation::building_anim::eva_faction_key(
-                            owner_str,
-                            &state.match_state.match_presentation.house_roster,
-                        );
-                        if let Some(eva_sound_id) = state
-                            .audio
-                            .eva_registry
-                            .get("EVA_UnitPromoted", faction)
-                            .map(str::to_string)
-                        {
-                            state
-                                .match_state
-                                .match_audio
-                                .sound_events
-                                .push(GameSoundEvent::UnitPromotedEva { eva_sound_id });
-                        }
+                        // `0x006FA0C6 MOV ECX,0x843138 ("EVA_UnitPromoted") ; OR
+                        // EDX,-1 ; CALL VoxClass::PlayEVA`: the voice slot, with
+                        // the entry's own type (STANDARD LOW on stock data).
+                        state
+                            .match_state
+                            .match_audio
+                            .sound_events
+                            .push(GameSoundEvent::Eva {
+                                event: "EVA_UnitPromoted".to_string(),
+                                type_override: None,
+                            });
                         continue;
                     }
                     SimSoundEvent::CloakSound {
@@ -1427,17 +1391,11 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let faction = crate::app::presentation::building_anim::eva_faction_key(
-                            owner_str,
-                            &state.match_state.match_presentation.house_roster,
-                        );
-                        let sound_id = state
-                            .audio
-                            .eva_registry
-                            .get("EVA_ConstructionComplete", faction)
-                            .unwrap_or("ceva048")
-                            .to_string();
-                        GameSoundEvent::BuildingReady { sound_id }
+                        // `StripClass::AI 0x006A8E2F`: `PlayEVA` with type -1.
+                        GameSoundEvent::Eva {
+                            event: "EVA_ConstructionComplete".to_string(),
+                            type_override: None,
+                        }
                     }
                     SimSoundEvent::SuperWeaponLaunched {
                         sw_type, rx, ry, ..
@@ -1456,30 +1414,20 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             &resources.rules.general,
                             sw.start_sound.as_deref(),
                         );
-                        // The EVA sample is picked for the *listening* client's
+                        // The EVA column is picked for the *listening* client's
                         // side, not the launcher's: `VoxClass::PlayEVA` takes
-                        // only the event name and resolves the faction row
-                        // locally.
-                        let eva_sound_id = cue.eva_event.and_then(|event| {
-                            let local = local_owner_name.as_deref()?;
-                            let faction = crate::app::presentation::building_anim::eva_faction_key(
-                                local,
-                                &state.match_state.match_presentation.house_roster,
-                            );
-                            state
-                                .audio
-                                .eva_registry
-                                .get(event, faction)
-                                .map(str::to_string)
-                        });
-                        if cue.sound_id.is_none() && eva_sound_id.is_none() {
+                        // only the event name; the consumer resolves the side.
+                        let eva_event = cue
+                            .eva_event
+                            .filter(|_| local_owner_name.is_some())
+                            .map(str::to_string);
+                        if cue.sound_id.is_none() && eva_event.is_none() {
                             continue;
                         }
                         GameSoundEvent::SuperWeaponActivated {
                             sound_id: cue.sound_id.unwrap_or_default(),
                             source: cue.positional.then(|| sound_source_at_cell(rx, ry)),
-                            eva_sound_id,
-                            eva_queued: cue.eva_queued,
+                            eva_event,
                         }
                     }
                     SimSoundEvent::LightningStormBegan => {
@@ -1496,8 +1444,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             // `PlayAtPos` with pan `0x2000`: centred, not at
                             // the storm cell.
                             source: None,
-                            eva_sound_id: None,
-                            eva_queued: false,
+                            eva_event: None,
                         }
                     }
                     SimSoundEvent::SuperWeaponStrike { rx, ry } => {
@@ -1547,17 +1494,11 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let faction = crate::app::presentation::building_anim::eva_faction_key(
-                            owner_str,
-                            &state.match_state.match_presentation.house_roster,
-                        );
-                        let sound_id = state
-                            .audio
-                            .eva_registry
-                            .get("EVA_UnitReady", faction)
-                            .unwrap_or("ceva062")
-                            .to_string();
-                        GameSoundEvent::UnitReady { sound_id }
+                        // `HouseClass::Place_Production 0x004FB644`: type -1.
+                        GameSoundEvent::Eva {
+                            event: "EVA_UnitReady".to_string(),
+                            type_override: None,
+                        }
                     }
                     SimSoundEvent::MatchOutcome { owner, kind } => {
                         let owner_str = sim.interner.resolve(owner);
@@ -1567,18 +1508,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let faction = crate::app::presentation::building_anim::eva_faction_key(
-                            owner_str,
-                            &state.match_state.match_presentation.house_roster,
-                        );
-                        let (eva_key, fallback) = outcome_eva_entry(kind, faction);
-                        let eva_sound_id = state
-                            .audio
-                            .eva_registry
-                            .get(eva_key, faction)
-                            .unwrap_or(fallback)
-                            .to_string();
-                        GameSoundEvent::OutcomeEva { eva_sound_id }
+                        GameSoundEvent::Eva {
+                            event: outcome_eva_event(kind).to_string(),
+                            type_override: None,
+                        }
                     }
                     SimSoundEvent::WallSold { receiver } => {
                         let receiver_name = sim.interner.resolve(receiver);
@@ -1599,17 +1532,11 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let faction = crate::app::presentation::building_anim::eva_faction_key(
-                            owner_str,
-                            &state.match_state.match_presentation.house_roster,
-                        );
-                        let sound_id = state
-                            .audio
-                            .eva_registry
-                            .get("EVA_CannotDeployHere", faction)
-                            .unwrap_or("ceva063")
-                            .to_string();
-                        GameSoundEvent::CannotDeployHere { sound_id }
+                        // `UnitClass::Deploy 0x0073950A`: type -1.
+                        GameSoundEvent::Eva {
+                            event: "EVA_CannotDeployHere".to_string(),
+                            type_override: None,
+                        }
                     }
                     SimSoundEvent::StructureGarrisoned { owner } => {
                         // EVA cue: only play for the local human player.
@@ -1620,17 +1547,12 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let faction = crate::app::presentation::building_anim::eva_faction_key(
-                            owner_str,
-                            &state.match_state.match_presentation.house_roster,
-                        );
-                        let sound_id = state
-                            .audio
-                            .eva_registry
-                            .get("EVA_StructureGarrisoned", faction)
-                            .unwrap_or("ceva107")
-                            .to_string();
-                        GameSoundEvent::StructureGarrisoned { sound_id }
+                        // `BuildingClass::AddGarrisonOccupant 0x005229C1`: type -1
+                        // (stock entry QUEUE NORMAL).
+                        GameSoundEvent::Eva {
+                            event: "EVA_StructureGarrisoned".to_string(),
+                            type_override: None,
+                        }
                     }
                     SimSoundEvent::StructureAbandoned { owner } => {
                         let owner_str = sim.interner.resolve(owner);
@@ -1640,17 +1562,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let faction = crate::app::presentation::building_anim::eva_faction_key(
-                            owner_str,
-                            &state.match_state.match_presentation.house_roster,
-                        );
-                        let sound_id = state
-                            .audio
-                            .eva_registry
-                            .get("EVA_StructureAbandoned", faction)
-                            .unwrap_or("ceva108")
-                            .to_string();
-                        GameSoundEvent::StructureAbandoned { sound_id }
+                        GameSoundEvent::Eva {
+                            event: "EVA_StructureAbandoned".to_string(),
+                            type_override: None,
+                        }
                     }
                     SimSoundEvent::BuildingGarrisonedSfx { owner, rx, ry } => {
                         // Positional SFX: only audible to the local human player
@@ -1826,34 +1741,22 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         } else {
                             Some(sound_source_at_cell(rx, ry))
                         };
-                        // EVA cue gated on local-human owner. Resolves
-                        // `EVA_BridgeRepaired` from the registry (no faction
-                        // fallback needed — bridge repair is faction-agnostic).
+                        // EVA cue gated on local-human owner and the radar
+                        // dedupe result (`InfantryClass::PerCellProcess
+                        // 0x00519BC9`, `PlayEVA` type -1).
                         let owner_str = sim.interner.resolve(owner);
-                        let eva_sound_id = if eva_allowed
+                        let eva_event = (eva_allowed
                             && local_owner_name
                                 .as_deref()
-                                .is_some_and(|l| l.eq_ignore_ascii_case(owner_str))
-                        {
-                            let faction = crate::app::presentation::building_anim::eva_faction_key(
-                                owner_str,
-                                &state.match_state.match_presentation.house_roster,
-                            );
-                            state
-                                .audio
-                                .eva_registry
-                                .get("EVA_BridgeRepaired", faction)
-                                .map(|s| s.to_string())
-                        } else {
-                            None
-                        };
-                        if sound_id.is_empty() && eva_sound_id.is_none() {
+                                .is_some_and(|l| l.eq_ignore_ascii_case(owner_str)))
+                        .then(|| "EVA_BridgeRepaired".to_string());
+                        if sound_id.is_empty() && eva_event.is_none() {
                             continue;
                         }
                         GameSoundEvent::BridgeRepaired {
                             sound_id,
                             source,
-                            eva_sound_id,
+                            eva_event,
                         }
                     }
                     SimSoundEvent::UnderAttack {
@@ -1887,26 +1790,22 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             .match_audio
                             .eva_under_attack_block_until_tick =
                             sim.session.tick + EVA_UNDER_ATTACK_COOLDOWN_TICKS;
-                        let faction = crate::app::presentation::building_anim::eva_faction_key(
-                            owner_str,
-                            &state.match_state.match_presentation.house_roster,
-                        );
-                        let (cue, fallback) = if miner {
-                            ("EVA_OreMinerUnderAttack", "ceva037")
+                        // `HouseClass::NotifyUnderAttack 0x004F94FB/0x004F95B3`,
+                        // `UnitClass::ReceiveDamage 0x00738530`: `PlayEVA` type
+                        // -1 (stock entries STANDARD NORMAL → pending slot).
+                        let cue = if miner {
+                            "EVA_OreMinerUnderAttack"
                         } else {
-                            ("EVA_OurBaseIsUnderAttack", "ceva054")
+                            "EVA_OurBaseIsUnderAttack"
                         };
-                        let eva_sound_id = state
-                            .audio
-                            .eva_registry
-                            .get(cue, faction)
-                            .unwrap_or(fallback)
-                            .to_string();
                         state
                             .match_state
                             .match_audio
                             .sound_events
-                            .push(GameSoundEvent::UnderAttackEva { eva_sound_id });
+                            .push(GameSoundEvent::Eva {
+                                event: cue.to_string(),
+                                type_override: None,
+                            });
                         if let Some(siren) = base_under_attack_siren(miner, &resources.rules) {
                             state.match_state.match_audio.sound_events.push(siren);
                         }
@@ -2612,7 +2511,7 @@ mod tests {
     use super::{
         ExactStepError, ExactStepReceipt, VOICE_FEEDBACK_PERCENT, append_fire_effect_batch,
         base_under_attack_siren, begin_fire_effect_batch, cloak_sound_for_app,
-        finish_fire_effect_batch, lightning_storm_begin_cue, outcome_eva_entry,
+        finish_fire_effect_batch, lightning_storm_begin_cue, outcome_eva_event,
         superweapon_launch_cue, upsert_overlay_entries, validate_exact_step_receipt,
         voice_feedback_speaks, wall_sell_sound_for_local, world_point_to_cell,
     };
@@ -2646,16 +2545,12 @@ mod tests {
         use crate::sim::house_state::HouseOutcomeKind;
 
         assert_eq!(
-            outcome_eva_entry(HouseOutcomeKind::Victory, "Allied"),
-            ("EVA_YouAreVictorious", "ceva022")
+            outcome_eva_event(HouseOutcomeKind::Victory),
+            "EVA_YouAreVictorious"
         );
         assert_eq!(
-            outcome_eva_entry(HouseOutcomeKind::Victory, "Russian"),
-            ("EVA_YouAreVictorious", "csof022")
-        );
-        assert_eq!(
-            outcome_eva_entry(HouseOutcomeKind::Defeat, "Yuri"),
-            ("EVA_YouHaveLost", "cyur023")
+            outcome_eva_event(HouseOutcomeKind::Defeat),
+            "EVA_YouHaveLost"
         );
     }
 
@@ -2787,7 +2682,6 @@ mod tests {
         assert_eq!(nuke.sound_id.as_deref(), Some("NukeSiren"));
         assert!(nuke.positional);
         assert_eq!(nuke.eva_event, Some("EVA_NuclearMissileLaunched"));
-        assert!(!nuke.eva_queued);
 
         // Case 1: EVA only — the arm reaches no VocClass call.
         let ic = cue(K::IronCurtain, None);
@@ -2821,16 +2715,19 @@ mod tests {
             );
         }
 
-        // Cases 7 and 9: positional cue plus a Type=QUEUE EVA line.
+        // Cases 7 and 9: positional cue plus an EVA line (the entry's own
+        // `Type=QUEUE` routes it; the cue table carries only the name).
         let dominator = cue(K::PsychicDominator, None);
         assert_eq!(
             dominator.sound_id.as_deref(),
             Some("PsychicDominatorActivate")
         );
-        assert!(dominator.positional && dominator.eva_queued);
+        assert!(dominator.positional);
+        assert_eq!(dominator.eva_event, Some("EVA_PsychicDominatorActivated"));
         let mutator = cue(K::GeneticConverter, None);
         assert_eq!(mutator.sound_id.as_deref(), Some("GeneticMutatorActivate"));
-        assert!(mutator.positional && mutator.eva_queued);
+        assert!(mutator.positional);
+        assert_eq!(mutator.eva_event, Some("EVA_GeneticMutatorActivated"));
 
         // Case 11: cue only, no EVA.
         let reveal = cue(K::PsychicReveal, None);
