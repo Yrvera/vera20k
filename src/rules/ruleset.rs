@@ -406,6 +406,15 @@ pub struct GeneralRules {
     /// Unit types that count as a player's home when no buildings remain.
     /// Parsed from `[General] BaseUnit=`. Stock YR: AMCV, SMCV, PCV.
     pub base_unit_types: Vec<String>,
+    /// `[General] MultiplayerAICM=` — `RulesClass+0x1304` int list read by
+    /// `RulesClass__ReadGeneral` at `0x00670512..0x0067053B`. Indexed directly
+    /// by `HouseClass+0x184` difficulty (0 = Hard, 1 = Normal, 2 = Easy) in
+    /// `ScenarioClass__Post_Map_Init @ 0x00686A52..0x00686A5E`; each entry is a
+    /// percentage of the AI house's opening balance granted once at match start.
+    /// Stock `rulesmd.ini:88` is `400,0,0`. The constructor default is an empty
+    /// vector (`0x00667034`), which native would index out of bounds; VERA treats
+    /// a missing entry as 0 (no grant).
+    pub multiplayer_ai_cm: Vec<i32>,
     /// Aircraft types in native Rules `PadAircraft` order. BuildingType's
     /// virtual value calculation reads the first two entries for the bundled
     /// helipad-cost branch.
@@ -1158,6 +1167,7 @@ impl Default for GeneralRules {
             sov_paradrop_list: vec![("E2".to_string(), 9)],
             yuri_paradrop_list: vec![("INIT".to_string(), 6)],
             base_unit_types: vec!["AMCV".to_string(), "SMCV".to_string(), "PCV".to_string()],
+            multiplayer_ai_cm: Vec::new(),
             pad_aircraft_types: Vec::new(),
             separate_aircraft: false,
             prism_type: None,
@@ -1879,6 +1889,15 @@ impl GeneralRules {
                         .collect()
                 })
                 .unwrap_or_else(|| defaults.base_unit_types),
+            multiplayer_ai_cm: general
+                .get_list("MultiplayerAICM")
+                .map(|items| {
+                    items
+                        .into_iter()
+                        .filter_map(crate::rules::ini_value::parse_read_int_value)
+                        .collect()
+                })
+                .unwrap_or_else(|| defaults.multiplayer_ai_cm),
             pad_aircraft_types: general
                 .get_list("PadAircraft")
                 .map(|items| {
@@ -4997,6 +5016,19 @@ CellSpread=0
     }
 
     #[test]
+    fn parse_multiplayer_ai_cm_list_in_source_order() {
+        // rulesmd.ini:88 `MultiplayerAICM=400,0,0` (Hard, Normal, Easy).
+        let ini = IniFile::from_str("[General]\nMultiplayerAICM=400,0,0\n");
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.multiplayer_ai_cm, vec![400, 0, 0]);
+
+        // RulesClass constructor leaves the +0x1304 vector empty (0x00667034).
+        let ini = IniFile::from_str("[General]\n");
+        let general = GeneralRules::from_ini(&ini);
+        assert!(general.multiplayer_ai_cm.is_empty());
+    }
+
+    #[test]
     fn parse_tier1_superweapon_rules() {
         let ini_text = "[General]\n\
 ForceShieldRadius=5\n\
@@ -5502,7 +5534,10 @@ MutateWarhead=MyMutate\n\
         assert_eq!(ftol_scale(52, rules.general.veteran_rof), 31);
         assert_eq!(ftol_scale(65, rules.general.veteran_combat), 71);
         assert_eq!(ftol_scale(15, rules.general.veteran_speed), 18);
-        assert_eq!(self_heal_interval_frames(rules.general.repair_rate_minutes), 14);
+        assert_eq!(
+            self_heal_interval_frames(rules.general.repair_rate_minutes),
+            14
+        );
         assert_eq!(
             rules.general.upgrade_veteran_sound.as_deref(),
             Some("UpgradeVeteran")
@@ -5566,8 +5601,9 @@ BuildingGarrisonedSound=BuildingGarrisoned
             Some("BaseUnderAttackSiren")
         );
 
-        let absent =
-            GeneralRules::from_ini(&IniFile::from_str("[General]\nFlightLevel=500\n[AudioVisual]\n"));
+        let absent = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\n",
+        ));
         assert_eq!(absent.base_under_attack_sound, None);
     }
 
@@ -5584,8 +5620,9 @@ BuildingGarrisonedSound=BuildingGarrisoned
             Some("BuildingGenericDie")
         );
 
-        let absent =
-            GeneralRules::from_ini(&IniFile::from_str("[General]\nFlightLevel=500\n[AudioVisual]\n"));
+        let absent = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\n",
+        ));
         assert_eq!(absent.building_die_sound, None);
 
         let empty = GeneralRules::from_ini(&IniFile::from_str(
@@ -5608,8 +5645,9 @@ BuildingGarrisonedSound=BuildingGarrisoned
             Some("BuildingDamaged")
         );
 
-        let absent =
-            GeneralRules::from_ini(&IniFile::from_str("[General]\nFlightLevel=500\n[AudioVisual]\n"));
+        let absent = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\n",
+        ));
         assert_eq!(absent.building_damage_sound, None);
 
         let empty = GeneralRules::from_ini(&IniFile::from_str(
@@ -5638,8 +5676,9 @@ BuildingGarrisonedSound=BuildingGarrisoned
             "strtok collapses the empty field between the two commas"
         );
 
-        let absent =
-            GeneralRules::from_ini(&IniFile::from_str("[General]\nFlightLevel=500\n[AudioVisual]\n"));
+        let absent = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\n",
+        ));
         assert!(absent.lightning_sounds.is_empty());
 
         let empty = GeneralRules::from_ini(&IniFile::from_str(
