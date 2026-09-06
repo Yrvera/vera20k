@@ -520,3 +520,182 @@ pub(in crate::sim) fn revalidate_and_step_factories(sim: &mut Simulation, rules:
     registry.step_all(&mut sim.houses, &prepared);
     sim.production.factory_shadow = registry;
 }
+
+/// A saved relationship that the live factory operations cannot publish.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("factory state for owner {owner}: {reason}")]
+pub(crate) struct FactoryRestoreError {
+    pub(crate) owner: InternedId,
+    pub(crate) reason: &'static str,
+}
+
+/// Validate factory relationships before a loaded candidate becomes a match.
+///
+/// VERA-internal snapshot admission; gamemd equivalent UNCHECKED. These checks
+/// follow the synchronous constructor/publication/settlement operations above,
+/// not a new queue, refund or gameplay policy. Generic snapshot reference and
+/// LogicVector validation precede this operation. Missing Houses and unrelated
+/// limbo objects remain supported; manager pointers are not globally reciprocal.
+pub(crate) fn validate_restored_factory_state(
+    sim: &Simulation,
+    rules: &RuleSet,
+) -> Result<(), FactoryRestoreError> {
+    use crate::map::entities::EntityCategory;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let fail = |owner, reason| FactoryRestoreError { owner, reason };
+    let mut ready = BTreeMap::new();
+    for (&owner, entries) in &sim.production.ready_by_owner {
+        if sim.interner.try_resolve(owner).is_none() {
+            return Err(fail(owner, "ready owner is absent from the interner"));
+        }
+        for &type_id in entries {
+            let object = sim
+                .interner
+                .try_resolve(type_id)
+                .and_then(|name| rules.object(name))
+                .ok_or_else(|| fail(owner, "ready type is absent from bound rules"))?;
+            if object.category != ObjectCategory::Building {
+                return Err(fail(owner, "ready entry is not a building"));
+            }
+            let category = production_category_for_object(object);
+            if ready.insert((owner, category), type_id).is_some() {
+                return Err(fail(owner, "multiple ready entries claim one factory"));
+            }
+            let factory = sim
+                .production
+                .factory_shadow
+                .view(owner, category)
+                .ok_or_else(|| fail(owner, "ready entry has no factory"))?;
+            let held = factory
+                .object
+                .ok_or_else(|| fail(owner, "ready entry has no active object"))?;
+            if held.type_id != type_id {
+                return Err(fail(owner, "ready type disagrees with active object"));
+            }
+            if !factory.ready || !held.completion_accounted {
+                return Err(fail(owner, "ready entry precedes completion publication"));
+            }
+        }
+    }
+
+    let mut roots = BTreeSet::new();
+    for (&(owner, category), factory) in sim.production.factory_shadow.keyed_factories() {
+        if factory.owner != owner || factory.category != category {
+            return Err(fail(owner, "registry key disagrees with factory identity"));
+        }
+        if sim.interner.try_resolve(owner).is_none() {
+            return Err(fail(owner, "factory owner is absent from the interner"));
+        }
+        for queued in &factory.queue {
+            let object = sim
+                .interner
+                .try_resolve(queued.type_id)
+                .and_then(|name| rules.object(name))
+                .ok_or_else(|| fail(owner, "queued type is absent from bound rules"))?;
+            if production_category_for_object(object) != category {
+                return Err(fail(owner, "queued type disagrees with factory category"));
+            }
+        }
+        let Some(held) = &factory.object else {
+            if !factory.queue.is_empty() {
+                return Err(fail(owner, "queued tail has no active object"));
+            }
+            continue;
+        };
+        let object = sim
+            .interner
+            .try_resolve(held.type_id)
+            .and_then(|name| rules.object(name))
+            .ok_or_else(|| fail(owner, "active type is absent from bound rules"))?;
+        if production_category_for_object(object) != category {
+            return Err(fail(owner, "active type disagrees with factory category"));
+        }
+        let entity_id = held
+            .entity_id
+            .ok_or_else(|| fail(owner, "active object has no constructed identity"))?;
+        if !roots.insert(entity_id) {
+            return Err(fail(
+                owner,
+                "constructed identity belongs to multiple factories",
+            ));
+        }
+        let entity = sim.substrate.entities.get(entity_id).ok_or_else(|| {
+            fail(
+                owner,
+                "constructed identity is absent from the entity store",
+            )
+        })?;
+        if entity.owner() != owner || entity.type_ref() != held.type_id {
+            return Err(fail(
+                owner,
+                "constructed identity disagrees with factory owner or type",
+            ));
+        }
+        let expected_category = match object.category {
+            ObjectCategory::Infantry => EntityCategory::Infantry,
+            ObjectCategory::Vehicle => EntityCategory::Unit,
+            ObjectCategory::Aircraft => EntityCategory::Aircraft,
+            ObjectCategory::Building => EntityCategory::Structure,
+        };
+        if entity.category != expected_category {
+            return Err(fail(
+                owner,
+                "constructed identity has the wrong concrete category",
+            ));
+        }
+        if entity.spawn_owner_id.is_some() || entity.slave_harvester.is_some() {
+            return Err(fail(owner, "factory root is itself a manager child"));
+        }
+        // Do not infer health or death flags from factory membership. Current
+        // coordinate-based superweapon ingress can damage an unmarked held
+        // Infantry; rejecting its save here would hide that separate live bug.
+        if !entity.lifecycle.in_limbo || entity.lifecycle.cell_marked || entity.in_logic_vector {
+            return Err(fail(
+                owner,
+                "factory object is already admitted to the world",
+            ));
+        }
+        if held.completion_accounted && factory.progress < super::PRODUCTION_STEPS {
+            return Err(fail(
+                owner,
+                "completion accounting precedes completed progress",
+            ));
+        }
+        if held.completion_accounted
+            && object.category == ObjectCategory::Building
+            && ready.get(&(owner, category)) != Some(&held.type_id)
+        {
+            return Err(fail(owner, "accounted building has no ready entry"));
+        }
+    }
+
+    // Restrict only factory roots: native manager pointers elsewhere can alias
+    // without implying reciprocal ownership, and ordinary limbo is not a root.
+    for (&(owner, _), factory) in sim.production.factory_shadow.keyed_factories() {
+        let Some(parent) = factory.object.as_ref().and_then(|object| object.entity_id) else {
+            continue;
+        };
+        let entity = sim
+            .substrate
+            .entities
+            .get(parent)
+            .expect("validated factory root");
+        let spawn_alias = entity.spawn_manager.as_ref().is_some_and(|manager| {
+            manager
+                .slots
+                .iter()
+                .filter_map(|slot| slot.spawn)
+                .any(|id| roots.contains(&id))
+        });
+        let slave_alias = sim
+            .production
+            .slave_bindings
+            .get(&parent)
+            .is_some_and(|children| children.iter().any(|id| roots.contains(id)));
+        if spawn_alias || slave_alias {
+            return Err(fail(owner, "factory root aliases a held constructor child"));
+        }
+    }
+    Ok(())
+}

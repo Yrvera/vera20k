@@ -197,5 +197,8 @@ fn log_prepared_load_error(
         PreparedLoadError::Restore(source) => {
             log::error!("Load: restoration validation failed: {source}")
         }
+        PreparedLoadError::FactoryState(source) => {
+            log::error!("Load: restoration validation failed: {source}")
+        }
     }
 }

@@ -538,6 +538,14 @@ pub(crate) struct RevalAction {
 }
 
 impl FactoryRegistry {
+    /// Saved keys participate in factory identity; restoration must validate
+    /// them against the embedded values before accepting world relationships.
+    pub(super) fn keyed_factories(
+        &self,
+    ) -> impl Iterator<Item = (&(InternedId, ProductionCategory), &Factory)> {
+        self.factories.iter()
+    }
+
     /// Seed the queue kernel without constructing a world object. External
     /// fixtures explicitly finish construction when their scenario requires it.
     #[cfg(test)]
