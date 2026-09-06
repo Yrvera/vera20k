@@ -319,7 +319,7 @@ pub enum GameSoundEvent {
     /// A superweapon fired: its `[AudioVisual]` cue and/or its EVA warning.
     ///
     /// `SuperClass::Launch @ 0x006CC390` decides both per `Type=` case; see
-    /// [`crate::app::match_runtime::sim_tick::superweapon_launch_cue`] for the
+    /// [`crate::app::match_runtime::sound_dispatch::superweapon_launch_cue`] for the
     /// case-by-case table and its addresses. Every cue in that table is played
     /// by `VocClass::PlayAtCoord @ 0x00750E20` (or `PlayAt @ 0x007509E0` for
     /// `ForceShield`) at the target coordinate, hence `source`.
@@ -329,7 +329,7 @@ pub enum GameSoundEvent {
     /// launch, so the cue is played only when the deferment expires
     /// (`0x0053A044`, `VocClass::PlayAtPos @ 0x00750920`, pan `0x2000`, volume
     /// `1.0f` — centred and full-volume). See
-    /// [`crate::app::match_runtime::sim_tick::lightning_storm_begin_cue`].
+    /// [`crate::app::match_runtime::sound_dispatch::lightning_storm_begin_cue`].
     ///
     /// The EVA line is not gated on the launching house: native calls
     /// `VoxClass::PlayEVA` behind `[0x00A8B538]` only, a client-side flag that
@@ -585,7 +585,7 @@ impl GameSoundEvent {
 ///
 /// **Superweapon launch cues are landed** — see
 /// [`GameSoundEvent::SuperWeaponActivated`] and
-/// [`crate::app::match_runtime::sim_tick::superweapon_launch_cue`]. Two
+/// [`crate::app::match_runtime::sound_dispatch::superweapon_launch_cue`]. Two
 /// residuals remain there: the EVA suppression flag `[0x00A8B538]` has no VERA
 /// equivalent (VERA has no defeated-spectator state), and the `MultiMissile`,
 /// `ChronoSphere`, `ChronoWarp`, `PsychicDominator` and `SpyPlane` cases have
