@@ -812,7 +812,7 @@ fn tick_production_advances_multiple_queue_categories_for_same_owner() {
 #[test]
 fn blocked_vehicle_delivery_keeps_completed_item_and_holds_next_queue_item() {
     let mut sim = Simulation::new();
-    let rules = basic_multi_queue_rules();
+    let rules = super::lifecycle_tests::manager_rules();
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let terrain = water_terrain(32, 32);
     let grid = PathGrid::from_resolved_terrain(&terrain);
@@ -850,6 +850,13 @@ fn blocked_vehicle_delivery_keeps_completed_item_and_holds_next_queue_item() {
             .test_arm_ready(americans_id, ProductionCategory::Vehicle)
     );
 
+    let held_id_before =
+        super::lifecycle_tests::held_id(&sim, americans_id, ProductionCategory::Vehicle);
+    let children_before = super::lifecycle_tests::children(&sim, held_id_before);
+    assert_eq!(children_before.len(), 3);
+    let owned_before = sim.houses[&americans_id].owned_unit_count;
+    let rng_before = sim.scenario_rng.clone();
+    let allocated_before = sim.substrate.next_stable_object_id;
     let spawned = tick_production(&mut sim, &rules, &height_map, Some(&grid));
     assert!(
         !spawned,
@@ -898,12 +905,26 @@ fn blocked_vehicle_delivery_keeps_completed_item_and_holds_next_queue_item() {
     let held = sim.substrate.entities.get(held_id).unwrap();
     assert!(held.lifecycle.in_limbo && !held.lifecycle.cell_marked);
     assert_eq!(sim.interner.resolve(held.type_ref), "MTNK");
+    for _ in 0..3 {
+        assert!(!tick_production(&mut sim, &rules, &height_map, Some(&grid)));
+    }
+    assert_eq!(
+        super::lifecycle_tests::held_id(&sim, americans_id, ProductionCategory::Vehicle),
+        held_id_before
+    );
+    assert_eq!(
+        super::lifecycle_tests::children(&sim, held_id_before),
+        children_before
+    );
+    assert_eq!(sim.scenario_rng.logical_state(), rng_before.logical_state());
+    assert_eq!(sim.substrate.next_stable_object_id, allocated_before);
+    assert_eq!(sim.houses[&americans_id].owned_unit_count, owned_before + 0);
 }
 
 #[test]
 fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item() {
     let mut sim = Simulation::new();
-    let rules = basic_multi_queue_rules();
+    let rules = super::lifecycle_tests::manager_rules();
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let mut terrain = water_terrain(32, 32);
     let blocked_grid = PathGrid::from_resolved_terrain(&terrain);
@@ -919,6 +940,7 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
     spawn_structure(&mut sim, 1, "Americans", "GAWEAP", 10, 10);
 
     let americans_id = sim.interner.intern("Americans");
+    *super::credits_entry_for_owner(&mut sim, "Americans") = 50_000;
     // P5d: arm the front MTNK (active) then a second MTNK at a higher stamp (FIFO tail).
     arm_build_via(
         &mut sim,
@@ -947,9 +969,22 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
             .test_arm_ready(americans_id, ProductionCategory::Vehicle)
     );
 
+    let held_id_before =
+        super::lifecycle_tests::held_id(&sim, americans_id, ProductionCategory::Vehicle);
+    let children_before = super::lifecycle_tests::children(&sim, held_id_before);
+    assert_eq!(children_before.len(), 3);
+    let owned_before = sim.houses[&americans_id].owned_unit_count;
+    let rng_before = sim.scenario_rng.clone();
+    let allocated_before = sim.substrate.next_stable_object_id;
     let blocked = tick_production(&mut sim, &rules, &height_map, Some(&blocked_grid));
     assert!(!blocked, "first delivery attempt should remain pending");
 
+    assert_eq!(
+        super::lifecycle_tests::children(&sim, held_id_before),
+        children_before
+    );
+    assert_eq!(sim.scenario_rng.logical_state(), rng_before.logical_state());
+    assert_eq!(sim.substrate.next_stable_object_id, allocated_before);
     for cell in &mut terrain.cells {
         cell.is_water = false;
         cell.land_type = crate::rules::terrain_rules::LandType::Clear.as_index();
@@ -1026,14 +1061,42 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
     let projected = queue_view_for_owner(&sim, &rules, "Americans");
     assert_eq!(projected.len(), 1);
     assert_eq!(projected[0].state, BuildQueueState::Building);
+    assert!(
+        !sim.substrate
+            .entities
+            .get(held_id_before)
+            .unwrap()
+            .lifecycle
+            .in_limbo
+    );
+    assert_eq!(
+        super::lifecycle_tests::children(&sim, held_id_before),
+        children_before
+    );
+    let promoted_children = super::lifecycle_tests::children(&sim, promoted_id);
+    assert_eq!(promoted_children.len(), 3);
+    assert!(
+        promoted_children
+            .iter()
+            .all(|id| !children_before.contains(id))
+    );
+    let mut expected = rng_before;
+    for id in std::iter::once(promoted_id).chain(promoted_children) {
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(id)
+                .unwrap()
+                .techno_ctor_random_word,
+            (expected.next_u32() & 0xffff) as u16
+        );
+    }
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    assert_eq!(sim.houses[&americans_id].owned_unit_count, owned_before + 4);
 }
 
 #[test]
-#[ignore = "retired (P5b): tick_production no longer advances a frames timer, so the \
-            paused-vs-active frame delta this asserted is gone. Pause behaviour (a Paused front \
-            maps to a `manual` registry factory that never charges) is pinned by the \
-            registry-driven pause guard test."]
-fn paused_queue_category_does_not_advance_while_other_category_does() {
+fn paused_category_projection_and_factory_charge_remain_independent() {
     let mut sim = Simulation::new();
     let rules = basic_multi_queue_rules();
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
@@ -1042,6 +1105,7 @@ fn paused_queue_category_does_not_advance_while_other_category_does() {
     spawn_structure(&mut sim, 2, "Americans", "GAWEAP", 14, 10);
 
     let americans_id = sim.interner.intern("Americans");
+    *super::credits_entry_for_owner(&mut sim, "Americans") = 50_000;
     // P5d: arm both category factories directly in the registry.
     arm_build_via(
         &mut sim,
@@ -1066,7 +1130,14 @@ fn paused_queue_category_does_not_advance_while_other_category_does() {
         toggle_pause_for_owner_category(&mut sim, "Americans", ProductionCategory::Infantry);
     assert!(paused);
 
-    let _ = tick_production(&mut sim, &rules, &height_map, None);
+    // Run the actual frame owner, which now performs revalidation and charging.
+    sim.houses
+        .get_mut(&americans_id)
+        .unwrap()
+        .owned_building_count = 2;
+    for _ in 0..40 {
+        sim.advance_tick(&[], Some(&rules), &height_map, None, None, 67);
+    }
 
     // Project the registry to the sidebar view for state assertions (the per-item
     // `state`/`remaining_base_frames` mirror is retired).
@@ -1082,35 +1153,18 @@ fn paused_queue_category_does_not_advance_while_other_category_does() {
 
     assert_eq!(infantry.state, BuildQueueState::Paused);
     assert_eq!(vehicle.state, BuildQueueState::Building);
-    // P5D-REVIEW: ignored/retired test. The paused-vs-active per-frame delta (infantry 1000,
-    // vehicle 999) is gone: `tick_production` no longer advances a frames timer, so neither
-    // factory's `progress` moves here and both keep their full base-frame remainder. The
-    // remaining-frame value assertions are documented as no longer applicable; the live
-    // surviving assertion is that the paused category stays Paused while the other is Building.
-    let infantry_remaining = sim
+    let infantry = sim
         .production
         .factory_shadow
         .view(americans_id, ProductionCategory::Infantry)
-        .map(|v| {
-            let steps_left = super::factory::PRODUCTION_STEPS
-                .saturating_sub(v.progress.min(super::factory::PRODUCTION_STEPS))
-                as u64;
-            ((1000u64 * steps_left) / super::factory::PRODUCTION_STEPS as u64) as u32
-        })
-        .expect("infantry factory");
-    let vehicle_remaining = sim
+        .unwrap();
+    let vehicle = sim
         .production
         .factory_shadow
         .view(americans_id, ProductionCategory::Vehicle)
-        .map(|v| {
-            let steps_left = super::factory::PRODUCTION_STEPS
-                .saturating_sub(v.progress.min(super::factory::PRODUCTION_STEPS))
-                as u64;
-            ((1000u64 * steps_left) / super::factory::PRODUCTION_STEPS as u64) as u32
-        })
-        .expect("vehicle factory");
-    assert_eq!(infantry_remaining, 1000);
-    assert_eq!(vehicle_remaining, 1000);
+        .unwrap();
+    assert_eq!(infantry.progress, 0);
+    assert!(vehicle.progress > 0);
 }
 
 #[test]

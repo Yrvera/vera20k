@@ -278,7 +278,8 @@ pub fn place_ready_building_with_overlays(
     }
     if obj.wall {
         let category = production_category_for_object(obj);
-        let Some(factory_entity_id) = ready_factory_entity(sim, owner_id, category, type_interned)
+        let Some(held) =
+            super::factory_lifecycle::ready_object(sim, owner_id, category, type_interned)
         else {
             return false;
         };
@@ -312,8 +313,7 @@ pub fn place_ready_building_with_overlays(
         // Wall placement consumes the factory-created BuildingClass into
         // overlay state; the constructor identity is destroyed, never
         // reconstructed at placement.
-        let _ = sim.discard_constructed_limbo(factory_entity_id);
-        return consume_ready_building(sim, rules, owner_id, type_interned, category);
+        return held.consume_after_wall_stamp(sim, rules);
     }
     let foundation_str: String = rules
         .object(type_id)
@@ -329,11 +329,12 @@ pub fn place_ready_building_with_overlays(
         foundation_str,
     );
     let category = production_category_for_object(obj);
-    let Some(new_sid) = ready_factory_entity(sim, owner_id, category, type_interned) else {
+    let Some(held) = super::factory_lifecycle::ready_object(sim, owner_id, category, type_interned)
+    else {
         return false;
     };
     let Some(new_sid) = sim.unlimbo_held_production_object(
-        new_sid,
+        held.entity_id(),
         rx,
         ry,
         0,
@@ -380,45 +381,7 @@ pub fn place_ready_building_with_overlays(
         crate::sim::superweapon::refresh_super_weapons_for_owner(sim, rules, owner_id);
     }
 
-    consume_ready_building(sim, rules, owner_id, type_interned, category)
-}
-
-fn ready_factory_entity(
-    sim: &Simulation,
-    owner_id: crate::sim::intern::InternedId,
-    category: ProductionCategory,
-    type_id: crate::sim::intern::InternedId,
-) -> Option<u64> {
-    let object = sim
-        .production
-        .factory_shadow
-        .view(owner_id, category)?
-        .object?;
-    (object.type_id == type_id)
-        .then_some(object.entity_id)
-        .flatten()
-        .filter(|&stable_id| sim.substrate.entities.contains(stable_id))
-}
-
-fn consume_ready_building(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    owner_id: crate::sim::intern::InternedId,
-    type_id: crate::sim::intern::InternedId,
-    category: ProductionCategory,
-) -> bool {
-    let Some(ready_queue) = sim.production.ready_by_owner.get_mut(&owner_id) else {
-        return false;
-    };
-    let Some(index) = ready_queue.iter().position(|&queued| queued == type_id) else {
-        return false;
-    };
-    ready_queue.remove(index);
-    if ready_queue.is_empty() {
-        sim.production.ready_by_owner.remove(&owner_id);
-    }
-    super::production_queue::advance_after_delivery(sim, rules, owner_id, category);
-    true
+    held.release_after_placement(sim, rules)
 }
 
 fn evaluate_building_placement(

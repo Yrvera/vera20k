@@ -80,7 +80,7 @@ fn arm(
     let cost = sim.object_type(ty, rules).map_or(0, |o| o.cost.max(0));
     sim.production
         .factory_shadow
-        .enqueue(owner, cat, ty, order, total, cost);
+        .test_enqueue_kernel(owner, cat, ty, order, total, cost);
 }
 
 // ===== P1 — Economy shadow =====
@@ -707,7 +707,7 @@ fn factory_cancel_one_does_not_change_state_hash() {
     // fires (AbandonedActive).
     let mut reg = sim.production.factory_shadow.clone();
     let mut oracle = sim.houses[&owner].economy.clone();
-    let outcome = reg.cancel_one(owner, ProductionCategory::Vehicle, ty, &mut oracle);
+    let outcome = reg.test_cancel_one_kernel(owner, ProductionCategory::Vehicle, ty, &mut oracle);
     assert!(
         matches!(outcome, CancelOutcome::AbandonedActive { .. }),
         "the active build (no queued copy) is abandoned on the clone"
@@ -853,7 +853,8 @@ fn production_shadow_with_cancel_is_deterministic() {
                     .get(&owner)
                     .map(|h| h.economy.clone())
                     .unwrap_or_default();
-                let _ = reg.cancel_one(owner, ProductionCategory::Vehicle, ty, &mut oracle);
+                let _ =
+                    reg.test_cancel_one_kernel(owner, ProductionCategory::Vehicle, ty, &mut oracle);
                 sim.state_hash()
             })
             .collect()

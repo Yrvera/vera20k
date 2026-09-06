@@ -1098,7 +1098,7 @@ fn conyard_redeploy_ui_hides_while_building_queue_busy() {
     // production-busy gate sees an active Building factory. This deliberately
     // bypasses producer validation because the minimal fixture has no Factory
     // flag, but it must still model StartProduction's held Techno constructor.
-    let started = sim.production.factory_shadow.enqueue(
+    let started = sim.production.factory_shadow.test_enqueue_kernel(
         owner,
         crate::sim::production::ProductionCategory::Building,
         type_id,
@@ -1107,7 +1107,7 @@ fn conyard_redeploy_ui_hides_while_building_queue_busy() {
         0,
     );
     assert!(started);
-    crate::sim::production::construct_and_link_active_factory_object(
+    crate::sim::production::construct_active_factory_fixture(
         &mut sim,
         &rules,
         owner,
