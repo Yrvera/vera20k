@@ -339,15 +339,8 @@ impl App {
                             state.use_software_cursor(),
                         );
                     }
-                    crate::app::loading::pump::LoadingRenderResult::NativeFailed(err) => {
+                    crate::app::loading::pump::LoadingRenderResult::Failed => {
                         transitions::clear_screen(&mut encoder, &view);
-                        log::warn!("Could not render native loading screen: {err:#}");
-                        crate::app::loading::pump::clear_loading_state(state);
-                        state.match_state.startup.clear();
-                        state.frontend.screen = GameScreen::MissionResult {
-                            title: "Loading Failed".to_string(),
-                            detail: format!("{err:#}"),
-                        };
                     }
                 }
             }
@@ -632,35 +625,7 @@ impl App {
             }
         }
 
-        // Deferred loading: after presenting the Loading screen frame,
-        // pump one loading phase. The next patch will continue splitting the
-        // remaining legacy load body into smaller phases.
-        if matches!(state.frontend.screen, GameScreen::Loading) {
-            crate::app::loading::pump::loading_screen_presented(state);
-            let native_loading = crate::app::loading::pump::is_native_loading_session(state);
-            match crate::app::loading::pump::pump_loading_after_present(state) {
-                crate::app::loading::pump::LoadingPump::Pending => {
-                    state.platform.window.request_redraw();
-                }
-                crate::app::loading::pump::LoadingPump::Finished(result) => {
-                    transitions::apply_map_load_result(state, result);
-                }
-                crate::app::loading::pump::LoadingPump::Failed(err) => {
-                    log::warn!("Could not load map: {err:#}");
-                    if native_loading {
-                        crate::app::loading::pump::clear_loading_state(state);
-                        state.match_state.startup.clear();
-                        state.frontend.screen = GameScreen::MissionResult {
-                            title: "Loading Failed".to_string(),
-                            detail: format!("{err:#}"),
-                        };
-                    } else {
-                        let result = transitions::fallback_map_load_result();
-                        transitions::apply_map_load_result(state, result);
-                    }
-                }
-            }
-        }
+        crate::app::loading::pump::after_loading_frame_presented(state);
 
         Ok(())
     }

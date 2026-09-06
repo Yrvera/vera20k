@@ -413,7 +413,7 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         .take_acceptance_for_loading(Some(seed_name))
         .expect("accepted setup transfers preview and staged starts once");
     let launch = launch_session(seed_name);
-    let mut ui_request = LoadingRequest::unverified_legacy_skirmish(
+    let ui_request = LoadingRequest::unverified_legacy_skirmish(
         launch.clone(),
         crate::match_bootstrap::MatchSeed {
             value: MATCH_SEED,
@@ -423,16 +423,9 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         crate::ui::main_menu::SkirmishSettings::default(),
     )
     .with_accepted_random_map(Some(accepted_poison));
-    let ui_initial = ui_request
-        .load_initial_with_assets(seed_dir.clone(), &mut assets, &mut SilentProgress)
-        .expect("accepted UI .SED launch regeneration");
-    ui_request
-        .prepare_fresh_scenario_load_context(&ui_initial)
-        .expect("accepted generated source prepares its mandatory prefix");
-    let ui_context = ui_request
-        .take_fresh_scenario_load_context()
-        .expect("accepted generated context transfers once");
-    let ui_launch = ui_initial.into_random_map_launch_snapshot(&mut assets, ui_context);
+    let ui_launch = ui_request
+        .load_random_map_snapshot_for_test(seed_dir.clone(), &mut assets, &mut SilentProgress)
+        .expect("accepted UI .SED regeneration and admitted bundle transfer");
 
     // The reference arm must cross the same accepted-staging admission seam;
     // an arbitrary direct `.SED` is intentionally not a parity builder.
@@ -450,7 +443,7 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
     let direct_accepted = direct_retention
         .take_acceptance_for_loading(Some(seed_name))
         .expect("reference setup supplies accepted staging");
-    let mut direct_request = LoadingRequest::unverified_legacy_skirmish(
+    let direct_request = LoadingRequest::unverified_legacy_skirmish(
         launch,
         crate::match_bootstrap::MatchSeed {
             value: MATCH_SEED,
@@ -460,14 +453,9 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         crate::ui::main_menu::SkirmishSettings::default(),
     )
     .with_accepted_random_map(Some(direct_accepted));
-    direct_request
-        .prepare_fresh_scenario_load_context(&direct_initial)
-        .expect("reference generated source crosses accepted admission");
-    let direct_context = direct_request
-        .take_fresh_scenario_load_context()
-        .expect("reference generated context transfers once");
-    let direct_launch =
-        direct_initial.into_random_map_launch_snapshot(&mut assets, direct_context);
+    let direct_launch = direct_request
+        .prepare_random_map_snapshot_for_test(direct_initial, &mut assets)
+        .expect("reference generated bundle crosses accepted admission");
     assert_eq!(ui_launch, direct_launch);
     assert_ne!(ui_launch.map.header.0, "POISON_PREVIEW");
     assert_ne!(ui_launch.trace, poison_trace_reference);
