@@ -8078,6 +8078,25 @@ impl Simulation {
             // factory's per-step cost against the REAL wallet (house.credits) in
             // insertion_seq (temporal) order; the spawn/placement pass below then
             // delivers completed builds and advances the queue-of-record.
+            //
+            // DRIFT (same-tick transaction ordering; repair lane's to fix):
+            // `LogicClass::PerTickUpdate @ 0x0055AFB0` runs the object loop
+            // first — every depot repair debit
+            // (`BuildingClass::MissionRepairAndProduce @ 0x0044B780`) and every
+            // building's own repair debit are spent inside that object's `AI`
+            // visit — then Tactical, then a SEPARATE pass over
+            // `g_FactoryClass_Array` at 0x0055B66A where each factory's
+            // per-step charge (`FactoryClass::AI`) sees the wallet, then the
+            // houses (see
+            // docs/research/ADVANCE_TICK_PHASE_PARTITION_NATIVE_SPINE_GHIDRA_REPORT.md).
+            // So within one frame EVERY repair/depot debit precedes EVERY
+            // factory step natively; VERA charges every factory here first,
+            // then `tick_repairs` and `tick_building_docks` below. Trigger: a house whose credits fall
+            // below one factory step plus one repair step in the same frame.
+            // Player effect: which of the two stalls for that frame differs.
+            // Frequency: only while a player is nearly broke with both a
+            // factory and a repair running. Downstream risk: credit trajectory
+            // and stall cadence, no lifecycle or RNG effect.
             {
                 let mut registry = std::mem::take(&mut self.production.factory_shadow);
                 // P6: prereq/factory-loss revalidation BEFORE the charge sweep. Builds whose

@@ -152,14 +152,29 @@ fn dispatch_harvest_for_object_with_resource_authority(
         //   Harvest — or Guard for a human miner parked on non-ore land — and
         //   the promoted Harvest re-enters here at state 0.
         //
+        // - Enter with a repair-depot `DockState`: a player depot order
+        //   (`Command::RepairAtDepot`) commits Enter(7), and native dispatches
+        //   that selector through `FootClass::Mission_Enter @ 0x004D9290` —
+        //   `UnitClass`'s vtable `0x007F5C70 + 0x240` holds that Foot handler,
+        //   not an override — whose probe/epilogue VERA runs from the Unit
+        //   Enter arm of `techno_ai/mission_handlers.rs`
+        //   (`building_dock::mission_enter_dispatch`). Declining it here keeps
+        //   the dispatch timer on one writer while the miner waits, is
+        //   serviced and is released; the release Move's arrival puts it back
+        //   on Harvest (or Guard) through the harvester idle-mode arm.
+        //
         // RESIDUAL: a miner retasked onto Attack still resumes harvesting from
         // its old cursor when that order finishes (the Attack arrival is not
         // modelled); the strict `current == Harvest` gate waits on it.
+        let current = entity.mission.current().known();
         if matches!(
-            entity.mission.current().known(),
+            current,
             Some(crate::sim::mission::MissionType::Guard)
                 | Some(crate::sim::mission::MissionType::Move)
         ) {
+            return;
+        }
+        if current == Some(crate::sim::mission::MissionType::Enter) && entity.dock_state.is_some() {
             return;
         }
         // Native Mission_Dispatch gate: run the handler only when the

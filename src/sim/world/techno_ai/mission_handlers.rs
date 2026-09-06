@@ -56,7 +56,20 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // a harvester to Harvest (or Guard) — see
         // `harvester_enter_idle_mode_evaluation`. The Harvest handler declines
         // Move for the same single-writer reason.
+        //
+        // Enter with a repair-depot `DockState` is the third split: a
+        // harvester ordered to a depot (`Command::RepairAtDepot`) dispatches
+        // through `FootClass::Mission_Enter @ 0x004D9290` exactly like every
+        // other Foot object — `UnitClass`'s vtable `0x007F5C70 + 0x240` =
+        // `0x007F5EB0` holds `0x004D9290` (`read_memory`, 2026-09-06), so the
+        // Unit leaf does not override the slot, and `UnitClass::Mission_Harvest
+        // @ 0x0073E5E0` is only reached when the committed selector is
+        // Harvest(10). The Harvest handler declines Enter-with-depot for the
+        // same single-writer reason (`harvest_mission.rs`).
+        let depot_dock_state = entity.dock_state.is_some();
+        let miner_enter_depot = mission == Some(MissionType::Enter) && depot_dock_state;
         if entity.miner.is_some()
+            && !miner_enter_depot
             && !matches!(mission, Some(MissionType::Guard) | Some(MissionType::Move))
         {
             return;
@@ -69,7 +82,7 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             category,
             mission,
             harvester_miner: entity.miner.is_some(),
-            depot_dock_state: entity.dock_state.is_some(),
+            depot_dock_state,
             timer_due: entity.mission.dispatch_timer().due(now),
             moving_or_queued: moving || entity.mission.queued() != MissionId::NONE,
             bunker_delegate: entity.bunker_link.installed_in().is_some(),
