@@ -291,6 +291,83 @@
       ],
       "notes": ["Static evidence records concrete load/unload ordering drift; no native executable loop oracle exists."]
     },
+    "GSI-04.05": {
+      "native_anchors": [
+        {
+          "symbol": "CellClass::AddContent",
+          "address": "0x0047E8A0",
+          "evidence": "docs/research/bridges/05-damage-collapse-repair-cabhut/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "CellClass::RemoveContent",
+          "address": "0x0047EA90",
+          "evidence": "docs/research/bridges/05-damage-collapse-repair-cabhut/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/occupancy.rs",
+          "symbol": "CellOccupancy::first_on_layer / next_on_layer; OccupancyGrid::add / remove_on_layer / rebuild",
+          "coverage": "representative",
+          "observed_at_commit": "67127d0231341dc1613faab1a5ea804a9a96832d"
+        }
+      ],
+      "notes": [
+        "Bridge deck dispatch reads live selected membership. The represented world relayer updates every footprint cell and its serialized entry order so cache restoration reproduces the live list. This representative connection does not establish all raw occupation or movement callback semantics."
+      ]
+    },
+    "GSI-04.12": {
+      "native_anchors": [
+        {
+          "symbol": "CellClass::BlowUpBridge deck pass",
+          "address": "0x0047DDBA",
+          "evidence": "docs/research/bridges/05-damage-collapse-repair-cabhut/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/world/bridge_orchestrator.rs",
+          "symbol": "drop_in_bridge_deck_entities",
+          "coverage": "representative",
+          "observed_at_commit": "67127d0231341dc1613faab1a5ea804a9a96832d"
+        },
+        {
+          "path": "src/sim/world/bridge_deck_tests.rs",
+          "symbol": "hut_drop_in_owns_order_footprints_and_restore_without_teardown_side_effects",
+          "coverage": "representative",
+          "observed_at_commit": "67127d0231341dc1613faab1a5ea804a9a96832d"
+        },
+        {
+          "path": "src/sim/superweapon/cell_receiver_tests.rs",
+          "symbol": "iron_curtain_command_observes_native_deck_order_after_nested_bridge_drop_in",
+          "coverage": "representative",
+          "observed_at_commit": "67127d0231341dc1613faab1a5ea804a9a96832d"
+        }
+      ],
+      "notes": [
+        "The deck pass selects Bridge membership after the existing ground pass and captures next before each world relayer. Actual high-bridge hut and nested Iron Curtain command tests cover order, non-anchor footprint, unmarked exclusion and snapshot restoration. Full ground damage aliasing, raw/hidden callbacks and falling remain DRIFT; no whole bridge or rendered parity claim."
+      ]
+    },
+    "GSI-05.03": {
+      "native_anchors": [
+        {
+          "symbol": "ObjectClass::DropIn",
+          "address": "0x005F4160",
+          "evidence": "docs/research/bridges/05-damage-collapse-repair-cabhut/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/world/lifecycle.rs",
+          "symbol": "drop_in_bridge_member",
+          "coverage": "representative",
+          "observed_at_commit": "67127d0231341dc1613faab1a5ea804a9a96832d"
+        }
+      ],
+      "notes": [
+        "One world operation owns the represented deck member relayer, complete footprint removal/re-entry, one fresh serialized order and derived vehicle projection reconciliation. It preserves existing ground snap/movement reset, raw bytes, Drive reservations and clearing state; it does not run full Mark/Unmark teardown or placement effects. Full native DropIn, hidden-building entry and falling remain open."
+      ]
+    },
     "GSI-08.10": {
       "native_anchors": [
         {
@@ -1510,6 +1587,30 @@
       "detail": "The Infantry override invokes forced authored-Strength C4 damage through the shared world receiver, completing current nested world receipts before reading the next recipient.",
       "evidence": [
         "docs/research/IRONCURTAIN_FORCESHIELD_GHIDRA_REPORT.md"
+      ]
+    },
+    {
+      "id": "EDGE-0058-BRIDGE-DECK-CELL-MEMBERSHIP",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-04.12",
+      "to": "GSI-04.05",
+      "context": "Bridge deck fallout",
+      "detail": "Read the selected Bridge list after ground callbacks and capture each successor before invoking the relayer that removes current membership.",
+      "evidence": [
+        "docs/research/bridges/05-damage-collapse-repair-cabhut/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md"
+      ]
+    },
+    {
+      "id": "EDGE-0059-BRIDGE-DECK-WORLD-RELAYER",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-04.12",
+      "to": "GSI-05.03",
+      "context": "Bridge deck fallout",
+      "detail": "One world-owned represented relayer maintains complete footprint membership, serialized re-entry order and the derived vehicle projection while preserving existing raw bytes and reservations.",
+      "evidence": [
+        "docs/research/bridges/05-damage-collapse-repair-cabhut/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md"
       ]
     }
   ],
