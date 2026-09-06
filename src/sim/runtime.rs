@@ -228,18 +228,10 @@ impl SimRuntime {
 }
 
 impl SimRuntime {
-    /// Rebind a restored simulation over the surviving match resources
-    /// (same-content in-scenario load: rules, heights, registries, and
-    /// trigger definitions are immutable match inputs and MUST carry over —
-    /// an empty rebind would silently break every bound-resource consumer).
-    pub fn rebind_restored(previous: Option<SimRuntime>, simulation: Simulation) -> SimRuntime {
-        let resources = previous
-            .map(|rt| rt.resources)
-            .unwrap_or_else(SimResources::empty);
-        SimRuntime {
-            simulation,
-            resources,
-        }
+    /// Replace a same-content restored simulation in place. Resource ownership
+    /// never changes and callers must already have a running match.
+    pub(crate) fn replace_simulation(&mut self, simulation: Simulation) {
+        self.simulation = simulation;
     }
 }
 
@@ -273,24 +265,19 @@ mod tests {
             },
         );
         let expected_waypoints = resources.waypoints.clone();
-        let original = SimRuntime {
+        let mut original = SimRuntime {
             simulation: Simulation::new(),
             resources,
         };
 
-        let rebound = SimRuntime::rebind_restored(Some(original), Simulation::new());
+        original.replace_simulation(Simulation::new());
+        let rebound = original;
         assert_eq!(
             rebound.resources.height_map.get(&(3, 4)),
             Some(&7),
             "restore must carry the match resources, never rebind empty"
         );
         assert_eq!(rebound.resources.waypoints, expected_waypoints);
-
-        // Without a surviving runtime (fixture-only path) the rebind is
-        // explicitly empty rather than partially bound.
-        let fresh = SimRuntime::rebind_restored(None, Simulation::new());
-        assert!(fresh.resources.height_map.is_empty());
-        assert!(fresh.resources.waypoints.is_empty());
     }
 
     /// The crate regeneration rung is guarded in the master frame by

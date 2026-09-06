@@ -606,7 +606,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     }
 
     if state.match_state.input.spawn_pick_pending {
-        crate::app::loading::pump::clear_match_startup_state(state);
+        state.match_state.startup.clear();
         state.frontend.screen = GameScreen::SpawnPick;
         if returns_scenario_rng_to_offline_shell {
             state
@@ -618,34 +618,19 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     } else {
         match startup {
             crate::match_bootstrap::LoadingStartup::Accepted(prepared) => {
-                let receipt = (|| {
-                    let simulation = state
+                let receipt = state.match_state.startup.acknowledge(
+                    prepared,
+                    state
                         .match_state
                         .sim_runtime
                         .as_ref()
-                        .map(|rt| &rt.simulation)
-                        .ok_or_else(|| "accepted map load produced no Simulation".to_string())?;
-                    let active_correlation =
-                        state.frontend.active_loading_correlation.ok_or_else(|| {
-                            "accepted map load lost its active correlation".to_string()
-                        })?;
-                    crate::match_bootstrap::RustL0Observation {
-                        startup: &prepared,
-                        simulation,
-                        active_correlation,
-                        prior_receipt: state.frontend.rust_l0_receipt.as_ref(),
-                        screen_is_loading: matches!(state.frontend.screen, GameScreen::Loading),
-                        spawn_pick_active: state.match_state.input.spawn_pick_pending,
-                    }
-                    .acknowledge()
-                    .map_err(|err| err.to_string())
-                })();
+                        .map(|rt| &rt.simulation),
+                    matches!(state.frontend.screen, GameScreen::Loading),
+                    state.match_state.input.spawn_pick_pending,
+                );
 
                 match receipt {
-                    Ok(receipt) => {
-                        state.frontend.loaded_startup = Some(prepared);
-                        state.frontend.rust_l0_receipt = Some(receipt);
-                        state.frontend.active_loading_correlation = None;
+                    Ok(()) => {
                         let now_ms =
                             sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
                         state.match_state.scenario_elapsed_clock.start(now_ms);
@@ -657,7 +642,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
                         log::info!("Transitioned to InGame after Rust L0 acknowledgement");
                     }
                     Err(err) => {
-                        crate::app::loading::pump::clear_match_startup_state(state);
+                        state.match_state.startup.clear();
                         state.frontend.screen = GameScreen::MissionResult {
                             title: "Startup Rejected".to_string(),
                             detail: err.clone(),
@@ -668,9 +653,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             }
             crate::match_bootstrap::LoadingStartup::UnverifiedLegacy { .. }
             | crate::match_bootstrap::LoadingStartup::Generic { .. } => {
-                state.frontend.active_loading_correlation = None;
-                state.frontend.loaded_startup = None;
-                state.frontend.rust_l0_receipt = None;
+                state.match_state.startup.clear();
                 let now_ms = sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
                 state.match_state.scenario_elapsed_clock.start(now_ms);
                 state.frontend.screen = GameScreen::InGame;

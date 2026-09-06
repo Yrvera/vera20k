@@ -1,0 +1,201 @@
+//! User save/load requests; input and dialogs only select the operation.
+
+use crate::app::AppState;
+
+pub(crate) fn quicksave(state: &mut AppState) {
+    save(state, None);
+}
+
+/// Save As retains the exact user description in the envelope; only the
+/// filename is sanitized. Quick saves use the map name as their description.
+pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
+    save(state, Some(raw_name));
+}
+
+fn save(state: &mut AppState, name: Option<&str>) {
+    let label = if name.is_some() {
+        "Save As"
+    } else {
+        "Quicksave"
+    };
+    let sanitized = name.map(sanitize_save_name);
+    if sanitized.as_deref() == Some("") {
+        log::warn!("{label}: empty or whitespace-only name, ignored");
+        return;
+    }
+    let Some(runtime) = state.match_state.sim_runtime.as_ref() else {
+        log::warn!("{label}: no active simulation");
+        return;
+    };
+    let Some(map_hash) = state.match_state.loaded_map_hash else {
+        log::warn!("{label}: active world has no authoritative source-map digest");
+        return;
+    };
+    let sim = &runtime.simulation;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let bytes = crate::sim::snapshot::GameSnapshot::save_validated(
+        sim,
+        map_hash,
+        runtime.resources.rules.simulation_config_hash(),
+        name.unwrap_or(&sim.session.map_name),
+        now,
+    );
+    let tick = sim.session.tick;
+    let filename = match sanitized {
+        Some(name) => format!("save_{name}_tick{tick}_{now}.bin"),
+        None => format!("save_tick{tick}_{now}.bin"),
+    };
+    match state.persistence.write_save(&filename, &bytes, tick) {
+        Ok(path) => log::info!("{label}: saved {} bytes to {}", bytes.len(), path.display()),
+        Err(error) => match error.stage() {
+            crate::app::persistence::SaveWriteStage::CreateDirectory => {
+                log::error!("{label}: failed to create saves dir: {error}")
+            }
+            crate::app::persistence::SaveWriteStage::WriteFile => {
+                log::error!("{label}: write failed: {error}")
+            }
+        },
+    }
+}
+
+/// Sanitize a user-typed save name for use in a filename.
+///
+/// Replaces Windows-reserved characters (`/ \ : * ? " < > |`) with `_`,
+/// trims surrounding whitespace, then caps at 64 chars. Returns an empty
+/// string for empty/whitespace-only input.
+fn sanitize_save_name(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars().take(64) {
+        match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => out.push('_'),
+            c if c.is_control() => out.push('_'),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod save_name_tests {
+    use super::sanitize_save_name;
+    use crate::sim::snapshot::GameSnapshot;
+    use crate::sim::world::Simulation;
+
+    #[test]
+    fn empty_returns_empty() {
+        assert_eq!(sanitize_save_name(""), "");
+        assert_eq!(sanitize_save_name("   "), "");
+        assert_eq!(sanitize_save_name("\t\n"), "");
+    }
+
+    #[test]
+    fn strips_path_separators() {
+        assert_eq!(sanitize_save_name("../foo"), ".._foo");
+        assert_eq!(sanitize_save_name("a/b\\c"), "a_b_c");
+    }
+
+    #[test]
+    fn strips_windows_reserved_chars() {
+        assert_eq!(sanitize_save_name("a:b*c?d\"e<f>g|h"), "a_b_c_d_e_f_g_h");
+    }
+
+    #[test]
+    fn keeps_normal_chars() {
+        assert_eq!(sanitize_save_name("miner stuck repro"), "miner stuck repro");
+        assert_eq!(sanitize_save_name("dock_fix_a"), "dock_fix_a");
+    }
+
+    #[test]
+    fn caps_at_64_chars() {
+        let long: String = "x".repeat(100);
+        let out = sanitize_save_name(&long);
+        assert_eq!(out.len(), 64);
+    }
+
+    #[test]
+    fn trims_whitespace() {
+        assert_eq!(sanitize_save_name("  hello  "), "hello");
+    }
+
+    #[test]
+    fn gsi_17_02_unicode_filename_cap_preserves_exact_envelope_description() {
+        let raw_description = "保存".repeat(40);
+        let filename_part = sanitize_save_name(&raw_description);
+        assert_eq!(filename_part.chars().count(), 64);
+
+        let mut sim = Simulation::new();
+        sim.session.map_name = "OFFICIAL.MAP".to_string();
+        let bytes = GameSnapshot::save_validated(&sim, 1, 2, &raw_description, 3);
+        let header = GameSnapshot::read_header(&bytes).expect("current VERA header");
+        assert_eq!(header.description, raw_description);
+    }
+}
+
+pub(crate) fn quickload(state: &mut AppState) {
+    let path = match state
+        .persistence
+        .repository
+        .quickload_path_by_modified_time()
+    {
+        Some(p) => p,
+        None => {
+            log::warn!(
+                "Quickload: no save files found in {}/",
+                state.persistence.repository.directory().display()
+            );
+            return;
+        }
+    };
+    load_save_file(state, &path);
+}
+
+/// Load a save file by path. Used by both quickload and the save/load panel.
+pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
+    let preparation = crate::app::persistence::PreparedLoad::from_repository(
+        crate::app::persistence::LoadPreparationView::from_runtime(
+            &state.persistence.repository,
+            state.match_state.sim_runtime.as_ref(),
+            state.match_state.loaded_map_hash,
+        ),
+        path,
+    );
+    match preparation {
+        Ok(prepared) => {
+            crate::app::match_runtime::restore::commit_prepared_load(state, path, prepared)
+        }
+        Err(error) => log_prepared_load_error(path, &error),
+    }
+}
+
+fn log_prepared_load_error(
+    path: &std::path::Path,
+    error: &crate::app::persistence::PreparedLoadError,
+) {
+    use crate::app::persistence::PreparedLoadError;
+
+    match error {
+        PreparedLoadError::ReadFile(source) => {
+            log::warn!("Load: could not read {}: {source}", path.display())
+        }
+        PreparedLoadError::MissingCurrentSimulation
+        | PreparedLoadError::MissingMapHash
+        | PreparedLoadError::MissingRules => log::warn!("Load: {error}"),
+        PreparedLoadError::Snapshot(source) => log::error!("Load: {source}"),
+        PreparedLoadError::MissingTerrainTemplate => {
+            log::error!("Load: {error}")
+        }
+        PreparedLoadError::MissingOverlayRegistry => {
+            log::error!("Load: restoration validation failed: {error}")
+        }
+        PreparedLoadError::Restore(source) => {
+            log::error!("Load: restoration validation failed: {source}")
+        }
+    }
+}

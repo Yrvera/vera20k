@@ -487,6 +487,7 @@ impl App {
         let mut state = AppState {
             platform: PlatformState::new(window, game_config, shell_client_size),
             match_state: crate::app::match_runtime::state::MatchState {
+                startup: Default::default(),
                 sim_runtime: None,
                 input: crate::app::input::state::MatchInputState {
                     minimap_dragging: false,
@@ -627,9 +628,6 @@ impl App {
                 loading_session: None,
                 frontend_main_rng: crate::sim::rng::SimRng::new(u64::from(frontend_seed.value)),
                 next_match_correlation: 1,
-                active_loading_correlation: None,
-                loaded_startup: None,
-                rust_l0_receipt: None,
                 random_map_generation: None,
                 random_map_retention: RandomMapGenerationRetention::default(),
                 skirmish_preview_texture: None,

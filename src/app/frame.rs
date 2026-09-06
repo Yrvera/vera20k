@@ -343,7 +343,7 @@ impl App {
                         transitions::clear_screen(&mut encoder, &view);
                         log::warn!("Could not render native loading screen: {err:#}");
                         crate::app::loading::pump::clear_loading_state(state);
-                        crate::app::loading::pump::clear_match_startup_state(state);
+                        state.match_state.startup.clear();
                         state.frontend.screen = GameScreen::MissionResult {
                             title: "Loading Failed".to_string(),
                             detail: format!("{err:#}"),
@@ -649,7 +649,7 @@ impl App {
                     log::warn!("Could not load map: {err:#}");
                     if native_loading {
                         crate::app::loading::pump::clear_loading_state(state);
-                        crate::app::loading::pump::clear_match_startup_state(state);
+                        state.match_state.startup.clear();
                         state.frontend.screen = GameScreen::MissionResult {
                             title: "Loading Failed".to_string(),
                             detail: format!("{err:#}"),
