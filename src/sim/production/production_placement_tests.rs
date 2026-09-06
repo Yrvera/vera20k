@@ -450,6 +450,7 @@ fn gsi_04_07_wall_placement_contract() -> (RuleSet, OverlayTypeRegistry) {
          1=CYCL\n\
          2=GAWALL\n\
          [GACNST]\n\
+         Factory=BuildingType\n\
          Strength=1000\n\
          Armor=wood\n\
          Foundation=2x2\n\
@@ -464,6 +465,7 @@ fn gsi_04_07_wall_placement_contract() -> (RuleSet, OverlayTypeRegistry) {
          Armor=concrete\n\
          Strength=300\n\
          Cost=100\n\
+         TechLevel=1\n\
          Foundation=1x1\n\
          Adjacent=8\n\
          GuardRange=5\n\
@@ -509,10 +511,8 @@ fn ready_building(sim: &mut Simulation, rules: &RuleSet, owner: &str, type_id: &
         .factory_shadow
         .enqueue(owner_id, category, type_id, 0, 1, cost);
     assert!(started, "test fixture arms one fresh factory head");
-    super::production_queue::construct_and_link_active_factory_object(
-        sim, rules, owner_id, category, type_id,
-    )
-    .expect("ready-building fixture constructs at StartProduction");
+    super::construct_active_factory_fixture(sim, rules, owner_id, category, type_id)
+        .expect("ready-building fixture constructs at StartProduction");
     assert!(
         sim.production
             .factory_shadow
@@ -569,6 +569,8 @@ fn completed_building_moves_into_ready_placement_pool() {
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
     let americans = sim.interner.intern("Americans");
     let gacnst = sim.interner.intern("GACNST");
+    *super::credits_entry_for_owner(&mut sim, "Americans") = 50_000;
+    let built_before = sim.houses[&americans].stats.built;
     // P5d: arm the Building build directly in the registry (queue-of-record), then force it
     // to the completed-held state so `tick_production` moves it into the ready-placement pool.
     super::tests::arm_build_via(
@@ -602,6 +604,27 @@ fn completed_building_moves_into_ready_placement_pool() {
             .collect::<Vec<_>>(),
         vec![gacnst]
     );
+    let held_id = held.object.unwrap().entity_id.unwrap();
+    let built = sim.houses[&americans].stats.built;
+    assert_eq!(built, built_before + 1);
+    let rng = sim.scenario_rng.logical_state();
+    for _ in 0..3 {
+        assert!(!tick_production(&mut sim, &rules, &height_map, None));
+    }
+    assert_eq!(sim.houses[&americans].stats.built, built);
+    assert_eq!(
+        super::lifecycle_tests::held_id(&sim, americans, ProductionCategory::Building),
+        held_id
+    );
+    assert_eq!(
+        sim.production.ready_by_owner[&americans]
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![gacnst]
+    );
+    assert_eq!(sim.sound_events.iter().filter(|event| matches!(event, crate::sim::world::SimSoundEvent::BuildingComplete { owner } if *owner == americans)).count(), 1);
+    assert_eq!(sim.scenario_rng.logical_state(), rng);
 }
 
 #[test]
@@ -620,7 +643,17 @@ fn place_ready_building_spawns_and_consumes_ready_item() {
         .view(americans, ProductionCategory::Building)
         .and_then(|view| view.object.and_then(|object| object.entity_id))
         .expect("Factory+0x58 identity exists before placement");
-    let rng_before_placement = sim.scenario_rng.logical_state();
+    super::tests::arm_build_via(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GACNST",
+        ProductionCategory::Building,
+        100,
+        50,
+    );
+    let mut expected = sim.scenario_rng.clone();
+    let successor_word = (expected.next_u32() & 0xffff) as u16;
 
     assert!(place_ready_building_without_overlays(
         &mut sim,
@@ -632,7 +665,7 @@ fn place_ready_building_spawns_and_consumes_ready_item() {
         Some(&grid),
         &height_map,
     ));
-    assert_eq!(sim.scenario_rng.logical_state(), rng_before_placement);
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
     assert!(ready_buildings_for_owner(&sim, &rules, "Americans").is_empty());
 
     let structures = sim
@@ -660,6 +693,32 @@ fn place_ready_building_spawns_and_consumes_ready_item() {
         .expect("same held identity placed");
     assert_eq!((placed.position.rx, placed.position.ry), (20, 20));
     assert!(!placed.lifecycle.in_limbo);
+    let successor = super::lifecycle_tests::held_id(&sim, americans, ProductionCategory::Building);
+    assert!(successor > held_id);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(successor)
+            .unwrap()
+            .techno_ctor_random_word,
+        successor_word
+    );
+    assert!(
+        sim.substrate
+            .entities
+            .get(successor)
+            .unwrap()
+            .lifecycle
+            .in_limbo
+    );
+    assert_eq!(
+        sim.production
+            .factory_shadow
+            .view(americans, ProductionCategory::Building)
+            .unwrap()
+            .progress,
+        0
+    );
 }
 
 #[test]
@@ -1908,12 +1967,28 @@ fn gsi_04_07_command_places_authoritative_owned_wall_without_entity() {
     let height_map = BTreeMap::new();
     let path_grid = PathGrid::new(64, 64);
     let mut sim = Simulation::new();
+    *super::credits_entry_for_owner(&mut sim, "Americans") = 50_000;
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
     sim.overlay_grid = Some(OverlayGrid::new(64, 64));
     sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |_| {}));
     ready_building(&mut sim, &rules, "Americans", "GAWALL");
     let owner = sim.interner.get("Americans").expect("owner");
     let type_id = sim.interner.get("GAWALL").expect("wall type");
+    let category =
+        super::production_tech::production_category_for_object(rules.object("GAWALL").unwrap());
+    let held = super::lifecycle_tests::held_id(&sim, owner, category);
+    assert!(super::enqueue_by_type(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAWALL"
+    ));
+    assert!(matches!(
+        super::production_tech::revalidate_eligibility(&sim, &rules, "Americans", "GAWALL"),
+        super::factory::BuildEligibility::Buildable
+    ));
+    let mut expected = sim.scenario_rng.clone();
+    let successor_word = (expected.next_u32() & 0xffff) as u16;
     let entities_before = sim.substrate.entities.len();
 
     let tick = sim.advance_tick(
@@ -1941,8 +2016,8 @@ fn gsi_04_07_command_places_authoritative_owned_wall_without_entity() {
     );
     assert_eq!(
         sim.substrate.entities.len(),
-        entities_before - 1,
-        "wall placement consumes the limbo Factory+0x58 BuildingClass into overlay state"
+        entities_before,
+        "wall consumes one held identity and constructs exactly one successor"
     );
     assert!(ready_buildings_for_owner(&sim, &rules, "Americans").is_empty());
     let cell = sim.overlay_grid.as_ref().unwrap().cell(12, 10);
@@ -1953,6 +2028,26 @@ fn gsi_04_07_command_places_authoritative_owned_wall_without_entity() {
         entity.type_ref == type_id && (entity.position.rx, entity.position.ry) == (12, 10)
     }));
     assert_eq!(tick.state_hash, sim.state_hash());
+    assert!(!sim.substrate.entities.contains(held));
+    let successor = super::lifecycle_tests::held_id(&sim, owner, category);
+    assert!(successor > held);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(successor)
+            .unwrap()
+            .techno_ctor_random_word,
+        successor_word
+    );
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    assert_eq!(
+        sim.production
+            .factory_shadow
+            .view(owner, category)
+            .unwrap()
+            .progress,
+        0
+    );
 }
 
 #[test]
@@ -1985,6 +2080,9 @@ fn gsi_04_07_regular_wall_autofill_is_cardinal_ordered_bounded_and_consumes_once
         1,
         "fixture must begin with one authoritative completed wall"
     );
+    super::tests::arm_build_via(&mut sim, &rules, "Americans", "GAWALL", category, 100, 50);
+    let mut expected_rng = sim.scenario_rng.clone();
+    let successor_word = (expected_rng.next_u32() & 0xffff) as u16;
     let overlay_id = registry.id_for_name("GAWALL").expect("wall overlay");
     let origin = (18, 18);
     let endpoints = [(18, 13), (23, 18), (18, 23), (13, 18)];
@@ -2047,12 +2145,27 @@ fn gsi_04_07_regular_wall_autofill_is_cardinal_ordered_bounded_and_consumes_once
         ready_buildings_for_owner(&sim, &rules, "Americans").is_empty(),
         "the primary plus all fillers consume the one ready product"
     );
-    assert!(
+    let successor = super::lifecycle_tests::held_id(&sim, owner, category);
+    assert!(successor > held_id);
+    assert_eq!(
         sim.production
             .factory_shadow
             .view(owner, category)
-            .is_none_or(|view| view.object.is_none() && view.queue.is_empty()),
-        "wall placement must clear the authoritative completed factory object"
+            .unwrap()
+            .progress,
+        0
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(successor)
+            .unwrap()
+            .techno_ctor_random_word,
+        successor_word
+    );
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected_rng.logical_state()
     );
     assert!(
         sim.substrate.entities.get(held_id).is_none(),

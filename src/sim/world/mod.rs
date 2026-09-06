@@ -7167,33 +7167,7 @@ impl Simulation {
             // Frequency: only while a player is nearly broke with both a
             // factory and a repair running. Downstream risk: credit trajectory
             // and stall cadence, no lifecycle or RNG effect.
-            {
-                let mut registry = std::mem::take(&mut self.production.factory_shadow);
-                // P6: prereq/factory-loss revalidation BEFORE the charge sweep. Builds whose
-                // prerequisites or producing factory were lost are abandoned (partial refund)
-                // + now-unbuildable queued items dropped, so a freshly-abandoned factory is not
-                // charged this tick and a freshly-promoted one starts charging next tick.
-                let reval_plan = registry.plan_revalidation(self, rules);
-                let lifecycle = registry.apply_revalidation(&reval_plan, &mut self.houses);
-                for entity_id in lifecycle.discarded_entity_ids {
-                    let discarded = self.discard_constructed_limbo(entity_id);
-                    debug_assert!(
-                        discarded,
-                        "prerequisite AbandonProduction destroys its held limbo object"
-                    );
-                }
-                self.production.factory_shadow = registry;
-                for (owner, category, type_id) in lifecycle.promoted {
-                    production::construct_and_link_active_factory_object(
-                        self, rules, owner, category, type_id,
-                    )
-                    .expect("validated revalidation promotion must construct one Techno");
-                }
-                let mut registry = std::mem::take(&mut self.production.factory_shadow);
-                let prepared = registry.prepare_step_inputs(self, rules);
-                registry.step_all(&mut self.houses, &prepared);
-                self.production.factory_shadow = registry;
-            }
+            production::revalidate_and_step_factories(self, rules);
             spawned_entities |= production::tick_production_with_overlay_registry(
                 self,
                 rules,

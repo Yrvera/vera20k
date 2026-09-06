@@ -538,6 +538,41 @@ pub(crate) struct RevalAction {
 }
 
 impl FactoryRegistry {
+    /// Seed the queue kernel without constructing a world object. External
+    /// fixtures explicitly finish construction when their scenario requires it.
+    #[cfg(test)]
+    pub(crate) fn test_enqueue_kernel(
+        &mut self,
+        owner: InternedId,
+        category: ProductionCategory,
+        type_id: InternedId,
+        enqueue_order: u64,
+        total_base_frames: u32,
+        cost: i32,
+    ) -> bool {
+        self.enqueue(
+            owner,
+            category,
+            type_id,
+            enqueue_order,
+            total_base_frames,
+            cost,
+        )
+    }
+
+    /// Standalone registry oracle access; live cancellation must also settle
+    /// the held world object through the production lifecycle owner.
+    #[cfg(test)]
+    pub(crate) fn test_cancel_one_kernel(
+        &mut self,
+        owner: InternedId,
+        category: ProductionCategory,
+        type_id: InternedId,
+        economy: &mut Economy,
+    ) -> CancelOutcome {
+        self.cancel_one(owner, category, type_id, economy)
+    }
+
     /// Apply the save/load swizzle result to the optional produced-object
     /// pointer. An unmatched saved identity becomes null; the Factory and its
     /// type/progress state remain intact.
@@ -642,7 +677,7 @@ impl FactoryRegistry {
     /// `cost` is resolved by the caller (which holds `&rules`) so this stays `&sim`-free.
     /// Returns `true` only when this call starts an active object; queued-tail
     /// appends return `false` because their Techno constructor has not run yet.
-    pub(crate) fn enqueue(
+    pub(super) fn enqueue(
         &mut self,
         owner: InternedId,
         category: ProductionCategory,
@@ -748,7 +783,7 @@ impl FactoryRegistry {
     /// revalidation sweep passes `1`.
     /// Returns the popped type, or `None` if the queue was empty (the factory is left idle
     /// for `prune_idle`).
-    pub(crate) fn clear_active_and_advance(
+    pub(super) fn clear_active_and_advance(
         &mut self,
         owner: InternedId,
         category: ProductionCategory,
@@ -763,7 +798,7 @@ impl FactoryRegistry {
     /// Link the EntityStore identity created at StartProduction to the active
     /// factory object. The link is established at progress zero and is retained
     /// through completion and every delivery retry.
-    pub(crate) fn link_active_entity(
+    pub(super) fn link_active_entity(
         &mut self,
         owner: InternedId,
         category: ProductionCategory,
@@ -781,7 +816,7 @@ impl FactoryRegistry {
     /// completed object. Delivery refusal does not clear the object, so later
     /// retries observe `false`; `start_next_queued` constructs the next head with
     /// a fresh `false` latch.
-    pub(crate) fn account_completed_object_once(
+    pub(super) fn account_completed_object_once(
         &mut self,
         owner: InternedId,
         category: ProductionCategory,
@@ -829,7 +864,7 @@ impl FactoryRegistry {
     /// write phase can borrow `&mut houses` without aliasing. Walks `iter_insertion_ordered`
     /// (the deterministic temporal order = `step_all` charge order = hash fold order) so the
     /// plan — and the refund application order — is replay-stable.
-    pub(crate) fn plan_revalidation(
+    pub(super) fn plan_revalidation(
         &self,
         sim: &crate::sim::world::Simulation,
         rules: &RuleSet,
@@ -891,7 +926,7 @@ impl FactoryRegistry {
     /// queued entry (C7 StartNextQueued, cost-seeded, `step_delay = 1` because this sweep runs
     /// BEFORE `step_all` so the promoted build is not charged the same tick). Idle factories
     /// are pruned.
-    pub(crate) fn apply_revalidation(
+    pub(super) fn apply_revalidation(
         &mut self,
         plan: &[RevalAction],
         houses: &mut BTreeMap<InternedId, crate::sim::house_state::HouseState>,
@@ -955,7 +990,7 @@ impl FactoryRegistry {
     /// Stamps are unique (monotonic mint) so there is never a tie. A tail item is removed
     /// uncharged (no refund); the active build (empty tail) is abandoned with the C8 PARTIAL
     /// refund routed through `economy`. The caller prunes an emptied factory.
-    pub(crate) fn cancel_last(
+    pub(super) fn cancel_last(
         &mut self,
         owner: InternedId,
         economy: &mut Economy,
@@ -994,7 +1029,7 @@ impl FactoryRegistry {
     /// as an OWNED map so `step_all` can then run against `&mut houses` without holding a
     /// `&Simulation` borrow (the split-borrow the authority flip needs). Only armed,
     /// steppable factories (object held, not complete/suspended/paused) get inputs.
-    pub fn prepare_step_inputs(
+    pub(super) fn prepare_step_inputs(
         &self,
         sim: &crate::sim::world::Simulation,
         rules: &RuleSet,
@@ -1059,7 +1094,7 @@ impl FactoryRegistry {
     /// `economy.spent_credits` accumulates; `economy.credits` is a transient shim, never
     /// the authority, never hashed. `prepared` (from `prepare_step_inputs`) carries the
     /// producer inputs so this method holds no `&Simulation` borrow.
-    pub fn step_all(
+    pub(super) fn step_all(
         &mut self,
         houses: &mut BTreeMap<InternedId, crate::sim::house_state::HouseState>,
         prepared: &BTreeMap<(InternedId, ProductionCategory), BuildStepTimeInputs>,
@@ -1127,7 +1162,7 @@ impl FactoryRegistry {
     ///
     /// `&mut Economy` is an ORACLE (clone) in P4; the authority-flip slice flips WHO is
     /// passed, not this body.
-    pub fn cancel_one(
+    pub(super) fn cancel_one(
         &mut self,
         owner: InternedId,
         category: ProductionCategory,

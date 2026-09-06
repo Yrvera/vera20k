@@ -606,7 +606,7 @@ pub(super) fn arm_build_via(
         cost,
     );
     if started {
-        super::production_queue::construct_and_link_active_factory_object(
+        super::construct_active_factory_fixture(
             sim,
             rules,
             oid,
