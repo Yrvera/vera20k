@@ -23,7 +23,8 @@ use std::hash::{Hash, Hasher};
 use crate::rules::combat_damage::CombatDamageDefaults;
 use crate::rules::crate_rules::CrateRules;
 use crate::rules::error::RulesError;
-use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerStack};
+use crate::rules::ini_parser::{IniFile};
+use crate::rules::native_processing::{ProcessedRulesLayers, RulesLayerStack};
 use crate::rules::mission_data::MissionControl;
 use crate::rules::object_type::{BuildCategory, FactoryType, ObjectCategory, ObjectType};
 use crate::rules::particle_system_type::{
@@ -4693,7 +4694,7 @@ SpawnCount=3
         assert_eq!(meteor.spawn_count, 3);
     }
     use super::*;
-    use crate::rules::ini_parser::RulesLayerKind;
+    use crate::rules::native_processing::RulesLayerKind;
 
     #[test]
     fn cloak_global_defaults_and_native_minute_conversion_parse() {
@@ -6623,13 +6624,13 @@ ZAdjust=-10
 
     #[test]
     fn merge_art_propagates_add_remove_occupy() {
-        let mut rules_ini = IniFile::from_str(&make_test_rules());
-        rules_ini.merge_rules_layer(&IniFile::from_str(
+        let mut layers = RulesLayerStack::new(IniFile::from_str(&make_test_rules()));
+        layers.push(crate::rules::native_processing::RulesLayerKind::Scenario, IniFile::from_str(
             "[BuildingTypes]\n0=GAREFN\n\
              [GAREFN]\nName=Refinery\nCost=2000\nFoundation=4x3\n",
         ));
         let art_text = "[GAREFN]\nFoundation=4x3\nCanHideThings=no\nOccupyHeight=4\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n";
-        let mut rules: RuleSet = RuleSet::from_ini(&rules_ini).expect("rules parse");
+        let mut rules: RuleSet = RuleSet::from_rules_layers(&layers).expect("rules parse");
         let art_ini: IniFile = IniFile::from_str(art_text);
         let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
         rules.merge_art_data(&art);
@@ -6645,12 +6646,12 @@ ZAdjust=-10
 
     #[test]
     fn merge_art_propagates_infantry_crawls_without_building_side_effects() {
-        let mut rules_ini = IniFile::from_str(&make_test_rules());
-        rules_ini.merge_rules_layer(&IniFile::from_str(
+        let mut layers = RulesLayerStack::new(IniFile::from_str(&make_test_rules()));
+        layers.push(crate::rules::native_processing::RulesLayerKind::Scenario, IniFile::from_str(
             "[E1]\nName=GI\nImage=GI\nStrength=125\nArmor=flak\nSpeed=4\n\
              [GAPOWR]\nName=Power\nStrength=750\nArmor=wood\nFoundation=2x2\n",
         ));
-        let mut rules = RuleSet::from_ini(&rules_ini).expect("rules parse");
+        let mut rules = RuleSet::from_rules_layers(&layers).expect("rules parse");
         let art_ini = IniFile::from_str(
             "[GI]\nCrawls=yes\nFireUp=2\nFireProne=3\nSecondaryFire=4\nSecondaryProne=5\n\n[GAPOWR]\nCrawls=yes\nFireUp=9\n",
         );

@@ -7,11 +7,8 @@
 //! allowed to become a second registry owner.
 
 use crate::rules::error::RulesError;
-use crate::rules::ini_parser::{
-    IniFile, NativeRulesRegistryState, NativeTypeConstructionEvent,
-    NativeTypeConstructionTrace, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack,
-    process_native_noncampaign_rules_prepass, process_native_rules_cold_start,
-};
+use crate::rules::ini_parser::{IniFile};
+use crate::rules::native_processing::{NativeRulesRegistryState, NativeTypeConstructionEvent, NativeTypeConstructionTrace, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack, process_native_noncampaign_rules_prepass, process_native_rules_cold_start};
 use crate::rules::ruleset::RuleSet;
 
 /// The startup-selected INI objects reused by every later native Process call.
@@ -265,7 +262,8 @@ impl NativeRulesProcessOwner {
 #[cfg(test)]
 mod tests {
     use super::NativeRulesProcessOwner;
-    use crate::rules::ini_parser::{IniFile, NativeTypeConstructorFamily};
+    use crate::rules::ini_parser::{IniFile};
+use crate::rules::native_processing::{NativeTypeConstructorFamily};
 
     fn ini(text: &str) -> IniFile {
         IniFile::from_bytes(text.as_bytes()).expect("valid synthetic INI")

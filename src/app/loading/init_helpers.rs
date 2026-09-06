@@ -22,9 +22,8 @@ use crate::render::sprite_atlas::{self, SpriteAtlas};
 use crate::render::tile_atlas::{self, TileAtlas};
 use crate::render::unit_atlas::{self, UnitAtlas};
 use crate::rules::art_data::ArtRegistry;
-use crate::rules::ini_parser::{
-    IniFile, NativeTypeConstructionTrace, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack,
-};
+use crate::rules::ini_parser::{IniFile};
+use crate::rules::native_processing::{NativeTypeConstructionTrace, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack};
 use crate::rules::process_owner::NativeRulesProcessOwner;
 use crate::rules::ruleset::RuleSet;
 
@@ -298,13 +297,13 @@ fn compose_rules_layers(
 ) -> Result<ProcessedRulesLayers, crate::rules::error::RulesError> {
     let mut layers = RulesLayerStack::new(rulesmd);
     if let Some(langrule) = langrule {
-        layers.push(RulesLayerKind::LangRule, langrule.clone());
+        layers.push(crate::rules::native_processing::RulesLayerKind::LangRule, langrule.clone());
     }
     if let Some(mode) = mode {
-        layers.push(RulesLayerKind::GameMode, mode.clone());
+        layers.push(crate::rules::native_processing::RulesLayerKind::GameMode, mode.clone());
     }
     if let Some(map) = map {
-        layers.push(RulesLayerKind::Scenario, map.clone());
+        layers.push(crate::rules::native_processing::RulesLayerKind::Scenario, map.clone());
     }
     layers.process_with_fixed_art(fixed_art)
 }
@@ -876,9 +875,8 @@ mod tests {
     use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::map::resolved_terrain::TerrainTileAnimation;
     use crate::rules::art_data::ArtRegistry;
-    use crate::rules::ini_parser::{
-        IniFile, NativeTypeConstructorFamily, RulesLayerStack,
-    };
+    use crate::rules::ini_parser::{IniFile};
+use crate::rules::native_processing::{NativeTypeConstructorFamily, RulesLayerStack};
     use crate::rules::ruleset::RuleSet;
     use crate::rules::terrain_rules::{LandType, SpeedCostProfile};
     use crate::sim::components::Health;
@@ -1165,12 +1163,12 @@ mod tests {
     /// values in RuleSet, including a sim-consumed path (C4 delay ticks).
     #[test]
     fn map_ini_overrides_rules_values() {
-        let mut ini = IniFile::from_str(RULES_BASE);
+        let mut layers = RulesLayerStack::new(IniFile::from_str(RULES_BASE));
         let map = IniFile::from_str(
             "[Basic]\nName=Fixture\n[General]\nBuildSpeed=1\n[CombatDamage]\nC4Delay=.06\n",
         );
-        ini.merge_rules_overrides(&map);
-        let rules = RuleSet::from_ini(&ini).expect("triple-merged rules parse");
+        layers.push(crate::rules::native_processing::RulesLayerKind::Scenario, map);
+        let rules = RuleSet::from_rules_layers(&layers).expect("ordered rules parse");
         // C4Delay is minutes: ticks = minutes * 60 * 15 => .06 -> 54.
         assert_eq!(rules.c4_delay_ticks, 54);
         // BuildSpeed consumer — assert the deterministic x1000 field, not the
@@ -1181,10 +1179,10 @@ mod tests {
     /// AT-9 inverse: a map with no rules-shaped sections changes nothing.
     #[test]
     fn map_without_overrides_leaves_rules_unchanged() {
-        let mut with_map = IniFile::from_str(RULES_BASE);
+        let mut with_map = RulesLayerStack::new(IniFile::from_str(RULES_BASE));
         let map = IniFile::from_str("[Basic]\nName=Clean\n[Waypoints]\n0=45035\n");
-        with_map.merge_rules_overrides(&map);
-        let a = RuleSet::from_ini(&with_map).expect("parse");
+        with_map.push(crate::rules::native_processing::RulesLayerKind::Scenario, map);
+        let a = RuleSet::from_rules_layers(&with_map).expect("parse");
         let b = RuleSet::from_ini(&IniFile::from_str(RULES_BASE)).expect("parse");
         assert_eq!(a.c4_delay_ticks, b.c4_delay_ticks);
         assert_eq!(
@@ -1503,9 +1501,9 @@ mod tests {
     fn rules_hash_reflects_map_value_overrides() {
         let no_override = RuleSet::from_ini(&IniFile::from_str(RULES_BASE)).expect("parse");
 
-        let mut with_override = IniFile::from_str(RULES_BASE);
-        with_override.merge_rules_overrides(&IniFile::from_str("[General]\nBuildSpeed=2\n"));
-        let overridden = RuleSet::from_ini(&with_override).expect("parse");
+        let mut with_override = RulesLayerStack::new(IniFile::from_str(RULES_BASE));
+        with_override.push(crate::rules::native_processing::RulesLayerKind::Scenario, IniFile::from_str("[General]\nBuildSpeed=2\n"));
+        let overridden = RuleSet::from_rules_layers(&with_override).expect("parse");
 
         assert_ne!(
             no_override.source_ini_hash(),
