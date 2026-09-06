@@ -859,6 +859,22 @@ pub struct ObjectType {
     /// when an enemy Engineer or Spy is selected and hovering this building.
     pub capturable: bool,
 
+    /// `NeedsEngineer=` — `BuildingTypeClass::ReadINI 0x0046023E..0x0046024B`
+    /// stores it at `+0x1552`. A tech building that starts neutral and is
+    /// taken by an engineer; `BuildingClass::ChangeOwner 0x00448401` routes
+    /// the capture announcement on it (`EVA_TechBuildingLost` for the local
+    /// old owner instead of the radar-gated `EVA_BuildingCaptured`).
+    pub needs_engineer: bool,
+
+    /// `CaptureEvaEvent=` — `BuildingTypeClass::ReadINI 0x00460258..0x00460265`
+    /// stores the `VoxClass` entry index at `+0x1554` (`-1` when absent).
+    /// `BuildingClass::ChangeOwner 0x00448443..0x00448459` queues it
+    /// (`QueueVoice(index, -1, -1)`) for a local NEW owner of a
+    /// `NeedsEngineer=` building (stock: `EVA_OilRefineryCaptured` on
+    /// `CAOILD`, `EVA_HospitalCaptured`, ...). The name is kept; the app
+    /// resolves it through the EVA registry.
+    pub capture_eva_event: Option<String>,
+
     /// Whether this building can be repaired via the Repair command.
     /// Parsed from `Repairable=yes` in rules.ini. Defaults to true for buildings.
     pub repairable: bool,
@@ -1882,6 +1898,12 @@ impl ObjectType {
             engineer: section.get_bool("Engineer").unwrap_or(false),
             deployer: section.get_bool("Deployer").unwrap_or(false),
             capturable: section.get_bool("Capturable").unwrap_or(false),
+            needs_engineer: section.get_bool("NeedsEngineer").unwrap_or(false),
+            capture_eva_event: section
+                .get("CaptureEvaEvent")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             // Repairable defaults to true — most buildings can be repaired in RA2.
             repairable: section.get_bool("Repairable").unwrap_or(true),
             can_be_occupied: section.get_bool("CanBeOccupied").unwrap_or(false),

@@ -14,7 +14,8 @@ use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::pathfinding::cell_entry::{TerrainCheckResult, check_terrain};
 use crate::sim::world::{
-    PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, Simulation, UninitContext,
+    PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, SimSoundEvent, Simulation,
+    UninitContext,
 };
 use crate::util::lepton;
 
@@ -772,6 +773,18 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
     if refund > 0 {
         *credits_entry_for_owner(sim, &owner_name) += refund;
     }
+    // `BuildingClass::Sell 0x00449C99..0x00449CE5` (sell state 2, the
+    // building is gone): `[this+0x6DD]` — the build-animation-complete flag,
+    // set at `0x004467C9` (construction complete), cleared in sell state 0
+    // and again at the end of sell state 1, so state 2 waits for the
+    // sell-down animation — `[this+0x41A]` (owner is the local player) and
+    // `UndeploysInto=` (`Type+0x408`) null → `PlayEVA("EVA_StructureSold")`.
+    // A Construction Yard undeploys into its MCV instead and stays silent.
+    // The app applies the local-owner half.
+    if obj.undeploys_into.is_none() {
+        sim.sound_events
+            .push(SimSoundEvent::StructureSold { owner: owner_id });
+    }
     log::info!(
         "Building {} sold by {}: refunded {} credits, ejected {} crew + {} garrison, undocked {} miners",
         type_id,
@@ -798,6 +811,15 @@ pub fn toggle_repair(sim: &mut Simulation, stable_id: u64) -> bool {
     } else {
         entity.repairing = true;
         log::info!("Repair started on entity {}", stable_id);
+        // `BuildingClass::ToggleRepair @ 0x00446FF0`: once the flag is on
+        // and `Health != Type.Strength` (`0x00447059`), the local owner
+        // (`0x004470A4 CALL 0x0050B6F0`) gets the sidebar flash and
+        // `PlayEVA("EVA_Repairing")` (`0x004470B7`). The app applies the
+        // local-owner half.
+        if entity.health.current != entity.health.max {
+            let owner = entity.owner;
+            sim.sound_events.push(SimSoundEvent::Repairing { owner });
+        }
     }
     true
 }
@@ -943,6 +965,7 @@ mod tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::components::Health;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::movement::locomotor::LocomotorState;
     use crate::sim::occupancy::CellListInsertion;
@@ -1535,5 +1558,104 @@ mod tests {
 
         sim.flush_pending_delete();
         assert!(sim.substrate.entities.get(passenger_id).is_none());
+    }
+
+    fn sell_eva_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n0=AMCV\n[AircraftTypes]\n\
+             [BuildingTypes]\n0=GAPOWR\n1=GACNST\n\n\
+             [AMCV]\nStrength=450\nArmor=heavy\nSpeed=5\nDeploysInto=GACNST\n\n\
+             [GAPOWR]\nStrength=100\nArmor=wood\nCost=800\n\n\
+             [GACNST]\nStrength=1000\nArmor=wood\nCost=3000\nConstructionYard=yes\nUndeploysInto=AMCV\n",
+        );
+        RuleSet::from_ini(&ini).expect("sell eva rules should parse")
+    }
+
+    fn insert_structure(sim: &mut Simulation, id: u64, type_id: &str, owner: &str) {
+        let mut entity = GameEntity::test_default(id, type_id, owner, 10, 10);
+        entity.category = EntityCategory::Structure;
+        entity.owner = sim.interner.intern(owner);
+        entity.type_ref = sim.interner.intern(type_id);
+        sim.substrate.entities.insert(entity);
+    }
+
+    fn sold_events(sim: &Simulation, owner: crate::sim::intern::InternedId) -> usize {
+        sim.sound_events
+            .iter()
+            .filter(
+                |event| matches!(event, SimSoundEvent::StructureSold { owner: o } if *o == owner),
+            )
+            .count()
+    }
+
+    /// `BuildingClass::Sell 0x00449CD1 MOV ECX,[EAX+0x408] ; TEST ; JNZ skip`:
+    /// a type with `UndeploysInto=` never speaks.
+    #[test]
+    fn selling_announces_structure_sold_unless_the_type_undeploys() {
+        let rules = sell_eva_rules();
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        sim.houses.insert(
+            owner,
+            crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10),
+        );
+        insert_structure(&mut sim, 1, "GAPOWR", "Americans");
+        insert_structure(&mut sim, 2, "GACNST", "Americans");
+
+        assert!(sell_building(&mut sim, &rules, 1));
+        assert_eq!(
+            sold_events(&sim, owner),
+            1,
+            "a power plant sale speaks once"
+        );
+
+        sim.sound_events.clear();
+        assert!(sell_building(&mut sim, &rules, 2));
+        assert_eq!(
+            sold_events(&sim, owner),
+            0,
+            "a Construction Yard (UndeploysInto=) sale is silent"
+        );
+    }
+
+    /// `BuildingClass::ToggleRepair 0x00447053..0x004470B7`: the line needs the
+    /// flag to end up ON and `Health != Type.Strength`.
+    #[test]
+    fn repair_toggle_announces_only_when_switching_on_a_damaged_building() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        insert_structure(&mut sim, 1, "GAPOWR", "Americans");
+        insert_structure(&mut sim, 2, "GAPOWR", "Americans");
+        {
+            let damaged = sim.substrate.entities.get_mut(1).expect("damaged plant");
+            damaged.health = Health {
+                current: 40,
+                max: 100,
+            };
+            let intact = sim.substrate.entities.get_mut(2).expect("intact plant");
+            intact.health = Health {
+                current: 100,
+                max: 100,
+            };
+        }
+        let repairing = |sim: &Simulation| {
+            sim.sound_events
+                .iter()
+                .filter(
+                    |event| matches!(event, SimSoundEvent::Repairing { owner: o } if *o == owner),
+                )
+                .count()
+        };
+
+        assert!(toggle_repair(&mut sim, 1));
+        assert_eq!(
+            repairing(&sim),
+            1,
+            "switching repair on a damaged building speaks"
+        );
+        assert!(toggle_repair(&mut sim, 1));
+        assert_eq!(repairing(&sim), 1, "switching it off is silent");
+        assert!(toggle_repair(&mut sim, 2));
+        assert_eq!(repairing(&sim), 1, "a building at full strength is silent");
     }
 }

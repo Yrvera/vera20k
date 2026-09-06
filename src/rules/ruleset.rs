@@ -2703,6 +2703,11 @@ pub struct RuleSet {
     pub radar_event_config: RadarEventConfig,
     /// All superweapon types indexed by ID (e.g., "LightningStormSpecial" → SuperWeaponType).
     pub super_weapons: HashMap<String, SuperWeaponType>,
+    /// `[SuperWeaponTypes]` in list order — the `SuperWeaponTypeClass` array
+    /// index gamemd switches on where it does not use `Type=` (the
+    /// `BuildingClass::OnConstructionComplete 0x00446948` `*Detected` jump
+    /// table indexes this list: stock `1=NukeSpecial` is index 0).
+    pub super_weapon_order: Vec<String>,
     /// Default particle systems from `[CombatDamage]` (smoke, sparks, debris, fire-stream).
     pub combat_damage: CombatDamageDefaults,
     /// Pre-resolved bridge-related warhead names (`[CombatDamage]
@@ -3302,6 +3307,7 @@ impl RuleSet {
         // Step 8: Parse superweapon type registry.
         let mut super_weapons: HashMap<String, SuperWeaponType> = HashMap::new();
         let sw_ids: Vec<String> = parse_registry(ini, "SuperWeaponTypes");
+        let super_weapon_order: Vec<String> = sw_ids.clone();
         for sw_id in &sw_ids {
             if let Some(section) = ini.section(sw_id) {
                 if let Some(sw) = SuperWeaponType::from_ini_section(sw_id, section) {
@@ -3482,6 +3488,7 @@ impl RuleSet {
             radiation,
             radar_event_config,
             super_weapons,
+            super_weapon_order,
             combat_damage,
             bridge_warheads,
             missile_spawn,

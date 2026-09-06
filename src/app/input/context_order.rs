@@ -515,6 +515,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     // entry of the selection array speak.
     let mut speaker_id: Option<u64> = None;
     let selected_ids = selected_stable_ids_in_order(state);
+    // `EVA_NewRallyPointEstablished` is spoken by the click handler itself,
+    // after the sim borrow below ends.
+    let mut rally_announce = false;
 
     if let Some(rt) = state.match_state.sim_runtime.as_mut() {
         let resources = &rt.resources;
@@ -749,6 +752,25 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     let struct_owner_id = sim.interner.get(&struct_own).unwrap_or(owner_id);
                     let producer_ids =
                         selected_rally_producer_ids(sim, &selected_ids, struct_owner_id);
+                    // `BuildingClass::SetRallyPoint 0x00443A2B..0x00443A69`,
+                    // called per selected factory with announce = 1 by the
+                    // map-click handlers `FUN_00443410` / `FUN_004436F0`:
+                    // after the rally `EventClass` is pushed, the
+                    // clicking machine speaks `EVA_NewRallyPointEstablished`
+                    // when the factory's owner is the local player
+                    // (`0x00443A3C CALL 0x0050B6F0`) and the type is neither
+                    // a `ConstructionYard=` nor a `ResourceDestination=`.
+                    // One `PlayEVA` per factory; VoxClass drops same-entry
+                    // duplicates, so one request per click is equivalent.
+                    rally_announce = struct_owner_id == owner_id && producer_ids.iter().any(|id| {
+                        sim.entities().get(*id).is_some_and(|entity| {
+                            Some(&resources.rules)
+                                .and_then(|r| r.object(sim.interner.resolve(entity.type_ref)))
+                                .is_some_and(
+                                    crate::app::match_runtime::eva_producers::rally_point_announces,
+                                )
+                        })
+                    });
                     queued.push(CommandEnvelope::new(
                         struct_owner_id,
                         execute_tick,
@@ -1300,6 +1322,12 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     }
     if consumed_order_mode && state.match_state.input.queued_order_mode != OrderMode::Move {
         state.match_state.input.queued_order_mode = OrderMode::Move;
+    }
+    if rally_announce {
+        crate::app::input::dispatch::push_local_eva(
+            state,
+            crate::app::match_runtime::eva_producers::EVA_NEW_RALLY_POINT_ESTABLISHED,
+        );
     }
     finish_order(state, queued, speaker_id)
 }

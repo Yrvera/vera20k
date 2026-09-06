@@ -387,6 +387,69 @@ pub enum SimSoundEvent {
     /// (`EVA_InsufficientFunds` `0x004F8BA0`, `EVA_LowPower` `0x004F8D14`)
     /// for a human house; `event` is the `evamd.ini` section name.
     HouseEva { owner: InternedId, event: &'static str },
+    /// `BuildingClass::Sell @ 0x00449B70`, sell state 2 (`0x00449C99..
+    /// 0x00449CE5`, the building is gone): `+0x6DD` (the build-animation-
+    /// complete flag: set at `0x004467C9`, cleared in sell states 0 and 1,
+    /// so state 2 waits for the sell-down animation to finish),
+    /// `TechnoClass+0x41A` (owner is the local player) and `UndeploysInto=`
+    /// (`Type+0x408`) null — a Construction Yard undeploys instead and stays
+    /// silent. The upgrade-sell path (`0x0044AB22..0x0044AB36`) speaks on
+    /// `+0x41A` alone; VERA sells no upgrades. App plays `EVA_StructureSold`.
+    /// Timing DRIFT, recorded: native speaks after the sell-down animation
+    /// (state 1); VERA's sale is synchronous, so the line comes at the click.
+    StructureSold { owner: InternedId },
+    /// `BuildingClass::ToggleRepair @ 0x00446FF0` (`0x004470B7`): repair
+    /// switched on while `Health != Type.Strength` (`0x00447059`) and the
+    /// owner is the local player (`0x004470A4 CALL 0x0050B6F0`). App plays
+    /// `EVA_Repairing` for the local owner.
+    Repairing { owner: InternedId },
+    /// `BuildingClass::ChangeOwner @ 0x00448260` announce block
+    /// (`0x004483C0..0x0044848F`) for an engineer capture
+    /// (`InfantryClass::PerCellProcess 0x00519A27 PUSH 1` = announce). Native
+    /// gate: the OLD or the NEW owner is the local player (`0x004483C6` /
+    /// `0x004483D1 CALL 0x0050B6F0`), the new owner's type not
+    /// `MultiplayPassive` (`0x004483E1`). `tech_building` is `NeedsEngineer=`
+    /// (`Type+0x1552`, `0x00448401`): clear → `CreateRadarEvent(10, cell)`
+    /// (`0x00448472 MOV ECX,0xA`) and, when accepted, `EVA_BuildingCaptured`
+    /// (`0x0044848A`); set → `EVA_TechBuildingLost` for a local OLD owner
+    /// (`0x00448415`, ECX = `this->Owner`) and the type's `CaptureEvaEvent=`
+    /// (`Type+0x1554`, `0x00448459 QueueVoice`) for a local NEW owner. The
+    /// sim cannot see the local player: it emits for any human-controlled
+    /// side and the app applies the local test. `radar_accepted` carries the
+    /// radar result.
+    BuildingCaptured {
+        old_owner: InternedId,
+        new_owner: InternedId,
+        tech_building: bool,
+        radar_accepted: bool,
+        capture_eva_event: Option<InternedId>,
+    },
+    /// `SuperClass::AI_Ready @ 0x006CBCA0` (`0x006CBE63`): the charge
+    /// expired and `+0x6F` (IsReady) was set (`0x006CBDCC`); the announce
+    /// argument is `house == PlayerPtr` (`0x004F8E42..0x004F8E47` in
+    /// `HouseClass::Update`). `sw_type` is the `[SuperWeaponTypes]` section;
+    /// the app maps its `Type=` onto the `*Ready` line through the
+    /// `0x006CBDE6` jump table (`0x006CBEA8`).
+    SuperWeaponReady { owner: InternedId, sw_type: InternedId },
+    /// `BuildingClass::OnConstructionComplete @ 0x00445F80`
+    /// (`0x004468AD..0x00446995`): a building whose type carries
+    /// `SuperWeapon=` finished building up. Native speaks only when the owner
+    /// is not the local player (`0x004468B3`), not allied with it
+    /// (`0x004468CD IsAlliedWith(PlayerPtr)`), `[0xA8B538] == 0` (local
+    /// player not defeated, `0x004468DA`), `GameMode != 0` (`0x004468E7`),
+    /// and the type's `AuxBuilding=` is absent or owned by the building's
+    /// owner (`0x0044692E CountOwnedInstances`); the line comes from the
+    /// `[SuperWeaponTypes]` list index (`0x00446948` table at `0x00446FC0`).
+    /// The app applies the listener gates and the table.
+    SuperWeaponDetected { owner: InternedId, sw_type: InternedId },
+    /// `HouseClass::MPlayer_Defeated @ 0x004FC0B0`, non-local branch
+    /// (`0x004FC30C..0x004FC3BC`): a house whose type is not
+    /// `MultiplayPassive` (`0x004FC30F`) was defeated. Native also skips the
+    /// line for the observer house (`0x004FC343 CMP ESI,[0xAC1198]`), which
+    /// VERA does not model. App plays `EVA_PlayerDefeated` when `house` is
+    /// not the local player (the local defeat is `EVA_YouHaveLost` via
+    /// [`SimSoundEvent::MatchOutcome`]).
+    PlayerDefeated { house: InternedId },
     /// A superweapon fired. `sw_type` is the interned `[SuperWeaponTypes]`
     /// section name of the launched weapon — the discriminator the app layer
     /// needs to pick the cue, and the same object gamemd switches on.
@@ -5167,6 +5230,12 @@ impl Simulation {
                 house.owned_building_count == 0 && house.owned_unit_count == 0
             };
             if should_defeat {
+                // `HouseClass::MPlayer_Defeated 0x004FC30F..0x004FC3BC`: the
+                // defeat of any non-passive house is announced (the passive
+                // gate is the `continue` above); the app decides local vs
+                // other.
+                self.sound_events
+                    .push(SimSoundEvent::PlayerDefeated { house: owner });
                 let accepted = if let Some(h) = self.houses.get_mut(&owner) {
                     h.is_defeated = true;
                     // A house that owns nothing (or, in Short Game, has no base
@@ -6040,6 +6109,33 @@ impl Simulation {
         }
     }
 
+    /// `BuildingClass::OnConstructionComplete @ 0x00445F80`, the
+    /// `SuperWeapon=` announce block (`0x004468AD..0x00446995`): a completed
+    /// building whose type names a `[SuperWeaponTypes]` section
+    /// (`Type+0x16F0 != -1`) reports itself. Only the owner-independent half
+    /// lives here; the listener gates (local player, `IsAlliedWith(PlayerPtr)`,
+    /// `[0xA8B538]`, `GameMode`, `AuxBuilding` ownership) are the app's.
+    fn announce_super_weapon_building_complete(&mut self, stable_id: u64, rules: &RuleSet) {
+        let Some((owner, type_ref)) = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .filter(|e| e.category == EntityCategory::Structure && !e.dying)
+            .map(|e| (e.owner, e.type_ref))
+        else {
+            return;
+        };
+        let Some(section) = rules
+            .object(self.interner.resolve(type_ref))
+            .and_then(|obj| obj.super_weapon.clone())
+        else {
+            return;
+        };
+        let sw_type = self.interner.intern(&section);
+        self.sound_events
+            .push(SimSoundEvent::SuperWeaponDetected { owner, sw_type });
+    }
+
     /// Advance build-up animations and return completed building stable IDs.
     fn tick_building_up(&mut self) -> Vec<u64> {
         // Collect keys first to allow &mut iteration via get_mut().
@@ -6747,6 +6843,7 @@ impl Simulation {
         if let Some(rules) = rules {
             for &stable_id in &completed_buildings {
                 self.add_building_sensor_array_if_powered(stable_id, rules);
+                self.announce_super_weapon_building_complete(stable_id, rules);
             }
             *spawned_entities |= production::spawn_completed_refinery_free_units(
                 self,

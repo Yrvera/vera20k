@@ -1855,6 +1855,17 @@ impl Simulation {
         };
 
         // Check that all footprint cells are free before deploying.
+        //
+        // Follow-up (documented, not wired): `UnitClass::Deploy @ 0x007393C0`
+        // speaks `EVA_CannotDeployHere` (`0x0073950A`) only when the owner
+        // is a human player AND `Type+0x5EC` (`ResourceGatherer=`, `ReadINI
+        // 0x007143E4`) is clear (`0x007394EB..0x0073950A`); a blocked
+        // ResourceGatherer deploy stays silent. VERA's `CannotDeployHere`
+        // events below do not yet apply that type gate. Stock: `[SMIN]`
+        // (slave miner, `ResourceGatherer=yes`, `DeploysInto=YAREFN`) is the
+        // one such unit — a blocked slave-miner deploy speaks in VERA and
+        // not in gamemd. DRIFT, recorded; trigger: every blocked human
+        // slave-miner deploy.
         let (fw, fh) = foundation_dimensions(&foundation);
         for dy in 0..fh {
             for dx in 0..fw {

@@ -23,7 +23,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::rules::superweapon_type::SuperWeaponKind;
 use crate::sim::intern::InternedId;
 use crate::sim::timer::CdTimer;
-use crate::sim::world::Simulation;
+use crate::sim::world::{SimSoundEvent, Simulation};
 
 /// Per-house, per-superweapon-type runtime state.
 ///
@@ -219,6 +219,7 @@ pub fn tick_superweapon_instances(sim: &mut Simulation, rules: &RuleSet) {
     // Phase 1: Charge/suspend lifecycle for all instances.
     // Collect owners to avoid borrow conflict on sim.super_weapons.
     let owners: Vec<InternedId> = sim.super_weapons.keys().copied().collect();
+    let mut became_ready: Vec<(InternedId, InternedId)> = Vec::new();
     for owner_id in owners {
         let is_low_power = sim
             .power_states
@@ -251,9 +252,18 @@ pub fn tick_superweapon_instances(sim: &mut Simulation, rules: &RuleSet) {
                 if inst.charge_timer().expired(current_frame as i32) {
                     inst.is_ready = true;
                     inst.ready_tick = current_frame as i32;
+                    became_ready.push((owner_id, inst.type_id));
                 }
             }
         }
+    }
+    // `SuperClass::AI_Ready @ 0x006CBCA0`: `+0x6F` set at `0x006CBDB6`, then
+    // `0x006CBE63 PlayEVA(<Type=-indexed *Ready line>, -1)` when the announce
+    // argument (`house == PlayerPtr`, `HouseClass::Update 0x004F8E42`) holds.
+    // The app applies that local-owner half.
+    for (owner, sw_type) in became_ready {
+        sim.sound_events
+            .push(SimSoundEvent::SuperWeaponReady { owner, sw_type });
     }
 }
 
@@ -385,5 +395,49 @@ mod frame_tests {
         instance.resume(0);
         assert_eq!(instance.charge_progress(1, 4), 0.75);
         assert_eq!(instance.charge_progress(2, 4), 1.0);
+    }
+
+    /// `SuperClass::AI_Ready 0x006CBDCC MOV [ESI+0x6F],BL` then `0x006CBE63
+    /// PlayEVA`: the ready line is a sim fact emitted once, at expiry.
+    #[test]
+    fn charge_expiry_emits_super_weapon_ready_once() {
+        use crate::rules::ini_parser::IniFile;
+        let ini = IniFile::from_str(
+            "[SuperWeaponTypes]\n1=NukeSpecial\n[NukeSpecial]\nType=MultiMissile\n\
+             RechargeTime=1\nIsPowered=no\n\
+             [InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("superweapon ready rules should parse");
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let sw = sim.interner.intern("NukeSpecial");
+        let mut instance = SuperWeaponInstance::new(sw, owner);
+        instance.activate(10, sim.session.binary_frame);
+        sim.super_weapons.entry(owner).or_default().insert(sw, instance);
+        sim.super_weapons_initialized = true;
+        let ready = |sim: &Simulation| {
+            sim.sound_events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        SimSoundEvent::SuperWeaponReady { owner: o, sw_type }
+                            if *o == owner && *sw_type == sw
+                    )
+                })
+                .count()
+        };
+
+        sim.session.binary_frame += 5;
+        tick_superweapon_instances(&mut sim, &rules);
+        assert_eq!(ready(&sim), 0, "still charging");
+
+        sim.session.binary_frame += 10;
+        tick_superweapon_instances(&mut sim, &rules);
+        assert_eq!(ready(&sim), 1, "the expiry tick announces");
+        assert!(sim.super_weapons[&owner][&sw].is_ready);
+
+        tick_superweapon_instances(&mut sim, &rules);
+        assert_eq!(ready(&sim), 1, "a ready weapon is not re-announced");
     }
 }

@@ -224,6 +224,8 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         engineer: false,
         deployer: false,
         capturable: false,
+        needs_engineer: false,
+        capture_eva_event: None,
         repairable: true,
         can_be_occupied: false,
         can_occupy_fire: false,
