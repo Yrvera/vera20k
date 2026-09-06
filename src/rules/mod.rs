@@ -31,6 +31,7 @@ pub mod infantry_sequence;
 pub mod ini_enum;
 pub mod ini_parser;
 pub mod ini_value;
+pub mod native_processing;
 pub mod jumpjet_params;
 pub mod locomotor_type;
 pub mod missile_spawn;
