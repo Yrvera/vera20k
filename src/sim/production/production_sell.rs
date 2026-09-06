@@ -440,6 +440,7 @@ fn place_garrison_passenger_at_cell(
     building_ry: u16,
     building_width: u16,
     building_height: u16,
+    context: UninitContext<'_>,
 ) -> bool {
     // Owner transfer (if any) goes through the substrate chokepoint first, so
     // the by_owner index stays in sync; then take the mutable borrow for the
@@ -460,7 +461,7 @@ fn place_garrison_passenger_at_cell(
         pax.passenger_role = PassengerRole::None;
     }
     let (sub_x, sub_y) = lepton::subcell_lepton_offset(pax_sub_cell);
-    let reveal = sim.try_reveal_entity(
+    let reveal = sim.try_reveal_entity_with_context(
         passenger_id,
         RevealRequest {
             position: RevealPosition {
@@ -475,6 +476,7 @@ fn place_garrison_passenger_at_cell(
             placement: PlacementEvidence::MarkSucceeded,
             logic_eligible: true,
         },
+        context,
     );
     if !matches!(reveal, RevealOutcome::Revealed { .. }) {
         return false;
@@ -541,6 +543,7 @@ fn eject_garrison_passengers_at_edges(
             ry,
             width,
             height,
+            uninit_context,
         ) {
             ejected += 1;
         }

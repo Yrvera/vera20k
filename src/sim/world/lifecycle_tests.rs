@@ -238,6 +238,91 @@ fn receiver_fatal_limbo_clears_sparse_map_dummy_reservation() {
 }
 
 #[test]
+fn receiver_garrison_survivor_keeps_height_aware_playfield_membership() {
+    let rules =
+        crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[InfantryTypes]\n0=OCCUPANT\n[BuildingTypes]\n0=GARRISON\n\
+             [OCCUPANT]\nStrength=100\nArmor=none\n\
+             [GARRISON]\nStrength=100\nArmor=concrete\nFoundation=2x2\nCanBeOccupied=yes\n\
+             [Warheads]\n0=KILLWH\n[KILLWH]\nCellSpread=0\n\
+             Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ))
+        .expect("garrison survivor rules");
+    let mut sim = Simulation::new();
+    sim.session.map_width = 16;
+    sim.session.map_height = 16;
+    sim.playfield_bounds =
+        Some(crate::sim::cell_rect::PlayfieldBounds::from_normalized_local_size(16, 2, 2, 12, 3));
+    install_common_raw_terrain(&mut sim, 16, 16, 4, None);
+    let building_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, building_id, EntityCategory::Structure);
+    let passenger_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, passenger_id, EntityCategory::Infantry);
+    let building_type = sim.interner.intern("GARRISON");
+    let passenger_type = sim.interner.intern("OCCUPANT");
+    {
+        let passenger = sim.substrate.entities.get_mut(passenger_id).unwrap();
+        passenger.type_ref = passenger_type;
+        passenger.passenger_role = PassengerRole::Inside {
+            transport_id: building_id,
+        };
+    }
+    {
+        let building = sim.substrate.entities.get_mut(building_id).unwrap();
+        building.type_ref = building_type;
+        building.foundation = "2x2".to_string();
+        let mut cargo = PassengerCargo::new(5, 1);
+        assert!(cargo.board(passenger_id, 1));
+        building.passenger_role = PassengerRole::Transport { cargo };
+    }
+    assert!(matches!(
+        sim.try_reveal_entity(building_id, common_raw_request(13, 13, 4, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    assert!(
+        sim.substrate
+            .entities
+            .get(building_id)
+            .unwrap()
+            .in_playfield
+    );
+
+    let warhead = sim.interner.intern("KILLWH");
+    let hit = crate::sim::combat::EntityDamageEvent::direct_receiver(
+        building_id,
+        100,
+        0,
+        crate::sim::combat::RAD_NO_ATTACKER,
+        None,
+        warhead,
+        crate::sim::combat::ReceiverCallFlags {
+            ignore_defenses: true,
+            arg6: false,
+        },
+    );
+    sim.commit_noncombat_aoe_hits(&rules, None, &[hit]);
+
+    let passenger = sim.substrate.entities.get(passenger_id).unwrap();
+    assert!(passenger.lifecycle.object_alive);
+    assert!(!passenger.lifecycle.in_limbo);
+    assert_eq!(
+        (
+            passenger.position.rx,
+            passenger.position.ry,
+            passenger.position.z
+        ),
+        (15, 15, 4)
+    );
+    // SellBuilding @ 0x00458060 calls Infantry Unlimbo; Techno Unlimbo
+    // @ 0x006F6CC0..0x006F6CFE writes mode-one global MapClass membership,
+    // including during the ejection helper's temporary editor-mode bracket.
+    assert!(
+        passenger.in_playfield,
+        "survivor must use actual level-four map membership"
+    );
+}
+
+#[test]
 fn receiver_borrowed_map_uninit_clears_aircraft_bridge_occupation() {
     let mut sim = Simulation::new();
     install_common_raw_terrain(&mut sim, 8, 8, 0xFE, Some((3, 4)));

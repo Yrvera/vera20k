@@ -51,9 +51,10 @@ pub(crate) enum PointerExpiryControl {
     Uninit,
 }
 
-/// Borrowed map authority carried through one synchronous ObjectClass UnInit
-/// tree. Ordinary entry points use the Simulation-owned terrain; combat uses
-/// this context while that same terrain is staged outside `Simulation`.
+/// Borrowed map authority carried through one synchronous receiver lifecycle
+/// tree, including nested survivor Reveal as well as UnInit. Ordinary entry
+/// points use the Simulation-owned terrain; combat uses this context while
+/// that same terrain is staged outside `Simulation`.
 /// Native clear/repair routines always query the global MapClass: Unit clear
 /// `0x00744210` (RemoveContent `0x0047EA90`, vt+0xF4), Aircraft clear
 /// `0x005F6120` (vtable `0x007E22A4`), Building reservation clear `0x004561F0`,
@@ -495,11 +496,12 @@ impl Simulation {
         cells: &[(u16, u16)],
         position: RevealPosition,
         exact_z_leptons: Option<i32>,
+        context: UninitContext<'_>,
     ) -> bool {
         match category {
             EntityCategory::Unit => {
                 let (ground_level, ground_z, live_structural_bridge) =
-                    self.raw_occupation_cell_facts(position, UninitContext::default());
+                    self.raw_occupation_cell_facts(position, context);
                 if Self::raw_occupation_reaches_deck(
                     position,
                     exact_z_leptons,
@@ -523,7 +525,7 @@ impl Simulation {
             }
             EntityCategory::Infantry => {
                 let (ground_level, ground_z, live_structural_bridge) =
-                    self.raw_occupation_cell_facts(position, UninitContext::default());
+                    self.raw_occupation_cell_facts(position, context);
                 let mask = infantry_raw_occupation_mask(position.sub_x, position.sub_y);
                 // Native: `InfantryClass::MarkCellOccupancy` @ `0x005217C0`
                 // selects the deck only at/above the bridge plane and only
@@ -562,7 +564,7 @@ impl Simulation {
             }
             EntityCategory::Aircraft => {
                 let (ground_level, ground_z, live_structural_bridge) =
-                    self.raw_occupation_cell_facts(position, UninitContext::default());
+                    self.raw_occupation_cell_facts(position, context);
                 if Self::raw_occupation_reaches_deck(
                     position,
                     exact_z_leptons,
@@ -716,6 +718,19 @@ impl Simulation {
         stable_id: u64,
         request: RevealRequest,
     ) -> RevealOutcome {
+        self.try_reveal_entity_with_context(stable_id, request, UninitContext::default())
+    }
+
+    /// A nested receiver Reveal uses the same map authority as its enclosing
+    /// destruction transaction. SellBuilding @ 0x00458060 still reaches the
+    /// global MapClass membership writer in Techno Unlimbo @ 0x006F6CC0..6CFE.
+    /// Source: active gamemd.exe call and instruction bodies.
+    pub(crate) fn try_reveal_entity_with_context(
+        &mut self,
+        stable_id: u64,
+        request: RevealRequest,
+        context: UninitContext<'_>,
+    ) -> RevealOutcome {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return RevealOutcome::Failed(RevealFailure::MissingObject);
         };
@@ -731,7 +746,7 @@ impl Simulation {
             return RevealOutcome::Failed(RevealFailure::RejectedEarly);
         }
         if request.placement == PlacementEvidence::EvaluateMark
-            && !self.reveal_position_is_in_playfield(request.position)
+            && !self.reveal_position_is_in_playfield(request.position, context)
         {
             return RevealOutcome::Failed(RevealFailure::RejectedEarly);
         }
@@ -754,7 +769,7 @@ impl Simulation {
         // TechnoClass+0x3D5 byte from mode-one MapClass membership. Headless
         // fixtures have no MapClass authority, so they retain the constructor
         // default and their consumers explicitly leave the byte unenforced.
-        self.establish_entity_playfield_membership_on_unlimbo(stable_id);
+        self.establish_entity_playfield_membership_on_unlimbo(stable_id, context);
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::RevealCoordinatesCommitted);
 
@@ -769,7 +784,7 @@ impl Simulation {
 
         let attached_upgrade = request.placement == PlacementEvidence::AttachedUpgrade;
         if !attached_upgrade {
-            if !self.mark_entity_put(stable_id) {
+            if !self.mark_entity_put(stable_id, context) {
                 if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
                     entity.lifecycle.in_limbo = true;
                 }
@@ -792,8 +807,9 @@ impl Simulation {
         // This precedes display/Logic exposure and must not run on either
         // failed placement path above.
         let reveal_slope = self.substrate.entities.get(stable_id).and_then(|entity| {
-            self.resolved_terrain
-                .as_ref()?
+            context
+                .terrain()
+                .or(self.resolved_terrain.as_ref())?
                 .cell(entity.position.rx, entity.position.ry)
                 .map(|cell| cell.slope_type)
         });
@@ -819,7 +835,7 @@ impl Simulation {
         if !attached_upgrade {
             self.append_live_build_const(stable_id);
             self.refresh_waypoint_edge_from_committed_structure(stable_id);
-            self.mark_building_base_reservation(stable_id);
+            self.mark_building_base_reservation_with_arg(stable_id, false, context);
             self.fill_base_plan_from_successful_building_unlimbo(stable_id);
         }
         self.lifecycle_outputs
@@ -929,7 +945,7 @@ impl Simulation {
         }
     }
 
-    fn mark_entity_put(&mut self, stable_id: u64) -> bool {
+    fn mark_entity_put(&mut self, stable_id: u64, context: UninitContext<'_>) -> bool {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return false;
         };
@@ -1024,6 +1040,7 @@ impl Simulation {
                         &cells,
                         raw_position,
                         exact_z_leptons,
+                        context,
                     ) {
                         #[cfg(test)]
                         self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationMarked);
@@ -1069,14 +1086,18 @@ impl Simulation {
     /// `ObjectClass::Reveal @ 0x005F4EC0` before Mark(PUT). A normal constructed
     /// scenario always has MapClass bounds; unbounded synthetic fixtures retain
     /// their historical permissive behavior.
-    fn reveal_position_is_in_playfield(&self, position: RevealPosition) -> bool {
+    fn reveal_position_is_in_playfield(
+        &self,
+        position: RevealPosition,
+        context: UninitContext<'_>,
+    ) -> bool {
         let Some(bounds) = self.playfield_bounds else {
             return true;
         };
         crate::sim::cell_rect::cell_is_in_playfield_height_aware(
             (i32::from(position.rx), i32::from(position.ry)),
             Some(bounds),
-            self.resolved_terrain.as_ref(),
+            context.terrain().or(self.resolved_terrain.as_ref()),
         )
     }
 
@@ -1098,10 +1119,6 @@ impl Simulation {
             "base-reservation owner must be present in ScenarioSession.house_order"
         );
         index
-    }
-
-    fn mark_building_base_reservation(&mut self, stable_id: u64) -> bool {
-        self.mark_building_base_reservation_with_arg(stable_id, false, UninitContext::default())
     }
 
     fn mark_building_base_reservation_with_arg(
@@ -1461,7 +1478,7 @@ impl Simulation {
     /// Test/fixture helper retained at the transaction boundary.  It is
     /// idempotent and updates the authoritative `cell_marked` fact.
     pub(crate) fn add_entity_occupancy(&mut self, stable_id: u64) {
-        let _ = self.mark_entity_put(stable_id);
+        let _ = self.mark_entity_put(stable_id, UninitContext::default());
     }
 
     /// Existing movement and fixture boundary; common lifecycle code calls the
