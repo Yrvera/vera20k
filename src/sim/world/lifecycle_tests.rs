@@ -156,6 +156,116 @@ fn packed_reservation_test_coord(x: i32, y: i32) -> u32 {
     u32::from(x as i16 as u16) | (u32::from(y as i16 as u16) << 16)
 }
 
+fn receiver_authority_rules() -> crate::rules::ruleset::RuleSet {
+    crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+        "[VehicleTypes]\n0=TEST\n[BuildingTypes]\n0=BUILDING41\n\
+         [TEST]\nStrength=100\nArmor=light\n\
+         [BUILDING41]\nStrength=100\nArmor=concrete\nFoundation=1x1\n\
+         [Warheads]\n0=KILLWH\n[KILLWH]\nCellSpread=0\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("receiver world-authority rules")
+}
+
+fn commit_receiver_authority_lethal_hit(sim: &mut Simulation, target_id: u64) {
+    let rules = receiver_authority_rules();
+    let warhead = sim.interner.intern("KILLWH");
+    let hit = crate::sim::combat::EntityDamageEvent::direct_receiver(
+        target_id,
+        100,
+        0,
+        crate::sim::combat::RAD_NO_ATTACKER,
+        None,
+        warhead,
+        crate::sim::combat::ReceiverCallFlags {
+            ignore_defenses: true,
+            arg6: false,
+        },
+    );
+    sim.commit_noncombat_aoe_hits(&rules, None, &[hit]);
+}
+
+#[test]
+fn receiver_fatal_limbo_clears_elevated_ground_occupation() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 16, 16, 4, None);
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    assert!(matches!(
+        sim.try_reveal_entity(1, common_raw_request(3, 4, 4, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x20);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+
+    commit_receiver_authority_lethal_hit(&mut sim, 1);
+
+    assert!(sim.substrate.entities.get(1).unwrap().lifecycle.in_limbo);
+    assert_eq!(
+        sim.substrate.raw_cell_occupation.ground_bits(3, 4),
+        0,
+        "fatal Limbo must clear the elevated ground plane marked by Reveal"
+    );
+}
+
+#[test]
+fn receiver_fatal_limbo_clears_sparse_map_dummy_reservation() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 16, 16, 0, None);
+    let allocated: Vec<_> = (0..16)
+        .flat_map(|y| (0..16).map(move |x| (x, y)))
+        .filter(|&cell| cell != (9, 9))
+        .collect();
+    sim.resolved_terrain
+        .as_mut()
+        .unwrap()
+        .test_set_native_allocated_cells(&allocated);
+    let owner = insert_reservation_building(&mut sim, 41, "Americans", 10, 10, "1x1", 1);
+    sim.session.house_order.push(owner);
+    assert!(matches!(
+        sim.try_reveal_entity(41, common_raw_request(10, 10, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    assert_ne!(sim.substrate.base_reservations.dummy_mask(), 0);
+
+    commit_receiver_authority_lethal_hit(&mut sim, 41);
+
+    assert!(sim.substrate.entities.get(41).unwrap().lifecycle.in_limbo);
+    assert_eq!(
+        sim.substrate.base_reservations.dummy_mask(),
+        0,
+        "fatal Limbo must resolve the same sparse-map CellClass identity as Reveal"
+    );
+}
+
+#[test]
+fn receiver_borrowed_map_uninit_clears_aircraft_bridge_occupation() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 0xFE, Some((3, 4)));
+    install_fly_aircraft(&mut sim, 1, SimFixed::from_num(0));
+    sim.substrate.entities.get_mut(1).unwrap().on_bridge = true;
+    assert!(matches!(
+        sim.try_reveal_entity(1, common_raw_request(3, 4, 2, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0x40);
+
+    // Exercise the borrowed-map UnInit boundary, not Aircraft ReceiveDamage:
+    // fatal Aircraft damage starts a crash and does not immediately UnInit.
+    let terrain = sim.resolved_terrain.take();
+    let bridge_state = sim.bridge_state.take();
+    sim.uninit_with_context(
+        1,
+        super::UninitContext::with_terrain(terrain.as_ref())
+            .with_bridge_state(bridge_state.as_ref()),
+    );
+    sim.resolved_terrain = terrain;
+    sim.bridge_state = bridge_state;
+
+    assert!(sim.substrate.entities.get(1).unwrap().lifecycle.in_limbo);
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+}
+
 #[test]
 fn gsi_04_11_structure_mark_clears_full_smudge_footprints_and_refinery_hole() {
     let mut sim = Simulation::with_seed(1);
@@ -4546,7 +4656,14 @@ fn gsi_05_04_ground_source_and_target_retarget_before_removal_without_expiry() {
         cell_target
     );
     assert!(
-        f64::from_bits(sim.projectiles.get(projectile_id).unwrap().velocity.y.bits()) > 0.0,
+        f64::from_bits(
+            sim.projectiles
+                .get(projectile_id)
+                .unwrap()
+                .velocity
+                .y
+                .bits()
+        ) > 0.0,
         "allocated Cell target remains at (9,11) despite the unrelated dummy stamp"
     );
 }
@@ -4937,6 +5054,15 @@ fn gsi_05_04_combat_fatal_garrison_recursion_keeps_cell_target() {
 
 #[test]
 fn gsi_04_01_unallocated_expiry_retains_live_dummy_identity_for_bullet_ai() {
+    assert_unallocated_expiry_retains_live_dummy_identity(false);
+}
+
+#[test]
+fn receiver_fatal_expiry_retains_live_dummy_identity_for_bullet_ai() {
+    assert_unallocated_expiry_retains_live_dummy_identity(true);
+}
+
+fn assert_unallocated_expiry_retains_live_dummy_identity(through_receiver: bool) {
     let mut sim = Simulation::new();
     sim.session.map_width = 16;
     sim.session.map_height = 16;
@@ -4968,7 +5094,11 @@ fn gsi_04_01_unallocated_expiry_retains_live_dummy_identity_for_bullet_ai() {
         ),
     );
 
-    sim.uninit(target_id);
+    if through_receiver {
+        commit_receiver_authority_lethal_hit(&mut sim, target_id);
+    } else {
+        sim.uninit(target_id);
+    }
 
     assert_eq!(
         sim.projectiles.get(projectile_id).unwrap().target,
@@ -4990,7 +5120,14 @@ fn gsi_04_01_unallocated_expiry_retains_live_dummy_identity_for_bullet_ai() {
     assert_eq!(dummy.snapshot().coord, (20, -1));
     assert!(sim.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
     assert!(
-        f64::from_bits(sim.projectiles.get(projectile_id).unwrap().velocity.y.bits()) < 0.0,
+        f64::from_bits(
+            sim.projectiles
+                .get(projectile_id)
+                .unwrap()
+                .velocity
+                .y
+                .bits()
+        ) < 0.0,
         "guided Bullet must steer toward the later south-negative dummy stamp"
     );
 }

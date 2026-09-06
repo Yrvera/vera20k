@@ -54,10 +54,16 @@ pub(crate) enum PointerExpiryControl {
 /// Borrowed map authority carried through one synchronous ObjectClass UnInit
 /// tree. Ordinary entry points use the Simulation-owned terrain; combat uses
 /// this context while that same terrain is staged outside `Simulation`.
+/// Native clear/repair routines always query the global MapClass: Unit clear
+/// `0x00744210` (RemoveContent `0x0047EA90`, vt+0xF4), Aircraft clear
+/// `0x005F6120` (vtable `0x007E22A4`), Building reservation clear `0x004561F0`,
+/// and Bullet expiry `0x004684E0`. Source: active gamemd.exe bodies and vtables.
+/// An absent resident field during receiver execution is not an empty map.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct UninitContext<'a> {
     terrain: Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid>,
     rules: Option<&'a RuleSet>,
+    bridge_state: Option<&'a crate::sim::bridge_state::BridgeRuntimeState>,
 }
 
 impl<'a> UninitContext<'a> {
@@ -67,6 +73,7 @@ impl<'a> UninitContext<'a> {
         Self {
             terrain,
             rules: None,
+            bridge_state: None,
         }
     }
 
@@ -83,6 +90,7 @@ impl<'a> UninitContext<'a> {
         Self {
             terrain: None,
             rules: Some(rules),
+            bridge_state: None,
         }
     }
 
@@ -90,6 +98,14 @@ impl<'a> UninitContext<'a> {
         self,
     ) -> Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid> {
         self.terrain
+    }
+
+    pub(crate) const fn with_bridge_state(
+        mut self,
+        bridge_state: Option<&'a crate::sim::bridge_state::BridgeRuntimeState>,
+    ) -> Self {
+        self.bridge_state = bridge_state;
+        self
     }
 
     pub(crate) const fn rules(self) -> Option<&'a RuleSet> {
@@ -421,10 +437,14 @@ impl Simulation {
             })
     }
 
-    fn raw_occupation_cell_facts(&self, position: RevealPosition) -> (i32, i32, bool) {
-        let Some(terrain_cell) = self
-            .resolved_terrain
-            .as_ref()
+    fn raw_occupation_cell_facts(
+        &self,
+        position: RevealPosition,
+        context: UninitContext<'_>,
+    ) -> (i32, i32, bool) {
+        let Some(terrain_cell) = context
+            .terrain()
+            .or(self.resolved_terrain.as_ref())
             .and_then(|terrain| terrain.cell(position.rx, position.ry))
         else {
             return (0, 0, false);
@@ -446,9 +466,9 @@ impl Simulation {
             i32::from(terrain_cell.level as i8).wrapping_mul(LEPTONS_PER_LEVEL as i32)
         });
         let live_structural_bridge = terrain_cell.bridge_facts.has_structural_bridge()
-            && self
+            && context
                 .bridge_state
-                .as_ref()
+                .or(self.bridge_state.as_ref())
                 .is_some_and(|state| state.is_bridge_walkable(position.rx, position.ry));
         (ground_level, ground_z, live_structural_bridge)
     }
@@ -479,7 +499,7 @@ impl Simulation {
         match category {
             EntityCategory::Unit => {
                 let (ground_level, ground_z, live_structural_bridge) =
-                    self.raw_occupation_cell_facts(position);
+                    self.raw_occupation_cell_facts(position, UninitContext::default());
                 if Self::raw_occupation_reaches_deck(
                     position,
                     exact_z_leptons,
@@ -503,7 +523,7 @@ impl Simulation {
             }
             EntityCategory::Infantry => {
                 let (ground_level, ground_z, live_structural_bridge) =
-                    self.raw_occupation_cell_facts(position);
+                    self.raw_occupation_cell_facts(position, UninitContext::default());
                 let mask = infantry_raw_occupation_mask(position.sub_x, position.sub_y);
                 // Native: `InfantryClass::MarkCellOccupancy` @ `0x005217C0`
                 // selects the deck only at/above the bridge plane and only
@@ -542,7 +562,7 @@ impl Simulation {
             }
             EntityCategory::Aircraft => {
                 let (ground_level, ground_z, live_structural_bridge) =
-                    self.raw_occupation_cell_facts(position);
+                    self.raw_occupation_cell_facts(position, UninitContext::default());
                 if Self::raw_occupation_reaches_deck(
                     position,
                     exact_z_leptons,
@@ -574,10 +594,11 @@ impl Simulation {
         cells: &[(u16, u16)],
         position: RevealPosition,
         exact_z_leptons: Option<i32>,
+        context: UninitContext<'_>,
     ) -> bool {
         match category {
             EntityCategory::Unit => {
-                let (ground_level, ground_z, _) = self.raw_occupation_cell_facts(position);
+                let (ground_level, ground_z, _) = self.raw_occupation_cell_facts(position, context);
                 if Self::raw_occupation_reaches_deck(
                     position,
                     exact_z_leptons,
@@ -610,7 +631,7 @@ impl Simulation {
             }
             EntityCategory::Aircraft => {
                 let (ground_level, ground_z, live_structural_bridge) =
-                    self.raw_occupation_cell_facts(position);
+                    self.raw_occupation_cell_facts(position, context);
                 if Self::raw_occupation_reaches_deck(
                     position,
                     exact_z_leptons,
@@ -633,7 +654,7 @@ impl Simulation {
                 true
             }
             EntityCategory::Infantry => {
-                let (ground_level, ground_z, _) = self.raw_occupation_cell_facts(position);
+                let (ground_level, ground_z, _) = self.raw_occupation_cell_facts(position, context);
                 let mask = infantry_raw_occupation_mask(position.sub_x, position.sub_y);
                 // Native: InfantryClass::Unmark (+0x744170) picks its plane from
                 // height alone, retaining the proven mark/unmark bridge-bit asymmetry.
@@ -1080,13 +1101,14 @@ impl Simulation {
     }
 
     fn mark_building_base_reservation(&mut self, stable_id: u64) -> bool {
-        self.mark_building_base_reservation_with_arg(stable_id, false)
+        self.mark_building_base_reservation_with_arg(stable_id, false, UninitContext::default())
     }
 
     fn mark_building_base_reservation_with_arg(
         &mut self,
         stable_id: u64,
         repair_only: bool,
+        context: UninitContext<'_>,
     ) -> bool {
         let Some((owner, rect)) = self.base_reservation_writer(stable_id) else {
             return false;
@@ -1095,7 +1117,7 @@ impl Simulation {
             return false;
         };
         self.substrate.base_reservations.reserve_rect(
-            self.resolved_terrain.as_ref(),
+            context.terrain().or(self.resolved_terrain.as_ref()),
             rect,
             house_index,
         );
@@ -1107,7 +1129,7 @@ impl Simulation {
             debug_assert!(false, "base-reservation owner must have HouseState");
         }
         if !repair_only {
-            self.update_base_reservation_perimeter_after_mark(owner, house_index, rect);
+            self.update_base_reservation_perimeter_after_mark(owner, house_index, rect, context);
         }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::BaseReservationMarked);
@@ -1119,12 +1141,18 @@ impl Simulation {
         owner: InternedId,
         house_index: i32,
         rect: CellRect,
+        context: UninitContext<'_>,
     ) {
         scan_cell_rect(base_reservation_perimeter_rect(rect), |x, y| {
             let neighbor_mask = self
                 .substrate
                 .base_reservations
-                .house_reservation_neighbor_mask(self.resolved_terrain.as_ref(), x, y, house_index);
+                .house_reservation_neighbor_mask(
+                    context.terrain().or(self.resolved_terrain.as_ref()),
+                    x,
+                    y,
+                    house_index,
+                );
             let packed = packed_reservation_coord(x, y);
             if let Some(house) = self.houses.get_mut(&owner) {
                 match neighbor_mask {
@@ -1145,12 +1173,18 @@ impl Simulation {
         owner: InternedId,
         house_index: i32,
         rect: CellRect,
+        context: UninitContext<'_>,
     ) {
         scan_cell_rect(base_reservation_perimeter_rect(rect), |x, y| {
             let neighbor_mask = self
                 .substrate
                 .base_reservations
-                .house_reservation_neighbor_mask(self.resolved_terrain.as_ref(), x, y, house_index);
+                .house_reservation_neighbor_mask(
+                    context.terrain().or(self.resolved_terrain.as_ref()),
+                    x,
+                    y,
+                    house_index,
+                );
             let packed = packed_reservation_coord(x, y);
             match neighbor_mask {
                 0x0000_00ff => {
@@ -1171,7 +1205,7 @@ impl Simulation {
                     }
                     // Native resolves the center again before the extra clear.
                     self.substrate.base_reservations.clear(
-                        self.resolved_terrain.as_ref(),
+                        context.terrain().or(self.resolved_terrain.as_ref()),
                         x,
                         y,
                         house_index,
@@ -1205,7 +1239,11 @@ impl Simulation {
         })
     }
 
-    fn clear_building_base_reservation_and_repair(&mut self, stable_id: u64) -> bool {
+    fn clear_building_base_reservation_and_repair(
+        &mut self,
+        stable_id: u64,
+        context: UninitContext<'_>,
+    ) -> bool {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return false;
         };
@@ -1240,7 +1278,7 @@ impl Simulation {
         };
 
         self.substrate.base_reservations.clear_rect(
-            self.resolved_terrain.as_ref(),
+            context.terrain().or(self.resolved_terrain.as_ref()),
             rect,
             house_index,
         );
@@ -1251,30 +1289,39 @@ impl Simulation {
         // the ground list. Each lookup selects only the first Building and calls
         // its repair-only writer immediately; identities are not deduplicated.
         scan_cell_rect(repair_rect, |x, y| {
-            let neighbor_id = resolve_reservation_real_cell(self.resolved_terrain.as_ref(), x, y)
-                .and_then(|(rx, ry)| {
-                    self.substrate.occupancy.first_building_on_layer(
-                        rx,
-                        ry,
-                        crate::sim::movement::locomotor::MovementLayer::Ground,
-                    )
-                });
+            let neighbor_id = resolve_reservation_real_cell(
+                context.terrain().or(self.resolved_terrain.as_ref()),
+                x,
+                y,
+            )
+            .and_then(|(rx, ry)| {
+                self.substrate.occupancy.first_building_on_layer(
+                    rx,
+                    ry,
+                    crate::sim::movement::locomotor::MovementLayer::Ground,
+                )
+            });
             if let Some(neighbor_id) = neighbor_id
                 && neighbor_id != stable_id
             {
-                self.mark_building_base_reservation_with_arg(neighbor_id, true);
+                self.mark_building_base_reservation_with_arg(neighbor_id, true, context);
             }
             true
         });
-        self.update_base_reservation_perimeter_after_clear(owner, house_index, rect);
+        self.update_base_reservation_perimeter_after_clear(owner, house_index, rect, context);
         true
     }
 
-    fn unmark_entity_remove(&mut self, stable_id: u64) -> bool {
-        self.unmark_entity_remove_impl(stable_id, true)
+    fn unmark_entity_remove(&mut self, stable_id: u64, context: UninitContext<'_>) -> bool {
+        self.unmark_entity_remove_impl(stable_id, true, context)
     }
 
-    fn unmark_entity_remove_impl(&mut self, stable_id: u64, clear_air_spatial: bool) -> bool {
+    fn unmark_entity_remove_impl(
+        &mut self,
+        stable_id: u64,
+        clear_air_spatial: bool,
+        context: UninitContext<'_>,
+    ) -> bool {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return false;
         };
@@ -1347,6 +1394,7 @@ impl Simulation {
                     &cells,
                     raw_position,
                     exact_z_leptons,
+                    context,
                 ) {
                     #[cfg(test)]
                     self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationCleared);
@@ -1419,7 +1467,7 @@ impl Simulation {
     /// Existing movement and fixture boundary; common lifecycle code calls the
     /// private unmark transaction instead.
     pub(crate) fn remove_entity_occupancy(&mut self, stable_id: u64) {
-        self.unmark_entity_remove(stable_id);
+        self.unmark_entity_remove(stable_id, UninitContext::default());
     }
 
     /// gamemd-derived: active YR `FlyLocomotionClass__Process @ 0x004CD600`
@@ -1496,7 +1544,7 @@ impl Simulation {
                     })
             });
         if transact_fly {
-            self.unmark_entity_remove_impl(stable_id, false);
+            self.unmark_entity_remove_impl(stable_id, false, UninitContext::default());
         }
 
         let stats = crate::sim::movement::air_movement::tick_air_movement(
@@ -1849,7 +1897,7 @@ impl Simulation {
         }
         self.notify_pointer_expired(stable_id, context);
 
-        if self.unmark_entity_remove(stable_id) {
+        if self.unmark_entity_remove(stable_id, context) {
             #[cfg(test)]
             self.trace_lifecycle_for_test(LifecycleTestEvent::ConcealUnmarked);
         }
@@ -1938,7 +1986,7 @@ impl Simulation {
         // Dead and InLimbo are independent native state. TechnoClass::Limbo
         // still reaches ObjectClass::Conceal for a stored dead object; the
         // latter's InLimbo branch alone decides whether Conceal is a no-op.
-        self.clear_building_base_reservation_and_repair(stable_id);
+        self.clear_building_base_reservation_and_repair(stable_id, context);
         crate::sim::radio::broadcast_break(self, stable_id);
         self.object_conceal_with_context(stable_id, context)
     }
@@ -2561,11 +2609,10 @@ impl Simulation {
     /// gamemd-derived: active YR `DispatchPointerExpiredCleanup @ 0x007258D0`
     /// is called directly by `ObjectClass__UnInit @ 0x005F65F0` and again by
     /// `ObjectClass::Destroy @ 0x005F5280` inside the virtual Conceal path.
-    /// The caller's legacy terrain context stays unread: production queries the
-    /// Simulation-resident resolved grid below as its MapClass table. The other
-    /// listener arms still read the object's liveness, health and mission from
-    /// the same destructure.
-    fn notify_pointer_expired(&mut self, expired_id: u64, _context: UninitContext<'_>) {
+    /// Every listener uses the live MapClass authority, including when a receiver
+    /// has temporarily lent that grid through UninitContext. The remaining arms
+    /// read the object's liveness, health and mission from the same world.
+    fn notify_pointer_expired(&mut self, expired_id: u64, context: UninitContext<'_>) {
         if !self.substrate.entities.contains(expired_id) {
             return;
         }
@@ -2580,7 +2627,7 @@ impl Simulation {
         // death arm of `ReceiveDamage @ 0x0070206A`): both halves of a drain
         // link drop when either object expires.
         crate::sim::credit_income::clear_drain_links_on_expiry(self, expired_id);
-        self.broadcast_pointer_expired(expired_id, PointerExpiryControl::Uninit);
+        self.broadcast_pointer_expired(expired_id, PointerExpiryControl::Uninit, context);
     }
 
     /// `ObjectClass::Detach_All(false)` — the vtable `+0xDC` call
@@ -2616,10 +2663,19 @@ impl Simulation {
         if !self.substrate.entities.contains(expired_id) {
             return;
         }
-        self.broadcast_pointer_expired(expired_id, PointerExpiryControl::DetachAll);
+        self.broadcast_pointer_expired(
+            expired_id,
+            PointerExpiryControl::DetachAll,
+            UninitContext::default(),
+        );
     }
 
-    fn broadcast_pointer_expired(&mut self, expired_id: u64, control: PointerExpiryControl) {
+    fn broadcast_pointer_expired(
+        &mut self,
+        expired_id: u64,
+        control: PointerExpiryControl,
+        context: UninitContext<'_>,
+    ) {
         let Some((
             expired_target_cell,
             expired_is_high_flying,
@@ -2741,7 +2797,7 @@ impl Simulation {
                     ProjectileTarget::None
                 } else {
                     let (rx, ry) = expired_target_cell.expect("checked target cell");
-                    match self.resolved_terrain.as_ref() {
+                    match context.terrain().or(self.resolved_terrain.as_ref()) {
                         Some(terrain) => match crate::sim::cell_rect::get_cellclass_fallback(
                             Some(terrain),
                             i32::from(rx),
