@@ -18,6 +18,7 @@ mod lifecycle;
 mod load_object_lifecycle;
 mod logic_vector;
 mod projectile_collision;
+mod receiver_transaction;
 mod substrate;
 mod techno_ai;
 #[cfg(test)]
@@ -51,6 +52,8 @@ pub(crate) use logic_vector::LogicVector;
 pub use substrate::EnterOrderCounter;
 pub(crate) use substrate::ObjectSubstrate;
 pub(crate) use world_spawn::{GeneratedTechnoInitError, GeneratedTechnoInitTable};
+
+use receiver_transaction::ReceiverTransaction;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -2052,23 +2055,9 @@ impl Simulation {
         // Copy-read the pre-resolved handles: Some from init/load in
         // production, None for fixtures. Ticks never resolve or intern.
         let rule_handles = self.rule_handles;
-        let mut entities = std::mem::take(&mut self.substrate.entities);
-        let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
-        let mut interner = std::mem::take(&mut self.interner);
-        let mut main_rng = std::mem::replace(&mut self.main_rng, SimRng::new(0));
-        let mut scenario_rng = std::mem::replace(&mut self.scenario_rng, SimRng::new(0));
-        let mut resource_nodes = std::mem::take(&mut self.production.resource_nodes);
-        let mut overlay_grid = self.overlay_grid.take();
-        let mut resolved_terrain = self.resolved_terrain.take();
-        let bridge_state = self.bridge_state.take();
+        let mut transaction = ReceiverTransaction::take_from(self);
         let mut radiation = std::mem::take(&mut self.radiation);
-        let mut terrain_area_state = crate::sim::terrain_object::TerrainAreaState::take_from(
-            &mut self.production,
-            &mut self.substrate.raw_cell_occupation,
-        );
         let missile_detonations = std::mem::take(&mut self.pending_missile_detonations);
-        let mut sound_events = std::mem::take(&mut self.sound_events);
-        let mut houses = self.houses.clone();
         let house_order = self.session.house_order.clone();
         let house_alliances = self.house_alliances.clone();
         let fog = self.fog.clone();
@@ -2085,25 +2074,25 @@ impl Simulation {
         let combat_result = {
             let mut inline_hooks = SimulationCombatInlineHooks {
                 sim: self,
-                bridge_state: bridge_state.as_ref(),
+                bridge_state: transaction.bridge_state.as_ref(),
             };
             combat::tick_combat_with_fog_and_main_rng_with_terrain_area(
-                &mut entities,
-                &mut occupancy,
+                &mut transaction.entities,
+                &mut transaction.occupancy,
                 rules,
-                &mut interner,
+                &mut transaction.interner,
                 rule_handles,
                 Some(&fog),
                 &power_states,
-                &mut houses,
+                &mut transaction.houses,
                 &house_order,
                 &house_alliances,
-                Some(&mut sound_events),
-                &mut resource_nodes,
-                overlay_grid.as_mut(),
+                Some(&mut transaction.sound_events),
+                &mut transaction.resource_nodes,
+                transaction.overlay_grid.as_mut(),
                 overlay_registry,
-                resolved_terrain.as_mut(),
-                bridge_state.as_ref(),
+                transaction.resolved_terrain.as_mut(),
+                transaction.bridge_state.as_ref(),
                 scenario_no_damage,
                 require_playfield_membership,
                 current_tick,
@@ -2116,35 +2105,15 @@ impl Simulation {
                 wave_damage_events,
                 Some(&mut radiation),
                 &missile_detonations,
-                &mut scenario_rng,
-                &mut main_rng,
+                &mut transaction.scenario_rng,
+                &mut transaction.main_rng,
                 Some(&mut inline_hooks),
-                Some(&mut terrain_area_state),
+                Some(&mut transaction.terrain_area_state),
             )
         };
 
-        let inactive_terrain_logic_ids = terrain_area_state.inactive_logic_ids();
-        let terrain_navigation_changed_cells = terrain_area_state.restore_into(
-            &mut self.production,
-            &mut self.substrate.raw_cell_occupation,
-        );
-        for stable_id in inactive_terrain_logic_ids {
-            let retired = self.retire_non_entity_object(stable_id);
-            debug_assert!(retired);
-        }
-
-        self.substrate.entities = entities;
-        self.substrate.occupancy = occupancy;
-        self.interner = interner;
-        self.main_rng = main_rng;
-        self.scenario_rng = scenario_rng;
-        self.production.resource_nodes = resource_nodes;
-        self.overlay_grid = overlay_grid;
-        self.resolved_terrain = resolved_terrain;
-        self.bridge_state = bridge_state;
+        let terrain_navigation_changed_cells = transaction.finish(self);
         self.radiation = radiation;
-        self.sound_events = sound_events;
-        self.merge_receiver_house_state(&houses);
         let mut combat_result = combat_result;
         combat_result.terrain_navigation_changed_cells = terrain_navigation_changed_cells;
         combat_result
@@ -2166,21 +2135,7 @@ impl Simulation {
         // fixtures); ticks never resolve or intern.
         let rule_handles = self.rule_handles;
 
-        let mut entities = std::mem::take(&mut self.substrate.entities);
-        let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
-        let mut interner = std::mem::take(&mut self.interner);
-        let mut main_rng = std::mem::replace(&mut self.main_rng, SimRng::new(0));
-        let mut scenario_rng = std::mem::replace(&mut self.scenario_rng, SimRng::new(0));
-        let mut resource_nodes = std::mem::take(&mut self.production.resource_nodes);
-        let mut overlay_grid = self.overlay_grid.take();
-        let mut resolved_terrain = self.resolved_terrain.take();
-        let bridge_state = self.bridge_state.take();
-        let mut sound_events = std::mem::take(&mut self.sound_events);
-        let mut terrain_area_state = crate::sim::terrain_object::TerrainAreaState::take_from(
-            &mut self.production,
-            &mut self.substrate.raw_cell_occupation,
-        );
-        let mut houses = self.houses.clone();
+        let mut transaction = ReceiverTransaction::take_from(self);
         let house_order = self.session.house_order.clone();
         let house_alliances = self.house_alliances.clone();
         let current_tick = u64::from(self.session.binary_frame);
@@ -2189,54 +2144,34 @@ impl Simulation {
         let commit = {
             let mut inline_hooks = SimulationCombatInlineHooks {
                 sim: self,
-                bridge_state: bridge_state.as_ref(),
+                bridge_state: transaction.bridge_state.as_ref(),
             };
             combat::commit_logic_projectile_detonations(
                 detonations,
-                &mut entities,
-                &mut occupancy,
+                &mut transaction.entities,
+                &mut transaction.occupancy,
                 rules,
-                &mut interner,
+                &mut transaction.interner,
                 rule_handles,
-                &mut houses,
+                &mut transaction.houses,
                 &house_order,
                 &house_alliances,
-                &mut main_rng,
-                &mut scenario_rng,
-                &mut resource_nodes,
-                overlay_grid.as_mut(),
+                &mut transaction.main_rng,
+                &mut transaction.scenario_rng,
+                &mut transaction.resource_nodes,
+                transaction.overlay_grid.as_mut(),
                 overlay_registry,
-                resolved_terrain.as_mut(),
-                bridge_state.as_ref(),
-                Some(&mut terrain_area_state),
+                transaction.resolved_terrain.as_mut(),
+                transaction.bridge_state.as_ref(),
+                Some(&mut transaction.terrain_area_state),
                 scenario_no_damage,
                 current_tick,
-                Some(&mut sound_events),
+                Some(&mut transaction.sound_events),
                 Some(&mut inline_hooks),
             )
         };
 
-        let inactive_terrain_logic_ids = terrain_area_state.inactive_logic_ids();
-        let terrain_navigation_changed_cells = terrain_area_state.restore_into(
-            &mut self.production,
-            &mut self.substrate.raw_cell_occupation,
-        );
-        for stable_id in inactive_terrain_logic_ids {
-            let retired = self.retire_non_entity_object(stable_id);
-            debug_assert!(retired);
-        }
-
-        self.substrate.entities = entities;
-        self.substrate.occupancy = occupancy;
-        self.interner = interner;
-        self.main_rng = main_rng;
-        self.scenario_rng = scenario_rng;
-        self.production.resource_nodes = resource_nodes;
-        self.overlay_grid = overlay_grid;
-        self.resolved_terrain = resolved_terrain;
-        self.bridge_state = bridge_state;
-        self.sound_events = sound_events;
-        self.merge_receiver_house_state(&houses);
+        let terrain_navigation_changed_cells = transaction.finish(self);
 
         for projectile in commit.projectile_spawns {
             let stable_id = self.allocate_stable_id();
@@ -2426,22 +2361,8 @@ impl Simulation {
         }
 
         let rule_handles = self.rule_handles;
-        let mut entities = std::mem::take(&mut self.substrate.entities);
-        let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
-        let mut interner = std::mem::take(&mut self.interner);
-        let mut main_rng = std::mem::replace(&mut self.main_rng, SimRng::new(0));
-        let mut scenario_rng = std::mem::replace(&mut self.scenario_rng, SimRng::new(0));
-        let mut resource_nodes = std::mem::take(&mut self.production.resource_nodes);
-        let mut overlay_grid = self.overlay_grid.take();
+        let mut transaction = ReceiverTransaction::take_from(self);
         let mut smudge_grid = self.smudge_grid.take();
-        let mut resolved_terrain = self.resolved_terrain.take();
-        let bridge_state = self.bridge_state.take();
-        let mut sound_events = std::mem::take(&mut self.sound_events);
-        let mut terrain_area_state = crate::sim::terrain_object::TerrainAreaState::take_from(
-            &mut self.production,
-            &mut self.substrate.raw_cell_occupation,
-        );
-        let mut houses = self.houses.clone();
         let house_order = self.session.house_order.clone();
         let house_alliances = self.house_alliances.clone();
         let current_tick = u64::from(self.session.binary_frame);
@@ -2454,21 +2375,21 @@ impl Simulation {
         {
             let mut inline_hooks = SimulationCombatInlineHooks {
                 sim: self,
-                bridge_state: bridge_state.as_ref(),
+                bridge_state: transaction.bridge_state.as_ref(),
             };
             let mut inline_hooks: Option<&mut dyn crate::sim::combat::CombatInlineHooks> =
                 Some(&mut inline_hooks);
-            let mut sound_sink = Some(&mut sound_events);
+            let mut sound_sink = Some(&mut transaction.sound_events);
 
             for recorded in &request.recorded_cells {
-                let cell = recorded.current_cell(resolved_terrain.as_ref());
+                let cell = recorded.current_cell(transaction.resolved_terrain.as_ref());
                 // GetWeapon(0) is re-entered exactly once per cell, with the
                 // owner's current rank. A null owner aborts DamageArea before
                 // any receiver, wall, cliff, or RNG work.
-                let Some(firer) = entities.get(request.firer_id) else {
+                let Some(firer) = transaction.entities.get(request.firer_id) else {
                     break;
                 };
-                let Some(object_type) = rules.object(interner.resolve(firer.type_ref)) else {
+                let Some(object_type) = rules.object(transaction.interner.resolve(firer.type_ref)) else {
                     break;
                 };
                 let Some(weapon_name) = crate::sim::combat::combat_weapon::primary_for_tier(
@@ -2484,7 +2405,7 @@ impl Simulation {
                 let Some(warhead_name) = weapon.warhead.as_deref() else {
                     break;
                 };
-                let warhead_ref = interner.intern(warhead_name);
+                let warhead_ref = transaction.interner.intern(warhead_name);
                 let source_house = Some(firer.owner);
                 let mut shared_damage = raw_ambient_damage;
 
@@ -2508,8 +2429,8 @@ impl Simulation {
                 };
 
                 let mut current = current_order(
-                    &occupancy,
-                    terrain_area_state.terrain_object_cells(),
+                    &transaction.occupancy,
+                    transaction.terrain_area_state.terrain_object_cells(),
                     rx,
                     ry,
                     layer,
@@ -2520,7 +2441,7 @@ impl Simulation {
                     let receiver = match receiver_object {
                         CellObject::Entity(target_id) => {
                             let eligible = target_id != request.firer_id
-                                && entities.get(target_id).is_some_and(|entity| {
+                                && transaction.entities.get(target_id).is_some_and(|entity| {
                                     entity.is_alive()
                                         && !entity.dying
                                         && !entity.lifecycle.in_limbo
@@ -2528,8 +2449,8 @@ impl Simulation {
                                 });
                             if !eligible {
                                 let order = current_order(
-                                    &occupancy,
-                                    terrain_area_state.terrain_object_cells(),
+                                    &transaction.occupancy,
+                                    transaction.terrain_area_state.terrain_object_cells(),
                                     rx,
                                     ry,
                                     layer,
@@ -2554,14 +2475,14 @@ impl Simulation {
                             );
                             let post_object_damage = crate::sim::combat::wave_post_object_damage(
                                 &event,
-                                &entities,
+                                &transaction.entities,
                                 rules,
-                                &interner,
-                                &houses,
+                                &transaction.interner,
+                                &transaction.houses,
                                 &house_alliances,
                                 scenario_no_damage,
                                 current_tick,
-                                resolved_terrain.as_ref(),
+                                transaction.resolved_terrain.as_ref(),
                             );
                             if let Some(value) = post_object_damage {
                                 shared_damage = value;
@@ -2573,7 +2494,7 @@ impl Simulation {
                                 .trace_wave_receiver(
                                     request.wave_id,
                                     target_id,
-                                    scenario_rng.state(),
+                                    transaction.scenario_rng.state(),
                                 );
                             crate::sim::combat::combat_aoe::AreaDamageReceiver::Entity(event)
                         }
@@ -2585,7 +2506,7 @@ impl Simulation {
                                 .trace_wave_receiver(
                                     request.wave_id,
                                     stable_id,
-                                    scenario_rng.state(),
+                                    transaction.scenario_rng.state(),
                                 );
                             crate::sim::combat::combat_aoe::AreaDamageReceiver::Terrain(
                                 crate::sim::combat::TerrainDamageEvent {
@@ -2603,22 +2524,22 @@ impl Simulation {
                     let (nested, mut pings) =
                         crate::sim::combat::commit_area_damage_receivers_with_scenario(
                             std::slice::from_ref(&receiver),
-                            &mut entities,
-                            &mut occupancy,
+                            &mut transaction.entities,
+                            &mut transaction.occupancy,
                             rules,
-                            &mut interner,
+                            &mut transaction.interner,
                             rule_handles,
-                            &mut houses,
+                            &mut transaction.houses,
                             &house_order,
                             &house_alliances,
-                            &mut main_rng,
-                            &mut scenario_rng,
+                            &mut transaction.main_rng,
+                            &mut transaction.scenario_rng,
                             &mut handled_deaths,
-                            &mut resource_nodes,
-                            overlay_grid.as_mut(),
+                            &mut transaction.resource_nodes,
+                            transaction.overlay_grid.as_mut(),
                             overlay_registry,
-                            resolved_terrain.as_mut(),
-                            Some(&mut terrain_area_state),
+                            transaction.resolved_terrain.as_mut(),
+                            Some(&mut transaction.terrain_area_state),
                             scenario_no_damage,
                             current_tick,
                             &mut inline_hooks,
@@ -2631,8 +2552,8 @@ impl Simulation {
                     // If UnInit removed the current object, its represented
                     // list link is gone and this walk terminates.
                     let order = current_order(
-                        &occupancy,
-                        terrain_area_state.terrain_object_cells(),
+                        &transaction.occupancy,
+                        transaction.terrain_area_state.terrain_object_cells(),
                         rx,
                         ry,
                         layer,
@@ -2647,7 +2568,7 @@ impl Simulation {
                 // follows receivers and reloads raw AmbientDamage, ignoring
                 // the shared mutable occupant value.
                 if let (Some(grid), Some(registry)) =
-                    (overlay_grid.as_mut(), overlay_registry)
+                    (transaction.overlay_grid.as_mut(), overlay_registry)
                     && let Some(overlay_id) = grid.cell(rx, ry).overlay_id
                     && let Some(flags) = registry.flags(overlay_id)
                 {
@@ -2655,18 +2576,18 @@ impl Simulation {
                     if flags.wall {
                         let wall = {
                             let mut host = SimulationWallDamageHost {
-                                entities: &mut entities,
+                                entities: &mut transaction.entities,
                                 trace: &mut effects.cell_target_detaches,
                                 inline_hooks: &mut inline_hooks,
                             };
                             crate::sim::overlay_grid::damage_wall_overlay_with_runtime_host(
                                 grid,
                                 registry,
-                                resolved_terrain.as_mut(),
+                                transaction.resolved_terrain.as_mut(),
                                 rx,
                                 ry,
                                 raw_ambient_damage,
-                                &mut scenario_rng,
+                                &mut transaction.scenario_rng,
                                 Some(&mut host),
                             )
                         };
@@ -2680,18 +2601,18 @@ impl Simulation {
                 // The cliff tail is independent of damage magnitude and
                 // Warhead. Eligibility alone consumes one Scenario draw,
                 // including signed chances outside 0..=100.
-                let destroyable_cliff = resolved_terrain
+                let destroyable_cliff = transaction.resolved_terrain
                     .as_ref()
                     .is_some_and(|terrain| terrain.is_destroyable_cliff(rx, ry));
                 if destroyable_cliff {
-                    let chance_draw = scenario_rng.next_range_u32_inclusive(0, 99) as i32;
+                    let chance_draw = transaction.scenario_rng.next_range_u32_inclusive(0, 99) as i32;
                     if chance_draw < rules.combat_damage.collapse_chance
-                        && let Some(mutation) = resolved_terrain.as_mut().and_then(|terrain| {
+                        && let Some(mutation) = transaction.resolved_terrain.as_mut().and_then(|terrain| {
                             terrain.collapse_destroyable_cliff_terrain(
                                 rx,
                                 ry,
                                 |cell_x, cell_y| {
-                                    if let Some(grid) = overlay_grid.as_mut() {
+                                    if let Some(grid) = transaction.overlay_grid.as_mut() {
                                         let _ = grid.clear_overlay(cell_x, cell_y);
                                     }
                                     if let Some(grid) = smudge_grid.as_mut() {
@@ -2710,9 +2631,9 @@ impl Simulation {
                             .expect("world cliff hook")
                             .rebuild_cliff_navigation(
                                 rules,
-                                &mut resolved_terrain,
-                                &mut entities,
-                                &mut interner,
+                                &mut transaction.resolved_terrain,
+                                &mut transaction.entities,
+                                &mut transaction.interner,
                             );
 
                         // Pass three's externally represented effects remain
@@ -2720,7 +2641,7 @@ impl Simulation {
                         // then dirty this radar cell, in old-TMP row order.
                         for &coord in &mutation.original_footprint {
                             crate::sim::combat::combat_aoe::expire_cell_target_references(
-                                &mut entities,
+                                &mut transaction.entities,
                                 coord.0,
                                 coord.1,
                                 &mut effects.cell_target_detaches,
@@ -2740,24 +2661,24 @@ impl Simulation {
                         // Every representable allocation is successful, so
                         // each attempt consumes type, X, Y, and delay draws.
                         let anim_types = [
-                            interner.intern("XGRYMED1"),
-                            interner.intern("XGRYMED2"),
-                            interner.intern("XGRYSML1"),
+                            transaction.interner.intern("XGRYMED1"),
+                            transaction.interner.intern("XGRYMED2"),
+                            transaction.interner.intern("XGRYSML1"),
                         ];
                         for &(cell_x, cell_y) in &mutation.animation_cells {
                             for _ in 0..2 {
                                 let type_index =
-                                    scenario_rng.next_range_u32_inclusive(0, 2) as usize;
+                                    transaction.scenario_rng.next_range_u32_inclusive(0, 2) as usize;
                                 let jitter_x =
-                                    scenario_rng.next_range_u32_inclusive(0, 16) as i32 - 8;
+                                    transaction.scenario_rng.next_range_u32_inclusive(0, 16) as i32 - 8;
                                 let jitter_y =
-                                    scenario_rng.next_range_u32_inclusive(0, 24) as i32 - 12;
-                                let level = resolved_terrain
+                                    transaction.scenario_rng.next_range_u32_inclusive(0, 24) as i32 - 12;
+                                let level = transaction.resolved_terrain
                                     .as_ref()
                                     .expect("collapse terrain retained")
                                     .collapse_animation_level(cell_x, cell_y);
                                 let delay =
-                                    scenario_rng.next_range_u32_inclusive(0, 2) as u16;
+                                    transaction.scenario_rng.next_range_u32_inclusive(0, 2) as u16;
                                 let world_coord = crate::sim::anim_class::AnimWorldCoord {
                                     x: i32::from(cell_x)
                                         .wrapping_mul(256)
@@ -2795,8 +2716,8 @@ impl Simulation {
                                     .expect("world cliff hook")
                                     .spawn_cliff_anims(
                                         rules,
-                                        &mut interner,
-                                        &mut scenario_rng,
+                                        &mut transaction.interner,
+                                        &mut transaction.scenario_rng,
                                         &mut *cliff_sound_events,
                                         vec![(descriptor, world_coord)],
                                     );
@@ -2804,7 +2725,7 @@ impl Simulation {
                             }
                         }
 
-                        let terrain = resolved_terrain
+                        let terrain = transaction.resolved_terrain
                             .as_ref()
                             .expect("collapse terrain retained");
                         for &(cell_x, cell_y) in &mutation.changed_cells {
@@ -2822,31 +2743,12 @@ impl Simulation {
             }
         }
 
-        let inactive_terrain_logic_ids = terrain_area_state.inactive_logic_ids();
-        let terrain_navigation_changed_cells = terrain_area_state.restore_into(
-            &mut self.production,
-            &mut self.substrate.raw_cell_occupation,
-        );
-        for stable_id in inactive_terrain_logic_ids {
-            let retired = self.retire_non_entity_object(stable_id);
-            debug_assert!(retired);
-        }
-        self.substrate.entities = entities;
-        self.substrate.occupancy = occupancy;
-        self.interner = interner;
-        self.main_rng = main_rng;
-        self.scenario_rng = scenario_rng;
-        self.production.resource_nodes = resource_nodes;
-        self.overlay_grid = overlay_grid;
+        let terrain_navigation_changed_cells = transaction.finish(self);
         self.smudge_grid = smudge_grid;
-        self.resolved_terrain = resolved_terrain;
-        self.bridge_state = bridge_state;
         self.dynamic_terrain_cells.extend(collapsed_terrain_cells);
         if let Some(terrain) = self.resolved_terrain.as_ref() {
             self.real_cell_bridge_flags_0x1180 = terrain.capture_real_cell_bridge_flags_0x1180();
         }
-        self.sound_events = sound_events;
-        self.merge_receiver_house_state(&houses);
         self.absorb_noncombat_damage_effects(
             rules,
             overlay_registry,
@@ -2884,21 +2786,7 @@ impl Simulation {
         receivers: &[crate::sim::combat::combat_aoe::AreaDamageReceiver],
     ) {
         let rule_handles = self.rule_handles;
-        let mut entities = std::mem::take(&mut self.substrate.entities);
-        let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
-        let mut interner = std::mem::take(&mut self.interner);
-        let mut main_rng = std::mem::replace(&mut self.main_rng, SimRng::new(0));
-        let mut scenario_rng = std::mem::replace(&mut self.scenario_rng, SimRng::new(0));
-        let mut resource_nodes = std::mem::take(&mut self.production.resource_nodes);
-        let mut overlay_grid = self.overlay_grid.take();
-        let mut resolved_terrain = self.resolved_terrain.take();
-        let bridge_state = self.bridge_state.take();
-        let mut sound_events = std::mem::take(&mut self.sound_events);
-        let mut terrain_area_state = crate::sim::terrain_object::TerrainAreaState::take_from(
-            &mut self.production,
-            &mut self.substrate.raw_cell_occupation,
-        );
-        let mut houses = self.houses.clone();
+        let mut transaction = ReceiverTransaction::take_from(self);
         let house_order = self.session.house_order.clone();
         let house_alliances = self.house_alliances.clone();
         let current_tick = u64::from(self.session.binary_frame);
@@ -2907,55 +2795,37 @@ impl Simulation {
         let (effects, under_attack_events) = {
             let mut inline_hooks = SimulationCombatInlineHooks {
                 sim: self,
-                bridge_state: bridge_state.as_ref(),
+                bridge_state: transaction.bridge_state.as_ref(),
             };
             let mut inline_hooks: Option<&mut dyn crate::sim::combat::CombatInlineHooks> =
                 Some(&mut inline_hooks);
-            let mut sound_sink = Some(&mut sound_events);
+            let mut sound_sink = Some(&mut transaction.sound_events);
             crate::sim::combat::commit_area_damage_receivers_with_scenario(
                 receivers,
-                &mut entities,
-                &mut occupancy,
+                &mut transaction.entities,
+                &mut transaction.occupancy,
                 rules,
-                &mut interner,
+                &mut transaction.interner,
                 rule_handles,
-                &mut houses,
+                &mut transaction.houses,
                 &house_order,
                 &house_alliances,
-                &mut main_rng,
-                &mut scenario_rng,
+                &mut transaction.main_rng,
+                &mut transaction.scenario_rng,
                 &mut handled_deaths,
-                &mut resource_nodes,
-                overlay_grid.as_mut(),
+                &mut transaction.resource_nodes,
+                transaction.overlay_grid.as_mut(),
                 overlay_registry,
-                resolved_terrain.as_mut(),
-                Some(&mut terrain_area_state),
+                transaction.resolved_terrain.as_mut(),
+                Some(&mut transaction.terrain_area_state),
                 scenario_no_damage,
                 current_tick,
                 &mut inline_hooks,
                 &mut sound_sink,
             )
         };
-        let inactive_terrain_logic_ids = terrain_area_state.inactive_logic_ids();
-        let terrain_navigation_changed_cells = terrain_area_state.restore_into(
-            &mut self.production,
-            &mut self.substrate.raw_cell_occupation,
-        );
-        for stable_id in inactive_terrain_logic_ids {
-            let retired = self.retire_non_entity_object(stable_id);
-            debug_assert!(retired);
-        }
-        self.substrate.entities = entities;
-        self.substrate.occupancy = occupancy;
-        self.interner = interner;
-        self.main_rng = main_rng;
-        self.scenario_rng = scenario_rng;
-        self.production.resource_nodes = resource_nodes;
-        self.overlay_grid = overlay_grid;
-        self.resolved_terrain = resolved_terrain;
-        self.bridge_state = bridge_state;
-        self.sound_events = sound_events;
-        self.merge_receiver_house_state(&houses);
+        let terrain_navigation_changed_cells = transaction.finish(self);
+
         self.absorb_noncombat_damage_effects(
             rules,
             overlay_registry,
