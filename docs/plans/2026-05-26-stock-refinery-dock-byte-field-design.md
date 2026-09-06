@@ -125,7 +125,7 @@ The chosen approach is full for this dock/unload slice:
 - East compass convention remains valid: 8-bit `0x40`, direction index `2`, delta `(1,0)`. Source: same facing report.
 - `0x15` queues mission `0x10`; it does not start unload, snap, drain cargo, emit sound, or set pad occupancy. Source: `RADIO_0X15_START_UNLOAD_SIDE_EFFECTS_GHIDRA_REPORT.md`, mission deploy verification.
 - Mission `0x10` dispatches to `UnitClass::Mission_Deploy_Building`. Source: `UNIT_MISSION_DEPLOY_BUILDING_UNLOAD_START_IMPLEMENTATION_VERIFICATION_GHIDRA_REPORT.md`.
-- Mission `0x10` checks `PathType::Has_Valid_Steps` before facing/RateTimer gate and before unload-start writes. Source: same verification.
+- Mission `0x10` checks `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) before facing/RateTimer gate and before unload-start writes. Source: same verification.
 - Facing/RateTimer accept condition is `((RateTimerCurrent >> 7) + 1) & 0x1FE == 0x80`. Source: same verification.
 - If not accepted and `+0x6AF` is clear, mission `0x10` calls locomotor `+0x4C(0x4000)` and returns delay `5`. Source: same verification.
 - Accepted unload start writes `+0xF8=0`, `+0x6D1=1`, `+0x10C=1`, `+0x100=current frame`, `+0x104=stack value`, `+0x108=1`, optional slot 7, then `+0xBC=3`. Source: same verification.
@@ -201,7 +201,7 @@ The chosen approach is full for this dock/unload slice:
 
 - `run_mission_deploy_building_gate(...)`:
   - runs only after `0x15` queues mission `0x10`;
-  - path gate first, with the exact verified `PathType::Has_Valid_Steps` branch polarity and cleanup return behavior documented in the implementation plan before code is written;
+  - path gate first, with the exact verified `RadioClass::In_Radio_Contact` branch polarity and cleanup return behavior documented in the implementation plan before code is written;
   - RateTimer accept gate second;
   - not-ready path calls `drive_do_turn_rate_timer(0x4000)` and stores/returns delay `5`;
   - accepted path calls unload-start initializer and then follows the verified mission timer epilogue/return cadence.

@@ -495,7 +495,7 @@ All slot calls via `BuildingClass::SetAnimSlotImage` @ 0x00451750 (art-name sele
 
 11. **FootClass case 0x12 writes 3-word timestamp** at `this+0xC8`, `+0xCC`, `+0xD0` = `[g_CurrentFrameCounter, iStack_10, 0]`. Verified via disassembly at 0x004D91fc–0x004D920d. (#5 §4)
 
-12. **`PathType::Has_Valid_Steps @ 0x0065AE30` is misnamed** — the body actually walks `this->Contacts[]` (+0xE4, +0xE8) and returns 1 if any slot is non-null. Functionally = HasRadioContact, not HasPathSteps. (#6 §stage-4a note)
+12. **`RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps) @ 0x0065AE30` is misnamed** — the body actually walks `this->Contacts[]` (+0xE4, +0xE8) and returns 1 if any slot is non-null. Functionally = HasRadioContact, not HasPathSteps. (#6 §stage-4a note)
 
 13. **`RadioHistory` is written but base RadioClass never reads it back** — the 3-slot push-down dedup log is write-only at the base class level. Subclasses may read it for dedup. (#1 §2)
 
@@ -531,7 +531,7 @@ All slot calls via `BuildingClass::SetAnimSlotImage` @ 0x00451750 (art-name sele
 | `HARVESTER_DOCK_UNLOAD.md` | §4a | "`BuildingClass::MissionRepairAndProduce` handles the refinery dump" | Refinery drain is entirely in `UnitClass::Mission_Deploy_Building` on the unit side. `MissionRepairAndProduce` is for UnitRepair/Bunker/Hospital only | #9 §Q2 |
 | `BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md` | §case 0x10, §6 table | "Type[0x16BB] is unknown flag, not in stock YR rules (likely TS-legacy); case 0x10 returns NEGATORY for standard DockUnload refineries" | Type[0x16BB] = `Refinery=yes` INI key; case 0x10 returns ROGER for GAREFN/NAREFN | #11 §5.1 + §3 flag table; `read_memory 0x00460A40`; string "Refinery" at 0x0081AA5C |
 | `UNITCLASS_ENTERBUILDINGORDOCK_GHIDRA_REPORT.md` (investigation plan label) | Title + scope | "This function is the harvester-side sender of 0x0E/0x16 traffic" | The function at 0x0041AA80 is `AircraftClass::Set_Destination` (vtable+0x480 of AircraftClass, not UnitClass). Ghidra label `UnitClass__EnterBuildingOrDock` is wrong | #6 §CRITICAL IDENTITY FINDING; `read_memory 0x007E2724` → `80 AA 41 00` |
-| `RADIO_CLASS_PROTOCOL_GHIDRA_REPORT.md` | PathType::Has_Valid_Steps description | "Checks if path has valid steps" | The body at 0x0065AE30 walks `this->Contacts[]` and returns 1 if any slot is non-null — functionally = HasRadioContact | #6 §stage-4a, #7 §tiny details |
+| `RADIO_CLASS_PROTOCOL_GHIDRA_REPORT.md` | RadioClass::In_Radio_Contact description | "Checks if path has valid steps" | The body at 0x0065AE30 walks `this->Contacts[]` and returns 1 if any slot is non-null — functionally = HasRadioContact | #6 §stage-4a, #7 §tiny details |
 | `DOCKMANAGER_STATE_MACHINE_FUN_006AF6C0_GHIDRA_REPORT.md` | Title | "DOCKMANAGER" in title | Content is correct: 0x006AF6C0 is `SlaveManagerClass::AI_Update`. Title is misleading. | #11 §2.7, §4 |
 
 ---

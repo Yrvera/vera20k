@@ -351,7 +351,7 @@ return 1;   // ROGER
 ```c
 // case 0x17:
 // Step 1: if has valid path and destination == current chrono dest, clear destination
-cVar3 = PathType__Has_Valid_Steps();   // 0x0065AE30
+cVar3 = RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)();   // 0x0065AE30
 if (cVar3 != 0) {
     iVar5 = FootClass__GetDestination(0);   // 0x0065AD30
     if (this+0x5A4 == iVar5) {              // chrono dest matches current destination
@@ -384,7 +384,7 @@ this->vtable[0x174](&DAT_008b3da8, 1, 1);  // ChangeLocomotorTo(nullCLSID, 1, 1)
 **Disassembly confirms at `0x004D902B`:**
 ```asm
 004d902b: MOV ECX, ESI
-004d902d: CALL 0x0065ae30           ; PathType__Has_Valid_Steps
+004d902d: CALL 0x0065ae30           ; RadioClass__In_Radio_Contact
 004d9032: TEST AL, AL
 004d9034: JZ  0x004d9055            ; no valid path, skip
 004d9036: PUSH 0x0

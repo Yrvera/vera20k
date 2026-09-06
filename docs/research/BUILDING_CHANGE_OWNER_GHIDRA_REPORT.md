@@ -25,7 +25,7 @@ is **not** transferred at entry time — instead a per-tick reconciliation funct
 | Step | Description | Relevant to garrison? |
 |------|-------------|----------------------|
 | 1 | Early exit if `newOwner == this->Owner` | Yes |
-| 2 | If building has power (`Type+0x1558`), refund power credits to old owner | No (civilian buildings have no power) |
+| 2 | If the old owner's side has the capture-grant flag (`Side+0x1A6`) and `Type+0x1558` (`ProduceCashStartup`) is non-zero, grant that amount via `HouseClass::Add_Credits` and stamp `+0x6D0/+0x6D4/+0x6D8` (the oil-derrick capture grant; corrected 2026-09-06 — this is not a power-credit refund) | No (civilian buildings have `ProduceCashStartup=0`; oil derricks do not) |
 | 3 | If `IsRadarJammer` (`Type+0x16A4`), recalculate old owner's jammer mask | No |
 | 4 | Disconnect walls if `IsWall` (`Type+0x16BE`) | No |
 | 5 | Play EVA notifications if human player involved (`EVA_StructureCaptured` or `EVA_StructureSold`) | Yes — announces capture |

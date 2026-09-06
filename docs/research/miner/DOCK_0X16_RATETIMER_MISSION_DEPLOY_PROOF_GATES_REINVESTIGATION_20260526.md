@@ -1,6 +1,6 @@
 # Dock 0x16 RateTimer / Mission_Deploy Proof Gates - Reinvestigation Report
 
-**Address(es):** `0x00737430` (`UnitClass::Receive_Radio` case `0x16`), `0x004B0EF0` (`DriveLocomotionClass::Do_Turn`), `0x004C9220` (`RateTimer::Set`), `0x004C93D0` (`RateTimer::Current`), `0x004D9290` (`FootClass::Mission_Enter`), `0x0073D630` (`UnitClass::Mission_Deploy_Building`), `0x0065AE30` (`PathType::Has_Valid_Steps`)
+**Address(es):** `0x00737430` (`UnitClass::Receive_Radio` case `0x16`), `0x004B0EF0` (`DriveLocomotionClass::Do_Turn`), `0x004C9220` (`RateTimer::Set`), `0x004C93D0` (`RateTimer::Current`), `0x004D9290` (`FootClass::Mission_Enter`), `0x0073D630` (`UnitClass::Mission_Deploy_Building`), `0x0065AE30` (`RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps))
 **Investigation Mode:** coverage-map follow-up
 **Claimed Scope:** proof-gate status for implementing a full coupled stock refinery dock-facing / unload-start path after the Chrono Miner locomotor ownership bridge.
 **Non-Scope:** fresh live Ghidra decompilation, runtime debugger traces, complete MissionClass scheduler storage/decrement, full building anim/audio composition, and Rust patches.
@@ -70,12 +70,12 @@ Evidence: `RATETIMER_CURRENT_FRAME_COUNTER_HELPERS_GHIDRA_REPORT.md`, `TICK_AND_
 
 ### 3.4 Mission_Deploy path/facing gates
 
-`Mission_Deploy_Building @ 0x0073D630` in the stock zero-link harvester branch first checks `PathType::Has_Valid_Steps @ 0x0065AE30`.
+`Mission_Deploy_Building @ 0x0073D630` in the stock zero-link harvester branch first checks `RadioClass::In_Radio_Contact @ 0x0065AE30`.
 
 The branch polarity is settled:
 
-- `Has_Valid_Steps() != 0` jumps to the RateTimer/facing gate.
-- `Has_Valid_Steps() == 0` takes cleanup, clears `+0x6D1`, optionally queues/stops, and direct-returns `1`.
+- `RadioClass__In_Radio_Contact() != 0` jumps to the RateTimer/facing gate.
+- `RadioClass__In_Radio_Contact() == 0` takes cleanup, clears `+0x6D1`, optionally queues/stops, and direct-returns `1`.
 
 The direct return `5` belongs to the facing-not-ready branch, not to the PathType false branch. The facing accept condition is:
 
@@ -191,7 +191,7 @@ This means a bridge patch can remove the forced facing snap and per-tick polling
 - `[RESOLVED] OQ-02 - Is RateTimer storage/progression known enough for the dock facing gate? -> Yes: target/source/start/duration/rate fields and Current/Set semantics are documented.` (evidence: `RATETIMER_CURRENT_FRAME_COUNTER_HELPERS_GHIDRA_REPORT.md`)
 - `[RESOLVED] OQ-03 - Does Mission_Deploy require exact target 0x4000? -> No, it accepts the quantized window `0x3F80..0x407F`.` (evidence: `UNIT_MISSION_DEPLOY_BUILDING_UNLOAD_START_IMPLEMENTATION_VERIFICATION_GHIDRA_REPORT.md`)
 - `[RESOLVED] OQ-04 - Which branch returns delay 5? -> The valid-path but facing-not-ready branch.` (evidence: `STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_PATHTYPE_STATE4_GHIDRA_REPORT.md`)
-- `[RESOLVED] OQ-05 - What is PathType::Has_Valid_Steps polarity? -> True proceeds to RateTimer/state dispatch; false cleanup direct-returns 1.` (evidence: `0x0065AE30`, `0x0073DEE2..0x0073DEE9` reports)
+- `[RESOLVED] OQ-05 - What is RadioClass::In_Radio_Contact polarity? -> True proceeds to RateTimer/state dispatch; false cleanup direct-returns 1.` (evidence: `0x0065AE30`, `0x0073DEE2..0x0073DEE9` reports)
 - `[RESOLVED] OQ-06 - Does unload-start snap body facing to East? -> No explicit facing write appears in the verified unload-start block.` (evidence: `0x0073DF56..0x0073E09D` in unload-start verification)
 - `[RESOLVED] OQ-07 - Is normal stock exit ReleaseDockedHarvester / Force_Track(0x47)? -> No. That is the nonzero reciprocal-link branch, not normal stock zero-link completion.` (evidence: PathType/state4 and reachability reports)
 - `[RESOLVED] OQ-08 - Does Mission Enter supply a later 0x16? -> Yes, through later `Mission_Enter -> 0x0E` dispatch after `0x12 == 0x14`; 0x16 does not self-schedule.` (evidence: second-call scheduling report)

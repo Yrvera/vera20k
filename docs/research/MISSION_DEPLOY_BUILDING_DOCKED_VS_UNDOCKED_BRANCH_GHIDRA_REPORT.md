@@ -51,7 +51,7 @@ In the zero-link state-4 branch, the function uses the unit cell plus the global
 
 After clearing `+0x6D1`, two paths exist:
 
-- If `+0x5A4` is null, queued mission is `-1`, or queued mission is `10`, it calls `SetMission(10,0)` via vtable `+0x1E8`, may transmit radio `0x03` if `PathType__Has_Valid_Steps` is true, then calls vtable `+0x1EC`.
+- If `+0x5A4` is null, queued mission is `-1`, or queued mission is `10`, it calls `SetMission(10,0)` via vtable `+0x1E8`, may transmit radio `0x03` if `RadioClass__In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) is true, then calls vtable `+0x1EC`.
 - Otherwise, it checks locomotor `+0x674`; if moving, it calls unit vtable `+0x500`, then calls vtable `+0x200` and, if true, vtable `+0x1EC`.
 
 No call to `ReleaseDockedHarvester`, no call to `UndockUnit`, and no reciprocal `+0x2E4` clear occurs in this stock zero-link state-4 branch because no reciprocal link exists to clear.

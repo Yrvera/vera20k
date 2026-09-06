@@ -267,7 +267,8 @@ if (FUN_0065ADF0()) {                        // Hospital/Armory: accept any infa
     this->vtable[0x27C](0x12 MOVE_TO_CELL, out_param, sender);
     return ROGER;
 }
-// evict mismatched queue entries
+// evict mismatched queue entries — Hospital/Armory branch ONLY (0x0043CB0C);
+// UnitRepair depots never reach this loop (depot path 0x0043C8A4 -> HELLO -> 0x13 -> return 1)
 for (i = 0; i < this->ContactsCount (field_0xE8); i++) {
     unit_i = FootClass::GetDestination();    // (reads contacts slot)
     if (this->vtable[0x278](0x22 IS_REPAIRING, unit_i) == 10) {
@@ -445,7 +446,7 @@ periodically sends `0x1C REPAIR_TICK` to the unit. The unit's TechnoClass::Recei
 case 0x1C runs:
 
 ```c
-if (this->HealthRatio >= Rules+0x16F8 ConditionYellowRepair) return NEGATORY;  // full
+if (this->HealthRatio >= Rules+0x16F8 /* constant 1.0 written at 0x0066B32D, not an INI key */) return NEGATORY;  // full
 step_cost = Type->vtable[0xB0]();     // money per tick
 step_hp   = max(1, Type->vtable[0xB4]());  // hp per tick
 if (owner_cash < step_cost) return INSUFFICIENT_FUNDS (0x20);

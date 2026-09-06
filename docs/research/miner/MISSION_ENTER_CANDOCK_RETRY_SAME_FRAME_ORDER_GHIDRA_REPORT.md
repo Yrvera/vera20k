@@ -38,7 +38,7 @@ On the actual release path:
 
 1. `unit+0x6D1 = 0` at `0x0073E1F6`.
 2. If the normal zero-link branch applies, the unit sets mission `0x0A` / Harvest at `0x0073E24F..0x0073E254`.
-3. It checks whether a radio contact exists (`vtable +0x200`, then `PathType__Has_Valid_Steps @ 0x0065AE30`).
+3. It checks whether a radio contact exists (`vtable +0x200`, then `RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps) @ 0x0065AE30`).
 4. It sends radio `BREAK(3)` at `0x0073E275..0x0073E279` only if that contact check succeeds.
 5. It finalizes radio cleanup through `vtable +0x1EC` at `0x0073E27F..0x0073E283`.
 

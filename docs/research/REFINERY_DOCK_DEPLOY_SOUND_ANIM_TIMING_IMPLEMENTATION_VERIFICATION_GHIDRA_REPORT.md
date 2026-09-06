@@ -36,7 +36,7 @@ Stock refinery unloading starts in `UnitClass::Mission_Deploy_Building`, not at 
 
 ### Unload latch and slot 7 timing
 
-`Mission_Deploy_Building` reaches the stock harvester branch after `PathType::Has_Valid_Steps()` succeeds and the facing/rate timer check accepts the east-facing slot. Evidence: `0x0073DF56..0x0073DF72` computes `((timer >> 7) + 1) & 0x1FE` and compares with `0x80`; the non-accepted branch calls locomotor/facing and returns `5`.
+`Mission_Deploy_Building` reaches the stock harvester branch after `RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)()` succeeds and the facing/rate timer check accepts the east-facing slot. Evidence: `0x0073DF56..0x0073DF72` computes `((timer >> 7) + 1) & 0x1FE` and compares with `0x80`; the non-accepted branch calls locomotor/facing and returns `5`.
 
 When `Unit+0x6D1 == 0`, the first-entry block runs:
 

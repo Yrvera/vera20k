@@ -282,7 +282,7 @@ if (param_1[0xb9] == 0):            // no alt-dock-link (== approaching)
         goto LAB_0073d672            // harvester path
 ```
 
-LAB_0073d672 is the **harvester dump path** — it starts with checking `PathType::Has_Valid_Steps()`
+LAB_0073d672 is the **harvester dump path** — it starts with checking `RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)()`
 and then handles the rate-timer / dump state machine.
 
 ### 4.2 Harvester Dump State Machine in Mission_Deploy_Building
@@ -290,7 +290,7 @@ and then handles the rate-timer / dump state machine.
 From decompile at 0x73D630 LAB_0073dee7 onwards:
 
 ```
-if PathType::Has_Valid_Steps() == false:
+if RadioClass::In_Radio_Contact() == false:
     // locomotor has finished — unit is stationary on pad
     if (field_0x6AF == 0):          // not chrono-teleporting
         // ensure rate timer at 0x4000
@@ -471,7 +471,7 @@ TICK N+1 (same tick, building side):
 
 TICK N+2+:
   Mission_Deploy_Building runs (unit mission = 0x10):
-    if PathType::Has_Valid_Steps() == false:      // locomotor finished
+    if RadioClass::In_Radio_Contact() == false:      // locomotor finished
         if RateTimer != 0x4000:
             SetSpeed(0x4000)
             return 5                              // wait — not ready

@@ -56,7 +56,7 @@ For the normal non-Weeder stock refinery branch, `Mission_Deploy_Building` state
 4. If normal stock branch condition passes, call `Queue_Mission(10, 0)` at `0x0073E24F..0x0073E254`.
 5. Call vtable `+0x200`, now resolved as `UnitClass::ShouldIdle`, at `0x0073E25E`.
 6. If false, jump to `0x0073E289` and skip both contact scan/BREAK and `Commence`.
-7. If true, call `PathType__Has_Valid_Steps @ 0x0065AE30`; if any contact exists, send `BREAK(0x03)` through vtable `+0x274` at `0x0073E275..0x0073E279`.
+7. If true, call `RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps) @ 0x0065AE30`; if any contact exists, send `BREAK(0x03)` through vtable `+0x274` at `0x0073E275..0x0073E279`.
 8. Call `Commence @ +0x1EC` at `0x0073E27F..0x0073E283`.
 9. Return through the mission timer epilogue.
 
@@ -126,7 +126,7 @@ Therefore, for the scoped healthy stock refinery state-4 exit, `+0x200` does not
 | `MissionClass::Commence @ 0x005B3570` | promotes queued mission and resets mission timer fields | skipped if state-4 `ShouldIdle` returns false |
 | `UnitClass::AI @ 0x007360C0` | same predicate is used as a general late/early commence gate | confirms `+0x200` is a mission readiness gate, not a refinery-only helper |
 | `RadioClass` contact slot helper `0x0065AD40` | returns contact slot by index | `ShouldIdle` reads contact slot 0 |
-| `PathType__Has_Valid_Steps @ 0x0065AE30` | contact-present scan in this radio context | called only after `ShouldIdle` true |
+| `RadioClass__In_Radio_Contact @ 0x0065AE30` | contact-present scan in this radio context | called only after `ShouldIdle` true |
 
 ## 6. Current Rust Implementation Status
 
@@ -198,7 +198,7 @@ Current Rust broadly matches the healthy stock outcome because it always perform
 
 ## Sources
 
-- Ghidra read-only decompile: `UnitClass::Mission_Deploy_Building @ 0x0073D630`; `UnitClass::ShouldIdle @ 0x00744270`; `MissionClass::Queue_Mission @ 0x005B35E0`; `MissionClass::Commence @ 0x005B3570`; `UnitClass::AI @ 0x007360C0`; `FUN_004A51D0`; `FUN_0065AD40`; `PathType__Has_Valid_Steps @ 0x0065AE30`; base stub `0x004E0140`; Infantry override `0x00521B60`.
+- Ghidra read-only decompile: `UnitClass::Mission_Deploy_Building @ 0x0073D630`; `UnitClass::ShouldIdle @ 0x00744270`; `MissionClass::Queue_Mission @ 0x005B35E0`; `MissionClass::Commence @ 0x005B3570`; `UnitClass::AI @ 0x007360C0`; `FUN_004A51D0`; `FUN_0065AD40`; `RadioClass__In_Radio_Contact @ 0x0065AE30`; base stub `0x004E0140`; Infantry override `0x00521B60`.
 - Ghidra assembly contexts: `0x0073E23D..0x0073E289`; `0x005B3629..0x005B3641`; `0x00744270..0x0074446A`; `0x00736461..0x00736473`; `0x0065AE30..0x0065AE54`.
 - Retail binary PE read: `<ra2-install>/gamemd.exe`, vtable dwords at `0x007F5E58`, `0x007F5E5C`, `0x007F5E70`, `0x007F5EAC`.
 - Existing docs: `ADDRESS_MAP.md`; `HARV_POST_UNLOAD_RADIO_0X08_FRAME_ORDER_RESWARM_20260528.md`; `miner/CMIN_STATE2_CLOSE_FAR_RETURN_TO_MISSION_ENTER_DISPATCH_GHIDRA_REPORT.md`; `BIB_SYSTEM_GHIDRA_REPORT.md`; `UNIT_MISSION_DEPLOY_BUILDING_GHIDRA_REPORT.md`.

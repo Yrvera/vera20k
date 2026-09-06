@@ -61,7 +61,7 @@ The helper has no `StorageClass::RemoveAmount`, `StorageClass::GetAmount`, `Hous
 
 If the lookup is null, the branch is:
 
-1. `PathType::Has_Valid_Steps` (`0x0073E313`).
+1. `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) (`0x0073E313`).
 2. If true, send radio `3` through unit vtable `+0x274` (`0x0073E31E..0x0073E322`).
 3. Queue mission `0x0A`/Harvest with immediate flag `1` (`0x0073E32A..0x0073E330`).
 4. Enter mission timer epilogue (`0x0073E338+`).

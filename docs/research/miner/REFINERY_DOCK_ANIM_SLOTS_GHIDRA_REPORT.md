@@ -447,7 +447,7 @@ Only **one** of the four is selected by this refinery-tier mechanism at a moment
   - `0x451890` (CreateAnimForSlot) — confirmed slot replacement semantics
   - `0x45FE50` (BuildingTypeClass::ReadINI) — verified slot↔INI key offsets via `LEA EDX, [EBP + offset]` instructions for every key
   - `0x459900` (vtable+0x468) — particle emitter
-  - `0x65AE30` (current label `PathType__Has_Valid_Steps`) — state-4 receiver `+0xE4/+0xE8` contact-vector nonempty test; current label is misleading
+  - `0x65AE30` (current label `RadioClass__In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps)) — state-4 receiver `+0xE4/+0xE8` contact-vector nonempty test; current label is misleading
   - `0x460A6C` (Refinery flag write) — confirms `+0x16BB`
 - **Parent doc:** [BUILDING_ANIM_STATE_MACHINE.md](BUILDING_ANIM_STATE_MACHINE.md) — 21-slot table, damage/power/cloak switching
 - **Related doc:** [BUILDING_DOCK_AND_HEAL_STATE_MACHINES.md](BUILDING_DOCK_AND_HEAL_STATE_MACHINES.md) — *NOTE: Part 2 of that doc is INCORRECT* (confused harvester dock with `SlaveManagerClass::AI_Update`). The slot 7/8/10 claims it makes are accurate; the FSM structure it claims is not.

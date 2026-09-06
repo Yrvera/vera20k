@@ -190,7 +190,7 @@ if nearest_object != NULL AND HouseClass__Is_Ally(nearest_object):
     if type.JumpJet (offset 0xC94) == 0:
         // Check close-enough and path validity
         distance = Distance3D(current - destination)
-        if distance < CloseEnough AND Has_Valid_Steps() == false:
+        if distance < CloseEnough AND RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)() == false:
             // Check height within tolerance
             height_diff = abs(techno.Z - coord_Z)
             if height_diff < DriveHeightStep * 2:
@@ -894,7 +894,7 @@ This sets a high retry counter and re-enters the main HAS_PATH processing. The a
 | `FootClass__Stop_Moving` | (techno) | Clears NavQueue offset 0x5A0 and 0x5A4 to 0 |
 | `FootClass__Is_Mission_Harvest` | (techno) | Returns mission == 7 |
 | `RadioClass__Tether_Count` | (techno) | Count of active tether links (radio connections) |
-| `PathType__Has_Valid_Steps` | (techno) | Checks if path_queue has any non-zero entries |
+| `RadioClass__In_Radio_Contact` | (techno) | Checks if path_queue has any non-zero entries |
 | `ObjectClass__GetHealthRatio` | (techno) | Returns Health / Type.Strength as double |
 | `MapClass__Is_Cell_In_Playfield` | (cell, validate) | Bounds-checks cell coordinates against map |
 | `MapClass__Get_CellClass` | (cell_coord) | Returns CellClass* for a cell coordinate |

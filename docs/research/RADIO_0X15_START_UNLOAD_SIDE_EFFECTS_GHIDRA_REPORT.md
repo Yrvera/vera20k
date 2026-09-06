@@ -99,7 +99,7 @@ This corrects a common shorthand: `0x10` in this path is not `UnitClass::Mission
 
 The stock HARV/CMIN path reaches the harvester block because `UnitType+0xE0E Harvester=yes` is set (`0x0073D678`) and `+0xE0F Weeder` is not set (`0x0073D686`). In the valid-path/facing-aligned branch:
 
-1. `0x0073DEE0..0x0073DEE9`: `PathType::Has_Valid_Steps()` must be true to proceed toward rate/facing/state dispatch. False goes to cleanup.
+1. `0x0073DEE0..0x0073DEE9`: `RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)()` must be true to proceed toward rate/facing/state dispatch. False goes to cleanup.
 2. `0x0073DF56..0x0073DF78`: read `RateTimer::Current(+0x388)`, compute `((current >> 7) + 1) & 0x1FE`, and require `0x80`.
 3. `0x0073DF7A..0x0073DFBC`: if not facing-ready and not chrono/teleport flag `+0x6AF`, call locomotor vtable `+0x4C(0x4000)` and return `5`.
 4. `0x0073DFBD..0x0073DFC5`: if `+0x6D1` is already set, skip init and continue state processing.

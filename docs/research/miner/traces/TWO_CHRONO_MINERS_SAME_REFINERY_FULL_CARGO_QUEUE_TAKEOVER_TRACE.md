@@ -77,7 +77,7 @@ No Rust, INI, or existing research docs were edited. This trace document is the 
 
 `MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md` is RED in `AUDIT_LOG.md:183`, so this trace uses the newer branch/writer reports plus a targeted decompile of `UnitClass::Mission_Deploy_Building @ 0x0073D630`. The spot-check confirmed:
 
-- `PathType::Has_Valid_Steps` true proceeds into the harvester timer/state dispatch;
+- `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) true proceeds into the harvester timer/state dispatch;
 - stock standard unload normally runs with `unit+0x2E4 == 0`;
 - state 3 drains cargo and sets state 4 on `FindFirstNonEmptySlot == -1`;
 - state 4 waits on `building+0x57C`, clears `+0x6D1`, sets mission Harvest `0x0A`, optionally sends radio `3`, and queues the next mission;

@@ -3,7 +3,7 @@
 **Address(es):** `0x006F9E50` `TechnoClass::AI_Update`, `0x004DA530` `FootClass::AI`, `0x007360C0` `UnitClass::AI`, `0x005B3060` `MissionClass::Mission_Dispatch`, `0x0073D630` `UnitClass::Mission_Deploy_Building`
 **Investigation Mode:** exhaustive-slice
 **Claimed Scope:** stock `HARV`/`CMIN` refinery unload ordering between `TechnoClass::AI_Update` timer-cluster increment of `Unit+0xF8` and `UnitClass::Mission_Deploy_Building` state-3 `HarvesterDumpRate` gate.
-**Non-Scope:** RateTimer `Set/Current`, `PathType::Has_Valid_Steps` polarity, cargo credit formulas, exact `+0x104` meaning, and runtime replay capture.
+**Non-Scope:** RateTimer `Set/Current`, `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) polarity, cargo credit formulas, exact `+0x104` meaning, and runtime replay capture.
 **Confidence:** High
 **Active in YR:** Yes. Stock `[HARV]` and `[CMIN]` have `Harvester=yes`; stock `[GAREFN]`/`[NAREFN]` have `DockUnload=yes`/`Refinery=yes`; mission `0x10` dispatches to `UnitClass::Mission_Deploy_Building`.
 

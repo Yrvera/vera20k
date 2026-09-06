@@ -24,7 +24,7 @@ YR executable. Confidence levels noted per finding.
 > Also prefer `STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_REACHABILITY_GHIDRA_REPORT.md`,
 > `CHRONO_MINER_REFINERY_CONTACT_SATURATION_QUEUE_EVICTION_GHIDRA_REPORT.md`, and
 > `miner/traces/CHRONO_MINER_FULL_CARGO_CLOSE_RETURN_MISSION_DISPATCH_TIMING_TRACE.md`.
-> These close the remaining stock-path issues: `PathType::Has_Valid_Steps()`
+> These close the remaining stock-path issues: `RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)()`
 > true continues to RateTimer/state dispatch; false performs cleanup and returns
 > `1`; stock refinery full `HELLO(0x02)` returns `10` without evicting receiver
 > contacts; sender-side HELLO eviction only evicts the sender's old contact; and

@@ -107,7 +107,7 @@ State at `BuildingClass+0xBC`.
 - state = 2
 
 ### State 2 — Idle monitor
-- `PathType::Has_Valid_Steps()` check
+- `RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)()` check
 - If no valid steps: Queue_Mission(5=GUARD) + ClearAnimSlot, return 1
 
 ---
@@ -216,7 +216,7 @@ State at `BuildingClass+0xBC`.
 Entry point for a fresh repair pad with no docked unit.
 
 ```c
-if (!PathType::Has_Valid_Steps()) {
+if (!RadioClass::In_Radio_Contact()) {
     // No unit docking → idle animations
     ClearAnimSlot(8); ClearAnimSlot(11);
     CreateAnimForSlot(Type+0x127C/0x128C);  // idle primary
@@ -253,7 +253,7 @@ if (!FUN_0053A130() && piggyback active) {
 ### State 1 — Drive-in phase
 
 ```c
-if (!PathType::Has_Valid_Steps()) {
+if (!RadioClass::In_Radio_Contact()) {
     // Arrived: switch to anim slots for docked state
     CreateAnimForSlot(Type+0x127C/0x128C);  // arm-out primary
     CreateAnimForSlot(Type+0x1018/0x1028);  // arm-out secondary
@@ -334,7 +334,7 @@ if (+0x57C == 0) {   // some precondition
 ### State 2 — Repair tick (HP-per-time)
 
 ```c
-if (!PathType::Has_Valid_Steps()) {
+if (!RadioClass::In_Radio_Contact()) {
     // Abort: clear anims and go back to state 1
     ClearAnimSlot(8); ClearAnimSlot(11);
     CreateAnimForSlot(Type+0x127C/0x128C);
@@ -556,8 +556,8 @@ but state machines not wired.
 
 1. **Rules+0x16E8 exact INI key name** — not traced in this pass. Likely
    `RepairStep=` or `RepairDelay=`. Needs ReadINI trace.
-2. **Rules+0x16F8 exact INI key** — "close enough" health ratio threshold.
-   Probably `RepairPercent=` or similar.
+2. **Rules+0x16F8 exact INI key** — RESOLVED 2026-09-06: not an INI key; `RulesClass::ReadAudioVisual`
+   writes the constant double 1.0 at `0x0066B32D` (`param_1[0x5be]=0; param_1[0x5bf]=0x3ff00000`).
 3. **DAT_007E9AB0 locomotor CLSID** — the "alternate" piggyback-compatible
    locomotor compared in state 0. Not identified; might be
    `JumpjetLocomotion` or `FlyLocomotion`.

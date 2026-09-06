@@ -188,7 +188,7 @@ Much more complex, with 3 states (0, 1, 2):
   - On 0x20 (unit leaving): plays EVA warning, clears anims, goes to state 1
   - On 0x21 (complete): clears anims, sends unit to rally point, goes to state 1
 - **State 1:** Unit departing
-  - Checks PathType__Has_Valid_Steps() — waits for unit to leave
+  - Checks RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)() — waits for unit to leave
   - If unit stopped: checks if it needs to force-depart via locomotion
   - Checks distance < 200 to determine arrival/departure
   - Uses IPiggyback locomotion interface for complex movement

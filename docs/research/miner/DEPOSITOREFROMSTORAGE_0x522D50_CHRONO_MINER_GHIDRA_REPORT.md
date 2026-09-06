@@ -28,7 +28,7 @@ This changes the framing for all items (a)–(g) below.
 
 **Slave Miner path — BuildingClass::DepositOreFromStorage (0x522D50):**
 Called **once-for-all-storage** per invocation. Internally loops over all non-empty tiberium
-slots and drains the entire building's StorageClass in a single call:
+slots and drains the entire StorageClass of `this` in a single call — and `this` (ECX) is the arriving *slave*, whose own `+0x33C` storage is addressed by `LEA EBP,[ECX+0x33C]` at `0x00522D55`; the building is only the stack argument (owner `+0x21C`, smoke `vtable+0x468`) (corrected 2026-09-06):
 
 ```c
 while (tibType = StorageClass__FindFirstNonEmptySlot() != -1) {
@@ -74,7 +74,7 @@ Purifier bonus (same in both paths):
 ```
 purifierBonus = (float)storageCapacity * RulesClass[0xF3C] * amount
 ```
-Where `storageCapacity = HouseClass+0x538C`, optionally +AIVirtualPurifiers[difficulty]
+Where `storageCapacity` is a misnomer for `HouseClass+0x538C` = the owner's OrePurifier *building count* (inc `0x0044637C`/`0x004491EB`, dec `0x00448AC2`/`0x00445925`, gated on `Type+0x16CC OrePurifier=`), optionally +AIVirtualPurifiers[difficulty]
 for non-human players when `g_GameMode != 0`.
 
 ### (c) Owner-credit-add call
@@ -96,8 +96,9 @@ Called twice per dump event (base + purifier bonus if > 0). See ORE_VALUE_CREDIT
 | +0x0C  | Amount[3] | Aboreus             |
 
 **Storage location by unit path:**
-- **Slave miner path:** Storage is on the **BuildingClass** (refinery) at BuildingClass+0x33C.
-  Slaves deposit ore into the building's buffer; `DepositOreFromStorage` drains it.
+- **Slave miner path:** Storage is on the **slave infantry** at InfantryClass+0x33C (`FUN_00522E70`:
+  `LEA EDI,[ESI+0x33C]` at `0x00522F0A`, `ESI` = slave). `DepositOreFromStorage` is called with `ECX` = the
+  slave and drains that slave storage; the building's own `+0x33C` is not written (corrected 2026-09-06).
 - **Harvester / Chrono Miner path:** Storage is on the **harvester unit** itself at
   UnitClass+0x33C. Ore is added during `Harvest_Ore_Tick` directly to the unit's own
   StorageClass; `Mission_Deploy_Building` drains it while the unit is on the dock cell.
@@ -155,7 +156,7 @@ in ORE_VALUE_CREDIT_DEPOSIT_GHIDRA_REPORT.md §3).
 **Refinery destroyed mid-unload:** The building pointer `this_00` comes from
 `Look_up_building_in_cell()`. If the building is destroyed, `Look_up_building_in_cell()` 
 returns null. The null check `if (this_00 != NULL)` causes the dump branch to be skipped;
-`PathType__Has_Valid_Steps` is checked instead, and the harvester is sent to Guard/Harvest.
+`RadioClass__In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) is checked instead, and the harvester is sent to Guard/Harvest.
 Ore remaining in the harvester's StorageClass is preserved — it is NOT lost. The harvester
 will carry remaining ore to the next refinery it docks at. (Confirmed consistent with
 MINER_DOCK_GAPS_RESEARCH.md Case C, but clarified: partial ore is retained on the harvester,

@@ -35,7 +35,7 @@ Assembly context:
 - `0x0073E306`: calls `Look_up_building_in_cell`.
 - `0x0073E30D`: compares returned building pointer with null.
 - `0x0073E30F`: non-null branches to the storage/credit path at `0x0073E355`.
-- `0x0073E313`: null path checks `PathType::Has_Valid_Steps`.
+- `0x0073E313`: null path checks `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps).
 - `0x0073E31E..0x0073E322`: if valid steps exist, sends radio `3`.
 - `0x0073E32A..0x0073E330`: queues mission `0x0A` with immediate flag `1`.
 - `0x0073E338+`: enters mission timer epilogue.

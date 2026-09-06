@@ -308,13 +308,13 @@ The family table is a count of classifications, not a weighted progress score. A
 | GSI-07.12 | Mission 7: Enter handler | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
 | GSI-07.13 | Mission 8: Capture handler | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
 | GSI-07.14 | Mission 9: Eaten handler/row | UNKNOWN | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
-| GSI-07.15 | Mission 10: Harvest handler | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
+| GSI-07.15 | Mission 10: Harvest handler | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | UNCHECKED | PHASE7-PR242-248 |
 | GSI-07.16 | Mission 11: Area Guard handler | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
-| GSI-07.17 | Mission 12: Return handler | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
+| GSI-07.17 | Mission 12: Return handler | COMPILED_INACTIVE | BOUNDED | ANCHORED | ABSENT | UNCHECKED | PHASE7-DEAD-SLOT-0x234 |
 | GSI-07.18 | Mission 13: Stop handler | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
 | GSI-07.19 | Mission 14: Ambush dead TS stub | COMPILED_INACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
 | GSI-07.20 | Mission 15: Hunt handler | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
-| GSI-07.21 | Mission 16: Unload handler | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
+| GSI-07.21 | Mission 16: Unload handler | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | UNCHECKED | PHASE7-PR251 |
 | GSI-07.22 | Mission 17: Sabotage selector and Capture-slot routing | GROUP_NODE | GROUP_NODE | N/A | N/A | N/A | MIXED-SCOPE |
 | GSI-07.23 | Mission 18: Construction handler | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
 | GSI-07.24 | Mission 19: Selling handler | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
@@ -330,9 +330,9 @@ The family table is a count of classifications, not a weighted progress score. A
 | GSI-07.34 | Mission 29: Attack Move assign-side selector with no dispatcher case | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | UNCHECKED | LIVE-MISSION |
 | GSI-07.35 | Mission 30: Spyplane Approach handler | CONTENT_CONDITIONAL | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
 | GSI-07.36 | Mission 31: Spyplane Overfly handler | CONTENT_CONDITIONAL | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
-| GSI-07.37 | Radio contact protocol, link negotiation, messages, and teardown | STOCK_ACTIVE | BOUNDED | ANCHORED | PARTIAL | DRIFT | RADIO-PROTOCOL |
-| GSI-07.38 | generic docking reservations, queues, and authority handoff | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
-| GSI-07.39 | refinery docking, ore transfer, credit display, and release | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
+| GSI-07.37 | Radio contact protocol, link negotiation, messages, and teardown | STOCK_ACTIVE | BOUNDED | ANCHORED | PARTIAL | DRIFT | PHASE7-PR253 |
+| GSI-07.38 | generic docking reservations, queues, and authority handoff | STOCK_ACTIVE | BOUNDED | ANCHORED | PARTIAL | UNCHECKED | PHASE7-PR253 |
+| GSI-07.39 | refinery docking, ore transfer, credit display, and release | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | UNCHECKED | PHASE7-PR245-246 |
 | GSI-07.40 | aircraft docking, pad choice, landing, rearm, and release | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
 | GSI-07.41 | factory exit, spawn cell, rally point, and blocked-exit recovery | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
 | GSI-07.42 | cargo/passenger load, unload, capacity, and transporter destruction | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
@@ -383,11 +383,11 @@ The family table is a count of classifications, not a weighted progress score. A
 
 | ID | System | Activity | Inventory | Native | Rust | Parity | Basis |
 |---|---|---|---|---|---|---|---|
-| GSI-09.01 | credits, income/spending, displayed money, and transaction ordering | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
-| GSI-09.02 | storage capacity, refinery storage, silo behavior, and resource loss | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
-| GSI-09.03 | ore/gem value lookup, harvester capacity, collection, and unload conversion | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | DRIFT | HARVEST-TIMING |
-| GSI-09.04 | resource growth/spread scheduling and map resource state | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | DRIFT | TIBERIUM-QUEUE |
-| GSI-09.05 | standard miner/harvester work-site selection and economy-side return decisions | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
+| GSI-09.01 | credits, income/spending, displayed money, and transaction ordering | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | UNCHECKED | PHASE7-PR244 |
+| GSI-09.02 | storage capacity, refinery storage, silo behavior, and resource loss | STOCK_ACTIVE | BOUNDED | ANCHORED | PARTIAL | UNCHECKED | PHASE7-STORAGE |
+| GSI-09.03 | ore/gem value lookup, harvester capacity, collection, and unload conversion | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | DRIFT | PHASE7-PR242 |
+| GSI-09.04 | resource growth/spread scheduling and map resource state | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | DRIFT | PHASE7-PR243 |
+| GSI-09.05 | standard miner/harvester work-site selection and economy-side return decisions | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | UNCHECKED | PHASE7-PR245-248 |
 | GSI-09.06 | slave miner deployment, slaves, grinding, and mobile refinery behavior | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
 | GSI-09.07 | power production/drain, low power, blackout, and powered-state effects | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | DRIFT | POWER-STATE |
 | GSI-09.08 | tech tree, prerequisites, build limits, stolen tech, and availability | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
@@ -517,8 +517,8 @@ The family table is a count of classifications, not a weighted progress score. A
 | GSI-15.03 | channels, handles, interruption, looping, stop/fade, and lifetime | STOCK_ACTIVE | BOUNDED | ANCHORED | PARTIAL | DRIFT | AUDIO-CHANNELS |
 | GSI-15.04 | DirectSound device/channel pool, mixer/buffer servicing, and audio update-thread cadence | STOCK_ACTIVE | BOUNDED | ANCHORED | PARTIAL | DRIFT | AUDIO-BACKEND |
 | GSI-15.05 | gameplay/UI/weapon/animation/ambient sound-trigger routing | STOCK_ACTIVE | BOUNDED | ANCHORED | PARTIAL | DRIFT | AUDIO-TRIGGERS |
-| GSI-15.06 | EVA event selection, queueing, suppression, interruption, and house voice | STOCK_ACTIVE | BOUNDED | ANCHORED | PARTIAL | DRIFT | EVA |
-| GSI-15.07 | theme/music catalog, selection, shuffle, transitions, and stream pump | STOCK_ACTIVE | DISCOVERED | UNCHECKED | PARTIAL | UNCHECKED | INV+FAMILY_SCAN |
+| GSI-15.06 | EVA event selection, queueing, suppression, interruption, and house voice | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | DRIFT | PHASE7-PR249-254 |
+| GSI-15.07 | theme/music catalog, selection, shuffle, transitions, and stream pump | STOCK_ACTIVE | BOUNDED | ANCHORED | PRESENT | UNCHECKED | PHASE7-PR247 |
 | GSI-15.08 | unit voices, acknowledgements, attack/move/death pools, and taunts | GROUP_NODE | GROUP_NODE | N/A | N/A | N/A | MIXED-SCOPE |
 | GSI-15.09 | subtitles/captions and speech-linked text presentation | GROUP_NODE | GROUP_NODE | N/A | N/A | N/A | MIXED-SCOPE |
 | GSI-15.10 | Bink/VQA movie playback, audio sync, skip, and shell transition | MODE_ACTIVE | BOUNDED | ANCHORED | PARTIAL | DRIFT | MOVIE-PLAYBACK |

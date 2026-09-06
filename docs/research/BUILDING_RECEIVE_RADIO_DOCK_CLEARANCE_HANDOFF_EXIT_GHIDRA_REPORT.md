@@ -125,7 +125,7 @@ That transmit goes through `RadioClass__Transmit_Radio_ToFirst @ 0x0065ACB0`, th
 
 `UnitClass::Mission_Deploy_Building @ 0x0073D630` splits at entry on `unit+0x2E4`. If the field is zero, it enters the ordinary unload FSM. Stock `0x15` handoff does not write `+0x2E4`, so stock refinery unload remains on this zero-link side.
 
-State 4 checks the adjacent refinery and slot-8 guard. If `building+0x57C != 0`, it returns `1` and waits. If clear, it writes `unit+0x6D1 = 0`, queues/continues Harvest (`mission 10 / 0x0A`), and may send direct `BREAK(0x03)` through the unit's `vtable+0x274` only if `PathType__Has_Valid_Steps` succeeds.
+State 4 checks the adjacent refinery and slot-8 guard. If `building+0x57C != 0`, it returns `1` and waits. If clear, it writes `unit+0x6D1 = 0`, queues/continues Harvest (`mission 10 / 0x0A`), and may send direct `BREAK(0x03)` through the unit's `vtable+0x274` only if `RadioClass__In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) succeeds.
 
 Assembly context:
 
@@ -269,7 +269,7 @@ Current tests already include `empty_unload_gate_releases_dock_on_next_stock_sta
 - `[RESOLVED] OQ-004 - Does `0x15` write reciprocal `unit/building +0x2E4`? -> No; neither the branch nor immediate radio/mission callees write `+0x2E4`.` (evidence: `0x0043C788..0x0043C7A0`, `0x005B35E0`, `0x0065A970`, `0x0065ACB0`)
 - `[RESOLVED] OQ-005 - Who sends stock pad-arrival `0x15`? -> `UnitClass::PerCellProcess` sends it through `vtable+0x274` after `FootClass::PerCellProcess(2)`.` (evidence: `0x00739EC0`)
 - `[RESOLVED] OQ-006 - Is normal stock unload exit `ReleaseDockedHarvester`? -> No. Stock unload remains zero-link and exits through `Mission_Deploy_Building` state 4.` (evidence: `0x0073D630`, `0x0073E1F0..0x0073E289`)
-- `[RESOLVED] OQ-007 - Does stock state-4 release immediately clear the dock contact? -> It clears `+0x6D1`, queues/continues Harvest, and may send direct `BREAK(0x03)` if `PathType__Has_Valid_Steps` succeeds; contact clearing is via radio protocol, not reciprocal `+0x2E4` teardown.` (evidence: `0x0073E1F6`, `0x0073E275..0x0073E279`, `0x0065A970`)
+- `[RESOLVED] OQ-007 - Does stock state-4 release immediately clear the dock contact? -> It clears `+0x6D1`, queues/continues Harvest, and may send direct `BREAK(0x03)` if `RadioClass__In_Radio_Contact` succeeds; contact clearing is via radio protocol, not reciprocal `+0x2E4` teardown.` (evidence: `0x0073E1F6`, `0x0073E275..0x0073E279`, `0x0065A970`)
 - `[RESOLVED] OQ-008 - Does `ReleaseDockedHarvester` directly send `0x19`? -> No. It directly sends only `BREAK(0x03)` after linked-unit teardown.` (evidence: `0x00459828..0x0045982C`)
 - `[RESOLVED] OQ-009 - Can `BREAK(0x03)` produce `0x19`? -> Yes, conditionally: TechnoClass case `0x03` sends `0x19` if both receiver and sender `+0x418` are set.` (evidence: `0x006F4C50..0x006F4C7A`)
 - `[RESOLVED] OQ-010 - What clears `+0x418`? -> TechnoClass case `0x19` writes `0` before propagating `0x19`.` (evidence: `0x006F4BA6..0x006F4BAD`)

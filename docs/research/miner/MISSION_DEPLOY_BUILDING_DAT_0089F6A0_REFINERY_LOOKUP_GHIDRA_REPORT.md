@@ -65,7 +65,7 @@ Verified sites:
 | `0x0073E2C8..0x0073E306` | state 3 dump loop: find refinery each deposit tick | same pattern, then `this_00` drives credits/anims | Yes |
 | `0x0073E181..0x0073E1C6` | state 4 wait/close branch: find refinery to test `Refinery=yes` and `+0x57C` | same pattern, then reads `Type+0x16BB` and `building+0x57C` | Yes |
 
-The state 3 null-building branch is also active: if lookup returns null, the function checks `PathType__Has_Valid_Steps`; if valid it sends radio command `3`, then sets mission `10`/Harvest with queued flag `1`.
+The state 3 null-building branch is also active: if lookup returns null, the function checks `RadioClass__In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps); if valid it sends radio command `3`, then sets mission `10`/Harvest with queued flag `1`.
 
 ### 3.3 Lookup helper
 

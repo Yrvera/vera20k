@@ -153,9 +153,9 @@ If the queue is empty, `OnArrival` continues into target/attack/infantry shuffle
 **Evidence:** `0x004D82B0`.
 **Active in YR:** Yes.
 
-### 10. `PathType::Has_Valid_Steps` is separate from NavQueue and DriveTrack state
+### 10. `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) is separate from NavQueue and DriveTrack state
 
-`PathType::Has_Valid_Steps @ 0x0065AE30` checks path count at `+0xE8`, scans the path pointer at `+0xE4`, and returns true if any path entry is nonzero. It does not inspect:
+`RadioClass::In_Radio_Contact @ 0x0065AE30` checks path count at `+0xE8`, scans the path pointer at `+0xE4`, and returns true if any path entry is nonzero. It does not inspect:
 
 - owner `NavCom` at `+0x5A4`;
 - owner `NavQueue.Count2` at `+0x598`;
@@ -198,7 +198,7 @@ Acceptance scenarios:
 - Do not clear Rust's owner-level destination merely because the last DriveTrack point was consumed.
 - Do not equate `movement_target == None` with both Drive stopped and owner `NavCom == NULL` unless the null-destination path has actually run.
 - Do not call `OnArrival` in the empty-queue `Process` arrival branch; gamemd calls `Set_Destination(NULL,1)` there and lets later mission/arrival handling run through the normal lifecycle.
-- Do not treat `NavQueue` as the same thing as the path array checked by `PathType::Has_Valid_Steps`.
+- Do not treat `NavQueue` as the same thing as the path array checked by `RadioClass::In_Radio_Contact`.
 - Do not infer action-line frame visibility from this report alone; that belongs to the action-line/renderer timing slot.
 
 ## Uncertainty
@@ -232,7 +232,7 @@ with:
 - Ghidra read-only decompile: `FootClass::OnArrival @ 0x004D82B0`.
 - Ghidra read-only decompile: `FootClass::Stop_Moving @ 0x004DF0D0`.
 - Ghidra read-only decompile: `FootClass::Set_Destination_Internal @ 0x004D94B0`.
-- Ghidra read-only decompile: `PathType::Has_Valid_Steps @ 0x0065AE30`.
+- Ghidra read-only decompile: `RadioClass::In_Radio_Contact @ 0x0065AE30`.
 - Ghidra read-only decompile: `UnitClass::PerCellProcess @ 0x00739EC0`.
 - Existing context: `docs/research/DRIVELOCOMOTOR_ACCEPTED_CELL_ARRIVAL_VISIBILITY_GHIDRA_REPORT.md`.
 - Existing context: `docs/research/NAVCOM_LIFECYCLE_GHIDRA_REPORT.md`.

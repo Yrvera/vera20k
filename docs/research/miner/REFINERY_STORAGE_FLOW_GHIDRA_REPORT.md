@@ -18,7 +18,7 @@
 Yuri's Revenge has **two structurally distinct ore-deposit paths**:
 
 1. **Allied/Soviet (standard harvester)** — the harvester carries its own `StorageClass` and drains it inline during `Mission_Deploy_Building` state 3 → `HouseClass::Add_Tiberium_Credits`. The refinery's `StorageClass` is **not touched** by this path. The refinery's `Storage=` value is consumed only by `UpdateAnimation` phase F to drive the tier-display visual.
-2. **Yuri (Slave Miner)** — slave infantry deposit ore into the Slave Miner *building's* `StorageClass` (via `FUN_00522E70`, a slave-side helper that calls `StorageClass::AddAmount`). The building then drains its own storage to credits via `BuildingClass::DepositOreFromStorage`, called from `SlaveManagerClass::AI_Update` state 4 when a slave reaches the dock cell.
+2. **Yuri (Slave Miner)** — slave infantry harvest into their **own** `StorageClass` at `+0x33C` (`FUN_00522E70` writes `LEA EDI,[ESI+0x33C]` at `0x00522F0A` with `ESI` = the slave, then calls `StorageClass::AddAmount`). The slave's own storage is then drained to credits via `0x00522D50` (`DepositOreFromStorage`), which is called with `ECX` = the slave (`LEA EBP,[ECX+0x33C]` at `0x00522D55`); the Slave Miner building is only the stack argument, used for its `+0x21C` owner and the `vtable+0x468` smoke callback. It is called from `SlaveManagerClass::AI_Update` state 4 when a slave reaches the dock cell. (Corrected 2026-09-06 against the binary; the building's `StorageClass` is never written by this path.)
 
 Both paths use identical bonus math — `bonus = facilities × PurifierBonus × amount` — and award credits via `HouseClass::Add_Tiberium_Credits`. The Ore Purifier bonus and AIVirtualPurifiers difficulty bonus apply to both.
 
@@ -53,7 +53,7 @@ Used both standalone (per harvester unit, per refinery building) and indirectly 
 |--------|------|---------|------------|
 | `+0x800` | int | `Storage=` capacity | HIGH (used as denominator in tier formula and as cap in Harvest_Ore_Tick) |
 | `+0x16BB` | bool (byte) | `Refinery=yes` flag (gates phase F) | HIGH (verified previous session) |
-| `+0x16D8` | int | OrePurifier per-instance bonus contribution (multiplied into HouseClass+0x5398 by RecalcBonuses) | MEDIUM (Agent D citation, not directly re-verified) |
+| `+0x16CC` | bool (byte) | `OrePurifier=` flag (bound in `BuildingTypeClass::ReadINI`: string xref `0x004604ED`, write `0x004604FA`); each owned OrePurifier building increments HouseClass+0x538C (corrected 2026-09-06: earlier `+0x16D8` attribution was wrong) | HIGH (binary) |
 
 ### UnitClass (harvester-relevant fields)
 
@@ -80,7 +80,7 @@ Used both standalone (per harvester unit, per refinery building) and indirectly 
 | `+0x184` | int | **AI player difficulty index** (0/1/2 for Hard/Medium/Easy, used to index AIVirtualPurifiers) | HIGH — resolved 2026-05-19 via `HouseClass::SetDifficulty @ 0x004F6EC0` decompile and INI comment `AIVirtualPurifiers=4,2,0 ; h,m,e` (rulesmd.ini:89). See `ADD_TIBERIUM_CREDITS_PURIFIER_VIRTUAL_PURIFIERS_GHIDRA_REPORT.md`. |
 | `+0x1EC` | bool (byte) | `IsHuman` flag (non-zero = human player) | HIGH (gates the AIVirtualPurifiers add) |
 | `+0x30C` | int | Credits — likely the cached/display value | MEDIUM (written by Add_Tiberium_Credits; relationship to +0x54E8 unconfirmed — see Open Q §7.3) |
-| `+0x538C` | int | **Storage facility count** — used directly as the bonus multiplier in the PurifierBonus formula. Likely the accumulator from `RecalcBonuses`. | HIGH (Agent D cited; verified used in both deposit paths) |
+| `+0x538C` | int | **OrePurifier building count** — used directly as the bonus multiplier in the PurifierBonus formula. Incremented at `OnConstructionComplete` (`0x0044637C`) and `ChangeOwner` new-owner side (`0x004491EB`), decremented at `ChangeOwner` old-owner side (`0x00448AC2`) and `Limbo` (`0x00445925`), all gated on `Type+0x16CC`. Not a "storage facility count" (corrected 2026-09-06). | HIGH (binary) |
 | `+0x54E8` | int | Credits — likely the live/authoritative value | MEDIUM (written by Add_Tiberium_Credits) |
 | `+0x5398` | int | Accumulated OrePurifier bonus from `RecalcBonuses` case 3 (input to GetAccumulatedBonus) | MEDIUM (Agent D citation; not re-verified — see Open Q §7.6) |
 
@@ -174,12 +174,12 @@ function Mission_Deploy_Building_state3(harvester):
 
 ### 3b. Yuri Slave Miner deposit (drain-on-arrival)
 
-Inside `BuildingClass::DepositOreFromStorage` (decompiled at `0x522D50`):
+Inside `BuildingClass::DepositOreFromStorage` (decompiled at `0x522D50`). **Note (corrected 2026-09-06):** `ECX` (this) is the arriving *slave*, not the building — `LEA EBP,[ECX+0x33C]` at `0x00522D55` addresses the slave's own `StorageClass`; the building is the stack argument (`[ESP+0x20]`), used only for `+0x21C` owner and the `vtable+0x468` smoke callback:
 
 ```pseudo
-function DepositOreFromStorage(building):
+function DepositOreFromStorage(slave /*ECX*/, building /*stack arg*/):
     any_credits_awarded = false
-    slot = building.StorageClass.FindFirstNonEmptySlot()
+    slot = slave.StorageClass.FindFirstNonEmptySlot()   // slave+0x33C
 
     while slot != -1:
         owner = building.Owner    // building[+0x21C]
@@ -187,29 +187,29 @@ function DepositOreFromStorage(building):
         if !owner.IsHuman and g_GameMode != 0:
             facility_count += AIVirtualPurifiers[owner[+0x184]]
 
-        amount = building.StorageClass.GetAmount(slot)
+        amount = slave.StorageClass.GetAmount(slot)
         bonus = facility_count * Rules.PurifierBonus * amount
 
-        drained = building.StorageClass.RemoveAmount(amount, slot)
+        drained = slave.StorageClass.RemoveAmount(amount, slot)
         if drained > 0.0:
             any_credits_awarded = true
             building.Owner.Add_Tiberium_Credits(drained, slot)
             if bonus > 0:
                 building.Owner.Add_Tiberium_Credits(bonus, slot)
 
-        slot = building.StorageClass.FindFirstNonEmptySlot()
+        slot = slave.StorageClass.FindFirstNonEmptySlot()
 
     if any_credits_awarded:
         building.vtable[+0x468]()   // post-deposit callback
     return
 ```
 
-**Called from:** `SlaveManagerClass::AI_Update` state 4 (`0x6AFBD2` at offset `0x6AFC02` based on decompile context). When a slave infantry reaches the dock cell of the deployed Slave Miner refinery (param_1+0x24 = the building), this function drains its entire StorageClass to the owner's credits in one synchronous call.
+**Called from:** `SlaveManagerClass::AI_Update` state 4 (`0x6AFBD2` at offset `0x6AFC02` based on decompile context). When a slave infantry reaches the dock cell of the deployed Slave Miner refinery (param_1+0x24 = the building), this function drains the arriving slave's entire StorageClass (slave+0x33C) to the building owner's credits in one synchronous call.
 
 **Key tiny details:**
 - Unlike the Allied/Soviet path, this loops over ALL slots in one call (the `while` loop). The Allied/Soviet path drains one slot per fire of the dump-counter gate, so multi-slot harvesters take multiple ~15-frame fires.
 - The post-deposit callback (`vtable+0x468`) fires once, after all drains complete — not per slot.
-- The slave deposit *into* the building (the call site of `StorageClass::AddAmount` in `FUN_00522E70`) was not decompiled this pass — see Open Q §7.8.
+- There is no slave deposit *into* the building: `FUN_00522E70` adds harvested ore to the slave's own `+0x33C` storage (`LEA EDI,[ESI+0x33C]` at `0x00522F0A`, `ESI` = slave) — see Open Q §7.8 (resolved).
 
 ### 3c. Storage-tier visual indicator (already verified prior session)
 
@@ -240,7 +240,7 @@ function UpdateAnimation_phaseF(building):
             CreateAnimForSlot(slot=new_tier+3, anim_name, ...)
 ```
 
-**Source of `stored`:** The Allied/Soviet refinery's `StorageClass` is **never written** by the standard harvester path (see §3a). So in stock YR play, GAREFN/NAREFN refineries always have `stored == 0` and remain stuck at tier 0. Yuri's Slave Miner building's StorageClass *is* written (by slave deposits) — but it drains the moment a slave arrives, so it ticks between 0 and small values, briefly showing tier 1/2/3 before the drain.
+**Source of `stored`:** The Allied/Soviet refinery's `StorageClass` is **never written** by the standard harvester path (see §3a). So in stock YR play, GAREFN/NAREFN refineries always have `stored == 0` and remain stuck at tier 0. Yuri's Slave Miner building's StorageClass is likewise *not* written by slave deposits — slaves carry ore in their own `+0x33C` storage and `0x00522D50` drains the slave, not the building (corrected 2026-09-06).
 
 **For our Rust port, this means the tier indicator cannot be driven from the existing bale → credits flow — it needs a separate per-refinery "display counter" that ticks on each `BaleDepositEvent`.** See §6 below.
 
@@ -346,7 +346,7 @@ Brutal AI (`index=0`) gets +4 virtual purifiers → bonus = `4 × 0.25 × amount
 | `SlaveManagerClass::AI_Update @ 0x6AFBD2` state 4 | `DepositOreFromStorage` on building+0x24 (Slave Miner refinery) | When slave reaches dock cell with cargo | Yuri credit flow |
 | `BuildingClass::Sell` | `Add_Tiberium_Credits` | Building sell refund | Refund (out of scope) |
 | `UnitClass::Harvest_Ore_Tick @ 0x73D450` | `StorageClass::AddAmount` × 2 | Per harvest cycle | Harvester storage fill (in scope of multi-bale work just shipped) |
-| `FUN_00522E70` | `StorageClass::AddAmount` | Slave deposit into Slave Miner building | Yuri half (not fully decompiled — Open Q §7.8) |
+| `FUN_00522E70` | `StorageClass::AddAmount` | Slave harvest into the slave's own `+0x33C` storage (`0x00522F0A`) | Yuri half (Open Q §7.8 resolved) |
 | `HouseClass::Add_Tiberium_To_Storage @ 0x4F9700` | `StorageClass::AddAmount` × N | Weeder loop (TS-legacy, never reached) | Dormant |
 
 ### Tick-order (binary)
@@ -391,11 +391,11 @@ The current `docs/gap-scans/2026-05-12-gap-scan-miner-deep.md` lists 11 detail-d
 
 7.5 **AIDifficulty index order — RESOLVED 2026-05-19.** Order is `{Brutal=0, Medium=1, Easy=2}` — Brutal AI gets `{4,2,0}[0] = 4` virtual purifiers (+100% ore income). Verified via `HouseClass::SetDifficulty @ 0x004F6EC0` decompile + `rulesmd.ini:89` inline comment `AIVirtualPurifiers=4,2,0 ; h,m,e`. See `ADD_TIBERIUM_CREDITS_PURIFIER_VIRTUAL_PURIFIERS_GHIDRA_REPORT.md`.
 
-7.6 **HouseClass+0x538C vs +0x5398 relationship.** Both are likely accumulators set by `RecalcBonuses`, but `DepositOreFromStorage` reads `+0x538C` (not `+0x5398`). The Agent D scoping noted `RecalcBonuses` writes `+0x5390..+0x53A0`. Suspect `+0x538C` is the "storage facility count" (real refineries + ore purifiers) while `+0x5398` is the "OrePurifier accumulated bonus" — but the formula in `DepositOreFromStorage` would imply they're separate things. Decompile `RecalcBonuses` to resolve.
+7.6 **HouseClass+0x538C vs +0x5398 relationship — RESOLVED 2026-09-06.** `+0x538C` is the OrePurifier *building count*: `INC [Owner+0x538C]` at `OnConstructionComplete` `0x0044637C` and `ChangeOwner` `0x004491EB`, `DEC` at `ChangeOwner` `0x00448AC2` and `Limbo` `0x00445925`, each gated on `Type+0x16CC` (`OrePurifier=`, bound at `BuildingTypeClass::ReadINI` `0x004604ED`/`0x004604FA`). It is not a storage-facility count and is not written by `RecalcBonuses`.
 
 7.7 **vtable+0x468 callback.** Fires after each Mission_Deploy_Building drain AND once at the end of DepositOreFromStorage. Slot offset 0x468 = vtable index `0x468/4 = 0x11A`. Likely a "refresh display / mark dirty / play deposit sound" virtual. Identify by finding the slot in `BuildingClass` vtable at `0x007E3F18`.
 
-7.8 **`FUN_00522E70` slave deposit.** Calls `StorageClass::AddAmount` on (presumably) the Slave Miner building. Not decompiled this pass. Out of scope unless/until Yuri-faction work begins.
+7.8 **`FUN_00522E70` slave deposit — RESOLVED 2026-09-06.** Calls `StorageClass::AddAmount` on the *slave's own* storage (`LEA EDI,[ESI+0x33C]` at `0x00522F0A`, `ESI` = slave/this), not the Slave Miner building. `0x00522D50` then drains that same slave storage (`LEA EBP,[ECX+0x33C]` at `0x00522D55`, `ECX` = slave); the building argument supplies only `+0x21C` owner and `vtable+0x468`.
 
 ## Sources
 

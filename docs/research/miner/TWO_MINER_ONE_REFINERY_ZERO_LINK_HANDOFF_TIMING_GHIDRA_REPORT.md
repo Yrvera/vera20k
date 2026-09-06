@@ -21,7 +21,7 @@ For two miners, dock availability is therefore a radio/contact retry problem. Th
 | `RadioClass::Contacts.Capacity` | `+0xE8` | Contact array size; stock refinery capacity becomes `NumberOfDocks=1` | Yes |
 | `RadioClass::FindDockSlot` | `0x0065AD90` | Returns contact index for a target or `-1` | Yes |
 | `FUN_0065ADF0` | `0x0065ADF0` | Returns true when a contact slot is free or already equals the target | Yes |
-| `PathType__Has_Valid_Steps` | `0x0065AE30` | Misnamed in this context; returns true when any radio contact slot is non-null | Yes |
+| `RadioClass__In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) | `0x0065AE30` | Misnamed in this context; returns true when any radio contact slot is non-null | Yes |
 | `unit+0x418` / `building+0x418` | byte at `+0x418` | Radio entered/contact byte set by `0x18`, cleared by `0x19` | Yes |
 | `unit+0x5A4` | `+0x5A4` | Destination/target field read during state-4 branch selection | Yes |
 | `unit+0x6D1` | byte at `+0x6D1` | Harvester unload initialized/active byte; state 4 clears it | Yes |
@@ -43,7 +43,7 @@ When `UnitClass::Mission_Deploy_Building @ 0x0073D630` is on the stock zero-link
 3. Clear `unit+0x6D1 = 0`. Evidence: `0x0073E1F6`.
 4. In the normal branch, call unit vtable `+0x1E8` with `0x0A, 0`, assigning Harvest mission. Evidence: `0x0073E24F..0x0073E254`.
 5. Call unit vtable `+0x200`; if it returns false, skip the radio break and mission queue call and go to the timer epilogue. Evidence: `0x0073E25E`, `0x0073E264`, `0x0073E266`.
-6. If `PathType__Has_Valid_Steps @ 0x0065AE30` reports any contact slot, send `BREAK(0x03)` with unit vtable `+0x274` (`Transmit_Radio_ToFirst`). Evidence: `0x0073E26A`, `0x0073E26F`, `0x0073E275`, `0x0073E279`.
+6. If `RadioClass__In_Radio_Contact @ 0x0065AE30` reports any contact slot, send `BREAK(0x03)` with unit vtable `+0x274` (`Transmit_Radio_ToFirst`). Evidence: `0x0073E26A`, `0x0073E26F`, `0x0073E275`, `0x0073E279`.
 7. Call unit vtable `+0x1EC` to queue/advance the mission. Evidence: `0x0073E27F..0x0073E283`.
 8. Return through the mission timer/random epilogue. Evidence: `0x0073E289..0x0073E2B7`.
 
@@ -113,7 +113,7 @@ Therefore:
 | `RadioClass::Transmit_Radio_Impl @ 0x0065A970` | Sender-side synchronous dispatch | BREAK clears sender slot before target receive; HELLO can evict sender's slot 0 when sender slots are full |
 | `RadioClass::Transmit_Radio_ToFirst @ 0x0065ACB0` | State-4 `+0x274` target selection | Sends to `Contacts[0]` only; returns `0` if `Contacts[0]` is null |
 | `FUN_0065ADF0 @ 0x0065ADF0` | Free-slot test | True when a slot is null or already equals target |
-| `PathType__Has_Valid_Steps @ 0x0065AE30` | Contact-present test | Walks Contacts and returns true if any slot is non-null |
+| `RadioClass__In_Radio_Contact @ 0x0065AE30` | Contact-present test | Walks Contacts and returns true if any slot is non-null |
 | `TechnoClass::Receive_Radio @ 0x006F4AB0` | `+0x418` state | `0x18` sets, `0x19` clears, `0x03` can trigger `0x19` before base BREAK cleanup |
 | `FootClass::Mission_Enter @ 0x004D9290` | Retry driver | Re-sends `0x0E`; on rejection with no preserve condition sends `BREAK` and clears destination |
 | `TechnoClass::Set_Destination @ 0x00741970` | Harvester destination/admission sender | Sends `HELLO` and `CAN_DOCK` in live return path; broad function touched, not exhausted |
@@ -169,7 +169,7 @@ Observed status:
 - `[RESOLVED] OQ-05 - When is the miner-side Contacts[] cleared? -> In `Transmit_Radio_Impl(3)`, before the refinery receives BREAK.` (evidence: `0x0065A970`, `0x0065A9A8..0x0065A9C9`)
 - `[RESOLVED] OQ-06 - When is the refinery-side Contacts[] cleared? -> In base `RadioClass::Receive_Radio(3)` after Building/Techno case-3 handling.` (evidence: `0x0065A820`, `0x0043C2D0`, `0x006F4AB0`)
 - `[RESOLVED] OQ-07 - When does `+0x418` clear? -> During the conditional `0x19` cascade triggered by TechnoClass case `3`, before base receiver-side contact nulling.` (evidence: `0x006F4AB0`)
-- `[RESOLVED] OQ-08 - Is `PathType__Has_Valid_Steps` a path guard here? -> No, it scans radio Contacts[] and returns true if any slot is non-null.` (evidence: `0x0065AE30`)
+- `[RESOLVED] OQ-08 - Is `RadioClass__In_Radio_Contact` a path guard here? -> No, it scans radio Contacts[] and returns true if any slot is non-null.` (evidence: `0x0065AE30`)
 - `[RESOLVED] OQ-09 - Does `NumberOfDocks=1` matter? -> Yes; stock GAREFN/NAREFN have one contact slot, so a second miner cannot be simultaneously stored in refinery Contacts[].` (evidence: `rulesmd.ini:11729`, `12521`; `RadioClass::Set_Contact_Count @ 0x0065AE60`)
 - `[RESOLVED] OQ-10 - Does the binary prove a persistent two-miner FIFO? -> No; static evidence shows contact slots and retry, not a persistent FIFO promotion list for stock refineries.` (evidence: `0x0065A820`, `0x0065ADF0`, `0x004D9290`)
 - `[RESOLVED] OQ-11 - What happens to old trace Stage 8? -> The ReleaseDockedHarvester-based handoff is superseded for stock normal exit; replace it with zero-link state-4 BREAK/contact cleanup.` (evidence: old trace correction banner; `0x0073D630`)

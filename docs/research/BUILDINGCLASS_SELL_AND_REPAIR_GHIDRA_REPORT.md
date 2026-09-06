@@ -700,10 +700,11 @@ All three use the same accumulator pattern (fields `0x620, 0x624, 0x628, 0x62C, 
 
 - Each timer tick (when CDTimer at 0x628 expires and `field_0x634 != 0`):
   `field_0x620 += field_0x638` (accumulator += step size).
-- **Fire threshold:** `RulesRate * 792.25 <= field_0x620`, where 792.25 is
-  `DAT_007E27F8` (corrected 2026-05-28: was "900.0 = 15 fps × 60 s"; binary reads
-  bytes `00 00 00 00 00 20 8C 40` = IEEE 754 double 0x408C200000000000 = 792.25 —
-  verified via `read_memory 0x007E27F8` — ROOT_CAUSE: INFERENCE_HARDENED).
+- **Fire threshold:** `RulesRate * 900.0 <= field_0x620`, where 900.0 is
+  `DAT_007E27F8` (re-corrected 2026-09-06: the 2026-05-28 audit decoded the bytes
+  `00 00 00 00 00 20 8C 40` = IEEE 754 double 0x408C200000000000 as 792.25, which is
+  a decode error — exponent 0x408 = 2^9, mantissa 1.7578125, value 900.0 — so the original
+  "900.0 = 15 fps × 60 s" reading was right; verified via `read_memory 0x007E27F8`).
 - At threshold: clear accumulator, fire radio action, reset timer.
 
 | Building       | Rate field                    | Action on fire |

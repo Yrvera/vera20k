@@ -29,7 +29,7 @@ For normal refinery docking, CMIN/HARV contact a BuildingClass refinery (`WhatAm
 
 Verified branch order at `0x00741B30..0x00741BA4`:
 
-1. `PathType__Has_Valid_Steps()` must be true.
+1. `RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)()` must be true.
 2. vtable slot `+0x184` must return `0`.
 3. `this+0x418` must be nonzero.
 4. `FootClass__GetDestination(0)` returns the current radio contact.

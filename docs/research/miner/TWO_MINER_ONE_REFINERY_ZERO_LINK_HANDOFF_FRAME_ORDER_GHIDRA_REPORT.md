@@ -47,7 +47,7 @@ Let frame `F` be the frame where miner A's `UnitClass::Mission_Deploy_Building @
 3. A sets mission Harvest (`0x0A`) before sending the break. This means A is logically back in harvest scheduling before the refinery contact slot is cleared.  
    **Evidence:** state-4 normal exit in `0x0073D630`, `0x0073E24F..0x0073E254`. **Active in YR:** Yes.
 
-4. A sends `BREAK(3)` only through the radio/contact path when vtable `+0x200` succeeds and `PathType__Has_Valid_Steps @ 0x0065AE30` reports a non-null contact slot.  
+4. A sends `BREAK(3)` only through the radio/contact path when vtable `+0x200` succeeds and `RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps) @ 0x0065AE30` reports a non-null contact slot.  
    **Evidence:** `0x0073E25E..0x0073E279`; `0x0065AE30` prior decompile. **Active in YR:** Yes for normal valid-contact unload completion.
 
 5. `RadioClass::Transmit_Radio_Impl @ 0x0065A970` removes the refinery from A's sender-side `Contacts[]` before forwarding BREAK to the refinery. `RadioClass::Receive_Radio @ 0x0065A820` then removes A from the refinery-side `Contacts[]`.  

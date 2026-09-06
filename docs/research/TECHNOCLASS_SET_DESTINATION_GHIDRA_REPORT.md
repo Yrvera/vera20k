@@ -20,7 +20,7 @@
 2. **Early-out guard** — if `param_2 == existing destination` AND the "has-destination" flag (`+0x1f8`) is clear, return immediately (no-op).
 3. **Stop-moving guard** — if locomotor flags indicate no movement capability, call `FootClass::Stop_Moving` and return.
 4. **LEAVE_DOCK(0x19) cancel-docking path** — if there is already a radio contact AND `Get_Current_Mission()==0` (current mission is 0, via vtable+0x184 — NOT What_Am_I) AND `+0x418 != 0` AND the contact is RTTI==2 (AircraftClass — corrected 2026-07-13: was "Aircraft?"; confirmed via `AircraftClass::What_Am_I` raw bytes at 0x0041c180 = `MOV EAX,0x2; RET`, verified via `read_memory 0x0041c180` — RTTI table reconciled, see RTTI_WHATAMI_TYPEID_RECONCILE_GHIDRA_REPORT.md) AND the contact's TypeClass flag at +0xDFC is set: call `Set_Destination(NULL, 1)` on the contact (via vtable+0x480), then send `LEAVE_DOCK(0x19)` followed by `OVER_AND_OUT(0x03)` to the radio link. This is the "abort dock while approaching" path.
-5. **Mission=7 (Mission_Enter) gate** — if `Get_Current_Mission()==7` OR `this->mission==7` AND `PathType::Has_Valid_Steps()==false`:
+5. **Mission=7 (Mission_Enter) gate** — if `Get_Current_Mission()==7` OR `this->mission==7` AND `RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)()==false`:
    - If the filtered dest is RTTI==1 (UnitClass) → store as pending unit-target (+0x51C) and ghost. Else if the dest filters to a bare/occupied cell (not a building, not a unit) with `IsOccupied` set → `HELLO(0x02)` dock approach.
    - Else if new dest is RTTI==6 (Building) AND no existing valid path → **send `CAN_DOCK(0x0E)` via vtable+0x278 (Transmit)**
    - Handle ROGER vs OVER_AND_OUT paths accordingly
@@ -108,11 +108,11 @@ this->field_0x1f8 = 0;  // clear flag unconditionally
 ### Stage 3 — LEAVE_DOCK(0x19) cancel-dock path (0x00741ad1–0x00741bA9)
 
 Gate chain:
-1. `PathType__Has_Valid_Steps()` → has radio contact (cVar4 != 0)
+1. `RadioClass__In_Radio_Contact()` → has radio contact (cVar4 != 0)
 2. `[EBP + 0x6c4]->field_0x5e0 > 0` — some timer/count field
 3. `FootClass__GetDestination(0)` RTTI == 0xF (InfantryClass — corrected 2026-07-13: was CellClass; 0xF=InfantryClass per InfantryClass__What_Am_I 0x00523340 = MOV EAX,0xf, verified via disassemble_function — RTTI table reconciled, see RTTI_WHATAMI_TYPEID_RECONCILE_GHIDRA_REPORT.md) — existing contact is an InfantryClass object
 4. `param_2 != NULL` AND `(param_2+0x14) & 1 != 0` — new destination is occupied cell
-5. `PathType__Has_Valid_Steps()` != 0 — already has valid steps
+5. `RadioClass__In_Radio_Contact()` != 0 — already in radio contact (any non-null slot in [+0xE4,+0xE8))
 6. `Get_Current_Mission() == 0` — current mission is 0. This is `vtable+0x184` = `MissionClass::GetCurrentMission` (`0x005B3040`; reads `+0xAC`, falls back to `+0xB4`), a MISSION getter — NOT `What_Am_I`/RTTI. The earlier "RTTI 0 = UnitClass" reading here was wrong (byte-verified 2026-07-19: `read_memory 0x007F5DF4` = `40 30 5b 00` = 0x005B3040)
 7. `+0x418 != 0` — has-pending-destination flag
 8. `FootClass__GetDestination(0)` RTTI == 2 — contact is RTTI 2 (AircraftClass — corrected 2026-07-13: was "Aircraft? or some type code"; confirmed via `read_memory 0x0041c180` = `MOV EAX,0x2; RET` — Open Question 6 below is RESOLVED)
@@ -132,7 +132,7 @@ This is the main building-approach block:
 
 **Outer gate (0x741c4F–0x741c78):**
 - `Get_Current_Mission() == 7` (vtable+0x184, MissionClass::GetCurrentMission) OR `this->field_0xB4 == 7` (this->mission == 7 = Mission_Enter)
-- `PathType__Has_Valid_Steps() == false` (no existing path/radio contact)
+- `RadioClass__In_Radio_Contact() == false` (no existing path/radio contact)
 
 If NOT in Mission_Enter: skip to Stage 6 (write `param_1[8].{NeedsRedraw, InLimbo, ...}` flags).
 
@@ -273,7 +273,7 @@ All CALLs confirmed by disassemble_function result read. Offset 0x274 = Transmit
 
 ### Q1: Does it send 0x0E CAN_DOCK?
 
-**YES.** Multiple sites (see table above). The primary refinery-dock send is at **0x00741DDA**: vtable+0x278 (Transmit, not ToFirst), message 0x0E, target is the filtered building (refinery), under gate: `Get_Current_Mission()==7 OR mission==7 (Mission_Enter)` AND `PathType::Has_Valid_Steps()==false` AND `RTTI(dest)==6 (Building)`.
+**YES.** Multiple sites (see table above). The primary refinery-dock send is at **0x00741DDA**: vtable+0x278 (Transmit, not ToFirst), message 0x0E, target is the filtered building (refinery), under gate: `Get_Current_Mission()==7 OR mission==7 (Mission_Enter)` AND `RadioClass::In_Radio_Contact()==false` AND `RTTI(dest)==6 (Building)`.
 
 This is the **initial dock initiation** — when the harvester has no existing radio path to the refinery and is being sent there. On ROGER, the building's Receive_Radio(0x0E) has already replied with MOVE_TO_CELL etc. and established the radio link; the harvester then checks if `DockUnload=yes` (TypeClass+0x16B3) and the contact pointer changed, updating `param_2` accordingly.
 
@@ -366,10 +366,10 @@ ReleaseDockedHarvester @ 0x004595C0
 ```
 
 **Is Set_Destination a one-shot or per-tick call?**  
-ONE-SHOT per destination change. However, `Mission_Enter` at `0x004D9290` calls `vtable+0x480` each tick while in the approach phase, which means this function IS called per tick during the mission — but with the same destination each time. The function's inner logic has `PathType::Has_Valid_Steps()` guards that prevent redundant 0x0E sends once a radio contact is established.
+ONE-SHOT per destination change. However, `Mission_Enter` at `0x004D9290` calls `vtable+0x480` each tick while in the approach phase, which means this function IS called per tick during the mission — but with the same destination each time. The function's inner logic has `RadioClass::In_Radio_Contact()` guards that prevent redundant 0x0E sends once a radio contact is established.
 
 **Relationship to Mission_Enter (0x004D9290):**  
-Mission_Enter is the per-tick driver that calls Set_Destination on each tick with the same target. Set_Destination performs the initial radio contact on the first call (when no radio path exists), and does nothing radio-related on subsequent calls (the `Has_Valid_Steps` check returns true once the radio link is established).
+Mission_Enter is the per-tick driver that calls Set_Destination on each tick with the same target. Set_Destination performs the initial radio contact on the first call (when no radio path exists), and does nothing radio-related on subsequent calls (the `RadioClass__In_Radio_Contact` check returns true once the radio link is established).
 
 **Relationship to ReleaseDockedHarvester (0x004595C0):**  
 None directly. ReleaseDockedHarvester runs after deposit is complete. The `+0x5E0` write in this function (writing the previous dock target) may be read by the exit path, but this is unresolved.

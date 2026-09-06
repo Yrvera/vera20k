@@ -76,7 +76,9 @@ TechnoClass__Receive_Radio(param_2, param_3, param_4)
 // Guard: power check
 if param_1->HasPower == false: return 10
 
-// Non-DockUnload, non-Weeder path (factories, helipads):
+// Hospital/Armory path (Type+0x16C1 || Type+0x16C2, else-branch at 0x0043CB0C;
+//   corrected 2026-09-06 — NOT factories/helipads/UnitRepair depots, which take
+//   the HELLO -> 0x13 branch and return 1 before reaching this loop):
 //   calls FUN_0065adf0 (FindFreeContactSlot) — accepts if free, else
 //   iterates param_1->field_0xe8 (contact count) and pings existing contacts
 //   with 0x22; if they answer 10 sends 0x17 to them, then re-checks for

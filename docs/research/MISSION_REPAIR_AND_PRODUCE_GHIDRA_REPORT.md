@@ -47,7 +47,7 @@ flags. The function uses a state machine via `field_0xBC` (MissionState: 0=init,
   - `field_0x630` = 1
 
 - **State 1 (Unit Approaching):** Guides unit to center of service depot.
-  - Checks `PathType::Has_Valid_Steps()` - if path is clear, continue.
+  - Checks `RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)()` - if path is clear, continue.
   - Checks `field_0x57C` and `field_0x588` (production/factory flags) for anim management.
   - Uses `BuildingClass::DistanceToObject` (vtable+0x4D8, `0x00447E00`) to check if unit is
     within 200 leptons of the dock position.
@@ -272,7 +272,7 @@ If no units present: `Queue_Mission(GUARD, 0)`, return 3.
   - Transitions to state 2
 
 - **State 2 (Validating):**
-  - Calls `PathType::Has_Valid_Steps()`
+  - Calls `RadioClass::In_Radio_Contact()`
   - If path is invalid: `Queue_Mission(GUARD, 0)`, clear anims, return 1
   - If valid: return 1 (keep waiting)
 

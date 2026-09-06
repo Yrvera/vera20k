@@ -36,7 +36,7 @@ When the refinery selected by a stock CMIN/HARV disappears or becomes unusable m
 | Finding | Active in YR | Evidence | Confidence |
 |---|---:|---|---|
 | State-3 missing-building branch first recomputes the adjacent refinery lookup cell, calls `Look_up_building_in_cell`, and only enters the abort branch when that returns null. | Yes | `0x0073E306 CALL 0x0047C520`; `0x0073E30D CMP EDI,EBX`; `0x0073E30F JNZ 0x0073E355` | High |
-| Abort order is: optional radio `3`, then `Queue_Mission(10,1)`, then mission-timer return. | Yes | `0x0073E313 CALL PathType__Has_Valid_Steps`; `0x0073E31A JZ 0x0073E328`; `0x0073E31E PUSH 0x3`; `0x0073E322 CALL [vtable+0x274]`; `0x0073E32A PUSH 1`; `0x0073E32C PUSH 0xA`; `0x0073E330 CALL [vtable+0x1E8]` | High |
+| Abort order is: optional radio `3`, then `Queue_Mission(10,1)`, then mission-timer return. | Yes | `0x0073E313 CALL RadioClass__In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps); `0x0073E31A JZ 0x0073E328`; `0x0073E31E PUSH 0x3`; `0x0073E322 CALL [vtable+0x274]`; `0x0073E32A PUSH 1`; `0x0073E32C PUSH 0xA`; `0x0073E330 CALL [vtable+0x1E8]` | High |
 | Cargo is preserved on the missing-building branch because every `StorageClass__RemoveAmount` / credit path is inside the non-null building branch at `0x0073E355+`; the null branch jumps around it. | Yes | `Mission_Deploy_Building @ 0x0073D630` decompile: null branch runs radio/queue only; drain block begins after non-null branch and calls `FindFirstNonEmptySlot`, `RemoveAmount`, `HouseClass__Add_Tiberium_Credits` | High |
 | Missing-building abort does not explicitly clear `unit+0x6D1`; `Queue_Mission` and `Commence` also do not clear it. | Yes | No `+0x6D1` write in `0x0073E306..0x0073E350`; `Queue_Mission @ 0x005B35E0` writes queued mission `+0xB4` and `+0xB8`; `Commence @ 0x005B3570` writes current mission `+0xAC`, substate `+0xBC`, timers, `+0xB8`; no `+0x6D1` | High |
 | `UnloadingClass` visual is gated by `Harvester=yes`, `unit+0x6D1 != 0`, and `Type+0x6B8 != 0`; there is no current-mission gate in the swap. | Yes | `UnitClass::DrawExtras @ 0x0073CEC0` checks `Type+0xE0E`, `unit+0x6D1`, `Type+0x6B8`, then temporarily swaps type to `UnloadingClass` | High |
@@ -78,7 +78,7 @@ The state-3 branch order is exact:
 1. Compute unit-anchor plus `g_refinery_unload_adjacent_lookup_dx/dy`.
 2. `MapClass__Get_CellClass`.
 3. `Look_up_building_in_cell`.
-4. If null, call `PathType__Has_Valid_Steps`.
+4. If null, call `RadioClass__In_Radio_Contact`.
 5. If valid steps, send radio `3` from the unit.
 6. Queue mission `10` with immediate flag `1`.
 7. Return the normal mission timer plus random `0..2`.

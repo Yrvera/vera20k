@@ -2,7 +2,7 @@
 
 **Address(es):** `0x0073D630` primary, `0x0065AE30` PathType helper, `0x004595C0` release helper, `0x0047C520` building lookup, `0x0049F2F0` adjacent-offset init
 **Investigation Mode:** exhaustive-slice
-**Claimed Scope:** stock `CMIN/HARV -> GAREFN/NAREFN` zero-link refinery unload branch in `UnitClass::Mission_Deploy_Building`, including entry split on `unit+0x2E4`, `SizeLimit` versus `Harvester=yes` routing, `PathType::Has_Valid_Steps` guard polarity, state 3 empty-cargo transition, state 4 direct returns versus timer epilogue, `+0x6D1` clear, `building+0x57C` wait, `SetMission(0x0A)`, `QueueMission`, radio `3`, and normal-path reachability of `ReleaseDockedHarvester` / `Force_Track(0x47)`.
+**Claimed Scope:** stock `CMIN/HARV -> GAREFN/NAREFN` zero-link refinery unload branch in `UnitClass::Mission_Deploy_Building`, including entry split on `unit+0x2E4`, `SizeLimit` versus `Harvester=yes` routing, `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) guard polarity, state 3 empty-cargo transition, state 4 direct returns versus timer epilogue, `+0x6D1` clear, `building+0x57C` wait, `SetMission(0x0A)`, `QueueMission`, radio `3`, and normal-path reachability of `ReleaseDockedHarvester` / `Force_Track(0x47)`.
 **Non-Scope:** two-miner queue handoff timing, full Mission_Harvest retry loop, full runtime tick-order proof outside this function, modded refinery `ProductionAnim` lifetime beyond identifying the wait guard, and Yuri slave miner.
 **Confidence:** High for the claimed slice.
 **Active in YR:** Yes for stock HARV/CMIN unloading at GAREFN/NAREFN; conditional branches are marked per finding.
@@ -11,7 +11,7 @@
 
 The stock refinery unload path is the zero-`unit+0x2E4` path. It does not require a reciprocal `unit/building +0x2E4` dock link, and normal stock cargo-empty completion does not call `BuildingClass::ReleaseDockedHarvester`.
 
-The key correction is the `PathType::Has_Valid_Steps` guard polarity. At `0x0073DEE2`, a true result jumps to the timer/state-dispatch path; false takes a cleanup branch that can direct-return `1`. Therefore the prior RED doc's "steps present -> return 5" reading is inverted.
+The key correction is the `RadioClass::In_Radio_Contact` guard polarity. At `0x0073DEE2`, a true result jumps to the timer/state-dispatch path; false takes a cleanup branch that can direct-return `1`. Therefore the prior RED doc's "steps present -> return 5" reading is inverted.
 
 ## 2. Class Layout / Key Offsets
 
@@ -65,9 +65,9 @@ The `JLE` path is not "non-harvester only." It reaches `LAB_0073D672`, which the
 
 **Active in YR:** Yes. `rulesmd.ini` has no active `SizeLimit` key under `[CMIN]` or `[HARV]`; both have `Harvester=yes`.
 
-### 3.3 `PathType::Has_Valid_Steps` helper semantics
+### 3.3 `RadioClass::In_Radio_Contact` helper semantics
 
-`PathType__Has_Valid_Steps @ 0x0065AE30` scans `param_1+0xE4` for `param_1+0xE8` entries and returns true if any entry is nonzero. Empty count or all-zero entries return false.
+`RadioClass__In_Radio_Contact @ 0x0065AE30` scans `param_1+0xE4` for `param_1+0xE8` entries and returns true if any entry is nonzero. Empty count or all-zero entries return false.
 
 The first harvester-path guard is:
 
@@ -150,7 +150,7 @@ For stock non-Weeder HARV/CMIN, state 4 starts at `0x0073E17F`:
 4. otherwise clear `unit+0x6D1 = 0`;
 5. inspect override state: `unit+0x5A4`, queued mission `+0xB4`, and mission id `0x0A`;
 6. on normal stock exit, call vtable `+0x1E8` with mission `0x0A` and queued flag `0`;
-7. if vtable `+0x200` succeeds, call `PathType::Has_Valid_Steps`;
+7. if vtable `+0x200` succeeds, call `RadioClass::In_Radio_Contact`;
 8. if true, send radio command `3` via vtable `+0x274`;
 9. call vtable `+0x1EC` / `QueueMission`;
 10. fall through to timer epilogue at `0x0073E289`.
@@ -228,7 +228,7 @@ But direct returns exist:
 | `BuildingClass::Receive_Radio @ 0x0043C2D0` | case `0x0E` admission; case `0x15` sends sender mission `0x10` for DockUnload | decompile `0x0043C2D0` | Yes |
 | `UnitClass::PerCellProcess @ 0x00739EC0` | pad arrival sends radio `0x15`; does not write reciprocal `+0x2E4` | decompile `0x00739EC0` | Yes |
 | `UnitClass::Mission_Deploy_Building @ 0x0073D630` | unit-side unload FSM | decompile/disassembly | Yes |
-| `PathType::Has_Valid_Steps @ 0x0065AE30` | route guard and radio-3 condition | decompile `0x0065AE30` | Yes |
+| `RadioClass::In_Radio_Contact @ 0x0065AE30` | route guard and radio-3 condition | decompile `0x0065AE30` | Yes |
 | `Look_up_building_in_cell @ 0x0047C520` | scans `CellClass+0xE4` object list for `WhatAmI()==6` | decompile `0x0047C520` | Yes |
 | `Foundation_direction_table_init @ 0x0049F2F0` | initializes `g_refinery_unload_adjacent_lookup_dx = 0x0000FFFF`, i.e. `(-1,0)` | decompile `0x0049F2F0` | Yes |
 | `MissionClass::GetMissionTimerEntry @ 0x005B3A00` | timer epilogue entry lookup from current mission id | decompile `0x005B3A00` | Yes |
@@ -258,7 +258,7 @@ No Rust files, INI files, or existing docs were modified.
 | Nonzero `unit+0x2E4` release branch | verified | `0x0073D647..0x0073D66D`; `0x004595C0` | exact non-stock runtime frequency out of scope |
 | Stock no-writer evidence for `+0x2E4` | verified via prior report | `STANDARD_REFINERY_0X2E4_WRITER_INVENTORY_GHIDRA_REPORT.md`; spot-check `0x0043C2D0`, `0x00739EC0` | none for stock path |
 | `SizeLimit` branch correction | verified | `0x0073D6EC JLE 0x0073DCD3`; harvester gate `0x0073D678` | none |
-| `PathType::Has_Valid_Steps` helper body | verified | decompile `0x0065AE30` | none |
+| `RadioClass::In_Radio_Contact` helper body | verified | decompile `0x0065AE30` | none |
 | PathType guard polarity in primary function | verified | `0x0073DEE2..0x0073DEE9` | none |
 | No-valid-steps branch return | verified | `0x0073DEEB..0x0073DF55` | concrete names for vtable `+0x484/+0x500/+0x200` not needed for this slice |
 | RateTimer direct `return 5` | verified | `0x0073DF56..0x0073DFBC` | none |
@@ -281,7 +281,7 @@ No Rust files, INI files, or existing docs were modified.
 - [RESOLVED] OQ-02 - Does the expected report already exist? -> No; output path did not exist before writing. (evidence: `Test-Path docs/research/miner/STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_PATHTYPE_STATE4_GHIDRA_REPORT.md`)
 - [RESOLVED] OQ-03 - Is the stock path `unit+0x2E4 == 0` or nonzero? -> Zero enters the normal FSM; nonzero calls release. (evidence: `0x0073D63B`, `0x0073D641`)
 - [RESOLVED] OQ-04 - Is `SizeLimit>=1` required for stock HARV/CMIN? -> No; default zero/absent SizeLimit goes through the JLE path and then the `Harvester=yes` gate. (evidence: `0x0073D6EC`, `0x0073D672`, `rulesmd.ini:[CMIN]/[HARV]`)
-- [RESOLVED] OQ-05 - What does `PathType::Has_Valid_Steps` return? -> True when any path array entry is nonzero, false for empty/all-zero steps. (evidence: decompile `0x0065AE30`)
+- [RESOLVED] OQ-05 - What does `RadioClass::In_Radio_Contact` return? -> True when any path array entry is nonzero, false for empty/all-zero steps. (evidence: decompile `0x0065AE30`)
 - [RESOLVED] OQ-06 - What is the first PathType guard polarity? -> True jumps to RateTimer/state dispatch; false takes cleanup. (evidence: `0x0073DEE2..0x0073DEE9`)
 - [RESOLVED] OQ-07 - Which branch returns `5`? -> The RateTimer-not-ready branch, not the PathType false branch. (evidence: `0x0073DF56..0x0073DFBC`)
 - [RESOLVED] OQ-08 - Does the no-valid-steps branch use timer epilogue? -> No; it direct-returns `1` after optional queueing. (evidence: `0x0073DF49..0x0073DF55`)
@@ -291,7 +291,7 @@ No Rust files, INI files, or existing docs were modified.
 - [RESOLVED] OQ-12 - What is `building+0x57C`? -> Slot-8 `ProductionAnim` pointer, i.e. `Anims_0[8]`. (evidence: `BUILDINGCLASS_0X57C_DOCK_DEPART_GUARD_GHIDRA_REPORT.md`)
 - [RESOLVED] OQ-13 - Does state 4 clear `+0x6D1` before or after the slot-8 wait? -> After the slot-8 wait guard passes. (evidence: guard `0x0073E1CB..0x0073E1EA`; clear `0x0073E1F6`)
 - [RESOLVED] OQ-14 - What is the normal state-4 mission handoff? -> `SetMission(0x0A,0)`, optional radio `3`, `QueueMission`, timer epilogue. (evidence: `0x0073E24F..0x0073E2BE`)
-- [RESOLVED] OQ-15 - When is radio `3` sent in normal state 4? -> Only after `SetMission(0x0A,0)` and successful vtable `+0x200`, if `PathType::Has_Valid_Steps` returns true. (evidence: `0x0073E25A..0x0073E279`)
+- [RESOLVED] OQ-15 - When is radio `3` sent in normal state 4? -> Only after `SetMission(0x0A,0)` and successful vtable `+0x200`, if `RadioClass::In_Radio_Contact` returns true. (evidence: `0x0073E25A..0x0073E279`)
 - [RESOLVED] OQ-16 - Is `ReleaseDockedHarvester` reachable on normal stock zero-link completion? -> No; the only call is the top nonzero-`+0x2E4` branch. (evidence: `0x0073D66D`, `0x004595C0`, writer inventory)
 - [RESOLVED] OQ-17 - Is `Force_Track(0x47)` part of normal stock cargo-empty exit? -> No; it is inside `ReleaseDockedHarvester`, excluded from stock zero-link completion. (evidence: decompile `0x004595C0`, entry split `0x0073D63B`)
 - [RESOLVED] OQ-18 - Are stock GAREFN/NAREFN delayed by `building+0x57C`? -> Normally no, because stock refineries do not define active slot-8 `ProductionAnim`; code path is still live and mod-sensitive. (evidence: `BUILDINGCLASS_0X57C...`; `artmd.ini:[GAREFN]/[NAREFN]`)
@@ -306,7 +306,7 @@ No Rust files, INI files, or existing docs were modified.
 |---|---|---|---|---|---|---|
 | Stock unload runs through zero `unit+0x2E4`; reciprocal release branch is not normal | `0x0073D63B`, `0x0073D66D`, writer inventory | none observed in current comments/direction | `src/sim/miner/miner_dock_sequence.rs::phase_departing`, `src/sim/miner/miner_dock.rs::RefineryDockContacts` | keep stock completion independent from reciprocal link semantics | full CMIN unload completes without `Force_Track(0x47)` or release-helper sound/effects | Do not model normal GAREFN/NAREFN completion as `ReleaseDockedHarvester` |
 | `SizeLimit` absent/zero still reaches stock harvester path through `Harvester=yes` | `0x0073D6EC`, `0x0073D672`, `rulesmd.ini:[CMIN]/[HARV]` | none observed | rules/object type harvester classification and miner system entry | `Harvester=yes`, not `SizeLimit`, should classify stock miners for unload | `[CMIN]` and `[HARV]` with no `SizeLimit` still unload | Do not require `SizeLimit>=1` for refinery unload |
-| `PathType::Has_Valid_Steps` true proceeds to RateTimer/state dispatch | `0x0065AE30`, `0x0073DEE2..0x0073DEE9` | unchecked exact equivalent | future low-level mission parity if modeled | if porting this branch, preserve true/false polarity | unit with valid path steps does not take no-steps cleanup path | Avoid inverting the guard from the RED doc |
+| `RadioClass::In_Radio_Contact` true proceeds to RateTimer/state dispatch | `0x0065AE30`, `0x0073DEE2..0x0073DEE9` | unchecked exact equivalent | future low-level mission parity if modeled | if porting this branch, preserve true/false polarity | unit with valid path steps does not take no-steps cleanup path | Avoid inverting the guard from the RED doc |
 | RateTimer mismatch returns `5` directly | `0x0073DF56..0x0073DFBC` | high-level Rust pivot/timer differs | `phase_pivoting`, future mission-timer compatibility | maintain a wait result before dump-state dispatch until facing/rate window converges | miner waits/turns before first state-3 init rather than dumping while still rotating | Do not attach return `5` to PathType false |
 | State 3 drains one complete StorageClass slot per dump gate | `0x0073E3BF..0x0073E457` | implemented | `phase_unloading` | keep ore-then-gem slot drain, not per-bale incremental drain | mixed ore+gem cargo credits in two pulses, ore first | Do not reintroduce per-bale credit trickle |
 | State 3 empty-check occurs on a later threshold crossing and then direct-returns `1` after setting state 4 | `0x0073E4DC..0x0073E5BD` | mostly modeled by `DepositCooldown`; timing still queue-sensitive | `phase_unloading`, `phase_deposit_cooldown` | preserve one dump-gate hold after last slot drain before state-4 cleanup | full single-slot HARV does not depart immediately on the same tick as slot drain | Adjacent two-miner handoff task should verify this before changing timing |
@@ -318,7 +318,7 @@ No Rust files, INI files, or existing docs were modified.
 ### Stale Docs / Follow-up Docs
 
 - Replace `MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md` claim "stock HARV/CMIN zero-link route is `SizeLimit >= 1`" with: "stock HARV/CMIN can reach the harvester block through the `SizeLimit <= 0` path because `LAB_0073D672` tests `UnitType+0xE0E` / `Harvester=yes` and jumps to `0x0073DEE0`."
-- Replace the PathType guard wording with: "`PathType::Has_Valid_Steps != 0` jumps to `0x0073DF56` RateTimer/state dispatch; `== 0` takes cleanup, clears `+0x6D1`, optionally queues, and direct-returns `1`."
+- Replace the PathType guard wording with: "`RadioClass::In_Radio_Contact != 0` jumps to `0x0073DF56` RateTimer/state dispatch; `== 0` takes cleanup, clears `+0x6D1`, optionally queues, and direct-returns `1`."
 - Replace "timer epilogue is all-path convergence" with: "timer epilogue is used by state-init and normal state-4 handoff, but direct returns exist at `0x0073DFB3` (`5`) and `0x0073E5B4` (`1`), plus no-valid-steps direct `1`."
 - Replace "normal stock exit is ReleaseDockedHarvester/Force_Track driven" with: "normal stock zero-link state 4 clears `+0x6D1`, calls `SetMission(0x0A,0)`, optionally radios `3`, queues mission, and reaches the timer epilogue; `ReleaseDockedHarvester` is only the nonzero-`unit+0x2E4` entry branch."
 - Replace any `DAT_0089F6A0` "DockingOffset0" language with: "`DAT_0089F6A0/2` is initialized by `0x0049F2F0` as signed `(-1,0)`, a west-neighbor lookup used to rediscover the refinery."

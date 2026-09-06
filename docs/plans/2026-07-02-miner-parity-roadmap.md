@@ -128,7 +128,7 @@ visibility; the rest (NV10-NV20, NV25) opportunistically.
 
 ## W13 — Research-doc correction pass
 13 doc errors listed in the report (incl. the +0xE0E "Teleporter" mislabel in 5 locomotion docs,
-the Has_Valid_Steps label, NEXT_DOCKER pseudocode, ZoneType-6 trace claim). Run
+the RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps) label, NEXT_DOCKER pseudocode, ZoneType-6 trace claim). Run
 /verify-doc-fix-swarm scoped to those docs, citing GH-1..GH-4.
 
 ## Deferred (correctly absent — needs other systems first)

@@ -53,7 +53,7 @@ Output type: `model-synthesis`. There are stale and RED/YELLOW source claims, bu
 | `ReleaseDockedHarvester` `Force_Track(0x47)` is conditional on nonzero reciprocal link; not normal stock zero-link unload exit | Ghidra spot-check `0x0073D630`; `CHRONO_MINER_FORCE_TRACK_0X47_EXIT_NAVCOM_STEP...` | confirmed | high | stock path no; conditional path yes | IMPLEMENTATION_SAFE |
 | Exact frame separation from state 3 queue to first `Mission_Enter` dispatch | close-return report | unknown | medium | yes | NEEDS_REINVESTIGATE |
 | Full queue/contact saturation behavior for multi-miner refinery contention | `BUILDING_RECEIVE_RADIO_0X08_CLEARANCE_QUEUE...`; traces | partial | medium | yes | NEEDS_REINVESTIGATE |
-| Stock state-4 unload reachability and `PathType::Has_Valid_Steps` polarity | `STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_REACHABILITY...` | confirmed | high | yes | IMPLEMENTATION_SAFE |
+| Stock state-4 unload reachability and `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) polarity | `STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_REACHABILITY...` | confirmed | high | yes | IMPLEMENTATION_SAFE |
 | Receiver-side full HELLO behavior and sender-side HELLO eviction target | `CHRONO_MINER_REFINERY_CONTACT_SATURATION_QUEUE_EVICTION...` | confirmed | high | yes | IMPLEMENTATION_SAFE |
 | Current Rust close-return timing/threshold mismatches | `CHRONO_MINER_FULL_CARGO_CLOSE_RETURN_MISSION_DISPATCH_TIMING_TRACE...` | confirmed/partial | medium | yes | NEEDS_IMPLEMENTATION_PLAN |
 
