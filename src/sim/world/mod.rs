@@ -857,6 +857,9 @@ pub struct Simulation {
     #[cfg(test)]
     #[serde(skip)]
     lifecycle_test_events: Vec<LifecycleTestEvent>,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(crate) receiver_fixture: Option<crate::sim::combat::receiver_fixture::FixturePolicy>,
     /// App-visible outcomes produced by the authoritative trigger rung.
     /// Trigger actions mutate `trigger_runtime` during the frame; only their
     /// presentation outcomes are moved into `SimFrameOutput` after the tick.
@@ -2840,6 +2843,8 @@ impl Simulation {
             pending_wave_damage_requests: Vec::new(),
             #[cfg(test)]
             lifecycle_test_events: Vec::new(),
+            #[cfg(test)]
+            receiver_fixture: None,
             trigger_effects: Vec::new(),
             #[cfg(test)]
             master_frame_test_trace: Vec::new(),

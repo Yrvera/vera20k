@@ -71,7 +71,7 @@ fn sonic_active_wave_gate_precedes_target_resolution_and_all_shot_work() {
     let mut resources = BTreeMap::new();
     let mut rng = SimRng::new(0x50_4e_49_43);
     let rng_before = rng.logical_state();
-    let mut hooks: Option<&mut dyn CombatInlineHooks> = None;
+    let mut hooks: Option<&mut FixtureTrace> = None;
     let mut emit = CombatEmit::default();
 
     resolve_attacker_fire(
@@ -350,92 +350,6 @@ fn gsi_04_05_attack_frame_rules() -> RuleSet {
     .expect("House attack-frame rules parse")
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct BaseDefenseResponseTraceEntry {
-    site: BaseDefenseResponseCallSite,
-    victim_id: u64,
-    health: u16,
-    last_attacker_house_index: i32,
-}
-
-#[derive(Default)]
-struct BaseDefenseResponseTraceHook {
-    entries: Vec<BaseDefenseResponseTraceEntry>,
-}
-
-impl CombatInlineHooks for BaseDefenseResponseTraceHook {
-    fn respond_to_base_attack(
-        &mut self,
-        site: BaseDefenseResponseCallSite,
-        victim_id: u64,
-        _attacker_id: u64,
-        entities: &mut EntityStore,
-        _rules: &RuleSet,
-        _interner: &StringInterner,
-        houses: &mut BTreeMap<InternedId, HouseState>,
-        _scenario_rng: &mut SimRng,
-        _terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
-    ) {
-        let victim = entities
-            .get(victim_id)
-            .expect("response victim remains live");
-        let last_attacker_house_index = houses[&victim.owner]
-            .strategy_emergency
-            .last_attacker_house_index();
-        self.entries.push(BaseDefenseResponseTraceEntry {
-            site,
-            victim_id,
-            health: victim.health.current,
-            last_attacker_house_index,
-        });
-    }
-
-    fn fatal_lifecycle(
-        &mut self,
-        _rules: &RuleSet,
-        _stage: FatalLifecycleStage,
-        _stable_id: u64,
-        _category: EntityCategory,
-        _entities: &mut EntityStore,
-        _occupancy: &mut OccupancyGrid,
-        _interner: &mut StringInterner,
-        _scenario_rng: &mut SimRng,
-        _terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
-        _terrain_area_state: Option<&mut TerrainAreaState>,
-        _sound_sink: Option<&mut Vec<SimSoundEvent>>,
-    ) {
-    }
-
-    fn commit_tiberium_reduction(
-        &mut self,
-        _rules: &RuleSet,
-        _request: TiberiumReductionRequest,
-        _scenario_rng: &mut SimRng,
-        _resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
-        _overlay_grid: Option<&mut OverlayGrid>,
-        _overlay_registry: Option<&OverlayTypeRegistry>,
-        _terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
-        _terrain_area_state: Option<&TerrainAreaState>,
-        _occupancy: Option<&OccupancyGrid>,
-    ) {
-    }
-
-    fn commit_smudge(
-        &mut self,
-        _rules: &RuleSet,
-        _request: SmudgeSpawnRequest,
-        _occupancy: &OccupancyGrid,
-        _interner: &StringInterner,
-        _scenario_rng: &mut SimRng,
-        _resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
-        _overlay_grid: Option<&mut OverlayGrid>,
-        _overlay_registry: Option<&OverlayTypeRegistry>,
-        _terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
-        _terrain_area_state: Option<&TerrainAreaState>,
-    ) {
-    }
-}
-
 #[test]
 fn gsi_04_05_building_attack_frame_prelude_obeys_object_and_type_gates() {
     let rules = gsi_04_05_attack_frame_rules();
@@ -622,8 +536,8 @@ fn gsi_04_05_building_attack_frame_precedes_immune_receiver_exit() {
     let mut scenario_rng = SimRng::new(7);
     let mut handled_deaths = Vec::new();
     let mut resources = BTreeMap::new();
-    let mut trace_hook = BaseDefenseResponseTraceHook::default();
-    let mut fatal_lifecycle: Option<&mut dyn CombatInlineHooks> = Some(&mut trace_hook);
+    let mut trace_hook = FixtureTrace::default();
+    let mut fatal_lifecycle: Option<&mut FixtureTrace> = Some(&mut trace_hook);
     let mut sound_sink = None;
 
     let _ = commit_damage_events(
@@ -697,8 +611,8 @@ fn gsi_04_05_protected_techno_response_runs_after_object_health_commit() {
     let mut scenario_rng = SimRng::new(7);
     let mut handled_deaths = Vec::new();
     let mut resources = BTreeMap::new();
-    let mut trace_hook = BaseDefenseResponseTraceHook::default();
-    let mut inline_hooks: Option<&mut dyn CombatInlineHooks> = Some(&mut trace_hook);
+    let mut trace_hook = FixtureTrace::default();
+    let mut inline_hooks: Option<&mut FixtureTrace> = Some(&mut trace_hook);
     let mut sound_sink = None;
 
     let _ = commit_damage_events(
@@ -819,7 +733,7 @@ fn gsi_04_05_building_self_damage_return_zero_stops_receiver_commit() {
 }
 
 #[test]
-fn gsi_04_05_building_attack_frame_survives_world_receiver_merge() {
+fn gsi_04_05_building_attack_frame_remains_live_after_world_receiver_dispatch() {
     let rules = gsi_04_05_attack_frame_rules();
     let mut sim = crate::sim::world::Simulation::new();
     let heights = BTreeMap::new();
@@ -851,14 +765,14 @@ fn gsi_04_05_building_attack_frame_survives_world_receiver_merge() {
             .strategy_emergency
             .last_building_attack_frame(),
         77,
-        "the world owner must retain the timestamp written into its staged House map"
+        "receiver dispatch writes the world's authoritative House timestamp"
     );
     assert_eq!(
         sim.houses[&victim_owner]
             .strategy_emergency
             .last_attacker_house_index(),
         0,
-        "the staged attacker-House index must merge back with the frame stamp"
+        "receiver dispatch retains the attacker-House index with the frame stamp"
     );
     assert_eq!(
         sim.substrate

@@ -116,13 +116,12 @@ pub(crate) enum TerrainAreaReceiveResult {
     Lethal(TerrainLethalDamage),
 }
 
-/// Transient owner for Terrain authority while an ordered area-damage transaction runs.
-///
-/// None of these fields add snapshot or hash state: the persisted maps/sets and raw
-/// occupation grid are moved out of their existing owners, then restored after commit.
-/// `navigation_changed_cells` and `finalizing_terrain` exist only for the duration of
-/// the outer transaction and are shared by nested receiver commits.
-#[derive(Debug, Default)]
+/// Inputs and outputs for phase-level Terrain receiver fixtures.
+/// The adapter lends these fields to a private world that runs the production
+/// receiver. Production Terrain authority stays resident in Simulation; this
+/// container and its transfers exist only in tests.
+#[cfg(test)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct TerrainAreaState {
     terrain_spawners: BTreeMap<(u16, u16), TerrainSpawnerState>,
     terrain_objects: BTreeMap<u64, TerrainObjectState>,
@@ -134,7 +133,23 @@ pub(crate) struct TerrainAreaState {
     finalizing_terrain: BTreeSet<u64>,
 }
 
+#[cfg(test)]
 impl TerrainAreaState {
+    pub(crate) fn take_fixture_progress(&mut self) -> (Vec<(u16, u16)>, BTreeSet<u64>) {
+        (
+            std::mem::take(&mut self.navigation_changed_cells),
+            std::mem::take(&mut self.finalizing_terrain),
+        )
+    }
+    pub(crate) fn restore_fixture_progress(
+        &mut self,
+        cells: Vec<(u16, u16)>,
+        finalizing: BTreeSet<u64>,
+    ) {
+        self.navigation_changed_cells = cells;
+        self.finalizing_terrain = finalizing;
+    }
+
     pub(crate) fn take_from(
         production: &mut ProductionState,
         raw_occupation: &mut RawCellOccupationGrid,
@@ -153,8 +168,7 @@ impl TerrainAreaState {
         }
     }
 
-    /// Temporarily expose the exact moved authority through `Simulation` during a
-    /// fatal lifecycle callback, then call this again to reclaim its mutations.
+    /// Lend fixture fields to the adapter world, then reclaim its mutations.
     pub(crate) fn swap_authority(
         &mut self,
         production: &mut ProductionState,
@@ -177,8 +191,7 @@ impl TerrainAreaState {
         std::mem::swap(&mut self.raw_occupation, raw_occupation);
     }
 
-    /// Restore Terrain authority and return ordered, first-occurrence-only navigation
-    /// cells for the World-owned cache publication tail.
+    /// Return fixture fields and the receiver's ordered navigation receipts.
     pub(crate) fn restore_into(
         mut self,
         production: &mut ProductionState,
@@ -200,40 +213,15 @@ impl TerrainAreaState {
         &self.terrain_object_cells
     }
 
-    /// Objects whose authoritative terrain finalization made them inactive
-    /// while their LogicClass membership record is still available to repair.
-    pub(crate) fn inactive_logic_ids(&self) -> Vec<u64> {
-        self.terrain_objects
-            .values()
-            .filter(|terrain| !terrain.is_live() && terrain.in_logic_vector)
-            .map(|terrain| terrain.stable_id)
-            .collect()
-    }
-
     pub(crate) fn navigation_changed_cells(&self) -> &[(u16, u16)] {
         &self.navigation_changed_cells
     }
 
-    /// Raw CellClass occupation bytes moved into this receiver transaction.
-    /// Inline building-survivor smudges must read them before world authority
-    /// is restored, while the destroyed building still occupies its cells.
-    pub(crate) fn raw_occupation(&self) -> &RawCellOccupationGrid {
-        &self.raw_occupation
-    }
-
-    /// Terrain-object cells that remain authoritative tiberium sources while
-    /// combat has the production maps moved into this transaction.
-    pub(crate) fn tiberium_spawning_terrain_cells(&self) -> &BTreeSet<(u16, u16)> {
-        &self.tiberium_spawning_terrain_cells
-    }
-
-    #[cfg(test)]
     pub(crate) fn is_finalizing(&self, stable_id: u64) -> bool {
         self.finalizing_terrain.contains(&stable_id)
     }
 
     /// Enter the shared Object damage kernel for one captured Terrain receiver.
-    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn receive_area_damage(
         &mut self,
@@ -244,33 +232,6 @@ impl TerrainAreaState {
         warhead: &WarheadType,
         rules: &RuleSet,
         interner: &StringInterner,
-    ) -> TerrainAreaReceiveResult {
-        self.receive_area_damage_with_scenario(
-            stable_id,
-            cell,
-            raw_damage,
-            distance_leptons,
-            warhead,
-            rules,
-            interner,
-            false,
-        )
-    }
-
-    /// Scenario-aware shared Object-kernel entry used by production damage
-    /// transactions. The compatibility wrapper above keeps isolated fixtures
-    /// on the ordinary stock-skirmish false path.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn receive_area_damage_with_scenario(
-        &mut self,
-        stable_id: u64,
-        cell: (u16, u16),
-        raw_damage: i32,
-        distance_leptons: i32,
-        warhead: &WarheadType,
-        rules: &RuleSet,
-        interner: &StringInterner,
-        scenario_no_damage: bool,
     ) -> TerrainAreaReceiveResult {
         receive_terrain_area_damage_with_scenario(
             &mut self.terrain_objects,
@@ -283,7 +244,7 @@ impl TerrainAreaState {
             warhead,
             rules,
             interner,
-            scenario_no_damage,
+            false,
         )
     }
 

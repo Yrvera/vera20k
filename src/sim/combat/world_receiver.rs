@@ -13,6 +13,27 @@ fn respond_to_base_attack(
     victim_id: u64,
     attacker_id: u64,
 ) {
+    #[cfg(test)]
+    if let Some(fixture) = world.receiver_fixture.as_mut() {
+        let victim = world
+            .substrate
+            .entities
+            .get(victim_id)
+            .expect("response victim represented");
+        let last_attacker_house_index = world.houses.get(&victim.owner()).map_or(-1, |house| {
+            house.strategy_emergency.last_attacker_house_index()
+        });
+        fixture
+            .trace
+            .entries
+            .push(super::receiver_fixture::BaseDefenseResponseTraceEntry {
+                site: _site,
+                victim_id,
+                health: victim.health.current,
+                last_attacker_house_index,
+            });
+        return;
+    }
     let mut context = base_defense_response::BaseDefenseResponseContext {
         entities: &mut world.substrate.entities,
         rules,
@@ -44,6 +65,13 @@ fn collect_area(
     air_impact: Option<combat_aoe::AoEAirImpact>,
     impact_z: i32,
 ) -> combat_aoe::AoEDamageResult {
+    #[cfg(not(test))]
+    let include_terrain_objects = true;
+    #[cfg(test)]
+    let include_terrain_objects = world
+        .receiver_fixture
+        .as_ref()
+        .is_none_or(|fixture| fixture.terrain_collection);
     let mut prelude = crate::sim::world::simulation_area_damage_cell_prelude(
         rules,
         warhead,
@@ -64,6 +92,22 @@ fn collect_area(
         &mut world.path_grid,
         world.bridge_state.as_ref(),
     );
+    #[cfg(test)]
+    let mut deferred_prelude = world.receiver_fixture.as_mut().map(|fixture| {
+        super::receiver_fixture::DeferredCellPrelude {
+            amount: (!world.session.no_damage)
+                .then(|| tiberium_reduction_amount(damage, true, warhead))
+                .flatten(),
+            deferred: &mut fixture.deferred_tiberium,
+        }
+    });
+    #[cfg(test)]
+    let prelude: &mut dyn combat_aoe::AoECellPrelude = match deferred_prelude.as_mut() {
+        Some(deferred) => deferred,
+        None => &mut prelude,
+    };
+    #[cfg(not(test))]
+    let prelude: &mut dyn combat_aoe::AoECellPrelude = &mut prelude;
     combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
         &mut world.substrate.entities,
         cell.0,
@@ -83,12 +127,12 @@ fn collect_area(
             air_impact,
             impact_z,
         },
-        Some(combat_aoe::TerrainCollectionView {
+        include_terrain_objects.then_some(combat_aoe::TerrainCollectionView {
             objects: &world.production.terrain_objects,
             cells: &world.production.terrain_object_cells,
         }),
         world.session.no_damage,
-        Some(&mut prelude),
+        Some(prelude),
     )
 }
 
@@ -97,7 +141,13 @@ fn commit_smudges(
     rules: &RuleSet,
     overlay_registry: Option<&OverlayTypeRegistry>,
     requests: Vec<SmudgeSpawnRequest>,
+    _deferred: &mut Vec<SmudgeSpawnRequest>,
 ) {
+    #[cfg(test)]
+    if world.receiver_fixture.is_some() {
+        _deferred.extend(requests);
+        return;
+    }
     for request in requests {
         world.commit_smudge_request_inline(rules, overlay_registry, request);
     }
@@ -106,7 +156,7 @@ fn commit_smudges(
 #[derive(Default)]
 pub(crate) struct ReceiverRun {
     pub(crate) handled_deaths: Vec<u64>,
-    finalizing_terrain: BTreeSet<u64>,
+    pub(super) finalizing_terrain: BTreeSet<u64>,
     pub(crate) navigation_changed_cells: Vec<(u16, u16)>,
 }
 
@@ -135,15 +185,11 @@ pub(crate) fn commit_area(
     rules: &RuleSet,
     overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> (DeathEffects, Vec<UnderAttackEvent>) {
-    let handles = world.rule_handles;
-    let current_tick = u64::from(world.session.binary_frame);
+    let current_tick = receiver_tick(world);
     let scenario_no_damage = world.session.no_damage;
 
-    let isolation_armed = area_near_center_ic_isolation_armed(
-        receivers,
-        (&mut world.substrate.entities),
-        current_tick,
-    );
+    let isolation_armed =
+        area_near_center_ic_isolation_armed(receivers, &mut world.substrate.entities, current_tick);
     let mut effects = DeathEffects::default();
     let mut under_attack_events = Vec::new();
 
@@ -181,7 +227,7 @@ pub(crate) fn commit_area(
                     event.distance_leptons,
                     &warhead,
                     rules,
-                    (&mut world.interner),
+                    &mut world.interner,
                     scenario_no_damage,
                 );
                 let TerrainAreaReceiveResult::Lethal(lethal) = receive else {
@@ -197,17 +243,21 @@ pub(crate) fn commit_area(
                         .as_ref()
                         .and_then(|grid| grid.cell(lethal.cell.0, lethal.cell.1))
                         .map_or(0, |cell| i32::from(cell.level));
-                    let aoe = collect_area(
-                        world,
-                        rules,
-                        overlay_registry,
-                        lethal.cell,
-                        100,
-                        &c4_warhead,
-                        (RAD_NO_ATTACKER, None, c4_id),
-                        None,
-                        impact_z,
-                    );
+                    let aoe = {
+                        let collected = collect_area(
+                            world,
+                            rules,
+                            overlay_registry,
+                            lethal.cell,
+                            100,
+                            &c4_warhead,
+                            (RAD_NO_ATTACKER, None, c4_id),
+                            None,
+                            impact_z,
+                        );
+                        append_fixture_tiberium(world, &mut effects.tiberium_reduction_requests);
+                        collected
+                    };
                     effects.wall_mutations.extend(aoe.wall_mutations);
                     effects
                         .wall_radar_dirty_cells
@@ -246,8 +296,9 @@ pub(crate) fn commit_entities(
     rules: &RuleSet,
     overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> (DeathEffects, Vec<UnderAttackEvent>) {
-    let handles = world.rule_handles;
-    let current_tick = u64::from(world.session.binary_frame);
+    let sound_enabled = sound_enabled(world);
+
+    let current_tick = receiver_tick(world);
     let scenario_no_damage = world.session.no_damage;
 
     let mut death = DeathEffects::default();
@@ -258,7 +309,7 @@ pub(crate) fn commit_entities(
     // before the arming record. The per-record check below remains live so an
     // earlier receiver or nested death effect can change later protection.
     let near_center_ic_isolation = near_center_ic_isolation_override.unwrap_or_else(|| {
-        near_center_ic_isolation_armed(damage_events, (&mut world.substrate.entities), current_tick)
+        near_center_ic_isolation_armed(damage_events, &mut world.substrate.entities, current_tick)
     });
 
     for event in damage_events {
@@ -276,10 +327,10 @@ pub(crate) fn commit_entities(
         let attacker_id = event.attacker_id;
         match apply_building_receive_prelude(
             event,
-            (&mut world.substrate.entities),
+            &mut world.substrate.entities,
             rules,
-            (&mut world.interner),
-            (&mut world.houses),
+            &mut world.interner,
+            &mut world.houses,
             current_tick,
         ) {
             BuildingReceivePrelude::ReturnZero => continue,
@@ -295,7 +346,9 @@ pub(crate) fn commit_entities(
                         .entities
                         .get(event.attacker_id)
                         .and_then(|attacker| {
-                            (&world.session.house_order)
+                            world
+                                .session
+                                .house_order
                                 .iter()
                                 .position(|owner| *owner == attacker.owner())
                         })
@@ -347,11 +400,11 @@ pub(crate) fn commit_entities(
         let receiver_outcome = event.distance_leptons.map(|_| {
             resolve_receive_damage(
                 event,
-                (&mut world.substrate.entities),
+                &mut world.substrate.entities,
                 rules,
-                (&mut world.interner),
-                (&mut world.houses),
-                (&world.house_alliances),
+                &mut world.interner,
+                &mut world.houses,
+                &world.house_alliances,
                 scenario_no_damage,
                 current_tick,
                 world.resolved_terrain.as_ref(),
@@ -379,10 +432,10 @@ pub(crate) fn commit_entities(
             threat_feedback,
         }) = receiver_health::commit_receiver_health(
             event,
-            (&mut world.substrate.entities),
+            &mut world.substrate.entities,
             rules,
-            (&mut world.interner),
-            (&world.house_alliances),
+            &mut world.interner,
+            &world.house_alliances,
             attacker_owner,
             live_source_owner,
             receiver_outcome,
@@ -445,7 +498,7 @@ pub(crate) fn commit_entities(
                 .map(|cloak| cloak.start_uncloaking_from_damage(now, cloaking_speed));
             if surfaced.is_some_and(|result| result.play_sound)
                 && let Some(sound_name) = rules.general.cloak_sound.as_deref()
-                && let Some(sink) = Some(&mut world.sound_events)
+                && let Some(sink) = sound_enabled.then_some(&mut world.sound_events)
                 && let Some(target) = world.substrate.entities.get(target_id)
             {
                 sink.push(SimSoundEvent::cloak_sound(
@@ -459,7 +512,7 @@ pub(crate) fn commit_entities(
             // ObjectClass routes its kill callback while Health is exactly zero,
             // before Destroy's reference notification and before TechnoClass's
             // victim-house anger callback.
-            capture_kill_credit(target, attacker_owner, rules, (&mut world.interner));
+            capture_kill_credit(target, attacker_owner, rules, &mut world.interner);
         }
         // `Record_The_Kill` awards the killer's experience in the same call, so
         // it is a same-tick write the victim's own death effects can already
@@ -467,32 +520,34 @@ pub(crate) fn commit_entities(
         // visibility.
         if reached_exact_zero {
             award_kill_experience(
-                (&mut world.substrate.entities),
+                &mut world.substrate.entities,
                 rules,
-                (&mut world.interner),
-                (&world.house_alliances),
+                &mut world.interner,
+                &world.house_alliances,
                 attacker_id,
                 target_id,
             );
         }
         if postmortem_candidate.is_some() {
-            world.apply_fatal_lifecycle_stage(
-                rules,
-                FatalLifecycleStage::PostMortemExactZero {
-                    killer_owner: attacker_owner,
-                },
-                target_id,
-                fatal_category,
-                crate::sim::world::UninitContext::with_rules(rules),
-            );
+            if callbacks_enabled(world) {
+                world.apply_fatal_lifecycle_stage(
+                    rules,
+                    FatalLifecycleStage::PostMortemExactZero {
+                        killer_owner: attacker_owner,
+                    },
+                    target_id,
+                    fatal_category,
+                    crate::sim::world::UninitContext::with_rules(rules),
+                );
+            };
         }
         if let Some((victim_owner, source_owner, final_damage, strength, cost)) = threat_feedback {
             let delta = receiver_anger_delta(final_damage, strength, cost);
             update_anger_nodes(
-                (&mut world.houses),
-                (&world.session.house_order),
-                (&world.house_alliances),
-                (&mut world.interner),
+                &mut world.houses,
+                &world.session.house_order,
+                &world.house_alliances,
+                &mut world.interner,
                 victim_owner,
                 source_owner,
                 delta,
@@ -543,13 +598,15 @@ pub(crate) fn commit_entities(
         }
 
         if let Some((category, state)) = smoke_maintenance {
-            world.apply_fatal_lifecycle_stage(
-                rules,
-                FatalLifecycleStage::MaintainDamageSmoke { state },
-                target_id,
-                category,
-                crate::sim::world::UninitContext::with_rules(rules),
-            );
+            if callbacks_enabled(world) {
+                world.apply_fatal_lifecycle_stage(
+                    rules,
+                    FatalLifecycleStage::MaintainDamageSmoke { state },
+                    target_id,
+                    category,
+                    crate::sim::world::UninitContext::with_rules(rules),
+                );
+            };
         }
         if healing_only {
             continue;
@@ -595,7 +652,7 @@ pub(crate) fn commit_entities(
                         target,
                         attacker_coord,
                         world.resolved_terrain.as_ref(),
-                        (&mut world.substrate.occupancy),
+                        &mut world.substrate.occupancy,
                         rules,
                         world
                             .houses
@@ -603,7 +660,7 @@ pub(crate) fn commit_entities(
                             .is_some_and(|house| house.is_human),
                         infantry_is_fraidycat,
                         has_scatter_ability,
-                        (&mut world.scenario_rng),
+                        &mut world.scenario_rng,
                     )
                 })
             } else {
@@ -621,7 +678,7 @@ pub(crate) fn commit_entities(
                     );
                 }
                 let _ = crate::sim::movement::issue_direct_move(
-                    (&mut world.substrate.entities),
+                    &mut world.substrate.entities,
                     target_id,
                     scatter.destination,
                     scatter.speed,
@@ -704,7 +761,7 @@ pub(crate) fn commit_entities(
         // ReceiveDamage` only resumes after at `0x00442425`, so the voice
         // precedes the building cue.
         if let Some((owner, type_ref, rx, ry)) = voice_feedback_cue
-            && let Some(sink) = Some(&mut world.sound_events)
+            && let Some(sink) = sound_enabled.then_some(&mut world.sound_events)
         {
             sink.push(SimSoundEvent::VoiceFeedback {
                 owner,
@@ -715,7 +772,7 @@ pub(crate) fn commit_entities(
         }
 
         if let Some((rx, ry)) = building_damage_cue
-            && let Some(sink) = Some(&mut world.sound_events)
+            && let Some(sink) = sound_enabled.then_some(&mut world.sound_events)
         {
             sink.push(SimSoundEvent::BuildingDamagedSfx { rx, ry });
         }
@@ -726,17 +783,17 @@ pub(crate) fn commit_entities(
                 .receiver_stage_trace
                 .push(ReceiverStageTrace::ShouldRetaliate { target_id });
             if combat_targeting::should_retaliate_from_damage(
-                (&mut world.substrate.entities),
+                &mut world.substrate.entities,
                 target_id,
                 attacker_id,
                 rules,
-                (&mut world.interner),
-                (&mut world.houses),
-                (&world.house_alliances),
+                &mut world.interner,
+                &mut world.houses,
+                &world.house_alliances,
                 world.resolved_terrain.as_ref(),
             ) {
                 override_mission_on_damage_response(
-                    (&mut world.substrate.entities),
+                    &mut world.substrate.entities,
                     target_id,
                     attacker_id,
                 );
@@ -745,13 +802,15 @@ pub(crate) fn commit_entities(
 
         if became_fatal {
             {
-                world.apply_fatal_lifecycle_stage(
-                    rules,
-                    FatalLifecycleStage::BeforeDeathEffects,
-                    target_id,
-                    fatal_category,
-                    crate::sim::world::UninitContext::with_rules(rules),
-                );
+                if callbacks_enabled(world) {
+                    world.apply_fatal_lifecycle_stage(
+                        rules,
+                        FatalLifecycleStage::BeforeDeathEffects,
+                        target_id,
+                        fatal_category,
+                        crate::sim::world::UninitContext::with_rules(rules),
+                    );
+                };
             }
             let mut nested = handle_death(
                 world,
@@ -767,15 +826,17 @@ pub(crate) fn commit_entities(
                 EntityCategory::Unit | EntityCategory::Structure
             ) {
                 {
-                    world.apply_fatal_lifecycle_stage(
-                        rules,
-                        FatalLifecycleStage::AfterDeathEffects,
-                        target_id,
-                        fatal_category,
-                        crate::sim::world::UninitContext::with_rules(rules),
-                    );
+                    if callbacks_enabled(world) {
+                        world.apply_fatal_lifecycle_stage(
+                            rules,
+                            FatalLifecycleStage::AfterDeathEffects,
+                            target_id,
+                            fatal_category,
+                            crate::sim::world::UninitContext::with_rules(rules),
+                        );
+                    };
                 }
-                {
+                if callbacks_enabled(world) {
                     nested
                         .immediate_uninit_ids
                         .retain(|&dead_id| dead_id != target_id);
@@ -797,7 +858,6 @@ pub(crate) fn handle_death(
     overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> DeathEffects {
     let handles = world.rule_handles;
-    let current_tick = u64::from(world.session.binary_frame);
     let scenario_no_damage = world.session.no_damage;
 
     debug_assert!(
@@ -898,8 +958,8 @@ pub(crate) fn handle_death(
                     category,
                     rules.general.building_die_sound.as_deref(),
                     world.houses.get(&owner).is_some_and(|house| house.is_human),
-                    (&mut world.main_rng),
-                    (&mut world.interner),
+                    &mut world.main_rng,
+                    &mut world.interner,
                     rx,
                     ry,
                     &mut death_sounds,
@@ -924,7 +984,7 @@ pub(crate) fn handle_death(
                 throw_debris_for_death(
                     obj,
                     rules,
-                    (&mut world.interner),
+                    &mut world.interner,
                     owner,
                     rx,
                     ry,
@@ -932,7 +992,7 @@ pub(crate) fn handle_death(
                     sub_y,
                     z,
                     world_z_leptons,
-                    (&mut world.main_rng),
+                    &mut world.main_rng,
                     &mut voxel_debris,
                     &mut explosion_effects,
                 );
@@ -942,7 +1002,7 @@ pub(crate) fn handle_death(
                     veterancy,
                     current_weapon_index,
                     current_weapon_ref,
-                    (&mut world.interner),
+                    &mut world.interner,
                 ) {
                     death_aoe.push((
                         rx,
@@ -1172,17 +1232,21 @@ pub(crate) fn handle_death(
             let routed_wall =
                 wall_overlay_flags_at(world.overlay_grid.as_ref(), overlay_registry, *rx, *ry)
                     .is_some_and(|flags| warhead_damages_wall(warhead, flags));
-            let aoe = collect_area(
-                world,
-                rules,
-                overlay_registry,
-                (*rx, *ry),
-                *dmg,
-                warhead,
-                (*source_id, Some(*owner_id), *wh_id),
-                *air_impact,
-                i32::from(*z),
-            );
+            let aoe = {
+                let collected = collect_area(
+                    world,
+                    rules,
+                    overlay_registry,
+                    (*rx, *ry),
+                    *dmg,
+                    warhead,
+                    (*source_id, Some(*owner_id), *wh_id),
+                    *air_impact,
+                    i32::from(*z),
+                );
+                append_fixture_tiberium(world, &mut tiberium_reduction_requests);
+                collected
+            };
             wall_mutations.extend(aoe.wall_mutations);
             wall_radar_dirty_cells.extend(aoe.wall_radar_dirty_cells);
             cell_target_detaches.extend(aoe.cell_target_detaches);
@@ -1245,18 +1309,24 @@ pub(crate) fn handle_death(
                 *sub_y,
                 *z,
                 *world_z_leptons,
-                (&mut world.interner),
+                &mut world.interner,
                 &mut explosion_effects,
                 &mut smudge_spawn_requests,
             );
             let outer_anim_requests = smudge_spawn_requests.split_off(outer_anim_start);
-            commit_smudges(world, rules, overlay_registry, outer_anim_requests);
+            commit_smudges(
+                world,
+                rules,
+                overlay_registry,
+                outer_anim_requests,
+                &mut smudge_spawn_requests,
+            );
         }
     }
 
     // Concrete InfDeath AnimClass and building destruction smudges are the
     // receiver postlude. The structure is intentionally still represented and
-    // its raw occupation bytes are still in TerrainAreaState during dispatch.
+    // its raw occupation bytes remain live in the world during dispatch.
     for plan in concrete_smudge_plans {
         let mut requests = Vec::new();
         match plan {
@@ -1277,7 +1347,7 @@ pub(crate) fn handle_death(
                 sub_y,
                 z,
                 world_z_leptons,
-                (&mut world.interner),
+                &mut world.interner,
                 &mut explosion_effects,
                 &mut requests,
             ),
@@ -1288,7 +1358,13 @@ pub(crate) fn handle_death(
                 foundation,
             } => append_building_smudge_requests(&mut requests, rx, ry, z, &foundation),
         }
-        commit_smudges(world, rules, overlay_registry, requests);
+        commit_smudges(
+            world,
+            rules,
+            overlay_registry,
+            requests,
+            &mut smudge_spawn_requests,
+        );
     }
 
     DeathEffects {
@@ -1402,13 +1478,13 @@ fn emit_one_projectile_detonation(
         SpecialDetonationAction::OrdinaryDamage => {
             emit_projectile_shrapnel(
                 detonation,
-                (&mut world.substrate.entities),
-                (&mut world.substrate.occupancy),
+                &mut world.substrate.entities,
+                &mut world.substrate.occupancy,
                 rules,
-                (&mut world.interner),
+                &mut world.interner,
                 world.resolved_terrain.as_ref(),
-                (&world.house_alliances),
-                (&mut world.scenario_rng),
+                &world.house_alliances,
+                &mut world.scenario_rng,
                 out,
             );
 
@@ -1419,21 +1495,25 @@ fn emit_one_projectile_detonation(
                 impact_ry,
             )
             .is_some_and(|flags| warhead_damages_wall(warhead, flags));
-            let aoe = collect_area(
-                world,
-                rules,
-                overlay_registry,
-                (impact_rx, impact_ry),
-                detonation.payload.base_damage,
-                warhead,
-                (
-                    detonation.source_id,
-                    Some(detonation.payload.owner),
-                    detonation.payload.warhead,
-                ),
-                air_impact,
-                impact_z,
-            );
+            let aoe = {
+                let collected = collect_area(
+                    world,
+                    rules,
+                    overlay_registry,
+                    (impact_rx, impact_ry),
+                    detonation.payload.base_damage,
+                    warhead,
+                    (
+                        detonation.source_id,
+                        Some(detonation.payload.owner),
+                        detonation.payload.warhead,
+                    ),
+                    air_impact,
+                    impact_z,
+                );
+                append_fixture_tiberium(world, &mut out.tiberium_reduction_requests);
+                collected
+            };
             out.wall_mutations.extend(aoe.wall_mutations);
             out.wall_radar_dirty_cells
                 .extend(aoe.wall_radar_dirty_cells);
@@ -1477,22 +1557,19 @@ fn emit_one_projectile_detonation(
         impact_sub_y,
         impact_z_byte(impact_z),
         world_z_leptons,
-        (&mut world.interner),
+        &mut world.interner,
         &mut out.explosion_effects,
         &mut out.smudge_spawn_requests,
     );
 }
 
-fn emit_projectile_detonations(
+pub(super) fn emit_projectile_detonations(
     world: &mut Simulation,
     rules: &RuleSet,
     overlay_registry: Option<&OverlayTypeRegistry>,
     detonations: &[ProjectileDetonation],
     out: &mut CombatEmit,
 ) {
-    let handles = world.rule_handles;
-    let scenario_no_damage = world.session.no_damage;
-
     for detonation in detonations {
         let projectile_type = rules
             .weapon(world.interner.resolve(detonation.payload.weapon))
@@ -1515,7 +1592,7 @@ fn emit_projectile_detonations(
             let mut clustered = *detonation;
             clustered.impact = coordinate;
             emit_one_projectile_detonation(world, rules, overlay_registry, &clustered, out);
-            coordinate = projectile_next_cluster_coord(coordinate, (&mut world.scenario_rng));
+            coordinate = projectile_next_cluster_coord(coordinate, &mut world.scenario_rng);
         }
     }
 }
@@ -1552,7 +1629,13 @@ pub(crate) fn commit_projectile_detonations_inline(
         );
         absorb_inline_death_effects(emit, death, inline_death);
         emit.explosion_effects.extend(outer_explosion_effects);
-        commit_smudges(world, rules, overlay_registry, outer_anim_requests);
+        commit_smudges(
+            world,
+            rules,
+            overlay_registry,
+            outer_anim_requests,
+            &mut emit.smudge_spawn_requests,
+        );
         under_attack_events.append(&mut pings);
     }
 }
@@ -1564,9 +1647,6 @@ pub(crate) fn commit_projectiles(
     rules: &RuleSet,
     overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> LogicProjectileCommit {
-    let handles = world.rule_handles;
-    let scenario_no_damage = world.session.no_damage;
-
     let mut emit = CombatEmit::default();
     let mut effects = DeathEffects::default();
     let mut under_attack_events = Vec::new();
@@ -1632,9 +1712,6 @@ fn emit_missile_detonations(
     detonations: &[crate::sim::spawn_manager::MissileDetonation],
     out: &mut CombatEmit,
 ) {
-    let handles = world.rule_handles;
-    let scenario_no_damage = world.session.no_damage;
-
     for det in detonations {
         let warhead_name = world.interner.resolve(det.warhead).to_string();
         let Some(warhead) = rules.warhead(&warhead_name) else {
@@ -1665,23 +1742,33 @@ fn emit_missile_detonations(
             crate::util::lepton::CELL_CENTER_LEPTON,
             impact_z_byte(impact_z),
             world_z_leptons,
-            (&mut world.interner),
+            &mut world.interner,
             &mut outer_explosions,
             &mut outer_smudges,
         );
         out.explosion_effects.extend(outer_explosions);
-        commit_smudges(world, rules, overlay_registry, outer_smudges);
-        let aoe = collect_area(
+        commit_smudges(
             world,
             rules,
             overlay_registry,
-            (det.rx, det.ry),
-            det.damage,
-            warhead,
-            (det.firer_id, Some(det.owner), wh_iid),
-            air_impact,
-            impact_z,
+            outer_smudges,
+            &mut out.smudge_spawn_requests,
         );
+        let aoe = {
+            let collected = collect_area(
+                world,
+                rules,
+                overlay_registry,
+                (det.rx, det.ry),
+                det.damage,
+                warhead,
+                (det.firer_id, Some(det.owner), wh_iid),
+                air_impact,
+                impact_z,
+            );
+            append_fixture_tiberium(world, &mut out.tiberium_reduction_requests);
+            collected
+        };
         out.wall_mutations.extend(aoe.wall_mutations);
         out.wall_radar_dirty_cells
             .extend(aoe.wall_radar_dirty_cells);
@@ -1690,7 +1777,7 @@ fn emit_missile_detonations(
     }
 }
 
-fn resolve_attacker_fire(
+pub(super) fn resolve_attacker_fire(
     world: &mut Simulation,
     rules: &RuleSet,
     overlay_registry: Option<&OverlayTypeRegistry>,
@@ -1702,6 +1789,8 @@ fn resolve_attacker_fire(
     has_active_wave: bool,
     out: &mut CombatEmit,
 ) {
+    let sound_enabled = sound_enabled(world);
+
     let handles = world.rule_handles;
     let scenario_no_damage = world.session.no_damage;
 
@@ -1762,14 +1851,14 @@ fn resolve_attacker_fire(
         bool,
     )> = match snap.target {
         TargetKind::Entity(target_id) => world.substrate.entities.get(target_id).map(|t| {
-            let (trx, try_, tsx, tsy) = target_coords(t, Some(rules), (&world.interner));
+            let (trx, try_, tsx, tsy) = target_coords(t, Some(rules), &world.interner);
             (
                 trx,
                 try_,
                 tsx,
                 tsy,
                 t.health.current,
-                combat_target_category(t, rules, (&world.interner)),
+                combat_target_category(t, rules, &world.interner),
                 t.type_ref(),
                 t.owner(),
                 t.category == EntityCategory::Infantry && infantry::is_prone_for_damage(t),
@@ -1818,9 +1907,9 @@ fn resolve_attacker_fire(
                 return;
             }
             if let Some(new_target) = acquire_best_target(
-                (&mut world.substrate.entities),
+                &mut world.substrate.entities,
                 rules,
-                (&mut world.interner),
+                &mut world.interner,
                 snap,
                 obj,
                 fog,
@@ -1884,7 +1973,7 @@ fn resolve_attacker_fire(
             };
             let is_ally = combat_weapon::is_ally_by_object(
                 fog.map(|fog_state| &fog_state.alliances),
-                (&mut world.interner),
+                &mut world.interner,
                 snap.owner,
                 target_entity.owner(),
             );
@@ -1968,9 +2057,9 @@ fn resolve_attacker_fire(
                 return;
             }
             if let Some(new_target) = acquire_best_target(
-                (&mut world.substrate.entities),
+                &mut world.substrate.entities,
                 rules,
-                (&mut world.interner),
+                &mut world.interner,
                 snap,
                 obj,
                 fog,
@@ -2000,9 +2089,9 @@ fn resolve_attacker_fire(
                 return;
             }
             if let Some(new_target) = acquire_best_target(
-                (&mut world.substrate.entities),
+                &mut world.substrate.entities,
                 rules,
-                (&mut world.interner),
+                &mut world.interner,
                 snap,
                 obj,
                 fog,
@@ -2123,7 +2212,7 @@ fn resolve_attacker_fire(
                     attacker_entity,
                     &snap.target,
                     weapon,
-                    (&world.substrate.entities),
+                    &world.substrate.entities,
                     t,
                 ) else {
                     return;
@@ -2134,8 +2223,8 @@ fn resolve_attacker_fire(
                     &snap.target,
                     weapon,
                     rules,
-                    (&world.interner),
-                    (&world.substrate.entities),
+                    &world.interner,
+                    &world.substrate.entities,
                     t,
                     &line_of_fire::LineOfFireInputs {
                         overlay_grid: world.overlay_grid.as_ref(),
@@ -2217,7 +2306,7 @@ fn resolve_attacker_fire(
     ) && in_range::fire_error_on_bridge_mismatch(
         attacker_entity,
         &snap.target,
-        (&world.substrate.entities),
+        &world.substrate.entities,
         t,
     ) {
         if pending_at_fire_frame {
@@ -2271,7 +2360,7 @@ fn resolve_attacker_fire(
                 });
             if start.is_some_and(|result| result.play_sound)
                 && let Some(sound_name) = rules.general.cloak_sound.as_deref()
-                && let Some(sink) = Some(&mut world.sound_events)
+                && let Some(sink) = sound_enabled.then_some(&mut world.sound_events)
                 && let Some(entity) = world.substrate.entities.get(snap.stable_id)
             {
                 sink.push(SimSoundEvent::cloak_sound(
@@ -2649,7 +2738,7 @@ fn resolve_attacker_fire(
             target_ry,
             target_sub_x,
             target_sub_y,
-            (&mut world.substrate.entities),
+            &mut world.substrate.entities,
             world.resolved_terrain.as_ref(),
         );
         let origin_world_z_leptons = world
@@ -2734,7 +2823,7 @@ fn resolve_attacker_fire(
                 (weapon.range * SimFixed::from_num(crate::util::lepton::LEPTONS_PER_CELL_I32))
                     .to_num::<i32>(),
                 flak,
-                (&mut world.scenario_rng),
+                &mut world.scenario_rng,
             ),
             None => delta,
         };
@@ -2759,7 +2848,7 @@ fn resolve_attacker_fire(
         let target_location = |target: TargetKind| -> Option<ProjectileCoord> {
             match target {
                 TargetKind::Entity(id) => world.substrate.entities.get(id).map(|entity| {
-                    let (rx, ry, sx, sy) = target_coords(entity, Some(rules), (&world.interner));
+                    let (rx, ry, sx, sy) = target_coords(entity, Some(rules), &world.interner);
                     ProjectileCoord::new(
                         i32::from(rx) * 256 + sx.to_num::<i32>(),
                         i32::from(ry) * 256 + sy.to_num::<i32>(),
@@ -2935,11 +3024,7 @@ fn resolve_attacker_fire(
                 },
                 guidance,
                 visual,
-                arm_frames: projectile_arm_delay(
-                    arm_frames,
-                    target,
-                    (&mut world.substrate.entities),
-                ),
+                arm_frames: projectile_arm_delay(arm_frames, target, &mut world.substrate.entities),
                 fuse_frames: None,
                 // AI 467C0C calls Check for ROT>0 or Ranged even when
                 // Dropping later suppresses detector-only admission.
@@ -2953,7 +3038,7 @@ fn resolve_attacker_fire(
     } else {
         let impact_z = attack_impact_z(
             snap.target,
-            (&mut world.substrate.entities),
+            &mut world.substrate.entities,
             world.resolved_terrain.as_ref(),
         );
         let air_impact = attack_air_impact(
@@ -2962,7 +3047,7 @@ fn resolve_attacker_fire(
             target_ry,
             target_sub_x,
             target_sub_y,
-            (&mut world.substrate.entities),
+            &mut world.substrate.entities,
             world.resolved_terrain.as_ref(),
         );
         let world_z_leptons = attack_world_z_leptons(
@@ -2971,7 +3056,7 @@ fn resolve_attacker_fire(
             target_ry,
             target_sub_x,
             target_sub_y,
-            (&mut world.substrate.entities),
+            &mut world.substrate.entities,
             world.resolved_terrain.as_ref(),
         );
         let routed_wall = wall_overlay_flags_at(
@@ -2982,17 +3067,21 @@ fn resolve_attacker_fire(
         )
         .is_some_and(|flags| warhead_damages_wall(warhead, flags));
         let wh_iid = world.interner.intern(&warhead.id);
-        let aoe = collect_area(
-            world,
-            rules,
-            overlay_registry,
-            (target_rx, target_ry),
-            base_damage,
-            warhead,
-            (snap.stable_id, Some(snap.owner), wh_iid),
-            air_impact,
-            impact_z,
-        );
+        let aoe = {
+            let collected = collect_area(
+                world,
+                rules,
+                overlay_registry,
+                (target_rx, target_ry),
+                base_damage,
+                warhead,
+                (snap.stable_id, Some(snap.owner), wh_iid),
+                air_impact,
+                impact_z,
+            );
+            append_fixture_tiberium(world, &mut out.tiberium_reduction_requests);
+            collected
+        };
         out.wall_mutations.extend(aoe.wall_mutations);
         out.wall_radar_dirty_cells
             .extend(aoe.wall_radar_dirty_cells);
@@ -3042,7 +3131,7 @@ fn resolve_attacker_fire(
             .is_some_and(|projectile| projectile.inviso)
         {
             inviso_scatter::scatter_inviso_effect_coord(
-                (&mut world.scenario_rng),
+                &mut world.scenario_rng,
                 target_rx,
                 target_ry,
                 target_sub_x,
@@ -3060,7 +3149,7 @@ fn resolve_attacker_fire(
             effect_sub_y,
             effect_z,
             world_z_leptons,
-            (&mut world.interner),
+            &mut world.interner,
             &mut out.explosion_effects,
             &mut out.smudge_spawn_requests,
         );
@@ -3131,7 +3220,7 @@ fn resolve_attacker_fire(
         out.burst_updates
             .push((snap.stable_id, current_remaining, burst_delay, 0));
     } else {
-        let mut rof_ticks = rof_to_cooldown_frames(weapon.rof, (&mut world.scenario_rng));
+        let mut rof_ticks = rof_to_cooldown_frames(weapon.rof, &mut world.scenario_rng);
         // `GetROF @ 0x006FCFA0`, `0x006FD0E2..0x006FD14C`: a ROF-ability
         // holder then stores `ftol(rof * Rules.VeteranROF)` — applied ONCE,
         // after the jitter and before the garrison divides. The firer's rank
@@ -3179,13 +3268,28 @@ pub(crate) fn tick_combat(
     projectile_detonations: &[ProjectileDetonation],
     wave_damage_events: &[WaveDamageEvent],
 ) -> CombatTickResult {
-    let handles = world.rule_handles;
-    let current_tick = u64::from(world.session.binary_frame);
+    let radiation_enabled = radiation_enabled(world);
+
+    let sound_enabled = sound_enabled(world);
+
     let binary_frame = world.session.binary_frame;
-    let scenario_no_damage = world.session.no_damage;
     let require_playfield_membership = world.playfield_bounds.is_some();
+    #[cfg(test)]
+    let require_playfield_membership = world
+        .receiver_fixture
+        .as_ref()
+        .map_or(require_playfield_membership, |fixture| {
+            fixture.require_playfield_membership
+        });
     let fog_snapshot = world.fog.clone();
     let fog = Some(&fog_snapshot);
+    #[cfg(test)]
+    let fog = fog.filter(|_| {
+        world
+            .receiver_fixture
+            .as_ref()
+            .is_none_or(|fixture| fixture.fog_enabled)
+    });
     let power_snapshot = world.power_states.clone();
     let power_states = &power_snapshot;
     let active_wave_owners: BTreeSet<_> = world.active_wave_links.keys().copied().collect();
@@ -3256,10 +3360,10 @@ pub(crate) fn tick_combat(
 
     // Pre-scan: collect entities blocked from firing by locomotor or power state.
     let fire_blocked = combat_fire_gate::collect_fire_blocked_entities(
-        (&mut world.substrate.entities),
+        &mut world.substrate.entities,
         power_states,
         Some(rules),
-        (&mut world.interner),
+        &mut world.interner,
     );
 
     let keys: Vec<u64> = world.substrate.entities.keys_sorted();
@@ -3272,7 +3376,7 @@ pub(crate) fn tick_combat(
     // cell (the detonation re-arms the site, which closes the gate again).
     // The synthesized self-target is cleared once the gate closes; targets the
     // player set explicitly are never touched.
-    if let Some(rad) = Some(&world.radiation) {
+    if let Some(rad) = radiation_enabled.then_some(&world.radiation) {
         let mut set_self_target: Vec<u64> = Vec::new();
         let mut clear_self_target: Vec<u64> = Vec::new();
         for &id in &keys {
@@ -3419,7 +3523,7 @@ pub(crate) fn tick_combat(
                     continue;
                 }
             }
-            let target_cat = combat_target_category(candidate, rules, (&world.interner));
+            let target_cat = combat_target_category(candidate, rules, &world.interner);
             let target_armor = rules
                 .object(world.interner.resolve(candidate.type_ref()))
                 .map(|o| o.armor.as_str())
@@ -3662,9 +3766,9 @@ pub(crate) fn tick_combat(
             snap.stable_id,
             crate::sim::movement::turret::facing_update(
                 entity,
-                (&world.substrate.entities),
+                &world.substrate.entities,
                 Some(rules),
-                (&world.interner),
+                &world.interner,
                 binary_frame,
             ),
         ));
@@ -3745,12 +3849,20 @@ pub(crate) fn tick_combat(
         );
         absorb_inline_death_effects(&mut emit, &mut death, inline_death);
         emit.explosion_effects.extend(outer_explosion_effects);
-        commit_smudges(world, rules, overlay_registry, outer_anim_requests);
+        commit_smudges(
+            world,
+            rules,
+            overlay_registry,
+            outer_anim_requests,
+            &mut emit.smudge_spawn_requests,
+        );
         under_attack_events.append(&mut pings);
         let wave_fire_events = emit.fire_events[fire_event_start..].to_vec();
         for event in &wave_fire_events {
             {
-                world.commit_fired_wave(rules, event);
+                if callbacks_enabled(world) {
+                    world.commit_fired_wave(rules, event);
+                }
             }
         }
         // S3: only this Unit's explicit retarget/remove may replace its seeded
@@ -3784,9 +3896,9 @@ pub(crate) fn tick_combat(
                 crate::sim::movement::turret::facing_toward_target(
                     e,
                     &TargetKind::Entity(tid),
-                    (&world.substrate.entities),
+                    &world.substrate.entities,
                     Some(rules),
-                    (&world.interner),
+                    &world.interner,
                 )
                 .unwrap_or_else(|| crate::sim::movement::turret::body_facing_to_turret(e.facing)),
             )
@@ -3831,9 +3943,9 @@ pub(crate) fn tick_combat(
                 id,
                 crate::sim::movement::turret::facing_update(
                     e,
-                    (&world.substrate.entities),
+                    &world.substrate.entities,
                     Some(rules),
-                    (&world.interner),
+                    &world.interner,
                     binary_frame,
                 ),
             ));
@@ -3847,7 +3959,7 @@ pub(crate) fn tick_combat(
     for event in wave_damage_events {
         emit.damage_events
             .push(combat_aoe::AreaDamageReceiver::Entity(
-                EntityDamageEvent::from_wave(*event, (&mut world.substrate.entities)),
+                EntityDamageEvent::from_wave(*event, &mut world.substrate.entities),
             ));
     }
     // Destructure back into the named locals for post-fire state updates.
@@ -3904,7 +4016,7 @@ pub(crate) fn tick_combat(
     // UNCHECKED; no stock drainer carries a SpawnManager or that link).
     for &(drainer_id, victim_id) in &drain_links {
         crate::sim::credit_income::install_drain_link(
-            (&mut world.substrate.entities),
+            &mut world.substrate.entities,
             drainer_id,
             victim_id,
         );
@@ -4007,7 +4119,7 @@ pub(crate) fn tick_combat(
     // the phased engine collects it here so deaths route through the same
     // death pipeline as weapon damage (death anim selection via the
     // RadSiteWarhead, owned-count bookkeeping, survivor ejection).
-    if let Some(rad) = Some(&mut world.radiation) {
+    if let Some(rad) = radiation_enabled.then_some(&mut world.radiation) {
         for &det in &rad_detonations {
             rad.apply_detonation(
                 det,
@@ -4088,7 +4200,7 @@ pub(crate) fn tick_combat(
         rules,
         overlay_registry,
     );
-    if let Some(rad) = Some(&mut world.radiation) {
+    if let Some(rad) = radiation_enabled.then_some(&mut world.radiation) {
         for det in late_death.rad_detonations.drain(..) {
             rad.apply_detonation(
                 det,
@@ -4128,7 +4240,7 @@ pub(crate) fn tick_combat(
 
     // Push the synchronously selected death sounds to the presentation sink;
     // entity UnInit itself remains the world-owned deferred handoff.
-    {
+    if sound_enabled {
         let sink = &mut world.sound_events;
         for (die_id, rx, ry) in death.death_sounds {
             sink.push(SimSoundEvent::EntityDied {
@@ -4169,5 +4281,49 @@ pub(crate) fn tick_combat(
         unit_facing,
         under_attack_events,
         unit_lost_events: death.unit_lost_events,
+    }
+}
+
+#[inline]
+fn callbacks_enabled(_world: &Simulation) -> bool {
+    #[cfg(test)]
+    if _world.receiver_fixture.is_some() {
+        return false;
+    }
+    true
+}
+
+#[inline]
+fn receiver_tick(world: &Simulation) -> u64 {
+    #[cfg(test)]
+    if let Some(fixture) = world.receiver_fixture.as_ref() {
+        return fixture.current_tick;
+    }
+    u64::from(world.session.binary_frame)
+}
+
+#[inline]
+fn sound_enabled(_world: &Simulation) -> bool {
+    #[cfg(test)]
+    if let Some(fixture) = _world.receiver_fixture.as_ref() {
+        return fixture.sound_enabled;
+    }
+    true
+}
+
+#[inline]
+fn radiation_enabled(_world: &Simulation) -> bool {
+    #[cfg(test)]
+    if let Some(fixture) = _world.receiver_fixture.as_ref() {
+        return fixture.radiation_enabled;
+    }
+    true
+}
+
+#[inline]
+fn append_fixture_tiberium(_world: &mut Simulation, _out: &mut Vec<TiberiumReductionRequest>) {
+    #[cfg(test)]
+    if let Some(fixture) = _world.receiver_fixture.as_mut() {
+        _out.append(&mut fixture.deferred_tiberium);
     }
 }

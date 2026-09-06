@@ -63,7 +63,7 @@ fn resolve_once(
     );
     let mut resources = BTreeMap::new();
     let mut rng = SimRng::new(0xC10A_F1AE);
-    let mut hooks: Option<&mut dyn CombatInlineHooks> = None;
+    let mut hooks: Option<&mut FixtureTrace> = None;
     resolve_attacker_fire(
         &snap,
         entities,
