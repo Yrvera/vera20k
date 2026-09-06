@@ -9894,3 +9894,155 @@ fn player_move_arrival_in_radio_contact_assigns_nothing() {
     assert_eq!(e.mission.current().known(), Some(MissionType::Move));
     assert_eq!(e.mission.queued(), MissionId::NONE);
 }
+
+/// Registers `Americans` (the `spawn_miner` owner) and `YuriCountry` (the
+/// captor) with explicit `is_human` so the selector's
+/// `houses.get(owner)` gate reads a real house, not the absent-house
+/// fallback.
+fn register_capture_houses(
+    sim: &mut Simulation,
+    old_is_human: bool,
+    new_is_human: bool,
+) -> crate::sim::intern::InternedId {
+    use crate::sim::house_state::HouseState;
+    let old = sim.interner.intern("Americans");
+    sim.houses
+        .insert(old, HouseState::new(old, 0, None, old_is_human, 0, 10));
+    let captor = sim.interner.intern("YuriCountry");
+    sim.houses.insert(
+        captor,
+        HouseState::new(captor, 1, None, new_is_human, 0, 10),
+    );
+    captor
+}
+
+/// `TechnoClass::ChangeOwner @ 0x007014A0` on a harvesting miner standing on
+/// ore: the forced `Queue_Mission(Guard, commence_now = 1)` commits Guard on
+/// the spot, then the `Enter_Idle_Mode(0, 1)` call at 0x00701849 takes the
+/// harvester arm of `UnitClass::Enter_Idle_Mode @ 0x00738970` and re-queues
+/// Harvest for the NEW owner (the arm reads the owner after the `+0x21C`
+/// swap). Target and destination are cleared on the way. Both houses are
+/// human here: on ore the land check passes for either kind of owner.
+#[test]
+fn captured_harvesting_miner_requeues_harvest_for_the_new_owner() {
+    use crate::sim::mission::{MissionId, MissionType};
+
+    let rules = miner_rules();
+    let mut sim = Simulation::new();
+    let captor = register_capture_houses(&mut sim, true, true);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 10, 10);
+    place_ore(&mut sim, 10, 10, 100);
+    sim.mission_assign_exact(miner_id, MissionId::from_known(MissionType::Harvest), 0)
+        .expect("miner exists");
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(miner_id)
+            .unwrap()
+            .mission
+            .current()
+            .known(),
+        Some(MissionType::Harvest)
+    );
+
+    sim.change_owner_with_rules(miner_id, captor, &rules);
+
+    let miner = sim.substrate.entities.get(miner_id).expect("miner present");
+    assert_eq!(miner.owner, captor);
+    assert_eq!(
+        miner.mission.current().known(),
+        Some(MissionType::Guard),
+        "ChangeOwner force-queues Guard and commences it on a ready unit"
+    );
+    assert_eq!(
+        miner.mission.queued(),
+        MissionId::from_known(MissionType::Harvest),
+        "the idle-mode harvester arm re-queues Harvest on ore"
+    );
+    assert!(miner.attack_target.is_none());
+    assert!(miner.navigation.nav_com.is_none());
+    assert!(miner.movement_target.is_none());
+}
+
+/// Same owner change, miner standing off ore, captured by a HUMAN house
+/// (the old owner is AI, so the outcome can only come from the NEW owner's
+/// `IsControlledByHuman`): the arm's `IsControlledByHuman && LandType != 5`
+/// branch selects Guard, which is already current, so nothing is queued —
+/// the captured miner parks.
+#[test]
+fn captured_miner_off_ore_under_a_human_house_parks_on_guard() {
+    use crate::sim::mission::{MissionId, MissionType};
+
+    let rules = miner_rules();
+    let mut sim = Simulation::new();
+    let captor = register_capture_houses(&mut sim, false, true);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 10, 10);
+    place_ore(&mut sim, 20, 20, 100);
+    sim.mission_assign_exact(miner_id, MissionId::from_known(MissionType::Harvest), 0)
+        .expect("miner exists");
+
+    sim.change_owner_with_rules(miner_id, captor, &rules);
+
+    let miner = sim.substrate.entities.get(miner_id).expect("miner present");
+    assert_eq!(miner.owner, captor);
+    assert_eq!(miner.mission.current().known(), Some(MissionType::Guard));
+    assert_eq!(miner.mission.queued(), MissionId::NONE);
+}
+
+/// The mirror case: a HUMAN player's miner off ore captured by an AI house.
+/// The Guard branch at 0x00738970 requires the NEW owner to pass
+/// `IsControlledByHuman` (the arm runs after the `+0x21C` swap); an AI
+/// captor always takes Harvest, so the miner re-queues Harvest even though
+/// the human it was taken from would have parked it.
+#[test]
+fn captured_miner_off_ore_under_an_ai_house_requeues_harvest() {
+    use crate::sim::mission::{MissionId, MissionType};
+
+    let rules = miner_rules();
+    let mut sim = Simulation::new();
+    let captor = register_capture_houses(&mut sim, true, false);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 10, 10);
+    place_ore(&mut sim, 20, 20, 100);
+    sim.mission_assign_exact(miner_id, MissionId::from_known(MissionType::Harvest), 0)
+        .expect("miner exists");
+
+    sim.change_owner_with_rules(miner_id, captor, &rules);
+
+    let miner = sim.substrate.entities.get(miner_id).expect("miner present");
+    assert_eq!(miner.owner, captor);
+    assert_eq!(miner.mission.current().known(), Some(MissionType::Guard));
+    assert_eq!(
+        miner.mission.queued(),
+        MissionId::from_known(MissionType::Harvest),
+        "an AI captor skips the human land check and re-queues Harvest off ore"
+    );
+}
+
+/// A miner in radio contact (docked at its refinery) when captured by a
+/// human house: the harvester arm's `In_Radio_Contact` early return assigns
+/// nothing beyond the forced Guard.
+#[test]
+fn captured_miner_in_radio_contact_gets_only_the_forced_guard() {
+    use crate::sim::mission::{MissionId, MissionType};
+
+    let rules = miner_rules();
+    let mut sim = Simulation::new();
+    let captor = register_capture_houses(&mut sim, true, true);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 10, 10);
+    spawn_refinery(&mut sim, 2, 12, 12);
+    place_ore(&mut sim, 10, 10, 100);
+    sim.mission_assign_exact(miner_id, MissionId::from_known(MissionType::Harvest), 0)
+        .expect("miner exists");
+    sim.substrate
+        .entities
+        .get_mut(miner_id)
+        .unwrap()
+        .mark_live_contact_with(2);
+
+    sim.change_owner_with_rules(miner_id, captor, &rules);
+
+    let miner = sim.substrate.entities.get(miner_id).expect("miner present");
+    assert_eq!(miner.owner, captor);
+    assert_eq!(miner.mission.current().known(), Some(MissionType::Guard));
+    assert_eq!(miner.mission.queued(), MissionId::NONE);
+}

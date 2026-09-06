@@ -246,7 +246,7 @@
         },
         {
           "name": "refund configuration",
-          "detail": "Type cost, owner cost modifiers, and General RefundPercent determine the amount.",
+          "detail": "Native: type cost, owner cost modifiers, and General RefundPercent determine the amount (BuildingClass sell refund 0x00711F60, no health term for a human house). Rust DRIFT: production_sell.rs uses a fixed SELL_REFUND_PERCENT=50 scaled by health percent; owned by GSI-09.14.",
           "external_source": "Retail TechnoType cost and merged rules RefundPercent"
         }
       ],
@@ -336,9 +336,9 @@
         },
         {
           "kind": "state-transition",
-          "status": "VERIFIED",
-          "basis": "mixed",
-          "detail": "RefundPercent is rules-driven and the stock full-health GAPOWR fixture credits 400.",
+          "status": "UNCHECKED",
+          "basis": "unverified",
+          "detail": "DRIFT: native computes house-adjusted cost x General RefundPercent with no health term for a human house (0x00711F60, 09.01 scan); Rust src/sim/production/production_sell.rs applies a fixed SELL_REFUND_PERCENT=50 x health percent. The stock full-health GAPOWR fixture still credits 400 on both, so the fixture cannot certify the mechanism. Fix belongs to GSI-09.14.",
           "evidence": [
             "docs/research/traces/2026-07-25-loop-012-power-outage-recovery-trace.md:122-147",
             "ini/rulesmd.ini:25",

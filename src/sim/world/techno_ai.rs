@@ -15,6 +15,7 @@
 //! (invariant #2).
 
 mod mission_handlers;
+pub(crate) use mission_handlers::harvester_enter_idle_mode_selector;
 
 use mission_handlers::*;
 

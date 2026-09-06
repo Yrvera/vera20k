@@ -417,13 +417,29 @@ pub(crate) fn mission_enter_dispatch(sim: &mut Simulation, rules: &RuleSet, id: 
         if linked && hp >= max_hp {
             // 0x0043C824..C842: linked sender whose 0x22 answers 10 (ratio >=
             // 1.0) gets 10 back; Mission_Enter 0x004D92D0 then BREAKs and
-            // calls Enter_Idle_Mode (Guard for a plain unit, 0x00738970).
-            // The unit leaves Enter; the epilogue draw below still happens.
+            // calls Enter_Idle_Mode(0, 1) at 0x004D92E2 (Guard for a plain
+            // unit, 0x00738970; a Harvester=yes unit takes the harvester arm:
+            // Harvest, or Guard for a human owner standing off ore — with the
+            // depot contact already broken, the arm's radio gate only sees a
+            // refinery link). The unit leaves Enter; the epilogue draw below
+            // still happens.
             break_depot_contact(sim, id, dock_building_id);
-            queue_mission(sim, id, MissionType::Guard);
             if let Some(unit) = sim.substrate.entities.get_mut(id) {
                 unit.dock_state = None;
                 unit.movement_target = None;
+            }
+            let is_miner = sim
+                .substrate
+                .entities
+                .get(id)
+                .is_some_and(|unit| unit.miner.is_some());
+            let selector = if is_miner {
+                crate::sim::world::harvester_enter_idle_mode_selector(sim, id, rules, false)
+            } else {
+                Some(MissionType::Guard)
+            };
+            if let Some(selector) = selector {
+                queue_mission(sim, id, selector);
             }
         } else if !linked {
             // 0x0043C8A4..C8C3: not a contact and a slot is free or own ⇒ the
@@ -1601,6 +1617,62 @@ mod tests {
         assert_eq!(
             depot_exit_cell(&sim, Some(&grid), DEPOT_RX, DEPOT_RY, "3x3"),
             Some((DEPOT_RX + 1, DEPOT_RY + 3))
+        );
+    }
+
+    /// A repaired (full-HP) linked waiter that is a Harvester=yes unit takes
+    /// the harvester arm of `Enter_Idle_Mode @ 0x00738970` after the BREAK
+    /// (`FootClass::Mission_Enter` 0x004D92E2, args (0, 1)): Harvest for a
+    /// non-human house regardless of land, Guard for a human house standing
+    /// off ore. Plain units keep the Guard exit.
+    #[test]
+    fn linked_full_health_miner_waiter_takes_the_harvester_idle_arm() {
+        use crate::sim::miner::{Miner, MinerConfig, MinerKind};
+        use crate::sim::mission::MissionId;
+
+        fn build(human: bool) -> (Simulation, RuleSet) {
+            let (mut sim, rules, _grid) = setup(0);
+            if human {
+                let owner_id = sim.interner.intern("Americans");
+                sim.houses.get_mut(&owner_id).unwrap().is_human = true;
+            }
+            spawn_entity(&mut sim, 1, "MTNK", EntityCategory::Unit, 14, 11, 300, 300);
+            {
+                let unit = sim.substrate.entities.get_mut(1).unwrap();
+                unit.miner = Some(Miner::new(MinerKind::War, &MinerConfig::default(), 0));
+                let mut ds = DockState::approach(DEPOT);
+                ds.phase = DockPhase::WaitForDock;
+                unit.dock_state = Some(ds);
+                unit.mark_live_contact_with(DEPOT);
+            }
+            sim.substrate
+                .entities
+                .get_mut(DEPOT)
+                .unwrap()
+                .mark_live_contact_with(1);
+            sim.mission_assign_exact(1, MissionId::from_known(MissionType::Enter), 0)
+                .expect("unit exists");
+            assert!(linked(&sim, 1));
+            (sim, rules)
+        }
+
+        let (mut sim, rules) = build(false);
+        mission_enter_dispatch(&mut sim, &rules, 1);
+        assert!(!linked(&sim, 1));
+        assert!(phase(&sim, 1).is_none());
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().mission.queued(),
+            MissionId::from_known(MissionType::Harvest),
+            "a non-human house's miner always re-queues Harvest"
+        );
+
+        let (mut sim, rules) = build(true);
+        mission_enter_dispatch(&mut sim, &rules, 1);
+        assert!(!linked(&sim, 1));
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().mission.queued(),
+            MissionId::from_known(MissionType::Guard),
+            "a human house's miner standing off ore parks on Guard"
         );
     }
 }

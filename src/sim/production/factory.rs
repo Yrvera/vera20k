@@ -279,6 +279,15 @@ impl Factory {
         // removed (NOT the full cost — that is the legacy DRIFT). `.max(0)` documents
         // intent; the invariant `balance <= original_balance` holds (the stepper only
         // decrements balance), so it never fires in a well-formed shadow.
+        //
+        // RESIDUAL (DRIFT, rare): `FactoryClass::AbandonProduction @ 0x004C9FF0`
+        // refunds `Add_Credits(Type->GetCost(Object->Owner) - Balance)` — the type's
+        // cost virtual (`TechnoTypeClass` vtable `+0x84`, house-adjusted) evaluated
+        // AT CANCEL TIME, not the cost snapshot taken at StartProduction. The two
+        // agree unless the owner's cost multiplier changed mid-build (a FactoryPlant
+        // completed or lost while this object was in progress). Trigger: cancel
+        // after such a change; effect: refund off by the multiplier delta on the
+        // whole cost, one-shot; frequency: rare. Downstream: money only.
         let refund = (self.original_balance - self.balance).max(0);
         economy.add_credits(refund); // ORACLE economy in P4 (saturating add)
 
