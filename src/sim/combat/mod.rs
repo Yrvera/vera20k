@@ -29,6 +29,7 @@ pub(crate) mod greatest_threat;
 pub(crate) mod in_range;
 mod inviso_scatter;
 mod receiver_health;
+pub(crate) mod world_receiver;
 pub(crate) mod line_of_fire;
 pub mod smudge_dispatch;
 pub(crate) mod threat_range;

@@ -6253,6 +6253,94 @@ fn wave_tail_consumes_wall_roll_before_mandatory_cliff_chance_roll() {
 }
 
 #[test]
+fn wave_fatal_death_weapon_starts_crater_with_live_smudge_authority() {
+    use crate::rules::ini_parser::IniFile;
+
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n[VehicleTypes]\n0=VICTIM\n1=FIRER\n\
+         [AircraftTypes]\n[BuildingTypes]\n[OverlayTypes]\n\
+         [Warheads]\n0=KILLWH\n1=CRATERWH\n[SmudgeTypes]\n0=CR1\n\
+         [VICTIM]\nStrength=1\nArmor=light\nExplodes=yes\nDeathWeapon=DeathBoom\n\
+         [FIRER]\nStrength=100\nArmor=light\nPrimary=SONIC\n\
+         [SONIC]\nDamage=1\nAmbientDamage=10\nWarhead=KILLWH\nIsSonic=yes\n\
+         [DeathBoom]\nDamage=1\nWarhead=CRATERWH\n\
+         [KILLWH]\nCellSpread=0\nPercentAtMax=1\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+         [CRATERWH]\nCellSpread=0\nTiberium=no\nAnimList=CRATERANIM\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+         [CR1]\nCrater=yes\nWidth=1\nHeight=1\n",
+    );
+    let mut rules = crate::rules::ruleset::RuleSet::from_ini(&ini).unwrap();
+    rules.art_registry = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
+        "[CRATERANIM]\nCrater=yes\nScorch=no\nStart=0\nFrameWidth=100\nFrameHeight=100\n",
+    ));
+    let registry = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+    let mut sim = Simulation::with_seed(1);
+    let mut cells = Vec::new();
+    for ry in 0..10 {
+        for rx in 0..10 {
+            let mut cell = common_raw_terrain_cell(rx, ry, 0, false);
+            cell.filled_clear = true;
+            cell.accepts_smudge = true;
+            cell.allows_tiberium = true;
+            cells.push(cell);
+        }
+    }
+    sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(10, 10, cells));
+    sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::new(10, 10));
+    sim.smudge_grid = Some(crate::sim::smudge_grid::SmudgeGrid::new(10, 10));
+    sim.production.ore_growth_state = crate::sim::ore_growth::OreGrowthState::new(10, 10);
+    let victim_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, victim_id, EntityCategory::Unit);
+    let victim = sim.substrate.entities.get_mut(victim_id).unwrap();
+    victim.type_ref = sim.interner.intern("VICTIM");
+    victim.health = Health { current: 1, max: 1 };
+    assert!(matches!(
+        sim.try_reveal_entity(victim_id, common_raw_request(4, 5, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    let firer_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, firer_id, EntityCategory::Unit);
+    let firer = sim.substrate.entities.get_mut(firer_id).unwrap();
+    firer.type_ref = sim.interner.intern("FIRER");
+    firer.attack_target = Some(AttackTarget::new(victim_id));
+    let wave_id = sim.allocate_stable_id();
+    let mut wave = Wave::new_owned(
+        0,
+        firer_id,
+        TargetKind::Entity(victim_id),
+        ProjectileCoord::new(4 * 256, 5 * 256, 0),
+        ProjectileCoord::new(5 * 256, 5 * 256, 0),
+    );
+    wave.active_geometry = false;
+    wave.decaying = true;
+    wave.fade_in = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    wave.fade_out = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    wave.replace_recorded_cells(vec![WaveRecordedCell::real(4, 5)]);
+    sim.admit_wave(wave_id, wave);
+
+    // Wave vslot call 0x0075F42C -> DeathWeapon Detonate 0x0070D782 ->
+    // zero-delay Anim constructor 0x00469C93 -> 0x00422702/0x00424D5A.
+    // Default Start=0 crater work is synchronous, including Reduce_Tiberium
+    // at 0x004250E7. Evidence: active gamemd.exe bodies/call instructions.
+    assert!(sim.object_ai_visit_one(
+        wave_id,
+        Some(&rules),
+        ObjectAiCtx {
+            overlay_registry: Some(&registry),
+            ..ObjectAiCtx::default()
+        },
+    ));
+    assert!(!sim.substrate.entities.get(victim_id).unwrap().is_alive());
+    let crater = rules.smudge_types.find_by_name("CR1").unwrap();
+    assert_eq!(
+        sim.smudge_grid.as_ref().unwrap().cell(4, 5).type_id,
+        Some(crater),
+        "nested DeathWeapon starts its crater before Wave AI returns, without a later effects drain",
+    );
+}
+
+#[test]
 fn wave_cliff_collapse_consumes_exact_body_rng_and_spawns_row_major_anims() {
     use crate::rules::locomotor_type::MovementZone;
     use crate::sim::pathfinding::zone_hierarchy::{
