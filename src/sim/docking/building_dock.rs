@@ -922,6 +922,7 @@ mod tests {
              [InfantryTypes]\n\
              [VehicleTypes]\n\
              0=MTNK\n\
+             1=HARV\n\
              [AircraftTypes]\n\
              [BuildingTypes]\n\
              0=GADEPT\n\
@@ -930,6 +931,12 @@ mod tests {
              Cost=700\n\
              Strength=300\n\
              Speed=6\n\
+             [HARV]\n\
+             Name=War Miner\n\
+             Cost=1400\n\
+             Strength=600\n\
+             Speed=4\n\
+             Harvester=yes\n\
              [GADEPT]\n\
              Name=Depot\n\
              Foundation=3x3\n\
@@ -1369,6 +1376,209 @@ mod tests {
             tick(&mut sim, &rules, &grid);
         }
         assert!(linked(&sim, 2));
+    }
+
+    // --- A harvester at the depot ---
+    //
+    // Native dispatches a miner on Enter(7) through `FootClass::Mission_Enter
+    // @ 0x004D9290` like any Foot object (`UnitClass` vtable `0x007F5C70 +
+    // 0x240` = `0x007F5EB0` holds `0x004D9290`; the Harvest handler is only
+    // reached on selector 10). The Unit Enter arm therefore runs for a miner
+    // with a depot `DockState`, and the Harvest handler declines it.
+
+    fn miner_cfg() -> crate::sim::miner::MinerConfig {
+        crate::sim::miner::MinerConfig::default()
+    }
+
+    fn spawn_damaged_miner(sim: &mut Simulation, sid: u64, rx: u16, ry: u16) {
+        spawn_entity(sim, sid, "HARV", EntityCategory::Unit, rx, ry, 100, 600);
+        let e = sim.substrate.entities.get_mut(sid).unwrap();
+        e.miner = Some(crate::sim::miner::Miner::new(
+            crate::sim::miner::MinerKind::War,
+            &miner_cfg(),
+            0,
+        ));
+    }
+
+    /// The object-AI pass with the Harvest handler LIVE (`miner_config`
+    /// supplied, as production does), in live-object order.
+    fn visit_units_with_harvest(sim: &mut Simulation, rules: &RuleSet) {
+        let units: Vec<u64> = sim
+            .substrate
+            .entities
+            .keys_sorted()
+            .into_iter()
+            .filter(|&id| {
+                sim.substrate
+                    .entities
+                    .get(id)
+                    .is_some_and(|e| e.category == EntityCategory::Unit)
+            })
+            .collect();
+        let cfg = miner_cfg();
+        for id in units {
+            sim.object_ai_visit_one(
+                id,
+                Some(rules),
+                crate::sim::world::ObjectAiCtx {
+                    path_grid: None,
+                    overlay_registry: None,
+                    terrain_spawner_cells: None,
+                    miner_config: Some(&cfg),
+                },
+            );
+        }
+    }
+
+    fn dispatch_timer(sim: &Simulation, id: u64) -> (i32, i32) {
+        let t = sim
+            .substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .mission
+            .dispatch_timer();
+        (t.start_frame(), t.delay())
+    }
+
+    fn harvest_cursor(sim: &Simulation, id: u64) -> u32 {
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .mission
+            .handler_state()
+    }
+
+    /// A damaged war miner ordered to the depot HELLOs on its Enter cadence
+    /// (one Scenario `(0,2)` draw per dispatch, none between), links, is
+    /// serviced to full and released with the Harvest cursor untouched. The
+    /// dispatch timer has one writer: it moves only on frames where it was
+    /// due at entry, and every write is the Enter epilogue (14..=16), never
+    /// the Harvest handler's per-frame `1`.
+    #[test]
+    fn damaged_miner_at_depot_probes_links_is_serviced_and_released() {
+        let (mut sim, rules, grid) = setup(0);
+        const MINER: u64 = 7;
+        spawn_damaged_miner(&mut sim, MINER, 14, 11);
+        assert!(order_repair(&mut sim, &rules, &grid, MINER));
+        let cursor_at_order = harvest_cursor(&sim, MINER);
+
+        let mut reached_pad = false;
+        let mut released = false;
+        let mut writes = 0u32;
+        let mut prev_timer = dispatch_timer(&sim, MINER);
+        for _ in 0..2000 {
+            sim.session.binary_frame = sim.session.binary_frame.wrapping_add(1);
+            let now = sim.session.binary_frame;
+            let due_at_entry = sim
+                .substrate
+                .entities
+                .get(MINER)
+                .unwrap()
+                .mission
+                .dispatch_timer()
+                .due(now);
+            let waiting = matches!(
+                phase(&sim, MINER),
+                Some(DockPhase::Approach | DockPhase::WaitForDock | DockPhase::EnterDock)
+            );
+            let mut shadow = sim.clone_scenario_rng();
+            visit_units_with_harvest(&mut sim, &rules);
+            let timer = dispatch_timer(&sim, MINER);
+            if waiting {
+                if due_at_entry {
+                    // Exactly one Enter dispatch: one (0,2) draw, one write.
+                    shadow.next_range_u32_inclusive(0, 2);
+                    assert_eq!(sim.scenario_rng.state(), shadow.state());
+                    assert_eq!(timer.0, now as i32, "epilogue anchors at now");
+                    assert!((14..=16).contains(&timer.1), "Enter cadence, got {timer:?}");
+                    writes += 1;
+                } else {
+                    assert_eq!(sim.scenario_rng.state(), shadow.state(), "no draw");
+                    assert_eq!(timer, prev_timer, "no writer on a pending frame");
+                }
+                assert_eq!(harvest_cursor(&sim, MINER), cursor_at_order);
+            }
+            prev_timer = timer;
+            tick_building_docks(&mut sim, &rules, Some(&grid));
+            crate::sim::movement::tick_movement(
+                &mut sim.substrate.entities,
+                &mut sim.interner,
+                &mut sim.pending_lifecycle_requests,
+            );
+            sim.session.tick += 1;
+            if phase(&sim, MINER) == Some(DockPhase::Servicing) {
+                reached_pad = true;
+                assert!(linked(&sim, MINER));
+            }
+            if reached_pad && phase(&sim, MINER).is_none() {
+                released = true;
+                break;
+            }
+        }
+        assert!(reached_pad, "miner never reached the pad");
+        assert!(released, "miner never released");
+        assert!(writes >= 1, "at least the first HELLO dispatch");
+        let e = sim.substrate.entities.get(MINER).unwrap();
+        assert_eq!(e.health.current, 600);
+        assert!(e.miner.is_some(), "miner component survives the depot stay");
+        assert!(!linked(&sim, MINER));
+        assert_eq!(e.mission.queued().known(), Some(MissionType::Move));
+        assert_eq!(harvest_cursor(&sim, MINER), cursor_at_order);
+    }
+
+    /// Single writer, directly: on a due frame the Harvest handler declines a
+    /// miner on Enter with a depot dock state (timer and cursor untouched),
+    /// and the object-AI visit then writes the timer exactly once with the
+    /// Enter epilogue.
+    #[test]
+    fn harvest_handler_declines_miner_on_enter_with_depot_dock_state() {
+        let (mut sim, rules, grid) = setup(0);
+        const MINER: u64 = 7;
+        spawn_damaged_miner(&mut sim, MINER, 14, 11);
+        assert!(order_repair(&mut sim, &rules, &grid, MINER));
+        sim.session.binary_frame += 1;
+        visit_units_with_harvest(&mut sim, &rules);
+        assert!(linked(&sim, MINER));
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(MINER)
+                .unwrap()
+                .mission
+                .current()
+                .known(),
+            Some(MissionType::Enter)
+        );
+        let (start, delay) = dispatch_timer(&sim, MINER);
+        assert!((14..=16).contains(&delay));
+        // Jump to the due frame.
+        sim.session.binary_frame = (start + delay) as u32;
+        let now = sim.session.binary_frame;
+        let before = dispatch_timer(&sim, MINER);
+        let cursor = harvest_cursor(&sim, MINER);
+        let rng_before = sim.scenario_rng.state();
+        let cfg = miner_cfg();
+        crate::sim::miner::dispatch_harvest_for_object(&mut sim, &rules, &cfg, None, None, MINER);
+        assert_eq!(
+            dispatch_timer(&sim, MINER),
+            before,
+            "Harvest handler declined"
+        );
+        assert_eq!(harvest_cursor(&sim, MINER), cursor);
+        assert_eq!(sim.scenario_rng.state(), rng_before);
+
+        let mut shadow = sim.clone_scenario_rng();
+        visit_units_with_harvest(&mut sim, &rules);
+        shadow.next_range_u32_inclusive(0, 2);
+        assert_eq!(sim.scenario_rng.state(), shadow.state(), "one (0,2) draw");
+        let after = dispatch_timer(&sim, MINER);
+        assert_eq!(after.0, now as i32);
+        assert!(
+            (14..=16).contains(&after.1),
+            "Enter epilogue, got {after:?}"
+        );
     }
 
     /// Exit-cell selection skips foundation/vehicle-blocked cells in list order.
