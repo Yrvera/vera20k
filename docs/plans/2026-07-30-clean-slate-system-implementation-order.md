@@ -50,8 +50,8 @@ prelude to rebuild in isolation.
 Row status is not kept in this document. It lives in the System Map registry
 (`docs/system-map/registry.v2.json`, one `baseline_status` per GSI row with
 `native_evidence`, `rust_implementation`, `parity` and `basis`) and is updated
-only for touched, verified connections through `python -m tools.system_map
-import` followed by `python -m tools.system_map check --require-sources`.
+only for touched, verified connections, then checked with
+`python -m tools.system_map check`.
 Read a row there before selecting work; `parity` stays `UNCHECKED`/`DRIFT`
 until a gamemd-derived executable comparison demonstrates equivalence.
 
