@@ -1523,117 +1523,25 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_, '
             });
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn commit_wave_fire_event(
         &mut self,
         rules: &RuleSet,
-        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         event: &SimFireEvent,
-        borrowed_entities: &mut EntityStore,
-        borrowed_occupancy: &mut OccupancyGrid,
-        borrowed_interner: &mut StringInterner,
-        borrowed_main_rng: &mut SimRng,
-        borrowed_scenario_rng: &mut SimRng,
-        borrowed_resource_nodes: &mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
-        borrowed_houses: &mut BTreeMap<InternedId, HouseState>,
-        borrowed_overlay_grid: Option<&mut crate::sim::overlay_grid::OverlayGrid>,
-        borrowed_terrain: Option<&mut ResolvedTerrainGrid>,
-        borrowed_bridge_state: Option<&BridgeRuntimeState>,
-        borrowed_terrain_area_state: Option<
-            &mut crate::sim::terrain_object::TerrainAreaState,
-        >,
-        borrowed_sound_events: Option<&mut Vec<SimSoundEvent>>,
+        entities: &EntityStore,
+        interner: &StringInterner,
+        terrain: Option<&ResolvedTerrainGrid>,
+        scenario_rng_state: u64,
     ) {
         #[cfg(test)]
-        self.sim
-            .trace_lifecycle_for_test(LifecycleTestEvent::CombatFireEffectsCommitted {
-                attacker_id: event.attacker_id,
-                scenario_rng_state: borrowed_scenario_rng.state(),
-            });
-
-        std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
-        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
-        std::mem::swap(&mut self.sim.interner, borrowed_interner);
-        std::mem::swap(&mut self.sim.main_rng, borrowed_main_rng);
-        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
-        std::mem::swap(
-            &mut self.sim.production.resource_nodes,
-            borrowed_resource_nodes,
-        );
-        std::mem::swap(&mut self.sim.houses, borrowed_houses);
-
-        let mut borrowed_terrain_area_state = borrowed_terrain_area_state;
-        if let Some(area_state) = borrowed_terrain_area_state.as_deref_mut() {
-            area_state.swap_authority(
-                &mut self.sim.production,
-                &mut self.sim.substrate.raw_cell_occupation,
-            );
+        self.sim.trace_lifecycle_for_test(LifecycleTestEvent::CombatFireEffectsCommitted {
+            attacker_id: event.attacker_id,
+            scenario_rng_state,
+        });
+        #[cfg(not(test))]
+        let _ = scenario_rng_state;
+        if let Some(wave) = self.sim.prepare_fired_wave(rules, event, entities, interner, terrain) {
+            self.sim.admit_fired_wave(event.attacker_id, wave, terrain);
         }
-
-        let had_overlay = borrowed_overlay_grid.is_some();
-        let mut borrowed_overlay_grid = borrowed_overlay_grid;
-        if let Some(grid) = borrowed_overlay_grid.as_deref_mut() {
-            debug_assert!(self.sim.overlay_grid.is_none());
-            self.sim.overlay_grid = Some(grid.clone());
-            std::mem::swap(self.sim.overlay_grid.as_mut().expect("installed"), grid);
-        }
-        let had_terrain = borrowed_terrain.is_some();
-        let mut borrowed_terrain = borrowed_terrain;
-        if let Some(terrain) = borrowed_terrain.as_deref_mut() {
-            debug_assert!(self.sim.resolved_terrain.is_none());
-            self.sim.resolved_terrain = Some(terrain.clone());
-            std::mem::swap(
-                self.sim.resolved_terrain.as_mut().expect("installed"),
-                terrain,
-            );
-        }
-        debug_assert!(self.sim.bridge_state.is_none());
-        self.sim.bridge_state = borrowed_bridge_state.cloned();
-
-        let mut borrowed_sound_events = borrowed_sound_events;
-        if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
-            std::mem::swap(&mut self.sim.sound_events, sound_events);
-        }
-
-        self.sim
-            .create_wave_from_fire_event(rules, overlay_registry, event);
-
-        if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
-            std::mem::swap(&mut self.sim.sound_events, sound_events);
-        }
-        self.sim.bridge_state = None;
-        if let Some(terrain) = borrowed_terrain.as_deref_mut() {
-            std::mem::swap(
-                self.sim.resolved_terrain.as_mut().expect("installed"),
-                terrain,
-            );
-        }
-        if had_terrain {
-            self.sim.resolved_terrain = None;
-        }
-        if let Some(grid) = borrowed_overlay_grid.as_deref_mut() {
-            std::mem::swap(self.sim.overlay_grid.as_mut().expect("installed"), grid);
-        }
-        if had_overlay {
-            self.sim.overlay_grid = None;
-        }
-        if let Some(area_state) = borrowed_terrain_area_state.as_deref_mut() {
-            area_state.swap_authority(
-                &mut self.sim.production,
-                &mut self.sim.substrate.raw_cell_occupation,
-            );
-        }
-
-        std::mem::swap(&mut self.sim.houses, borrowed_houses);
-        std::mem::swap(
-            &mut self.sim.production.resource_nodes,
-            borrowed_resource_nodes,
-        );
-        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
-        std::mem::swap(&mut self.sim.main_rng, borrowed_main_rng);
-        std::mem::swap(&mut self.sim.interner, borrowed_interner);
-        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
-        std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
     }
 
     fn rebuild_cliff_navigation(
@@ -1901,20 +1809,24 @@ impl Simulation {
     /// therefore use the returned real CellClass's canonical coordinate, while
     /// misses retain and restamp the one process-global dummy identity.
     fn wave_cell_target_position(&self, rx: u16, ry: u16) -> ProjectileCoord {
+        self.wave_cell_target_position_in(self.resolved_terrain.as_ref(), rx, ry)
+    }
+
+    fn wave_cell_target_position_in(&self, terrain: Option<&ResolvedTerrainGrid>, rx: u16, ry: u16) -> ProjectileCoord {
         use crate::sim::cell_rect::{CellRef, get_cellclass_fallback};
 
         match get_cellclass_fallback(
-            self.resolved_terrain.as_ref(),
+            terrain,
             i32::from(rx),
             i32::from(ry),
         ) {
             CellRef::Real(cell) => crate::sim::projectile::cell_target_coord(
-                self.resolved_terrain.as_ref(),
+                terrain,
                 cell.rx,
                 cell.ry,
             ),
             CellRef::Dummy { cell } => {
-                let live_dummy = if self.resolved_terrain.is_some() {
+                let live_dummy = if terrain.is_some() {
                     cell
                 } else {
                     // A mapless lookup still addresses Simulation's retained
@@ -2191,28 +2103,30 @@ impl Simulation {
         );
     }
 
-    /// Complete the Wave-producing tail of `TechnoClass::FireAt` while the
-    /// firing object's combat transaction still owns all mutable authorities.
-    fn create_wave_from_fire_event(
-        &mut self,
+    /// Read the firing transaction directly; construction never installs a second
+    /// entity, map, house or RNG authority into the world.
+    fn prepare_fired_wave(
+        &self,
         rules: &RuleSet,
-        _overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         event: &SimFireEvent,
-    ) {
-        let Some(weapon) = rules.weapon(self.interner.resolve(event.weapon_id)) else {
-            return;
+        entities: &EntityStore,
+        interner: &StringInterner,
+        terrain: Option<&ResolvedTerrainGrid>,
+    ) -> Option<crate::sim::wave::Wave> {
+        let Some(weapon) = rules.weapon(interner.resolve(event.weapon_id)) else {
+            return None;
         };
         let wave_type = if weapon.is_sonic {
             0
         } else if weapon.is_mag_beam {
             3
         } else {
-            return;
+            return None;
         };
         let target = match event.target {
             crate::sim::combat::TargetKind::Entity(id) => {
-                let Some(entity) = self.substrate.entities.get(id) else {
-                    return;
+                let Some(entity) = entities.get(id) else {
+                    return None;
                 };
                 ProjectileCoord::new(
                     i32::from(entity.position.rx) * 256
@@ -2221,17 +2135,15 @@ impl Simulation {
                         + entity.position.sub_y.to_num::<i32>(),
                     crate::sim::combat::object_world_z_leptons(
                         entity,
-                        self.resolved_terrain.as_ref(),
+                        terrain,
                     ),
                 )
             }
             crate::sim::combat::TargetKind::Cell(rx, ry) => {
-                self.wave_cell_target_position(rx, ry)
+                self.wave_cell_target_position_in(terrain, rx, ry)
             }
         };
-        let source = self
-            .substrate
-            .entities
+        let source = entities
             .get(event.attacker_id)
             .map(|entity| {
                 ProjectileCoord::new(
@@ -2241,7 +2153,7 @@ impl Simulation {
                         + entity.position.sub_y.to_num::<i32>(),
                     crate::sim::combat::object_world_z_leptons(
                         entity,
-                        self.resolved_terrain.as_ref(),
+                        terrain,
                     ),
                 )
             })
@@ -2255,32 +2167,43 @@ impl Simulation {
                         * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
                 )
             });
-        let mut wave = crate::sim::wave::Wave::new_owned(
+        let wave = crate::sim::wave::Wave::new_owned(
             wave_type,
             event.attacker_id,
             event.target,
             source,
             target,
         );
+        Some(wave)
+    }
+
+    /// Commit identity, constructor cleanup and immediate Logic admission in their
+    /// original order. The receiver keeps ownership of all combat/map state.
+    fn admit_fired_wave(
+        &mut self,
+        attacker_id: u64,
+        mut wave: crate::sim::wave::Wave,
+        terrain: Option<&ResolvedTerrainGrid>,
+    ) {
         let stable_id = self.allocate_stable_id();
         if !wave.constructor_distance_is_live() {
             // Constructor UnInit precedes registration and unique identity,
             // but FireAt stores the returned dead pointer. The stable id only
             // represents that same-frame deferred cleanup window.
             self.waves.spawn(stable_id, wave);
-            self.active_wave_links.insert(event.attacker_id, stable_id);
+            self.active_wave_links.insert(attacker_id, stable_id);
             let retired = self.retire_non_entity_object(stable_id);
             debug_assert!(retired);
             return;
         }
         let context = crate::sim::wave::WaveUpdateContext {
-            owner_position: Some(source),
-            owner_current_target: Some(event.target),
-            target_position: Some(target),
+            owner_position: Some(wave.source),
+            owner_current_target: wave.target_ref,
+            target_position: Some(wave.target),
         };
-        let _terminal = wave.initialize(context, self.resolved_terrain.as_ref());
+        let _terminal = wave.initialize(context, terrain);
         self.admit_wave(stable_id, wave);
-        self.active_wave_links.insert(event.attacker_id, stable_id);
+        self.active_wave_links.insert(attacker_id, stable_id);
     }
 
     /// Finish the live Logic pass after combat has modeled the pre-existing

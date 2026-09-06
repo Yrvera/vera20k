@@ -2874,6 +2874,15 @@ fn sonic_tail_order_test_rules() -> RuleSet {
     .expect("Sonic Logic-tail ordering fixture")
 }
 
+fn admit_test_wave(sim: &mut Simulation, rules: &RuleSet, event: &SimFireEvent) {
+    let wave = sim.prepare_fired_wave(
+        rules, event, &sim.substrate.entities, &sim.interner, sim.resolved_terrain.as_ref(),
+    ).expect("wave prepared");
+    let terrain = sim.resolved_terrain.take();
+    sim.admit_fired_wave(event.attacker_id, wave, terrain.as_ref());
+    sim.resolved_terrain = terrain;
+}
+
 fn sonic_fire_event(sim: &mut Simulation, attacker_id: u64, target_id: u64) -> SimFireEvent {
     SimFireEvent {
         attacker_id,
@@ -2921,7 +2930,7 @@ fn sonic_constructor_dead_pointer_link_lives_until_deferred_delete_at_239() {
     sim.substrate.entities.insert(target);
     let event = sonic_fire_event(&mut sim, firer_id, target_id);
 
-    sim.create_wave_from_fire_event(&rules, None, &event);
+    admit_test_wave(&mut sim, &rules, &event);
 
     let wave_id = *sim
         .active_wave_links
@@ -2958,7 +2967,7 @@ fn sonic_constructor_at_240_registers_then_runs_at_same_pass_tail() {
     sim.substrate.entities.insert(target);
     let event = sonic_fire_event(&mut sim, firer_id, target_id);
 
-    sim.create_wave_from_fire_event(&rules, None, &event);
+    admit_test_wave(&mut sim, &rules, &event);
 
     let wave_id = *sim
         .active_wave_links
@@ -3006,7 +3015,7 @@ fn sonic_cell_target_uses_persistent_dummy_gettargetcoords_on_create_and_refresh
 
     let mut event = sonic_fire_event(&mut sim, firer_id, u64::MAX);
     event.target = crate::sim::combat::TargetKind::Cell(u16::MAX, 7);
-    sim.create_wave_from_fire_event(&rules, None, &event);
+    admit_test_wave(&mut sim, &rules, &event);
 
     let wave_id = *sim
         .active_wave_links
@@ -3095,7 +3104,13 @@ fn sonic_fire_registers_immediately_but_later_techno_fires_before_wave_tail_ai()
     sim.clear_lifecycle_test_events_for_test();
 
     let path = PathGrid::test_all_passable(8, 3);
-    let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&path), None, 67);
+    sim.path_grid = Some(std::sync::Arc::new(path));
+    let mut runtime = crate::sim::runtime::SimRuntime::from_simulation(sim);
+    runtime.resources.rules = rules;
+    runtime.resources.height_map = heights;
+    let output = runtime.advance_frame(&[], 67, TickLane::Ordinary);
+    assert!(output.tick.frame_committed);
+    let sim = &runtime.simulation;
 
     assert_eq!(
         sim.substrate
@@ -3229,7 +3244,13 @@ fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
     ));
 
     let path = PathGrid::test_all_passable(8, 1);
-    let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&path), None, 67);
+    sim.path_grid = Some(std::sync::Arc::new(path));
+    let mut runtime = crate::sim::runtime::SimRuntime::from_simulation(sim);
+    runtime.resources.rules = rules;
+    runtime.resources.height_map = heights;
+    let output = runtime.advance_frame(&[], 67, TickLane::Ordinary);
+    assert!(output.tick.frame_committed);
+    let sim = &runtime.simulation;
 
     let wave_id = *sim
         .active_wave_links
