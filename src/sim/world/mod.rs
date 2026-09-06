@@ -14,6 +14,7 @@ pub(crate) mod authored_load_host;
 pub(crate) mod bridge_orchestrator;
 pub(crate) mod building_anim;
 pub mod edge_cell;
+mod hash_schema;
 mod lifecycle;
 mod load_object_lifecycle;
 mod logic_vector;
