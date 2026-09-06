@@ -2,7 +2,8 @@
 //!
 //! This module sits above simulation and owns loading-screen progress behavior
 //! verified from gamemd.exe. It also owns the request/session boundary used by
-//! the app loop before map-load phases are split into a fully pumpable job.
+//! app loop. The prepared map, prefix and startup move together; remaining
+//! loading stays synchronous and retains the native progress/presentation order.
 
 use crate::app::AppState;
 use crate::app::loading::composition::{
@@ -267,24 +268,14 @@ impl<'a> LoadingPhaseProgress<'a> {
     }
 }
 
-enum FreshScenarioLoadState {
-    Pending,
-    Ready(FreshScenarioLoadContextDescriptor),
-    Transferred,
-}
-
 pub(crate) struct LoadingRequest {
-    /// `None` is an internal terminal-transfer marker only. Every live request
-    /// owns exactly one explicit startup variant.
-    startup: Option<LoadingStartup>,
-    fresh_scenario_load: FreshScenarioLoadState,
+    startup: LoadingStartup,
     /// Accepted setup start staging is small, provenance-bearing gameplay
     /// input. It is never reconstructed from the presentation preview.
     accepted_rmg_start_staging: Option<crate::app::shell_random_map::AcceptedRmgStartStaging>,
     /// Setup-generated preview retained only as a loading-composition fallback.
     /// It never supplies gameplay map data, RNG continuation, or constructors.
     random_map_preview: Option<crate::map::rmg::GeneratedMap>,
-    presentation: LoadingPresentation,
     fallback_skirmish_settings: SkirmishSettings,
 }
 
@@ -294,11 +285,9 @@ impl LoadingRequest {
         fallback_skirmish_settings: SkirmishSettings,
     ) -> Self {
         Self {
-            startup: Some(LoadingStartup::Accepted(startup)),
-            fresh_scenario_load: FreshScenarioLoadState::Pending,
+            startup: LoadingStartup::Accepted(startup),
             accepted_rmg_start_staging: None,
             random_map_preview: None,
-            presentation: LoadingPresentation::NativeSelectedSkirmish,
             fallback_skirmish_settings,
         }
     }
@@ -309,14 +298,12 @@ impl LoadingRequest {
         fallback_skirmish_settings: SkirmishSettings,
     ) -> Self {
         Self {
-            startup: Some(LoadingStartup::UnverifiedLegacy {
+            startup: LoadingStartup::UnverifiedLegacy {
                 session: skirmish_launch_session,
                 seed,
-            }),
-            fresh_scenario_load: FreshScenarioLoadState::Pending,
+            },
             accepted_rmg_start_staging: None,
             random_map_preview: None,
-            presentation: LoadingPresentation::NativeSelectedSkirmish,
             fallback_skirmish_settings,
         }
     }
@@ -326,13 +313,11 @@ impl LoadingRequest {
         fallback_skirmish_settings: SkirmishSettings,
     ) -> Self {
         Self {
-            startup: Some(LoadingStartup::Generic {
+            startup: LoadingStartup::Generic {
                 selected_map_file: selected_map_file.into(),
-            }),
-            fresh_scenario_load: FreshScenarioLoadState::Pending,
+            },
             accepted_rmg_start_staging: None,
             random_map_preview: None,
-            presentation: LoadingPresentation::GenericMapLoad,
             fallback_skirmish_settings,
         }
     }
@@ -345,7 +330,7 @@ impl LoadingRequest {
     /// preview is intentionally not an argument: active retail's `.SED` reader
     /// regenerates gameplay after Start, while the preview remains a loading-
     /// composition fallback only.
-    pub(crate) fn load_initial_with_assets(
+    fn load_initial_with_assets(
         &self,
         ra2_dir: std::path::PathBuf,
         asset_manager: &mut AssetManager,
@@ -364,9 +349,7 @@ impl LoadingRequest {
     }
 
     fn startup(&self) -> &LoadingStartup {
-        self.startup
-            .as_ref()
-            .expect("live loading request must retain startup authority")
+        &self.startup
     }
 
     /// Attach the setup preview for presentation fallback only. Scenario read
@@ -402,72 +385,86 @@ impl LoadingRequest {
         self.random_map_preview.as_ref()
     }
 
-    pub(crate) fn prepare_fresh_scenario_load_context(
+    fn admit_context(
         &mut self,
         initial: &MapLoadInitial,
-    ) -> anyhow::Result<()> {
-        match &self.fresh_scenario_load {
-            FreshScenarioLoadState::Ready(_) => return Ok(()),
-            FreshScenarioLoadState::Transferred => {
-                anyhow::bail!("fresh scenario context was already transferred")
-            }
-            FreshScenarioLoadState::Pending => {}
-        }
-        self.fresh_scenario_load =
-            FreshScenarioLoadState::Ready(FreshScenarioLoadContextDescriptor::admit_stock_offline(
-                self.startup
-                    .as_ref()
-                    .expect("live loading request retains startup authority"),
-                initial.map_data(),
-                initial.map_source(),
-                &mut self.accepted_rmg_start_staging,
-            )?);
-        Ok(())
-    }
-
-    pub(crate) fn fresh_scenario_load_context(
-        &self,
-    ) -> Option<&FreshScenarioLoadContextDescriptor> {
-        match &self.fresh_scenario_load {
-            FreshScenarioLoadState::Ready(context) => Some(context),
-            FreshScenarioLoadState::Pending | FreshScenarioLoadState::Transferred => None,
-        }
-    }
-
-    pub(crate) fn take_fresh_scenario_load_context(
-        &mut self,
     ) -> anyhow::Result<FreshScenarioLoadContextDescriptor> {
-        match &self.fresh_scenario_load {
-            FreshScenarioLoadState::Pending => {
-                anyhow::bail!("loading transfer attempted before fresh scenario admission")
-            }
-            FreshScenarioLoadState::Transferred => {
-                anyhow::bail!("fresh scenario context transfers exactly once")
-            }
-            FreshScenarioLoadState::Ready(_) => {}
-        }
-        match std::mem::replace(
-            &mut self.fresh_scenario_load,
-            FreshScenarioLoadState::Transferred,
-        ) {
-            FreshScenarioLoadState::Ready(context) => Ok(context),
-            FreshScenarioLoadState::Pending | FreshScenarioLoadState::Transferred => {
-                unreachable!("state was checked before terminal move")
-            }
-        }
+        FreshScenarioLoadContextDescriptor::admit_stock_offline(
+            &self.startup,
+            initial.map_data(),
+            initial.map_source(),
+            &mut self.accepted_rmg_start_staging,
+        )
     }
 
-    fn take_startup(&mut self) -> LoadingStartup {
-        self.startup
-            .take()
-            .expect("terminal loading phase transfers startup authority once")
+    fn prepare(
+        self,
+        ra2_dir: PathBuf,
+        assets: &mut AssetManager,
+        progress: &mut dyn LoadingProgressSink,
+    ) -> anyhow::Result<PreparedScenarioLoad> {
+        let initial = self.load_initial_with_assets(ra2_dir, assets, progress)?;
+        self.prepare_initial(initial)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn load_random_map_snapshot_for_test(
+        self,
+        ra2_dir: PathBuf,
+        assets: &mut AssetManager,
+        progress: &mut dyn LoadingProgressSink,
+    ) -> anyhow::Result<init::RandomMapLaunchSnapshot> {
+        let prepared = self.prepare(ra2_dir, assets, progress)?;
+        Ok(prepared
+            .initial
+            .into_random_map_launch_snapshot(assets, prepared.context))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prepare_random_map_snapshot_for_test(
+        self,
+        initial: MapLoadInitial,
+        assets: &mut AssetManager,
+    ) -> anyhow::Result<init::RandomMapLaunchSnapshot> {
+        let prepared = self.prepare_initial(initial)?;
+        Ok(prepared
+            .initial
+            .into_random_map_launch_snapshot(assets, prepared.context))
+    }
+
+    fn prepare_initial(mut self, initial: MapLoadInitial) -> anyhow::Result<PreparedScenarioLoad> {
+        let context = self.admit_context(&initial)?;
+        Ok(PreparedScenarioLoad {
+            request: self,
+            initial,
+            context,
+        })
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LoadingPresentation {
-    NativeSelectedSkirmish,
-    GenericMapLoad,
+/// VERA-internal ownership protocol, gamemd equivalent UNCHECKED. Native phase
+/// order is independently established in
+/// LOADING_FIRST_RENDERER_CORRECTED_COMPOSITION_DATA_READINESS_GHIDRA_REPORT.md
+/// (Full_Init00687558..00687594). The parsed map, admitted prefix and startup
+/// travel together from preparation through composition to remaining loading.
+struct PreparedScenarioLoad {
+    request: LoadingRequest,
+    initial: MapLoadInitial,
+    context: FreshScenarioLoadContextDescriptor,
+}
+
+enum LoadingStage {
+    Selected(LoadingRequest),
+    Prepared(PreparedScenarioLoad),
+}
+
+impl LoadingStage {
+    fn request(&self) -> &LoadingRequest {
+        match self {
+            Self::Selected(request) => request,
+            Self::Prepared(prepared) => &prepared.request,
+        }
+    }
 }
 
 pub(crate) struct NativeLoadingScreenState {
@@ -489,7 +486,6 @@ pub(crate) struct NativeLoadingScreenState {
     pub progress_row: LoadingProgressRowSnapshot,
     pub atlas: Option<LoadingScreenAtlas>,
     pub composition: Option<LoadingCompositionSnapshot>,
-    pub first_renderer_ready: bool,
     /// Native constructs two runtime ColorScheme objects per current `[Colors]`
     /// entry. Capture that pre-load count before the later rules reset.
     runtime_color_scheme_count: usize,
@@ -516,7 +512,6 @@ impl NativeLoadingScreenState {
             progress_row,
             atlas: None,
             composition: None,
-            first_renderer_ready: false,
             runtime_color_scheme_count: 0,
             progress_cadence,
         }
@@ -549,27 +544,22 @@ impl NativeLoadingScreenState {
 }
 
 pub(crate) struct LoadingSession {
-    pub request: LoadingRequest,
-    pub native: Option<NativeLoadingScreenState>,
+    stage: LoadingStage,
+    native: Option<NativeLoadingScreenState>,
     job: LoadingJob,
-    pub first_frame_presented: bool,
+    first_frame_presented: bool,
 }
 
 impl LoadingSession {
-    /// The pump's native admission gate (F07 characterization): a native
-    /// session may not pump loader work until its first loading frame
-    /// composition is ready to present. `first_renderer_ready` flips only when
-    /// the session-local atlas decode completes, and the frame loop calls the
-    /// pump strictly after `loading_screen_presented`.
-    pub(crate) fn native_pump_blocked(&self) -> bool {
+    fn native_pump_blocked(&self) -> bool {
         self.native
             .as_ref()
-            .is_some_and(|native| !native.first_renderer_ready)
+            .is_some_and(|native| native.atlas.is_none())
     }
 
     fn from_request(request: LoadingRequest) -> Self {
-        let native = match (&request.presentation, request.skirmish_launch_session()) {
-            (LoadingPresentation::NativeSelectedSkirmish, Some(skirmish_launch_session)) => {
+        let native = match request.skirmish_launch_session() {
+            Some(skirmish_launch_session) => {
                 let variant =
                     loading_art_variant_from_launch_country(skirmish_launch_session.local.country);
                 // `local.color_index` is the gamemd color priority; resolve to a
@@ -588,18 +578,10 @@ impl LoadingSession {
                     progress_cadence,
                 ))
             }
-            (LoadingPresentation::GenericMapLoad, None) => None,
-            (LoadingPresentation::NativeSelectedSkirmish, None)
-            | (LoadingPresentation::GenericMapLoad, Some(_)) => {
-                debug_assert!(
-                    false,
-                    "LoadingRequest constructor created mismatched launch/presentation modes"
-                );
-                None
-            }
+            None => None,
         };
         Self {
-            request,
+            stage: LoadingStage::Selected(request),
             native,
             job: LoadingJob::new(),
             first_frame_presented: false,
@@ -607,7 +589,7 @@ impl LoadingSession {
     }
 }
 
-pub(crate) enum LoadingPump {
+enum LoadingPump {
     Pending,
     Finished(MapLoadResult),
     Failed(anyhow::Error),
@@ -616,16 +598,10 @@ pub(crate) enum LoadingPump {
 pub(crate) enum LoadingRenderResult {
     NativeRendered,
     GenericFallback,
-    NativeFailed(anyhow::Error),
-}
-
-enum LoadingJobPhase {
-    InitialMapSelection,
-    RemainingLegacyLoad(Option<MapLoadInitial>),
+    Failed,
 }
 
 struct LoadingJob {
-    phase: LoadingJobPhase,
     ra2_dir: Option<PathBuf>,
     asset_manager: Option<AssetManager>,
 }
@@ -633,7 +609,6 @@ struct LoadingJob {
 impl LoadingJob {
     fn new() -> Self {
         Self {
-            phase: LoadingJobPhase::InitialMapSelection,
             ra2_dir: None,
             asset_manager: None,
         }
@@ -641,12 +616,6 @@ impl LoadingJob {
 }
 
 pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
-    let next_active = request
-        .startup()
-        .accepted()
-        .map(|startup| startup.correlation);
-    state.match_state.startup.begin(next_active);
-    clear_loading_state(state);
     let mut session = LoadingSession::from_request(request);
     session.job.ra2_dir = state
         .platform
@@ -662,14 +631,41 @@ pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
         state,
         std::time::Instant::now(),
     );
-    let session = lease_loading_assets_and_play_loading_theme(
+    reset_loading_presentation(state);
+    replace_loading_attempt(
+        &mut state.frontend.loading_session,
+        &mut state.match_state.startup,
         &mut state.process_assets,
         &mut state.audio,
         session,
         now_ms,
     );
-    state.frontend.loading_session = Some(session);
     state.frontend.screen = GameScreen::Loading;
+}
+
+/// Establish replacement admission before retiring the previous attempt's
+/// resources. Successful resource retirement must leave this correlation live
+/// for the installer's L0 acknowledgement.
+fn replace_loading_attempt(
+    slot: &mut Option<LoadingSession>,
+    startup: &mut crate::app::match_runtime::startup::MatchStartup,
+    assets: &mut crate::app::process_assets::ProcessAssets,
+    audio: &mut crate::app::audio_runtime::AppAudioRuntime,
+    next: LoadingSession,
+    now_ms: u64,
+) {
+    let correlation = next
+        .stage
+        .request()
+        .startup()
+        .accepted()
+        .map(|s| s.correlation);
+    startup.begin(correlation);
+    retire_loading_attempt(slot, assets);
+    *slot = Some(lease_loading_assets_and_play_loading_theme(
+        assets, audio, next, now_ms,
+    ));
+    log::debug!(target: "vera20k::loading_attempt", "selected correlation={correlation:?}");
 }
 
 /// The shell -> scenario boundary of `begin_loading`: lease the process asset
@@ -716,20 +712,48 @@ pub(crate) fn loading_map_name(state: &AppState) -> Option<&str> {
         .frontend
         .loading_session
         .as_ref()
-        .map(|session| session.request.selected_map_file())
+        .map(|session| session.stage.request().selected_map_file())
 }
 
 pub(crate) fn clear_loading_state(state: &mut AppState) {
-    // F11 slot: the rescue is unconditional — the leased manager (with its
-    // sticky CRC cache and theater identity) always comes home. The old code
-    // rescued only when the state slot was empty and otherwise dropped it.
-    if let Some(mut session) = state.frontend.loading_session.take() {
-        if let Some(manager) = session.job.asset_manager.take() {
-            state.process_assets.return_from_loading(manager);
-        }
-    }
+    retire_loading_attempt(
+        &mut state.frontend.loading_session,
+        &mut state.process_assets,
+    );
+    reset_loading_presentation(state);
+}
+
+fn reset_loading_presentation(state: &mut AppState) {
     state.frontend.loading_screen_atlas = None;
     state.frontend.loading_progress = LoadingProgressState::standard_skirmish();
+}
+
+fn retire_loading_attempt(
+    slot: &mut Option<LoadingSession>,
+    assets: &mut crate::app::process_assets::ProcessAssets,
+) {
+    if let Some(session) = slot.take() {
+        session.job.retire(assets);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoadingFailurePolicy {
+    ReportNativeFailure,
+    InstallGenericFallback,
+}
+
+fn retire_failed_loading_attempt(
+    slot: &mut Option<LoadingSession>,
+    startup: &mut crate::app::match_runtime::startup::MatchStartup,
+    assets: &mut crate::app::process_assets::ProcessAssets,
+    policy: LoadingFailurePolicy,
+) -> LoadingFailurePolicy {
+    retire_loading_attempt(slot, assets);
+    if policy == LoadingFailurePolicy::ReportNativeFailure {
+        startup.clear();
+    }
+    policy
 }
 
 /// The handle the player launched this skirmish under, as shown on the loading
@@ -739,11 +763,11 @@ pub(crate) fn launch_player_name(state: &AppState) -> Option<String> {
         .frontend
         .loading_session
         .as_ref()
-        .and_then(|session| session.request.skirmish_launch_session())
+        .and_then(|session| session.stage.request().skirmish_launch_session())
         .map(|launch| launch.player_name.clone())
 }
 
-pub(crate) fn is_native_loading_session(state: &AppState) -> bool {
+fn is_native_loading_session(state: &AppState) -> bool {
     state
         .frontend
         .loading_session
@@ -751,225 +775,193 @@ pub(crate) fn is_native_loading_session(state: &AppState) -> bool {
         .is_some_and(|session| session.native.is_some())
 }
 
-pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
-    let Some(mut session) = state.frontend.loading_session.take() else {
+fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
+    let Some(session) = state.frontend.loading_session.take() else {
         return LoadingPump::Pending;
     };
     if session.native_pump_blocked() {
-        restore_job_asset_manager(state, &mut session);
+        session.job.retire(&mut state.process_assets);
         return LoadingPump::Failed(anyhow::anyhow!(
             "native Skirmish loading renderer was not ready before the first loading pump"
         ));
     }
 
-    let phase = std::mem::replace(&mut session.job.phase, LoadingJobPhase::InitialMapSelection);
-    let result = match phase {
-        LoadingJobPhase::InitialMapSelection => {
-            let initial = match ensure_session_job_asset_manager(state, &mut session) {
-                Ok(()) => {
-                    let ra2_dir = session
-                        .job
-                        .ra2_dir
-                        .clone()
-                        .expect("asset-manager setup stores the RA2 directory");
-                    let asset_manager = session
-                        .job
-                        .asset_manager
-                        .as_mut()
-                        .expect("asset-manager setup stores the manager");
-                    match session.native.as_mut() {
-                        // The map-parse milestone (8) is emitted inside the loader.
-                        Some(native) => {
-                            let cadence = native.progress_cadence;
-                            let mut sink = GatedProgressSink {
-                                progress: &mut native.progress,
-                                cadence,
-                            };
-                            session.request.load_initial_with_assets(
-                                ra2_dir,
-                                asset_manager,
-                                &mut sink,
-                            )
-                        }
-                        None => session.request.load_initial_with_assets(
-                            ra2_dir,
-                            asset_manager,
-                            &mut NoopProgressSink,
-                        ),
-                    }
-                }
-                Err(err) => Err(err),
-            };
-            match initial {
-                Ok(initial) => match session
-                    .request
-                    .prepare_fresh_scenario_load_context(&initial)
-                {
-                    Ok(()) => {
-                        session.job.phase = LoadingJobPhase::RemainingLegacyLoad(Some(initial));
-                        LoadingPump::Pending
-                    }
-                    Err(err) => LoadingPump::Failed(err),
-                },
-                Err(err) => LoadingPump::Failed(err),
+    if matches!(session.stage, LoadingStage::Selected(_)) {
+        return match prepare_loading_session(
+            &mut state.process_assets,
+            session,
+            false,
+            state
+                .platform
+                .game_config
+                .as_ref()
+                .map(|c| c.paths.ra2_dir.clone()),
+        ) {
+            Ok(session) => {
+                state.frontend.loading_session = Some(session);
+                LoadingPump::Pending
             }
-        }
-        LoadingJobPhase::RemainingLegacyLoad(mut initial) => {
-            let Some(initial) = initial.take() else {
-                restore_job_asset_manager(state, &mut session);
-                return LoadingPump::Failed(anyhow::anyhow!(
-                    "loading job had no initial map state"
-                ));
-            };
-            let native_theater_cache_mismatch = theater_cache_mismatch(
-                state.match_state.loaded_map_source.is_some(),
-                &state.match_state.match_presentation.theater_name,
-                initial.theater_name(),
-            );
-            // All mid-load milestones (12..98) are emitted inside the loader; the
-            // pump emits the terminal 100 once the result is ready. For the native
-            // case we drive a RenderingProgressSink that synchronously repaints the
-            // loading screen on each advancing milestone (gamemd's per-milestone
-            // hidden-to-primary blit), so the bar visibly sweeps instead of
-            // snapping once.
-            //
-            // Pre-copy the by-value pieces before borrowing so the disjoint
-            // split-borrows (gpu/depth_view/batch shared, vxl_compute &mut,
-            // native.progress &mut, native.atlas shared, request shared) all
-            // hold simultaneously.
-            let render_size = [
-                state.renderer.gpu.config.width,
-                state.renderer.gpu.config.height,
-            ];
-            // The pre-parse swallowed the loader's raw 8 so it could not present
-            // before the first frame; hand it over now for either native cadence.
-            if let Some(native) = session.native.as_mut()
-                && native
-                    .progress_cadence
-                    .prepares_scenario_before_first_frame()
-            {
-                advance_and_present_native_progress(
-                    &state.renderer.gpu,
-                    &state.renderer.shell_surface_presenter,
-                    &state.renderer.depth_view,
-                    &state.renderer.batch_renderer,
-                    &state.renderer.bit_font,
-                    native,
-                    8,
-                    render_size,
-                );
-            }
-            // `session.native` and `session.request` are disjoint fields, so the
-            // launch-session/settings borrows below coexist with the native split.
-            let fresh_scenario_context = match session.request.take_fresh_scenario_load_context() {
-                Ok(context) => context,
-                Err(err) => {
-                    restore_job_asset_manager(state, &mut session);
-                    return LoadingPump::Failed(err);
-                }
-            };
-            let startup = session.request.take_startup();
-            if !state.process_assets.has_native_rules() {
-                restore_job_asset_manager(state, &mut session);
-                return LoadingPump::Failed(anyhow::anyhow!(
-                    "loading requires the process-resident native Rules owner"
-                ));
-            }
-            let Some(asset_manager) = session.job.asset_manager.as_mut() else {
-                restore_job_asset_manager(state, &mut session);
-                return LoadingPump::Failed(anyhow::anyhow!(
-                    "loading job lost its process asset manager"
-                ));
-            };
-            let shared_cell_dummy = state.process_assets.shared_cell_dummy.clone();
-            let (native_rules_owner, tile_variant_selector_cache) =
-                state.process_assets.native_rules_mut_with_tile_cache();
-            let native_rules_owner =
-                native_rules_owner.expect("native Rules availability checked before split borrow");
-            let load_result = {
-                let mut progress = LoadingPhaseProgress::select(
-                    session.native.as_mut(),
-                    native_theater_cache_mismatch,
-                    |native| {
-                        let backing_rgb = native.backing_rgb;
-                        let text_rgb = native.text_rgb;
-                        let cadence = native.progress_cadence;
-                        let atlas = native
-                            .atlas
-                            .as_ref()
-                            .expect("selected rendering sink has atlas");
-                        let composition = native.composition.as_ref();
-                        RenderingProgressSink {
-                            gpu: &state.renderer.gpu,
-                            presenter: &state.renderer.shell_surface_presenter,
-                            depth_view: &state.renderer.depth_view,
-                            batch: &state.renderer.batch_renderer,
-                            font: &state.renderer.bit_font,
-                            progress: &mut native.progress,
-                            progress_row: &native.progress_row,
-                            atlas,
-                            composition,
-                            backing_rgb,
-                            text_rgb,
-                            render_size,
-                            cadence,
-                        }
-                    },
-                );
-                init::load_map_from_initial(
-                    &state.renderer.gpu,
-                    &state.renderer.batch_renderer,
-                    asset_manager,
-                    initial,
-                    startup,
-                    fresh_scenario_context,
-                    &session.request.fallback_skirmish_settings,
-                    progress.native_theater_cache_mismatch,
-                    progress.runtime_color_scheme_count,
-                    state.renderer.vxl_compute.as_mut(),
-                    native_rules_owner,
-                    shared_cell_dummy,
-                    tile_variant_selector_cache,
-                    &mut progress.sink,
-                )
-            };
-
-            match load_result {
-                Ok(mut result) => {
-                    if let Some(native) = session.native.as_mut() {
-                        let terminal_raw_percent = native.progress_cadence.terminal_raw_percent();
-                        advance_and_present_native_progress(
-                            &state.renderer.gpu,
-                            &state.renderer.shell_surface_presenter,
-                            &state.renderer.depth_view,
-                            &state.renderer.batch_renderer,
-                            &state.renderer.bit_font,
-                            native,
-                            terminal_raw_percent,
-                            render_size,
-                        );
-                    }
-                    result.asset_manager = session.job.asset_manager.take();
-                    LoadingPump::Finished(result)
-                }
-                Err(err) => LoadingPump::Failed(err),
-            }
-        }
-    };
-
-    if matches!(result, LoadingPump::Pending) {
-        state.frontend.loading_session = Some(session);
-    } else if matches!(result, LoadingPump::Failed(_)) {
-        restore_job_asset_manager(state, &mut session);
+            Err(err) => LoadingPump::Failed(err),
+        };
     }
-    result
+    let LoadingSession {
+        stage,
+        mut native,
+        mut job,
+        ..
+    } = session;
+    let LoadingStage::Prepared(prepared) = stage else {
+        unreachable!()
+    };
+    let PreparedScenarioLoad {
+        request,
+        initial,
+        context: fresh_scenario_context,
+    } = prepared;
+    log::debug!(target: "vera20k::loading_attempt", "remaining_load_begin");
+    let result = (|| -> anyhow::Result<MapLoadResult> {
+        let native_theater_cache_mismatch = theater_cache_mismatch(
+            state.match_state.loaded_map_source.is_some(),
+            &state.match_state.match_presentation.theater_name,
+            initial.theater_name(),
+        );
+        // All mid-load milestones (12..98) are emitted inside the loader; the
+        // pump emits the terminal 100 once the result is ready. For the native
+        // case we drive a RenderingProgressSink that synchronously repaints the
+        // loading screen on each advancing milestone (gamemd's per-milestone
+        // hidden-to-primary blit), so the bar visibly sweeps instead of
+        // snapping once.
+        //
+        // Pre-copy the by-value pieces before borrowing so the disjoint
+        // split-borrows (gpu/depth_view/batch shared, vxl_compute &mut,
+        // native.progress &mut, native.atlas shared, request shared) all
+        // hold simultaneously.
+        let render_size = [
+            state.renderer.gpu.config.width,
+            state.renderer.gpu.config.height,
+        ];
+        // The pre-parse swallowed the loader's raw 8 so it could not present
+        // before the first frame; hand it over now for either native cadence.
+        if let Some(native) = native.as_mut()
+            && native
+                .progress_cadence
+                .prepares_scenario_before_first_frame()
+        {
+            advance_and_present_native_progress(
+                &state.renderer.gpu,
+                &state.renderer.shell_surface_presenter,
+                &state.renderer.depth_view,
+                &state.renderer.batch_renderer,
+                &state.renderer.bit_font,
+                native,
+                8,
+                render_size,
+            );
+        }
+        let startup = request.startup;
+        if !state.process_assets.has_native_rules() {
+            anyhow::bail!("loading requires the process-resident native Rules owner");
+        }
+        let asset_manager = job
+            .asset_manager
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("loading job lost its process asset manager"))?;
+        let shared_cell_dummy = state.process_assets.shared_cell_dummy.clone();
+        let (native_rules_owner, tile_variant_selector_cache) =
+            state.process_assets.native_rules_mut_with_tile_cache();
+        let native_rules_owner =
+            native_rules_owner.expect("native Rules availability checked before split borrow");
+        let load_result = {
+            let mut progress = LoadingPhaseProgress::select(
+                native.as_mut(),
+                native_theater_cache_mismatch,
+                |native| {
+                    let backing_rgb = native.backing_rgb;
+                    let text_rgb = native.text_rgb;
+                    let cadence = native.progress_cadence;
+                    let atlas = native
+                        .atlas
+                        .as_ref()
+                        .expect("selected rendering sink has atlas");
+                    let composition = native.composition.as_ref();
+                    RenderingProgressSink {
+                        gpu: &state.renderer.gpu,
+                        presenter: &state.renderer.shell_surface_presenter,
+                        depth_view: &state.renderer.depth_view,
+                        batch: &state.renderer.batch_renderer,
+                        font: &state.renderer.bit_font,
+                        progress: &mut native.progress,
+                        progress_row: &native.progress_row,
+                        atlas,
+                        composition,
+                        backing_rgb,
+                        text_rgb,
+                        render_size,
+                        cadence,
+                    }
+                },
+            );
+            init::load_map_from_initial(
+                &state.renderer.gpu,
+                &state.renderer.batch_renderer,
+                asset_manager,
+                initial,
+                startup,
+                fresh_scenario_context,
+                &request.fallback_skirmish_settings,
+                progress.native_theater_cache_mismatch,
+                progress.runtime_color_scheme_count,
+                state.renderer.vxl_compute.as_mut(),
+                native_rules_owner,
+                shared_cell_dummy,
+                tile_variant_selector_cache,
+                &mut progress.sink,
+            )
+        };
+
+        match load_result {
+            Ok(mut result) => {
+                if let Some(native) = native.as_mut() {
+                    let terminal_raw_percent = native.progress_cadence.terminal_raw_percent();
+                    advance_and_present_native_progress(
+                        &state.renderer.gpu,
+                        &state.renderer.shell_surface_presenter,
+                        &state.renderer.depth_view,
+                        &state.renderer.batch_renderer,
+                        &state.renderer.bit_font,
+                        native,
+                        terminal_raw_percent,
+                        render_size,
+                    );
+                }
+                result.asset_manager = job.asset_manager.take();
+                Ok(result)
+            }
+            Err(err) => Err(err),
+        }
+    })();
+    match result {
+        Ok(result) => LoadingPump::Finished(result),
+        Err(err) => {
+            job.retire(&mut state.process_assets);
+            LoadingPump::Failed(err)
+        }
+    }
 }
 
 fn ensure_job_asset_manager(state: &mut AppState) -> anyhow::Result<()> {
     let Some(mut session) = state.frontend.loading_session.take() else {
         return Ok(());
     };
-    let result = ensure_session_job_asset_manager(state, &mut session);
+    let result = ensure_session_job_asset_manager(
+        &mut state.process_assets,
+        &mut session,
+        state
+            .platform
+            .game_config
+            .as_ref()
+            .map(|c| c.paths.ra2_dir.clone()),
+    );
     state.frontend.loading_session = Some(session);
     result
 }
@@ -979,34 +971,31 @@ fn loading_asset_manager(session: &LoadingSession) -> Option<&AssetManager> {
 }
 
 fn ensure_session_job_asset_manager(
-    state: &mut AppState,
+    process_assets: &mut crate::app::process_assets::ProcessAssets,
     session: &mut LoadingSession,
+    configured_ra2_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     if session.job.ra2_dir.is_none() {
         session.job.ra2_dir = Some(
-            state
-                .platform
-                .game_config
-                .as_ref()
-                .map(|config| config.paths.ra2_dir.clone())
+            configured_ra2_dir
                 .ok_or_else(|| anyhow::anyhow!("missing game config for loading job assets"))?,
         );
     }
     if session.job.asset_manager.is_none() {
-        let asset_manager = if let Some(asset_manager) = state.process_assets.lease_for_loading() {
+        let asset_manager = if let Some(asset_manager) = process_assets.lease_for_loading() {
             asset_manager
         } else {
             // Warn only when a manager actually existed and its lease was
             // lost — reconstructing then loses the sticky CRC cache and
             // theater identity. An asset-less startup (no retail archives)
             // has nothing to lose and stays quiet.
-            if state.process_assets.is_leased() {
+            if process_assets.is_leased() {
                 log::warn!(
                     "loading job reconstructs an AssetManager; process-sticky \
                      MIX cache and theater identity restart"
                 );
             }
-            state.process_assets.note_lease_ended_without_return();
+            process_assets.note_lease_ended_without_return();
             AssetManager::new(
                 session
                     .job
@@ -1020,12 +1009,70 @@ fn ensure_session_job_asset_manager(
     Ok(())
 }
 
-fn restore_job_asset_manager(state: &mut AppState, session: &mut LoadingSession) {
-    // F11 slot: unconditional return (Loading -> Available); a double return
-    // keeps the resident manager and logs inside the slot.
-    if let Some(manager) = session.job.asset_manager.take() {
-        state.process_assets.return_from_loading(manager);
+impl LoadingJob {
+    fn retire(self, process_assets: &mut crate::app::process_assets::ProcessAssets) {
+        if let Some(manager) = self.asset_manager {
+            process_assets.return_from_loading(manager);
+        }
     }
+}
+
+/// Both entry timings use the same consuming preparation. Only the progress
+/// sink differs: prepaint must swallow raw8 until the first frame is presented.
+fn prepare_loading_session(
+    process_assets: &mut crate::app::process_assets::ProcessAssets,
+    mut session: LoadingSession,
+    before_first_frame: bool,
+    configured_ra2_dir: Option<PathBuf>,
+) -> anyhow::Result<LoadingSession> {
+    if let Err(err) =
+        ensure_session_job_asset_manager(process_assets, &mut session, configured_ra2_dir)
+    {
+        session.job.retire(process_assets);
+        return Err(err);
+    }
+    let LoadingSession {
+        stage,
+        mut native,
+        mut job,
+        first_frame_presented,
+    } = session;
+    let stage = match stage {
+        LoadingStage::Prepared(prepared) => LoadingStage::Prepared(prepared),
+        LoadingStage::Selected(request) => {
+            let ra2_dir = job
+                .ra2_dir
+                .clone()
+                .expect("asset setup stores RA2 directory");
+            let assets = job
+                .asset_manager
+                .as_mut()
+                .expect("asset setup stores manager");
+            let prepared = if !before_first_frame && let Some(native) = native.as_mut() {
+                let mut sink = GatedProgressSink {
+                    progress: &mut native.progress,
+                    cadence: native.progress_cadence,
+                };
+                request.prepare(ra2_dir, assets, &mut sink)
+            } else {
+                request.prepare(ra2_dir, assets, &mut NoopProgressSink)
+            };
+            match prepared {
+                Ok(prepared) => LoadingStage::Prepared(prepared),
+                Err(err) => {
+                    job.retire(process_assets);
+                    return Err(err);
+                }
+            }
+        }
+    };
+    log::debug!(target: "vera20k::loading_attempt", "prepared before_first_frame={before_first_frame}");
+    Ok(LoadingSession {
+        stage,
+        native,
+        job,
+        first_frame_presented,
+    })
 }
 
 /// Resolve native Scenario inputs before constructing the first loading frame.
@@ -1050,49 +1097,25 @@ fn prepare_scenario_initial_before_first_frame(state: &mut AppState) -> anyhow::
             .frontend
             .loading_session
             .as_ref()
-            .is_some_and(|session| {
-                matches!(session.job.phase, LoadingJobPhase::InitialMapSelection)
-            });
+            .is_some_and(|session| matches!(session.stage, LoadingStage::Selected(_)));
     if !should_prepare {
         return Ok(());
     }
 
-    let Some(mut session) = state.frontend.loading_session.take() else {
+    let Some(session) = state.frontend.loading_session.take() else {
         return Ok(());
     };
-    let result = ensure_session_job_asset_manager(state, &mut session).and_then(|()| {
-        let ra2_dir = session
-            .job
-            .ra2_dir
-            .clone()
-            .expect("asset-manager setup stores the RA2 directory");
-        let asset_manager = session
-            .job
-            .asset_manager
-            .as_mut()
-            .expect("asset-manager setup stores the manager");
-        session
-            .request
-            .load_initial_with_assets(ra2_dir, asset_manager, &mut NoopProgressSink)
-    });
-    match result {
-        Ok(initial) => {
-            if let Err(err) = session
-                .request
-                .prepare_fresh_scenario_load_context(&initial)
-            {
-                state.frontend.loading_session = Some(session);
-                return Err(err);
-            }
-            session.job.phase = LoadingJobPhase::RemainingLegacyLoad(Some(initial));
-            state.frontend.loading_session = Some(session);
-            Ok(())
-        }
-        Err(err) => {
-            state.frontend.loading_session = Some(session);
-            Err(err)
-        }
-    }
+    state.frontend.loading_session = Some(prepare_loading_session(
+        &mut state.process_assets,
+        session,
+        true,
+        state
+            .platform
+            .game_config
+            .as_ref()
+            .map(|c| c.paths.ra2_dir.clone()),
+    )?);
+    Ok(())
 }
 
 /// Decode the random-map preview bitmap written by the random-map setup dialog.
@@ -1183,9 +1206,11 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
         if native.composition.is_some() {
             return;
         }
-        let Some(context) = session.request.fresh_scenario_load_context() else {
+        let LoadingStage::Prepared(prepared) = &session.stage else {
             return;
         };
+        let context = &prepared.context;
+        let initial = &prepared.initial;
         let launch_session = context.stock_offline_launch().session();
         let projection = context.stock_offline_projection();
         let render_size = [
@@ -1194,9 +1219,6 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
         ];
         match native.progress_cadence {
             NativeLoadingProgressCadence::SelectedMap => {
-                let LoadingJobPhase::RemainingLegacyLoad(Some(initial)) = &session.job.phase else {
-                    return;
-                };
                 let assignments = selected_map_start_assignments(launch_session, Some(projection));
                 build_loading_composition(
                     initial.map_data(),
@@ -1207,9 +1229,6 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
                 )
             }
             NativeLoadingProgressCadence::RandomMapHalved => {
-                let LoadingJobPhase::RemainingLegacyLoad(Some(initial)) = &session.job.phase else {
-                    return;
-                };
                 let preview = session
                     .job
                     .ra2_dir
@@ -1382,7 +1401,6 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
         .as_mut()
         .and_then(|session| session.native.as_mut())
     {
-        native.first_renderer_ready = atlas.is_some();
         native.atlas = atlas;
     }
     if state
@@ -1390,7 +1408,7 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
         .loading_session
         .as_ref()
         .and_then(|session| session.native.as_ref())
-        .is_some_and(|native| native.first_renderer_ready)
+        .is_some_and(|native| native.atlas.is_some())
     {
         log::info!("Native standard Skirmish loading atlas ready: {variant:?} {width:?}");
         Ok(())
@@ -1407,11 +1425,25 @@ pub(crate) fn render_loading_screen(
     encoder: &mut wgpu::CommandEncoder,
     destination: &wgpu::Texture,
 ) -> LoadingRenderResult {
+    match encode_loading_screen(state, encoder, destination) {
+        Ok(result) => result,
+        Err(err) => {
+            fail_loading(state, LoadingFailurePolicy::ReportNativeFailure, err);
+            LoadingRenderResult::Failed
+        }
+    }
+}
+
+fn encode_loading_screen(
+    state: &mut AppState,
+    encoder: &mut wgpu::CommandEncoder,
+    destination: &wgpu::Texture,
+) -> anyhow::Result<LoadingRenderResult> {
     if !is_native_loading_session(state) {
-        return LoadingRenderResult::GenericFallback;
+        return Ok(LoadingRenderResult::GenericFallback);
     }
     if let Err(err) = ensure_native_loading_atlas(state) {
-        return LoadingRenderResult::NativeFailed(err);
+        return Err(err);
     }
     if let Some(session) = state.frontend.loading_session.as_mut()
         && !session.first_frame_presented
@@ -1430,10 +1462,10 @@ pub(crate) fn render_loading_screen(
         .as_ref()
         .and_then(|session| session.native.as_ref())
     else {
-        return LoadingRenderResult::GenericFallback;
+        return Ok(LoadingRenderResult::GenericFallback);
     };
     let Some(atlas) = native.atlas.as_ref() else {
-        return LoadingRenderResult::NativeFailed(anyhow::anyhow!(
+        return Err(anyhow::anyhow!(
             "native Skirmish loading atlas was not available for render"
         ));
     };
@@ -1468,7 +1500,7 @@ pub(crate) fn render_loading_screen(
         .batch_renderer
         .create_instance_buffer(&state.renderer.gpu, &instances)
     else {
-        return LoadingRenderResult::NativeFailed(anyhow::anyhow!(
+        return Err(anyhow::anyhow!(
             "native Skirmish loading instances could not be uploaded"
         ));
     };
@@ -1561,15 +1593,61 @@ pub(crate) fn render_loading_screen(
         .renderer
         .shell_surface_presenter
         .encode_present(encoder, destination);
-    LoadingRenderResult::NativeRendered
+    Ok(LoadingRenderResult::NativeRendered)
 }
 
-pub(crate) fn loading_screen_presented(state: &mut AppState) {
+/// Called only after the submitted loading frame and its readbacks. Loading
+/// owns acknowledgement, continuation and terminal disposition as one step.
+pub(crate) fn after_loading_frame_presented(state: &mut AppState) {
+    if !matches!(state.frontend.screen, GameScreen::Loading) {
+        return;
+    }
+    loading_screen_presented(state);
+    let policy = if is_native_loading_session(state) {
+        LoadingFailurePolicy::ReportNativeFailure
+    } else {
+        LoadingFailurePolicy::InstallGenericFallback
+    };
+    match pump_loading_after_present(state) {
+        LoadingPump::Pending => state.platform.window.request_redraw(),
+        LoadingPump::Finished(result) => {
+            log::debug!(target: "vera20k::loading_attempt", "install_begin");
+            super::transitions::apply_map_load_result(state, result);
+            log::debug!(target: "vera20k::loading_attempt", "install_end screen={:?} assets_available={} accepted={}", state.frontend.screen, state.process_assets.is_available(), state.match_state.startup.accepted().is_some());
+        }
+        LoadingPump::Failed(err) => fail_loading(state, policy, err),
+    }
+}
+
+fn fail_loading(state: &mut AppState, policy: LoadingFailurePolicy, err: anyhow::Error) {
+    log::warn!("Could not load map: {err:#}");
+    let policy = retire_failed_loading_attempt(
+        &mut state.frontend.loading_session,
+        &mut state.match_state.startup,
+        &mut state.process_assets,
+        policy,
+    );
+    reset_loading_presentation(state);
+    if policy == LoadingFailurePolicy::ReportNativeFailure {
+        state.frontend.screen = GameScreen::MissionResult {
+            title: "Loading Failed".to_string(),
+            detail: format!("{err:#}"),
+        };
+    } else {
+        super::transitions::apply_map_load_result(
+            state,
+            super::transitions::fallback_map_load_result(),
+        );
+    }
+}
+
+fn loading_screen_presented(state: &mut AppState) {
     let Some(session) = state.frontend.loading_session.as_mut() else {
         state.frontend.loading_progress.advance_progress(3);
         return;
     };
     session.first_frame_presented = true;
+    log::debug!(target: "vera20k::loading_attempt", "frame_presented native_progress={:?}", session.native.as_ref().map(|n| n.progress.current_value()));
 }
 
 fn selected_loading_art_variant(state: &AppState) -> Option<LoadingArtVariant> {
@@ -2068,6 +2146,7 @@ fn advance_and_present_native_progress(
     let Some(atlas) = native.atlas.as_ref() else {
         return;
     };
+    log::debug!(target: "vera20k::loading_attempt", "progress_present raw={raw_percent} effective={effective_percent}");
     if let Err(err) = present_native_loading(
         gpu,
         presenter,
@@ -2113,6 +2192,7 @@ impl LoadingProgressSink for RenderingProgressSink<'_> {
     fn milestone(&mut self, raw_percent: u32) {
         let effective_percent = self.cadence.effective_percent(raw_percent);
         if self.progress.advance_progress(effective_percent) {
+            log::debug!(target: "vera20k::loading_attempt", "progress_present raw={raw_percent} effective={effective_percent}");
             if let Err(err) = present_native_loading(
                 self.gpu,
                 self.presenter,
@@ -2432,6 +2512,21 @@ mod tests {
         .expect("valid test startup must acknowledge")
     }
 
+    fn test_audio() -> crate::app::audio_runtime::AppAudioRuntime {
+        crate::app::audio_runtime::AppAudioRuntime {
+            theme: crate::audio::theme::ThemeRuntime::default(),
+            last_theme_poll_ms: None,
+            music_player: None,
+            sfx_player: None,
+            sound_registry: Default::default(),
+            audio_indices: Vec::new(),
+            audio_indices_enabled: false,
+            launcher_audio_available: true,
+            theme_startup_suppressed: false,
+            eva_registry: Default::default(),
+        }
+    }
+
     /// `begin_loading`'s shell -> scenario boundary: the LOADING request
     /// (`Start_Scenario @ 0x00683AB0`, `Play_Song(From_Name("LOADING"))` @
     /// `0x00683D1A`) must resolve the process asset manager *through the
@@ -2455,30 +2550,24 @@ mod tests {
             None,
             None,
         );
-        let mut audio = crate::app::audio_runtime::AppAudioRuntime {
-            theme: crate::audio::theme::ThemeRuntime::default(),
-            last_theme_poll_ms: None,
-            music_player: None,
-            sfx_player: None,
-            sound_registry: Default::default(),
-            audio_indices: Vec::new(),
-            audio_indices_enabled: false,
-            launcher_audio_available: true,
-            theme_startup_suppressed: false,
-            eva_registry: Default::default(),
-        };
+        let mut audio = test_audio();
         let session = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
             test_launch_session(LaunchCountry::America),
             unverified_seed(1),
             SkirmishSettings::default(),
         ));
 
-        let session = lease_loading_assets_and_play_loading_theme(
+        let mut slot = None;
+        let mut startup = crate::app::match_runtime::startup::MatchStartup::default();
+        replace_loading_attempt(
+            &mut slot,
+            &mut startup,
             &mut process_assets,
             &mut audio,
             session,
             500,
         );
+        let session = slot.as_ref().unwrap();
 
         assert!(
             process_assets.manager().is_none() && process_assets.is_leased(),
@@ -2501,10 +2590,247 @@ mod tests {
             audio_service_asset_manager(&process_assets, None).is_none(),
             "resident slot alone cannot serve the poll during a lease"
         );
-        let assets = audio_service_asset_manager(&process_assets, Some(&session))
+        let assets = audio_service_asset_manager(&process_assets, Some(session))
             .expect("leased manager serves the Theme poll");
         audio.update_theme(assets, 600);
         assert_eq!(audio.last_theme_poll_ms, Some(600));
+    }
+
+    #[test]
+    fn loading_replacement_and_terminal_retirement_preserve_cache_and_admission_order() {
+        let dir =
+            std::env::temp_dir().join(format!("vera20k-loading-owner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("sentinel.bin"), b"first winner").unwrap();
+        let mut assets = crate::app::process_assets::ProcessAssets::from_startup(
+            Some(AssetManager::from_loose_root_for_test(&dir)),
+            None,
+            None,
+            None,
+        );
+        let original = assets
+            .manager()
+            .unwrap()
+            .load_file_from_mix("sentinel.bin")
+            .unwrap();
+        let mut audio = test_audio();
+        let mut startup = crate::app::match_runtime::startup::MatchStartup::default();
+        let mut slot = None;
+        let mut next = 1;
+        let first = prepared_startup(&mut next, 7);
+        let replacement = prepared_startup(&mut next, 8);
+        for prepared in [&first, &replacement] {
+            replace_loading_attempt(
+                &mut slot,
+                &mut startup,
+                &mut assets,
+                &mut audio,
+                LoadingSession::from_request(LoadingRequest::accepted_skirmish(
+                    prepared.clone(),
+                    SkirmishSettings::default(),
+                )),
+                500,
+            );
+            let cached = loading_asset_manager(slot.as_ref().unwrap())
+                .unwrap()
+                .load_file_from_mix("SENTINEL.BIN")
+                .unwrap();
+            assert!(std::sync::Arc::ptr_eq(&original.bytes, &cached.bytes));
+        }
+        assert!(
+            startup
+                .acknowledge(
+                    first.clone(),
+                    Some(&crate::sim::world::Simulation::with_seed(7)),
+                    true,
+                    false
+                )
+                .is_err()
+        );
+        // The installer's resource-only cleanup must preserve the replacement
+        // admission until its actual L0 observation commits.
+        retire_loading_attempt(&mut slot, &mut assets);
+        assert!(slot.is_none() && assets.is_available() && !assets.is_leased());
+        startup
+            .acknowledge(
+                replacement.clone(),
+                Some(&crate::sim::world::Simulation::with_seed(8)),
+                true,
+                false,
+            )
+            .unwrap();
+        assert_eq!(startup.startup(), Some(&replacement));
+
+        for consumed_during_preparation in [false, true] {
+            let attempt = prepared_startup(&mut next, 9);
+            replace_loading_attempt(
+                &mut slot,
+                &mut startup,
+                &mut assets,
+                &mut audio,
+                LoadingSession::from_request(LoadingRequest::accepted_skirmish(
+                    attempt.clone(),
+                    SkirmishSettings::default(),
+                )),
+                600,
+            );
+            if consumed_during_preparation {
+                // Exact production preparation failure before initial selection;
+                // no config exists, while the prior lease is already owned.
+                let err = prepare_loading_session(&mut assets, slot.take().unwrap(), true, None)
+                    .err()
+                    .unwrap();
+                assert!(err.to_string().contains("missing game config"));
+                assert!(assets.is_available());
+            }
+            assert_eq!(
+                retire_failed_loading_attempt(
+                    &mut slot,
+                    &mut startup,
+                    &mut assets,
+                    LoadingFailurePolicy::ReportNativeFailure
+                ),
+                LoadingFailurePolicy::ReportNativeFailure
+            );
+            assert!(slot.is_none() && assets.is_available() && !assets.is_leased());
+            assert!(
+                startup
+                    .acknowledge(
+                        attempt,
+                        Some(&crate::sim::world::Simulation::with_seed(9)),
+                        true,
+                        false
+                    )
+                    .is_err()
+            );
+            let cached = assets
+                .manager()
+                .unwrap()
+                .load_file_from_mix("sentinel.bin")
+                .unwrap();
+            assert!(std::sync::Arc::ptr_eq(&original.bytes, &cached.bytes));
+        }
+
+        replace_loading_attempt(
+            &mut slot,
+            &mut startup,
+            &mut assets,
+            &mut audio,
+            LoadingSession::from_request(LoadingRequest::generic_map_load(
+                "auto",
+                SkirmishSettings::default(),
+            )),
+            700,
+        );
+        let before_fallback_install = startup.clone();
+        assert_eq!(
+            retire_failed_loading_attempt(
+                &mut slot,
+                &mut startup,
+                &mut assets,
+                LoadingFailurePolicy::InstallGenericFallback
+            ),
+            LoadingFailurePolicy::InstallGenericFallback
+        );
+        assert_eq!(startup, before_fallback_install);
+        assert!(assets.is_available() && slot.is_none());
+        assert!(std::sync::Arc::ptr_eq(
+            &original.bytes,
+            &assets
+                .manager()
+                .unwrap()
+                .load_file_from_mix("sentinel.bin")
+                .unwrap()
+                .bytes
+        ));
+    }
+
+    /// Uses the production initial-map reader and real retail trig tables;
+    /// assertions distinguish initial read failure from context admission.
+    #[test]
+    #[ignore = "requires RA2_DIR with verified retail gamemd.exe"]
+    fn loading_preparation_consumes_real_source_and_returns_lease_on_initial_and_admission_failures()
+     {
+        let ra2_dir = PathBuf::from(std::env::var_os("RA2_DIR").expect("RA2_DIR"));
+        crate::map::retail_trig::install_from_dir(&ra2_dir);
+        assert!(crate::map::retail_trig::wave_tables_available());
+        let dir = std::env::temp_dir().join(format!(
+            "vera20k-loading-preparation-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let map_path = dir.join("mp01t4.map");
+        let map_bytes = AssetManager::new(&ra2_dir)
+            .unwrap()
+            .get("Fight.MAP")
+            .expect("retail Fight.MAP fixture");
+        std::fs::write(&map_path, map_bytes).unwrap();
+        std::fs::write(dir.join("sentinel.bin"), b"keep this cache").unwrap();
+        let mut assets = crate::app::process_assets::ProcessAssets::from_startup(
+            Some(AssetManager::from_loose_root_for_test(&dir)),
+            None,
+            None,
+            None,
+        );
+        let original = assets
+            .manager()
+            .unwrap()
+            .load_file_from_mix("sentinel.bin")
+            .unwrap();
+        let mut launch = test_launch_session(LaunchCountry::America);
+        launch.selected_map_file = Some(map_path.to_string_lossy().into_owned());
+        let request = LoadingRequest::unverified_legacy_skirmish(
+            launch,
+            unverified_seed(7),
+            SkirmishSettings::default(),
+        );
+        let mut session = LoadingSession::from_request(request);
+        session.job.asset_manager = assets.lease_for_loading();
+        let session =
+            prepare_loading_session(&mut assets, session, true, Some(ra2_dir.clone())).unwrap();
+        assert!(!session.first_frame_presented);
+        assert_eq!(
+            session.native.as_ref().unwrap().progress.current_value(),
+            0.0
+        );
+        let LoadingStage::Prepared(prepared) = &session.stage else {
+            panic!("prepared payload");
+        };
+        assert_eq!(
+            prepared.context.physical_source(),
+            prepared.initial.map_source()
+        );
+        assert_eq!(prepared.context.signed_new_ini_format(), 4);
+        assert!(!prepared.initial.map_data().waypoints.is_empty());
+        session.job.retire(&mut assets);
+
+        for (selected, expected_error) in [
+            (map_path.to_string_lossy().into_owned(), "Generic startup"),
+            (
+                dir.join("absent.map").to_string_lossy().into_owned(),
+                "absent.map",
+            ),
+        ] {
+            let mut session = LoadingSession::from_request(LoadingRequest::generic_map_load(
+                selected,
+                SkirmishSettings::default(),
+            ));
+            session.job.asset_manager = assets.lease_for_loading();
+            let err = prepare_loading_session(&mut assets, session, false, Some(ra2_dir.clone()))
+                .err()
+                .unwrap();
+            assert!(format!("{err:#}").contains(expected_error), "{err:#}");
+            assert!(assets.is_available() && !assets.is_leased());
+            assert!(std::sync::Arc::ptr_eq(
+                &original.bytes,
+                &assets
+                    .manager()
+                    .unwrap()
+                    .load_file_from_mix("sentinel.bin")
+                    .unwrap()
+                    .bytes
+            ));
+        }
     }
 
     #[test]
@@ -2548,10 +2874,11 @@ mod tests {
             SkirmishSettings::default(),
         ));
 
-        assert_eq!(session.request.selected_map_file(), "mp01t4.map");
+        assert_eq!(session.stage.request().selected_map_file(), "mp01t4.map");
         assert_eq!(
             session
-                .request
+                .stage
+                .request()
                 .skirmish_launch_session()
                 .and_then(|launch| launch.selected_map_file.as_deref()),
             Some("mp01t4.map")
@@ -2684,19 +3011,17 @@ mod tests {
                 seed_name: selected.to_ascii_lowercase(),
             },
         );
-        let mut request = LoadingRequest::unverified_legacy_skirmish(
+        let request = LoadingRequest::unverified_legacy_skirmish(
             launch.clone(),
             unverified_seed(0x1212),
             SkirmishSettings::default(),
         )
         .with_accepted_random_map(Some(accepted));
 
-        request
-            .prepare_fresh_scenario_load_context(&initial)
-            .unwrap();
-        let context = request
-            .fresh_scenario_load_context()
-            .expect("generated launch prepares a required typed context");
+        let prepared = request.prepare_initial(initial).unwrap();
+        let context = &prepared.context;
+        let initial = &prepared.initial;
+        let request = &prepared.request;
         let projection = context.stock_offline_projection();
         let final_starts = projection
             .final_gathered_starts()
@@ -2820,10 +3145,6 @@ mod tests {
             request.random_map_preview().is_some(),
             "presentation preview remains available to loading composition"
         );
-        request
-            .prepare_fresh_scenario_load_context(&initial)
-            .expect("re-entry observes the already prepared plan without another transfer");
-        assert!(request.accepted_rmg_start_staging.is_none());
     }
 
     #[test]
@@ -2859,15 +3180,16 @@ mod tests {
                     map,
                     source.clone(),
                 );
-                let mut request = LoadingRequest::unverified_legacy_skirmish(
+                let request = LoadingRequest::unverified_legacy_skirmish(
                     test_launch_session(LaunchCountry::America),
                     unverified_seed(0x1A2B_3C4D),
                     SkirmishSettings::default(),
                 );
-                request
-                    .prepare_fresh_scenario_load_context(&initial)
+                let prepared = request
+                    .prepare_initial(initial)
                     .expect("authored Loose/MIX stock context");
-                let context = request.fresh_scenario_load_context().unwrap();
+                let context = &prepared.context;
+                let request = &prepared.request;
                 assert_eq!(context.physical_source(), &source);
                 assert_eq!(context.materialization(), FreshMapMaterialization::Authored);
                 assert_eq!(context.family(), FreshScenarioFamily::StockOffline);
@@ -2879,7 +3201,7 @@ mod tests {
                 assert_eq!(context.signed_new_ini_format(), expected_signed);
                 context
                     .validate_terminal_transfer(request.startup(), &source, expected_signed)
-                    .expect("the independently moved terminal owners still agree");
+                    .expect("the prepared bundle retains matching terminal inputs");
                 assert_eq!(
                     context.authored_pack_bodies_enabled(),
                     expected_pack_gate,
@@ -2914,16 +3236,17 @@ mod tests {
                 map,
                 source.clone(),
             );
-            let mut request = LoadingRequest::unverified_legacy_skirmish(
+            let request = LoadingRequest::unverified_legacy_skirmish(
                 launch,
                 unverified_seed(0x2345),
                 SkirmishSettings::default(),
             )
             .with_accepted_random_map(Some(accepted));
-            request
-                .prepare_fresh_scenario_load_context(&initial)
+            let prepared = request
+                .prepare_initial(initial)
                 .expect("accepted Battle/FFA generated context");
-            let context = request.fresh_scenario_load_context().unwrap();
+            let context = &prepared.context;
+            let request = &prepared.request;
             assert_eq!(context.physical_source(), &source);
             assert_eq!(
                 context.materialization(),
@@ -2951,25 +3274,26 @@ mod tests {
         };
         let mut map = prefix_test_map(&starts);
         map.basic.new_ini_format = Some(4);
-        let initial = crate::app::loading::init::MapLoadInitial::from_test_map_source(map, source);
+        let initial =
+            crate::app::loading::init::MapLoadInitial::from_test_map_source(map, source.clone());
+        let mut legacy_map = prefix_test_map(&starts);
+        legacy_map.basic.new_ini_format = Some(4);
+        let legacy_initial =
+            crate::app::loading::init::MapLoadInitial::from_test_map_source(legacy_map, source);
         let seed = 0x3456_789A;
         let mut next = 1;
         let prepared = prepared_startup(&mut next, seed);
         let legacy_session = prepared.session.launch_session().clone();
-        let mut accepted = LoadingRequest::accepted_skirmish(prepared, SkirmishSettings::default());
-        let mut resolved_legacy = LoadingRequest::unverified_legacy_skirmish(
+        let accepted = LoadingRequest::accepted_skirmish(prepared, SkirmishSettings::default());
+        let resolved_legacy = LoadingRequest::unverified_legacy_skirmish(
             legacy_session,
             unverified_seed(seed),
             SkirmishSettings::default(),
         );
-        accepted
-            .prepare_fresh_scenario_load_context(&initial)
-            .unwrap();
-        resolved_legacy
-            .prepare_fresh_scenario_load_context(&initial)
-            .unwrap();
-        let accepted_context = accepted.fresh_scenario_load_context().unwrap();
-        let legacy_context = resolved_legacy.fresh_scenario_load_context().unwrap();
+        let accepted = accepted.prepare_initial(initial).unwrap();
+        let resolved_legacy = resolved_legacy.prepare_initial(legacy_initial).unwrap();
+        let accepted_context = &accepted.context;
+        let legacy_context = &resolved_legacy.context;
         assert_eq!(accepted_context.family(), FreshScenarioFamily::StockOffline);
         assert_eq!(accepted_context.family(), legacy_context.family());
         assert_eq!(accepted_context.match_seed(), legacy_context.match_seed());
@@ -2994,14 +3318,8 @@ mod tests {
             FreshStartupProvenance::ResolvedLegacy
         );
 
-        let accepted_parts = accepted
-            .take_fresh_scenario_load_context()
-            .unwrap()
-            .into_stock_offline_parts();
-        let legacy_parts = resolved_legacy
-            .take_fresh_scenario_load_context()
-            .unwrap()
-            .into_stock_offline_parts();
+        let accepted_parts = accepted.context.into_stock_offline_parts();
+        let legacy_parts = resolved_legacy.context.into_stock_offline_parts();
         let mut accepted_owner = crate::sim::scenario_bootstrap::ScenarioBootstrapRng::new(seed);
         let mut legacy_owner = crate::sim::scenario_bootstrap::ScenarioBootstrapRng::new(seed);
         let _ = accepted_owner
@@ -3031,11 +3349,8 @@ mod tests {
         let accepted = accepted_random_map_with_starts(selected, 0x4567, &starts, &starts);
         let mut generic = LoadingRequest::generic_map_load(selected, SkirmishSettings::default())
             .with_accepted_random_map(Some(accepted));
-        let generic_err = generic
-            .prepare_fresh_scenario_load_context(&initial)
-            .unwrap_err();
+        let generic_err = generic.admit_context(&initial).unwrap_err();
         assert!(format!("{generic_err:#}").contains("Generic startup"));
-        assert!(generic.fresh_scenario_load_context().is_none());
         assert!(generic.accepted_rmg_start_staging.is_some());
 
         let accepted = accepted_random_map_with_starts(selected, 0x4567, &starts, &starts);
@@ -3048,11 +3363,8 @@ mod tests {
             SkirmishSettings::default(),
         )
         .with_accepted_random_map(Some(accepted));
-        let unresolved_err = unresolved
-            .prepare_fresh_scenario_load_context(&initial)
-            .unwrap_err();
+        let unresolved_err = unresolved.admit_context(&initial).unwrap_err();
         assert!(format!("{unresolved_err:#}").contains("local slot still has a random country"));
-        assert!(unresolved.fresh_scenario_load_context().is_none());
         assert!(unresolved.accepted_rmg_start_staging.is_some());
 
         let authored = crate::app::loading::init::MapLoadInitial::from_test_map_source(
@@ -3069,11 +3381,8 @@ mod tests {
             unverified_seed(0x4567),
             SkirmishSettings::default(),
         );
-        let manual_err = manual
-            .prepare_fresh_scenario_load_context(&authored)
-            .unwrap_err();
+        let manual_err = manual.admit_context(&authored).unwrap_err();
         assert!(format!("{manual_err:#}").contains("no exact selected map record"));
-        assert!(manual.fresh_scenario_load_context().is_none());
     }
 
     #[test]
@@ -3179,9 +3488,7 @@ mod tests {
         )
         .with_random_map_preview(Some(generated_preview_with_starts(0x1313, &starts)));
 
-        let err = request
-            .prepare_fresh_scenario_load_context(&initial)
-            .unwrap_err();
+        let err = request.admit_context(&initial).unwrap_err();
         assert!(
             format!("{err:#}").contains("no accepted setup start staging"),
             "unexpected error: {err:#}"
@@ -3208,9 +3515,7 @@ mod tests {
         )
         .with_accepted_random_map(Some(accepted));
 
-        let err = request
-            .prepare_fresh_scenario_load_context(&initial)
-            .unwrap_err();
+        let err = request.admit_context(&initial).unwrap_err();
         assert!(
             format!("{err:#}").contains("does not match selected record"),
             "unexpected error: {err:#}"
@@ -3242,9 +3547,7 @@ mod tests {
         )
         .with_accepted_random_map(Some(accepted));
 
-        let err = request
-            .prepare_fresh_scenario_load_context(&initial)
-            .unwrap_err();
+        let err = request.admit_context(&initial).unwrap_err();
         assert!(
             format!("{err:#}").contains("unsupported for stock mode id 3"),
             "unexpected error: {err:#}"
@@ -3276,12 +3579,9 @@ mod tests {
         )
         .with_accepted_random_map(Some(accepted));
 
-        let err = request
-            .prepare_fresh_scenario_load_context(&initial)
-            .unwrap_err();
+        let err = request.admit_context(&initial).unwrap_err();
         assert!(format!("{err:#}").contains("not the validated active-retail stock row"));
         assert!(request.accepted_rmg_start_staging.is_some());
-        assert!(request.fresh_scenario_load_context().is_none());
     }
 
     #[test]
@@ -3315,9 +3615,7 @@ mod tests {
             )
             .with_accepted_random_map(Some(accepted));
 
-            let err = request
-                .prepare_fresh_scenario_load_context(&initial)
-                .unwrap_err();
+            let err = request.admit_context(&initial).unwrap_err();
             assert!(
                 format!("{err:#}").contains("cannot attach to an authored map source"),
                 "unexpected error: {err:#}"
@@ -3341,9 +3639,7 @@ mod tests {
             SkirmishSettings::default(),
         );
 
-        let err = request
-            .prepare_fresh_scenario_load_context(&initial)
-            .unwrap_err();
+        let err = request.admit_context(&initial).unwrap_err();
         assert!(
             format!("{err:#}")
                 .contains("requires an exact Loose, MIX, or accepted generated source"),
@@ -3355,45 +3651,11 @@ mod tests {
             prepared_startup(&mut next, 0x1717),
             SkirmishSettings::default(),
         );
-        let accepted_err = accepted
-            .prepare_fresh_scenario_load_context(&initial)
-            .unwrap_err();
+        let accepted_err = accepted.admit_context(&initial).unwrap_err();
         assert!(
             format!("{accepted_err:#}")
                 .contains("requires an exact Loose, MIX, or accepted generated source"),
             "unexpected error: {accepted_err:#}"
-        );
-    }
-
-    #[test]
-    fn stock_launch_terminal_transfer_requires_ready_prefix() {
-        let mut pending = LoadingRequest::unverified_legacy_skirmish(
-            test_launch_session(LaunchCountry::America),
-            unverified_seed(0x1818),
-            SkirmishSettings::default(),
-        );
-        let pending_err = pending.take_fresh_scenario_load_context().unwrap_err();
-        assert!(
-            format!("{pending_err:#}").contains("before fresh scenario admission"),
-            "unexpected error: {pending_err:#}"
-        );
-        let initial = crate::app::loading::init::MapLoadInitial::from_test_map_source(
-            prefix_test_map(&[(0, 20, 24), (1, 42, 46)]),
-            crate::app::frontend::list_maps::LoadedMapSource::Loose {
-                path: std::path::PathBuf::from("mp01t4.map"),
-                payload_len: 1,
-            },
-        );
-        pending
-            .prepare_fresh_scenario_load_context(&initial)
-            .expect("resolved authored stock launch admits once");
-        let _context = pending
-            .take_fresh_scenario_load_context()
-            .expect("ready context transfers once");
-        let transferred_err = pending.take_fresh_scenario_load_context().unwrap_err();
-        assert!(
-            format!("{transferred_err:#}").contains("transfers exactly once"),
-            "unexpected error: {transferred_err:#}"
         );
     }
 
@@ -3549,8 +3811,8 @@ mod tests {
         ));
 
         assert!(session.native.is_none());
-        assert!(session.request.skirmish_launch_session().is_none());
-        assert_eq!(session.request.selected_map_file(), "auto");
+        assert!(session.stage.request().skirmish_launch_session().is_none());
+        assert_eq!(session.stage.request().selected_map_file(), "auto");
     }
 
     #[test]
@@ -3561,10 +3823,7 @@ mod tests {
             SkirmishSettings::default(),
         ));
 
-        assert!(matches!(
-            session.job.phase,
-            LoadingJobPhase::InitialMapSelection
-        ));
+        assert!(matches!(session.stage, LoadingStage::Selected(_)));
     }
 
     #[test]
@@ -3596,14 +3855,22 @@ mod tests {
         let mut clock = Clock;
         let prepared =
             crate::match_bootstrap::prepare_match_startup(correlation, accepted, &mut clock);
-        let mut request =
+        let request =
             LoadingRequest::accepted_skirmish(prepared.clone(), SkirmishSettings::default());
 
         assert_eq!(request.startup().accepted(), Some(&prepared));
-        assert_eq!(request.take_startup(), LoadingStartup::Accepted(prepared));
-        assert!(
-            request.startup.is_none(),
-            "authority transfers exactly once"
+        let initial = MapLoadInitial::from_test_map_source(
+            prefix_test_map(&[(0, 20, 24), (1, 42, 46)]),
+            crate::app::frontend::list_maps::LoadedMapSource::Loose {
+                path: PathBuf::from("mp01t4.map"),
+                payload_len: 1,
+            },
+        );
+        let loaded = request.prepare_initial(initial).unwrap();
+        assert_eq!(loaded.request.startup, LoadingStartup::Accepted(prepared));
+        assert_eq!(
+            loaded.context.physical_source(),
+            loaded.initial.map_source()
         );
     }
 
@@ -4060,47 +4327,14 @@ mod tests {
 
     #[test]
     fn selected_generic_progress_uses_no_native_loader_metadata() {
-        let mut phase = LoadingPhaseProgress::select(None, true,
-            |_| panic!("generic loading must never construct rendering progress"));
+        let mut phase = LoadingPhaseProgress::select(None, true, |_| {
+            panic!("generic loading must never construct rendering progress")
+        });
         assert!(matches!(&phase.sink, SelectedProgressSink::Generic(_)));
         assert!(!phase.native_theater_cache_mismatch);
         assert_eq!(phase.runtime_color_scheme_count, 0);
-        for raw in [8, 6, 8, 12, 100, 200] { phase.sink.milestone(raw); }
-    }
-
-}
-
-#[cfg(test)]
-mod pump_gate_tests {
-    use super::*;
-    use crate::skirmish_launch::LaunchCountry;
-
-    /// F07 characterization: deferred loader work begins only after the first
-    /// native loading frame can present. A fresh native session is blocked
-    /// (composition has not produced the first renderer), and readiness alone
-    /// unblocks it; the frame loop calls the pump strictly after
-    /// `loading_screen_presented` inside the Loading-screen branch.
-    #[test]
-    fn loading_pump_starts_only_after_present() {
-        let request = LoadingRequest::unverified_legacy_skirmish(
-            tests::test_launch_session(LaunchCountry::America),
-            tests::unverified_seed(7),
-            SkirmishSettings::default(),
-        );
-        let mut session = LoadingSession::from_request(request);
-        assert!(
-            session.native.is_some(),
-            "native skirmish presentation must build a native loading session"
-        );
-        assert!(!session.first_frame_presented);
-        assert!(
-            session.native_pump_blocked(),
-            "the pump must refuse native sessions before the first loading frame is ready"
-        );
-
-        if let Some(native) = session.native.as_mut() {
-            native.first_renderer_ready = true;
+        for raw in [8, 6, 8, 12, 100, 200] {
+            phase.sink.milestone(raw);
         }
-        assert!(!session.native_pump_blocked());
     }
 }
