@@ -208,12 +208,12 @@ fn has_any_override_building(sim: &Simulation, owner: &str, overrides: &[String]
     sim.substrate.entities.values().any(|e| {
         !e.dying
             && !e.lifecycle.in_limbo
-            && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+            && sim.interner.resolve(e.owner()).eq_ignore_ascii_case(owner)
             && e.category == EntityCategory::Structure
             && e.building_up.is_none()
             && overrides
                 .iter()
-                .any(|ov| ov.eq_ignore_ascii_case(sim.interner.resolve(e.type_ref)))
+                .any(|ov| ov.eq_ignore_ascii_case(sim.interner.resolve(e.type_ref())))
     })
 }
 
@@ -235,7 +235,7 @@ fn count_owned_and_queued(sim: &Simulation, owner: &str, type_id: &str) -> u32 {
             .substrate
             .entities
             .values()
-            .filter(|e| !e.dying && e.owner == oid && e.type_ref == tid)
+            .filter(|e| !e.dying && e.owner() == oid && e.type_ref() == tid)
             .count() as u32,
         _ => 0,
     };
@@ -310,10 +310,10 @@ fn first_missing_prereq(
         let ok = sim.substrate.entities.values().any(|e| {
             !e.dying
                 && !e.lifecycle.in_limbo
-                && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+                && sim.interner.resolve(e.owner()).eq_ignore_ascii_case(owner)
                 && e.category == EntityCategory::Structure
                 && e.building_up.is_none()
-                && structure_satisfies_prerequisite(rules, sim.interner.resolve(e.type_ref), p)
+                && structure_satisfies_prerequisite(rules, sim.interner.resolve(e.type_ref()), p)
         });
         if !ok {
             return Some(p.clone());
@@ -359,10 +359,10 @@ fn has_factory_for_owner(
     entities.values().any(|e| {
         !e.dying
             && !e.lifecycle.in_limbo
-            && interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+            && interner.resolve(e.owner()).eq_ignore_ascii_case(owner)
             && e.category == EntityCategory::Structure
             && e.building_up.is_none()
-            && is_production_factory(rules, interner.resolve(e.type_ref), category)
+            && is_production_factory(rules, interner.resolve(e.type_ref()), category)
     })
 }
 
@@ -638,10 +638,10 @@ pub(in crate::sim::production) fn matching_factory_count_for_owner(
         .filter(|e| {
             !e.dying
                 && !e.lifecycle.in_limbo
-                && interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+                && interner.resolve(e.owner()).eq_ignore_ascii_case(owner)
                 && e.category == EntityCategory::Structure
                 && e.building_up.is_none()
-                && is_production_factory(rules, interner.resolve(e.type_ref), category)
+                && is_production_factory(rules, interner.resolve(e.type_ref()), category)
         })
         .count() as u32
 }
@@ -663,7 +663,7 @@ pub fn producer_candidates_for_owner_category(
         if e.lifecycle.in_limbo {
             continue;
         }
-        if !interner.resolve(e.owner).eq_ignore_ascii_case(owner) {
+        if !interner.resolve(e.owner()).eq_ignore_ascii_case(owner) {
             continue;
         }
         if e.category != EntityCategory::Structure {
@@ -672,14 +672,14 @@ pub fn producer_candidates_for_owner_category(
         if e.building_up.is_some() {
             continue;
         }
-        let type_ref_str = interner.resolve(e.type_ref);
+        let type_ref_str = interner.resolve(e.type_ref());
         let is_match = is_production_factory(rules, type_ref_str, category);
         if require_matching_factory && !is_match {
             continue;
         }
         if !require_matching_factory || is_match {
             preferred_factories.push((
-                e.stable_id,
+                e.stable_id(),
                 e.position.rx,
                 e.position.ry,
                 type_ref_str.to_string(),

@@ -1816,7 +1816,7 @@ fn collect_live_building_lights(
                 )
         })
         .filter_map(|entity| {
-            let type_id = sim.interner.resolve(entity.type_ref);
+            let type_id = sim.interner.resolve(entity.type_ref());
             let obj = rules.object(type_id)?;
             let light = lighting::point_light_from_object(
                 entity.position.rx,
@@ -1829,7 +1829,7 @@ fn collect_live_building_lights(
                     obj.light_blue_tint,
                 ],
             )?;
-            Some((entity.stable_id, light))
+            Some((entity.stable_id(), light))
         })
         .collect()
 }
@@ -3009,7 +3009,7 @@ pub(crate) fn load_map_from_initial(
                 .keys_sorted()
                 .into_iter()
                 .filter_map(|id| sim.substrate.entities.get(id))
-                .find(|e| e.owner == owner_id)
+                .find(|e| e.owner() == owner_id)
                 .map(|e| (e.position.rx, e.position.ry))
         });
     let (camera_anchor_x, camera_anchor_y): (f32, f32) = if let Some((rx, ry)) = local_start_cell {

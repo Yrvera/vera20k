@@ -31,7 +31,7 @@ pub(crate) fn transport_unload_command(
         return None;
     }
     Some(Command::UnloadPassengers {
-        transport_id: entity.stable_id,
+        transport_id: entity.stable_id(),
     })
 }
 

@@ -428,13 +428,13 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
     }
     let mut origin = origin.into();
     if origin.source_house.is_none() && origin.source_id != super::RAD_NO_ATTACKER {
-        origin.source_house = entities.get(origin.source_id).map(|source| source.owner);
+        origin.source_house = entities.get(origin.source_id).map(|source| source.owner());
     }
     let ground_source_admitted = handles
         .is_some_and(|handles| handles.is_crush(origin.warhead_ref))
         || entities
             .get(origin.source_id)
-            .and_then(|source| rules.object(interner.resolve(source.type_ref)))
+            .and_then(|source| rules.object(interner.resolve(source.type_ref())))
             .is_some_and(|source_type| source_type.damage_self);
 
     let cell_spread: SimFixed = warhead.cell_spread;
@@ -663,7 +663,7 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
         push_entity_aoe_damage(
             &mut result,
             entities,
-            entity.stable_id,
+            entity.stable_id(),
             impact_rx,
             impact_ry,
             entity.position.rx,
@@ -828,7 +828,7 @@ fn airborne_ids_in_spatial_order(
         buckets
             .entry(entity.air_spatial_bucket.expect("filtered above"))
             .or_default()
-            .push((entity.air_spatial_enter_order, entity.stable_id));
+            .push((entity.air_spatial_enter_order, entity.stable_id()));
     }
     for entries in buckets.values_mut() {
         entries.sort_unstable();
@@ -951,7 +951,7 @@ fn push_airborne_aoe_damage(
     }
 
     result.push_entity(EntityDamageEvent::area(
-        entity.stable_id,
+        entity.stable_id(),
         base_damage,
         distance_leptons,
         source_id,
@@ -1056,7 +1056,7 @@ fn push_entity_aoe_damage(
     }
 
     result.push_entity(EntityDamageEvent::area(
-        entity.stable_id,
+        entity.stable_id(),
         base_damage,
         distance_leptons,
         source_id,

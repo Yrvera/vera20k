@@ -61,10 +61,10 @@ pub fn funds_nag_factory_count(
         .filter(|e| {
             !e.dying
                 && !e.lifecycle.in_limbo
-                && e.owner == owner
+                && e.owner() == owner
                 && e.category == EntityCategory::Structure
                 && rules
-                    .object(interner.resolve(e.type_ref))
+                    .object(interner.resolve(e.type_ref()))
                     .and_then(|obj| obj.factory)
                     .is_some_and(|factory| {
                         // Naval yards are `Factory=UnitType` + `Naval=yes`
@@ -112,11 +112,11 @@ pub fn owns_build_power_plant(
     entities.values().any(|e| {
         !e.dying
             && !e.lifecycle.in_limbo
-            && e.owner == owner
+            && e.owner() == owner
             && e.category == EntityCategory::Structure
             && build_power
                 .iter()
-                .any(|name| name.eq_ignore_ascii_case(interner.resolve(e.type_ref)))
+                .any(|name| name.eq_ignore_ascii_case(interner.resolve(e.type_ref())))
     })
 }
 
@@ -165,10 +165,10 @@ pub fn tick_house_eva(sim: &mut Simulation, rules: &RuleSet) {
                 .filter(|e| {
                     !e.dying
                         && !e.lifecycle.in_limbo
-                        && e.owner == owner
+                        && e.owner() == owner
                         && e.category == EntityCategory::Structure
                 })
-                .filter_map(|e| rules.object(sim.interner.resolve(e.type_ref)))
+                .filter_map(|e| rules.object(sim.interner.resolve(e.type_ref())))
                 .map(|obj| obj.storage)
                 .fold(0i32, i32::saturating_add);
             if silo_nearly_full(capacity, 0) {

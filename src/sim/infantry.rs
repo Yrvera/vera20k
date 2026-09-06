@@ -223,13 +223,13 @@ pub fn tick_fear_for_entities(
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };
-        let Some(obj) = rules.object(interner.resolve(entity.type_ref)) else {
+        let Some(obj) = rules.object(interner.resolve(entity.type_ref())) else {
             continue;
         };
         // `HouseState::is_human` is this model's collapsed player-control fact —
         // the same byte pair gamemd's `IsPlayerControl` reads.
         let player_controlled = houses
-            .get(&entity.owner)
+            .get(&entity.owner())
             .is_some_and(|house| house.is_human);
         if let Some(sequence) = tick_fear_decay_and_prone(obj, entity, player_controlled) {
             if let Some(anim) = entity.animation.as_mut() {
@@ -422,13 +422,13 @@ pub fn tick_idle_actions(
         if entity.infantry.is_none() || !idle_action_ready(entity, frame) {
             continue;
         }
-        let type_name = interner.resolve(entity.type_ref);
+        let type_name = interner.resolve(entity.type_ref());
         let Some(obj) = rules.object(type_name) else {
             continue;
         };
         let biased_type = type_name.eq_ignore_ascii_case(IDLE_BIASED_TYPE);
         let player_controlled = houses
-            .get(&entity.owner)
+            .get(&entity.owner())
             .is_some_and(|house| house.is_human);
 
         // The wait is re-armed first, before any decision — gamemd re-arms even

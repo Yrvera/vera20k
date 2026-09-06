@@ -18,6 +18,10 @@ use std::collections::BTreeMap;
 
 use crate::sim::game_entity::GameEntity;
 
+/// Only this module can authorize a live indexed-owner write.
+/// Payload consumers can read owner identity but cannot construct this capability.
+pub(crate) struct OwnerChangeAuthority(());
+
 /// Container for all game entities, keyed by stable_id.
 ///
 /// Uses `BTreeMap<u64, GameEntity>` for deterministic sorted iteration
@@ -69,12 +73,12 @@ impl EntityStore {
     /// If an entity with the same id already existed (rare — stable_ids are
     /// monotonic), its old owner entry is removed first.
     pub fn insert(&mut self, entity: GameEntity) -> u64 {
-        let id = entity.stable_id;
-        let owner = entity.owner;
-        let type_ref = entity.type_ref;
+        let id = entity.stable_id();
+        let owner = entity.owner();
+        let type_ref = entity.type_ref();
         if let Some(old) = self.entities.insert(id, entity) {
-            self.index_remove(old.owner, id);
-            self.type_count_remove(old.owner, old.type_ref);
+            self.index_remove(old.owner(), id);
+            self.type_count_remove(old.owner(), old.type_ref());
         }
         self.index_add(owner, id);
         self.type_count_add(owner, type_ref);
@@ -86,8 +90,8 @@ impl EntityStore {
     pub fn remove(&mut self, stable_id: u64) -> Option<GameEntity> {
         let removed = self.entities.remove(&stable_id);
         if let Some(ref e) = removed {
-            self.index_remove(e.owner, stable_id);
-            self.type_count_remove(e.owner, e.type_ref);
+            self.index_remove(e.owner(), stable_id);
+            self.type_count_remove(e.owner(), e.type_ref());
         }
         removed
     }
@@ -126,7 +130,7 @@ impl EntityStore {
             if entity.dock_entered_with == Some(stable_id) {
                 entity.dock_entered_with = None;
             }
-            if entity.stable_id == stable_id {
+            if entity.stable_id() == stable_id {
                 entity.radio_contacts.clear_all();
                 entity.dock_entered_with = None;
             }
@@ -138,7 +142,10 @@ impl EntityStore {
         self.entities.get(&stable_id)
     }
 
-    /// Look up an entity by stable_id (mutable).
+    /// Mutate ordinary entity payload. Indexed identity is read through accessors;
+    /// live ownership changes use the world lifecycle and `change_owner` below.
+    /// Replacing a stored entity wholesale is unsupported: remove/insert through
+    /// the owning lifecycle instead so its indexes and registrations are updated.
     pub fn get_mut(&mut self, stable_id: u64) -> Option<&mut GameEntity> {
         self.entities.get_mut(&stable_id)
     }
@@ -206,10 +213,10 @@ impl EntityStore {
     /// No-op if the entity is absent or already owned by `new_owner`.
     pub fn change_owner(&mut self, stable_id: u64, new_owner: crate::sim::intern::InternedId) {
         let (old_owner, type_ref) = match self.entities.get_mut(&stable_id) {
-            Some(e) if e.owner != new_owner => {
-                let old = e.owner;
-                e.owner = new_owner;
-                (old, e.type_ref)
+            Some(e) if e.owner() != new_owner => {
+                let old = e.owner();
+                e.set_owner_from_store(new_owner, OwnerChangeAuthority(()));
+                (old, e.type_ref())
             }
             _ => return,
         };
@@ -262,15 +269,15 @@ impl EntityStore {
     }
 
     /// Rebuild the per-owner index from primary storage.
-    /// Called after deserialization or any bulk mutation that bypasses insert/remove.
-    pub fn rebuild_owner_index(&mut self) {
+    /// Owned by Deserialize; synthetic fixtures may also rebuild after raw setup.
+    pub(crate) fn rebuild_owner_index(&mut self) {
         self.by_owner.clear();
         self.by_owner_type.clear();
         for (&id, entity) in &self.entities {
-            self.by_owner.entry(entity.owner).or_default().push(id);
+            self.by_owner.entry(entity.owner()).or_default().push(id);
             *self
                 .by_owner_type
-                .entry((entity.owner, entity.type_ref))
+                .entry((entity.owner(), entity.type_ref()))
                 .or_insert(0) += 1;
         }
         // BTreeMap iteration is already sorted by key; Vecs are sorted because

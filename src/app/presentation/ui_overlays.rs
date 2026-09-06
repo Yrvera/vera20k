@@ -176,16 +176,16 @@ pub(crate) fn build_building_status_instances(
         if e.category != EntityCategory::Structure {
             continue;
         }
-        if !e.selected && hovered_structure_id != Some(e.stable_id) {
+        if !e.selected && hovered_structure_id != Some(e.stable_id()) {
             continue;
         }
         let health = &e.health;
-        let type_str = sim.interner.resolve(e.type_ref);
+        let type_str = sim.interner.resolve(e.type_ref());
         if !status_entity_visible_plain(
             local_owner_id,
             &sim.fog,
             &e.position,
-            e.owner,
+            e.owner(),
             ignore_visibility,
         ) {
             continue;
@@ -380,10 +380,10 @@ pub(crate) fn build_occupant_pip_instances(
         if e.category != EntityCategory::Structure {
             continue;
         }
-        if !e.selected && hovered_structure_id != Some(e.stable_id) {
+        if !e.selected && hovered_structure_id != Some(e.stable_id()) {
             continue;
         }
-        let type_str = sim.interner.resolve(e.type_ref);
+        let type_str = sim.interner.resolve(e.type_ref());
         let Some(obj) = rules.and_then(|r| r.object(type_str)) else {
             continue;
         };
@@ -394,7 +394,7 @@ pub(crate) fn build_occupant_pip_instances(
             local_owner_id,
             &sim.fog,
             &e.position,
-            e.owner,
+            e.owner(),
             ignore_visibility,
         ) {
             continue;
@@ -451,7 +451,7 @@ pub(crate) fn build_occupant_pip_instances(
                 sim.entities()
                     .get(pax_id)
                     .and_then(|pax| {
-                        rules.and_then(|r| r.object(sim.interner.resolve(pax.type_ref)))
+                        rules.and_then(|r| r.object(sim.interner.resolve(pax.type_ref())))
                     })
                     .map(|pax_obj| pax_obj.occupy_pip)
                     .unwrap_or(7) // default PersonGreen
@@ -499,7 +499,7 @@ pub(crate) fn build_occupant_pip_instances(
             local_owner_id,
             &sim.fog,
             &e.position,
-            e.owner,
+            e.owner(),
             ignore_visibility,
         ) {
             continue;
@@ -566,7 +566,7 @@ pub(crate) fn build_unit_status_bg_instances(
             continue;
         }
         let (draw_background, _) =
-            unit_status_visibility(e.selected, hovered_unit_id == Some(e.stable_id));
+            unit_status_visibility(e.selected, hovered_unit_id == Some(e.stable_id()));
         if !draw_background {
             continue;
         }
@@ -574,7 +574,7 @@ pub(crate) fn build_unit_status_bg_instances(
             local_owner_id,
             &sim.fog,
             &e.position,
-            e.owner,
+            e.owner(),
             ignore_visibility,
         ) {
             continue;
@@ -597,7 +597,7 @@ pub(crate) fn build_unit_status_bg_instances(
             )
         };
         let bracket_delta: f32 = state.rules()
-            .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
+            .and_then(|r| r.object(sim.interner.resolve(e.type_ref())))
             .map(|obj| obj.pixel_selection_bracket_delta as f32)
             .unwrap_or(0.0);
         let (off_x, off_y) = overlay.pipbrd_offset(is_infantry);
@@ -655,7 +655,7 @@ pub(crate) fn build_unit_status_fill_instances(
         }
         let health = &e.health;
         let (_, draw_pips) =
-            unit_status_visibility(e.selected, hovered_unit_id == Some(e.stable_id));
+            unit_status_visibility(e.selected, hovered_unit_id == Some(e.stable_id()));
         if !draw_pips {
             continue;
         }
@@ -663,7 +663,7 @@ pub(crate) fn build_unit_status_fill_instances(
             local_owner_id,
             &sim.fog,
             &e.position,
-            e.owner,
+            e.owner(),
             ignore_visibility,
         ) {
             continue;
@@ -684,7 +684,7 @@ pub(crate) fn build_unit_status_fill_instances(
             UNIT_PIPS_VEHICLE
         };
         let bracket_delta: f32 = state.rules()
-            .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
+            .and_then(|r| r.object(sim.interner.resolve(e.type_ref())))
             .map(|obj| obj.pixel_selection_bracket_delta as f32)
             .unwrap_or(0.0);
         let (pip_off_x, pip_off_y) = overlay.pip_offset(is_infantry);
@@ -813,7 +813,7 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
             continue;
         }
         let obj = state.rules()
-            .and_then(|r| r.object(sim.interner.resolve(e.type_ref)));
+            .and_then(|r| r.object(sim.interner.resolve(e.type_ref())));
         let is_tiberium_scale = obj
             .map(|o| o.pip_scale == crate::rules::object_type::PipScale::Tiberium)
             .unwrap_or(false);
@@ -827,7 +827,7 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
             local_owner_id,
             &sim.fog,
             &e.position,
-            e.owner,
+            e.owner(),
             ignore_visibility,
         ) {
             continue;
@@ -963,12 +963,12 @@ pub(crate) fn build_building_radius_ring_instances(
             local_owner_id,
             &sim.fog,
             &e.position,
-            e.owner,
+            e.owner(),
             ignore_visibility,
         ) {
             continue;
         }
-        let type_str = sim.interner.resolve(e.type_ref);
+        let type_str = sim.interner.resolve(e.type_ref());
         let Some(obj) = rules.object(type_str) else {
             continue;
         };

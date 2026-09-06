@@ -118,7 +118,7 @@ pub fn build_entity_block_sets(
         // With rules, expand to the full foundation so A* sees every occupied
         // cell — without it, only the anchor blocks (legacy behavior).
         if entity.category == EntityCategory::Structure {
-            if let Some(obj) = rules.and_then(|r| r.object(interner.resolve(entity.type_ref))) {
+            if let Some(obj) = rules.and_then(|r| r.object(interner.resolve(entity.type_ref()))) {
                 let foundation_cells = crate::sim::production::building_base_foundation_cells(
                     pos.0,
                     pos.1,
@@ -149,7 +149,7 @@ pub fn build_entity_block_sets(
         }
         // Enemy units: soft-block with code 5 (cost 20x).
         let blocker_is_infantry = entity.category == EntityCategory::Infantry;
-        let entity_owner_str = interner.resolve(entity.owner);
+        let entity_owner_str = interner.resolve(entity.owner());
         let is_friendly =
             crate::map::houses::are_houses_friendly(alliances, mover_owner, entity_owner_str);
         if !is_friendly {
@@ -300,7 +300,7 @@ pub(crate) fn build_blocker_neighbor_counts_with_overlays(
         let pos = (entity.position.rx, entity.position.ry);
         if entity.category == EntityCategory::Structure {
             let (width, height) = rules
-                .and_then(|r| r.object(interner.resolve(entity.type_ref)))
+                .and_then(|r| r.object(interner.resolve(entity.type_ref())))
                 .map(|obj| crate::sim::production::foundation_dimensions(&obj.foundation))
                 .unwrap_or((1, 1));
             counts.add_building_expanded_foundation(pos.0, pos.1, width, height);
@@ -764,7 +764,7 @@ pub fn emit_crush_kill_sounds_at(
 ) {
     let rx = crush_coord.0.clamp(0, i32::from(u16::MAX)) as u16;
     let ry = crush_coord.1.clamp(0, i32::from(u16::MAX)) as u16;
-    let type_str = interner.resolve(victim.type_ref).to_string();
+    let type_str = interner.resolve(victim.type_ref()).to_string();
     let Some(obj) = rules.object(&type_str) else {
         return;
     };
@@ -933,7 +933,7 @@ pub fn classify_drive_crush_phase(
     let Some(crusher) = entities.get(crusher_id) else {
         return DriveCrushOutcome::None;
     };
-    let crusher_owner = interner.resolve(crusher.owner);
+    let crusher_owner = interner.resolve(crusher.owner());
     // Per-cell pre-scan, exactly once, before the dispatch walk.
     let elite_in_cell = match phase {
         DriveCrushPhase::EnteringCell => cell_has_elite_occupant(occ, crusher_id, entities),
@@ -954,7 +954,7 @@ pub fn classify_drive_crush_phase(
                 }
             }
             DriveCrushPhase::FullyInCell => {
-                let victim_owner = interner.resolve(victim.owner);
+                let victim_owner = interner.resolve(victim.owner());
                 if crate::map::houses::are_houses_friendly(alliances, crusher_owner, victim_owner) {
                     continue;
                 }
@@ -1059,7 +1059,7 @@ pub fn blocker_is_fraidycat(
         return false;
     }
     rules
-        .and_then(|rules| rules.object(interner.resolve(blocker.type_ref)))
+        .and_then(|rules| rules.object(interner.resolve(blocker.type_ref())))
         .is_some_and(|obj| obj.fraidycat)
 }
 

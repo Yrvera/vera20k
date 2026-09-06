@@ -154,7 +154,7 @@ pub(crate) fn install_forced_drive_track(
     // established the mover is on the ground plane.
     let current_cell = (entity.position.rx, entity.position.ry);
     let current_layer = locomotor::MovementLayer::Ground;
-    let entity_stable_id = entity.stable_id;
+    let entity_stable_id = entity.stable_id();
 
     let drive = entity
         .drive_locomotion

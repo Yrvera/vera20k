@@ -98,7 +98,7 @@ pub fn tick_attack_state(
     let entity_ry = entity.position.ry;
     let entity_facing = entity.facing;
     let entity_veterancy = entity.veterancy;
-    let type_ref = entity.type_ref;
+    let type_ref = entity.type_ref();
 
     // Look up type info.
     let type_str = interner.resolve(type_ref);

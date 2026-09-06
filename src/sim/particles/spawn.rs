@@ -194,7 +194,7 @@ impl Simulation {
 
         let Some((coords, owner_entity, system_types)) =
             self.substrate.entities.get(stable_id).and_then(|entity| {
-                let object = rules.object(self.interner.resolve(entity.type_ref))?;
+                let object = rules.object(self.interner.resolve(entity.type_ref()))?;
                 let offset = damage_smoke_offset(object);
                 let coords = IVec3::new(
                     i32::from(entity.position.rx)

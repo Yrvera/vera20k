@@ -822,7 +822,7 @@ impl Simulation {
             self.substrate.entities.get(stable_id).and_then(|entity| {
                 (entity.category == EntityCategory::Structure && entity.base_plan_type_index >= 0)
                     .then_some((
-                        entity.owner,
+                        entity.owner(),
                         entity.base_plan_type_index,
                         crate::sim::base_plan::pack_base_plan_cell(
                             i32::from(entity.position.rx),
@@ -860,7 +860,7 @@ impl Simulation {
             self.substrate.entities.get(stable_id).and_then(|entity| {
                 (entity.category == EntityCategory::Structure && entity.base_plan_type_index >= 0)
                     .then_some((
-                        entity.owner,
+                        entity.owner(),
                         entity.base_plan_type_index,
                         crate::sim::base_plan::pack_base_plan_cell(
                             i32::from(entity.position.rx),
@@ -898,7 +898,7 @@ impl Simulation {
                 && entity.lifecycle.object_alive
                 && !entity.lifecycle.in_limbo
                 && entity.lifecycle.cell_marked)
-                .then_some((entity.owner, (entity.position.rx, entity.position.ry)))
+                .then_some((entity.owner(), (entity.position.rx, entity.position.ry)))
         }) else {
             return;
         };
@@ -1194,7 +1194,7 @@ impl Simulation {
                 == Some(crate::sim::movement::locomotor::MovementLayer::Ground))
         .then(|| {
             (
-                entity.owner,
+                entity.owner(),
                 building_base_reservation_rect(
                     entity.position.rx,
                     entity.position.ry,
@@ -1219,7 +1219,7 @@ impl Simulation {
         {
             return false;
         }
-        let owner = entity.owner;
+        let owner = entity.owner();
         let rect = building_base_reservation_rect(
             entity.position.rx,
             entity.position.ry,
@@ -1948,7 +1948,7 @@ impl Simulation {
         let Some((owner, category, already_released, destroyed, killed_by, award, dont_score)) =
             self.substrate.entities.get(stable_id).map(|entity| {
                 (
-                    entity.owner,
+                    entity.owner(),
                     entity.category,
                     entity.owned_count_released,
                     entity.health.current == 0,
@@ -2048,10 +2048,10 @@ impl Simulation {
         let Some((owner, category, dont_score, type_ref, veterancy)) =
             self.substrate.entities.get(stable_id).map(|target| {
                 (
-                    target.owner,
+                    target.owner(),
                     target.category,
                     target.dont_score,
-                    target.type_ref,
+                    target.type_ref(),
                     target.veterancy,
                 )
             })
@@ -2340,7 +2340,7 @@ impl Simulation {
         let current_target_matches = listener.attack_target.as_ref().is_some_and(
             |target| matches!(target.target, TargetKind::Entity(id) if id == expired_id),
         );
-        let listener_owner = listener.owner;
+        let listener_owner = listener.owner();
         let passive_scan_remaining = listener
             .passive_scan_timer
             .remaining(self.session.binary_frame);
@@ -2640,7 +2640,7 @@ impl Simulation {
                 expired.health.current,
                 expired.mission.current().known()
                     == Some(crate::sim::mission::MissionType::Selling),
-                Some(expired.owner),
+                Some(expired.owner()),
             )
         })
         else {

@@ -307,19 +307,19 @@ pub(super) fn snapshot_bridge_marker_peers(
                     base_height_leptons.wrapping_add(locomotor.altitude.to_num::<i32>())
                 });
             let speed = rules
-                .and_then(|rules| rules.object(interner.resolve(entity.type_ref)))
+                .and_then(|rules| rules.object(interner.resolve(entity.type_ref())))
                 .map_or(0, |object| object.speed);
             let foot_derived = matches!(
                 entity.category,
                 EntityCategory::Unit | EntityCategory::Infantry | EntityCategory::Aircraft
             );
             (
-                entity.stable_id,
+                entity.stable_id(),
                 BridgeMarkerPeer {
                     category: entity.category,
                     foot_derived,
                     locomotor_kind: entity.locomotor.as_ref().map(|locomotor| locomotor.kind),
-                    type_ref: entity.type_ref,
+                    type_ref: entity.type_ref(),
                     speed,
                     path_start,
                     path_directions,

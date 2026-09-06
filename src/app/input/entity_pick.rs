@@ -44,7 +44,7 @@ pub(crate) struct TypeSelectTapResult {
 
 /// EntityStore keys are monotonic object identities, hence creation order.
 pub(crate) fn map_entity_creation_order(entities: &EntityStore) -> Vec<u64> {
-    entities.values().map(|entity| entity.stable_id).collect()
+    entities.values().map(|entity| entity.stable_id()).collect()
 }
 
 /// Y-axis weight in the elliptical pick distance formula.
@@ -123,8 +123,8 @@ pub(crate) fn hover_target_at_point(
     let mut best: Option<(u64, f32)> = None;
     for entity in sim.entities().values() {
         let is_structure = entity.category == EntityCategory::Structure;
-        let type_str = sim.interner.resolve(entity.type_ref);
-        let owner_str = sim.interner.resolve(entity.owner);
+        let type_str = sim.interner.resolve(entity.type_ref());
+        let owner_str = sim.interner.resolve(entity.owner());
         let (sx, sy) = if is_structure {
             crate::render::locomotor_visual::screen_position(entity)
         } else {
@@ -183,7 +183,7 @@ pub(crate) fn hover_target_at_point(
         };
         match best {
             Some((_, best_dist_sq)) if dist_sq >= best_dist_sq => {}
-            _ => best = Some((encode_hover_kind_with_id(kind, entity.stable_id), dist_sq)),
+            _ => best = Some((encode_hover_kind_with_id(kind, entity.stable_id()), dist_sq)),
         }
     }
     best.map(|(encoded, _)| decode_hover_kind_with_id(encoded))
@@ -300,7 +300,7 @@ pub(crate) fn compute_click_selection_snapshot_with_playfield(
     };
 
     let picked = entities.get(picked_sid)?;
-    let type_str = interner.map_or("", |i| i.resolve(picked.type_ref));
+    let type_str = interner.map_or("", |i| i.resolve(picked.type_ref()));
     let admitted = static_selection_gate(picked, type_str, rules, require_playfield_membership);
     // A shift-click adds when the selection it is joining is the local player's,
     // whatever was clicked. The native ACTION_SELECT arm asks
@@ -336,7 +336,7 @@ pub(crate) fn compute_click_selection_snapshot_with_playfield(
     let owner_is_local = |entity: &crate::sim::game_entity::GameEntity| -> bool {
         match (local_owner, interner) {
             (Some(owner), Some(names)) => {
-                names.resolve(entity.owner).eq_ignore_ascii_case(owner)
+                names.resolve(entity.owner()).eq_ignore_ascii_case(owner)
             }
             _ => true,
         }
@@ -421,7 +421,7 @@ pub(crate) fn band_rect_contains_drawn_object(
             // Bulk-registered, shroud or no shroud.
             return true;
         }
-        let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
+        let owner_str = interner.map_or("", |i| i.resolve(entity.owner()));
         is_drawn_for_local_owner(fog, local_owner, owner_str, entity, local_owner_id)
     })
 }
@@ -612,7 +612,7 @@ pub(crate) fn compute_type_select_tap_with_playfield(
     let mut selected = current_selection.to_vec();
     if selected.len() == 1 {
         let nonlocal = entities.get(selected[0]).is_some_and(|entity| {
-            let owner = interner.map_or("", |i| i.resolve(entity.owner));
+            let owner = interner.map_or("", |i| i.resolve(entity.owner()));
             local_owner.is_some_and(|local| !owner.eq_ignore_ascii_case(local))
         });
         if nonlocal {
@@ -626,8 +626,8 @@ pub(crate) fn compute_type_select_tap_with_playfield(
         let Some(entity) = entities.get(id) else {
             continue;
         };
-        let own = interner.map_or("", |i| i.resolve(entity.type_ref));
-        push_exact_seed(&mut seeds, entity.type_ref);
+        let own = interner.map_or("", |i| i.resolve(entity.type_ref()));
+        push_exact_seed(&mut seeds, entity.type_ref());
         if let Some(object) = rules.and_then(|r| r.object(own)) {
             if let Some(deploys_into) = object.deploys_into.as_deref() {
                 if let Some(type_ref) = interner.and_then(|i| i.get(deploys_into)) {
@@ -724,11 +724,11 @@ fn type_select_candidates(
         .iter()
         .filter_map(|id| {
             let entity = entities.get(*id)?;
-            let owner = interner.map_or("", |i| i.resolve(entity.owner));
-            let type_id = interner.map_or("", |i| i.resolve(entity.type_ref));
+            let owner = interner.map_or("", |i| i.resolve(entity.owner()));
+            let type_id = interner.map_or("", |i| i.resolve(entity.type_ref()));
             if !entity.lifecycle.object_alive
                 || local_owner.is_some_and(|local| !owner.eq_ignore_ascii_case(local))
-                || !seeds.contains(&entity.type_ref)
+                || !seeds.contains(&entity.type_ref())
                 || (screen_only
                     && entity.category != EntityCategory::Structure
                     && !is_drawn_for_local_owner(fog, local_owner, owner, entity, local_owner_id))
@@ -759,7 +759,7 @@ fn type_select_final_admissions(
         .copied()
         .filter(|id| {
             entities.get(*id).is_some_and(|entity| {
-                let type_id = interner.map_or("", |i| i.resolve(entity.type_ref));
+                let type_id = interner.map_or("", |i| i.resolve(entity.type_ref()));
                 static_selection_gate(entity, type_id, rules, require_playfield_membership)
             })
         })
@@ -806,7 +806,7 @@ pub(crate) fn compute_type_select_click_mutation_with_playfield(
     let Some(clicked) = entities.get(clicked_id) else {
         return SelectionMutation::default();
     };
-    let clicked_type = clicked.type_ref;
+    let clicked_type = clicked.type_ref();
     if additive && current_selection.contains(&clicked_id) {
         return SelectionMutation {
             deselect: exact_type_group(
@@ -902,8 +902,8 @@ pub(crate) fn compute_type_select_box_mutation_with_playfield(
         if !entity.lifecycle.object_alive || sx < min_x || sx > max_x || sy < min_y || sy > max_y {
             continue;
         }
-        if !represented_types.contains(&entity.type_ref) {
-            represented_types.push(entity.type_ref);
+        if !represented_types.contains(&entity.type_ref()) {
+            represented_types.push(entity.type_ref());
         }
     }
 
@@ -942,11 +942,11 @@ fn exact_type_group(
         .iter()
         .filter_map(|id| {
             let entity = entities.get(*id)?;
-            let owner = interner.map_or("", |i| i.resolve(entity.owner));
-            let type_id = interner.map_or("", |i| i.resolve(entity.type_ref));
+            let owner = interner.map_or("", |i| i.resolve(entity.owner()));
+            let type_id = interner.map_or("", |i| i.resolve(entity.type_ref()));
             if !entity.lifecycle.object_alive
                 || entity.lifecycle.in_limbo
-                || entity.type_ref != type_ref
+                || entity.type_ref() != type_ref
                 || local_owner.is_some_and(|local| !owner.eq_ignore_ascii_case(local))
                 || (selecting
                     && !static_selection_gate(entity, type_id, rules, require_playfield_membership))
@@ -982,8 +982,8 @@ fn entities_in_rect(
             if !(sx >= min_x && sx <= max_x && sy >= min_y && sy <= max_y) {
                 return None;
             }
-            let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
-            let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+            let owner_str = interner.map_or("", |i| i.resolve(entity.owner()));
+            let type_str = interner.map_or("", |i| i.resolve(entity.type_ref()));
             if !is_local_band_candidate(
                 local_owner,
                 owner_str,
@@ -997,7 +997,7 @@ fn entities_in_rect(
             if !can_be_selected_now(entity, entities, rules, interner) {
                 return None;
             }
-            Some(entity.stable_id)
+            Some(entity.stable_id())
         })
         .collect()
 }
@@ -1102,7 +1102,7 @@ fn building_covers_cell(
         {
             return false;
         }
-        let type_str = interner.map_or("", |i| i.resolve(candidate.type_ref));
+        let type_str = interner.map_or("", |i| i.resolve(candidate.type_ref()));
         let foundation = rules
             .and_then(|r| r.object(type_str))
             .map(|o| o.foundation.as_str())
@@ -1176,7 +1176,7 @@ pub(crate) fn pick_entity_at_point(
         if !entity.lifecycle.object_alive || entity.lifecycle.in_limbo {
             continue;
         }
-        let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
+        let owner_str = interner.map_or("", |i| i.resolve(entity.owner()));
         if entity.category != EntityCategory::Structure
             && !is_drawn_for_local_owner(fog, local_owner, owner_str, entity, local_owner_id)
         {
@@ -1194,7 +1194,7 @@ pub(crate) fn pick_entity_at_point(
         // submarine cannot be moused over at all and no explicit attack order
         // against it can be issued.
         if let (Some(fog_state), Some(owner_id)) = (fog, local_owner_id)
-            && entity.owner != owner_id
+            && entity.owner() != owner_id
             && entity
                 .cloak
                 .as_ref()
@@ -1212,7 +1212,7 @@ pub(crate) fn pick_entity_at_point(
         if distance < PICK_DISTANCE_THRESHOLD as i32
             && best.is_none_or(|(_, best_distance)| distance < best_distance)
         {
-            best = Some((entity.stable_id, distance));
+            best = Some((entity.stable_id(), distance));
         }
     }
 
@@ -1229,7 +1229,7 @@ pub(crate) fn pick_entity_at_point(
         {
             return None;
         }
-        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref()));
         let foundation = rules
             .and_then(|r| r.object(type_str))
             .map(|o| o.foundation.as_str())
@@ -1243,7 +1243,7 @@ pub(crate) fn pick_entity_at_point(
             height_map,
             bridge_height_map,
         )
-        .then_some(entity.stable_id)
+        .then_some(entity.stable_id())
     })
 }
 

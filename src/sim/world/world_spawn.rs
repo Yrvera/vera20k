@@ -1471,8 +1471,8 @@ impl Simulation {
     /// Store a freshly constructed object in native-style limbo and account for
     /// its owner. Placement is a separate, result-bearing Reveal transaction.
     fn store_spawned_limbo(&mut self, mut ge: GameEntity) -> u64 {
-        let stable_id = ge.stable_id;
-        let owner = self.interner.resolve(ge.owner).to_string();
+        let stable_id = ge.stable_id();
+        let owner = self.interner.resolve(ge.owner()).to_string();
         let category = ge.category;
 
         // This boundary receives newly constructed objects. Make those constructor
@@ -1519,7 +1519,7 @@ impl Simulation {
             .remove(stable_id)
             .expect("constructor object existence checked above");
         debug_assert!(entity.lifecycle.in_limbo && !entity.lifecycle.cell_marked);
-        let owner = self.interner.resolve(entity.owner).to_string();
+        let owner = self.interner.resolve(entity.owner()).to_string();
         self.decrement_owned_count(&owner, entity.category);
         for child_id in spawn_children.into_iter().chain(slave_children) {
             if self.substrate.entities.contains(child_id) {
@@ -1655,8 +1655,8 @@ impl Simulation {
         if entity.category != EntityCategory::Unit || self.resolved_terrain.is_none() {
             return PlacementEvidence::EvaluateMark;
         }
-        let owner = self.interner.resolve(entity.owner).to_string();
-        let type_id = self.interner.resolve(entity.type_ref).to_string();
+        let owner = self.interner.resolve(entity.owner()).to_string();
+        let type_id = self.interner.resolve(entity.type_ref()).to_string();
         let admission = crate::sim::production::produced_unit_unlimbo_entry_at_resolved_cell(
             self,
             rules,
@@ -1684,7 +1684,7 @@ impl Simulation {
         }
         let Some((slave_type, slave_count, owner, rx, ry, z, facing, capacity)) =
             self.substrate.entities.get(parent_id).and_then(|parent| {
-                let parent_type = self.interner.resolve(parent.type_ref);
+                let parent_type = self.interner.resolve(parent.type_ref());
                 let object = rules.object_case_insensitive(parent_type)?;
                 let slave_type = object.enslaves.as_deref()?;
                 let slave_object = rules.object_case_insensitive(slave_type)?;
@@ -1694,7 +1694,7 @@ impl Simulation {
                 Some((
                     slave_type.to_string(),
                     object.slaves_number as usize,
-                    self.interner.resolve(parent.owner).to_string(),
+                    self.interner.resolve(parent.owner()).to_string(),
                     parent.position.rx,
                     parent.position.ry,
                     parent.position.z,
@@ -1739,7 +1739,7 @@ impl Simulation {
                     entity.category,
                     entity.veterancy,
                     entity.in_playfield,
-                    entity.type_ref,
+                    entity.type_ref(),
                 )
             })
         else {
@@ -1786,6 +1786,7 @@ impl Simulation {
             let Some(entity) = self.substrate.entities.get_mut(sid) else {
                 continue;
             };
+            let type_ref = entity.type_ref();
             let Some(ref mut va) = entity.voxel_animation else {
                 continue;
             };
@@ -1797,7 +1798,7 @@ impl Simulation {
             ]
             .iter()
             .filter_map(|layer| {
-                frame_counts.get(&(self.interner.resolve(entity.type_ref).to_string(), *layer))
+                frame_counts.get(&(self.interner.resolve(type_ref).to_string(), *layer))
             })
             .copied()
             .max()
@@ -1827,7 +1828,7 @@ impl Simulation {
     ) -> bool {
         // Read deploy data from EntityStore before mutating.
         let deploy_data = self.substrate.entities.get(stable_id).and_then(|entity| {
-            let type_str = self.interner.resolve(entity.type_ref);
+            let type_str = self.interner.resolve(entity.type_ref());
             let yard_type = construction_yard_type_for_mcv(type_str, rules)?;
             let yard_obj = rules.object(&yard_type)?;
             let (spawn_rx, spawn_ry) = deploy_origin_from_unit_cell(
@@ -1836,7 +1837,7 @@ impl Simulation {
                 &yard_obj.foundation,
             );
             Some((
-                entity.owner,
+                entity.owner(),
                 spawn_rx,
                 spawn_ry,
                 entity.position.z,
@@ -1887,12 +1888,12 @@ impl Simulation {
                     // command batch) no longer blocks an MCV deploy footprint.
                     if e.dying
                         || e.lifecycle.in_limbo
-                        || e.stable_id == stable_id
+                        || e.stable_id() == stable_id
                         || e.category != EntityCategory::Structure
                     {
                         return false;
                     }
-                    let Some(existing) = self.object_type(e.type_ref, rules) else {
+                    let Some(existing) = self.object_type(e.type_ref(), rules) else {
                         return false;
                     };
                     if existing.wall {
@@ -2028,13 +2029,13 @@ impl Simulation {
             if !self.can_undeploy_building_runtime(stable_id, rules) {
                 return None;
             }
-            let type_str = self.interner.resolve(entity.type_ref);
+            let type_str = self.interner.resolve(entity.type_ref());
             let unit_type = undeploy_target_for_building(type_str, rules)?;
             let obj = rules.object(type_str)?;
             let (center_rx, center_ry) =
                 undeploy_unit_cell(entity.position.rx, entity.position.ry, &obj.foundation);
             Some((
-                entity.owner,
+                entity.owner(),
                 center_rx,
                 center_ry,
                 entity.position.z,
@@ -2071,10 +2072,10 @@ impl Simulation {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return false;
         };
-        let Some(obj) = self.object_type(entity.type_ref, rules) else {
+        let Some(obj) = self.object_type(entity.type_ref(), rules) else {
             return false;
         };
-        if obj.construction_yard && self.owner_has_building_production_busy(entity.owner) {
+        if obj.construction_yard && self.owner_has_building_production_busy(entity.owner()) {
             return false;
         }
         self.can_undeploy_building_runtime(stable_id, rules)
@@ -2090,7 +2091,7 @@ impl Simulation {
         {
             return false;
         }
-        let type_str = self.interner.resolve(entity.type_ref);
+        let type_str = self.interner.resolve(entity.type_ref());
         let Some(obj) = rules.object(type_str) else {
             return false;
         };
@@ -2111,7 +2112,7 @@ impl Simulation {
             return false;
         }
         self.houses
-            .get(&entity.owner)
+            .get(&entity.owner())
             .is_some_and(|house| house.is_human)
     }
 

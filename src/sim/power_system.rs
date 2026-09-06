@@ -82,10 +82,10 @@ fn recalculate_power_for_owner(
         if entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
-        if entity.category != EntityCategory::Structure || entity.owner != owner_id {
+        if entity.category != EntityCategory::Structure || entity.owner() != owner_id {
             continue;
         }
-        let Some(obj) = rules.object(interner.resolve(entity.type_ref)) else {
+        let Some(obj) = rules.object(interner.resolve(entity.type_ref())) else {
             continue;
         };
 
@@ -156,9 +156,9 @@ pub fn tick_power_states(
         if !entity.dying
             && !entity.lifecycle.in_limbo
             && entity.category == EntityCategory::Structure
-            && !owners.contains(&entity.owner)
+            && !owners.contains(&entity.owner())
         {
-            owners.push(entity.owner);
+            owners.push(entity.owner());
         }
     }
     owners.sort();
@@ -204,7 +204,7 @@ pub fn is_building_powered(
     if entity.category != EntityCategory::Structure {
         return true;
     }
-    let Some(obj) = rules.object(interner.resolve(entity.type_ref)) else {
+    let Some(obj) = rules.object(interner.resolve(entity.type_ref())) else {
         return true;
     };
     // Power plants (positive Power=) are never deactivated.
@@ -217,7 +217,7 @@ pub fn is_building_powered(
     }
     // Check if owner is in low power.
     let is_low = power_states
-        .get(&entity.owner)
+        .get(&entity.owner())
         .is_some_and(|state| state.is_low_power);
     !is_low
 }
@@ -257,9 +257,9 @@ pub fn has_active_radar(
         !e.dying
             && !e.lifecycle.in_limbo
             && e.category == EntityCategory::Structure
-            && e.owner == owner_id
+            && e.owner() == owner_id
             && rules
-                .object(interner.resolve(e.type_ref))
+                .object(interner.resolve(e.type_ref()))
                 .is_some_and(|obj| obj.radar)
     })
 }

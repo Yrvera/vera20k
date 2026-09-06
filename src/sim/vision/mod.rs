@@ -1295,7 +1295,7 @@ pub(crate) fn entity_has_sight_ability(
     rules: Option<&crate::rules::ruleset::RuleSet>,
 ) -> bool {
     rules
-        .and_then(|rules| rules.object(interner.resolve(entity.type_ref)))
+        .and_then(|rules| rules.object(interner.resolve(entity.type_ref())))
         .is_some_and(|object| {
             crate::sim::combat::veterancy::has_weapon_ability(
                 crate::sim::combat::veterancy::rank_of(entity.veterancy_raw),
@@ -1401,7 +1401,7 @@ pub(crate) fn reveal_entity_vision(
     }
     let vis = fog
         .by_owner
-        .entry(entity.owner)
+        .entry(entity.owner())
         .or_insert_with(|| OwnerVisibility::new(width, height));
     let height_leptons: i32 = entity_height_leptons(entity);
 

@@ -79,7 +79,7 @@ pub fn tick_approach(
     // Mission_Open only queues Mission_Rescue here; Drop_Payload owns the
     // successful-drop sound/reveal side effects.
     if dist_leptons <= radius {
-        let exit = compute_exit_cell(sim, aircraft.owner, target_rx, target_ry, path_grid);
+        let exit = compute_exit_cell(sim, aircraft.owner(), target_rx, target_ry, path_grid);
         return ApproachOutcome {
             new_mission: AircraftMission::ParaDropOverfly {
                 exit_rx: exit.0,

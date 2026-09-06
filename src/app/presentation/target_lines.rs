@@ -171,14 +171,14 @@ pub(crate) fn build_factory_rally_line_instances(
         if !entity.selected || entity.category != EntityCategory::Structure {
             continue;
         }
-        let owner = sim.interner.resolve(entity.owner);
+        let owner = sim.interner.resolve(entity.owner());
         if owner != local_owner {
             continue;
         }
         let Some((rx, ry)) = entity.rally_target else {
             continue;
         };
-        let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
+        let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref())) else {
             continue;
         };
         if !obj.has_rally_line() {

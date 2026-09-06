@@ -57,8 +57,8 @@ pub(crate) fn spawn_completed_refinery_free_units(
                 }
                 let (width, height) = foundation_dimensions(&entity.foundation);
                 Some((
-                    entity.owner,
-                    entity.type_ref,
+                    entity.owner(),
+                    entity.type_ref(),
                     entity.position.rx,
                     entity.position.ry,
                     width,

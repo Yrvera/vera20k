@@ -94,7 +94,7 @@ pub(crate) fn apply_unit_facing(
     for update in updates {
         let id = update.entity_id;
         let rot_byte: u8 = rules
-            .object(interner.resolve(entities.get(id).map(|e| e.type_ref).unwrap_or_default()))
+            .object(interner.resolve(entities.get(id).map(|e| e.type_ref()).unwrap_or_default()))
             .map(|obj| obj.turret_rot.clamp(0, 0xFF) as u8)
             .unwrap_or(5);
         let Some(entity) = entities.get_mut(id) else {

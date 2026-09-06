@@ -205,7 +205,7 @@ impl Simulation {
                 .get_mut(stable_id)
                 .and_then(|entity| {
                     let deposit = entity.sensor_deposit.take()?;
-                    Some((deposit, entity.owner))
+                    Some((deposit, entity.owner()))
                 })?;
         if deposit.detect_disguise_radius > 0 {
             // `BuildingClass::RemoveDetectDisguiseAt @ 0x00455980`, reached
@@ -253,9 +253,9 @@ impl Simulation {
     pub(crate) fn add_unit_sensor_after_unlimbo(&mut self, stable_id: u64, rules: &RuleSet) {
         let Some((owner, center, radius, in_limbo)) =
             self.substrate.entities.get(stable_id).and_then(|entity| {
-                let object = rules.object(self.interner.resolve(entity.type_ref))?;
+                let object = rules.object(self.interner.resolve(entity.type_ref()))?;
                 Some((
-                    entity.owner,
+                    entity.owner(),
                     (entity.position.rx, entity.position.ry),
                     unit_sensor_radius(entity.category, object)?,
                     entity.lifecycle.in_limbo,
@@ -295,7 +295,7 @@ impl Simulation {
     pub(crate) fn add_building_sensor_array_if_powered(&mut self, stable_id: u64, rules: &RuleSet) {
         let Some((owner, center, sight, remove_radius, detect_radius, powered, in_limbo)) =
             self.substrate.entities.get(stable_id).and_then(|entity| {
-                let object = rules.object(self.interner.resolve(entity.type_ref))?;
+                let object = rules.object(self.interner.resolve(entity.type_ref()))?;
                 if entity.category != EntityCategory::Structure
                     || object.category != ObjectCategory::Building
                 {
@@ -315,7 +315,7 @@ impl Simulation {
                     return None;
                 }
                 Some((
-                    entity.owner,
+                    entity.owner(),
                     (entity.position.rx, entity.position.ry),
                     sight,
                     object.cloak_radius_in_cells,

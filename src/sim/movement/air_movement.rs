@@ -343,7 +343,7 @@ pub fn tick_air_movement(
                     log::debug!(
                         "air_move entity={} type={} speed={} fly_speed={} dt={} alt={} dist_lep={} facing={}",
                         entity_id,
-                        entity.type_ref,
+                        entity.type_ref(),
                         target.speed,
                         fly_speed,
                         dt,

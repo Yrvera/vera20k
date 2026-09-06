@@ -195,7 +195,7 @@ fn apply_mutate_per_cell(
                 .iter()
                 .any(|(rx, ry)| e.position.rx == *rx && e.position.ry == *ry)
         })
-        .map(|e| (e.stable_id, e.position.rx, e.position.ry))
+        .map(|e| (e.stable_id(), e.position.rx, e.position.ry))
         .collect();
 
     let mut killed: Vec<(u16, u16)> = Vec::new();

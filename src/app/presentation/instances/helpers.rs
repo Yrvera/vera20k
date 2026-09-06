@@ -38,8 +38,8 @@ pub(crate) fn tactical_entity_encounter_order(
         }
     }
     for entity in sim.entities().values() {
-        if seen.insert(entity.stable_id) {
-            registered.push(entity.stable_id);
+        if seen.insert(entity.stable_id()) {
+            registered.push(entity.stable_id());
         }
     }
 
@@ -61,7 +61,7 @@ pub(crate) fn tactical_entity_encounter_order(
             };
             let (coord, y_sort_adjust) = if entity.category == EntityCategory::Structure {
                 let object_type =
-                    rules.and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref)));
+                    rules.and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref())));
                 crate::app::presentation::render::draw_plan_lowering::building_ground_order_parts(
                     location,
                     object_type.is_some_and(|object| object.turret_anim_is_voxel),
@@ -195,7 +195,7 @@ fn compose_tactical_screen_entity_encounter_order(
         .into_iter()
         .filter(|id| {
             sim.entities().get(*id).is_some_and(|entity| {
-                let owner = sim.interner.resolve(entity.owner);
+                let owner = sim.interner.resolve(entity.owner());
                 let admitted = if bulk_register_live_buildings
                     && entity.category == EntityCategory::Structure
                 {

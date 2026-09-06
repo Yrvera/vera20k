@@ -313,10 +313,10 @@ impl<'a> SparkCollisionWorld<'a> {
             // Native stops at the first building in the selected object list.
             let object = self
                 .sim
-                .object_type(entity.type_ref, self.rules)
-                .ok_or(SparkWorldError::MissingObjectType(entity.stable_id))?;
+                .object_type(entity.type_ref(), self.rules)
+                .ok_or(SparkWorldError::MissingObjectType(entity.stable_id()))?;
             if object.laser_fence {
-                return Err(SparkWorldError::UnsupportedLaserFence(entity.stable_id));
+                return Err(SparkWorldError::UnsupportedLaserFence(entity.stable_id()));
             }
             let undeploys_from_one_by_one = object
                 .undeploys_into

@@ -389,7 +389,7 @@ pub(super) fn build_live_building_entry_skip_map(
         if building.category != EntityCategory::Structure {
             continue;
         }
-        let Some(obj) = rules.object(interner.resolve(building.type_ref)) else {
+        let Some(obj) = rules.object(interner.resolve(building.type_ref())) else {
             continue;
         };
         let gate_skip = gate_helpers
@@ -398,11 +398,11 @@ pub(super) fn build_live_building_entry_skip_map(
                 .building_gate
                 .is_some_and(|state| state.can_garrison_passable());
         let infantry_entry_target = mover.category == EntityCategory::Infantry
-            && (mover.capture_target == Some(building.stable_id)
+            && (mover.capture_target == Some(building.stable_id())
                 || mover
                     .c4_plant
-                    .is_some_and(|plant| plant.target_building_id == building.stable_id));
-        let has_contact = vehicle_row_helpers && mover.has_live_contact_with(building.stable_id);
+                    .is_some_and(|plant| plant.target_building_id == building.stable_id()));
+        let has_contact = vehicle_row_helpers && mover.has_live_contact_with(building.stable_id());
         let has_vehicle_exception =
             vehicle_row_helpers && (has_contact || obj.unit_repair || obj.bunker || obj.bib);
         if !has_vehicle_exception && !gate_skip && !infantry_entry_target {
@@ -427,8 +427,8 @@ pub(super) fn build_live_building_entry_skip_map(
                     branch: VehicleBuildingEntryBranch::RadioContact {
                         mover_has_contact: has_contact,
                     },
-                    checked_building_id: building.stable_id,
-                    candidate_building_id: Some(building.stable_id),
+                    checked_building_id: building.stable_id(),
+                    candidate_building_id: Some(building.stable_id()),
                     candidate_x: cx,
                     building_origin_x: building.position.rx,
                     number_impassable_rows: obj.number_impassable_rows,
@@ -466,7 +466,7 @@ pub(super) fn build_live_building_entry_skip_map(
                 skips
                     .entry((cx, cy))
                     .or_default()
-                    .insert(building.stable_id);
+                    .insert(building.stable_id());
             }
         }
     }

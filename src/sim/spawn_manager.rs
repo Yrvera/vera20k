@@ -504,7 +504,7 @@ fn step_ready_docked(
         return;
     }
 
-    let owner_type = sim.interner.resolve(owner.type_ref).to_string();
+    let owner_type = sim.interner.resolve(owner.type_ref()).to_string();
     let launch_rx = owner.position.rx;
     let launch_ry = owner.position.ry;
     let launch_z = owner.position.z;
@@ -703,7 +703,7 @@ fn restore_docked_child(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, sl
         .substrate
         .entities
         .get(child_id)
-        .map(|c| sim.interner.resolve(c.type_ref).to_string());
+        .map(|c| sim.interner.resolve(c.type_ref()).to_string());
     if let Some(obj) = child_type.as_deref().and_then(|name| rules.object(name))
         && let Some(child) = sim.substrate.entities.get_mut(child_id)
     {
@@ -731,7 +731,7 @@ fn regenerate_child(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, slot_i
     let Some((owner_house, rx, ry, z, facing)) =
         sim.substrate.entities.get(owner_id).map(|owner| {
             (
-                sim.interner.resolve(owner.owner).to_string(),
+                sim.interner.resolve(owner.owner()).to_string(),
                 owner.position.rx,
                 owner.position.ry,
                 owner.position.z,
@@ -855,7 +855,7 @@ fn step_manager_mode(
                 // they are kept apart because a mod can separate them.
                 let child_missile_spawn = child_slot
                     .and_then(|child| sim.substrate.entities.get(child))
-                    .map(|child| sim.interner.resolve(child.type_ref).to_string())
+                    .map(|child| sim.interner.resolve(child.type_ref()).to_string())
                     .and_then(|name| rules.object(&name))
                     .map(|obj| obj.missile_spawn)
                     .unwrap_or(is_missile_family);
@@ -1078,7 +1078,7 @@ fn child_air_speed(
     sim.substrate
         .entities
         .get(child_id)
-        .map(|c| sim.interner.resolve(c.type_ref).to_string())
+        .map(|c| sim.interner.resolve(c.type_ref()).to_string())
         .and_then(|name| rules.object(&name))
         .map(|obj| crate::util::fixed_math::ra2_speed_to_leptons_per_second(obj.speed.max(1)))
         .unwrap_or(crate::util::fixed_math::SimFixed::from_num(8))
@@ -1152,7 +1152,7 @@ fn launch_missile_child(
         .substrate
         .entities
         .get(child_id)
-        .map(|c| sim.interner.resolve(c.type_ref).to_string());
+        .map(|c| sim.interner.resolve(c.type_ref()).to_string());
     // The six-phase rocket machine runs in LEPTONS per second (its ascent
     // altitude, acceleration and terminal constants are lepton-domain, and its
     // own attach test uses a 300-scale speed), so the raw INI `Speed=` goes
@@ -1226,7 +1226,7 @@ pub fn detonate_missiles(sim: &mut Simulation, detonated: &[u64]) {
         let Some((rx, ry, payload, owner)) = sim.substrate.entities.get(missile_id).and_then(|e| {
             e.rocket_state
                 .as_ref()
-                .map(|r| (r.target_rx, r.target_ry, r.payload, e.owner))
+                .map(|r| (r.target_rx, r.target_ry, r.payload, e.owner()))
         }) else {
             continue;
         };

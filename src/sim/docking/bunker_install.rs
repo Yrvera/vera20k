@@ -339,7 +339,7 @@ fn start_install_force_track(
         .substrate
         .entities
         .get(unit_id)
-        .map(|u| (u.position.rx, u.position.ry, u.type_ref))
+        .map(|u| (u.position.rx, u.position.ry, u.type_ref()))
     else {
         return false;
     };

@@ -87,7 +87,7 @@ pub(super) fn radar_entity_owner_color(
         .as_ref()
         .filter(|disguise| disguise.disguised)
         .and_then(|disguise| disguise.disguised_as_house)
-        .unwrap_or(entity.owner);
+        .unwrap_or(entity.owner());
     let owner_str = interner.map_or("", |interner| interner.resolve(color_owner));
     // Building and mobile tracker entries share RenderCellPixel's owner/remap
     // path. Khaki is terrain-only. The existing RGBA ramp is not yet proof of
@@ -111,20 +111,20 @@ pub(super) fn radar_pixel_candidate_eligible(
     let Some(entity) = entities.get(entry.stable_id) else {
         return false;
     };
-    let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+    let type_str = interner.map_or("", |i| i.resolve(entity.type_ref()));
     let object = rules.and_then(|rules| rules.object(type_str));
 
     if let Some(local_owner) = local_owner {
-        let friendly = entity.owner == local_owner
+        let friendly = entity.owner() == local_owner
             || interner.is_some_and(|interner| {
-                fog.is_friendly_id(local_owner, entity.owner, interner)
+                fog.is_friendly_id(local_owner, entity.owner(), interner)
             });
         if !full_visibility {
             let (rx, ry) = projection
                 .pixel_to_cell(entry.x, entry.y)
                 .unwrap_or((entity.position.rx, entity.position.ry));
             let owner_is_human = radar_owner_is_human_player(
-                entity.owner,
+                entity.owner(),
                 local_owner,
                 houses,
                 game_mode_nonzero,
@@ -143,7 +143,7 @@ pub(super) fn radar_pixel_candidate_eligible(
 
     if object.is_some_and(|object| object.insignificant && !object.radar_visible)
         && !houses
-            .get(&entity.owner)
+            .get(&entity.owner())
             .is_some_and(|house| !house.multiplay_passive)
     {
         return false;

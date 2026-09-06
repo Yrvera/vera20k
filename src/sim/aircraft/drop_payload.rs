@@ -153,7 +153,7 @@ pub fn try_drop(
         prior_movement_layer,
     ) = match sim.substrate.entities.get(passenger_id) {
         Some(passenger) => {
-            let object_type = sim.object_type(passenger.type_ref, rules);
+            let object_type = sim.object_type(passenger.type_ref(), rules);
             (
                 passenger.category,
                 passenger.lifecycle.object_alive && passenger.lifecycle.in_limbo,

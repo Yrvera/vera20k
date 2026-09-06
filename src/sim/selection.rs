@@ -190,7 +190,7 @@ pub fn deselect_all(entities: &mut EntityStore) {
     let selected_ids: Vec<u64> = entities
         .values()
         .filter(|e| e.selected)
-        .map(|e| e.stable_id)
+        .map(|e| e.stable_id())
         .collect();
     for id in selected_ids {
         if let Some(e) = entities.get_mut(id) {

@@ -157,7 +157,7 @@ pub(super) fn current_target_disposition(
         Some(TargetKind::Entity(id))
             if entities.get(id).is_some_and(|target| {
                 rules
-                    .object(interner.resolve(target.type_ref))
+                    .object(interner.resolve(target.type_ref()))
                     .is_some_and(|object| is_armed(target, object))
             }) =>
         {
@@ -258,7 +258,7 @@ pub(crate) fn responder_peek_fire_error(
         || candidate
             .passenger_role
             .inside_transport_id()
-            .is_some_and(|transport_id| transport_id == target.stable_id)
+            .is_some_and(|transport_id| transport_id == target.stable_id())
     {
         return ResponderPeekFireError::Illegal;
     }
@@ -317,10 +317,10 @@ pub(super) fn candidate_admitted(
     context: &BaseDefenseResponseContext<'_>,
 ) -> bool {
     if !candidate.is_object_alive()
-        || candidate.owner != victim_owner
+        || candidate.owner() != victim_owner
         || context
             .teams
-            .team_for_member(candidate.stable_id)
+            .team_for_member(candidate.stable_id())
             .is_some_and(|(_, is_base_defense)| !is_base_defense)
         || !candidate.base_defense_response.recruitable_a
         || !candidate.base_defense_response.recruitable_b
@@ -347,7 +347,7 @@ pub(super) fn candidate_admitted(
                             .entities
                             .get(attacker_id)
                             .expect("entry retained attacker")
-                            .type_ref,
+                            .type_ref(),
                     ),
                 )
                 .expect("entry retained attacker type"),

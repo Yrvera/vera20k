@@ -182,7 +182,7 @@ pub(crate) fn compute_effective_max_range_leptons(
         if let Some(target_entity) = entities.get(target_id) {
             // AirRange bonus when target is high-flying.
             if is_high_flying(target_entity) {
-                if let Some(attacker_obj) = rules.object(interner.resolve(attacker.type_ref)) {
+                if let Some(attacker_obj) = rules.object(interner.resolve(attacker.type_ref())) {
                     if let Some(air_bonus) = attacker_obj.air_range_bonus {
                         range_lep += cells_fixed_to_leptons(air_bonus);
                     }
@@ -190,7 +190,7 @@ pub(crate) fn compute_effective_max_range_leptons(
             }
             // Foundation bonus when target is a building: (FoundationW + FoundationH) * 64 lep.
             if target_entity.category == EntityCategory::Structure {
-                if let Some(target_obj) = rules.object(interner.resolve(target_entity.type_ref)) {
+                if let Some(target_obj) = rules.object(interner.resolve(target_entity.type_ref())) {
                     let (fw, fh) = foundation_dimensions(&target_obj.foundation);
                     range_lep += (fw as i64 + fh as i64) * 0x40;
                 }
@@ -384,7 +384,7 @@ fn line_of_fire_clear(
         // stock rules leave off, and a fixture interner that never saw this
         // owner must not panic the range gate. An unresolvable owner matches
         // no alliance, which is the same verdict the stock rule gives.
-        interner.try_resolve(attacker.owner).unwrap_or_default(),
+        interner.try_resolve(attacker.owner()).unwrap_or_default(),
         rules,
         terrain,
         interner,
@@ -593,7 +593,7 @@ fn resolve_entity_target_coords(
     interner: &StringInterner,
 ) -> (u16, u16, SimFixed, SimFixed) {
     if t.category == EntityCategory::Structure {
-        if let Some(obj) = rules.object(interner.resolve(t.type_ref)) {
+        if let Some(obj) = rules.object(interner.resolve(t.type_ref())) {
             let (fw, fh) = foundation_dimensions(&obj.foundation);
             let offset_x = (fw.saturating_sub(1) as i32) * 128;
             let offset_y = (fh.saturating_sub(1) as i32) * 128;

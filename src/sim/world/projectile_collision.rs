@@ -1359,7 +1359,7 @@ impl ProjectileCollisionWorld<'_> {
         if object.category == EntityCategory::Structure
             && let Some(kind) = self
                 .rules
-                .and_then(|rules| rules.object(self.interner.resolve(object.type_ref)))
+                .and_then(|rules| rules.object(self.interner.resolve(object.type_ref())))
         {
             let (width, height) = crate::rules::foundation::foundation_dimensions(&kind.foundation);
             coord.x = coord.x.wrapping_add(i32::from(width) * 128 - 128);
@@ -1377,8 +1377,8 @@ impl ProjectileCollisionWorld<'_> {
         };
         crate::map::houses::is_allied_with(
             self.alliances,
-            self.interner.resolve(source.owner),
-            self.interner.resolve(other.owner),
+            self.interner.resolve(source.owner()),
+            self.interner.resolve(other.owner()),
         )
     }
 
@@ -1423,7 +1423,7 @@ impl ProjectileCollisionWorld<'_> {
             .into_iter()
             .flat_map(|occupants| occupants.iter_layer(MovementLayer::Ground))
             .filter_map(|occupant| self.entities.get(occupant.entity_id))
-            .map(|object| (object.stable_id, self.raw_location(object)));
+            .map(|object| (object.stable_id(), self.raw_location(object)));
         let mut best = None;
         let mut best_distance = 0;
         for object in objects {
@@ -1526,7 +1526,7 @@ impl ProjectileCollisionWorld<'_> {
                         .get(id)
                         .and_then(|object| {
                             self.rules.and_then(|rules| {
-                                rules.object(self.interner.resolve(object.type_ref))
+                                rules.object(self.interner.resolve(object.type_ref()))
                             })
                         })
                         .is_some_and(|kind| {
@@ -1739,7 +1739,7 @@ impl ProjectileCollisionWorld<'_> {
         if target.category == EntityCategory::Structure
             && let Some(kind) = self
                 .rules
-                .and_then(|rules| rules.object(self.interner.resolve(target.type_ref)))
+                .and_then(|rules| rules.object(self.interner.resolve(target.type_ref())))
         {
             let (width, height) = crate::rules::foundation::foundation_dimensions(&kind.foundation);
             distance = distance
@@ -1847,7 +1847,7 @@ impl ProjectileCollisionWorld<'_> {
             && crate::map::houses::is_allied_with(
                 self.alliances,
                 self.interner.resolve(owner),
-                self.interner.resolve(source.owner),
+                self.interner.resolve(source.owner()),
             )
         {
             return false;
@@ -1875,7 +1875,7 @@ impl ProjectileCollisionWorld<'_> {
     fn high_flying(&self, target: &crate::sim::game_entity::GameEntity) -> bool {
         if target.category == EntityCategory::Aircraft
             && self.rules.is_some_and(|rules| {
-                let name = self.interner.resolve(target.type_ref);
+                let name = self.interner.resolve(target.type_ref());
                 name.eq_ignore_ascii_case(&rules.missile_spawn.v3.type_name)
                     || name.eq_ignore_ascii_case(&rules.missile_spawn.dmisl.type_name)
             })

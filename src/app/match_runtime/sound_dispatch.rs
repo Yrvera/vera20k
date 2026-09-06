@@ -690,11 +690,11 @@ pub(super) fn dispatch_sim_sound_events(
                 {
                     None => true,
                     Some(aux) => sim.substrate.entities.values().any(|e| {
-                        e.owner == owner
+                        e.owner() == owner
                             && !e.dying
                             && !e.lifecycle.in_limbo
                             && e.category == crate::map::entities::EntityCategory::Structure
-                            && sim.interner.resolve(e.type_ref).eq_ignore_ascii_case(aux)
+                            && sim.interner.resolve(e.type_ref()).eq_ignore_ascii_case(aux)
                     }),
                 };
                 if !eva_producers::super_weapon_detected_allowed(

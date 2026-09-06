@@ -1549,7 +1549,7 @@ impl Simulation {
                 (
                     entity.health.current,
                     entity.health.max,
-                    entity.type_ref,
+                    entity.type_ref(),
                     entity.position.clone(),
                     entity.damage_fire_state_active,
                     entity.category,

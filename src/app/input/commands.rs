@@ -166,7 +166,7 @@ fn own_building_id(state: &AppState, stable_id: u64) -> Option<u64> {
     (entity.category == EntityCategory::Structure
         && sim
             .interner
-            .resolve(entity.owner)
+            .resolve(entity.owner())
             .eq_ignore_ascii_case(&owner))
     .then_some(stable_id)
 }
@@ -671,7 +671,7 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
         .map(|rt| &rt.simulation)?;
     // Sandbox fallback: prefer owner of selected unit first.
     for entity in sim.entities().values() {
-        let owner_str = sim.interner.resolve(entity.owner);
+        let owner_str = sim.interner.resolve(entity.owner());
         if entity.selected && is_playable_house_name(owner_str) {
             return Some(owner_str.to_string());
         }
@@ -687,7 +687,7 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
     // Prefer owners that currently have structures.
     let mut structure_counts: HashMap<String, usize> = HashMap::new();
     for entity in sim.entities().values() {
-        let owner_str = sim.interner.resolve(entity.owner);
+        let owner_str = sim.interner.resolve(entity.owner());
         if entity.category == EntityCategory::Structure && is_playable_house_name(owner_str) {
             *structure_counts.entry(owner_str.to_string()).or_insert(0) += 1;
         }
@@ -718,7 +718,7 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
     let mut owners: Vec<String> = sim
         .entities()
         .values()
-        .map(|e| sim.interner.resolve(e.owner).to_string())
+        .map(|e| sim.interner.resolve(e.owner()).to_string())
         .filter(|o| is_playable_house_name(o))
         .collect();
     owners.sort();
@@ -744,7 +744,7 @@ pub(crate) fn collect_playable_owners(state: &AppState) -> Vec<String> {
         .map(|rt| &rt.simulation)
     {
         for entity in sim.entities().values() {
-            let owner_str = sim.interner.resolve(entity.owner);
+            let owner_str = sim.interner.resolve(entity.owner());
             if is_playable_house_name(owner_str) {
                 owners.push(owner_str.to_string());
             }

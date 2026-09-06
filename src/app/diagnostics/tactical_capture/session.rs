@@ -480,9 +480,9 @@ impl TacticalCaptureSession {
             .iter_sorted()
             .filter(|(_, entity)| {
                 entity.is_active()
-                    && sim.interner.resolve(entity.owner) == owner
+                    && sim.interner.resolve(entity.owner()) == owner
                     && rules
-                        .object(sim.interner.resolve(entity.type_ref))
+                        .object(sim.interner.resolve(entity.type_ref()))
                         .is_some_and(|object| object.deploys_into.is_some())
             })
             .collect();
@@ -492,7 +492,7 @@ impl TacticalCaptureSession {
             deployers.len()
         );
         let mcv = deployers[0].1;
-        let mcv_type_id = sim.interner.resolve(mcv.type_ref).to_owned();
+        let mcv_type_id = sim.interner.resolve(mcv.type_ref()).to_owned();
         let mcv_rule = rules
             .object(&mcv_type_id)
             .context("local MCV has no merged rule")?;
@@ -762,9 +762,9 @@ impl TacticalCaptureSession {
             .entities()
             .iter_sorted()
             .map(|(_, entity)| TacticalEntityObservation {
-                stable_id: entity.stable_id,
-                owner: sim.interner.resolve(entity.owner).to_owned(),
-                type_id: sim.interner.resolve(entity.type_ref).to_owned(),
+                stable_id: entity.stable_id(),
+                owner: sim.interner.resolve(entity.owner()).to_owned(),
+                type_id: sim.interner.resolve(entity.type_ref()).to_owned(),
                 cell: (entity.position.rx, entity.position.ry),
                 facing: entity.facing,
                 active: entity.is_active(),
@@ -1080,10 +1080,10 @@ impl TacticalCaptureSession {
             if !entity.is_active()
                 || entity.dying
                 || entity.building_up.is_some()
-                || sim.interner.resolve(entity.owner) != self.request.profile().launch.player_name
+                || sim.interner.resolve(entity.owner()) != self.request.profile().launch.player_name
                 || !sim
                     .interner
-                    .resolve(entity.type_ref)
+                    .resolve(entity.type_ref())
                     .eq_ignore_ascii_case(&binding.type_id)
                 || (entity.position.rx, entity.position.ry) != binding.cell
             {
@@ -1107,7 +1107,7 @@ impl TacticalCaptureSession {
             if !entity.is_active()
                 || !sim
                     .interner
-                    .resolve(entity.type_ref)
+                    .resolve(entity.type_ref())
                     .eq_ignore_ascii_case(expected_harvester)
             {
                 return Ok(false);

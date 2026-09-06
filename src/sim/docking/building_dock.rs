@@ -384,7 +384,7 @@ pub(crate) fn mission_enter_dispatch(sim: &mut Simulation, rules: &RuleSet, id: 
                 ds.phase,
                 unit.health.current,
                 unit.health.max,
-                unit.owner,
+                unit.owner(),
             ))
         })
     else {
@@ -403,8 +403,8 @@ pub(crate) fn mission_enter_dispatch(sim: &mut Simulation, rules: &RuleSet, id: 
         .substrate
         .entities
         .get(dock_building_id)
-        .filter(|depot| depot.health.current > 0 && !depot.dying && depot.owner == owner)
-        .and_then(|depot| sim.object_type(depot.type_ref, rules))
+        .filter(|depot| depot.health.current > 0 && !depot.dying && depot.owner() == owner)
+        .and_then(|depot| sim.object_type(depot.type_ref(), rules))
         .filter(|obj| obj.unit_repair)
         .map(|obj| usize::from(obj.number_of_docks.max(1)));
 
@@ -508,9 +508,9 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet, path_grid: Opt
         .filter_map(|e| {
             let ds = e.dock_state.as_ref()?;
             Some(DockSnapshot {
-                id: e.stable_id,
-                owner: e.owner,
-                type_ref: e.type_ref,
+                id: e.stable_id(),
+                owner: e.owner(),
+                type_ref: e.type_ref(),
                 rx: e.position.rx,
                 ry: e.position.ry,
                 hp: e.health.current,
@@ -570,10 +570,10 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet, path_grid: Opt
                 if depot.health.current == 0 || depot.dying {
                     return None;
                 }
-                if depot.owner != snap.owner {
+                if depot.owner() != snap.owner {
                     return None;
                 }
-                let obj = sim.object_type(depot.type_ref, rules)?;
+                let obj = sim.object_type(depot.type_ref(), rules)?;
                 if !obj.unit_repair {
                     return None;
                 }
@@ -740,7 +740,7 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet, path_grid: Opt
         if m.deduct_credits > 0 {
             if let Some(house) = crate::sim::house_state::house_state_for_owner_mut(
                 &mut sim.houses,
-                sim.interner.resolve(entity.owner),
+                sim.interner.resolve(entity.owner()),
                 &sim.interner,
             ) {
                 house.credits = (house.credits - m.deduct_credits).max(0);

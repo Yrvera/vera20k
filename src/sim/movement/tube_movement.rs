@@ -246,7 +246,7 @@ pub(crate) fn tick_active_tube_object(
     };
     let category = entity.category;
     let speed = rules
-        .and_then(|rules| rules.object(interner.resolve(entity.type_ref)))
+        .and_then(|rules| rules.object(interner.resolve(entity.type_ref())))
         .map_or(0, |object| native_type_speed(object.speed));
     let budget = if category == EntityCategory::Unit {
         speed.wrapping_mul(3) / 2
@@ -562,7 +562,7 @@ fn scatter_exit_blockers(
             continue;
         }
         let fraidycat = rules
-            .and_then(|rules| rules.object(interner.resolve(blocker.type_ref)))
+            .and_then(|rules| rules.object(interner.resolve(blocker.type_ref())))
             .is_some_and(|object| object.fraidycat);
         let mission_control = rules.map(|rules| &rules.mission_control);
         bump_crush::scatter_blocker(

@@ -332,9 +332,14 @@ pub struct StructureUpgradeLink {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GameEntity {
     // --- Always present (every entity has these) ---
+    // Indexed identity is private in production. Synthetic fixtures retain raw
+    // setup access; conditional declarations preserve the exact serde field order.
     /// Deterministic stable ID — primary key, used for cross-entity references,
     /// replay logs, state hashing, and networking. Never reused.
-    pub stable_id: u64,
+    #[cfg(test)]
+    pub(crate) stable_id: u64,
+    #[cfg(not(test))]
+    stable_id: u64,
     /// Low word of the one raw Scenario RNG draw performed by the active-retail
     /// `TechnoClass` constructor (`0x006F3254`, stored at native `+0x3C8`).
     /// Later report-selection consumers read this persistent value; placement
@@ -366,11 +371,17 @@ pub struct GameEntity {
     #[serde(default)]
     pub body_frame_counter: u32,
     /// Owning player/faction name (e.g., "Americans", "Soviet") — interned for zero-cost clones.
-    pub owner: InternedId,
+    #[cfg(test)]
+    pub(crate) owner: InternedId,
+    #[cfg(not(test))]
+    owner: InternedId,
     /// Current and maximum hit points.
     pub health: Health,
     /// rules.ini section name (e.g., "HTNK", "E1", "GAPOWR") — interned for zero-cost clones.
-    pub type_ref: InternedId,
+    #[cfg(test)]
+    pub(crate) type_ref: InternedId,
+    #[cfg(not(test))]
+    type_ref: InternedId,
     /// Entity category: Unit, Infantry, Aircraft, or Structure.
     pub category: EntityCategory,
     /// Rules foundation string for structure footprint occupancy.
@@ -954,6 +965,30 @@ pub struct GameEntity {
 }
 
 impl GameEntity {
+    /// Immutable storage key. Construction and snapshot decoding establish it.
+    pub fn stable_id(&self) -> u64 {
+        self.stable_id
+    }
+
+    /// Indexed ownership. Live transfers go through Simulation's owner lifecycle
+    /// and EntityStore's index update; ordinary payload mutation cannot assign it.
+    pub fn owner(&self) -> InternedId {
+        self.owner
+    }
+
+    /// Immutable indexed type identity, established by construction/decoding.
+    pub fn type_ref(&self) -> InternedId {
+        self.type_ref
+    }
+
+    pub(crate) fn set_owner_from_store(
+        &mut self,
+        owner: InternedId,
+        _: crate::sim::entity_store::OwnerChangeAuthority,
+    ) {
+        self.owner = owner;
+    }
+
     /// The Harvest FSM cursor of record, decoded from
     /// `MissionCom::handler_state`. `None` when the entity has no Miner
     /// component. An out-of-vocabulary cursor decodes as `SearchOre` (the

@@ -146,7 +146,7 @@ pub(crate) fn produce_cash_on_owner_change(
     if entity.category != EntityCategory::Structure {
         return;
     }
-    let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
+    let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref())) else {
         return;
     };
     let old_passive = sim
@@ -244,8 +244,8 @@ pub(crate) fn produce_cash_step(sim: &mut Simulation, stable_id: u64, rules: &Ru
     if !entity.produce_cash_timer.fires_now(frame) {
         return;
     }
-    let owner = entity.owner;
-    let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
+    let owner = entity.owner();
+    let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref())) else {
         return;
     };
     let amount = obj.produce_cash_amount;
@@ -290,7 +290,7 @@ pub(crate) fn building_at_cell_in_store(entities: &EntityStore, rx: u16, ry: u16
         let (width, height) = crate::rules::foundation::foundation_dimensions(&entity.foundation);
         let (bx, by) = (entity.position.rx, entity.position.ry);
         (rx >= bx && rx < bx.saturating_add(width) && ry >= by && ry < by.saturating_add(height))
-            .then_some(entity.stable_id)
+            .then_some(entity.stable_id())
     })
 }
 
@@ -404,10 +404,10 @@ pub(crate) fn drain_common_step(sim: &mut Simulation, stable_id: u64, rules: &Ru
     let Some(entity) = sim.substrate.entities.get(stable_id) else {
         return;
     };
-    let victim_owner = entity.owner;
+    let victim_owner = entity.owner();
     let draining_me = entity.draining_me;
     let drain_target = entity.drain_target;
-    let type_ref = entity.type_ref;
+    let type_ref = entity.type_ref();
 
     if let Some(drainer_id) = draining_me
         && rules
@@ -421,7 +421,7 @@ pub(crate) fn drain_common_step(sim: &mut Simulation, stable_id: u64, rules: &Ru
                 .substrate
                 .entities
                 .get(drainer_id)
-                .map(|drainer| drainer.owner)
+                .map(|drainer| drainer.owner())
             {
                 let mut amount = rules.general.drain_money_amount;
                 let available = available_money(sim, victim_owner);
@@ -439,7 +439,7 @@ pub(crate) fn drain_common_step(sim: &mut Simulation, stable_id: u64, rules: &Ru
             .substrate
             .entities
             .get(victim_id)
-            .map(|victim| victim.owner)
+            .map(|victim| victim.owner())
         && crate::map::houses::are_houses_friendly(
             &sim.house_alliances,
             sim.interner.resolve(target_owner),

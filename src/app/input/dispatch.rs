@@ -1911,8 +1911,8 @@ pub(crate) fn selected_stable_ids_in_order(state: &AppState) -> Vec<u64> {
     }
     if !state.match_state.input.selection_order_pending {
         for entity in sim.entities().values() {
-            if entity.selected && !ordered.contains(&entity.stable_id) {
-                insert_selected_id(&mut ordered, entity.stable_id, sim, state.rules());
+            if entity.selected && !ordered.contains(&entity.stable_id()) {
+                insert_selected_id(&mut ordered, entity.stable_id(), sim, state.rules());
             }
         }
     }
@@ -1946,7 +1946,7 @@ pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
             .entities()
             .values()
             .filter(|entity| entity.selected)
-            .map(|entity| entity.stable_id)
+            .map(|entity| entity.stable_id())
             .collect();
         let same_membership = committed.len() == state.match_state.input.selection_order.len()
             && committed
@@ -1973,8 +1973,8 @@ pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
         .collect();
     let lifecycle_removed = reconciled.len() < prior_len;
     for entity in sim.entities().values() {
-        if entity.selected && !reconciled.contains(&entity.stable_id) {
-            insert_selected_id(&mut reconciled, entity.stable_id, sim, state.rules());
+        if entity.selected && !reconciled.contains(&entity.stable_id()) {
+            insert_selected_id(&mut reconciled, entity.stable_id(), sim, state.rules());
         }
     }
     if lifecycle_removed {
@@ -2015,7 +2015,7 @@ fn apply_selection_mutation(
         let Some(entity) = sim.entities().get(id) else {
             continue;
         };
-        let type_id = sim.interner.resolve(entity.type_ref);
+        let type_id = sim.interner.resolve(entity.type_ref());
         let admitted = entity.lifecycle.object_alive
             && !entity.lifecycle.in_limbo
             && !entity
@@ -2070,7 +2070,7 @@ fn insert_selected_id(
     rules: Option<&crate::rules::ruleset::RuleSet>,
 ) {
     let positive_damage_primary = sim.entities().get(id).is_some_and(|entity| {
-        let type_id = sim.interner.resolve(entity.type_ref);
+        let type_id = sim.interner.resolve(entity.type_ref());
         rules
             .and_then(|rules| rules.object(type_id))
             .and_then(|object| object.primary.as_deref())
@@ -2274,7 +2274,7 @@ fn queue_deploy_undeploy_for_selected(state: &mut AppState) {
             let Some(entity) = sim.entities().get(entity_id) else {
                 continue;
             };
-            let obj = rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
+            let obj = rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref())));
             match entity.category {
                 crate::map::entities::EntityCategory::Structure => {
                     // Garrisoned building → evacuate occupants.
@@ -2602,7 +2602,7 @@ fn selection_voice_event(
     entity_id: u64,
 ) -> Option<GameSoundEvent> {
     let entity = sim.entities().get(entity_id)?;
-    let object = rules.object(sim.interner.resolve(entity.type_ref))?;
+    let object = rules.object(sim.interner.resolve(entity.type_ref()))?;
     Some(GameSoundEvent::UnitSelected {
         speaker_id: entity_id,
         sound_id: object.voice_select.clone()?,
@@ -2629,16 +2629,16 @@ fn jump_camera_to_base(state: &mut AppState) {
             let conyard = sim.entities().values().find(|e| {
                 e.category == EntityCategory::Structure
                     && owner_name.map_or(true, |o| {
-                        sim.interner.resolve(e.owner).eq_ignore_ascii_case(o)
+                        sim.interner.resolve(e.owner()).eq_ignore_ascii_case(o)
                     })
                     && rules
-                        .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
+                        .and_then(|r| r.object(sim.interner.resolve(e.type_ref())))
                         .map_or(false, |o| o.undeploys_into.is_some())
             });
             if let Some(entity) = conyard {
                 log::info!(
                     "H: jumping to ConYard {} at ({}, {})",
-                    sim.interner.resolve(entity.type_ref),
+                    sim.interner.resolve(entity.type_ref()),
                     entity.position.rx,
                     entity.position.ry
                 );
@@ -2648,16 +2648,16 @@ fn jump_camera_to_base(state: &mut AppState) {
             let mcv = sim.entities().values().find(|e| {
                 e.category != EntityCategory::Structure
                     && owner_name.map_or(true, |o| {
-                        sim.interner.resolve(e.owner).eq_ignore_ascii_case(o)
+                        sim.interner.resolve(e.owner()).eq_ignore_ascii_case(o)
                     })
                     && rules
-                        .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
+                        .and_then(|r| r.object(sim.interner.resolve(e.type_ref())))
                         .map_or(false, |o| o.deploys_into.is_some())
             });
             if let Some(entity) = mcv {
                 log::info!(
                     "H: jumping to MCV {} at ({}, {})",
-                    sim.interner.resolve(entity.type_ref),
+                    sim.interner.resolve(entity.type_ref()),
                     entity.position.rx,
                     entity.position.ry
                 );

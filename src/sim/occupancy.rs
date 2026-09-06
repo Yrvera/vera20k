@@ -660,7 +660,7 @@ impl CellOccupationGrid {
                 grid.mark_vehicle_on_layer(
                     entity.position.rx,
                     entity.position.ry,
-                    entity.stable_id,
+                    entity.stable_id(),
                     layer,
                 );
             }
@@ -671,7 +671,7 @@ impl CellOccupationGrid {
                 .flat_map(|drive| [drive.occupation_handoff, drive.occupation_head_to])
                 .flatten()
             {
-                grid.mark_vehicle_on_layer(mark.rx, mark.ry, entity.stable_id, mark.layer);
+                grid.mark_vehicle_on_layer(mark.rx, mark.ry, entity.stable_id(), mark.layer);
             }
         }
         grid
@@ -685,18 +685,18 @@ impl CellOccupationGrid {
     pub(crate) fn reconcile_entity(&mut self, entity: &GameEntity) {
         let old_footprints = self
             .footprints_by_owner
-            .get_mut(&entity.stable_id)
+            .get_mut(&entity.stable_id())
             .map(std::mem::take)
             .unwrap_or_default();
         for footprint in old_footprints.iter() {
-            self.clear_vehicle_plane(footprint, entity.stable_id);
+            self.clear_vehicle_plane(footprint, entity.stable_id());
         }
 
         if entity.category != EntityCategory::Unit
             || !entity.lifecycle.cell_marked
             || entity.passenger_role.is_inside_transport()
         {
-            self.footprints_by_owner.remove(&entity.stable_id);
+            self.footprints_by_owner.remove(&entity.stable_id());
             return;
         }
         let current_cleared = entity
@@ -707,7 +707,7 @@ impl CellOccupationGrid {
             self.mark_vehicle_on_layer(
                 entity.position.rx,
                 entity.position.ry,
-                entity.stable_id,
+                entity.stable_id(),
                 layer,
             );
         }
@@ -718,14 +718,14 @@ impl CellOccupationGrid {
             .flat_map(|drive| [drive.occupation_handoff, drive.occupation_head_to])
             .flatten()
         {
-            self.mark_vehicle_on_layer(mark.rx, mark.ry, entity.stable_id, mark.layer);
+            self.mark_vehicle_on_layer(mark.rx, mark.ry, entity.stable_id(), mark.layer);
         }
         if self
             .footprints_by_owner
-            .get(&entity.stable_id)
+            .get(&entity.stable_id())
             .is_some_and(OwnerOccupationFootprints::is_empty)
         {
-            self.footprints_by_owner.remove(&entity.stable_id);
+            self.footprints_by_owner.remove(&entity.stable_id());
         }
     }
 
@@ -1217,7 +1217,7 @@ impl OccupancyGrid {
     pub fn rebuild(entities: &crate::sim::entity_store::EntityStore) -> Self {
         let mut grid = Self::new();
         let mut ordered: Vec<&GameEntity> = entities.values().collect();
-        ordered.sort_by_key(|entity| (entity.occupancy_enter_order, entity.stable_id));
+        ordered.sort_by_key(|entity| (entity.occupancy_enter_order, entity.stable_id()));
         for entity in ordered {
             // Global storage, native-alive, limbo, and cell-list membership are
             // independent facts. Only an object whose Mark transaction succeeded
@@ -1232,7 +1232,7 @@ impl OccupancyGrid {
             let Some(layer) = cell_list_layer_for_entity(entity) else {
                 continue;
             };
-            let sid = entity.stable_id;
+            let sid = entity.stable_id();
             let sub = if entity.category == EntityCategory::Infantry {
                 entity.sub_cell
             } else {

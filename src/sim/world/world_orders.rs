@@ -177,7 +177,7 @@ impl Simulation {
                     // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: a resumed order
                     // re-queries the getter like any other, so the FASTER stage
                     // runs here too.
-                    let obj = rules.and_then(|r| self.object_type(e.type_ref, r));
+                    let obj = rules.and_then(|r| self.object_type(e.type_ref(), r));
                     let bs: SimFixed =
                         crate::sim::combat::veterancy::entity_mover_speed_leptons_per_second(
                             e,
@@ -264,9 +264,9 @@ impl Simulation {
             .entities
             .values()
             .filter(|e| {
-                e.capture_target.is_some() && !e.dying && !turn_suppressed.contains(&e.stable_id)
+                e.capture_target.is_some() && !e.dying && !turn_suppressed.contains(&e.stable_id())
             })
-            .map(|e| (e.stable_id, e.capture_target.unwrap(), e.owner))
+            .map(|e| (e.stable_id(), e.capture_target.unwrap(), e.owner()))
             .collect();
 
         for (engineer_id, building_id, engineer_owner) in captures {
@@ -276,7 +276,7 @@ impl Simulation {
                 .entities
                 .get(building_id)
                 .and_then(|b| {
-                    self.object_type(b.type_ref, rules)
+                    self.object_type(b.type_ref(), rules)
                         .map(|t| t.bridge_repair_hut)
                 })
                 .unwrap_or(false);
@@ -355,7 +355,7 @@ impl Simulation {
             .substrate
             .entities
             .get(building_id)
-            .map(|e| (e.owner, e.type_ref, e.position.rx, e.position.ry))
+            .map(|e| (e.owner(), e.type_ref(), e.position.rx, e.position.ry))
         else {
             return;
         };
@@ -436,7 +436,7 @@ impl Simulation {
                     if e.dying {
                         return None;
                     }
-                    Some((e.capture_target?, e.owner))
+                    Some((e.capture_target?, e.owner()))
                 })
             else {
                 key_idx += 1;
@@ -449,7 +449,7 @@ impl Simulation {
                 .entities
                 .get(building_id)
                 .and_then(|b| {
-                    self.object_type(b.type_ref, rules)
+                    self.object_type(b.type_ref(), rules)
                         .map(|t| t.bridge_repair_hut)
                 })
                 .unwrap_or(false);
@@ -718,7 +718,7 @@ impl Simulation {
         for sid in self.substrate.entities.keys_sorted() {
             if let Some(e) = self.substrate.entities.get(sid) {
                 let bridge_hut = rules
-                    .object(self.interner.resolve(e.type_ref))
+                    .object(self.interner.resolve(e.type_ref()))
                     .is_some_and(|object| object.bridge_repair_hut);
                 if e.pending_c4_detonation.is_some() && !e.dying && bridge_hut {
                     det_keys.push(sid);
@@ -822,7 +822,7 @@ impl Simulation {
             .get(building_id)
             .and_then(|building| {
                 let pending = building.pending_c4_detonation?;
-                let object = rules.object(self.interner.resolve(building.type_ref))?;
+                let object = rules.object(self.interner.resolve(building.type_ref()))?;
                 Some((
                     pending,
                     i32::from(building.health.current),
@@ -866,7 +866,7 @@ impl Simulation {
         rules: &RuleSet,
     ) -> Option<Vec<(u16, u16)>> {
         let target = self.substrate.entities.get(target_id)?;
-        let obj = self.object_type(target.type_ref, rules)?;
+        let obj = self.object_type(target.type_ref(), rules)?;
         // Infantry building-entry resolves through normal building cell lookup.
         // AddOccupy/RemoveOccupy only affect hidden occupancy counters.
         Some(c4_base_foundation_cells(
@@ -986,7 +986,7 @@ impl Simulation {
             // Queue a Move command for the next tick. Simpler than
             // reimplementing the pathfind call; 1-tick delay is below the
             // human-observable threshold.
-            if let Some(owner) = self.substrate.entities.get(sid).map(|e| e.owner) {
+            if let Some(owner) = self.substrate.entities.get(sid).map(|e| e.owner()) {
                 self.queue_command(crate::sim::command::CommandEnvelope::new(
                     owner,
                     self.session.tick + 1,
@@ -1027,7 +1027,7 @@ impl Simulation {
             .get(building_id)
             .and_then(|b| {
                 rules
-                    .object(self.interner.resolve(b.type_ref))
+                    .object(self.interner.resolve(b.type_ref()))
                     .map(|t| t.bridge_repair_hut)
             })
             .unwrap_or(false);
@@ -1280,7 +1280,7 @@ impl Simulation {
                         .substrate
                         .entities
                         .get(entity_id)
-                        .map(|e| self.interner.resolve(e.owner).to_string())
+                        .map(|e| self.interner.resolve(e.owner()).to_string())
                         .unwrap_or_default();
                     let (entity_blocks, entity_block_map) = bump_crush::build_entity_block_set(
                         &self.substrate.entities,

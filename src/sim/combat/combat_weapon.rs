@@ -1052,9 +1052,9 @@ pub(crate) fn select_weapon_against<'a>(
     let target_facts = match *target {
         TargetKind::Entity(target_id) => {
             let target_entity = entities.get(target_id)?;
-            let target_obj = rules.object(interner.resolve(target_entity.type_ref))?;
+            let target_obj = rules.object(interner.resolve(target_entity.type_ref()))?;
             let is_ally =
-                is_ally_by_object(alliances, interner, attacker_owner, target_entity.owner);
+                is_ally_by_object(alliances, interner, attacker_owner, target_entity.owner());
             techno_target_facts(target_entity, target_obj, terrain, is_ally)
         }
         TargetKind::Cell(rx, ry) => cell_target_facts(rx, ry, terrain),

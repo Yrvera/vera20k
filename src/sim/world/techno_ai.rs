@@ -267,7 +267,7 @@ impl Simulation {
                     .entities
                     .get(projectile.source_id)
                     .is_some_and(|source| {
-                        self.object_type(source.type_ref, rules)
+                        self.object_type(source.type_ref(), rules)
                             .is_some_and(|kind| kind.jumpjet)
                     })
             });
@@ -372,7 +372,7 @@ impl Simulation {
             let Some(rules) = rules else {
                 return true;
             };
-            let type_ref = entity.type_ref;
+            let type_ref = entity.type_ref();
             let type_name = self.interner.resolve(type_ref);
             let sequence_set = rules.animation_sequence(type_name);
             let finished = crate::sim::animation::tick_dying_animation(
@@ -604,7 +604,7 @@ fn veterancy_promotion_step(sim: &mut Simulation, id: u64, rules: &RuleSet) {
     else {
         return;
     };
-    let owner = entity.owner;
+    let owner = entity.owner();
     let (rx, ry) = (entity.position.rx, entity.position.ry);
     let (sound, elite) = match promotion {
         crate::sim::combat::veterancy::Promotion::Elite => {
@@ -655,7 +655,7 @@ fn refresh_mover_speed_after_promotion(sim: &mut Simulation, id: u64, rules: &Ru
     if entity.movement_target.is_none() {
         return;
     }
-    let obj = sim.object_type(entity.type_ref, rules);
+    let obj = sim.object_type(entity.type_ref(), rules);
     let loco_multiplier = entity
         .locomotor
         .as_ref()
@@ -697,7 +697,7 @@ fn self_heal_step(sim: &mut Simulation, id: u64, rules: &RuleSet) {
     };
     let Some(object) = sim
         .interner
-        .try_resolve(entity.type_ref)
+        .try_resolve(entity.type_ref())
         .and_then(|type_id| rules.object(type_id))
     else {
         return;
@@ -742,7 +742,7 @@ fn drop_unsensed_cloaked_target_step(sim: &mut Simulation, id: u64) {
     else {
         return;
     };
-    let owner = entity.owner;
+    let owner = entity.owner();
     let owner_str = sim.interner.resolve(owner).to_owned();
     let Some(target) = sim.substrate.entities.get(target_id) else {
         return;
@@ -757,7 +757,7 @@ fn drop_unsensed_cloaked_target_step(sim: &mut Simulation, id: u64) {
     let target_cell = (target.position.rx, target.position.ry);
     if sim
         .fog
-        .is_friendly(&owner_str, sim.interner.resolve(target.owner))
+        .is_friendly(&owner_str, sim.interner.resolve(target.owner()))
     {
         return;
     }
@@ -821,7 +821,7 @@ fn techno_common_pre(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
     let Some(entity) = sim.substrate.entities.get(id) else {
         return;
     };
-    let Some(object_type) = rules.object(sim.interner.resolve(entity.type_ref)) else {
+    let Some(object_type) = rules.object(sim.interner.resolve(entity.type_ref())) else {
         return;
     };
     if !object_type.disguise_when_still || entity.locomotor.is_none() {
@@ -856,7 +856,7 @@ fn techno_common_pre(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
     let disguise_type = sim
         .interner
         .intern(&rules.general.default_mirage_disguises[index]);
-    let owner = sim.substrate.entities.get(id).map(|e| e.owner);
+    let owner = sim.substrate.entities.get(id).map(|e| e.owner());
     if let Some(entity) = sim.substrate.entities.get_mut(id) {
         let state = entity.disguise.get_or_insert_with(Default::default);
         state.acquire(sim.session.binary_frame, Some(disguise_type), owner);
@@ -915,7 +915,7 @@ fn techno_common_post(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
     };
     let cur = entity.health.current as i64;
     let max = entity.health.max as i64;
-    let type_ref = entity.type_ref;
+    let type_ref = entity.type_ref();
     let live_until_in = entity.damage_particle_live_until;
     let Some(obj) = rules.object(sim.interner.resolve(type_ref)) else {
         return;
@@ -1175,7 +1175,7 @@ fn can_acquire_target(sim: &Simulation, id: u64, rules: &RuleSet) -> bool {
     let Some(entity) = sim.substrate.entities.get(id) else {
         return false;
     };
-    let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
+    let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref())) else {
         return false;
     };
     if !obj.can_passive_acquire {
@@ -1274,7 +1274,7 @@ fn passive_target_scan(
         .substrate
         .entities
         .get(id)
-        .and_then(|e| rules.object(sim.interner.resolve(e.type_ref)))
+        .and_then(|e| rules.object(sim.interner.resolve(e.type_ref())))
         .is_some_and(|obj| obj.distributed_fire);
     if spreads_fire {
         if holds_passive_target {
@@ -1447,7 +1447,7 @@ fn passive_acquire_step(
         return;
     }
     let opportunity_fire = rules
-        .object(sim.interner.resolve(entity.type_ref))
+        .object(sim.interner.resolve(entity.type_ref()))
         .is_some_and(|obj| obj.opportunity_fire);
     if !passive_acquire_gate(
         mission,

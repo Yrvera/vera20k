@@ -164,7 +164,7 @@ impl Simulation {
                 if entity.category != EntityCategory::Unit || entity.is_voxel {
                     return None;
                 }
-                let object = rules?.object(sim.interner.resolve(entity.type_ref))?;
+                let object = rules?.object(sim.interner.resolve(entity.type_ref()))?;
                 Some(crate::sim::animation::ShpVehicleCadence {
                     walk_rate: object.walk_rate,
                     idle_rate: object.idle_rate,

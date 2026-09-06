@@ -333,8 +333,8 @@ pub fn collect_needed_base_keys(
         if entity.is_voxel {
             continue;
         }
-        let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
-        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+        let owner_str = interner.map_or("", |i| i.resolve(entity.owner()));
+        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref()));
         let color_idx: HouseColorIndex = house_colors
             .get(owner_str)
             .copied()
@@ -512,8 +512,8 @@ pub fn build_sprite_atlas(
         if entity.is_voxel {
             continue;
         }
-        let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
-        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+        let owner_str = interner.map_or("", |i| i.resolve(entity.owner()));
+        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref()));
         let color_idx: HouseColorIndex = house_colors
             .get(owner_str)
             .copied()
@@ -1170,13 +1170,13 @@ fn compute_building_bounds(
     let mut building_types: HashSet<String> = entities
         .values()
         .filter(|e| e.category == EntityCategory::Structure && !e.is_voxel)
-        .map(|e| interner.map_or("".to_string(), |i| i.resolve(e.type_ref).to_string()))
+        .map(|e| interner.map_or("".to_string(), |i| i.resolve(e.type_ref()).to_string()))
         .collect();
     if let Some(r) = rules {
         let deploy_targets: Vec<String> = entities
             .values()
             .filter_map(|e| {
-                let t = interner.map_or("", |i| i.resolve(e.type_ref));
+                let t = interner.map_or("", |i| i.resolve(e.type_ref()));
                 r.object(t).and_then(|o| o.deploys_into.clone())
             })
             .collect();

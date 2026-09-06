@@ -240,7 +240,7 @@ pub(crate) fn live_cell_rejects_tiberium(
         if entity.category != EntityCategory::Structure || !entity.is_alive() {
             continue;
         }
-        let type_name = context.interner.resolve(entity.type_ref);
+        let type_name = context.interner.resolve(entity.type_ref());
         let invisible_exception = context
             .rules
             .object(type_name)

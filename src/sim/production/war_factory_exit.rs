@@ -47,7 +47,7 @@ pub fn tick_war_factory_exit_contacts(
                 if producer.dying || producer.category != EntityCategory::Structure {
                     return None;
                 }
-                if !exact_land_vehicle_exit_factory(rules, interner.resolve(producer.type_ref)) {
+                if !exact_land_vehicle_exit_factory(rules, interner.resolve(producer.type_ref())) {
                     return None;
                 }
                 let on_footprint = occupancy
@@ -61,7 +61,7 @@ pub fn tick_war_factory_exit_contacts(
                 if on_footprint {
                     return None;
                 }
-                Some((mover.stable_id, producer_id))
+                Some((mover.stable_id(), producer_id))
             })
             .collect()
     };

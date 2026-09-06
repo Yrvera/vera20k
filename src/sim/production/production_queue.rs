@@ -288,10 +288,10 @@ pub fn build_options_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -
         );
         // Log owned structures and their factory status.
         for e in sim.substrate.entities.values() {
-            if sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+            if sim.interner.resolve(e.owner()).eq_ignore_ascii_case(owner)
                 && e.category == crate::map::entities::EntityCategory::Structure
             {
-                let ts = sim.interner.resolve(e.type_ref);
+                let ts = sim.interner.resolve(e.type_ref());
                 log::warn!(
                     "[BUILD-DIAG]   structure '{}' building_up={} factory_type={:?}",
                     ts,
@@ -619,7 +619,7 @@ fn tick_production_impl(
                     .entities
                     .get(af_id)
                     .and_then(|af| {
-                        let af_type = sim.interner.resolve(af.type_ref);
+                        let af_type = sim.interner.resolve(af.type_ref());
                         let af_obj = rules.object(af_type)?;
                         Some(af_obj.number_of_docks.max(1))
                     })

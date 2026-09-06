@@ -178,7 +178,7 @@ pub(crate) fn build_voxel_frame_catalog(
         if !entity.is_voxel {
             continue;
         }
-        let type_str = interner.resolve(entity.type_ref);
+        let type_str = interner.resolve(entity.type_ref());
         for variant in unit_atlas_variants(type_str, rules) {
             for &layer in seed_layers_for(
                 asset_manager,

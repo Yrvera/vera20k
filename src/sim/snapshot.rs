@@ -836,7 +836,7 @@ impl RestoredObjectIndex {
                 &mut identities,
                 "EntityStore",
                 registry_id,
-                entity.stable_id,
+                entity.stable_id(),
             )?;
             highest_id = highest_id.max(registry_id);
         }
@@ -1637,9 +1637,9 @@ impl Simulation {
         validate_passenger_size_tables(self)?;
         restore_object_references(self, &identities)?;
 
-        // Rust's native-shaped re-registration order:
-        // 1. class registry indexes, 2. Logic slots (including ParticleSystem),
-        // 3. CellClass-style lists.
+        // EntityStore already restored its indexes during Deserialize (Clone
+        // retains them too). Reference restoration above changes no indexed identity.
+        // Continue with Logic slots (including ParticleSystem), then CellClass lists.
         // Bullet Load 46AE9C..46AEB0 starts both embedded timers at the
         // already-restored global frame with duration zero. Only C4/CC gates
         // AI through Check (4E11F0); retain the saved reference/watermark.
@@ -1648,7 +1648,6 @@ impl Simulation {
                 .arm_timer
                 .start(self.session.binary_frame as i32, 0);
         }
-        self.substrate.entities.rebuild_owner_index();
         self.rebuild_logic_membership();
         self.substrate.occupancy =
             crate::sim::occupancy::OccupancyGrid::rebuild(&self.substrate.entities);
@@ -1676,7 +1675,7 @@ impl Simulation {
                 continue;
             }
 
-            let type_ref = entity.type_ref;
+            let type_ref = entity.type_ref();
             let world = Self::movement_sound_world(entity);
             let Some(configured_sound) = self
                 .object_type(type_ref, rules)

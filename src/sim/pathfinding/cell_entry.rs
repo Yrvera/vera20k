@@ -1063,7 +1063,7 @@ fn classify_blocker(
         return CellEntryResult::Impassable;
     };
     let is_friendly =
-        houses::are_houses_friendly(alliances, mover_owner, interner.resolve(blocker.owner));
+        houses::are_houses_friendly(alliances, mover_owner, interner.resolve(blocker.owner()));
     if !is_friendly {
         return CellEntryResult::OccupiedEnemy { blocker_id };
     }
