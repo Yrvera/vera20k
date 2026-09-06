@@ -6,8 +6,8 @@
 //! under-attack cadence) are sim-owned (`sim::house_eva`, the combat death
 //! and damage sites); this owner only carries their events to the player.
 //! Process/device-wide audio (players, registries, volumes) stays outside
-//! this owner; grouping those into `AppAudioRuntime` lands with the F12
-//! AppState owner reorganization.
+//! this owner, in `AppAudioRuntime`. `match_runtime::sound_dispatch` interprets
+//! ordered simulation events into this queue for the local listener.
 
 use crate::audio::events::SoundEventQueue;
 

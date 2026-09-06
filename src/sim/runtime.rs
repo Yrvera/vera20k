@@ -1,14 +1,13 @@
-//! SimRuntime — the construction/resource/API boundary around `Simulation`.
+//! Construction and frame API around Simulation and its bound match resources.
 //!
-//! F07: app, headless, and replay execution consume the simulation through
-//! this owner. `SimResources` will absorb the immutable per-match inputs
-//! (rules/art, overlay registry, height/map facts, trigger definitions, base
-//! terrain template) one cone per commit; until a cone moves, the app still
-//! passes that input per frame. `SimView` is the immutable read facade
-//! presentation borrows — no world clone, no mutation.
+//! App, headless and replay execution use SimRuntime. SimResources binds the
+//! rules/art registry, map heights, overlay registry, trigger definitions and
+//! base terrain template; advance_frame reads these without caller-substituted
+//! per-frame resources. Simulation owns live mutable terrain and gameplay state.
+//! SimView provides immutable access for presentation and diagnostics.
 //!
-//! ## Dependency rules
-//! - Part of sim/; NEVER depends on render/, ui/, sidebar/, audio/, net/.
+//! Dependency rules: part of sim/; never depends on render/, ui/, sidebar/,
+//! audio/ or net/.
 
 use crate::map::resolved_terrain::TerrainTileAnimation;
 use crate::rules::ruleset::RuleSet;
@@ -16,7 +15,7 @@ use crate::sim::anim_class::{AnimDrawRuntime, AnimWorldCoord};
 use crate::sim::components::AnimClassSpawnDescriptor;
 use crate::sim::world::Simulation;
 
-/// Immutable per-match resources bound at construction (F07 cones land here).
+/// Per-match resource inputs bound at construction and read during frame advancement.
 
 pub struct SimResources {
     /// Fixed per-cell terrain heights parsed from the loaded map.
@@ -71,8 +70,7 @@ pub struct SimRuntime {
 }
 
 impl SimRuntime {
-    /// Wrap an already-constructed simulation. Scenario construction moves
-    /// here in F09; this keeps the F07 slot move atomic and behavior-free.
+    /// Test adapter for an existing simulation with empty resource inputs.
     #[cfg(test)]
     pub(crate) fn from_simulation(simulation: Simulation) -> Self {
         Self {
@@ -89,15 +87,13 @@ impl SimRuntime {
     }
 }
 
-/// Immutable borrow facade over the committed simulation state. Getters grow
-/// per consumer cone (F10); presentation code reads through these instead of
-/// reaching into `Simulation` fields directly.
+/// Immutable borrow facade over simulation state for presentation and diagnostics.
 pub struct SimView<'a> {
     simulation: &'a Simulation,
 }
 
 impl<'a> SimView<'a> {
-    /// Escape hatch for not-yet-migrated consumers; cones retire it (F10).
+    /// Full immutable state access for consumers without a narrower view method.
     pub fn simulation(&self) -> &'a Simulation {
         self.simulation
     }

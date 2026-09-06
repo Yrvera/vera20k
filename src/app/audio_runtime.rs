@@ -1,9 +1,10 @@
 //! Process-wide audio runtime (F12 `AppAudioRuntime`): output players and
 //! sound/EVA registries that live for the whole process.
 //!
-//! Per-match audio state (event queue, EVA latches) lives in
-//! `app::match_audio::MatchAudioState`; this owner survives matches. The
-//! registries are reloaded on each map load today (redundant but harmless —
+//! The per-match event queue lives in
+//! `app::match_audio::MatchAudioState`; gameplay EVA latches live in sim.
+//! This process audio owner survives matches. The registries are reloaded on
+//! each map load today (redundant but harmless —
 //! they consume no map-specific input); that behavior is unchanged here.
 
 use crate::assets::asset_manager::AssetManager;

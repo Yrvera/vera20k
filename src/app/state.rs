@@ -1,8 +1,9 @@
-//! Process-wide application state owned by the app orchestrator.
+//! Application orchestration through eight explicit state owners.
 //!
-//! The top-level `AppState` path remains stable while focused ownership groups
-//! are introduced incrementally. Platform lifecycle and pacing are the first
-//! extracted group; unrelated presentation, input, and match state stay flat.
+//! Platform, renderer, diagnostics, frontend, match, process assets, audio and
+//! persistence each own their state and lifecycle. AppState coordinates these
+//! owners; match-scoped input and presentation live inside MatchState.
+//! The architecture guards keep unrelated flat fields from returning.
 
 use super::{BTreeMap, OverlayTypeRegistry, ResolvedTerrainGrid};
 

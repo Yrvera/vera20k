@@ -1,15 +1,16 @@
-//! The object substrate: the single owner of the active-object vector and the
-//! monotonic identity / enter-order counters that the lifecycle contract mutates.
+//! Shared object storage, registration order and spatial occupation authority.
 //!
-//! This is stage 1 of the substrate consolidation — it holds the
-//! bookkeeping/ordering state only. The lifecycle methods
-//! (`reveal`/`conceal`/`unlimbo`/`uninit`) stay on `Simulation` for now because
-//! they also need `EntityStore`/`OccupancyGrid`; they reach this state by path
-//! (`self.substrate.*`). Entity storage and the occupancy grid migrate into the
-//! substrate in later stages.
+//! ObjectSubstrate owns the entity, animation, voxel-animation and particle-system
+//! stores, the LogicVector, identity/enter-order counters and occupation planes.
+//! Terrain, projectile and wave stores remain in their mechanism owners and
+//! participate in the same lifecycle dispatch and global object-ID namespace.
 //!
-//! Dependency rules: part of sim/ — depends only on std + serde + the sibling
-//! `LogicVector`.
+//! Lifecycle operations live on Simulation because Reveal/Conceal/UnInit also
+//! coordinate houses, terrain and other mechanism state. Storage order, active
+//! Logic order and per-cell object order are distinct contracts. Field comments
+//! identify serialized authority versus caches rebuilt after snapshot loading.
+//!
+//! Dependency rules: part of sim/; no presentation, audio or network dependency.
 
 use serde::{Deserialize, Serialize};
 use std::hash::Hash;

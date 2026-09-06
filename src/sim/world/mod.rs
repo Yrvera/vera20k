@@ -4,11 +4,14 @@
 //! map data, executes command envelopes on fixed ticks, advances gameplay
 //! systems, and exposes deterministic state hashing for replay/desync checks.
 //!
-//! Implementation is split across sibling files for size:
+//! Responsibility boundaries:
 //! - `world_commands.rs` — command dispatch and selection/ownership helpers
-//! - `world_hash.rs` — deterministic state hashing
+//! - `world_hash.rs` / `hash_schema.rs` — deterministic folds and historical projections
 //! - `world_spawn.rs` — entity spawning from map data and production
 //! - `world_orders.rs` — order-intent tick systems (attack-move, guard, area-guard)
+//! - `lifecycle.rs` / `substrate.rs` — object transitions, stores and registration order
+//! - `receiver_transaction.rs` — shared damage-receiver authority transfer
+//! - `techno_ai.rs` — per-object AI visits within the live Logic walk
 
 pub(crate) mod authored_load_host;
 pub(crate) mod bridge_orchestrator;
