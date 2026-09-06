@@ -2072,24 +2072,14 @@ pub(crate) trait CombatInlineHooks {
     #[cfg(test)]
     fn trace_wave_receiver(&mut self, _wave_id: u64, _target_id: u64, _scenario_rng_state: u64) {}
 
-    #[allow(clippy::too_many_arguments)]
     fn commit_wave_fire_event(
         &mut self,
         _rules: &RuleSet,
-        _overlay_registry: Option<&OverlayTypeRegistry>,
         _event: &crate::sim::world::SimFireEvent,
-        _entities: &mut EntityStore,
-        _occupancy: &mut OccupancyGrid,
-        _interner: &mut StringInterner,
-        _main_rng: &mut SimRng,
-        _scenario_rng: &mut SimRng,
-        _resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
-        _houses: &mut BTreeMap<InternedId, HouseState>,
-        _overlay_grid: Option<&mut OverlayGrid>,
-        _terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
-        _bridge_state: Option<&BridgeRuntimeState>,
-        _terrain_area_state: Option<&mut TerrainAreaState>,
-        _sound_events: Option<&mut Vec<SimSoundEvent>>,
+        _entities: &EntityStore,
+        _interner: &StringInterner,
+        _terrain: Option<&ResolvedTerrainGrid>,
+        _scenario_rng_state: u64,
     ) {
     }
 
@@ -6553,20 +6543,11 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             if let Some(hooks) = inline_hooks.as_deref_mut() {
                 hooks.commit_wave_fire_event(
                     rules,
-                    overlay_registry,
                     event,
                     entities,
-                    occupancy,
                     interner,
-                    main_rng,
-                    scenario_rng,
-                    resource_nodes,
-                    houses,
-                    overlay_grid.as_deref_mut(),
-                    terrain.as_deref_mut(),
-                    bridge_state,
-                    terrain_area_state.as_deref_mut(),
-                    sound_sink.as_deref_mut(),
+                    terrain.as_deref(),
+                    scenario_rng.state(),
                 );
             }
         }

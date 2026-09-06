@@ -11,7 +11,8 @@
 //! - `world_orders.rs` — order-intent tick systems (attack-move, guard, area-guard)
 //! - `lifecycle.rs` / `substrate.rs` — object transitions, stores and registration order
 //! - `receiver_transaction.rs` — shared damage-receiver authority transfer
-//! - `techno_ai.rs` — per-object AI visits within the live Logic walk
+//! - `object_turn.rs` — complete live-object turn and pass outcomes
+//! - `techno_ai.rs` — per-object AI dispatch within each turn
 
 pub(crate) mod authored_load_host;
 pub(crate) mod bridge_orchestrator;
@@ -21,6 +22,9 @@ mod hash_schema;
 mod lifecycle;
 mod load_object_lifecycle;
 mod logic_vector;
+mod object_turn;
+#[cfg(test)]
+use object_turn::shp_vehicle_counter_admitted;
 mod projectile_collision;
 mod receiver_transaction;
 mod substrate;
@@ -95,9 +99,7 @@ use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::movement;
 use crate::sim::movement::drop_pod_movement;
 use crate::sim::movement::group_destination;
-use crate::sim::movement::homing_movement;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::movement::parachute_descent;
 use crate::sim::movement::rocket_movement;
 use crate::sim::movement::teleport_movement;
 use crate::sim::movement::tunnel_movement::{self, TunnelProcessContext};
@@ -134,16 +136,6 @@ use crate::util::fixed_math::SimFixed;
 /// Dev/test fallback seed. Real launches negotiate a per-match seed through
 /// `ScenarioDescriptor`; nothing on the launch path may rely on this value.
 const DEFAULT_SIM_SEED: u64 = 0x5EED_CAFE_D15E_A5E5;
-
-/// Whether this Unit visit reaches FootClass's SHP body-counter cadence.
-///
-/// An entry-active TubeMovement owns the UnitClass AI call and returns before
-/// FootClass AI. Tube state armed later during an ordinary Foot visit does not
-/// retroactively suppress work already reached by that visit, so only the
-/// entry snapshot belongs in this admission predicate.
-fn shp_vehicle_counter_admitted(tube_active_at_entry: bool) -> bool {
-    !tube_active_at_entry
-}
 
 #[derive(Default)]
 struct ActiveVisionStructures {
@@ -1523,117 +1515,25 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_, '
             });
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn commit_wave_fire_event(
         &mut self,
         rules: &RuleSet,
-        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         event: &SimFireEvent,
-        borrowed_entities: &mut EntityStore,
-        borrowed_occupancy: &mut OccupancyGrid,
-        borrowed_interner: &mut StringInterner,
-        borrowed_main_rng: &mut SimRng,
-        borrowed_scenario_rng: &mut SimRng,
-        borrowed_resource_nodes: &mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
-        borrowed_houses: &mut BTreeMap<InternedId, HouseState>,
-        borrowed_overlay_grid: Option<&mut crate::sim::overlay_grid::OverlayGrid>,
-        borrowed_terrain: Option<&mut ResolvedTerrainGrid>,
-        borrowed_bridge_state: Option<&BridgeRuntimeState>,
-        borrowed_terrain_area_state: Option<
-            &mut crate::sim::terrain_object::TerrainAreaState,
-        >,
-        borrowed_sound_events: Option<&mut Vec<SimSoundEvent>>,
+        entities: &EntityStore,
+        interner: &StringInterner,
+        terrain: Option<&ResolvedTerrainGrid>,
+        scenario_rng_state: u64,
     ) {
         #[cfg(test)]
-        self.sim
-            .trace_lifecycle_for_test(LifecycleTestEvent::CombatFireEffectsCommitted {
-                attacker_id: event.attacker_id,
-                scenario_rng_state: borrowed_scenario_rng.state(),
-            });
-
-        std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
-        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
-        std::mem::swap(&mut self.sim.interner, borrowed_interner);
-        std::mem::swap(&mut self.sim.main_rng, borrowed_main_rng);
-        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
-        std::mem::swap(
-            &mut self.sim.production.resource_nodes,
-            borrowed_resource_nodes,
-        );
-        std::mem::swap(&mut self.sim.houses, borrowed_houses);
-
-        let mut borrowed_terrain_area_state = borrowed_terrain_area_state;
-        if let Some(area_state) = borrowed_terrain_area_state.as_deref_mut() {
-            area_state.swap_authority(
-                &mut self.sim.production,
-                &mut self.sim.substrate.raw_cell_occupation,
-            );
+        self.sim.trace_lifecycle_for_test(LifecycleTestEvent::CombatFireEffectsCommitted {
+            attacker_id: event.attacker_id,
+            scenario_rng_state,
+        });
+        #[cfg(not(test))]
+        let _ = scenario_rng_state;
+        if let Some(wave) = self.sim.prepare_fired_wave(rules, event, entities, interner, terrain) {
+            self.sim.admit_fired_wave(event.attacker_id, wave, terrain);
         }
-
-        let had_overlay = borrowed_overlay_grid.is_some();
-        let mut borrowed_overlay_grid = borrowed_overlay_grid;
-        if let Some(grid) = borrowed_overlay_grid.as_deref_mut() {
-            debug_assert!(self.sim.overlay_grid.is_none());
-            self.sim.overlay_grid = Some(grid.clone());
-            std::mem::swap(self.sim.overlay_grid.as_mut().expect("installed"), grid);
-        }
-        let had_terrain = borrowed_terrain.is_some();
-        let mut borrowed_terrain = borrowed_terrain;
-        if let Some(terrain) = borrowed_terrain.as_deref_mut() {
-            debug_assert!(self.sim.resolved_terrain.is_none());
-            self.sim.resolved_terrain = Some(terrain.clone());
-            std::mem::swap(
-                self.sim.resolved_terrain.as_mut().expect("installed"),
-                terrain,
-            );
-        }
-        debug_assert!(self.sim.bridge_state.is_none());
-        self.sim.bridge_state = borrowed_bridge_state.cloned();
-
-        let mut borrowed_sound_events = borrowed_sound_events;
-        if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
-            std::mem::swap(&mut self.sim.sound_events, sound_events);
-        }
-
-        self.sim
-            .create_wave_from_fire_event(rules, overlay_registry, event);
-
-        if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
-            std::mem::swap(&mut self.sim.sound_events, sound_events);
-        }
-        self.sim.bridge_state = None;
-        if let Some(terrain) = borrowed_terrain.as_deref_mut() {
-            std::mem::swap(
-                self.sim.resolved_terrain.as_mut().expect("installed"),
-                terrain,
-            );
-        }
-        if had_terrain {
-            self.sim.resolved_terrain = None;
-        }
-        if let Some(grid) = borrowed_overlay_grid.as_deref_mut() {
-            std::mem::swap(self.sim.overlay_grid.as_mut().expect("installed"), grid);
-        }
-        if had_overlay {
-            self.sim.overlay_grid = None;
-        }
-        if let Some(area_state) = borrowed_terrain_area_state.as_deref_mut() {
-            area_state.swap_authority(
-                &mut self.sim.production,
-                &mut self.sim.substrate.raw_cell_occupation,
-            );
-        }
-
-        std::mem::swap(&mut self.sim.houses, borrowed_houses);
-        std::mem::swap(
-            &mut self.sim.production.resource_nodes,
-            borrowed_resource_nodes,
-        );
-        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
-        std::mem::swap(&mut self.sim.main_rng, borrowed_main_rng);
-        std::mem::swap(&mut self.sim.interner, borrowed_interner);
-        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
-        std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
     }
 
     fn rebuild_cliff_navigation(
@@ -1901,20 +1801,24 @@ impl Simulation {
     /// therefore use the returned real CellClass's canonical coordinate, while
     /// misses retain and restamp the one process-global dummy identity.
     fn wave_cell_target_position(&self, rx: u16, ry: u16) -> ProjectileCoord {
+        self.wave_cell_target_position_in(self.resolved_terrain.as_ref(), rx, ry)
+    }
+
+    fn wave_cell_target_position_in(&self, terrain: Option<&ResolvedTerrainGrid>, rx: u16, ry: u16) -> ProjectileCoord {
         use crate::sim::cell_rect::{CellRef, get_cellclass_fallback};
 
         match get_cellclass_fallback(
-            self.resolved_terrain.as_ref(),
+            terrain,
             i32::from(rx),
             i32::from(ry),
         ) {
             CellRef::Real(cell) => crate::sim::projectile::cell_target_coord(
-                self.resolved_terrain.as_ref(),
+                terrain,
                 cell.rx,
                 cell.ry,
             ),
             CellRef::Dummy { cell } => {
-                let live_dummy = if self.resolved_terrain.is_some() {
+                let live_dummy = if terrain.is_some() {
                     cell
                 } else {
                     // A mapless lookup still addresses Simulation's retained
@@ -2191,28 +2095,30 @@ impl Simulation {
         );
     }
 
-    /// Complete the Wave-producing tail of `TechnoClass::FireAt` while the
-    /// firing object's combat transaction still owns all mutable authorities.
-    fn create_wave_from_fire_event(
-        &mut self,
+    /// Read the firing transaction directly; construction never installs a second
+    /// entity, map, house or RNG authority into the world.
+    fn prepare_fired_wave(
+        &self,
         rules: &RuleSet,
-        _overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         event: &SimFireEvent,
-    ) {
-        let Some(weapon) = rules.weapon(self.interner.resolve(event.weapon_id)) else {
-            return;
+        entities: &EntityStore,
+        interner: &StringInterner,
+        terrain: Option<&ResolvedTerrainGrid>,
+    ) -> Option<crate::sim::wave::Wave> {
+        let Some(weapon) = rules.weapon(interner.resolve(event.weapon_id)) else {
+            return None;
         };
         let wave_type = if weapon.is_sonic {
             0
         } else if weapon.is_mag_beam {
             3
         } else {
-            return;
+            return None;
         };
         let target = match event.target {
             crate::sim::combat::TargetKind::Entity(id) => {
-                let Some(entity) = self.substrate.entities.get(id) else {
-                    return;
+                let Some(entity) = entities.get(id) else {
+                    return None;
                 };
                 ProjectileCoord::new(
                     i32::from(entity.position.rx) * 256
@@ -2221,17 +2127,15 @@ impl Simulation {
                         + entity.position.sub_y.to_num::<i32>(),
                     crate::sim::combat::object_world_z_leptons(
                         entity,
-                        self.resolved_terrain.as_ref(),
+                        terrain,
                     ),
                 )
             }
             crate::sim::combat::TargetKind::Cell(rx, ry) => {
-                self.wave_cell_target_position(rx, ry)
+                self.wave_cell_target_position_in(terrain, rx, ry)
             }
         };
-        let source = self
-            .substrate
-            .entities
+        let source = entities
             .get(event.attacker_id)
             .map(|entity| {
                 ProjectileCoord::new(
@@ -2241,7 +2145,7 @@ impl Simulation {
                         + entity.position.sub_y.to_num::<i32>(),
                     crate::sim::combat::object_world_z_leptons(
                         entity,
-                        self.resolved_terrain.as_ref(),
+                        terrain,
                     ),
                 )
             })
@@ -2255,32 +2159,43 @@ impl Simulation {
                         * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
                 )
             });
-        let mut wave = crate::sim::wave::Wave::new_owned(
+        let wave = crate::sim::wave::Wave::new_owned(
             wave_type,
             event.attacker_id,
             event.target,
             source,
             target,
         );
+        Some(wave)
+    }
+
+    /// Commit identity, constructor cleanup and immediate Logic admission in their
+    /// original order. The receiver keeps ownership of all combat/map state.
+    fn admit_fired_wave(
+        &mut self,
+        attacker_id: u64,
+        mut wave: crate::sim::wave::Wave,
+        terrain: Option<&ResolvedTerrainGrid>,
+    ) {
         let stable_id = self.allocate_stable_id();
         if !wave.constructor_distance_is_live() {
             // Constructor UnInit precedes registration and unique identity,
             // but FireAt stores the returned dead pointer. The stable id only
             // represents that same-frame deferred cleanup window.
             self.waves.spawn(stable_id, wave);
-            self.active_wave_links.insert(event.attacker_id, stable_id);
+            self.active_wave_links.insert(attacker_id, stable_id);
             let retired = self.retire_non_entity_object(stable_id);
             debug_assert!(retired);
             return;
         }
         let context = crate::sim::wave::WaveUpdateContext {
-            owner_position: Some(source),
-            owner_current_target: Some(event.target),
-            target_position: Some(target),
+            owner_position: Some(wave.source),
+            owner_current_target: wave.target_ref,
+            target_position: Some(wave.target),
         };
-        let _terminal = wave.initialize(context, self.resolved_terrain.as_ref());
+        let _terminal = wave.initialize(context, terrain);
         self.admit_wave(stable_id, wave);
-        self.active_wave_links.insert(event.attacker_id, stable_id);
+        self.active_wave_links.insert(attacker_id, stable_id);
     }
 
     /// Finish the live Logic pass after combat has modeled the pre-existing
@@ -7216,251 +7131,14 @@ impl Simulation {
         if rules.is_some() {
             crate::sim::miner::sweep_dead_dock_reservations(self);
         }
-        let miner_config = rules.map(crate::sim::miner::MinerConfig::from_rules);
-        let terrain_spawner_cells = self
-            .production
-            .terrain_spawners
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let object_ctx = techno_ai::ObjectAiCtx {
-            path_grid,
-            overlay_registry,
-            terrain_spawner_cells: Some(&terrain_spawner_cells),
-            miner_config: miner_config.as_ref(),
-        };
-
-        // --- Phase 1: Ground movement ---
-        // DEPENDS ON: commands (may set movement_target), entity positions from prior tick.
-        // PRODUCES: updated entity positions, crush/bump effects, drive track state.
+        // The live pass commits each object's AI, movement and lifecycle effects
+        // before advancing its cursor; later phases need only these outcomes.
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::LogicVector);
-        let mut movement_stats = movement::MovementTickStats::default();
-        let mut tube_turn_owned_ids = BTreeSet::new();
-        self.for_each_live_object(|sim, stable_id| {
-            // UnitClass::AI / InfantryClass::AI give an active TubeMovement
-            // object the whole live-object turn.  Capture before the leaf:
-            // successful finalization clears the payload but must still skip
-            // every ordinary locomotor tail and the second mission checkpoint.
-            let tube_active_at_entry =
-                sim.substrate.entities.get(stable_id).is_some_and(|entity| {
-                    !entity.dying
-                        && matches!(
-                            entity.category,
-                            EntityCategory::Unit | EntityCategory::Infantry
-                        )
-                        && entity.low_bridge_tube_state.is_some()
-                });
-            let was_structure = sim
-                .substrate
-                .entities
-                .get(stable_id)
-                .is_some_and(|entity| entity.category == EntityCategory::Structure);
-            sim.object_ai_visit_one(stable_id, rules, object_ctx);
-            if was_structure
-                && sim
-                    .substrate
-                    .entities
-                    .get(stable_id)
-                    .is_none_or(|entity| entity.dying)
-            {
-                destroyed_structure = true;
-            }
-            if sim
-                .substrate
-                .entities
-                .get(stable_id)
-                .is_none_or(|entity| entity.dying)
-            {
-                return;
-            }
-
-            let before_movement = sim.movement_sound_probe(stable_id);
-            let cell_before_movement = sim
-                .substrate
-                .entities
-                .get(stable_id)
-                .map(|entity| (entity.position.rx, entity.position.ry));
-            let one = [stable_id];
-            movement_stats.merge(movement::tick_movement_object_with_grids(
-                &mut sim.substrate.entities,
-                stable_id,
-                path_grid,
-                &sim.terrain_costs,
-                &sim.house_alliances,
-                &mut sim.substrate.occupancy,
-                &mut sim.substrate.cell_occupation,
-                &mut sim.substrate.raw_cell_occupation,
-                &mut sim.substrate.next_occupancy_enter_order,
-                &mut sim.scenario_rng,
-                sim.session.tick,
-                sim.session.binary_frame,
-                sim.zone_grid.as_ref(),
-                sim.resolved_terrain.as_ref(),
-                sim.overlay_grid.as_ref(),
-                overlay_registry,
-                sim.playfield_bounds,
-                &sim.terrain_speed_config,
-                sim.close_enough,
-                sim.path_delay_ticks,
-                sim.blockage_path_delay_ticks,
-                &mut sim.interner,
-                rules,
-                &mut sim.sound_events,
-                &mut sim.pending_lifecycle_requests,
-            ));
-
-            // FootClass advances the SHP Unit body counter immediately after
-            // this object's locomotor Process, against the still-current
-            // absolute binary frame. The global frame commits only after the
-            // complete live-object pass.
-            if shp_vehicle_counter_admitted(tube_active_at_entry) {
-                let shp_vehicle_cadence =
-                    sim.substrate.entities.get(stable_id).and_then(|entity| {
-                        if entity.category != EntityCategory::Unit || entity.is_voxel {
-                            return None;
-                        }
-                        let object = rules?.object(sim.interner.resolve(entity.type_ref))?;
-                        Some(crate::sim::animation::ShpVehicleCadence {
-                            walk_rate: object.walk_rate,
-                            idle_rate: object.idle_rate,
-                        })
-                    });
-                if let (Some(cadence), Some(entity)) = (
-                    shp_vehicle_cadence,
-                    sim.substrate.entities.get_mut(stable_id),
-                ) {
-                    crate::sim::animation::tick_shp_vehicle_body_frame_counter(
-                        entity,
-                        cadence,
-                        sim.session.binary_frame,
-                    );
-                }
-            }
-
-            // A direction-8 producer also ends this object's ordinary turn as
-            // soon as it arms TubeMovement.  The leaf itself starts on the
-            // object's next visit; an entry-active leaf may have cleared the
-            // payload above, hence the captured half of this predicate.
-            let tube_owns_whole_turn = tube_active_at_entry
-                || sim.substrate.entities.get(stable_id).is_some_and(|entity| {
-                    matches!(
-                        entity.category,
-                        EntityCategory::Unit | EntityCategory::Infantry
-                    ) && entity.low_bridge_tube_state.is_some()
-                });
-            if tube_owns_whole_turn {
-                tube_turn_owned_ids.insert(stable_id);
-                return;
-            }
-
-            sim.tick_air_movement_with_cell_lists_one(stable_id);
-            let teleport_relocating = sim
-                .substrate
-                .entities
-                .get(stable_id)
-                .and_then(|entity| entity.teleport_state.as_ref())
-                .is_some_and(|state| {
-                    state.phase == crate::sim::movement::teleport_movement::TeleportPhase::Relocate
-                });
-            if let Some(rules) = rules {
-                let warp_out_type = sim.interner.intern(&rules.general.warp_out.name);
-                let warp_out_total_frames = rules
-                    .effect_frame_count(&rules.general.warp_out.name)
-                    .unwrap_or(teleport_movement::FALLBACK_WARP_FRAME_COUNT);
-                let mut teleport_visuals = teleport_movement::TeleportVisuals {
-                    world_effects: &mut sim.world_effects,
-                    warp_out_type,
-                    warp_out_total_frames,
-                    warp_out_frame_delay: rules.general.warp_out.frame_delay,
-                };
-                teleport_movement::tick_teleport_movement(
-                    &mut sim.substrate.entities,
-                    &mut sim.substrate.occupancy,
-                    &one,
-                    sim.session.tick,
-                    Some(&mut teleport_visuals),
-                );
-            } else {
-                teleport_movement::tick_teleport_movement(
-                    &mut sim.substrate.entities,
-                    &mut sim.substrate.occupancy,
-                    &one,
-                    sim.session.tick,
-                    None,
-                );
-            }
-            sim.pending_rocket_detonations
-                .extend(rocket_movement::tick_rocket_movement(
-                    &mut sim.substrate.entities,
-                    &one,
-                    sim.session.tick,
-                ));
-            sim.tick_tunnel_locomotor_one(stable_id, path_grid);
-            sim.tick_drop_pod_locomotor_one(stable_id, path_grid);
-            let _ = homing_movement::tick_homing_movement(
-                &mut sim.substrate.entities,
-                &one,
-                sim.session.tick,
-            );
-            if let Some(rules) = rules {
-                parachute_descent::tick_parachute_descent_in_order(
-                    &mut sim.substrate.entities,
-                    &one,
-                    rules.general.parachute_max_fall_rate,
-                    sim.session.tick,
-                );
-            }
-            movement::tick_locomotor_piggyback_restore_one(&mut sim.substrate.entities, stable_id);
-
-            let cell_after_movement = sim
-                .substrate
-                .entities
-                .get(stable_id)
-                .map(|entity| (entity.position.rx, entity.position.ry));
-            if let Some(rules) = rules {
-                sim.move_unit_sensor_after_cell_change(
-                    stable_id,
-                    cell_before_movement,
-                    cell_after_movement,
-                    rules,
-                );
-            }
-            if teleport_relocating {
-                // `TeleportLocomotionClass` arrival owns the exceptional exact
-                // outside clear at 0x00719A99; it must not flow through the
-                // ordinary promote-only per-cell writer.
-                sim.clear_entity_playfield_membership_after_teleport(stable_id);
-            } else if cell_before_movement != cell_after_movement {
-                // `FootClass::PerCellProcess @ 0x004D85D0` runs the `Sensors=`
-                // neighbour scan on its cell-enter arm, after the sensor
-                // deposit has moved (`0x004D8611`/`0x004D8621`, issued just
-                // above) and before its `FUN_006F5090` playfield-membership
-                // tail — which is the promote below.
-                if let Some(rules) = rules {
-                    crate::sim::world::techno_ai_cloak::uncloak_on_sensor_neighbour_after_cell_entry(
-                        sim, stable_id, rules,
-                    );
-                }
-                sim.promote_entity_playfield_membership_after_move(stable_id);
-            }
-
-            let mut lifecycle_requests = std::mem::take(&mut sim.pending_lifecycle_requests);
-            for request in lifecycle_requests.drain(..) {
-                let LifecycleRequest::Uninit { stable_id, .. } = request;
-                sim.release_move_sound(stable_id);
-                if let Some(rules) = rules {
-                    sim.apply_lifecycle_request_with_rules(request, rules);
-                } else {
-                    sim.apply_lifecycle_request(request);
-                }
-            }
-            debug_assert!(lifecycle_requests.is_empty());
-            sim.pending_lifecycle_requests = lifecycle_requests;
-
-            sim.tick_move_sound_after_process(stable_id, before_movement, rules);
-            sim.object_ai_post_movement_promote_one(stable_id, rules);
-        });
+        let object_pass = self.advance_live_object_pass(rules, path_grid, overlay_registry);
+        let movement_stats = object_pass.movement;
+        destroyed_structure |= object_pass.destroyed_structure;
+        let tube_turn_owned_ids = object_pass.tube_turn_owned_ids;
         if let Some(rules) = rules {
             self.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, rules, None));
         }
