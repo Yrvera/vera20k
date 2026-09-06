@@ -1,24 +1,24 @@
-//! Game simulation — EntityStore + GameEntity, fixed-point math, deterministic logic.
+//! Deterministic game state, object lifecycle and ordered simulation systems.
 //!
-//! ALL simulation math uses fixed-point arithmetic (I32F16) — never floats.
-//! This is a day-one decision for deterministic multiplayer: identical results
-//! across different machines regardless of CPU floating-point behavior.
+//! Positions commonly use fixed-point arithmetic. Mechanisms whose native
+//! semantics require floating point retain their documented numeric behavior
+//! (for example `bounce` and `voxel_anim`); deterministic behavior depends on
+//! preserving each mechanism's operations, widths and RNG order.
 //!
-//! The simulation is data-driven: all unit stats, weapon damage, build times
-//! come from RuleSet (parsed from rules.ini). Sim code contains pure logic,
-//! never hardcoded game balance numbers.
+//! RuleSet supplies authored rules/art data. Native hardcoded rules and
+//! constants carry evidence near their implementation; see ENGINE.md.
 //!
 //! ## Key types
-//! - `Simulation` — owns EntityStore (BTreeMap<u64, GameEntity>), ticks game state forward
-//! - `GameEntity` — unified plain struct (position, health, owner, locomotor, etc.)
-//! - Systems: movement, combat, harvesting, production, pathfinding
+//! - `world::Simulation` owns mutable gameplay state and object lifecycle.
+//! - `runtime::SimRuntime` binds that state to match rules and map resources.
+//! - `game_entity::GameEntity` holds one techno's components and runtime state.
+//! - Systems include movement, combat, harvesting, production and pathfinding.
 //!
-//! ## Dependency rules â€" THIS IS THE #1 ARCHITECTURAL INVARIANT
-//! - sim/ depends on: rules/, map/
-//! - sim/ NEVER depends on: render/, ui/, sidebar/, audio/, net/
-//! - This isolation is what makes alternative views possible (Commander mode,
-//!   spectator view, headless server) without touching sim code.
-//! - sim/ receives commands but never calls into presentation modules.
+//! ## Dependency rules
+//! - sim/ may depend on rules/, map/ and util/.
+//! - sim/ never depends on render/, ui/, sidebar/, audio/ or net/.
+//! - Commands enter and outputs leave through simulation APIs; presentation
+//!   consumes state without becoming a gameplay authority.
 
 // --- Core types: entity storage, components, commands, RNG, interning ---
 pub mod anim_class;

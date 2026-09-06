@@ -1,29 +1,22 @@
-//! Source-level dependency guards for the engine domain-boundaries ledger
-//! (`docs/plans/2026-08-15-engine-domain-boundaries-design.md`, local).
+//! Source-level guards for current engine ownership and dependency boundaries.
 //!
-//! Installed ahead of F14 per the validation protocol: every boundary the
-//! design forbids is scanned now, boundaries that are already clean are held
-//! at zero, and the finite F04/F05/F06 remainder is pinned by an explicit
-//! exception inventory that may only shrink. Production code only:
-//! `tests.rs` / `*_tests.rs` files and `#[cfg(test)]` items are excluded, so
-//! test-only reverse edges (tracked by the ledger for F14 relocation) do not
-//! appear here. `cfg(any(test, debug_assertions))` items are deliberately
-//! treated as production — they compile into debug builds.
+//! LAYER_RULES forbids reverse production dependencies and the exception list is
+//! empty. The scanner excludes tests.rs, *_tests.rs and #[cfg(test)] items;
+//! cfg(any(test, debug_assertions)) remains production because debug builds use it.
+//! A separate guard checks the entire sim tree, including tests, for upper-layer
+//! references. Other guards pin frame API callers and AppState owner boundaries.
 //!
-//! The `app` pseudo-root matches `crate::app::*`, bare `crate::app` imports,
-//! and root `crate::app_*` modules; the ui rules additionally keep the retired
-//! `skirmish_scenarios` root forbidden so it cannot be recreated. F12 moves
-//! the remaining root app inventory under `src/app/`, after which
-//! `crate::app::` covers the whole layer and F14 adds the no-root-`app_*`
-//! guard.
+//! The app pseudo-root matches crate::app paths and retired root app_* modules.
+//! The ui rule also forbids the retired skirmish_scenarios root. These checks
+//! preserve the current layout rather than describing future migration work.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 /// Directory under `src/` -> reference roots its production code must not
-/// name. Direction contract: ENGINE.md "Architecture boundaries" and the
-/// design's "Proven dependency inversions".
+/// name. The simulation direction contract is in ENGINE.md; the remaining
+/// rules preserve the established lower-layer boundaries.
 const LAYER_RULES: &[(&str, &[&str])] = &[
     ("assets", &["sim", "rules", "map", "render", "sidebar", "ui", "app"]),
     ("util", &["sim", "rules", "map", "render", "sidebar", "ui", "app"]),
@@ -35,10 +28,8 @@ const LAYER_RULES: &[(&str, &[&str])] = &[
     ("sim", &["render", "sidebar", "ui", "audio", "net"]),
 ];
 
-/// The frozen ledger's remaining production exceptions. Entries may only be
-/// REMOVED — by the ledger item that closes them — never added. An edge that
-/// disappears from the source must also be deleted here, so the ratchet
-/// tightens monotonically.
+/// No production exceptions remain. Keep this inventory empty; new reverse
+/// edges must be fixed at their owner rather than exempted from the guard.
 const FROZEN_EXCEPTIONS: &[(&str, &str)] = &[];
 
 #[test]
@@ -472,8 +463,7 @@ fn bare_and_aliased_app_imports_cannot_evade_the_scan() {
     assert!(!group_contains_root("use crate::{apple, ui::x};\n", "app"));
 }
 
-/// F12 finish criterion: `AppState` holds exactly the eight named owners from
-/// the design's Target Architecture — no unrelated flat field may return.
+/// AppState holds exactly eight named owners; unrelated flat state must not return.
 #[test]
 fn app_state_contains_only_named_owners() {
     let state_rs = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/state.rs");
@@ -532,7 +522,7 @@ fn app_state_contains_only_named_owners() {
     );
 }
 
-/// F12 finish criterion: the root app inventory lives under `src/app/`;
+/// The app inventory lives under `src/app/`;
 /// `src/lib.rs` declares no root `app_*` module.
 #[test]
 fn no_root_app_modules_remain() {
@@ -556,7 +546,7 @@ fn no_root_app_modules_remain() {
     );
 }
 
-/// F14: after the boundary-test relocation, `sim/` names no presentation,
+/// The entire `sim/` tree names no presentation,
 /// audio, net, or app root anywhere — production AND test code. Unlike the
 /// layer scan above (which strips test items), this ratchet holds the whole
 /// tree at zero so a new sim-side test cannot quietly reintroduce the edge.

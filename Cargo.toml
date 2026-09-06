@@ -94,8 +94,8 @@ rfd = "0.14"
 # --- Math ---
 # glam provides fast vector/matrix math for rendering (screen coords, camera).
 glam = "0.29"
-# fixed-point math for deterministic simulation. ALL sim math uses this, never floats.
-# This ensures multiplayer lockstep stays in sync across different machines.
+# Fixed-point arithmetic for simulation positions and other fixed-width mechanisms.
+# Native floating-point mechanisms document their numeric contract at their owner.
 fixed = { version = "1", features = ["serde"] }
 
 # --- Serialization ---
