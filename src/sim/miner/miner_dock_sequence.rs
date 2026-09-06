@@ -473,7 +473,7 @@ fn resolve_refinery_cells(
     if entity.dying || entity.health.current == 0 {
         return None;
     }
-    let obj = sim.object_type(entity.type_ref, rules);
+    let obj = sim.object_type(entity.type_ref(), rules);
     let (w, h) = obj
         .map(|o| foundation_dimensions(&o.foundation))
         .unwrap_or((1, 1));
@@ -518,7 +518,7 @@ fn mission_deploy_unload_building(sim: &Simulation, miner_id: u64) -> Option<u64
                 && !entity.dying
                 && entity.health.current > 0
             {
-                Some(entity.stable_id)
+                Some(entity.stable_id())
             } else {
                 None
             }
@@ -568,7 +568,7 @@ fn entity_full_speed(sim: &Simulation, rules: &RuleSet, entity_id: u64) -> SimFi
     let Some(entity) = sim.substrate.entities.get(entity_id) else {
         return ra2_speed_to_leptons_per_second(4);
     };
-    let obj = sim.object_type(entity.type_ref, rules);
+    let obj = sim.object_type(entity.type_ref(), rules);
     crate::sim::combat::veterancy::entity_mover_speed_leptons_per_second(
         entity,
         obj,
@@ -1376,7 +1376,7 @@ fn phase_unloading(
             .substrate
             .entities
             .get(unload_building_id)
-            .map(|b| sim.interner.resolve(b.owner).to_string())
+            .map(|b| sim.interner.resolve(b.owner()).to_string())
             .expect("west-cell unload building should exist");
 
         // P7: per-country IncomeMult folds into the base credits (single truncation,

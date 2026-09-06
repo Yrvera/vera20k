@@ -555,7 +555,7 @@ pub(crate) fn combat_target_category(
     interner: &StringInterner,
 ) -> EntityCategory {
     if rules
-        .object(interner.resolve(entity.type_ref))
+        .object(interner.resolve(entity.type_ref()))
         .is_some_and(|obj| obj.considered_aircraft)
     {
         EntityCategory::Aircraft
@@ -720,7 +720,7 @@ impl EntityDamageEvent {
             event.payload.firer_id,
             entities
                 .get(event.payload.firer_id)
-                .map(|firer| firer.owner),
+                .map(|firer| firer.owner()),
             event.payload.warhead,
             ReceiverCallFlags {
                 ignore_defenses: false,
@@ -860,7 +860,7 @@ fn target_coords(
     let mut sub_y = entity.position.sub_y;
 
     if entity.category == EntityCategory::Structure {
-        if let Some(obj) = rules.and_then(|r| r.object(interner.resolve(entity.type_ref))) {
+        if let Some(obj) = rules.and_then(|r| r.object(interner.resolve(entity.type_ref()))) {
             let (fw, fh) = foundation_dimensions(&obj.foundation);
             // Shift from NW corner cell center to foundation geometric center.
             // (fw-1)*128 leptons in X, (fh-1)*128 leptons in Y.
@@ -930,14 +930,14 @@ pub(crate) fn can_fire_at_target(
     let Some(attacker) = entities.get(attacker_id) else {
         return false;
     };
-    let Some(attacker_obj) = rules.object(interner.resolve(attacker.type_ref)) else {
+    let Some(attacker_obj) = rules.object(interner.resolve(attacker.type_ref())) else {
         return false;
     };
     let Some(selected) = select_weapon_against(
         rules,
         attacker_obj,
         &combat_weapon::attacker_facts(attacker, attacker_obj),
-        attacker.owner,
+        attacker.owner(),
         target,
         entities,
         interner,
@@ -986,12 +986,12 @@ pub(crate) fn pursuit_selected_weapon<'a>(
     terrain: Option<&ResolvedTerrainGrid>,
     alliances: Option<&HouseAllianceMap>,
 ) -> Option<&'a WeaponType> {
-    let attacker_obj = rules.object(interner.resolve(entity.type_ref))?;
+    let attacker_obj = rules.object(interner.resolve(entity.type_ref()))?;
     let selected = select_weapon_against(
         rules,
         attacker_obj,
         &combat_weapon::attacker_facts(entity, attacker_obj),
-        entity.owner,
+        entity.owner(),
         target,
         entities,
         interner,
@@ -1247,7 +1247,7 @@ pub fn issue_attack_cell_command(
 ) -> bool {
     // Read attacker position + weapon presence before mutable borrow.
     let attacker_info = entities.get(attacker_id).map(|a| {
-        let type_str = interner.resolve(a.type_ref);
+        let type_str = interner.resolve(a.type_ref());
         let has_weapon = rules
             .and_then(|r| r.object(type_str))
             .is_some_and(|obj| combat_weapon::is_armed(a, obj));
@@ -2655,7 +2655,7 @@ fn handle_entity_deaths(
             let air_impact = combat_aoe::air_impact_from_entity(e, terrain.as_deref());
             let world_z_leptons = object_world_z_leptons(e, terrain.as_deref());
             (
-                e.type_ref,
+                e.type_ref(),
                 e.position.rx,
                 e.position.ry,
                 e.position.sub_x,
@@ -2663,7 +2663,7 @@ fn handle_entity_deaths(
                 e.position.z,
                 world_z_leptons,
                 air_impact,
-                e.owner,
+                e.owner(),
                 e.animation.is_some(),
                 e.category,
                 e.veterancy,
@@ -3242,7 +3242,7 @@ fn apply_building_receive_prelude(
     if target.category != EntityCategory::Structure {
         return BuildingReceivePrelude::Continue;
     }
-    let Some(target_type) = rules.object(interner.resolve(target.type_ref)) else {
+    let Some(target_type) = rules.object(interner.resolve(target.type_ref())) else {
         return BuildingReceivePrelude::Continue;
     };
 
@@ -3250,7 +3250,7 @@ fn apply_building_receive_prelude(
         return BuildingReceivePrelude::ReturnZero;
     }
     if event.attacker_id != RAD_NO_ATTACKER && !target_type.is_1x1_with_undeploy() {
-        if let Some(owner) = houses.get_mut(&target.owner) {
+        if let Some(owner) = houses.get_mut(&target.owner()) {
             owner
                 .strategy_emergency
                 .note_building_attack(current_tick as u32 as i32);
@@ -3275,13 +3275,13 @@ fn resolve_receive_damage(
     let receiver_flags = event.receiver_flags?;
     let target = entities.get(event.target_id)?;
     let warhead = rules.warhead(interner.resolve(event.warhead_ref))?;
-    let target_type = rules.object(interner.resolve(target.type_ref));
+    let target_type = rules.object(interner.resolve(target.type_ref()));
     let source = (event.attacker_id != RAD_NO_ATTACKER)
         .then(|| entities.get(event.attacker_id))
         .flatten();
     let source_house = event
         .source_house
-        .or_else(|| source.map(|entity| entity.owner));
+        .or_else(|| source.map(|entity| entity.owner()));
     // InfantryClass mutates the positive raw i32 before forwarding to the
     // shared Techno receiver. Its sign is therefore Techno's original-sign
     // snapshot used by the IC/FS gate below.
@@ -3299,8 +3299,8 @@ fn resolve_receive_damage(
             interner.resolve(other),
         )
     };
-    let attacker_is_allied = source_house.is_some_and(|owner| allied(owner, target.owner));
-    let source_house_is_allied = source_house.is_some_and(|owner| allied(target.owner, owner));
+    let attacker_is_allied = source_house.is_some_and(|owner| allied(owner, target.owner()));
+    let source_house_is_allied = source_house.is_some_and(|owner| allied(target.owner(), owner));
 
     let target_is_building = target.category == EntityCategory::Structure;
     let target_view = damage::TargetDamageView {
@@ -3322,7 +3322,7 @@ fn resolve_receive_damage(
     };
     let type_immune = target_type.is_some_and(|object| object.type_immune)
         && source.is_some_and(|source| {
-            source.type_ref == target.type_ref && source.owner == target.owner
+            source.type_ref() == target.type_ref() && source.owner() == target.owner()
         });
     let bunker_blocked = if target_is_building && target.bunker_occupant.is_some() {
         // Linked Building branch is intentionally the inverse of the installed
@@ -3364,12 +3364,12 @@ fn resolve_receive_damage(
         psionics_immune: target_type.is_some_and(|object| object.immune_to_psionics),
         target_is_building,
     };
-    let defender_country_armor = houses.get(&target.owner).map_or(1.0, |house| {
+    let defender_country_armor = houses.get(&target.owner()).map_or(1.0, |house| {
         let difficulty_armor = rules.general.difficulty_armor[house.difficulty.table_index()];
         let country_name = house
             .country
             .map(|country| interner.resolve(country))
-            .unwrap_or_else(|| interner.resolve(target.owner));
+            .unwrap_or_else(|| interner.resolve(target.owner()));
         let (country_armor, category_armor) = target_type
             .map(|object| rules.country_armor_factors(country_name, object))
             .unwrap_or((1.0, 1.0));
@@ -3419,7 +3419,7 @@ fn resolve_receive_damage(
             crate::sim::superweapon::invulnerability::InvulnKind::ForceShield => 6,
         };
         InvulnerabilityImpactEffect {
-            target_id: target.stable_id,
+            target_id: target.stable_id(),
             doubled_damage,
             warhead_ref: event.warhead_ref,
             coord: receiver_effect_coord(target, terrain),
@@ -3521,7 +3521,7 @@ fn postmortem_duration_for_event(
         return None;
     }
     let warhead = rules.warhead(interner.resolve(event.warhead_ref))?;
-    let object = rules.object(interner.resolve(target.type_ref))?;
+    let object = rules.object(interner.resolve(target.type_ref()))?;
     (warhead.causes_delay_kill && object.eligible_for_delay_kill)
         .then(|| postmortem_delay_duration(warhead, event.distance_leptons.unwrap_or(0)))
 }
@@ -3928,14 +3928,14 @@ fn commit_damage_events_with_isolation(
         ) {
             BuildingReceivePrelude::ReturnZero => continue,
             BuildingReceivePrelude::Respond => {
-                if let Some(victim_owner) = entities.get(event.target_id).map(|victim| victim.owner)
+                if let Some(victim_owner) = entities.get(event.target_id).map(|victim| victim.owner())
                 {
                     let attacker_house_index = entities
                         .get(event.attacker_id)
                         .and_then(|attacker| {
                             house_order
                                 .iter()
-                                .position(|owner| *owner == attacker.owner)
+                                .position(|owner| *owner == attacker.owner())
                         })
                         .map_or(-1, |index| index as i32);
                     if let Some(owner) = houses.get_mut(&victim_owner) {
@@ -3966,13 +3966,13 @@ fn commit_damage_events_with_isolation(
         // both null source object and null source house explicitly.
         let attacker_owner: Option<InternedId> = event.source_house.or_else(|| {
             (attacker_id != RAD_NO_ATTACKER)
-                .then(|| entities.get(attacker_id).map(|attacker| attacker.owner))
+                .then(|| entities.get(attacker_id).map(|attacker| attacker.owner()))
                 .flatten()
         });
         // UpdateAngerNodes reads source->Owner directly; the separately
         // captured source-house ABI argument is not used by this callback.
         let live_source_owner = (attacker_id != RAD_NO_ATTACKER)
-            .then(|| entities.get(attacker_id).map(|source| source.owner))
+            .then(|| entities.get(attacker_id).map(|source| source.owner()))
             .flatten();
         let receiver_outcome = event.distance_leptons.map(|_| {
             resolve_receive_damage(
@@ -4107,7 +4107,7 @@ fn commit_damage_events_with_isolation(
                 && attacker_owner.is_some_and(|source_owner| {
                     !crate::map::houses::is_allied_with(
                         alliances,
-                        interner.resolve(target.owner),
+                        interner.resolve(target.owner()),
                         interner.resolve(source_owner),
                     )
                 });
@@ -4116,10 +4116,10 @@ fn commit_damage_events_with_isolation(
                 && let Some(source_owner) = live_source_owner
                 && let Some(final_damage) =
                     receive_outcome.and_then(|outcome| outcome.post_object_damage)
-                && let Some(target_type) = rules.object(interner.resolve(target.type_ref))
+                && let Some(target_type) = rules.object(interner.resolve(target.type_ref()))
             {
                 threat_feedback = Some((
-                    target.owner,
+                    target.owner(),
                     source_owner,
                     final_damage,
                     target_type.strength,
@@ -4223,7 +4223,7 @@ fn commit_damage_events_with_isolation(
             ) && target.category == EntityCategory::Structure
                 && target.lifecycle.object_alive
                 && rules
-                    .object(interner.resolve(target.type_ref))
+                    .object(interner.resolve(target.type_ref()))
                     .is_some_and(|object| object.damage_sound.is_none())
             {
                 building_damage_cue = Some((target.position.rx, target.position.ry));
@@ -4254,7 +4254,7 @@ fn commit_damage_events_with_isolation(
             // the owner gate, so the event is emitted for every house.
             if receive_state == Some(damage::DamageState::Yellow)
                 && rules
-                    .object(interner.resolve(target.type_ref))
+                    .object(interner.resolve(target.type_ref()))
                     .is_some_and(|object| {
                         object
                             .voice_feedback
@@ -4263,8 +4263,8 @@ fn commit_damage_events_with_isolation(
                     })
             {
                 voice_feedback_cue = Some((
-                    target.owner,
-                    target.type_ref,
+                    target.owner(),
+                    target.type_ref(),
                     target.position.rx,
                     target.position.ry,
                 ));
@@ -4280,10 +4280,10 @@ fn commit_damage_events_with_isolation(
             && attacker_id != RAD_NO_ATTACKER
             && entities.get(target_id).is_some_and(|target| {
                 rules
-                    .object(interner.resolve(target.type_ref))
+                    .object(interner.resolve(target.type_ref()))
                     .is_some_and(|object| object.to_protect)
                     && houses
-                        .get(&target.owner)
+                        .get(&target.owner())
                         .is_some_and(|house| !house.is_human)
             });
         if protected_techno_response
@@ -4313,7 +4313,7 @@ fn commit_damage_events_with_isolation(
             let now = current_tick as i32;
             let cloaking_speed = entities
                 .get(target_id)
-                .and_then(|target| rules.object(interner.resolve(target.type_ref)))
+                .and_then(|target| rules.object(interner.resolve(target.type_ref())))
                 .map_or(1, |object| object.cloaking_speed);
             let surfaced = entities
                 .get_mut(target_id)
@@ -4475,7 +4475,7 @@ fn commit_damage_events_with_isolation(
             let scatter = if surviving_infantry_result {
                 attacker_coord.and_then(|attacker_coord| {
                     let target = entities.get(target_id)?;
-                    let target_type = rules.object(interner.resolve(target.type_ref));
+                    let target_type = rules.object(interner.resolve(target.type_ref()));
                     let infantry_is_fraidycat = target_type.is_some_and(|object| object.fraidycat);
                     let has_scatter_ability = target_type.is_some_and(|object| {
                         (target.veterancy >= VETERAN_VETERANCY && object.veteran_scatter)
@@ -4488,7 +4488,7 @@ fn commit_damage_events_with_isolation(
                         occupancy,
                         rules,
                         houses
-                            .get(&target.owner)
+                            .get(&target.owner())
                             .is_some_and(|house| house.is_human),
                         infantry_is_fraidycat,
                         has_scatter_ability,
@@ -4520,7 +4520,7 @@ fn commit_damage_events_with_isolation(
             let Some(target) = entities.get_mut(target_id) else {
                 continue;
             };
-            if let Some(obj) = rules.object(interner.resolve(target.type_ref)) {
+            if let Some(obj) = rules.object(interner.resolve(target.type_ref())) {
                 infantry::apply_fear_from_damage(
                     obj,
                     target,
@@ -4547,7 +4547,7 @@ fn commit_damage_events_with_isolation(
             // are overlay mutations, a sold building dying is rare).
             if damage > 0
                 && !became_fatal
-                && let Some(obj) = rules.object(interner.resolve(target.type_ref))
+                && let Some(obj) = rules.object(interner.resolve(target.type_ref()))
             {
                 // `BuildingClass::ReceiveDamage @ 0x00442230`: with a non-null
                 // source, a non-zero damage result and `Insignificant=` clear,
@@ -4576,7 +4576,7 @@ fn commit_damage_events_with_isolation(
                     under_attack_events.push(UnderAttackEvent {
                         rx: target.position.rx,
                         ry: target.position.ry,
-                        owner: target.owner,
+                        owner: target.owner(),
                         miner,
                         structure,
                     });
@@ -4908,7 +4908,7 @@ fn emit_projectile_shrapnel(
     let center_ry = detonation.impact.y / 256;
     let source_owner = entities
         .get(detonation.source_id)
-        .map(|source| source.owner);
+        .map(|source| source.owner());
     // Random CellClass selections must capture their target coordinate at the
     // lookup call point: every miss returns the same mutable process dummy, so
     // resolving a collected list afterward would give all missed children the
@@ -4949,7 +4949,7 @@ fn emit_projectile_shrapnel(
             crate::map::houses::are_houses_friendly(
                 house_alliances,
                 interner.resolve(owner),
-                interner.resolve(target.owner),
+                interner.resolve(target.owner()),
             )
         });
         if allied {
@@ -6032,7 +6032,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             if !entity.is_fully_deployed() || entity.dying || !entity.is_alive() {
                 continue;
             }
-            let Some(obj) = rules.object(interner.resolve(entity.type_ref)) else {
+            let Some(obj) = rules.object(interner.resolve(entity.type_ref())) else {
                 continue;
             };
             if !obj.deploy_fire || !obj.immune_to_radiation {
@@ -6093,12 +6093,12 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             }
             (
                 true,
-                entity.owner,
+                entity.owner(),
                 entity.position.rx,
                 entity.position.ry,
                 entity.position.sub_x,
                 entity.position.sub_y,
-                entity.type_ref,
+                entity.type_ref(),
                 entity.barrel_facing,
             )
         };
@@ -6132,7 +6132,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
 
         // Resolve occupant type + veterancy for garrison weapon validation.
         let (occ_type, occ_vet) = match entities.get(occ_id) {
-            Some(occ) => (occ.type_ref, occ.veterancy),
+            Some(occ) => (occ.type_ref(), occ.veterancy),
             None => continue,
         };
 
@@ -6146,7 +6146,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
         let mut best_target: Option<(i64, u8, u64)> = None;
         let owner_str = interner.resolve(owner);
         for candidate in entities.values() {
-            if candidate.stable_id == id
+            if candidate.stable_id() == id
                 || candidate.health.current == 0
                 || candidate.dying
                 || candidate.lifecycle.in_limbo
@@ -6154,11 +6154,11 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             {
                 continue;
             }
-            if candidate.owner == owner {
+            if candidate.owner() == owner {
                 continue;
             }
             if let Some(fog_state) = fog {
-                let candidate_owner_str = interner.resolve(candidate.owner);
+                let candidate_owner_str = interner.resolve(candidate.owner());
                 if fog_state.is_friendly(owner_str, candidate_owner_str) {
                     continue;
                 }
@@ -6168,7 +6168,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             }
             let target_cat = combat_target_category(candidate, rules, interner);
             let target_armor = rules
-                .object(interner.resolve(candidate.type_ref))
+                .object(interner.resolve(candidate.type_ref()))
                 .map(|o| o.armor.as_str())
                 .unwrap_or("none");
             // Use garrison weapon (OccupyWeapon) for target compatibility check.
@@ -6208,11 +6208,11 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             // Same VERA-internal two-bucket ordering as `threat_class`, on the
             // native `Is_Armed` model rather than `Primary=` so a `[SREF]` or
             // `[YAGGUN]` candidate is not ranked as an unarmed bystander.
-            let class = match rules.object(interner.resolve(candidate.type_ref)) {
+            let class = match rules.object(interner.resolve(candidate.type_ref())) {
                 Some(o) if combat_weapon::is_armed(candidate, o) => 0u8,
                 _ => 1,
             };
-            let rank = (dist_sq, class, candidate.stable_id);
+            let rank = (dist_sq, class, candidate.stable_id());
             match best_target {
                 Some(current) if rank >= current => {}
                 _ => best_target = Some(rank),
@@ -6345,14 +6345,14 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             None => continue,
         };
         let garrison = garrison_cargo.and_then(|(fire_idx, count, occ_id)| {
-            let obj = rules.object(interner.resolve(entity.type_ref))?;
+            let obj = rules.object(interner.resolve(entity.type_ref()))?;
             if !obj.can_be_occupied || !obj.can_occupy_fire {
                 return None;
             }
             let occ = entities.get(occ_id)?;
             let (fw, fh) = foundation_dimensions(&obj.foundation);
             Some(GarrisonSnapshot {
-                occupant_type_id: occ.type_ref,
+                occupant_type_id: occ.type_ref(),
                 occupant_veterancy: occ.veterancy,
                 fire_index: fire_idx,
                 occupant_count: count,
@@ -6984,8 +6984,8 @@ pub(crate) fn build_attacker_snapshot(
     garrison: Option<GarrisonSnapshot>,
 ) -> AttackerSnapshot {
     AttackerSnapshot {
-        stable_id: entity.stable_id,
-        owner: entity.owner,
+        stable_id: entity.stable_id(),
+        owner: entity.owner(),
         category: entity.category,
         target,
         pos_rx: entity.position.rx,
@@ -6994,7 +6994,7 @@ pub(crate) fn build_attacker_snapshot(
         pos_exact_z_leptons: entity.position.exact_z_leptons,
         sub_x: entity.position.sub_x,
         sub_y: entity.position.sub_y,
-        type_id: entity.type_ref,
+        type_id: entity.type_ref(),
         facing: entity.facing,
         veterancy: entity.veterancy,
         cooldown_ticks,
@@ -7115,10 +7115,10 @@ pub(crate) fn award_kill_experience(
         .map(|victim| {
             (
                 rules
-                    .object(interner.resolve(victim.type_ref))
+                    .object(interner.resolve(victim.type_ref()))
                     .map_or(0, |obj| obj.cost),
                 self::veterancy::rank_of(victim.veterancy_raw),
-                victim.owner,
+                victim.owner(),
             )
         })
     else {
@@ -7127,12 +7127,12 @@ pub(crate) fn award_kill_experience(
     let Some(killer) = entities.get(killer_id) else {
         return;
     };
-    let Some(killer_type) = rules.object(interner.resolve(killer.type_ref)) else {
+    let Some(killer_type) = rules.object(interner.resolve(killer.type_ref())) else {
         return;
     };
-    let killer_owner = killer.owner;
+    let killer_owner = killer.owner();
     let trainable_cost = |id: u64| -> Option<(u64, i32)> {
-        let object = rules.object(interner.resolve(entities.get(id)?.type_ref))?;
+        let object = rules.object(interner.resolve(entities.get(id)?.type_ref()))?;
         object.trainable.then_some((id, object.cost))
     };
     // Branch 1: a passenger firing from an OpenTopped transport pays its
@@ -7141,7 +7141,7 @@ pub(crate) fn award_kill_experience(
     let open_transporter = match killer.passenger_role {
         crate::sim::passenger::PassengerRole::Inside { transport_id } => entities
             .get(transport_id)
-            .and_then(|transport| rules.object(interner.resolve(transport.type_ref)))
+            .and_then(|transport| rules.object(interner.resolve(transport.type_ref())))
             .is_some_and(|transport_type| transport_type.open_topped)
             .then_some(transport_id),
         _ => None,
@@ -7227,7 +7227,7 @@ pub(crate) fn capture_kill_credit(
     };
     victim.killed_by = Some(killer_owner);
     victim.kill_award_points = score_award_for_victim(
-        rules.object(interner.resolve(victim.type_ref)),
+        rules.object(interner.resolve(victim.type_ref())),
         victim.veterancy,
     );
 }
@@ -7327,8 +7327,8 @@ pub(crate) fn resolve_attacker_fire(
                 tsy,
                 t.health.current,
                 combat_target_category(t, rules, interner),
-                t.type_ref,
-                t.owner,
+                t.type_ref(),
+                t.owner(),
                 t.category == EntityCategory::Infantry && infantry::is_prone_for_damage(t),
             )
         }),
@@ -7427,7 +7427,7 @@ pub(crate) fn resolve_attacker_fire(
         TargetKind::Entity(target_id) => {
             let Some((target_entity, target_obj)) = entities.get(target_id).and_then(|t| {
                 rules
-                    .object(interner.resolve(t.type_ref))
+                    .object(interner.resolve(t.type_ref()))
                     .map(|target_obj| (t, target_obj))
             }) else {
                 if delayed_building_slot.is_none() {
@@ -7439,7 +7439,7 @@ pub(crate) fn resolve_attacker_fire(
                 fog.map(|fog_state| &fog_state.alliances),
                 interner,
                 snap.owner,
-                target_entity.owner,
+                target_entity.owner(),
             );
             combat_weapon::techno_target_facts(
                 target_entity,
@@ -8375,7 +8375,7 @@ pub(crate) fn resolve_attacker_fire(
                 TargetKind::Cell(_, _) => None,
             })
             .filter(|target| target.category == EntityCategory::Structure)
-            .and_then(|target| rules.object(interner.resolve(target.type_ref)))
+            .and_then(|target| rules.object(interner.resolve(target.type_ref())))
             .map(|target_type| {
                 rules.building_launch_height(target_type)
                     .wrapping_mul(200)

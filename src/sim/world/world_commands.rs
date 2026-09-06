@@ -563,7 +563,7 @@ impl Simulation {
             .map(|l| l.speed_multiplier)
             .unwrap_or(SimFixed::from_num(1));
 
-        let obj = rules.and_then(|r| self.object_type(e.type_ref, r));
+        let obj = rules.and_then(|r| self.object_type(e.type_ref(), r));
         // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: every ordered move asks the
         // getter for the speed, so the `FASTER` multiply belongs here, between
         // the truncated type speed and the locomotor fraction — not only on the
@@ -1202,7 +1202,7 @@ impl Simulation {
                     .entities
                     .get(*entity_id)
                     .is_some_and(|entity| {
-                        self.object_type(entity.type_ref, rules)
+                        self.object_type(entity.type_ref(), rules)
                             .is_some_and(|obj| obj.enslaves.is_some() && obj.deploys_into.is_some())
                     })
                 {
@@ -1226,7 +1226,7 @@ impl Simulation {
                     .entities
                     .get(*entity_id)
                     .is_some_and(|entity| {
-                        self.object_type(entity.type_ref, rules).is_some_and(|obj| {
+                        self.object_type(entity.type_ref(), rules).is_some_and(|obj| {
                             obj.enslaves.is_some() && obj.undeploys_into.is_some()
                         })
                     })
@@ -1248,7 +1248,7 @@ impl Simulation {
                 let Some(rules) = rules else { return false };
                 // INI gate: only DeployFire=yes types respond.
                 let type_str = match self.substrate.entities.get(*entity_id) {
-                    Some(e) => self.interner.resolve(e.type_ref).to_string(),
+                    Some(e) => self.interner.resolve(e.type_ref()).to_string(),
                     None => return false,
                 };
                 let Some(obj) = rules.object(&type_str) else {
@@ -1541,10 +1541,10 @@ impl Simulation {
                 }
                 // Validate depot exists, is friendly, and has UnitRepair=yes.
                 let depot_info = self.substrate.entities.get(*depot_id).and_then(|depot| {
-                    if !command_owner.eq_ignore_ascii_case(self.interner.resolve(depot.owner)) {
+                    if !command_owner.eq_ignore_ascii_case(self.interner.resolve(depot.owner())) {
                         return None;
                     }
-                    let obj = self.object_type(depot.type_ref, rules)?;
+                    let obj = self.object_type(depot.type_ref(), rules)?;
                     if !obj.unit_repair {
                         return None;
                     }
@@ -1660,7 +1660,7 @@ impl Simulation {
                 }
                 // Validate transport exists and has cargo capacity.
                 let transport_info = self.substrate.entities.get(*transport_id).and_then(|t| {
-                    let obj = self.object_type(t.type_ref, rules)?;
+                    let obj = self.object_type(t.type_ref(), rules)?;
                     let cargo = t.passenger_role.cargo()?;
                     Some((t.position.rx, t.position.ry, obj.clone(), cargo.clone()))
                 });
@@ -1669,7 +1669,7 @@ impl Simulation {
                 };
                 // Validate passenger can enter.
                 let pax_ok = self.substrate.entities.get(*passenger_id).and_then(|p| {
-                    let pobj = self.object_type(p.type_ref, rules)?;
+                    let pobj = self.object_type(p.type_ref(), rules)?;
                     if passenger::can_enter_transport(
                         p,
                         self.substrate.entities.get(*transport_id)?,
@@ -1807,7 +1807,7 @@ impl Simulation {
                             .substrate
                             .entities
                             .get(*transport_id)
-                            .and_then(|t| self.object_type(t.type_ref, rules))
+                            .and_then(|t| self.object_type(t.type_ref(), rules))
                             .is_some_and(|obj| obj.passengers > 0);
                         if !is_transport || !self.order_actor_admits(*transport_id) {
                             return false;
@@ -1903,7 +1903,7 @@ impl Simulation {
                 }
                 // Validate attacker has C4=yes flag.
                 let c4_ok = self.substrate.entities.get(*attacker_id).and_then(|e| {
-                    let obj = self.object_type(e.type_ref, rules)?;
+                    let obj = self.object_type(e.type_ref(), rules)?;
                     obj.c4.then_some(())
                 });
                 if c4_ok.is_none() {
@@ -1923,7 +1923,7 @@ impl Simulation {
                         if b.dying {
                             return None;
                         }
-                        let obj = self.object_type(b.type_ref, rules)?;
+                        let obj = self.object_type(b.type_ref(), rules)?;
                         if !obj.can_c4 || obj.invisible_in_game {
                             return None;
                         }
@@ -1933,7 +1933,7 @@ impl Simulation {
                         ) {
                             return None;
                         }
-                        Some((b.position.rx, b.position.ry, b.owner))
+                        Some((b.position.rx, b.position.ry, b.owner()))
                     });
                 let Some((trx, try_, target_owner)) = target_info else {
                     return false;
@@ -2040,7 +2040,7 @@ impl Simulation {
                 }
                 // Validate engineer has Engineer=yes flag.
                 let eng_ok = self.substrate.entities.get(*engineer_id).and_then(|e| {
-                    let obj = self.object_type(e.type_ref, rules)?;
+                    let obj = self.object_type(e.type_ref(), rules)?;
                     obj.engineer.then_some(())
                 });
                 if eng_ok.is_none() {
@@ -2058,11 +2058,11 @@ impl Simulation {
                         if b.dying {
                             return None;
                         }
-                        let obj = self.object_type(b.type_ref, rules)?;
+                        let obj = self.object_type(b.type_ref(), rules)?;
                         if !obj.capturable && !obj.bridge_repair_hut {
                             return None;
                         }
-                        Some((b.position.rx, b.position.ry, b.owner))
+                        Some((b.position.rx, b.position.ry, b.owner()))
                     });
                 let Some((trx, try_, target_owner)) = target_info else {
                     return false;
@@ -2453,9 +2453,9 @@ impl Simulation {
                 .get(stable_id)
                 .is_some_and(|entity| {
                     entity.category == crate::map::entities::EntityCategory::Structure
-                        && command_owner.eq_ignore_ascii_case(self.interner.resolve(entity.owner))
+                        && command_owner.eq_ignore_ascii_case(self.interner.resolve(entity.owner()))
                         && self
-                            .object_type(entity.type_ref, rules)
+                            .object_type(entity.type_ref(), rules)
                             .is_some_and(|obj| obj.has_rally_line())
                 });
             if eligible {
@@ -2602,7 +2602,7 @@ impl Simulation {
         {
             return false;
         }
-        let type_ref = entity.type_ref;
+        let type_ref = entity.type_ref();
         let selectable = rules.is_none_or(|r| {
             r.object(self.interner.resolve(type_ref))
                 .is_none_or(|obj| obj.selectable)
@@ -2636,7 +2636,7 @@ impl Simulation {
         self.substrate
             .entities
             .get(stable_id)
-            .is_some_and(|e| command_owner.eq_ignore_ascii_case(self.interner.resolve(e.owner)))
+            .is_some_and(|e| command_owner.eq_ignore_ascii_case(self.interner.resolve(e.owner())))
     }
 
     /// The acting object's half of the native order-admission gate.
@@ -2762,7 +2762,7 @@ impl Simulation {
         if miner.miner.is_none() {
             return false;
         }
-        let harvester_type = self.interner.resolve(miner.type_ref);
+        let harvester_type = self.interner.resolve(miner.type_ref());
         let Some(refinery) = self.substrate.entities.get(refinery_id) else {
             return false;
         };
@@ -2772,11 +2772,11 @@ impl Simulation {
         if refinery.health.current == 0 || refinery.dying || refinery.building_up.is_some() {
             return false;
         }
-        let refinery_owner = self.interner.resolve(refinery.owner);
+        let refinery_owner = self.interner.resolve(refinery.owner());
         if !are_houses_friendly(&self.house_alliances, command_owner, refinery_owner) {
             return false;
         }
-        let refinery_type = self.interner.resolve(refinery.type_ref);
+        let refinery_type = self.interner.resolve(refinery.type_ref());
         rules.is_refinery_type(refinery_type)
             && rules.harvester_can_dock_at(harvester_type, refinery_type)
     }
@@ -2792,8 +2792,8 @@ impl Simulation {
         };
         !are_houses_friendly(
             &self.house_alliances,
-            self.interner.resolve(attacker.owner),
-            self.interner.resolve(target.owner),
+            self.interner.resolve(attacker.owner()),
+            self.interner.resolve(target.owner()),
         )
     }
 

@@ -307,7 +307,7 @@ pub(super) fn build_radar_object_update(
     playfield_bounds: Option<crate::map::playfield::PlayfieldBounds>,
     resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
 ) -> RadarObjectUpdate {
-    let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+    let type_str = interner.map_or("", |i| i.resolve(entity.type_ref()));
     let object = rules.and_then(|rules| rules.object(type_str));
     let (raw_x, raw_y) = radar_raw_coord_leptons(entity);
     let origin = projection.native_surface.map_or_else(
@@ -334,7 +334,7 @@ pub(super) fn build_radar_object_update(
     let foundation = (entity.category == EntityCategory::Structure)
         .then(|| parse_foundation_size(&entity.foundation));
     let owner_is_human_player = local_owner.is_none_or(|local_owner| {
-        radar_owner_is_human_player(entity.owner, local_owner, houses, game_mode_nonzero)
+        radar_owner_is_human_player(entity.owner(), local_owner, houses, game_mode_nonzero)
     });
     let (coord_x, coord_y) = radar_object_get_coords_leptons(entity);
     let current_cell = radar_fog_cell_from_leptons(coord_x, coord_y);
@@ -370,9 +370,9 @@ pub(super) fn build_radar_object_update(
     let allied_with_current_player = full_visibility
         || local_owner.is_none()
         || local_owner.is_some_and(|local_owner| {
-            entity.owner == local_owner
+            entity.owner() == local_owner
                 || interner
-                    .is_some_and(|interner| fog.is_friendly_id(local_owner, entity.owner, interner))
+                    .is_some_and(|interner| fog.is_friendly_id(local_owner, entity.owner(), interner))
         });
     let effective_type_invisible =
         object.is_some_and(|object| object.invisible || object.invisible_in_game);
@@ -421,8 +421,8 @@ pub(super) fn build_radar_object_update(
     };
 
     RadarObjectUpdate {
-        stable_id: entity.stable_id,
-        owner: entity.owner,
+        stable_id: entity.stable_id(),
+        owner: entity.owner(),
         origin,
         event_source_cell,
         enemy_sensed_prefilter,
@@ -432,7 +432,7 @@ pub(super) fn build_radar_object_update(
         visibility,
         // AddObjectToTracker @ 0x00655560 compares directly to g_PlayerPtr,
         // narrower than IsHumanPlayer's single-player shroud exception.
-        local_front: local_owner == Some(entity.owner),
+        local_front: local_owner == Some(entity.owner()),
     }
 }
 

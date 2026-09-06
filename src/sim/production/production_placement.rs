@@ -505,10 +505,10 @@ fn evaluate_building_placement(
             .values()
             .filter(|e| {
                 e.category == EntityCategory::Structure
-                    && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+                    && sim.interner.resolve(e.owner()).eq_ignore_ascii_case(owner)
             })
             .map(|e| {
-                let type_str = sim.interner.resolve(e.type_ref);
+                let type_str = sim.interner.resolve(e.type_ref());
                 let bn = rules.object(type_str).map_or(false, |o| o.base_normal);
                 format!(
                     "{}@({},{}) bn={}",
@@ -702,7 +702,7 @@ pub(super) fn structure_occupies_cell(
         if e.category != EntityCategory::Structure {
             return false;
         }
-        let Some(existing) = rules.object(interner.resolve(e.type_ref)) else {
+        let Some(existing) = rules.object(interner.resolve(e.type_ref())) else {
             return false;
         };
         // Wall entities render and behave as overlays — they don't block building
@@ -741,8 +741,8 @@ fn is_within_build_area(
         if e.category != EntityCategory::Structure {
             continue;
         }
-        let provider_owner = sim.interner.resolve(e.owner);
-        let Some(existing) = sim.object_type(e.type_ref, rules) else {
+        let provider_owner = sim.interner.resolve(e.owner());
+        let Some(existing) = sim.object_type(e.type_ref(), rules) else {
             continue;
         };
         if provider_owner.eq_ignore_ascii_case(owner) {

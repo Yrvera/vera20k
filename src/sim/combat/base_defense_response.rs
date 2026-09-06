@@ -302,18 +302,18 @@ pub(crate) fn respond_to_base_attack(
     };
     let Some(victim_object) = context
         .rules
-        .object(context.interner.resolve(victim.type_ref))
+        .object(context.interner.resolve(victim.type_ref()))
     else {
         return;
     };
     let Some(attacker_object) = context
         .rules
-        .object(context.interner.resolve(attacker.type_ref))
+        .object(context.interner.resolve(attacker.type_ref()))
     else {
         return;
     };
-    let victim_owner = victim.owner;
-    let attacker_owner = attacker.owner;
+    let victim_owner = victim.owner();
+    let attacker_owner = attacker.owner();
     let budget = attacker_object
         .cost
         .wrapping_mul(context.rules.general.computer_base_defense_response);
@@ -394,7 +394,7 @@ pub(crate) fn respond_to_base_attack(
             }
             let Some(candidate_object) = context
                 .rules
-                .object(context.interner.resolve(candidate.type_ref))
+                .object(context.interner.resolve(candidate.type_ref()))
             else {
                 continue;
             };
@@ -493,7 +493,7 @@ pub(crate) fn respond_to_base_attack(
         };
         let Some(responder_object) = context
             .rules
-            .object(context.interner.resolve(responder_entity.type_ref))
+            .object(context.interner.resolve(responder_entity.type_ref()))
         else {
             continue;
         };

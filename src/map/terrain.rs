@@ -692,7 +692,7 @@ pub fn build_terrain_grid_from_resolved(
     local_bounds: Option<LocalBounds>,
     anchor_variant_table: Option<crate::map::theater::BridgeAnchorVariantTable>,
 ) -> TerrainGrid {
-    let mut cells: Vec<TerrainCell> = Vec::with_capacity(resolved.cells.len());
+    let mut cells: Vec<TerrainCell> = Vec::with_capacity(resolved.cells().len());
     let mut min_x: f32 = f32::MAX;
     let mut min_y: f32 = f32::MAX;
     let mut max_x: f32 = f32::MIN;

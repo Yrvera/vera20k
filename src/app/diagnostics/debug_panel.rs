@@ -265,9 +265,9 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                         };
                         found.push(format!(
                             "{}({}) [{}] hp={}/{}",
-                            sim.interner.resolve(entity.type_ref),
+                            sim.interner.resolve(entity.type_ref()),
                             cat_str,
-                            sim.interner.resolve(entity.owner),
+                            sim.interner.resolve(entity.owner()),
                             entity.health.current,
                             entity.health.max,
                         ));
@@ -289,7 +289,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                             continue;
                         }
                         let foundation = rules
-                            .object(sim.interner.resolve(entity.type_ref))
+                            .object(sim.interner.resolve(entity.type_ref()))
                             .map(|obj| obj.foundation.as_str())
                             .unwrap_or("1x1");
                         let (fw, fh) = crate::sim::production::foundation_dimensions(foundation);
@@ -305,11 +305,11 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                                 egui::Color32::from_rgb(160, 120, 0),
                                 format!(
                                     "In footprint: {} ({}) @ ({},{}) {}",
-                                    sim.interner.resolve(entity.type_ref),
+                                    sim.interner.resolve(entity.type_ref()),
                                     foundation,
                                     ex,
                                     ey,
-                                    sim.interner.resolve(entity.owner)
+                                    sim.interner.resolve(entity.owner())
                                 ),
                             );
                         }
@@ -325,7 +325,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                     .entities()
                     .values()
                     .filter(|e| e.selected)
-                    .map(|e| e.stable_id)
+                    .map(|e| e.stable_id())
                     .collect();
                 if selected.is_empty() {
                     ui.label("Selected: (none)");
@@ -334,7 +334,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                         if let Some(entity) = sim.entities().get(sid) {
                             ui.label(format!(
                                 "Sel: {} @ ({},{}) sub=({},{})",
-                                sim.interner.resolve(entity.type_ref),
+                                sim.interner.resolve(entity.type_ref()),
                                 entity.position.rx,
                                 entity.position.ry,
                                 entity.position.sub_x,
@@ -393,7 +393,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                     ui.label(
                         egui::RichText::new(format!(
                             "Miner: {} ({:?})",
-                            sim.interner.resolve(entity.type_ref),
+                            sim.interner.resolve(entity.type_ref()),
                             miner.kind
                         ))
                         .strong(),
@@ -441,7 +441,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                         let ref_type = sim
                             .entities()
                             .get(ref_id)
-                            .map(|e| sim.interner.resolve(e.type_ref))
+                            .map(|e| sim.interner.resolve(e.type_ref()))
                             .unwrap_or("?");
                         ui.label(format!("Refinery: {} (id={})", ref_type, ref_id));
                     }
@@ -497,8 +497,8 @@ pub(crate) fn draw_event_history_panel(ctx: &egui::Context, state: &AppState) {
                     ui.label(
                         egui::RichText::new(format!(
                             "{} (id={})",
-                            sim.interner.resolve(entity.type_ref),
-                            entity.stable_id
+                            sim.interner.resolve(entity.type_ref()),
+                            entity.stable_id()
                         ))
                         .strong()
                         .color(egui::Color32::from_rgb(20, 20, 20)),
@@ -525,7 +525,7 @@ pub(crate) fn draw_event_history_panel(ctx: &egui::Context, state: &AppState) {
                     ui.label(
                         egui::RichText::new(format!(
                             "{} — inspector not active when spawned",
-                            sim.interner.resolve(entity.type_ref)
+                            sim.interner.resolve(entity.type_ref())
                         ))
                         .color(egui::Color32::from_rgb(140, 140, 140)),
                     );

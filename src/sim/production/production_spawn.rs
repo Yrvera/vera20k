@@ -287,7 +287,7 @@ pub fn mark_war_factory_spawn_contact(
 ) -> bool {
     let Some((producer_type, produced_is_vehicle)) =
         sim.substrate.entities.get(producer_id).and_then(|p| {
-            let producer_type = sim.interner.resolve(p.type_ref).to_string();
+            let producer_type = sim.interner.resolve(p.type_ref()).to_string();
             let produced = sim.substrate.entities.get(produced_id)?;
             Some((
                 producer_type,
@@ -766,12 +766,12 @@ pub(in crate::sim) fn produced_unit_unlimbo_entry_at_resolved_cell(
             let Some(blocker) = sim.substrate.entities.get(occupant.entity_id) else {
                 return ProductionUnitAdmission::nonzero(7, layer);
             };
-            let blocker_owner = sim.interner.resolve(blocker.owner);
+            let blocker_owner = sim.interner.resolve(blocker.owner());
             let allied =
                 crate::map::houses::are_houses_friendly(&sim.house_alliances, owner, blocker_owner);
 
             if blocker.category == EntityCategory::Structure {
-                let Some(blocker_type) = rules.object(sim.interner.resolve(blocker.type_ref))
+                let Some(blocker_type) = rules.object(sim.interner.resolve(blocker.type_ref()))
                 else {
                     return ProductionUnitAdmission::nonzero(7, layer);
                 };
@@ -782,7 +782,7 @@ pub(in crate::sim) fn produced_unit_unlimbo_entry_at_resolved_cell(
                     decide_live_vehicle_building_entry(LiveVehicleBuildingEntry {
                         mover_category: EntityCategory::Unit,
                         branch: VehicleBuildingEntryBranch::UnitRepairOrBunker,
-                        checked_building_id: blocker.stable_id,
+                        checked_building_id: blocker.stable_id(),
                         candidate_building_id: first_building,
                         candidate_x: cell.0,
                         building_origin_x: blocker.position.rx,
@@ -800,7 +800,7 @@ pub(in crate::sim) fn produced_unit_unlimbo_entry_at_resolved_cell(
                         cell.0.wrapping_add(1),
                         cell.1,
                         layer,
-                    ) != Some(blocker.stable_id)
+                    ) != Some(blocker.stable_id())
                 {
                     continue;
                 }
@@ -846,7 +846,7 @@ pub(in crate::sim) fn produced_unit_unlimbo_entry_at_resolved_cell(
                 // Ordinary buildings, including CABHUT, are blockers. The
                 // selected producer id is threaded explicitly; only the live
                 // helper above can skip that same yard occupant.
-                let _selected_producer = blocker.stable_id == producer_id;
+                let _selected_producer = blocker.stable_id() == producer_id;
                 return ProductionUnitAdmission::nonzero(if allied { 7 } else { 5 }, layer);
             }
 
@@ -867,7 +867,7 @@ pub(in crate::sim) fn produced_unit_unlimbo_entry_at_resolved_cell(
                 crush_capability,
                 bump_crush::CrushTarget::from_entity(blocker, sim.session.binary_frame),
             ) {
-                crush_victims.push(blocker.stable_id);
+                crush_victims.push(blocker.stable_id());
                 continue;
             }
             return ProductionUnitAdmission::nonzero(5, layer);
@@ -963,7 +963,7 @@ pub(in crate::sim) fn produced_unit_unlimbo_entry_at_resolved_cell(
                         crate::map::houses::are_houses_friendly(
                             &sim.house_alliances,
                             owner,
-                            sim.interner.resolve(infantry.owner),
+                            sim.interner.resolve(infantry.owner()),
                         )
                     })
             {
@@ -1648,10 +1648,10 @@ pub fn find_helipad_for_aircraft(
         if entity.health.current == 0 || entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
-        if entity.owner != owner_id {
+        if entity.owner() != owner_id {
             continue;
         }
-        let type_str = sim.interner.resolve(entity.type_ref);
+        let type_str = sim.interner.resolve(entity.type_ref());
         let Some(obj) = rules.object(type_str) else {
             continue;
         };
@@ -1662,14 +1662,14 @@ pub fn find_helipad_for_aircraft(
         if !sim
             .production
             .airfield_docks
-            .has_free_slot(entity.stable_id, max_slots)
+            .has_free_slot(entity.stable_id(), max_slots)
         {
             continue;
         }
         let (fw, fh) = crate::sim::production::foundation_dimensions(&obj.foundation);
         let cx = entity.position.rx + fw / 2;
         let cy = entity.position.ry + fh / 2;
-        return Some((entity.stable_id, cx, cy));
+        return Some((entity.stable_id(), cx, cy));
     }
 
     None

@@ -168,7 +168,7 @@ fn try_deploy_mcv(
     for entity in sim.substrate.entities.values() {
         if !sim
             .interner
-            .resolve(entity.owner)
+            .resolve(entity.owner())
             .eq_ignore_ascii_case(owner)
         {
             continue;
@@ -177,7 +177,7 @@ fn try_deploy_mcv(
             continue;
         }
         let is_deployable: bool = sim
-            .object_type(entity.type_ref, rules)
+            .object_type(entity.type_ref(), rules)
             .is_some_and(|obj| obj.deploys_into.is_some());
         if is_deployable {
             let owner_id = sim.interner.get(owner)?;
@@ -185,7 +185,7 @@ fn try_deploy_mcv(
                 owner_id,
                 execute_tick,
                 Command::DeployMcv {
-                    entity_id: entity.stable_id,
+                    entity_id: entity.stable_id(),
                 },
             ));
         }
@@ -210,8 +210,8 @@ where
         !e.dying
             && !e.lifecycle.in_limbo
             && e.category == EntityCategory::Structure
-            && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
-            && matches(sim.interner.resolve(e.type_ref))
+            && sim.interner.resolve(e.owner()).eq_ignore_ascii_case(owner)
+            && matches(sim.interner.resolve(e.type_ref()))
     })
 }
 
@@ -489,7 +489,7 @@ fn send_attack_wave(
     for entity in sim.substrate.entities.values() {
         if !sim
             .interner
-            .resolve(entity.owner)
+            .resolve(entity.owner())
             .eq_ignore_ascii_case(owner)
         {
             continue;
@@ -503,12 +503,12 @@ fn send_attack_wave(
         ) {
             continue;
         }
-        if production::is_harvester_type(rules, sim.interner.resolve(entity.type_ref)) {
+        if production::is_harvester_type(rules, sim.interner.resolve(entity.type_ref())) {
             continue;
         }
         // Check if unit has no movement target (idle).
         if entity.movement_target.is_none() {
-            idle_units.push((entity.stable_id, entity.position.rx, entity.position.ry));
+            idle_units.push((entity.stable_id(), entity.position.rx, entity.position.ry));
         }
     }
     idle_units.sort_by_key(|(sid, _, _)| *sid);
@@ -555,7 +555,7 @@ fn find_base_center(sim: &Simulation, owner: &str) -> Option<(u16, u16)> {
             && entity.category == EntityCategory::Structure
             && sim
                 .interner
-                .resolve(entity.owner)
+                .resolve(entity.owner())
                 .eq_ignore_ascii_case(owner)
         {
             sum_x += i64::from(entity.position.rx);
@@ -584,7 +584,7 @@ fn find_nearest_enemy_structure(sim: &Simulation, owner: &str) -> Option<(u16, u
         if entity.category != EntityCategory::Structure {
             continue;
         }
-        let e_owner = sim.interner.resolve(entity.owner);
+        let e_owner = sim.interner.resolve(entity.owner());
         if e_owner.eq_ignore_ascii_case(owner) {
             continue;
         }
@@ -778,8 +778,8 @@ fn count_refineries(sim: &Simulation, owner: &str, rules: &RuleSet) -> usize {
         .filter(|e| {
             !e.dying
                 && e.category == EntityCategory::Structure
-                && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
-                && rules.is_refinery_type(sim.interner.resolve(e.type_ref))
+                && sim.interner.resolve(e.owner()).eq_ignore_ascii_case(owner)
+                && rules.is_refinery_type(sim.interner.resolve(e.type_ref()))
         })
         .count()
 }

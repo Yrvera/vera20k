@@ -180,7 +180,7 @@ pub fn tick_aircraft_missions(
                 return None;
             }
             Some(MissionSnap {
-                id: e.stable_id,
+                id: e.stable_id(),
                 mission: mission.clone(),
                 release_tail: e.aircraft_release_tail,
             })
@@ -241,7 +241,7 @@ pub fn tick_aircraft_missions(
                     Some(e) => e,
                     None => continue,
                 };
-                let type_str = sim.interner.resolve(entity.type_ref);
+                let type_str = sim.interner.resolve(entity.type_ref());
                 let obj = rules.object(type_str);
                 // Weapon-array slot 0 (`TechnoTypeClass+0x898`) is the armed
                 // test here rather than `combat_weapon::is_armed`
@@ -262,8 +262,8 @@ pub fn tick_aircraft_missions(
                 let nearest = find_nearest_airfield_for(
                     sim,
                     rules,
-                    entity.owner,
-                    entity.type_ref,
+                    entity.owner(),
+                    entity.type_ref(),
                     (entity.position.rx, entity.position.ry),
                 );
 
@@ -351,7 +351,7 @@ pub fn tick_aircraft_missions(
                 } else if *sub_state == 10 {
                     // Restore cruise altitude on RTB.
                     if let Some(entity) = sim.substrate.entities.get(snap.id) {
-                        let type_str = sim.interner.resolve(entity.type_ref);
+                        let type_str = sim.interner.resolve(entity.type_ref());
                         if let Some(obj) = rules.object(type_str) {
                             let cruise =
                                 crate::sim::movement::locomotor::LocomotorState::from_object_type(
@@ -435,15 +435,15 @@ pub fn tick_aircraft_missions(
                     let nearest = find_nearest_airfield_for(
                         sim,
                         rules,
-                        entity.owner,
-                        entity.type_ref,
+                        entity.owner(),
+                        entity.type_ref(),
                         (entity.position.rx, entity.position.ry),
                     );
                     if let Some((af_id, af_rx, af_ry)) = nearest {
                         m.new_mission = AircraftMission::ReturnToBase { airfield_id: af_id };
                         m.move_to = Some((af_rx, af_ry));
                     } else {
-                        let type_str = sim.interner.resolve(entity.type_ref);
+                        let type_str = sim.interner.resolve(entity.type_ref());
                         let airport_bound =
                             rules.object(type_str).map_or(false, |o| o.airport_bound);
                         if airport_bound {
@@ -469,7 +469,7 @@ pub fn tick_aircraft_missions(
                     continue;
                 }
                 let af = sim.substrate.entities.get(*airfield_id).unwrap();
-                let type_str = sim.interner.resolve(af.type_ref);
+                let type_str = sim.interner.resolve(af.type_ref());
                 let (fw, fh) = rules
                     .object(type_str)
                     .map(|o| foundation_dimensions(&o.foundation))
@@ -518,7 +518,7 @@ pub fn tick_aircraft_missions(
                             .substrate
                             .entities
                             .get(*airfield_id)
-                            .map_or(entity.type_ref, |af| af.type_ref);
+                            .map_or(entity.type_ref(), |af| af.type_ref());
                         let type_str = sim.interner.resolve(af_type_ref);
                         let max_slots = rules
                             .object(type_str)
@@ -545,7 +545,7 @@ pub fn tick_aircraft_missions(
                             // multi-pad airfields visibly spread occupants.
                             if let Some((px, py)) =
                                 sim.substrate.entities.get(*airfield_id).and_then(|af| {
-                                    let obj = sim.object_type(af.type_ref, rules)?;
+                                    let obj = sim.object_type(af.type_ref(), rules)?;
                                     let foundation = crate::sim::production::foundation_dimensions(
                                         &obj.foundation,
                                     );
@@ -793,7 +793,7 @@ pub fn tick_aircraft_missions(
             .entities
             .get(id)
             .and_then(|e| {
-                let obj = sim.object_type(e.type_ref, rules)?;
+                let obj = sim.object_type(e.type_ref(), rules)?;
                 Some(crate::util::fixed_math::ra2_speed_to_leptons_per_second(
                     obj.speed.max(1),
                 ))
@@ -917,10 +917,10 @@ fn find_nearest_airfield_for(
         if entity.health.current == 0 || entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
-        if entity.owner != owner {
+        if entity.owner() != owner {
             continue;
         }
-        let entity_type_str = sim.interner.resolve(entity.type_ref);
+        let entity_type_str = sim.interner.resolve(entity.type_ref());
         let Some(obj) = rules.object(entity_type_str) else {
             continue;
         };
@@ -941,7 +941,7 @@ fn find_nearest_airfield_for(
         let dist = dx * dx + dy * dy;
 
         if best.is_none() || dist < best.unwrap().3 {
-            best = Some((entity.stable_id, dock_rx, dock_ry, dist));
+            best = Some((entity.stable_id(), dock_rx, dock_ry, dist));
         }
     }
 

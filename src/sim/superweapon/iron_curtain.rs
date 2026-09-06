@@ -46,7 +46,7 @@ pub fn launch(
                 .any(|(rx, ry)| e.position.rx == *rx && e.position.ry == *ry)
         })
         .filter(|e| e.health.current > 0 && !e.dying)
-        .map(|e| e.stable_id)
+        .map(|e| e.stable_id())
         .collect();
 
     // 3. Apply effect per entity.

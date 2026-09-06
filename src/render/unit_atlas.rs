@@ -279,7 +279,7 @@ pub fn collect_needed_unit_keys(
         if !entity.is_voxel {
             continue;
         }
-        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref()));
         let is_ground_vehicle: bool = entity.category != EntityCategory::Aircraft;
         for variant in unit_atlas_variants(type_str, rules) {
             seed_unit_variant_keys(
@@ -301,7 +301,7 @@ pub fn collect_needed_unit_keys(
             if entity.is_voxel || entity.category != EntityCategory::Structure {
                 continue;
             }
-            let btype_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+            let btype_str = interner.map_or("", |i| i.resolve(entity.type_ref()));
             let obj = match rules.and_then(|r| r.object(btype_str)) {
                 Some(o) => o,
                 None => continue,
@@ -365,7 +365,7 @@ pub fn build_unit_atlas(
         if !entity.is_voxel {
             continue;
         }
-        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref()));
         let is_ground_vehicle: bool = entity.category != EntityCategory::Aircraft;
         for variant in unit_atlas_variants(type_str, rules) {
             seed_unit_variant_keys(
@@ -387,7 +387,7 @@ pub fn build_unit_atlas(
             if entity.is_voxel || entity.category != EntityCategory::Structure {
                 continue;
             }
-            let btype_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+            let btype_str = interner.map_or("", |i| i.resolve(entity.type_ref()));
             let obj = match rules.and_then(|r| r.object(btype_str)) {
                 Some(o) => o,
                 None => continue,

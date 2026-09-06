@@ -116,8 +116,8 @@ pub(crate) fn override_mission_on_blocked_step(
     // object with no owner is not an ally, and gets attacked.
     if crate::map::houses::is_allied_with(
         alliances,
-        interner.resolve(mover_entity.owner),
-        interner.resolve(blocker_entity.owner),
+        interner.resolve(mover_entity.owner()),
+        interner.resolve(blocker_entity.owner()),
     ) {
         return false;
     }
@@ -302,7 +302,7 @@ struct LiveUnitWorld<'a> {
 impl LiveUnitWorld<'_> {
     fn weapons_factory(&self, entity: &crate::sim::game_entity::GameEntity) -> bool {
         self.rules
-            .object(self.sim.interner.resolve(entity.type_ref))
+            .object(self.sim.interner.resolve(entity.type_ref()))
             .is_some_and(|obj| obj.weapons_factory)
     }
 }

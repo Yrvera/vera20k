@@ -451,8 +451,7 @@ fn mirror_real_overlay_pair(
         return;
     };
     let value = cells.read(cell.target);
-    terrain.cells[index].bridge_facts.overlay_id = value.overlay_id();
-    terrain.cells[index].bridge_facts.state_byte = value.state();
+    terrain.mirror_authored_overlay_pair(index, value.overlay_id(), value.state());
 }
 
 /// One consuming authored-reader transaction. It owns the exact packed y/x
@@ -656,7 +655,7 @@ impl<'load, 'resources, H: AuthoredOverlayLoadHost>
         self.host
             .publish_dirty(MapLoadDirtyKind::BaseMarkTactical, anchor)
             .map_err(AuthoredOverlayFinalizeError::Host)?;
-        let slope_type = self.terrain.cells[anchor_index].slope_type;
+        let slope_type = self.terrain.cells()[anchor_index].slope_type;
         if slope_type > 4 && overlay_id != 0xB2 {
             self.host
                 .finish_slope_survivor(handle)
@@ -737,7 +736,7 @@ impl<'load, 'resources, H: AuthoredOverlayLoadHost>
         self.cells
             .write_identity(anchor.target, i32::from(overlay_id));
         if let NativeOverlayCellTarget::Real(index) = anchor.target {
-            self.terrain.cells[index].bridge_facts.overlay_id = Some(overlay_id);
+            self.terrain.mirror_authored_overlay_identity(index, Some(overlay_id));
         }
     }
 
@@ -768,7 +767,7 @@ impl<'load, 'resources, H: AuthoredOverlayLoadHost>
             mirror_real_overlay_pair(self.terrain, &self.cells, anchor);
             let world_z = match anchor.target {
                 NativeOverlayCellTarget::Real(index) => i32::from(
-                    self.terrain.cells[index].level as i8,
+                    self.terrain.cells()[index].level as i8,
                 )
                 .wrapping_mul(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS),
                 NativeOverlayCellTarget::Dummy => 0,
@@ -849,7 +848,7 @@ impl<'load, 'resources, H: AuthoredOverlayLoadHost>
         let target = self.cells.target(packed.0, packed.1);
         self.cells.write_state(target, state);
         if let NativeOverlayCellTarget::Real(index) = target {
-            self.terrain.cells[index].bridge_facts.state_byte = state;
+            self.terrain.mirror_authored_overlay_state(index, state);
         }
     }
 

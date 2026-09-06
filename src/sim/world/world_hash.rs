@@ -1267,7 +1267,7 @@ impl Simulation {
     /// BTreeMap iterates in key order (= stable_id), so no manual sort needed.
     fn hash_entities(&self, hasher: &mut impl Hasher, schema: HashSchema) {
         for entity in self.substrate.entities.values() {
-            entity.stable_id.hash(hasher);
+            entity.stable_id().hash(hasher);
             if schema.includes(HashFeature::CreditIncome) {
                 // GSI-09.01: the `BuildingClass+0x6D0/+0x6D8` ProduceCash
                 // timer and the `TechnoClass+0x1CC/+0x1D0` drain link pair.
@@ -1289,7 +1289,7 @@ impl Simulation {
                 // transitional ProductionState registry until the manager is
                 // promoted to its own component. Both the ordered pool and
                 // each child's active harvest cursor affect future simulation.
-                if let Some(slave_ids) = self.production.slave_bindings.get(&entity.stable_id) {
+                if let Some(slave_ids) = self.production.slave_bindings.get(&entity.stable_id()) {
                     b"constructor-slave-pool-v1".hash(hasher);
                     slave_ids.len().hash(hasher);
                     for slave_id in slave_ids {
@@ -1380,10 +1380,10 @@ impl Simulation {
                     anim.finished.hash(hasher);
                 }
             }
-            entity.owner.hash(hasher);
+            entity.owner().hash(hasher);
             entity.health.current.hash(hasher);
             entity.health.max.hash(hasher);
-            entity.type_ref.hash(hasher);
+            entity.type_ref().hash(hasher);
             (entity.category as u8).hash(hasher);
             entity.foundation.hash(hasher);
             entity.building_hidden_occupancy.hash(hasher);

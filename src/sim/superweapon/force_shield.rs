@@ -63,11 +63,11 @@ pub fn launch(
         .filter(|e| e.category == EntityCategory::Structure)
         .filter(|e| e.health.current > 0 && !e.dying)
         .filter(|e| {
-            let other = sim.interner.resolve(e.owner);
+            let other = sim.interner.resolve(e.owner());
             are_houses_friendly(&sim.house_alliances, &owner_str, other)
         })
         .filter(|e| {
-            sim.object_type(e.type_ref, rules)
+            sim.object_type(e.type_ref(), rules)
                 .map(|o| !o.no_force_shield)
                 .unwrap_or(true)
         })
@@ -80,7 +80,7 @@ pub fn launch(
             let dy = ey - target_y_leptons;
             dx * dx + dy * dy <= radius_sq
         })
-        .map(|e| e.stable_id)
+        .map(|e| e.stable_id())
         .collect();
 
     // 4. Apply invulnerability.

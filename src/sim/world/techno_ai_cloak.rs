@@ -25,7 +25,7 @@ fn stock_cloak_tick_facts(
     if entity.category != EntityCategory::Unit || entity.cloak.is_none() {
         return None;
     }
-    let object = rules.object(sim.interner.resolve(entity.type_ref))?;
+    let object = rules.object(sim.interner.resolve(entity.type_ref()))?;
     let rank_cloak = entity.veterancy >= 100 && object.veteran_cloak
         || entity.veterancy >= 200 && object.elite_cloak;
     if !object.cloakable && !rank_cloak {
@@ -87,7 +87,7 @@ fn stock_cloak_tick_facts(
             .entities
             .get(contact_id)
             .filter(|contact| contact.category == EntityCategory::Structure)
-            .and_then(|contact| rules.object(sim.interner.resolve(contact.type_ref)))
+            .and_then(|contact| rules.object(sim.interner.resolve(contact.type_ref())))
             .is_some_and(|contact_type| contact_type.weapons_factory)
     });
     let current_frame = sim.session.binary_frame as i32;
@@ -105,7 +105,7 @@ fn stock_cloak_tick_facts(
     // substituted `fog.is_cell_visible(owner, ...)` here, which is true for an
     // owner standing on its own cell — inverting both gates below.
     let cloaked_by_own_house =
-        owner_cloak_field_bit(sim, entity.owner, entity.position.rx, entity.position.ry);
+        owner_cloak_field_bit(sim, entity.owner(), entity.position.rx, entity.position.ry);
 
     // `TechnoClass::CanAutoCloak @ 0x006FBDC0`, in native step order.
     //
@@ -229,7 +229,7 @@ fn sensor_targeters_in_native_dispatch_order(sim: &Simulation, cloaker_id: u64) 
     let Some(cloaker) = sim.substrate.entities.get(cloaker_id) else {
         return Vec::new();
     };
-    let cloaker_owner = cloaker.owner;
+    let cloaker_owner = cloaker.owner();
     let cloaker_cell = (cloaker.position.rx, cloaker.position.ry);
 
     // TechnoClass+0x420 @ 0x006F4EB0 reverse-scans g_TechnoClass_Array,
@@ -245,10 +245,10 @@ fn sensor_targeters_in_native_dispatch_order(sim: &Simulation, cloaker_id: u64) 
                 .attack_target
                 .as_ref()
                 .is_some_and(|target| target.target == TargetKind::Entity(cloaker_id));
-            let admitted = targeter.owner == cloaker_owner
+            let admitted = targeter.owner() == cloaker_owner
                 || sim
                     .fog
-                    .has_sensor_for_house(targeter.owner, cloaker_cell.0, cloaker_cell.1);
+                    .has_sensor_for_house(targeter.owner(), cloaker_cell.0, cloaker_cell.1);
             (targets_cloaker && admitted).then_some(targeter_id)
         })
         .collect()
@@ -287,7 +287,7 @@ pub(crate) fn sensor_reevaluate_stock_cloak(
         return SensorCloakReevaluation::default();
     };
     let inside_friendly_cloak_field = sim.substrate.entities.get(id).is_some_and(|entity| {
-        owner_cloak_field_bit(sim, entity.owner, entity.position.rx, entity.position.ry)
+        owner_cloak_field_bit(sim, entity.owner(), entity.position.rx, entity.position.ry)
     });
     if !inside_friendly_cloak_field || !facts.can_auto_cloak {
         return SensorCloakReevaluation::default();
@@ -486,7 +486,7 @@ pub(crate) fn uncloak_on_sensor_neighbour_after_cell_entry(
     {
         return false;
     }
-    let owner = mover.owner;
+    let owner = mover.owner();
     let owner_str = sim.interner.resolve(owner).to_owned();
     let (rx, ry) = (i32::from(mover.position.rx), i32::from(mover.position.ry));
 
@@ -512,12 +512,12 @@ pub(crate) fn uncloak_on_sensor_neighbour_after_cell_entry(
         let Some(other) = sim.substrate.entities.get(nearest) else {
             continue;
         };
-        let other_owner_str = sim.interner.resolve(other.owner);
-        if sim.fog.is_friendly(&owner_str, other_owner_str) || other.owner == owner {
+        let other_owner_str = sim.interner.resolve(other.owner());
+        if sim.fog.is_friendly(&owner_str, other_owner_str) || other.owner() == owner {
             continue;
         }
         let detects = rules
-            .object(sim.interner.resolve(other.type_ref))
+            .object(sim.interner.resolve(other.type_ref()))
             .is_some_and(|object| object.sensors);
         if !detects {
             continue;
@@ -532,7 +532,7 @@ pub(crate) fn uncloak_on_sensor_neighbour_after_cell_entry(
         .substrate
         .entities
         .get(id)
-        .and_then(|entity| rules.object(sim.interner.resolve(entity.type_ref)))
+        .and_then(|entity| rules.object(sim.interner.resolve(entity.type_ref())))
         .map_or(1, |object| object.cloaking_speed);
     let now = sim.session.binary_frame as i32;
     let surfaced = sim
@@ -582,7 +582,7 @@ pub(super) fn tick_stock_cloak_producer(sim: &mut Simulation, id: u64, rules: &R
         .substrate
         .entities
         .get(id)
-        .map(|entity| (entity.category, entity.type_ref, entity.veterancy))
+        .map(|entity| (entity.category, entity.type_ref(), entity.veterancy))
     else {
         return;
     };

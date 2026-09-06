@@ -121,7 +121,7 @@ fn trigger_crane_anim(sim: &mut Simulation, rules: &RuleSet, art: &ArtRegistry, 
         let Some(entity) = sim.entities().get(producer.stable_id) else {
             return;
         };
-        let type_id = sim.interner.resolve(entity.type_ref).to_string();
+        let type_id = sim.interner.resolve(entity.type_ref()).to_string();
         let rules_image = rules
             .object(&type_id)
             .map(|object| object.image.clone())
@@ -249,7 +249,7 @@ fn consume_bale_events(sim: &mut Simulation, rules: &RuleSet, art: &ArtRegistry)
             let Some(building) = sim.entities().get(event.building_id) else {
                 continue;
             };
-            let type_name = sim.interner.resolve(building.type_ref);
+            let type_name = sim.interner.resolve(building.type_ref());
             let Some(object) = rules.object(type_name) else {
                 continue;
             };
@@ -460,7 +460,7 @@ fn consume_bunker_wall_events(sim: &mut Simulation, rules: &RuleSet, art: &ArtRe
             let Some(building) = sim.entities().get(event.building_id) else {
                 continue;
             };
-            let type_name = sim.interner.resolve(building.type_ref);
+            let type_name = sim.interner.resolve(building.type_ref());
             let Some(object) = rules.object(type_name) else {
                 continue;
             };

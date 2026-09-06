@@ -351,12 +351,12 @@ pub(crate) fn build_selection_bracket_instances(
         if e.category != EntityCategory::Structure || !e.selected {
             continue;
         }
-        let type_str = sim.interner.resolve(e.type_ref);
+        let type_str = sim.interner.resolve(e.type_ref());
         if !is_visible(
             local_owner_id,
             &sim.fog,
             &e.position,
-            e.owner,
+            e.owner(),
             ignore_visibility,
         ) {
             continue;

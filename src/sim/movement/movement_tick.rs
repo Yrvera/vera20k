@@ -294,7 +294,7 @@ fn snapshot_mover(
         omni_crusher: e.omni_crusher,
         regular_crusher: e.regular_crusher,
         drive_accelerates: e.drive_accelerates,
-        owner: e.owner,
+        owner: e.owner(),
         too_big_to_fit_under_bridge: e.too_big_to_fit_under_bridge,
         on_bridge: e.on_bridge,
         runtime_bridge_transition: e.runtime_bridge_transition,
@@ -695,7 +695,7 @@ fn process_pending_drive_arrivals(
         let movement_zone = Some(loco.movement_zone);
         let terrain_cost = terrain_costs.get(&loco.speed_type);
         let (entity_blocks, entity_block_map) = entity_block_sets
-            .get(&entity.owner)
+            .get(&entity.owner())
             .map(|(b, m)| (Some(b), Some(m)))
             .unwrap_or((None, None));
         let mut occupied_blocks = entity_blocks.cloned().unwrap_or_default();
@@ -742,7 +742,7 @@ fn process_pending_drive_arrivals(
             entity.navigation.pending_arrival_clear = true;
             continue;
         }
-        let obj = rules.and_then(|r| r.object(interner.resolve(entity.type_ref)));
+        let obj = rules.and_then(|r| r.object(interner.resolve(entity.type_ref())));
         let speed_multiplier = loco.speed_multiplier;
         // Copy out (Copy type) before `loco`'s borrow of `entity` ends: only
         // Drive-kind movers ride drive-track curve tables below — hover (and
@@ -1675,7 +1675,7 @@ fn tick_movement_with_grids_scoped(
         if let Some(entity) = entities.get(id) {
             let _ = drive_locomotion::process_drive_locomotion_shell(entity);
             if entity.navigation.pending_arrival_clear {
-                mover_owners.insert(entity.owner);
+                mover_owners.insert(entity.owner());
             }
             if forced_drive_processed.contains(&id)
                 || tube_processed.contains(&id)
@@ -1687,7 +1687,7 @@ fn tick_movement_with_grids_scoped(
             let layer = entity.movement_layer_or_ground();
             if !matches!(layer, MovementLayer::Air | MovementLayer::Underground) {
                 movers.push(id);
-                mover_owners.insert(entity.owner);
+                mover_owners.insert(entity.owner());
             }
         }
     }
@@ -1764,7 +1764,7 @@ fn tick_movement_with_grids_scoped(
                 return None;
             }
             let rules = rules?;
-            let obj = rules.object(interner.resolve(entity.type_ref))?;
+            let obj = rules.object(interner.resolve(entity.type_ref()))?;
             Some(obj.crawls)
         });
         let entity_cost_grid: Option<&TerrainCostGrid> =
@@ -2801,7 +2801,7 @@ fn tick_movement_with_grids_scoped(
             // the score-screen kill credit is captured here, against the same
             // shared helper the damage loop uses. Running infantry over is
             // routine, so without this the Kills column reads visibly low.
-            let crusher_owner = entities.get(kill.crusher_id).map(|crusher| crusher.owner);
+            let crusher_owner = entities.get(kill.crusher_id).map(|crusher| crusher.owner());
             if let Some(victim) = entities.get_mut(victim_id) {
                 victim.health.current = 0;
                 if let Some(rules) = rules {

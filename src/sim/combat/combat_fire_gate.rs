@@ -40,7 +40,7 @@ pub fn collect_fire_blocked_entities(
         if let Some(ref state) = entity.teleport_state {
             match state.phase {
                 TeleportPhase::Relocate => {
-                    blocked.insert(entity.stable_id);
+                    blocked.insert(entity.stable_id());
                     continue;
                 }
                 TeleportPhase::ChronoDelay => {}
@@ -49,14 +49,14 @@ pub fn collect_fire_blocked_entities(
 
         // Rockets are projectiles, not weapon-bearing units — never fire.
         if entity.rocket_state.is_some() {
-            blocked.insert(entity.stable_id);
+            blocked.insert(entity.stable_id());
             continue;
         }
 
         // Aircraft with 0 ammo cannot fire — must reload at an airfield first.
         if let Some(ref ammo) = entity.aircraft_ammo {
             if ammo.current <= 0 {
-                blocked.insert(entity.stable_id);
+                blocked.insert(entity.stable_id());
                 continue;
             }
         }
@@ -66,14 +66,14 @@ pub fn collect_fire_blocked_entities(
         // Docked-idle aircraft are parked on helipad — don't fire.
         if let Some(ref mission) = entity.aircraft_mission {
             if mission.is_attacking() || mission.is_docked_idle() {
-                blocked.insert(entity.stable_id);
+                blocked.insert(entity.stable_id());
                 continue;
             }
         }
 
         // Buildings still deploying cannot fire.
         if entity.building_up.is_some() {
-            blocked.insert(entity.stable_id);
+            blocked.insert(entity.stable_id());
             continue;
         }
 
@@ -81,7 +81,7 @@ pub fn collect_fire_blocked_entities(
         if entity.category == EntityCategory::Structure {
             if let Some(rules) = rules {
                 if !power_system::is_building_powered(power_states, rules, entity, interner) {
-                    blocked.insert(entity.stable_id);
+                    blocked.insert(entity.stable_id());
                     continue;
                 }
             }
@@ -92,11 +92,11 @@ pub fn collect_fire_blocked_entities(
         // garrisonable building is defenseless.
         if entity.category == EntityCategory::Structure {
             if let Some(rules) = rules {
-                if let Some(obj) = rules.object(interner.resolve(entity.type_ref)) {
+                if let Some(obj) = rules.object(interner.resolve(entity.type_ref())) {
                     if obj.can_be_occupied
                         && entity.passenger_role.cargo().map_or(true, |c| c.is_empty())
                     {
-                        blocked.insert(entity.stable_id);
+                        blocked.insert(entity.stable_id());
                     }
                 }
             }

@@ -1897,7 +1897,7 @@ impl Simulation {
                     if category != EntityCategory::Structure {
                         return None;
                     }
-                    let object = rules.object(self.interner.resolve(entity.type_ref))?;
+                    let object = rules.object(self.interner.resolve(entity.type_ref()))?;
                     let passenger_ids = entity
                         .passenger_role
                         .cargo()
@@ -1910,8 +1910,8 @@ impl Simulation {
                         crate::sim::production::foundation_dimensions(&object.foundation);
                     Some(crate::sim::combat::DestroyedGarrisonBuilding {
                         building_id: stable_id,
-                        type_id: entity.type_ref,
-                        owner: entity.owner,
+                        type_id: entity.type_ref(),
+                        owner: entity.owner(),
                         rx: entity.position.rx,
                         ry: entity.position.ry,
                         z: entity.position.z,
@@ -2309,7 +2309,7 @@ impl Simulation {
                 let Some(firer) = transaction.entities.get(request.firer_id) else {
                     break;
                 };
-                let Some(object_type) = rules.object(transaction.interner.resolve(firer.type_ref)) else {
+                let Some(object_type) = rules.object(transaction.interner.resolve(firer.type_ref())) else {
                     break;
                 };
                 let Some(weapon_name) = crate::sim::combat::combat_weapon::primary_for_tier(
@@ -2326,7 +2326,7 @@ impl Simulation {
                     break;
                 };
                 let warhead_ref = transaction.interner.intern(warhead_name);
-                let source_house = Some(firer.owner);
+                let source_house = Some(firer.owner());
                 let mut shared_damage = raw_ambient_damage;
 
                 // The shared dummy is still a native CellClass entry, so the
@@ -2787,7 +2787,7 @@ impl Simulation {
             .entities
             .get(dead_id)
             .filter(|building| building.category == EntityCategory::Structure)
-            .and_then(|building| self.object_type(building.type_ref, rules))
+            .and_then(|building| self.object_type(building.type_ref(), rules))
             .is_some_and(|obj| obj.refinery);
         if is_refinery {
             crate::sim::miner::interrupt_refinery_docked_miners(self, rules, dead_id);
@@ -2817,7 +2817,7 @@ impl Simulation {
                 self.substrate
                     .entities
                     .get(dead_id)
-                    .map(|entity| (entity.owner, entity.category))
+                    .map(|entity| (entity.owner(), entity.category))
             })
             .collect();
 
@@ -3054,7 +3054,7 @@ impl Simulation {
         };
         let Some(obj) = self
             .interner
-            .try_resolve(entity.type_ref)
+            .try_resolve(entity.type_ref())
             .and_then(|type_name| rules.object(type_name))
         else {
             return;
@@ -3064,7 +3064,7 @@ impl Simulation {
             entity.category,
             entity.position.rx,
             entity.position.ry,
-            entity.owner,
+            entity.owner(),
         );
         if let Some(event) = event {
             self.dispatch_unit_lost_events(&[event]);
@@ -3895,7 +3895,7 @@ impl Simulation {
             });
         let active = entity.move_sound_active;
         let countdown = entity.move_sound_countdown;
-        let type_ref = entity.type_ref;
+        let type_ref = entity.type_ref();
         let world = Self::movement_sound_world(entity);
         let qualifies = (movement_changed || moving_now) && !falling_or_crashing;
 
@@ -4136,7 +4136,7 @@ impl Simulation {
                     && entity.category != EntityCategory::Structure
                     && self
                         .houses
-                        .get(&entity.owner)
+                        .get(&entity.owner())
                         .is_some_and(|house| house.is_human);
                 Some((stable_id, member, reveal))
             })
@@ -4532,27 +4532,27 @@ impl Simulation {
                 debug_assert!(
                     entity.lifecycle.in_limbo,
                     "dead entity {} must have completed Conceal before alive clear",
-                    entity.stable_id
+                    entity.stable_id()
                 );
                 debug_assert!(
                     !entity.lifecycle.cell_marked,
                     "dead entity {} must be unmarked before alive clear",
-                    entity.stable_id
+                    entity.stable_id()
                 );
                 debug_assert!(
                     !entity.in_logic_vector,
                     "dead entity {} must leave LogicVector before alive clear",
-                    entity.stable_id
+                    entity.stable_id()
                 );
                 debug_assert!(
                     entity.owned_count_released,
                     "dead entity {} must release owned count exactly once before alive clear",
-                    entity.stable_id
+                    entity.stable_id()
                 );
                 debug_assert!(
-                    self.substrate.pending_delete.contains(&entity.stable_id),
+                    self.substrate.pending_delete.contains(&entity.stable_id()),
                     "dead entity {} must remain pending until finalization",
-                    entity.stable_id
+                    entity.stable_id()
                 );
             }
             if entity.lifecycle.cell_marked
@@ -4563,9 +4563,9 @@ impl Simulation {
                     debug_assert!(
                         self.substrate
                             .occupancy
-                            .contains_entity(rx, ry, entity.stable_id),
+                            .contains_entity(rx, ry, entity.stable_id()),
                         "cell-marked entity {} missing occupancy at ({rx}, {ry})",
-                        entity.stable_id
+                        entity.stable_id()
                     );
                 }
             }
@@ -4623,7 +4623,7 @@ impl Simulation {
         if let Some(rules) = rules {
             for e in self.substrate.entities.values() {
                 if crate::sim::miner::miner_system::counts_as_purifier(self, rules, e) {
-                    *purifiers.entry(e.owner).or_insert(0) += 1;
+                    *purifiers.entry(e.owner()).or_insert(0) += 1;
                 }
             }
         }
@@ -4900,7 +4900,7 @@ impl Simulation {
                 && entity.lifecycle.object_alive
                 && !entity.lifecycle.in_limbo
                 && entity.lifecycle.cell_marked)
-                .then_some(entity.owner)
+                .then_some(entity.owner())
         }) else {
             return;
         };
@@ -4928,7 +4928,7 @@ impl Simulation {
             .substrate
             .entities
             .get(stable_id)
-            .map(|entity| (entity.owner, entity.build_const_eligible))
+            .map(|entity| (entity.owner(), entity.build_const_eligible))
         else {
             return;
         };
@@ -4969,7 +4969,7 @@ impl Simulation {
         let Some((old_owner, category, has_spawn_manager, build_const_eligible)) =
             self.substrate.entities.get(stable_id).map(|entity| {
                 (
-                    entity.owner,
+                    entity.owner(),
                     entity.category,
                     entity.spawn_manager.is_some(),
                     entity.build_const_eligible,
@@ -5143,7 +5143,7 @@ impl Simulation {
                 self.substrate
                     .entities
                     .get(other)
-                    .and_then(|b| self.object_type(b.type_ref, rules))
+                    .and_then(|b| self.object_type(b.type_ref(), rules))
                     .is_some_and(|obj| obj.weapons_factory)
             })
         });
@@ -5310,12 +5310,12 @@ impl Simulation {
         };
 
         self.substrate.entities.values().any(|entity| {
-            entity.owner == owner
+            entity.owner() == owner
                 && entity.category == EntityCategory::Unit
                 && !entity.dying
                 && rules.general.base_unit_types.iter().any(|type_id| {
                     self.interner
-                        .resolve(entity.type_ref)
+                        .resolve(entity.type_ref())
                         .eq_ignore_ascii_case(type_id)
                 })
         })
@@ -5451,7 +5451,7 @@ impl Simulation {
                 (entity.category == EntityCategory::Structure).then_some((
                     entity.position.rx,
                     entity.position.ry,
-                    self.interner.resolve(entity.type_ref).to_string(),
+                    self.interner.resolve(entity.type_ref()).to_string(),
                 ))
             })
             .collect();
@@ -5831,7 +5831,7 @@ impl Simulation {
                     && entity.mission.current() != selling
                     && entity.mission.queued() != selling
                     && self
-                        .object_type(entity.type_ref, rules)
+                        .object_type(entity.type_ref(), rules)
                         .is_some_and(|object| object.spy_sat);
                 if !coarse_candidate {
                     continue;
@@ -5869,7 +5869,7 @@ impl Simulation {
             {
                 continue;
             }
-            let Some(obj) = self.object_type(entity.type_ref, rules) else {
+            let Some(obj) = self.object_type(entity.type_ref(), rules) else {
                 continue;
             };
             if entity.building_up.is_some() {
@@ -5884,7 +5884,7 @@ impl Simulation {
                 )
             {
                 effects.gap_generators.push((
-                    entity.owner,
+                    entity.owner(),
                     entity.position.rx,
                     entity.position.ry,
                     i32::from(obj.gap_radius_in_cells),
@@ -6052,7 +6052,7 @@ impl Simulation {
             let mut entity_stats: DiagMap<String, (u32, u16, u16, u16, u16)> = DiagMap::new();
             for entity in self.substrate.entities.values() {
                 let entry = entity_stats
-                    .entry(self.interner.resolve(entity.owner).to_string())
+                    .entry(self.interner.resolve(entity.owner()).to_string())
                     .or_insert((0, u16::MAX, u16::MAX, 0, 0));
                 entry.0 += 1;
                 entry.1 = entry.1.min(entity.position.rx);
@@ -6086,7 +6086,7 @@ impl Simulation {
             .entities
             .get(stable_id)
             .filter(|e| e.category == EntityCategory::Structure && !e.dying)
-            .map(|e| (e.owner, e.type_ref))
+            .map(|e| (e.owner(), e.type_ref()))
         else {
             return;
         };
@@ -6454,7 +6454,7 @@ impl Simulation {
                             entity.regular_crusher,
                             entity.omni_crusher,
                         ),
-                        self.interner.resolve(entity.owner),
+                        self.interner.resolve(entity.owner()),
                         locomotor_kind,
                         false,
                         &self.substrate.occupancy,
@@ -6924,7 +6924,7 @@ impl Simulation {
                         .substrate
                         .entities
                         .get(entity_id)
-                        .map(|entity| entity.type_ref)
+                        .map(|entity| entity.type_ref())
                     else {
                         continue;
                     };
@@ -7444,7 +7444,7 @@ impl Simulation {
                     self.substrate
                         .entities
                         .get(dead_id)
-                        .map(|entity| (entity.owner, entity.category))
+                        .map(|entity| (entity.owner(), entity.category))
                 })
                 .collect();
             // Animated infantry remain represented and live until their death
@@ -8020,7 +8020,7 @@ impl Simulation {
             return false;
         };
         let category = entity.category;
-        let owner = entity.owner;
+        let owner = entity.owner();
         let regular_crusher = entity.regular_crusher;
         let omni_crusher = entity.omni_crusher;
         let locomotor = entity.locomotor.as_ref();

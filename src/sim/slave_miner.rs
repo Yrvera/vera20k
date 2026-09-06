@@ -150,7 +150,7 @@ pub(super) fn tick_slave_harvesters(
         };
         snapshots.push(SlaveSnapshot {
             entity_id: id,
-            owner: entity.owner,
+            owner: entity.owner(),
             rx: entity.position.rx,
             ry: entity.position.ry,
             harvester: sh.clone(),
@@ -381,7 +381,7 @@ fn handle_slave_deposit(
         .substrate
         .entities
         .get(snap.harvester.master_id)
-        .map_or(snap.owner, |master| master.owner);
+        .map_or(snap.owner, |master| master.owner());
     let owner_str = sim.interner.resolve(master_owner).to_string();
     let income_ppm = income_ppm_for_owner(&sim.houses, &sim.interner, rules, &owner_str);
     let purifier_count = effective_purifier_count(sim, rules, &owner_str);
@@ -526,14 +526,14 @@ pub(crate) fn deploy_slave_miner_with_overlay_context(
     // Read deploy data before mutating.
     let deploy_data = {
         let entity = sim.substrate.entities.get(stable_id)?;
-        let type_str = sim.interner.resolve(entity.type_ref);
+        let type_str = sim.interner.resolve(entity.type_ref());
         let obj = rules.object_case_insensitive(type_str)?;
         let target_type: &str = obj.deploys_into.as_deref()?;
         // Verify target exists in rules.
         rules.object(target_type)?;
         let enslaves: String = obj.enslaves.clone()?;
         let slaves_number: i32 = obj.slaves_number.max(0);
-        let owner_str = sim.interner.resolve(entity.owner).to_string();
+        let owner_str = sim.interner.resolve(entity.owner()).to_string();
         Some((
             owner_str,
             entity.position.rx,
@@ -660,11 +660,11 @@ pub(crate) fn undeploy_slave_miner_with_overlay_context(
     // Read undeploy data.
     let undeploy_data = {
         let entity = sim.substrate.entities.get(stable_id)?;
-        let type_str = sim.interner.resolve(entity.type_ref);
+        let type_str = sim.interner.resolve(entity.type_ref());
         let obj = rules.object_case_insensitive(type_str)?;
         let target_type: &str = obj.undeploys_into.as_deref()?;
         rules.object(target_type)?;
-        let owner_str = sim.interner.resolve(entity.owner).to_string();
+        let owner_str = sim.interner.resolve(entity.owner()).to_string();
         Some((
             owner_str,
             entity.position.rx,
@@ -768,8 +768,8 @@ pub(super) fn tick_slave_regen(
             continue;
         };
 
-        let master_type = sim.interner.resolve(master.type_ref).to_string();
-        let owner = sim.interner.resolve(master.owner).to_string();
+        let master_type = sim.interner.resolve(master.type_ref()).to_string();
+        let owner = sim.interner.resolve(master.owner()).to_string();
         let mrx: u16 = master.position.rx;
         let mry: u16 = master.position.ry;
         let mz: u8 = master.position.z;

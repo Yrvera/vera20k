@@ -47,6 +47,9 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+#[path = "resolved_terrain_mutation.rs"]
+mod mutation;
+
 pub const YR_CELL_LAND_TUNNEL: u8 = 10;
 
 /// Identifies whether map overlays still require the ordinary authored-map
@@ -1345,7 +1348,10 @@ pub fn tile_anim_pixel_offset_to_leptons(x_offset: i32, y_offset: i32) -> (i32, 
 pub struct ResolvedTerrainGrid {
     width: u16,
     height: u16,
-    pub cells: Vec<ResolvedTerrainCell>,
+    #[cfg(test)]
+    pub(crate) cells: Vec<ResolvedTerrainCell>,
+    #[cfg(not(test))]
+    cells: Vec<ResolvedTerrainCell>,
     /// One live identity handle, normally bound to the process owner before
     /// scenario construction. Synthetic constructors own a fresh detached
     /// handle; derived clones share it.
@@ -2469,8 +2475,19 @@ impl ResolvedTerrainGrid {
         }
     }
 
-    /// Mutable access to a cell by map coordinates.
-    pub fn cell_mut(&mut self, rx: u16, ry: u16) -> Option<&mut ResolvedTerrainCell> {
+    /// Immutable cells in the grid's established storage order.
+    pub fn cells(&self) -> &[ResolvedTerrainCell] {
+        &self.cells
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cell_mut(&mut self, rx: u16, ry: u16) -> Option<&mut ResolvedTerrainCell> {
+        let idx = self.index(rx, ry)?;
+        self.cells.get_mut(idx)
+    }
+
+    #[cfg(not(test))]
+    fn cell_mut(&mut self, rx: u16, ry: u16) -> Option<&mut ResolvedTerrainCell> {
         let idx = self.index(rx, ry)?;
         self.cells.get_mut(idx)
     }

@@ -55,7 +55,7 @@ pub(crate) fn tick_parachute_anims(state: &mut AppState) {
         .filter(|e| {
             e.lifecycle.object_alive && !e.lifecycle.in_limbo && e.parachute_state.is_some()
         })
-        .map(|e| e.stable_id)
+        .map(|e| e.stable_id())
         .filter(|sid| !state.match_state.match_presentation.parachute_anims.iter().any(|a| a.target_id == *sid))
         .collect();
 

@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 
-use crate::map::resolved_terrain::{ResolvedTerrainGrid, recalc_zone_type};
+use crate::map::resolved_terrain::{ResolvedTerrainGrid};
 use crate::rules::ruleset::RuleSet;
 use crate::rules::terrain_object_type::TerrainObjectType;
 use crate::rules::warhead_type::WarheadType;
@@ -450,7 +450,7 @@ pub fn mark_terrain_occupation(
         production.terrain_occupation_bits.remove(&cell);
     }
     if let Some(grid) = resolved_terrain {
-        set_resolved_terrain_object_occupation(grid, cell, Some(terrain.occupation_bits));
+        grid.set_terrain_object_occupation(cell, Some(terrain.occupation_bits));
     }
 }
 
@@ -462,7 +462,7 @@ pub fn unmark_terrain_occupation(
     let cell = terrain.cell();
     production.terrain_occupation_bits.remove(&cell);
     if let Some(grid) = resolved_terrain {
-        set_resolved_terrain_object_occupation(grid, cell, None);
+        grid.set_terrain_object_occupation(cell, None);
     }
 }
 
@@ -519,7 +519,7 @@ fn limbo_terrain_object_at_cell_parts(
     );
     authority.terrain_occupation_bits.remove(&source_cell);
     if let Some(grid) = resolved_terrain {
-        set_resolved_terrain_object_occupation(grid, source_cell, None);
+        grid.set_terrain_object_occupation(source_cell, None);
     }
     if let Some(terrain) = authority.terrain_objects.get_mut(&stable_id) {
         terrain.lifecycle = TerrainObjectLifecycle::Limbo;
@@ -572,32 +572,6 @@ pub(crate) fn damage_terrain_object_at_cell(
     };
     let _ = area_state.restore_into(production, raw_occupation);
     result
-}
-
-fn set_resolved_terrain_object_occupation(
-    grid: &mut ResolvedTerrainGrid,
-    cell: (u16, u16),
-    occupation: Option<u8>,
-) {
-    let Some(terrain_cell) = grid.cell_mut(cell.0, cell.1) else {
-        return;
-    };
-    let blocked = occupation.is_some_and(|occupation| occupation != 0);
-    terrain_cell.terrain_object_occupation = occupation;
-    terrain_cell.terrain_object_blocks = blocked;
-    terrain_cell.ground_walk_blocked =
-        terrain_cell.base_ground_walk_blocked || terrain_cell.overlay_blocks || blocked;
-    terrain_cell.build_blocked = terrain_cell.base_build_blocked
-        || terrain_cell.overlay_blocks
-        || terrain_cell.has_bridge_deck
-        || blocked;
-    terrain_cell.zone_type = recalc_zone_type(
-        terrain_cell.outside_playfield,
-        terrain_cell.overlay_zone_type,
-        terrain_cell.land_type,
-        terrain_cell.speed_costs.wheel,
-        terrain_cell.terrain_object_occupation,
-    );
 }
 
 #[cfg(test)]

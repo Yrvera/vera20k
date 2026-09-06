@@ -262,10 +262,10 @@ fn find_nearest_airfield(
         if entity.health.current == 0 || entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
-        if entity.owner != owner {
+        if entity.owner() != owner {
             continue;
         }
-        let entity_type_str = sim.interner.resolve(entity.type_ref);
+        let entity_type_str = sim.interner.resolve(entity.type_ref());
         let Some(obj) = rules.object(entity_type_str) else {
             continue;
         };
@@ -286,7 +286,7 @@ fn find_nearest_airfield(
         let dist = cell_dist_sq(from.0, from.1, dock_rx, dock_ry);
 
         if best.is_none() || dist < best.unwrap().3 {
-            best = Some((entity.stable_id, dock_rx, dock_ry, dist));
+            best = Some((entity.stable_id(), dock_rx, dock_ry, dist));
         }
     }
 
@@ -320,7 +320,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
         .entities
         .values()
         .filter(|e| !e.dying)
-        .map(|e| e.stable_id)
+        .map(|e| e.stable_id())
         .collect();
     sim.production.airfield_docks.cleanup_dead(&alive);
 
@@ -359,9 +359,9 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
             }
             let air_phase = e.locomotor.as_ref().map(|l| l.air_phase);
             Some(AircraftSnap {
-                id: e.stable_id,
-                owner: e.owner,
-                type_ref: e.type_ref,
+                id: e.stable_id(),
+                owner: e.owner(),
+                type_ref: e.type_ref(),
                 rx: e.position.rx,
                 ry: e.position.ry,
                 current_ammo: ammo.current,
@@ -449,7 +449,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
                     if af.health.current == 0 || af.dying {
                         return None;
                     }
-                    let obj = sim.object_type(af.type_ref, rules)?;
+                    let obj = sim.object_type(af.type_ref(), rules)?;
                     let (w, h) = crate::sim::production::foundation_dimensions(&obj.foundation);
                     Some((af_sid, af.position.rx + w / 2, af.position.ry + h / 2))
                 });
@@ -501,7 +501,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
                     .substrate
                     .entities
                     .get(af_sid)
-                    .and_then(|af| sim.object_type(af.type_ref, rules))
+                    .and_then(|af| sim.object_type(af.type_ref(), rules))
                     .map(|obj| obj.number_of_docks.max(1))
                     .unwrap_or(1);
 
@@ -520,7 +520,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
                     // to whatever was previously targeted (building center)
                     // when the building has no DockingOffset%d in art.
                     if let Some((px, py)) = sim.substrate.entities.get(af_sid).and_then(|af| {
-                        let obj = sim.object_type(af.type_ref, rules)?;
+                        let obj = sim.object_type(af.type_ref(), rules)?;
                         let foundation =
                             crate::sim::production::foundation_dimensions(&obj.foundation);
                         obj.pads.get(pad_index as usize).map(|pad| {
@@ -627,7 +627,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
             .entities
             .get(id)
             .and_then(|e| {
-                let obj = sim.object_type(e.type_ref, rules)?;
+                let obj = sim.object_type(e.type_ref(), rules)?;
                 Some(crate::util::fixed_math::ra2_speed_to_leptons_per_second(
                     obj.speed.max(1),
                 ))

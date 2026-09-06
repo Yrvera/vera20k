@@ -236,7 +236,7 @@ fn emit_entity_order_voice(state: &mut AppState, speaker_id: u64, voice_field: &
     let Some(entity) = sim.entities().get(speaker_id) else {
         return;
     };
-    let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
+    let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref())) else {
         return;
     };
     let Some(id) = voice_id_for_key(obj, voice_field) else {
@@ -372,7 +372,7 @@ fn entity_can_attack_move(
     ) {
         return false;
     }
-    let Some(obj) = rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref))) else {
+    let Some(obj) = rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref()))) else {
         return false;
     };
     if obj.prevent_attack_move {
@@ -541,7 +541,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             if entity.category == EntityCategory::Structure {
                 _structure_count += 1;
                 if structure_owner.is_none() {
-                    structure_owner = Some(sim.interner.resolve(entity.owner).to_string());
+                    structure_owner = Some(sim.interner.resolve(entity.owner()).to_string());
                 }
             } else {
                 mobile_count += 1;
@@ -610,7 +610,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     let rules = Some(&resources.rules)?;
                     sim.entities().get(target.stable_id).and_then(|e| {
                         rules
-                            .is_refinery_type(sim.interner.resolve(e.type_ref))
+                            .is_refinery_type(sim.interner.resolve(e.type_ref()))
                             .then_some(target.stable_id)
                     })
                 })
@@ -703,14 +703,14 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                 entity,
                                 resources
                                     .rules
-                                    .object(sim.interner.resolve(entity.type_ref)),
+                                    .object(sim.interner.resolve(entity.type_ref())),
                             ) {
                                 queued.push(CommandEnvelope::new(owner_id, execute_tick, cmd));
                                 return finish_order(state, queued, speaker_id);
                             }
                             if entity.category == EntityCategory::Structure {
                                 let obj = Some(&resources.rules)
-                                    .and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
+                                    .and_then(|r| r.object(sim.interner.resolve(entity.type_ref())));
                                 let cmd = if obj.map_or(false, |o| o.can_be_occupied)
                                     && entity.passenger_role.cargo().is_some_and(|c| !c.is_empty())
                                 {
@@ -765,7 +765,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     rally_announce = struct_owner_id == owner_id && producer_ids.iter().any(|id| {
                         sim.entities().get(*id).is_some_and(|entity| {
                             Some(&resources.rules)
-                                .and_then(|r| r.object(sim.interner.resolve(entity.type_ref)))
+                                .and_then(|r| r.object(sim.interner.resolve(entity.type_ref())))
                                 .is_some_and(
                                     crate::app::match_runtime::eva_producers::rally_point_announces,
                                 )
@@ -849,7 +849,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     }
                     let rules = Some(&resources.rules)?;
                     let building = sim.entities().get(target.stable_id)?;
-                    let obj = rules.object(sim.interner.resolve(building.type_ref))?;
+                    let obj = rules.object(sim.interner.resolve(building.type_ref()))?;
                     if !obj.can_c4 || obj.invisible_in_game {
                         return None;
                     }
@@ -871,7 +871,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                             sim.entities().get(sid).is_some_and(|e| {
                                 e.category == EntityCategory::Infantry
                                     && Some(&resources.rules)
-                                        .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
+                                        .and_then(|r| r.object(sim.interner.resolve(e.type_ref())))
                                         .map_or(false, |o| o.c4)
                             })
                         })
@@ -902,8 +902,8 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     }
                     let rules = Some(&resources.rules)?;
                     let building = sim.entities().get(target.stable_id)?;
-                    let btype_str = sim.interner.resolve(building.type_ref);
-                    let bowner_str = sim.interner.resolve(building.owner);
+                    let btype_str = sim.interner.resolve(building.type_ref());
+                    let bowner_str = sim.interner.resolve(building.owner());
                     let obj = rules.object(btype_str)?;
                     if !obj.capturable && !obj.bridge_repair_hut {
                         return None;
@@ -925,7 +925,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                             sim.entities().get(sid).is_some_and(|e| {
                                 e.category == EntityCategory::Infantry
                                     && Some(&resources.rules)
-                                        .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
+                                        .and_then(|r| r.object(sim.interner.resolve(e.type_ref())))
                                         .map_or(false, |o| o.engineer)
                             })
                         })
@@ -956,7 +956,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     }
                     let rules = Some(&resources.rules)?;
                     let building = sim.entities().get(target.stable_id)?;
-                    let obj = rules.object(sim.interner.resolve(building.type_ref))?;
+                    let obj = rules.object(sim.interner.resolve(building.type_ref()))?;
                     obj.unit_repair.then_some(target.stable_id)
                 });
                 if let Some(depot_id) = depot_target {
@@ -1032,7 +1032,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     if selected_ids.contains(&target.stable_id) {
                         if let Some(entity) = sim.entities().get(target.stable_id) {
                             let obj = Some(&resources.rules)
-                                .and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
+                                .and_then(|r| r.object(sim.interner.resolve(entity.type_ref())));
                             let cmd = if entity.category == EntityCategory::Structure {
                                 // Garrisoned building → unload occupants.
                                 if obj.map_or(false, |o| o.can_be_occupied)
@@ -1201,7 +1201,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         .entities()
                         .get(stable_id)
                         .and_then(|e| {
-                            let type_str = sim.interner.resolve(e.type_ref);
+                            let type_str = sim.interner.resolve(e.type_ref());
                             Some(&resources.rules)
                                 .and_then(|r| r.object(type_str))
                                 .map(|obj| crate::sim::combat::combat_weapon::is_armed(e, obj))
@@ -1342,7 +1342,7 @@ fn selected_rally_producer_ids(
         .copied()
         .filter(|stable_id| {
             sim.entities().get(*stable_id).is_some_and(|entity| {
-                entity.category == EntityCategory::Structure && entity.owner == owner
+                entity.category == EntityCategory::Structure && entity.owner() == owner
             })
         })
         .collect();

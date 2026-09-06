@@ -211,7 +211,7 @@ pub(crate) fn facing_update(
         hull_destination: None,
         turret_destination_is_idle_return: false,
     };
-    let obj = rules.and_then(|r| r.object(interner.resolve(entity.type_ref)));
+    let obj = rules.and_then(|r| r.object(interner.resolve(entity.type_ref())));
     let has_turret = entity.barrel_facing.is_some();
 
     // --- A. AIM ---------------------------------------------------------
@@ -314,7 +314,7 @@ pub(crate) fn current_weapon_is_omni_fire(
     interner: &crate::sim::intern::StringInterner,
 ) -> bool {
     let Some(rules) = rules else { return false };
-    let Some(obj) = rules.object(interner.resolve(entity.type_ref)) else {
+    let Some(obj) = rules.object(interner.resolve(entity.type_ref())) else {
         return false;
     };
     let index: i32 = if obj.turret_count > 0 {
@@ -446,7 +446,7 @@ pub fn tick_turret_rotation(
                 interner.resolve(
                     entities
                         .get(update.id)
-                        .map(|e| e.type_ref)
+                        .map(|e| e.type_ref())
                         .unwrap_or_default(),
                 ),
             )

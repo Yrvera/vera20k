@@ -344,8 +344,8 @@ pub(crate) fn calculate_threat_score(
 ) -> Option<X87Value> {
     let scorer = entities.get(scorer_id)?;
     let candidate = entities.get(candidate_id)?;
-    let scorer_type = rules.object(interner.resolve(scorer.type_ref))?;
-    let candidate_type = rules.object(interner.resolve(candidate.type_ref))?;
+    let scorer_type = rules.object(interner.resolve(scorer.type_ref()))?;
+    let candidate_type = rules.object(interner.resolve(candidate.type_ref()))?;
     let coeff_a = load_threat_double(coefficients.my_effectiveness)?;
     let coeff_b = load_threat_double(coefficients.target_effectiveness)?;
     let coeff_c = load_threat_double(coefficients.target_special_threat)?;
@@ -360,7 +360,7 @@ pub(crate) fn calculate_threat_score(
         scorer,
         scorer_type,
         terrain,
-        is_ally_by_object(alliances, interner, candidate.owner, scorer.owner),
+        is_ally_by_object(alliances, interner, candidate.owner(), scorer.owner()),
     );
     if let Some(selected) = select_weapon_for_target(
         rules,
@@ -374,7 +374,7 @@ pub(crate) fn calculate_threat_score(
         if candidate
             .attack_target
             .as_ref()
-            .is_some_and(|target| target.target == super::TargetKind::Entity(scorer.stable_id))
+            .is_some_and(|target| target.target == super::TargetKind::Entity(scorer.stable_id()))
         {
             term = X87Chop53::neg(term);
         }
@@ -396,7 +396,7 @@ pub(crate) fn calculate_threat_score(
         candidate,
         candidate_type,
         terrain,
-        is_ally_by_object(alliances, interner, scorer.owner, candidate.owner),
+        is_ally_by_object(alliances, interner, scorer.owner(), candidate.owner()),
     );
     let selected_scorer_weapon = select_weapon_for_target(
         rules,
@@ -620,12 +620,12 @@ impl ScanIndex {
                 x + slack >= min.0 && x - slack <= max.0 && y + slack >= min.1 && y - slack <= max.1
             })
             .collect();
-        ordered.sort_by_key(|entity| (entity.occupancy_enter_order, entity.stable_id));
+        ordered.sort_by_key(|entity| (entity.occupancy_enter_order, entity.stable_id()));
 
         let mut cells = OccupancyGrid::new();
         let mut airborne: BTreeMap<(u16, u16), Vec<u64>> = BTreeMap::new();
         for entity in ordered {
-            let sid = entity.stable_id;
+            let sid = entity.stable_id();
             let Some(layer) = cell_list_layer_for_entity(entity) else {
                 airborne
                     .entry((entity.position.rx, entity.position.ry))
@@ -723,13 +723,13 @@ impl ScanContext<'_> {
 
     /// `HouseClass::Is_Ally_ByObject` — allied houses and the owner itself.
     fn is_ally(&self, candidate: &GameEntity) -> bool {
-        if candidate.owner == self.attacker.owner {
+        if candidate.owner() == self.attacker.owner {
             return true;
         }
         self.fog.is_some_and(|fog| {
             fog.is_friendly(
                 self.interner.resolve(self.attacker.owner),
-                self.interner.resolve(candidate.owner),
+                self.interner.resolve(candidate.owner()),
             )
         })
     }
@@ -1103,7 +1103,7 @@ fn global_list_scan(ctx: &ScanContext<'_>) -> Option<u64> {
         };
         if score > best_score {
             best_score = score;
-            best = Some(candidate.stable_id);
+            best = Some(candidate.stable_id());
         }
     }
     best
@@ -1154,7 +1154,7 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
     // its armor is at or below the `0.02f` floor. `select_weapon_for_target`
     // is the `SelectWeaponAgainst @ 0x006F3330` ladder and already carries the
     // 0% fallback, so a `None` here is native's `FIRE_ILLEGAL`.
-    let candidate_obj = ctx.rules.object(ctx.interner.resolve(candidate.type_ref))?;
+    let candidate_obj = ctx.rules.object(ctx.interner.resolve(candidate.type_ref()))?;
     let scanner_facts = ctx
         .entities
         .get(ctx.attacker.stable_id)
@@ -1168,7 +1168,7 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
             ctx.alliances(),
             ctx.interner,
             ctx.attacker.owner,
-            candidate.owner,
+            candidate.owner(),
         ),
     );
     let selected = select_weapon_for_target(
@@ -1203,7 +1203,7 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
                 candidate.position.ry,
             )
         }),
-        candidate.owner == ctx.attacker.owner,
+        candidate.owner() == ctx.attacker.owner,
     ) {
         return None;
     }
@@ -1216,7 +1216,7 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
     // G10/G11 — the ally arm and the self test. The cell walk already stopped
     // on the first hostile, but the airborne pre-pass and the retarget callers
     // arrive here directly.
-    if candidate.stable_id == ctx.attacker.stable_id || ctx.is_ally(candidate) {
+    if candidate.stable_id() == ctx.attacker.stable_id || ctx.is_ally(candidate) {
         return None;
     }
     if candidate.passenger_role.is_inside_transport() {
@@ -1298,7 +1298,7 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
         ScanRange::NoCutoff => true,
         ScanRange::CanFireAt => match (ctx.terrain, ctx.entities.get(ctx.attacker.stable_id)) {
             (Some(terrain), Some(attacker_entity)) => {
-                let candidate_target = super::TargetKind::Entity(candidate.stable_id);
+                let candidate_target = super::TargetKind::Entity(candidate.stable_id());
                 let src = super::in_range::fire_source_coords(
                     attacker_entity,
                     &candidate_target,
@@ -1478,7 +1478,7 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
     let score = calculate_threat_score(
         ctx.entities,
         ctx.attacker.stable_id,
-        candidate.stable_id,
+        candidate.stable_id(),
         ctx.rules,
         ctx.interner,
         ctx.terrain,

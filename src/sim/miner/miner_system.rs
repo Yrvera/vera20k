@@ -157,7 +157,7 @@ fn return_exceeds_too_far_threshold(
     // never produced (foreign-interner fixtures) degrades to a 1x1 footprint.
     let (w, h) = sim
         .interner
-        .try_resolve(refinery.type_ref)
+        .try_resolve(refinery.type_ref())
         .and_then(|name| rules.object_case_insensitive(name))
         .map(|obj| foundation_dimensions(&obj.foundation))
         .unwrap_or((1, 1));
@@ -566,7 +566,7 @@ fn sweep_dead_dock_reservations_for_keys(sim: &mut Simulation, order: &[u64]) {
         .entities
         .values()
         .filter(|e| !e.dying)
-        .map(|e| e.stable_id)
+        .map(|e| e.stable_id())
         .collect();
     sim.production.dock_reservations.cleanup_dead(&alive_sids);
 }
@@ -592,7 +592,7 @@ pub(super) fn build_miner_snapshot(
     // Use the authentic RA2 speed formula: Speed=4 → ~0.586 cells/sec.
     // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: the miner's drive loop asks the
     // same getter every mover does, so a `FASTER` miner takes the multiply here.
-    let obj = sim.object_type(entity.type_ref, rules);
+    let obj = sim.object_type(entity.type_ref(), rules);
     let speed: SimFixed = crate::sim::combat::veterancy::entity_mover_speed_leptons_per_second(
         entity,
         obj,
@@ -608,8 +608,8 @@ pub(super) fn build_miner_snapshot(
     );
     Some(MinerSnapshot {
         entity_id: id,
-        owner: entity.owner,
-        type_id: entity.type_ref,
+        owner: entity.owner(),
+        type_id: entity.type_ref(),
         rx: entity.position.rx,
         ry: entity.position.ry,
         speed,
@@ -1690,7 +1690,7 @@ fn refinery_building_in_cell(sim: &Simulation, rules: &RuleSet, cell: (u16, u16)
             entity.category == EntityCategory::Structure
                 && !entity.dying
                 && sim
-                    .object_type(entity.type_ref, rules)
+                    .object_type(entity.type_ref(), rules)
                     .is_some_and(|obj| obj.refinery)
         })
     })
@@ -1707,7 +1707,7 @@ fn building_nearby_passable_cell(
 ) -> Option<(u16, u16)> {
     let building = sim.substrate.entities.get(building_sid)?;
     let (w, h) = sim
-        .object_type(building.type_ref, rules)
+        .object_type(building.type_ref(), rules)
         .map(|obj| foundation_dimensions(&obj.foundation))
         .unwrap_or((1, 1));
     let (x, y) = building_get_coords_xy(building, w, h);
@@ -2262,7 +2262,7 @@ fn find_docking_bay(
             if entity.category != EntityCategory::Structure {
                 continue;
             }
-            let e_type = sim.interner.resolve(entity.type_ref);
+            let e_type = sim.interner.resolve(entity.type_ref());
             if !e_type.eq_ignore_ascii_case(dock_type) || entity.lifecycle.in_limbo {
                 continue;
             }
@@ -2397,7 +2397,7 @@ fn refinery_accepts_can_load(
         && !sim
             .production
             .dock_reservations
-            .would_admit(refinery.stable_id, miner_sid, capacity)
+            .would_admit(refinery.stable_id(), miner_sid, capacity)
     {
         return false;
     }
@@ -2442,7 +2442,7 @@ fn refinery_dock_for_sid(sim: &Simulation, rules: &RuleSet, ref_sid: u64) -> Opt
     if entity.dying || entity.health.current == 0 {
         return None;
     }
-    let obj = sim.object_type(entity.type_ref, rules);
+    let obj = sim.object_type(entity.type_ref(), rules);
     let (w, h) = obj
         .map(|o| foundation_dimensions(&o.foundation))
         .unwrap_or((1, 1));
@@ -2465,7 +2465,7 @@ fn refinery_dock_capacity_for_sid(
     if entity.dying || entity.health.current == 0 {
         return None;
     }
-    sim.object_type(entity.type_ref, rules)
+    sim.object_type(entity.type_ref(), rules)
         .map(|o| o.number_of_docks.max(1) as usize)
         .or(Some(1))
 }
@@ -2479,7 +2479,7 @@ fn chrono_return_staging_cell_for_sid(
     path_grid: Option<&PathGrid>,
 ) -> Option<(u16, u16)> {
     let entity = sim.substrate.entities.get(ref_sid)?;
-    let obj = sim.object_type(entity.type_ref, rules);
+    let obj = sim.object_type(entity.type_ref(), rules);
     let (w, h) = obj
         .map(|o| foundation_dimensions(&o.foundation))
         .unwrap_or((1, 1));
@@ -3042,7 +3042,7 @@ pub(crate) fn count_purifiers_for_owner(sim: &Simulation, rules: &RuleSet, owner
         .values()
         .filter(|e| {
             counts_as_purifier(sim, rules, e)
-                && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+                && sim.interner.resolve(e.owner()).eq_ignore_ascii_case(owner)
         })
         .count() as i32
 }
@@ -3064,7 +3064,7 @@ pub(crate) fn counts_as_purifier(
         && e.building_up.is_none()
         && e.category == EntityCategory::Structure
         && sim
-            .object_type(e.type_ref, rules)
+            .object_type(e.type_ref(), rules)
             .is_some_and(|obj| obj.ore_purifier)
 }
 

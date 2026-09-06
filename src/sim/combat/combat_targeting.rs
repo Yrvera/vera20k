@@ -162,7 +162,7 @@ pub(crate) fn acquire_best_target_for_entity(
             return None;
         }
     }
-    let obj = rules.object(interner.resolve(entity.type_ref))?;
+    let obj = rules.object(interner.resolve(entity.type_ref()))?;
     // Native `TechnoClass::Greatest_Threat @ 0x006F8DF0` has no weapon
     // early-out of its own; the armed requirement sits upstream in
     // `TechnoClass::CanAcquireTarget @ 0x007091D0`, whose last term is
@@ -176,8 +176,8 @@ pub(crate) fn acquire_best_target_for_entity(
     }
 
     let snapshot = AttackerSnapshot {
-        stable_id: entity.stable_id,
-        owner: entity.owner,
+        stable_id: entity.stable_id(),
+        owner: entity.owner(),
         category: entity.category,
         target: super::TargetKind::Entity(0), // Dummy — no current target when acquiring fresh
         pos_rx: entity.position.rx,
@@ -186,7 +186,7 @@ pub(crate) fn acquire_best_target_for_entity(
         pos_exact_z_leptons: entity.position.exact_z_leptons,
         sub_x: entity.position.sub_x,
         sub_y: entity.position.sub_y,
-        type_id: entity.type_ref,
+        type_id: entity.type_ref(),
         facing: entity.facing,
         veterancy: entity.veterancy,
         cooldown_ticks: 0,
@@ -282,18 +282,18 @@ fn can_retaliate(
     terrain: Option<&ResolvedTerrainGrid>,
     alliances: Option<&HouseAllianceMap>,
 ) -> bool {
-    let obj = match rules.object(interner.resolve(entity.type_ref)) {
+    let obj = match rules.object(interner.resolve(entity.type_ref())) {
         Some(o) => o,
         None => return false,
     };
-    let Some(attacker_obj) = rules.object(interner.resolve(attacker.type_ref)) else {
+    let Some(attacker_obj) = rules.object(interner.resolve(attacker.type_ref())) else {
         return false;
     };
     let target_facts = techno_target_facts(
         attacker,
         attacker_obj,
         terrain,
-        is_ally_by_object(alliances, interner, entity.owner, attacker.owner),
+        is_ally_by_object(alliances, interner, entity.owner(), attacker.owner()),
     );
     let selected =
         match select_weapon_for_target(rules, obj, &attacker_facts(entity, obj), &target_facts) {
@@ -331,7 +331,7 @@ pub(crate) fn calculate_ai_threat_score(
     alliances: Option<&HouseAllianceMap>,
 ) -> Option<X87Value> {
     let scorer = entities.get(scorer_id)?;
-    let scorer_type = rules.object(interner.resolve(scorer.type_ref))?;
+    let scorer_type = rules.object(interner.resolve(scorer.type_ref()))?;
     let coefficients = super::greatest_threat::ThreatCoefficients::resolve(
         rules,
         scorer_type,
@@ -398,7 +398,7 @@ pub(crate) fn should_retaliate_from_damage(
         return false;
     }
 
-    let Some(victim_type) = rules.object(interner.resolve(victim.type_ref)) else {
+    let Some(victim_type) = rules.object(interner.resolve(victim.type_ref())) else {
         return false;
     };
     if !victim_type.can_retaliate
@@ -426,8 +426,8 @@ pub(crate) fn should_retaliate_from_damage(
         return false;
     }
 
-    let victim_owner = interner.resolve(victim.owner);
-    let attacker_owner = interner.resolve(attacker.owner);
+    let victim_owner = interner.resolve(victim.owner());
+    let attacker_owner = interner.resolve(attacker.owner());
     if is_allied_with(alliances, victim_owner, attacker_owner)
         || is_allied_with(alliances, attacker_owner, victim_owner)
     {
@@ -438,19 +438,19 @@ pub(crate) fn should_retaliate_from_damage(
     // coordinate and keeps its current target only when that score is strictly
     // greater. Equal or lower permits the normal retaliation path.
     let is_human = houses
-        .get(&victim.owner)
+        .get(&victim.owner())
         .is_some_and(|house| house.is_human);
     if is_human && victim.attack_target.is_some() {
         return false;
     }
-    let Some(attacker_type) = rules.object(interner.resolve(attacker.type_ref)) else {
+    let Some(attacker_type) = rules.object(interner.resolve(attacker.type_ref())) else {
         return false;
     };
     let attacker_as_target = techno_target_facts(
         attacker,
         attacker_type,
         terrain,
-        is_ally_by_object(Some(alliances), interner, victim.owner, attacker.owner),
+        is_ally_by_object(Some(alliances), interner, victim.owner(), attacker.owner()),
     );
     let Some(selected) = select_weapon_for_target(
         rules,

@@ -391,7 +391,7 @@ fn sellbuilding_direct_scatter_handoff(
         i32::from(target_ry) - i32::from(pax.position.ry),
     );
     let start_cell = (pax.position.rx, pax.position.ry);
-    let type_name = sim.interner.resolve(pax.type_ref).to_string();
+    let type_name = sim.interner.resolve(pax.type_ref()).to_string();
     // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: a veteran garrison occupant
     // ejected by the sale scatters at its FASTER speed.
     let sell_obj = rules.object(&type_name);
@@ -568,7 +568,7 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
             Some(c) if !c.is_empty() => c,
             _ => return 0,
         };
-        let obj = match sim.object_type(entity.type_ref, rules) {
+        let obj = match sim.object_type(entity.type_ref(), rules) {
             Some(o) => o,
             None => return 0,
         };
@@ -680,7 +680,7 @@ pub(crate) fn eject_red_hp_garrison(
         if cargo.is_empty() {
             return 0;
         }
-        let Some(obj) = sim.object_type(entity.type_ref, rules) else {
+        let Some(obj) = sim.object_type(entity.type_ref(), rules) else {
             return 0;
         };
         if !obj.can_be_occupied {
@@ -693,7 +693,7 @@ pub(crate) fn eject_red_hp_garrison(
             entity.position.z,
             fw,
             fh,
-            entity.owner,
+            entity.owner(),
             cargo.passengers.clone(),
         )
     };
@@ -736,8 +736,8 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
             return false;
         }
         (
-            sim.interner.resolve(entity.owner).to_string(),
-            sim.interner.resolve(entity.type_ref).to_string(),
+            sim.interner.resolve(entity.owner()).to_string(),
+            sim.interner.resolve(entity.type_ref()).to_string(),
             entity.position.clone(),
             Some(entity.health),
         )
@@ -817,7 +817,7 @@ pub fn toggle_repair(sim: &mut Simulation, stable_id: u64) -> bool {
         // `PlayEVA("EVA_Repairing")` (`0x004470B7`). The app applies the
         // local-owner half.
         if entity.health.current != entity.health.max {
-            let owner = entity.owner;
+            let owner = entity.owner();
             sim.sound_events.push(SimSoundEvent::Repairing { owner });
         }
     }
@@ -841,7 +841,7 @@ fn tick_ai_low_credit_sell_decisions(sim: &mut Simulation, rules: &RuleSet) {
         .entities
         .values()
         .filter(|entity| entity.category == EntityCategory::Structure)
-        .map(|entity| entity.stable_id)
+        .map(|entity| entity.stable_id())
         .collect();
 
     for stable_id in building_ids {
@@ -852,7 +852,7 @@ fn tick_ai_low_credit_sell_decisions(sim: &mut Simulation, rules: &RuleSet) {
                     && f64::from(entity.health.current) / f64::from(entity.health.max)
                         < f64::from(rules.general.condition_red);
                 (
-                    entity.owner,
+                    entity.owner(),
                     entity.is_active()
                         && !entity.lifecycle.in_limbo
                         && entity.was_attacked_by_enemy
@@ -916,9 +916,9 @@ pub fn tick_repairs(sim: &mut Simulation, rules: &RuleSet) {
         })
         .map(|e| {
             (
-                e.stable_id,
-                sim.interner.resolve(e.owner).to_string(),
-                sim.interner.resolve(e.type_ref).to_string(),
+                e.stable_id(),
+                sim.interner.resolve(e.owner()).to_string(),
+                sim.interner.resolve(e.type_ref()).to_string(),
                 e.health.current,
                 e.health.max,
             )

@@ -167,7 +167,7 @@ fn refinery_hello(sim: &mut Simulation, ref_sid: u64, miner_sid: u64) -> RadioRe
     // Ally gate = owner equality (no ally graph in sim/ yet; stock skirmish docks
     // at the own-owner refinery only — swap for `is_ally()` when it lands).
     let miner_owner = match sim.substrate.entities.get(miner_sid) {
-        Some(m) => m.owner,
+        Some(m) => m.owner(),
         None => return RadioResponse::None,
     };
     let Some(refinery) = sim.substrate.entities.get_mut(ref_sid) else {
@@ -176,7 +176,7 @@ fn refinery_hello(sim: &mut Simulation, ref_sid: u64, miner_sid: u64) -> RadioRe
     if refinery.dying || refinery.health.current == 0 {
         return RadioResponse::None;
     }
-    if refinery.owner != miner_owner {
+    if refinery.owner() != miner_owner {
         return RadioResponse::Negatory;
     }
     // Idempotent (already linked ⇒ ROGER) is folded into `insert`. A saturated
@@ -253,7 +253,7 @@ fn bunker_receive(
 /// Sim-state admission gate (no rules): own-owner, alive, not occupied, idle.
 /// The rules-gated Bunkerable+weapon check runs at command time (EnterBunker).
 fn bunker_admits(sim: &Simulation, bld: u64, unit: u64) -> bool {
-    let Some(unit_owner) = sim.substrate.entities.get(unit).map(|u| u.owner) else {
+    let Some(unit_owner) = sim.substrate.entities.get(unit).map(|u| u.owner()) else {
         return false;
     };
     let Some(b) = sim.substrate.entities.get(bld) else {
@@ -262,7 +262,7 @@ fn bunker_admits(sim: &Simulation, bld: u64, unit: u64) -> bool {
     if b.dying || b.health.current == 0 {
         return false;
     }
-    if b.owner != unit_owner {
+    if b.owner() != unit_owner {
         return false;
     }
     if b.bunker_occupant.is_some() {

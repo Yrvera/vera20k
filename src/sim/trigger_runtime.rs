@@ -495,7 +495,7 @@ fn count_techtype(sim: &Simulation, type_id: &str) -> usize {
         .values()
         .filter(|e| {
             sim.interner
-                .resolve(e.type_ref)
+                .resolve(e.type_ref())
                 .eq_ignore_ascii_case(type_id)
         })
         .count()

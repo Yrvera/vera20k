@@ -950,7 +950,7 @@ where
         overlay_registry,
         lat_enabled,
         cliff_back_impassability,
-        terrain.cells.len(),
+        terrain.cells().len(),
     );
     let shape = crate::map::authored_overlay::NativeOverlayMapShape::new(
         i32::try_from(map_data.header.width).unwrap_or(i32::MAX),
@@ -1151,7 +1151,7 @@ pub(crate) fn map_wall_owner_candidate_from_building(
     );
 
     crate::sim::overlay_grid::MapWallOwnerCandidate {
-        owner: entity.owner,
+        owner: entity.owner(),
         world_x,
         world_y,
         world_z,
@@ -1205,7 +1205,7 @@ pub(crate) fn finalize_constructed_scenario(
             .map(|entity| {
                 let country = sim
                     .houses
-                    .get(&entity.owner)
+                    .get(&entity.owner())
                     .and_then(|house| house.country)
                     .map(|country| sim.interner.resolve(country));
                 map_wall_owner_candidate_from_building(

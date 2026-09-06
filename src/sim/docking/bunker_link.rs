@@ -42,7 +42,7 @@ pub fn can_auto_deploy_here(sim: &Simulation, unit_id: u64, rules: &RuleSet) -> 
     let Some(unit) = sim.substrate.entities.get(unit_id) else {
         return false;
     };
-    let Some(obj) = sim.object_type(unit.type_ref, rules) else {
+    let Some(obj) = sim.object_type(unit.type_ref(), rules) else {
         return false;
     };
     obj.bunkerable && obj.primary.is_some()

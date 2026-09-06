@@ -97,7 +97,7 @@ pub(crate) fn is_vehicle_transport_type(
     entity: &GameEntity,
     rules: &RuleSet,
 ) -> bool {
-    sim.object_type(entity.type_ref, rules)
+    sim.object_type(entity.type_ref(), rules)
         .is_some_and(|obj| obj.passengers > 0)
 }
 
@@ -203,7 +203,7 @@ fn octant_cell_open(
             let Some(other) = sim.substrate.entities.get(occupant.entity_id) else {
                 continue;
             };
-            let other_owner = sim.interner.resolve(other.owner);
+            let other_owner = sim.interner.resolve(other.owner());
             if !crate::map::houses::is_allied_with(
                 &sim.house_alliances,
                 transport_owner,
@@ -238,7 +238,7 @@ fn pick_exit_octant(
     path_grid: Option<&PathGrid>,
     entity: &GameEntity,
 ) -> Option<((u16, u16), usize)> {
-    let owner = sim.interner.resolve(entity.owner);
+    let owner = sim.interner.resolve(entity.owner());
     let base = (entity.position.rx, entity.position.ry);
     let facing16 = u16::from(entity.facing) << 8;
     let rear16 = facing16.wrapping_add(0x7FFF);
@@ -333,7 +333,7 @@ fn passenger_can_enter(
     if !cell_in_map(sim, path_grid, cell) {
         return false;
     }
-    let obj = sim.object_type(passenger.type_ref, rules);
+    let obj = sim.object_type(passenger.type_ref(), rules);
     let speed_type = passenger
         .locomotor
         .as_ref()
@@ -385,7 +385,7 @@ fn find_nearby_passable_for(
     seed: (u16, u16),
     speed_type_override: Option<SpeedType>,
 ) -> Option<(u16, u16)> {
-    let obj = sim.object_type(mover.type_ref, rules)?;
+    let obj = sim.object_type(mover.type_ref(), rules)?;
     let speed_type = speed_type_override.unwrap_or_else(|| {
         mover
             .locomotor
@@ -443,7 +443,7 @@ fn issue_pathed_move(
         .substrate
         .entities
         .get(id)
-        .map(|entity| sim.interner.resolve(entity.owner).to_string())
+        .map(|entity| sim.interner.resolve(entity.owner()).to_string())
         .unwrap_or_default();
     let (entity_blocks, entity_block_map) = bump_crush::build_entity_block_set(
         &sim.substrate.entities,
@@ -570,7 +570,7 @@ fn eject_head_passenger(
             .entities
             .get(transport_id)
             .expect("transport resolved before the head pop");
-        let obj = sim.object_type(transport.type_ref, rules);
+        let obj = sim.object_type(transport.type_ref(), rules);
         (
             (transport.position.rx, transport.position.ry),
             transport.facing,
@@ -753,7 +753,7 @@ fn reapply_gunner_weapon(sim: &mut Simulation, rules: &RuleSet, transport_id: u6
         return;
     };
     if !sim
-        .object_type(transport.type_ref, rules)
+        .object_type(transport.type_ref(), rules)
         .is_some_and(|obj| obj.gunner)
     {
         return;
@@ -762,7 +762,7 @@ fn reapply_gunner_weapon(sim: &mut Simulation, rules: &RuleSet, transport_id: u6
         return;
     };
     let ifv_mode = sim
-        .object_type(passenger.type_ref, rules)
+        .object_type(passenger.type_ref(), rules)
         .map_or(0, |obj| obj.ifv_mode);
     if let Some(transport) = sim.substrate.entities.get_mut(transport_id) {
         transport.weapon_override = Some(
@@ -827,7 +827,7 @@ pub(crate) fn unit_mission_unload(
                 // a turreted transport (the IFV) keeps its last passenger —
                 // `+0x6E4 = (cargo == 1 ? 0 : 1)` (`0x0073D82C`..`0x0073D83C`).
                 let turreted = sim
-                    .object_type(entity.type_ref, rules)
+                    .object_type(entity.type_ref(), rules)
                     .is_some_and(|obj| obj.turret_count > 0);
                 if let Some(entity) = sim.substrate.entities.get_mut(id) {
                     if turreted {

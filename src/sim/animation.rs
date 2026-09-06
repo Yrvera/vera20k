@@ -363,6 +363,7 @@ fn tick_animations_impl(
         if entity.dying && !tick_dying {
             continue;
         }
+        let type_ref = entity.type_ref();
         let Some(anim) = entity.animation.as_mut() else {
             // Dying entity with no animation → ready for despawn.
             if entity.dying {
@@ -378,7 +379,7 @@ fn tick_animations_impl(
                 continue;
             }
             let Some(seq_set) =
-                sequence_set_for_type(sequences, rules, interner.resolve(entity.type_ref))
+                sequence_set_for_type(sequences, rules, interner.resolve(type_ref))
             else {
                 dying_finished.push(id);
                 continue;
@@ -403,7 +404,7 @@ fn tick_animations_impl(
         let preserving_fire_action = sequence_is_fire_action(anim.sequence) && !has_fire_action;
 
         // Look up this type's sequence definitions for transition checks.
-        let seq_set = sequence_set_for_type(sequences, rules, interner.resolve(entity.type_ref));
+        let seq_set = sequence_set_for_type(sequences, rules, interner.resolve(type_ref));
 
         // Deploy state takes priority over the standard Stand/Walk/Attack cascade.
         // The visual reflects the sim phase; DeployedFire is the auto-transition

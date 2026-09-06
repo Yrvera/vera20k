@@ -169,7 +169,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         .as_ref()
         .and_then(|h| sim.entities().get(h.stable_id))
         .map_or(ActionDistanceTarget::CellCentre(hover_rx, hover_ry), |e| {
-            ActionDistanceTarget::Object(e.stable_id)
+            ActionDistanceTarget::Object(e.stable_id())
         });
     let best_id = select_best_for_action(sim, &selected, action_target, state.rules());
 
@@ -187,7 +187,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     if modifier == crate::app::input::context_order::OrderModifier::ForceFire {
         let best_is_armed = best_id.is_some_and(|id| {
             sim.entities().get(id).is_some_and(|e| {
-                let type_str = sim.interner.resolve(e.type_ref);
+                let type_str = sim.interner.resolve(e.type_ref());
                 state
                     .rules()
                     .and_then(|r| r.object(type_str))
@@ -442,7 +442,7 @@ fn capability_cursor_for_hover(
 
     let hovered_entity = sim.entities().get(hover.stable_id);
     let hovered_obj =
-        rules.and_then(|r| hovered_entity.and_then(|e| r.object(sim.interner.resolve(e.type_ref))));
+        rules.and_then(|r| hovered_entity.and_then(|e| r.object(sim.interner.resolve(e.type_ref()))));
 
     // 1. Deployer self-hover — the cursor is over the selected unit itself.
     //    Show the deploy cursor for units with Deployer=yes (e.g. GGI, Guardian GI)
@@ -452,7 +452,7 @@ fn capability_cursor_for_hover(
     if selected.len() == 1 && selected[0] == hover.stable_id {
         let entity = sim.entities().get(selected[0]);
         let obj =
-            entity.and_then(|e| rules.and_then(|r| r.object(sim.interner.resolve(e.type_ref))));
+            entity.and_then(|e| rules.and_then(|r| r.object(sim.interner.resolve(e.type_ref()))));
         if let Some(obj) = obj {
             if obj.deployer || obj.deploys_into.is_some() {
                 // DRIFT, recorded not fixed: this branch does not see the order
@@ -500,7 +500,7 @@ fn capability_cursor_for_hover(
             sim.entities().get(best_id),
             sim.entities()
                 .get(best_id)
-                .and_then(|e| rules.and_then(|r| r.object(sim.interner.resolve(e.type_ref)))),
+                .and_then(|e| rules.and_then(|r| r.object(sim.interner.resolve(e.type_ref())))),
         ) {
             // 2. C4 plant: SEAL / Tanya / Psi-Corp Trooper hovering an enemy
             //    structure with CanC4=yes, not InvisibleInGame, not iron-curtained.
@@ -614,7 +614,7 @@ fn capability_cursor_for_hover(
             if sel_entity.miner.is_some()
                 && matches!(hover.kind, HoverTargetKind::FriendlyStructure)
                 && hovered_entity.is_some_and(|e| {
-                    rules.is_some_and(|r| r.is_refinery_type(sim.interner.resolve(e.type_ref)))
+                    rules.is_some_and(|r| r.is_refinery_type(sim.interner.resolve(e.type_ref())))
                 })
             {
                 return CursorFeedbackKind::Enter;
@@ -711,7 +711,7 @@ fn resolved_unit_in_range(
     let Some(entity) = sim.entities().get(actor_id) else {
         return false;
     };
-    let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
+    let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref())) else {
         return false;
     };
     for slot in [obj.primary.as_ref(), obj.secondary.as_ref()] {
@@ -876,7 +876,7 @@ fn select_best_for_action(
             // and `[YAGGUN]` all author slot 0 — so the frequency is zero on
             // retail data. Downstream: cursor/order dispatch only, no sim
             // state.
-            let obj = rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
+            let obj = rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref())));
             let has_weapon = obj.is_some_and(|o| {
                 [o.primary.as_ref(), o.secondary.as_ref()]
                     .into_iter()

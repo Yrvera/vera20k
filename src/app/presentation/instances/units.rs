@@ -291,13 +291,13 @@ pub(crate) fn build_unit_instances(
         }
         // Common visibility, passenger, limbo, and DrawState admission is shared below.
         let pos = &entity.position;
-        let owner_str = sim.interner.resolve(entity.owner);
+        let owner_str = sim.interner.resolve(entity.owner());
         // Disguise remains the outer display-type choice. For an ordinary
         // undisguised Unit, `NoSpawnAlt` is selected from the current docked
         // slot count at draw time; the serialized override remains solely the
         // miner dock sub-FSM's UnloadingClass (HORV/CMON) hint.
         let active_disguise = entity.disguise.as_ref().filter(|state| state.disguised);
-        let base_type = sim.interner.resolve(entity.type_ref);
+        let base_type = sim.interner.resolve(entity.type_ref());
         let no_spawn_alt = state.rules()
             .and_then(|rules| rules.object(base_type))
             .is_some_and(|object| object.no_spawn_alt);
@@ -514,10 +514,10 @@ pub(crate) fn build_unit_instances(
             };
             let parent = if entity.category == EntityCategory::Structure {
                 state.rules()
-                    .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref)))
+                    .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref())))
                     .and_then(|object_type| {
                         ground_order.building_object_draw(
-                            entity.stable_id,
+                            entity.stable_id(),
                             location,
                             object_type,
                             crate::render::tactical_draw_plan::SpriteEncoding::Voxel,
@@ -525,7 +525,7 @@ pub(crate) fn build_unit_instances(
                     })
             } else {
                 ground_order.object_draw(
-                    entity.stable_id,
+                    entity.stable_id(),
                     location,
                     crate::render::tactical_draw_plan::SpriteEncoding::Voxel,
                 )

@@ -2745,7 +2745,7 @@ pub fn deployable_building_types<'a>(
 
     // Collect deploy targets for any units currently on the map.
     for entity in entities.values() {
-        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref()));
         if let Some(obj) = rules.object(type_str) {
             if let Some(ref target_id) = obj.deploys_into {
                 if let Some(target_obj) = rules.object(target_id) {

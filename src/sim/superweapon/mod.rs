@@ -207,7 +207,7 @@ pub fn tick_superweapon_instances(sim: &mut Simulation, rules: &RuleSet) {
             .entities
             .values()
             .filter(|e| e.category == crate::map::entities::EntityCategory::Structure && !e.dying)
-            .map(|e| e.owner)
+            .map(|e| e.owner())
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -295,7 +295,7 @@ pub fn refresh_super_weapons_for_owner(sim: &mut Simulation, rules: &RuleSet, ow
     // Collect all SW type IDs (as strings) granted by living buildings of this owner.
     let mut granted_strs: Vec<String> = Vec::new();
     for (_, entity) in sim.substrate.entities.iter_sorted() {
-        if entity.owner != owner {
+        if entity.owner() != owner {
             continue;
         }
         if entity.category != crate::map::entities::EntityCategory::Structure {
@@ -304,7 +304,7 @@ pub fn refresh_super_weapons_for_owner(sim: &mut Simulation, rules: &RuleSet, ow
         if entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
-        let type_str = sim.interner.resolve(entity.type_ref);
+        let type_str = sim.interner.resolve(entity.type_ref());
         if let Some(obj) = rules.object(type_str) {
             if let Some(ref sw_id) = obj.super_weapon {
                 if rules.super_weapon(sw_id).is_some() {

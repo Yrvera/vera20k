@@ -112,12 +112,12 @@ pub(crate) fn build_shp_instances(
             continue;
         }
         // Common visibility, passenger, limbo, and DrawState admission is shared below.
-        let owner_str = sim.interner.resolve(entity.owner);
+        let owner_str = sim.interner.resolve(entity.owner());
         let active_disguise = entity.disguise.as_ref().filter(|state| state.disguised);
         let type_str = active_disguise
             .and_then(|state| state.disguise_type)
             .map(|id| sim.interner.resolve(id))
-            .unwrap_or_else(|| sim.interner.resolve(entity.type_ref));
+            .unwrap_or_else(|| sim.interner.resolve(entity.type_ref()));
         let remap_owner = active_disguise
             .and_then(|state| state.disguised_as_house)
             .map(|id| sim.interner.resolve(id))
@@ -300,7 +300,7 @@ pub(crate) fn build_shp_instances(
             EntityDrawBand::Ground => apply_bridge_depth_bias(state, entity, base_depth),
         };
         if entity.parachute_state.is_some() {
-            parachute_body_depths.insert(entity.stable_id, depth);
+            parachute_body_depths.insert(entity.stable_id(), depth);
         }
         let tint = shp_body_tint(
             &state.match_state.match_presentation.lighting_grid,
@@ -371,7 +371,7 @@ pub(crate) fn build_shp_instances(
                 z: i32::from(pos.z),
             };
             if let Some(parent) =
-                ground_order.object_draw(entity.stable_id, coord, SpriteEncoding::Plain)
+                ground_order.object_draw(entity.stable_id(), coord, SpriteEncoding::Plain)
             {
                 ground_objects.push(PlannedGroundObjectInstance::object(
                     parent,
@@ -384,7 +384,7 @@ pub(crate) fn build_shp_instances(
         } else if band == EntityDrawBand::Top {
             top_instances.push(body);
             top_pages.push(entry.page as usize);
-            top_ids.push(entity.stable_id);
+            top_ids.push(entity.stable_id());
         } else {
             target_pages.expect("Ground SHP target was selected")[entry.page as usize].push(body);
         }
@@ -436,7 +436,7 @@ pub(crate) fn build_shp_instances(
                     entity.building_anim_overlays.as_ref(),
                     crate::app::presentation::building_anim::building_anim_elapsed_logic_frames(
                         state,
-                        entity.stable_id,
+                        entity.stable_id(),
                     ),
                     Some(&sim.session.game_options),
                     Some(&sim.interner),
@@ -489,10 +489,10 @@ pub(crate) fn build_shp_instances(
                 z: i32::from(pos.z),
             };
             let actual_type = state.rules()
-                .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref)));
+                .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref())));
             if let Some(parent) = actual_type.and_then(|object_type| {
                 ground_order.building_object_draw(
-                    entity.stable_id,
+                    entity.stable_id(),
                     location,
                     object_type,
                     SpriteEncoding::Plain,

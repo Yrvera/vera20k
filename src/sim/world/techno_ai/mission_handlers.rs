@@ -128,7 +128,7 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
                 && entity.deploy_state.is_some()
                 && sim
                     .interner
-                    .try_resolve(entity.type_ref)
+                    .try_resolve(entity.type_ref())
                     .and_then(|name| rules.object(name))
                     .is_some_and(|obj| {
                         obj.deploy_fire && !obj.immune_to_radiation && obj.undeploy_delay < 0
@@ -786,10 +786,10 @@ pub(crate) fn harvester_enter_idle_mode_selector(
     let human = !skip_human_land_check
         && sim
             .houses
-            .get(&entity.owner)
+            .get(&entity.owner())
             .is_none_or(|house| house.is_controlled_by_human(sim.session.game_mode_nonzero));
     let weeder = sim
-        .object_type(entity.type_ref, rules)
+        .object_type(entity.type_ref(), rules)
         .is_some_and(|obj| !obj.harvester && obj.weeder);
     let wanted_land = if weeder {
         crate::rules::terrain_rules::LandType::Weeds
@@ -1051,7 +1051,7 @@ fn retaliate_and_scan(
         .substrate
         .entities
         .get(id)
-        .and_then(|entity| sim.interner.try_resolve(entity.type_ref))
+        .and_then(|entity| sim.interner.try_resolve(entity.type_ref()))
         .and_then(|name| rules.object(name))
         .is_some_and(|obj| obj.distributed_fire);
     if spreads_fire {
@@ -1207,7 +1207,7 @@ fn evaluate_foot_hunt(
     rules: &RuleSet,
     ctx: super::ObjectAiCtx<'_>,
 ) -> MissionHandlerEvaluation {
-    let type_ref = sim.substrate.entities.get(id).map(|entity| entity.type_ref);
+    let type_ref = sim.substrate.entities.get(id).map(|entity| entity.type_ref());
     let stupid_hunt = type_ref
         .and_then(|type_ref| sim.interner.try_resolve(type_ref))
         .and_then(|name| rules.object(name))
@@ -1510,7 +1510,7 @@ fn harvester_guard_override_requeues_harvest(sim: &Simulation, id: u64, rules: &
     let Some(miner) = entity.miner.as_ref() else {
         return false;
     };
-    let Some(unit_type) = sim.object_type(entity.type_ref, rules) else {
+    let Some(unit_type) = sim.object_type(entity.type_ref(), rules) else {
         return false;
     };
     if !unit_type.harvester {
@@ -1518,7 +1518,7 @@ fn harvester_guard_override_requeues_harvest(sim: &Simulation, id: u64, rules: &
     }
     let human = sim
         .houses
-        .get(&entity.owner)
+        .get(&entity.owner())
         .is_none_or(|house| house.is_controlled_by_human(sim.session.game_mode_nonzero));
     if !human {
         // Arm (ii), `0x00740880..0x0074092C`.
@@ -1526,7 +1526,7 @@ fn harvester_guard_override_requeues_harvest(sim: &Simulation, id: u64, rules: &
             sim.interner.get(dock_type).is_some_and(|type_ref| {
                 sim.substrate
                     .entities
-                    .count_owned_of_type(entity.owner, type_ref)
+                    .count_owned_of_type(entity.owner(), type_ref)
                     > 0
             })
         });
@@ -1535,7 +1535,7 @@ fn harvester_guard_override_requeues_harvest(sim: &Simulation, id: u64, rules: &
         }
         let no_ore = sim
             .houses
-            .get(&entity.owner)
+            .get(&entity.owner())
             .is_some_and(|house| house.harvester_no_ore);
         return !(unit_type.harvester && no_ore);
     }
@@ -1556,9 +1556,9 @@ fn harvester_guard_override_requeues_harvest(sim: &Simulation, id: u64, rules: &
                 sim.substrate.entities.get(sid).is_some_and(|building| {
                     building.category == EntityCategory::Structure
                         && !building.dying
-                        && building.owner == entity.owner
+                        && building.owner() == entity.owner()
                         && sim
-                            .object_type(building.type_ref, rules)
+                            .object_type(building.type_ref(), rules)
                             .is_some_and(|obj| obj.refinery)
                 })
             });
@@ -1798,7 +1798,7 @@ fn foot_type_takes_cadence_band(
     attacker: &crate::sim::game_entity::GameEntity,
     close_primary_range_leptons: i64,
 ) -> bool {
-    let Some(object) = rules.object(sim.interner.resolve(attacker.type_ref)) else {
+    let Some(object) = rules.object(sim.interner.resolve(attacker.type_ref())) else {
         return false;
     };
     if attacker.category == EntityCategory::Infantry && object.close_range {

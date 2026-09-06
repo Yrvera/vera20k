@@ -271,7 +271,7 @@ pub fn can_enter_transport(
         );
     } else {
         // Vehicle transports: strict same-owner.
-        if passenger.owner != transport.owner {
+        if passenger.owner() != transport.owner() {
             return false;
         }
     }
@@ -304,8 +304,8 @@ pub fn can_dock_occupier_garrison(
     if !passenger_obj.occupier {
         return false;
     }
-    let same_owner = passenger.owner == building.owner;
-    if !same_owner && !owner_is_multiplay_passive(building.owner, houses) {
+    let same_owner = passenger.owner() == building.owner();
+    if !same_owner && !owner_is_multiplay_passive(building.owner(), houses) {
         return false;
     }
     if cargo.count() == building_obj.max_number_occupants {
@@ -352,10 +352,10 @@ pub fn can_entity_enter_garrison(
     let Some(building) = sim.substrate.entities.get(building_id) else {
         return false;
     };
-    let Some(passenger_obj) = sim.object_type(passenger.type_ref, rules) else {
+    let Some(passenger_obj) = sim.object_type(passenger.type_ref(), rules) else {
         return false;
     };
-    let Some(building_obj) = sim.object_type(building.type_ref, rules) else {
+    let Some(building_obj) = sim.object_type(building.type_ref(), rules) else {
         return false;
     };
     let Some(cargo) = building.passenger_role.cargo() else {
@@ -491,13 +491,13 @@ fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64
         .substrate
         .entities
         .get(pax_id)
-        .map(|e| sim.interner.resolve(e.type_ref).to_string())
+        .map(|e| sim.interner.resolve(e.type_ref()).to_string())
         .unwrap_or_default();
     let transport_type_str = sim
         .substrate
         .entities
         .get(transport_id)
-        .map(|e| sim.interner.resolve(e.type_ref).to_string())
+        .map(|e| sim.interner.resolve(e.type_ref()).to_string())
         .unwrap_or_default();
 
     let pax_size = rules.object(&pax_type_str).map(|obj| obj.size).unwrap_or(1);
@@ -508,7 +508,7 @@ fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64
     let pax_obj = rules.object(&pax_type_str);
     let pax_ifv_mode = pax_obj.map(|obj| obj.ifv_mode).unwrap_or(0);
     let pax_open_transport_weapon = pax_obj.map(|obj| obj.open_transport_weapon).unwrap_or(-1);
-    let entering_owner = sim.substrate.entities.get(pax_id).map(|pax| pax.owner);
+    let entering_owner = sim.substrate.entities.get(pax_id).map(|pax| pax.owner());
 
     let can_board = sim
         .substrate
@@ -637,8 +637,8 @@ fn reconcile_civilian_garrison_owner_for_building(
             .and_then(|building| {
                 let cargo = building.passenger_role.cargo()?;
                 Some((
-                    building.type_ref,
-                    building.owner,
+                    building.type_ref(),
+                    building.owner(),
                     // The FIRST occupant to enter: the cargo list is head-first
                     // (`AddPassenger` prepends), so the earliest entry is the
                     // tail. VERA-internal ownership rule, gamemd equivalent
@@ -674,7 +674,7 @@ fn reconcile_civilian_garrison_owner_for_building(
             .and_then(|building| {
                 let cargo = building.passenger_role.cargo()?;
                 Some((
-                    building.owner,
+                    building.owner(),
                     cargo.passengers.last().copied(),
                     cargo.is_empty(),
                 ))
@@ -690,7 +690,7 @@ fn reconcile_civilian_garrison_owner_for_building(
     if !cargo_empty && is_civilian_garrison_owner(&sim.interner, current_owner) {
         let Some(new_owner) = first_passenger
             .and_then(|passenger_id| sim.substrate.entities.get(passenger_id))
-            .map(|passenger| passenger.owner)
+            .map(|passenger| passenger.owner())
         else {
             return false;
         };
@@ -908,7 +908,7 @@ fn is_can_be_occupied_unloading_transport(
     if !matches!(entity.order_intent, Some(OrderIntent::Unloading)) {
         return false;
     }
-    sim.object_type(entity.type_ref, rules)
+    sim.object_type(entity.type_ref(), rules)
         .is_some_and(|obj| obj.can_be_occupied)
 }
 
@@ -1060,7 +1060,7 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
         .substrate
         .entities
         .get(pax_id)
-        .map(|e| sim.interner.resolve(e.type_ref).to_string())
+        .map(|e| sim.interner.resolve(e.type_ref()).to_string())
         .unwrap_or_default();
     let reveal_outcome = reveal_unloaded_passenger(sim, transport_id, pax_id, exit_rx, exit_ry, tz);
     if !matches!(reveal_outcome, RevealOutcome::Revealed { .. }) {

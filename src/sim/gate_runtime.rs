@@ -155,11 +155,11 @@ pub fn request_gate_open_for_cell(
         if candidate.category != EntityCategory::Structure {
             continue;
         }
-        let Some(obj) = rules.object(interner.resolve(candidate.type_ref)) else {
+        let Some(obj) = rules.object(interner.resolve(candidate.type_ref())) else {
             continue;
         };
         if !obj.gate
-            || !are_houses_friendly(alliances, mover_owner, interner.resolve(candidate.owner))
+            || !are_houses_friendly(alliances, mover_owner, interner.resolve(candidate.owner()))
         {
             continue;
         }
@@ -182,13 +182,13 @@ pub fn tick_gate_runtimes(
     let gate_ids: Vec<u64> = entities
         .values()
         .filter(|entity| entity.building_gate.is_some())
-        .map(|entity| entity.stable_id)
+        .map(|entity| entity.stable_id())
         .collect();
 
     for gate_id in gate_ids {
         let Some((origin, type_ref)) = entities
             .get(gate_id)
-            .map(|gate| ((gate.position.rx, gate.position.ry), gate.type_ref))
+            .map(|gate| ((gate.position.rx, gate.position.ry), gate.type_ref()))
         else {
             continue;
         };
