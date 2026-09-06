@@ -1435,6 +1435,7 @@ fn move_works_after_undeploy_completes() {
             phase: crate::sim::docking::building_dock::DockPhase::Approach,
             service_timer: 0,
             no_funds_ticks: 0,
+            enter_retry: Default::default(),
         });
     let _ = sim.apply_command(
         "Americans",

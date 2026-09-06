@@ -22,7 +22,7 @@ use crate::sim::command::{
     SellWallAtCellRecord,
 };
 use crate::sim::components::OrderIntent;
-use crate::sim::docking::building_dock::{self, DockPhase, DockState};
+use crate::sim::docking::building_dock::{self, DockState};
 use crate::sim::mission::{DockTeardown, MissionType};
 use crate::sim::movement;
 use crate::sim::movement::air_movement;
@@ -1580,12 +1580,7 @@ impl Simulation {
                     e.attack_target = None;
                     e.passively_acquired_target = false;
                     e.order_intent = None;
-                    e.dock_state = Some(DockState {
-                        dock_building_id: *depot_id,
-                        phase: DockPhase::Approach,
-                        service_timer: 0,
-                        no_funds_ticks: 0,
-                    });
+                    e.dock_state = Some(DockState::approach(*depot_id));
                 }
                 // Issue movement toward dock cell.
                 let info = self.resolve_move_info(*entity_id, Some(rules));
@@ -2463,13 +2458,31 @@ impl Simulation {
         true
     }
 
-    /// Cancel depot dock reservation for an entity. Called before issuing new orders.
+    /// Drop the entity's depot contact slot before a new order retasks it.
+    /// The depot keeps no queue (admission is `radio_contacts` capacity), so
+    /// this is a BREAK of the unit↔depot link when one exists. VERA-internal
+    /// timing: native tears the link down later (PerCellProcess `0x08` /
+    /// the depot's repair mission), gamemd equivalent UNCHECKED.
     pub(crate) fn cancel_depot_dock(&mut self, entity_id: u64) {
-        if let Some(e) = self.substrate.entities.get(entity_id) {
-            if let Some(ref ds) = e.dock_state {
-                self.production
-                    .depot_dock_reservations
-                    .cancel(ds.dock_building_id, entity_id);
+        let depot_id = self
+            .substrate
+            .entities
+            .get(entity_id)
+            .and_then(|e| e.dock_state.as_ref().map(|ds| ds.dock_building_id));
+        if let Some(depot_id) = depot_id {
+            let linked = self
+                .substrate
+                .entities
+                .get(entity_id)
+                .is_some_and(|e| e.radio_contacts.contains(depot_id));
+            if linked {
+                let _ = crate::sim::radio::transmit(
+                    self,
+                    entity_id,
+                    depot_id,
+                    crate::sim::radio::RadioMessage::Break,
+                    crate::sim::radio::RadioPayload::default(),
+                );
             }
         }
     }

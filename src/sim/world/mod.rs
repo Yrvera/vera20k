@@ -7963,7 +7963,7 @@ impl Simulation {
                 HouseAiActivationOrderTestEvent::ProductionCompleted,
             );
             production::tick_repairs(self, rules);
-            building_dock::tick_building_docks(self, rules);
+            building_dock::tick_building_docks(self, rules, phase_six_path_grid);
             crate::sim::docking::bunker_install::tick_bunker_install(
                 self,
                 rules,
