@@ -418,7 +418,12 @@ use crate::sim::world::Simulation;
 // low-power guard on `HouseState` (`HouseClass::Update 0x004F8B3C..0x004F8DAB`).
 // A v132 save would restore the timer at its constructor value and the guard
 // clear, re-announcing "Low power" on load; the state hash folds both.
-const SNAPSHOT_VERSION: u32 = 133;
+// v134 changes the bincode layout for repair-depot docking (GSI-07.38): the
+// FIFO `ProductionState.depot_dock_reservations` is gone (native has no
+// stored dock queue; admission is RadioClass contact capacity, BuildingClass
+// ctor 0x0043BCBD) and `DockState.enter_retry` carries each waiter's
+// `FootClass::Mission_Enter @ 0x004D9290` re-probe timer.
+const SNAPSHOT_VERSION: u32 = 134;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -1493,9 +1498,6 @@ fn restore_object_references(
             entity_ids.contains(master_id)
         });
     sim.production.dock_reservations.cleanup_dead(&entity_ids);
-    sim.production
-        .depot_dock_reservations
-        .cleanup_dead(&entity_ids);
     sim.production.airfield_docks.cleanup_dead(&entity_ids);
 
     // The produced-object link was validated above, so this legacy helper is
@@ -3186,7 +3188,8 @@ mod tests {
     /// `[0xA8F040]` low-power guard.
     #[test]
     fn house_eva_advice_snapshot_version_is_133() {
-        assert_eq!(super::SNAPSHOT_VERSION, 133);
+        // 133 -> 134: repair-depot docking layout (see the constant's comment).
+        assert_eq!(super::SNAPSHOT_VERSION, 134);
     }
 
     #[test]

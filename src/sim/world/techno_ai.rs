@@ -5443,6 +5443,7 @@ mod tests {
             phase: DockPhase::Approach,
             service_timer: 0,
             no_funds_ticks: 0,
+            enter_retry: Default::default(),
         });
         assert_ordinary_drive_host_error(&dock, &control, 120, ordinary, HostTraceError::DockPath);
 

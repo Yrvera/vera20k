@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::rules::object_type::ObjectCategory;
 use crate::sim::intern::InternedId;
 use crate::sim::miner::ResourceNode;
-use crate::sim::miner::miner_dock::{DockReservations, RefineryDockContacts};
+use crate::sim::miner::miner_dock::RefineryDockContacts;
 use crate::sim::ore_growth::{OreGrowthConfig, OreGrowthState};
 use crate::sim::production::factory::FactoryRegistry;
 
@@ -244,8 +244,6 @@ pub struct ProductionState {
     /// available. Runtime placement prefers the data-driven `TIB01..TIB12`
     /// registry set and uses this only for headless/fallback contexts.
     pub default_ore_overlay_id: Option<u8>,
-    /// Repair depot dock reservation state — one dock per depot, FIFO queue.
-    pub depot_dock_reservations: DockReservations,
     /// Airfield dock reservations — multi-slot (NumberOfDocks per airfield).
     pub airfield_docks: crate::sim::docking::aircraft_dock::AirfieldDocks,
     /// Per-(house, category) factory registry — the authoritative production state
@@ -274,7 +272,6 @@ impl Default for ProductionState {
             terrain_occupation_bits: BTreeMap::new(),
             tiberium_spawning_terrain_cells: BTreeSet::new(),
             default_ore_overlay_id: None,
-            depot_dock_reservations: DockReservations::default(),
             airfield_docks: crate::sim::docking::aircraft_dock::AirfieldDocks::default(),
             factory_shadow: FactoryRegistry::default(),
         }
