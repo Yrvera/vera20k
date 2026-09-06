@@ -153,10 +153,46 @@ operate independently via different fields at +0x280 range.)
 5. Iterate all cells in the standard 3x3 area (table at 0x00B0C038):
    - For each cell, get the object linked list (CellClass+0xE4 or +0xE8 for bridges)
    - For each object in cell:
-     - Skip if not a valid techno (`(flags >> 2) & 1 == 0`) or if `field_0x27C != 0`
-     - Skip if object is a building with `NoForceShield` or similar immunity flag
+     - Skip only when `Object+0x14 & 4` is nonzero AND byte `Techno+0x27C` is nonzero
+       (`006CCFF8..006CD006`). A non-Techno object reaches its virtual method;
+       the former non-Techno/NoForceShield exclusion here was incorrect.
      - Call `object->IronCurtain(Rules->IronCurtainDuration, super->Owner, 0)`
        - The 3rd argument is 0 = NOT ForceShield
+
+### Live cell and receiver verification (2026-09-06)
+
+Read-only inspection of the active retail `/gamemd.exe`, x86 Windows, image base
+`00400000`, confirmed the active House Fire_SW -> `006CB920` -> Super launch path.
+The nine packed offsets at `00B0C038..00B0C05C` are initialized by
+`006CAE00..006CAEBF` in this order:
+`(0,0), (1,0), (1,-1), (0,-1), (-1,-1), (-1,0), (-1,1), (0,1), (1,1)`.
+`006CCF41/006CCF44` add the two components as independent 16-bit words.
+`GetCell 005657A0` owns signed fixed-stride aliasing and shared dummy stamping;
+per-axis saturation is not equivalent.
+
+`006CCF6A` looks up the cell and `006CCF75` tests flag `0x100`; a second lookup
+reads deck head `+E8` at `006CCFB0` or ground head `+E4` at `006CCFEE`.
+After virtual `+154` returns, `006CD025` reads the current object's `+30`.
+Successful `CellClass::RemoveContent 0047EA90` repairs the list and clears the
+removed object's next at `0047EAF0`; a failed selected-list search does not clear
+it. A later re-add can repopulate that pointer from another cell/layer. Thus an
+IC walk must observe receiver mutations, including relayering, before advancing.
+
+Ordinary Infantry `InfDeath=1/2` retains cell membership during the death action:
+`005185D5` selects action `0xB`, `00518635` selects `0xC`, and the ordinary path
+joins `005185E5 -> 00518BA0` without UnInit. `Do_Action 0051D6F0`, action reset
+`0051DAF0`, and stock Walk stop `0075ADA0` do not unlink this ordinary case.
+Local retail `ini/rulesmd.ini:818` selects `C4Warhead=Super`; `[Super]` at
+`27093..27098` has `InfDeath=2`. This retention does not extend to every authored
+death mode: forced Cyborg damage sets the immediate-cleanup flag at `0051815B`,
+and external-animation/no-sequence branches can enter cleanup at `005185F1`.
+InfDeath 9 has success and fallback branches, so it requires its own traversal
+and lifecycle treatment.
+
+Genetic per-cell mutation deliberately differs: `006CD9E0` captures next BEFORE
+calling ReceiveDamage at `006CDA29`. Its saved successor can still be dispatched
+after nested work unlinks it. These observations establish native mechanics;
+they do not certify all Rust superweapon behavior or presentation parity.
 
 ### IronCurtain call parameters (verified from assembly at 0x006cd008-0x006cd01f):
 ```
@@ -430,10 +466,9 @@ void __thiscall InfantryClass::IronCurtain(int duration, int source_house, int i
 
 ### Key details:
 - **Warhead used:** C4Warhead (Rules+0xFA8) -- the same warhead used for C4/demolition
-- **Damage amount:** The infantry unit's full Strength (instant kill)
-- **force_damage parameter:** `true` (1) -- this bypasses ALL damage reduction checks,
-  including any invulnerability that might already be on the unit
-- The infantry is **not** made invulnerable -- it is simply killed outright
+- **Damage amount:** Authored InfantryType Strength, not remaining HP or a raw zero-HP write. An over-strength object can survive this call.
+- **Receiver flags:** `ignoreDefenses=1`, `arg6=0`; the concrete receiver owns their consequences, including the existing-invulnerability bypass. The wrapper does not itself implement damage gates.
+- The Infantry override invokes ReceiveDamage instead of applying an invulnerability timer.
 - This applies to ALL infantry, regardless of type. There is no INI key to opt out.
 - The source_house parameter is passed through for kill attribution
 
@@ -619,8 +654,8 @@ Decoded from the string pointer table at 0x008425C0:
 2. **Timer is passive/implicit**: no per-tick decrement. `IsIronCurtainActive()` checks
    `CurrentFrame - StartFrame < Duration` on demand.
 
-3. **Iron Curtain kills all infantry** via InfantryClass::IronCurtain override at
-   0x00522600. Uses C4Warhead (Rules+0xFA8) with force_damage=true for instant kill.
+3. **Iron Curtain applies forced authored-Strength damage to infantry** via InfantryClass::IronCurtain override at
+   0x00522600. Uses C4Warhead (Rules+0xFA8) with ignoreDefenses=1 and authored Strength as damage.
 
 4. **Iron Curtain blocks**: normal damage, temporal warping, mind control, crushing.
 
