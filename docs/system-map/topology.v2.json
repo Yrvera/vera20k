@@ -15,7 +15,6 @@
       "canonical_systems": ["GSI-04.09"],
       "reason": "The historical suffix described overlay-to-tiberium classification; canonical GSI-04.03 is elevation, ramps, cliffs, slopes, and height conversion.",
       "evidence": [
-        "docs/contracts/2026-07-24-gsi-04-03a-overlay-to-tiberium-index-implementation-contract.md",
         "docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:267",
         "docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:273"
       ]
@@ -26,7 +25,6 @@
       "canonical_systems": ["GSI-02.03", "GSI-02.04", "GSI-04.09"],
       "reason": "The historical suffix described merged-rules registry authority supporting overlay identity, not an elevation child system.",
       "evidence": [
-        "docs/contracts/2026-07-24-gsi-04-03b-merged-rules-overlay-registry-authority-implementation-contract.md",
         "docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:267",
         "docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:273"
       ]
@@ -191,7 +189,7 @@
           "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
         },
         {
-          "path": "src/app_skirmish_session.rs",
+          "path": "src/app/frontend/skirmish_session.rs",
           "symbol": "skirmish session launch",
           "coverage": "representative",
           "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
@@ -627,7 +625,7 @@
           "observed_at_commit": "e726da11bdafed70d634cc93e871e5a5cd8c6135"
         },
         {
-          "path": "src/app_init_helpers_retail_placement_oracle_tests.rs",
+          "path": "src/app/loading/init_helpers_retail_placement_oracle_tests.rs",
           "symbol": "retail_dustbowl_gapowr_blocked_then_valid_placement_oracle",
           "coverage": "representative",
           "observed_at_commit": "12948d89c7e68d0dac14f7e0ed58d9212e844a2e"
@@ -751,7 +749,7 @@
           "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
         },
         {
-          "path": "src/app_sidebar_build.rs",
+          "path": "src/app/presentation/sidebar_build.rs",
           "symbol": "build_gclock_instance / build_sidebar_cameo_instances",
           "coverage": "representative",
           "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
@@ -763,13 +761,13 @@
           "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
         },
         {
-          "path": "src/app_sidebar_render.rs",
+          "path": "src/app/presentation/sidebar_render.rs",
           "symbol": "current_sidebar_theme / sidebar_theme_for_owner_sources",
           "coverage": "representative",
           "observed_at_commit": "82b022134ab98c7203c8a680bd7479d71f60bed6"
         },
         {
-          "path": "src/app_skirmish.rs",
+          "path": "src/app/frontend/skirmish.rs",
           "symbol": "explicit_launch_local_owner_drives_production_sidebar_theme",
           "coverage": "representative",
           "observed_at_commit": "82b022134ab98c7203c8a680bd7479d71f60bed6"
@@ -1107,7 +1105,7 @@
       "to": "GSI-07.01",
       "context": "Production command path",
       "detail": "Local semantic orders become owned simulation command admissions.",
-      "evidence": ["src/app_commands.rs", "src/sim/world/world_commands.rs"],
+      "evidence": ["src/app/input/commands.rs", "src/sim/world/world_commands.rs"],
       "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
     },
     {
@@ -1652,7 +1650,7 @@
       "evidence": [
         "src/assets/asset_manager.rs",
         "src/render/sidebar_chrome.rs",
-        "src/app_sidebar_build.rs",
+        "src/app/presentation/sidebar_build.rs",
         "src/render/sidebar_chrome_tests.rs"
       ],
       "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
@@ -1749,9 +1747,9 @@
         {"path": "src/app/frame.rs", "coverage": "representative", "observed_at_commit": "d1c6d6d8c567a50740230bcb4bad6745f09e6a87"},
 
         {"path": "src/skirmish_launch.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
-        {"path": "src/app_skirmish_session.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
-        {"path": "src/app_skirmish.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
-        {"path": "src/app_init.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+        {"path": "src/app/frontend/skirmish_session.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app/frontend/skirmish.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app/loading/init.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
       ],
       "stages": [
         {"order": 1, "system": "GSI-03.10", "action": "Accept skirmish configuration."},
@@ -1932,18 +1930,18 @@
       "rust_touchpoints": [
         {"path": "src/sim/production/factory_lifecycle.rs", "coverage": "representative", "observed_at_commit": "73b82957923a824bd4a8a1fddd966b063a497d9f"},
         {"path": "src/sim/production/factory_lifecycle_tests.rs", "coverage": "representative", "observed_at_commit": "73b82957923a824bd4a8a1fddd966b063a497d9f"},
-        {"path": "src/app_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app/input/commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/production/factory.rs", "coverage": "representative", "observed_at_commit": "73b82957923a824bd4a8a1fddd966b063a497d9f"},
         {"path": "src/sim/production/production_queue.rs", "coverage": "representative", "observed_at_commit": "73b82957923a824bd4a8a1fddd966b063a497d9f"},
         {"path": "src/sim/production/production_placement.rs", "coverage": "representative", "observed_at_commit": "73b82957923a824bd4a8a1fddd966b063a497d9f"},
         {"path": "src/sim/world/world_commands.rs", "coverage": "representative", "observed_at_commit": "e726da11bdafed70d634cc93e871e5a5cd8c6135"},
-        {"path": "src/app_init_helpers_retail_placement_oracle_tests.rs", "coverage": "representative", "observed_at_commit": "12948d89c7e68d0dac14f7e0ed58d9212e844a2e"},
+        {"path": "src/app/loading/init_helpers_retail_placement_oracle_tests.rs", "coverage": "representative", "observed_at_commit": "12948d89c7e68d0dac14f7e0ed58d9212e844a2e"},
         {"path": "src/assets/asset_manager.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"},
         {"path": "src/render/sidebar_chrome.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"},
         {"path": "src/render/sidebar_chrome_tests.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"},
-        {"path": "src/app_sidebar_build.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"},
-        {"path": "src/app_sidebar_render.rs", "coverage": "representative", "observed_at_commit": "82b022134ab98c7203c8a680bd7479d71f60bed6"},
-        {"path": "src/app_skirmish.rs", "coverage": "representative", "observed_at_commit": "82b022134ab98c7203c8a680bd7479d71f60bed6"}
+        {"path": "src/app/presentation/sidebar_build.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"},
+        {"path": "src/app/presentation/sidebar_render.rs", "coverage": "representative", "observed_at_commit": "82b022134ab98c7203c8a680bd7479d71f60bed6"},
+        {"path": "src/app/frontend/skirmish.rs", "coverage": "representative", "observed_at_commit": "82b022134ab98c7203c8a680bd7479d71f60bed6"}
       ],
       "stages": [
         {"order": 1, "system": "GSI-14.10", "action": "Select production cameo."},
@@ -2165,8 +2163,8 @@
         "screen flash 0x0053AB70"
       ],
       "rust_touchpoints": [
-        {"path": "src/app_input.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
-        {"path": "src/app_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app/input/dispatch.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app/input/commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/world/world_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/superweapon", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
       ],
@@ -2220,7 +2218,7 @@
         {"path": "src/app/persistence/commands.rs", "coverage": "representative", "observed_at_commit": "923731fb3fc9f5599ff2e29ffc85a1de678daace"},
         {"path": "src/sim/production/factory_lifecycle.rs", "coverage": "representative", "observed_at_commit": "923731fb3fc9f5599ff2e29ffc85a1de678daace"},
         {"path": "src/app/persistence/tests/factory_restore_tests.rs", "coverage": "representative", "observed_at_commit": "923731fb3fc9f5599ff2e29ffc85a1de678daace"},
-        {"path": "src/app_save_load_panel.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app/persistence/save_load_panel.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/snapshot.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/world/mod.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/world/world_hash.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
@@ -2260,9 +2258,9 @@
         {"path": "src/sim/production/production_placement.rs", "coverage": "representative", "observed_at_commit": "84991f1404cd804f1ea8252afe4da3e0943898bd"},
         {"path": "src/sim/radar.rs", "coverage": "representative", "observed_at_commit": "84991f1404cd804f1ea8252afe4da3e0943898bd"},
         {"path": "src/sim/production/production_sell.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
-        {"path": "src/app_sidebar_render.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app/presentation/sidebar_render.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/render/minimap.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
-        {"path": "src/app_sim_tick.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+        {"path": "src/app/match_runtime/sim_tick.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
       ],
       "stages": [
         {"order": 1, "system": "GSI-14.08", "action": "Issue sell mode/action."},

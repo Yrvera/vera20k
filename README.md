@@ -23,7 +23,7 @@ Engine true to the original Westwood game: visuals, atmosphere, gameplay.
 Built for big multiplayer: targeting support for 30 players, 20,000 units, larger maps.
 
 **3.**
-Offer known old and new rts feautures never seen before to enhance the cnc ra2 experience.
+Room for RTS features the original never had.
 
 ## Development process
 

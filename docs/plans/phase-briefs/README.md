@@ -89,4 +89,4 @@ close it only if its end-to-end check passes, otherwise record residuals in
 the brief and stop after the handoff.
 
 Both modes update the brief and the System Map registry for touched, verified
-rows (`python -m tools.system_map check --require-sources`).
+rows (`python -m tools.system_map check`).

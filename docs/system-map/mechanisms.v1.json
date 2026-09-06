@@ -967,8 +967,8 @@
       ],
       "rust_surfaces": [
         {
-          "path": "src/app_sim_tick.rs",
-          "symbol": "announce_local_state_evas",
+          "path": "src/sim/house_eva.rs",
+          "symbol": "EVA_LOW_POWER guard (moved from app_sim_tick announce_local_state_evas in Phase 7, PR #250)",
           "coverage": "representative",
           "observed_at_commit": "c3133ff15ab3d46f33a1bcb5272c1c7d8b2845ad"
         }
@@ -1140,7 +1140,7 @@
       ],
       "rust_surfaces": [
         {
-          "path": "src/app_building_anim.rs",
+          "path": "src/app/presentation/building_anim.rs",
           "symbol": "update_power_bar_anim",
           "coverage": "representative",
           "observed_at_commit": "c3133ff15ab3d46f33a1bcb5272c1c7d8b2845ad"
@@ -1267,7 +1267,7 @@
       ],
       "rust_surfaces": [
         {
-          "path": "src/app_building_anim.rs",
+          "path": "src/app/presentation/building_anim.rs",
           "symbol": "update_radar_state",
           "coverage": "representative",
           "observed_at_commit": "c3133ff15ab3d46f33a1bcb5272c1c7d8b2845ad"
