@@ -3,7 +3,7 @@
 > **Repository execution note:** use this as the primary dependency-order and
 > system-coverage guide. For an actual clean-slate rebuild, follow the phases
 > and rows in order. In the existing repository, do not blindly reimplement
-> row 1 through row 336: use the audited status overlay and the selection
+> row 1 through row 336: use the System Map row status and the selection
 > procedure below to find the first incomplete mechanism in a player-visible
 > loop. The
 > [`Complete parity work queue`](2026-07-30-complete-parity-work-queue.md)
@@ -45,7 +45,7 @@ isolated projects:
 2. Enumerate that loop's GSI rows using this document and
    `system_map/topology.v2.json`.
 3. Reinspect the current committed Rust owner, tests, evidence, relevant INI
-   data, and git history. The dated status snapshot below is a lead, never a
+   data, and git history. The System Map row status is a lead, never a
    substitute for this check.
 4. Trace the loop in its actual runtime stage order and locate its **first
    player-visible or determinism-relevant divergence**.
@@ -74,118 +74,30 @@ must be rebuilt in isolation.
 | `ABSENT` | Verify active-YR reachability before designing the new owner; absence alone is not permission to port TS or dead code. |
 | `NOT_APPLICABLE_PROVEN` | Skip it for ordinary stock YR. Preserve the negative evidence and do not implement it speculatively. |
 
-### Snapshot route anchor
+## Status
 
-At audit snapshot `7f61d774`, the best fallback ordinary-skirmish anchor is
-**Phase 5's ground-movement loop** because movement is frequent, upstream of
-attack, harvesting, reveal/radar, transport, and many missions, and the audit
-found concrete partial pathing and movement owners.
+Row status is not kept in this document. It lives in the System Map registry
+(`docs/system-map/registry.v2.json`, one `baseline_status` per GSI row with
+`native_evidence`, `rust_implementation`, `parity` and `basis`) and is updated
+only for touched, verified connections through `python -m tools.system_map
+import` followed by `python -m tools.system_map check --require-sources`.
+Read a row there before selecting work; `parity` stays `UNCHECKED`/`DRIFT`
+until a gamemd-derived executable comparison demonstrates equivalence.
 
-`LOOP-002-GROUND-MOVE` is also marked `BLOCKED`, but that status refers to its
-native executable capture oracle. It is not evidence that movement is the
-uniquely most broken implementation. Loop-oracle state and system
-implementation state are separate.
-
-This does **not** mean “implement all of Phase 5.” Trace one stock move order
-from input through command admission, pathing, locomotion, occupancy, reveal,
-and rendering; fix its first divergence. Before taking it, recheck current
-HEAD and parallel ownership because locomotion work may have advanced since
-the snapshot.
-
-If there is no concrete user symptom or already-owned route, the audit's
-non-binding candidate order is:
-
-1. Phase 5 — ground movement and its command/occupancy/reveal handoffs;
-2. Phase 6 — authoritative projectile, damage, death, and feedback;
-3. Phase 8 — the concrete radar/minimap command-routing drift in `GSI-14.11`;
-4. Phases 7–8 — harvest/credit, build/place, factory exit, and power recovery;
-5. Phase 10 — stock skirmish AI data, teams, scripts, triggers, and decisions.
-
-Re-run selection after every bounded slice. A frequent player symptom, new
-production trace, changed HEAD, or parallel ownership overrides this snapshot
-order. The linked gap scan contains the longer ranked candidate set, including
-audio, save/replay, superweapons, campaign, and multiplayer.
-
-## Audited repository snapshot at `7f61d774`
-
-> **Evidence-derived snapshot, not a hand-maintained tracker.** These numbers
-> were produced by a four-way read-only audit of all 336 rows at committed
-> `dev` revision
-> `7f61d774aea36a0779834feb64da509ecf212232`. Replace this whole block from a
-> new audit when it becomes stale; do not increment counts manually. Full
-> evidence, row dispositions, caveats, and candidate gaps:
-> [`2026-07-30-gap-scan.md`](../gap-scans/2026-07-30-gap-scan.md).
->
-> **Staleness note (2026-08-09):** `dev` HEAD is now 131 commits past this
-> snapshot. Treat every count and status below as a dated lead only.
-
-| Audited classification | Rows |
-|---|---:|
-| Strict whole-system `VERIFIED_PARITY` | 0 |
-| `IMPLEMENTED_UNVERIFIED` | 10 |
-| `PARTIAL` | 244 |
-| `SCAFFOLD` | 44 |
-| `ABSENT` | 29 |
-| `NOT_APPLICABLE_PROVEN` for ordinary stock YR | 9 |
-| **Total** | **336** |
-
-There are 327 applicable rows after excluding the nine proven stock-inactive
-rows. Meaningful production code exists in 254 of those rows
-(`IMPLEMENTED_UNVERIFIED + PARTIAL`), or **77.7% structural coverage**.
-That is not a completion percentage: at that snapshot all 12 canonical loop
-oracles were
-non-positive (11 `UNVERIFIED`, one `BLOCKED`), so strict broad-system parity
-closure was **0 / 327**.
-
-This does not mean the game has “0% functionality.” It means no broad GSI row
-has yet accumulated the current whole-system native differential evidence
-required for the strict parity label.
-
-### Snapshot by phase
-
-`IU` means `IMPLEMENTED_UNVERIFIED`; `NAP` means
-`NOT_APPLICABLE_PROVEN`. At the audited snapshot every phase had zero
-`VERIFIED_PARITY` rows.
-
-| Phase | Rows | IU | Partial | Scaffold | Absent | NAP |
-|---:|---:|---:|---:|---:|---:|---:|
-| 0 | 21 | 3 | 15 | 3 | 0 | 0 |
-| 1 | 6 | 0 | 6 | 0 | 0 | 0 |
-| 2 | 9 | 0 | 9 | 0 | 0 | 0 |
-| 3 | 16 | 0 | 16 | 0 | 0 | 0 |
-| 4 | 27 | 1 | 26 | 0 | 0 | 0 |
-| 5 | 36 | 2 | 31 | 3 | 0 | 0 |
-| 6 | 37 | 1 | 31 | 5 | 0 | 0 |
-| 7 | 13 | 0 | 13 | 0 | 0 | 0 |
-| 8 | 19 | 1 | 18 | 0 | 0 | 0 |
-| 9 | 21 | 0 | 19 | 2 | 0 | 0 |
-| 10 | 22 | 0 | 15 | 1 | 6 | 0 |
-| 11 | 32 | 2 | 12 | 13 | 5 | 0 |
-| 12 | 22 | 0 | 15 | 7 | 0 | 0 |
-| 13 | 16 | 0 | 4 | 3 | 9 | 0 |
-| 14 | 23 | 0 | 13 | 5 | 5 | 0 |
-| 15 | 16 | 0 | 1 | 2 | 4 | 9 |
-| **Total** | **336** | **10** | **244** | **44** | **29** | **9** |
-
-### Row-level status lookup
-
-The linked audit supplies the complete compact disposition:
-
-- 244 rows default to `PARTIAL`;
-- it explicitly lists all 10 `IMPLEMENTED_UNVERIFIED` rows;
-- it explicitly lists all 44 `SCAFFOLD` rows;
-- it explicitly lists all 29 `ABSENT` rows;
-- it explicitly lists all nine `NOT_APPLICABLE_PROVEN` rows.
-
-Reinspect a selected row before work because status can change as soon as code,
-tests, evidence, or reachability changes.
+Each closed phase links a closure record under `docs/gap-scans/` from its
+phase heading below: the disparity scans that enumerated the phase's
+mechanisms, the reverse audits, the merged PR list and the remaining
+residuals. A new session should start from that record, not from a fresh
+enumeration. The 2026-07-30 four-way audit that once filled this section is
+superseded by the registry; its counts are no longer reproduced here.
 
 ### Copyable goal-agent contract
 
 ```text
 Use docs/plans/2026-07-30-clean-slate-system-implementation-order.md as the
-dependency order and docs/gap-scans/2026-07-30-gap-scan.md only as a dated
-status lead. Own exactly one bounded slice.
+dependency order, docs/system-map/registry.v2.json as row status, and the
+phase closure record linked from the phase heading as the residual list. Own
+exactly one bounded slice.
 
 Select one ordinary-stock end-to-end loop, enumerate its GSI participants,
 and reconcile current HEAD, Rust production owners, tests, research, INIs,
@@ -391,15 +303,23 @@ slice in that same loop. Write the handoff, then stop.
 
 ## Phase 7 — Harvesting and economy
 
+> **Closed 2026-09-06** (parity-close pass; rows anchored, parity not
+> demonstrated). Closure record:
+> [`2026-09-06-phase7-closure/`](../gap-scans/2026-09-06-phase7-closure/README.md)
+> — merged PRs #242–#251, #253–#257, #259, #264; remaining residuals in its
+> final audit, Part C.
+
 153. **GSI-09.01** — Credits, transactions and displayed money
 154. **GSI-09.02** — Storage, silos and resource loss
 155. **GSI-09.03** — Ore/gem value, cargo and unload conversion
 156. **GSI-09.05** — Miner work-site and return decisions
 157. **GSI-07.15** — Harvest mission
-158. **GSI-07.17** — Return mission — `SKIP/PROVE` (dead slot in stock YR:
-    rulesmd.ini marks `[Return]` `; <unused>`; the FootClass slot is the base
-    stub with no assigner. Harvester return-to-refinery runs *inside* the
-    Harvest mission's states — see item 157. Keep the enum slot.)
+158. **GSI-07.17** — Return mission — `PROVEN DEAD` (2026-09-05: vtable slot
+    `+0x234` holds the base stub `0x005B2ED0` (`return 450`) in all eight
+    vtables and no code path assigns mission 12; rulesmd.ini marks `[Return]`
+    `; <unused>`. Harvester return-to-refinery runs *inside* the Harvest
+    mission's states — see item 157. Keep the enum slot; System Map records
+    `COMPILED_INACTIVE` / `ABSENT`.)
 159. **GSI-07.37** — Radio contact and link protocol
 160. **GSI-07.38** — Docking reservations, queues and authority handoff
 161. **GSI-07.39** — Refinery docking, transfer and release
