@@ -1372,7 +1372,7 @@ impl Simulation {
                 }
                 let owner_s = self.interner.resolve(*owner).to_string();
                 let type_s = self.interner.resolve(*type_id).to_string();
-                production::place_ready_building_with_overlays(
+                let placed = production::place_ready_building_with_overlays(
                     self,
                     rules,
                     &owner_s,
@@ -1382,7 +1382,16 @@ impl Simulation {
                     path_grid,
                     height_map,
                     overlay_registry,
-                )
+                );
+                if !placed {
+                    // `HouseClass::Place_Production 0x004FB369..0x004FB377`:
+                    // a placement event whose Unlimbo fails speaks
+                    // `EVA_CannotDeployHere` when `this == PlayerPtr`; the
+                    // app applies the local-owner half.
+                    self.sound_events
+                        .push(SimSoundEvent::CannotDeployHere { owner: *owner });
+                }
+                placed
             }
             Command::CancelLastProduction { owner } => {
                 let Some(rules) = rules else { return false };
@@ -2455,6 +2464,9 @@ impl Simulation {
                 }
             }
         }
+        // `EVA_NewRallyPointEstablished` is not a sim fact: `BuildingClass::
+        // SetRallyPoint 0x00443A69` speaks inside the click handler, after the
+        // rally EventClass is pushed and before it executes — the app owns it.
         true
     }
 

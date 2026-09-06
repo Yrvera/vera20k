@@ -4,15 +4,22 @@
 //! explicit simulation, input, resize, and match-replacement transitions that
 //! rebuild the projection.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::sidebar::SidebarView;
+use crate::sim::intern::InternedId;
 use crate::sim::world::TickLane;
 
 #[derive(Debug, Default)]
 pub(crate) struct SidebarProjectionState {
     displayed_credits: HashMap<String, i32>,
     current_view: Option<SidebarView>,
+    /// The build cameos the strips held at the last projection — the
+    /// `StripClass` entry list `SidebarClass::AddCameo @ 0x006A63E0` scans
+    /// before inserting. `None` until the first projection of a match, which
+    /// is the scenario-init window (`[0xA8E7AC] != 0`) where insertions are
+    /// silent.
+    cameo_types: Option<BTreeSet<InternedId>>,
 }
 
 impl SidebarProjectionState {
@@ -23,7 +30,30 @@ impl SidebarProjectionState {
     }
 
     pub(crate) fn replace_view(&mut self, view: Option<SidebarView>) {
+        if view.is_none() {
+            self.cameo_types = None;
+        }
         self.current_view = view;
+    }
+
+    /// Forget the strip entry list: the next `note_cameos` is a scenario's
+    /// first projection again (`[0xA8E7AC] != 0`, silent). Called wherever a
+    /// simulation is installed — a new match or an in-scenario load — so a
+    /// different pre-placed base never reads as freshly inserted cameos.
+    pub(crate) fn reset_cameo_seed(&mut self) {
+        self.cameo_types = None;
+    }
+
+    /// Record the build cameos now shown and report whether at least one was
+    /// inserted since the previous projection
+    /// (`crate::app::input::sidebar_eva::new_construction_options`).
+    pub(crate) fn note_cameos(&mut self, current: BTreeSet<InternedId>) -> bool {
+        let (set, inserted) = crate::app::input::sidebar_eva::new_construction_options(
+            self.cameo_types.as_ref(),
+            current,
+        );
+        self.cameo_types = Some(set);
+        inserted
     }
 
     /// Return the owner's retained display value, seeding a newly observed
@@ -128,6 +158,27 @@ mod tests {
     }
 
     #[test]
+    fn installing_another_sim_reseeds_the_cameo_strip_silently() {
+        let a = InternedId::from_index(1);
+        let b = InternedId::from_index(2);
+        let mut projection = SidebarProjectionState::default();
+        // Sim A: the first projection seeds silently, growth speaks.
+        assert!(!projection.note_cameos(BTreeSet::from([a])));
+        assert!(projection.note_cameos(BTreeSet::from([a, b])));
+        // Sim B with a different pre-placed base: without the reset its
+        // first refresh would read `b`-less/`a`-less strips as insertions.
+        projection.reset_cameo_seed();
+        assert!(
+            !projection.note_cameos(BTreeSet::from([b])),
+            "the first refresh after a sim install is the init window"
+        );
+        assert!(projection.note_cameos(BTreeSet::from([a, b])));
+        // Leaving the match still clears the seed.
+        projection.replace_view(None);
+        assert!(!projection.note_cameos(BTreeSet::from([a])));
+    }
+
+    #[test]
     fn credits_advance_once_per_committed_ordinary_frame() {
         let mut projection = SidebarProjectionState::default();
         projection.displayed_credits_or_seed("Americans", 100);
@@ -183,7 +234,9 @@ mod tests {
 
     #[test]
     fn sidebar_credit_gate_matrix() {
-        use crate::app::match_runtime::sim_tick::{RuntimePassInputs, SessionMode, decide_runtime_pass};
+        use crate::app::match_runtime::sim_tick::{
+            RuntimePassInputs, SessionMode, decide_runtime_pass,
+        };
 
         // Baseline wall-clock pass: active window, accepted startup receipt,
         // elapsed pacer window, nothing paused, no menu. Every freeze case

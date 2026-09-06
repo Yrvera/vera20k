@@ -30,7 +30,11 @@ pub(crate) use crate::app::presentation::sidebar_build::{
 /// Return the one retained sidebar projection. Reading it never advances
 /// credits, clears targeting, or clamps scroll state.
 pub(crate) fn current_sidebar_view(state: &AppState) -> Option<&SidebarView> {
-    state.match_state.match_presentation.sidebar_projection.view()
+    state
+        .match_state
+        .match_presentation
+        .sidebar_projection
+        .view()
 }
 
 /// Advance the displayed balance at the authoritative gameplay-frame seam.
@@ -43,12 +47,19 @@ pub(crate) fn advance_sidebar_credits_after_frame(
         return;
     }
     let owner_name = preferred_local_owner_name(state).unwrap_or_else(|| "Americans".to_string());
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
         return;
     };
     let credits = production::credits_for_owner(sim, &owner_name);
     state
-        .match_state.match_presentation.sidebar_projection
+        .match_state
+        .match_presentation
+        .sidebar_projection
         .advance_credits(&owner_name, credits);
 }
 
@@ -68,7 +79,14 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         power_drained,
         sw_views,
     )) = (|| {
-        let (sim, rules) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation)?, state.rules()?);
+        let (sim, rules) = (
+            state
+                .match_state
+                .sim_runtime
+                .as_ref()
+                .map(|rt| &rt.simulation)?,
+            state.rules()?,
+        );
         let producer_focus = [
             production::ProductionCategory::Building,
             production::ProductionCategory::Defense,
@@ -102,9 +120,35 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         ))
     })()
     else {
-        state.match_state.match_presentation.sidebar_projection.replace_view(None);
+        state
+            .match_state
+            .match_presentation
+            .sidebar_projection
+            .replace_view(None);
         return;
     };
+
+    // `SidebarClass::AddCameo 0x006A63D6..0x006A6415`: a build cameo the
+    // strip did not hold (`visible_in_sidebar` is the strip entry set; the
+    // superweapon strip is the `RTTI == 0x1F` exclusion) speaks
+    // `EVA_NewConstructionOptions` once the scenario-init nesting counter
+    // is back to zero — the first projection of a match is that window.
+    let cameos: std::collections::BTreeSet<_> = build_options
+        .iter()
+        .filter(|opt| opt.visible_in_sidebar())
+        .map(|opt| opt.type_id)
+        .collect();
+    if state
+        .match_state
+        .match_presentation
+        .sidebar_projection
+        .note_cameos(cameos)
+    {
+        crate::app::input::dispatch::push_local_eva(
+            state,
+            crate::app::input::sidebar_eva::EVA_NEW_CONSTRUCTION_OPTIONS,
+        );
+    }
 
     // Resolve CSF display names (e.g., "Name:MTNK" → "Grizzly Battle Tank").
     if let Some(csf) = &state.process_assets.csf {
@@ -119,7 +163,9 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         }
     }
     let display_credits = state
-        .match_state.match_presentation.sidebar_projection
+        .match_state
+        .match_presentation
+        .sidebar_projection
         .displayed_credits_or_seed(&owner_name, credits);
     let (tab_btn_size, repair_btn_size, sell_btn_size, scroll_down_btn_size, scroll_up_btn_size) = {
         let scale = state.match_state.match_presentation.ui_scale;
@@ -140,17 +186,27 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         &mut state.match_state.input.building_placement_preview,
         &ready_buildings,
         &sw_views,
-        state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|s| &s.interner),
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation)
+            .map(|s| &s.interner),
     );
     // App targeting state -> the sidebar-owned armed projection (F06 seam).
-    let armed_entry = state.match_state.input.targeting_mode.as_ref().map(|mode| match mode {
-        crate::app::types::TargetingMode::BuildingPlacement(section) => {
-            sidebar::ArmedSidebarEntry::BuildingPlacement(section.clone())
-        }
-        crate::app::types::TargetingMode::SuperWeapon(section) => {
-            sidebar::ArmedSidebarEntry::SuperWeapon(section.clone())
-        }
-    });
+    let armed_entry = state
+        .match_state
+        .input
+        .targeting_mode
+        .as_ref()
+        .map(|mode| match mode {
+            crate::app::types::TargetingMode::BuildingPlacement(section) => {
+                sidebar::ArmedSidebarEntry::BuildingPlacement(section.clone())
+            }
+            crate::app::types::TargetingMode::SuperWeapon(section) => {
+                sidebar::ArmedSidebarEntry::SuperWeapon(section.clone())
+            }
+        });
     let mut view = sidebar::build_sidebar_view_with_spec(
         state.match_state.match_presentation.sidebar_layout_spec,
         state.render_width() as f32,
@@ -166,7 +222,12 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         armed_entry.as_ref(),
         &producer_focus,
         state.match_state.match_presentation.sidebar_scroll_rows,
-        state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|sim| &sim.interner),
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation)
+            .map(|sim| &sim.interner),
         &sw_views,
         &state.match_state.match_presentation.sidebar_gadget_state,
         repair_btn_size,
@@ -175,12 +236,21 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         scroll_up_btn_size,
     );
     state.match_state.match_presentation.sidebar_scroll_rows = view.scroll_rows;
-    if let Some(atlas) = state.match_state.match_presentation.sidebar_cameo_atlas.as_ref() {
+    if let Some(atlas) = state
+        .match_state
+        .match_presentation
+        .sidebar_cameo_atlas
+        .as_ref()
+    {
         for item in &mut view.items {
             item.has_cameo_art = atlas.get(&item.type_id).is_some();
         }
     }
-    state.match_state.match_presentation.sidebar_projection.replace_view(Some(view));
+    state
+        .match_state
+        .match_presentation
+        .sidebar_projection
+        .replace_view(Some(view));
 }
 
 pub(crate) fn sync_targeting_mode(
@@ -216,7 +286,9 @@ pub(crate) fn sync_targeting_mode(
 pub(crate) fn is_cursor_over_minimap(state: &AppState) -> bool {
     // Minimap interaction disabled when radar is not online.
     let minimap_visible: bool = state
-        .match_state.match_presentation.radar_anim
+        .match_state
+        .match_presentation
+        .radar_anim
         .as_ref()
         .map_or(true, |ra| ra.is_minimap_visible());
     if !minimap_visible {
@@ -254,10 +326,7 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
     let Some(minimap) = state.match_state.match_presentation.minimap.as_ref() else {
         return;
     };
-    let runtime = state
-        .match_state
-        .sim_runtime
-        .as_ref();
+    let runtime = state.match_state.sim_runtime.as_ref();
     let native_facts = runtime.and_then(|runtime| {
         let view = runtime.view();
         Some((
@@ -301,8 +370,10 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
     // Mapless/headless presentation fixture adapter only.
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
-    let (tactical_w, tactical_h) =
-        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    let (tactical_w, tactical_h) = crate::app::input::camera::tactical_viewport_size_px(
+        state.render_width(),
+        state.render_height(),
+    );
     let z = state.match_state.input.zoom_level;
     let (cx, cy) = minimap.camera_top_left_for_screen_point_in_rect(
         state.match_state.input.cursor_x,
@@ -324,15 +395,22 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
 pub(crate) fn active_minimap_content_screen_rect(state: &AppState) -> crate::sidebar::Rect {
     let aperture = active_minimap_screen_rect(state);
     let Some(minimap) = state.match_state.match_presentation.minimap.as_ref() else {
-        return crate::sidebar::Rect { x: aperture.x, y: aperture.y, w: 0.0, h: 0.0 };
+        return crate::sidebar::Rect {
+            x: aperture.x,
+            y: aperture.y,
+            w: 0.0,
+            h: 0.0,
+        };
     };
-    let Some([x, y, w, h]) = minimap.content_screen_rect_in_rect(
-        aperture.x,
-        aperture.y,
-        aperture.w,
-        aperture.h,
-    ) else {
-        return crate::sidebar::Rect { x: aperture.x, y: aperture.y, w: 0.0, h: 0.0 };
+    let Some([x, y, w, h]) =
+        minimap.content_screen_rect_in_rect(aperture.x, aperture.y, aperture.w, aperture.h)
+    else {
+        return crate::sidebar::Rect {
+            x: aperture.x,
+            y: aperture.y,
+            w: 0.0,
+            h: 0.0,
+        };
     };
     crate::sidebar::Rect { x, y, w, h }
 }
@@ -381,7 +459,15 @@ pub(crate) fn current_sidebar_theme(
 ) -> crate::render::sidebar_chrome::SidebarTheme {
     preferred_local_owner_name(state)
         .and_then(|owner| {
-            sidebar_theme_for_owner_sources(state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.house_roster, &owner)
+            sidebar_theme_for_owner_sources(
+                state
+                    .match_state
+                    .sim_runtime
+                    .as_ref()
+                    .map(|rt| &rt.simulation),
+                &state.match_state.match_presentation.house_roster,
+                &owner,
+            )
         })
         .unwrap_or(crate::render::sidebar_chrome::SidebarTheme::Allied)
 }
@@ -389,7 +475,11 @@ pub(crate) fn current_sidebar_theme(
 pub(crate) fn current_sidebar_chrome(
     state: &AppState,
 ) -> Option<&crate::render::sidebar_chrome::SidebarChromeAtlas> {
-    let set = state.match_state.match_presentation.sidebar_chrome.as_ref()?;
+    let set = state
+        .match_state
+        .match_presentation
+        .sidebar_chrome
+        .as_ref()?;
     let theme = current_sidebar_theme(state);
     set.for_theme(theme)
 }

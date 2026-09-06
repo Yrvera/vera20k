@@ -22,8 +22,8 @@ use crate::rules::ini_parser::IniFile;
 use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
-use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::combat::AttackTarget;
+use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::{BuildingUp, Health};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::MissionType;
@@ -1551,6 +1551,15 @@ fn placement_command_rejects_marked_ground_mobiles_until_they_are_unmarked() {
             !tick.spawned_entities,
             "rejected placement must not report a spawned entity"
         );
+        // `HouseClass::Place_Production 0x004FB369..0x004FB377`: the failed
+        // Unlimbo speaks `EVA_CannotDeployHere` for the placing house.
+        assert!(
+            sim.sound_events.iter().any(|event| matches!(
+                event,
+                crate::sim::world::SimSoundEvent::CannotDeployHere { owner } if *owner == americans
+            )),
+            "rejected placement must emit EVA_CannotDeployHere for {blocker_type}"
+        );
         assert_eq!(sim.substrate.entities.len(), entities_before);
         assert_eq!(sim.substrate.next_stable_object_id, next_id_before);
         assert_eq!(
@@ -2353,7 +2362,9 @@ fn gsi_04_07_wall_placement_publishes_connectivity_neighbor_auto_destruction() {
         sim.radar_terrain_dirty_generation, 5,
         "each first-unique native radar callback is published at its inline visit"
     );
-    let live_path = sim.path_grid_snapshot().expect("hosted placement path authority");
+    let live_path = sim
+        .path_grid_snapshot()
+        .expect("hosted placement path authority");
     assert!(
         live_path.is_walkable(13, 10),
         "removed neighbor must be passable before placement returns"

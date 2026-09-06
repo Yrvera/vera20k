@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use super::Simulation;
+use super::{SimSoundEvent, Simulation};
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::combat;
@@ -315,6 +315,7 @@ impl Simulation {
             let dy = (eng_ry as i32 - bld_ry as i32).abs();
 
             if dx <= 1 && dy <= 1 {
+                self.announce_engineer_capture(building_id, engineer_owner, rules);
                 // CAPTURE: the ownership chokepoint moves HouseState counts,
                 // the by-owner index, and the entity owner exactly once.
                 self.change_owner_with_rules(building_id, engineer_owner, rules);
@@ -324,6 +325,78 @@ impl Simulation {
             }
         }
         any_captured
+    }
+
+    /// `BuildingClass::ChangeOwner @ 0x00448260` announce block
+    /// (`0x004483C0..0x0044848F`), run before the owner swap because native
+    /// reads `this->Owner` (the OLD owner) there. The engineer capture site
+    /// (`InfantryClass::PerCellProcess 0x00519A27 PUSH 1`) passes
+    /// announce=true. Native gates: the old or the new owner is the local
+    /// player (`0x004483C6`/`0x004483D1 CALL 0x0050B6F0`) and the new
+    /// owner's type is not `MultiplayPassive` (`0x004483E1 HouseType+0x1A6`).
+    /// The sim has no local player, so it pre-filters on a human-controlled
+    /// house on either side and the app applies the local test (equal in the
+    /// single-human skirmish; VERA-internal, gamemd equivalent UNCHECKED for
+    /// two-human matches, where the radar event would also be local).
+    /// `NeedsEngineer=` types skip the radar event (`0x00448407`); the rest
+    /// go through `CreateRadarEvent(10, cell)` (`0x00448472 MOV ECX,0xA`)
+    /// whose accept result gates `EVA_BuildingCaptured` — type table row 10
+    /// (`0x007F0A38`: dedup 8, blink 100, unique 0) has no uniqueness
+    /// dedupe, so on stock data the radar accepts every capture. The type's
+    /// `CaptureEvaEvent=` (`Type+0x1554`, `0x00448443..0x00448459`) rides
+    /// along for the app's local-new-owner branch.
+    pub(crate) fn announce_engineer_capture(
+        &mut self,
+        building_id: u64,
+        new_owner: InternedId,
+        rules: &RuleSet,
+    ) {
+        let Some((old_owner, type_ref, rx, ry)) = self
+            .substrate
+            .entities
+            .get(building_id)
+            .map(|e| (e.owner, e.type_ref, e.position.rx, e.position.ry))
+        else {
+            return;
+        };
+        if old_owner == new_owner {
+            return;
+        }
+        let game_mode_nonzero = self.session.game_mode_nonzero;
+        let human = |sim: &Self, house: InternedId| {
+            sim.houses
+                .get(&house)
+                .is_some_and(|h| h.is_controlled_by_human(game_mode_nonzero))
+        };
+        if !(human(self, old_owner) || human(self, new_owner)) {
+            return;
+        }
+        if self
+            .houses
+            .get(&new_owner)
+            .is_some_and(|h| h.multiplay_passive)
+        {
+            return;
+        }
+        let (tech_building, capture_eva_event) = self
+            .object_type(type_ref, rules)
+            .map(|obj| (obj.needs_engineer, obj.capture_eva_event.clone()))
+            .unwrap_or((false, None));
+        let capture_eva_event = capture_eva_event.map(|name| self.interner.intern(&name));
+        let radar_accepted = !tech_building
+            && self.radar_events.push_owned(
+                crate::sim::radar::RadarEventType::BuildingCaptured,
+                rx,
+                ry,
+                None,
+            );
+        self.sound_events.push(SimSoundEvent::BuildingCaptured {
+            old_owner,
+            new_owner,
+            tech_building,
+            radar_accepted,
+            capture_eva_event,
+        });
     }
 
     /// Tick bridge-repair orders: any engineer with `capture_target` pointing

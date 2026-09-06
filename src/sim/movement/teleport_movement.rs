@@ -687,6 +687,8 @@ mod tests {
             engineer: false,
             deployer: false,
             capturable: false,
+            needs_engineer: false,
+            capture_eva_event: None,
             repairable: false,
             can_be_occupied: false,
             can_occupy_fire: false,

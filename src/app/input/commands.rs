@@ -374,6 +374,16 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
                     reason.label()
                 );
             }
+            // `DisplayClass::BandBox_LeftUp 0x004ABAAC/0x004ABABA`: a
+            // placement click whose pending building is not placeable
+            // (`+0x1180` clear, `BuildingClass 0x00452670` refused the cell)
+            // or not adjacent (`+0x1181` clear) goes to `0x004ABC76..
+            // 0x004ABC80 PlayEVA("EVA_CannotDeployHere", -1)` on the clicking
+            // machine, before any event is queued.
+            crate::app::input::dispatch::push_local_eva(
+                state,
+                crate::app::input::sidebar_eva::EVA_CANNOT_DEPLOY_HERE,
+            );
             return;
         }
     }

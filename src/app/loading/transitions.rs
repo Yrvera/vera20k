@@ -155,6 +155,13 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
                 },
             });
     state.match_state.match_presentation.combat_lights.clear();
+    // A new simulation is a new scenario for `SidebarClass::AddCameo`'s
+    // init gate: its first projection must seed the strip silently.
+    state
+        .match_state
+        .match_presentation
+        .sidebar_projection
+        .reset_cameo_seed();
     sync_in_game_options_speed_from_sim(state);
     if let Some(sim) = state
         .match_state

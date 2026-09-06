@@ -9767,3 +9767,190 @@ fn gsi_05_14_death_debris_joins_the_live_order_the_hash_and_the_snapshot() {
     );
     sim.debug_assert_logic_membership_consistent();
 }
+
+fn capture_eva_rules() -> RuleSet {
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+         [BuildingTypes]\n0=GAPOWR\n1=CAOILD\n\n\
+         [GAPOWR]\nStrength=100\nArmor=wood\nCapturable=yes\n\n\
+         [CAOILD]\nStrength=1000\nArmor=wood\nCapturable=yes\nNeedsEngineer=yes\n\
+         CaptureEvaEvent=EVA_OilRefineryCaptured\n",
+    );
+    RuleSet::from_ini(&ini).expect("capture eva rules should parse")
+}
+
+fn captured_events(
+    sim: &Simulation,
+) -> Vec<(InternedId, InternedId, bool, bool, Option<InternedId>)> {
+    sim.sound_events
+        .iter()
+        .filter_map(|event| match event {
+            SimSoundEvent::BuildingCaptured {
+                old_owner,
+                new_owner,
+                tech_building,
+                radar_accepted,
+                capture_eva_event,
+            } => Some((
+                *old_owner,
+                *new_owner,
+                *tech_building,
+                *radar_accepted,
+                *capture_eva_event,
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `BuildingClass::ChangeOwner 0x004483FB..0x0044848F`: an ordinary building
+/// goes through `CreateRadarEvent(10, cell)` and announces only when the radar
+/// queue accepted the event. Native row 10 of the `0x007F0998` type table
+/// (`0x007F0A38`: dedup 8, visibility 0, blink 100, unique 0) is NOT unique,
+/// so a second capture next to a live diamond is accepted too.
+#[test]
+fn engineer_capture_of_an_ordinary_building_is_gated_by_the_radar_event() {
+    let rules = capture_eva_rules();
+    let mut sim = Simulation::new();
+    sim.session.game_mode_nonzero = true;
+    let player = insert_house_with_counts(&mut sim, "Americans", 0, 0);
+    let enemy = insert_house_with_counts(&mut sim, "Russians", 2, 0);
+    sim.houses.get_mut(&enemy).expect("enemy").is_human = false;
+    insert_test_entity_for_owner(&mut sim, 1, enemy, "GAPOWR", EntityCategory::Structure);
+    insert_test_entity_for_owner(&mut sim, 2, enemy, "GAPOWR", EntityCategory::Structure);
+    sim.substrate
+        .entities
+        .get_mut(2)
+        .expect("second plant")
+        .position
+        .rx = 11;
+
+    sim.announce_engineer_capture(1, player, &rules);
+    assert_eq!(
+        captured_events(&sim),
+        vec![(enemy, player, false, true, None)]
+    );
+    assert_eq!(
+        sim.radar_events
+            .iter()
+            .filter(|event| event.event_type == crate::sim::radar::RadarEventType::BuildingCaptured)
+            .count(),
+        1,
+        "`0x00448472 MOV ECX,0xA` creates the type-10 radar event"
+    );
+
+    // A second capture one cell away while the first diamond lives: type 10
+    // is not unique, so the radar event and the line both go through.
+    sim.sound_events.clear();
+    sim.announce_engineer_capture(2, player, &rules);
+    assert_eq!(
+        captured_events(&sim),
+        vec![(enemy, player, false, true, None)]
+    );
+    assert_eq!(
+        sim.radar_events
+            .iter()
+            .filter(|event| event.event_type == crate::sim::radar::RadarEventType::BuildingCaptured)
+            .count(),
+        2
+    );
+}
+
+/// `0x00448401 MOV CL,[Type+0x1552]` (`NeedsEngineer=`): no radar event; the
+/// old owner's `EVA_TechBuildingLost` and the new owner's `CaptureEvaEvent=`
+/// are the app's to route.
+#[test]
+fn engineer_capture_of_a_tech_building_carries_its_capture_eva_event() {
+    let rules = capture_eva_rules();
+    let mut sim = Simulation::new();
+    sim.session.game_mode_nonzero = true;
+    let player = insert_house_with_counts(&mut sim, "Americans", 0, 0);
+    let civilian = insert_passive_house_with_counts(&mut sim, "Neutral", 1, 0);
+    insert_test_entity_for_owner(&mut sim, 1, civilian, "CAOILD", EntityCategory::Structure);
+
+    sim.announce_engineer_capture(1, player, &rules);
+    let line = sim.interner.get("EVA_OilRefineryCaptured");
+    assert!(
+        line.is_some(),
+        "the CaptureEvaEvent name is interned for the app"
+    );
+    assert_eq!(
+        captured_events(&sim),
+        vec![(civilian, player, true, false, line)]
+    );
+    assert_eq!(
+        sim.radar_events.len(),
+        0,
+        "NeedsEngineer skips CreateRadarEvent"
+    );
+}
+
+/// `0x004483C6/0x004483D1`: a human house on one side is required, and
+/// `0x004483E1`: a `MultiplayPassive` new owner never announces.
+#[test]
+fn engineer_capture_is_silent_without_a_human_side_or_into_a_passive_house() {
+    let rules = capture_eva_rules();
+    let mut sim = Simulation::new();
+    // Skirmish: `IsControlledByHuman` is the human flag alone (`0x0050B730`).
+    sim.session.game_mode_nonzero = true;
+    let ai_a = insert_house_with_counts(&mut sim, "Russians", 1, 0);
+    let ai_b = insert_house_with_counts(&mut sim, "Cubans", 0, 0);
+    let civilian = insert_passive_house_with_counts(&mut sim, "Neutral", 0, 0);
+    let player = insert_house_with_counts(&mut sim, "Americans", 1, 0);
+    for ai in [ai_a, ai_b] {
+        let house = sim.houses.get_mut(&ai).expect("ai house");
+        house.is_human = false;
+        house.player_control = false;
+    }
+    insert_test_entity_for_owner(&mut sim, 1, ai_a, "GAPOWR", EntityCategory::Structure);
+    insert_test_entity_for_owner(&mut sim, 2, player, "GAPOWR", EntityCategory::Structure);
+
+    sim.announce_engineer_capture(1, ai_b, &rules);
+    assert!(
+        captured_events(&sim).is_empty(),
+        "AI-vs-AI capture: nobody listens"
+    );
+    sim.announce_engineer_capture(2, civilian, &rules);
+    assert!(
+        captured_events(&sim).is_empty(),
+        "passive new owner is silent"
+    );
+    assert_eq!(sim.radar_events.len(), 0);
+}
+
+/// `HouseClass::MPlayer_Defeated 0x004FC30F..0x004FC3BC`: every non-passive
+/// defeat is announced; the app splits local from other.
+#[test]
+fn defeat_of_a_non_passive_house_emits_player_defeated() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    let player = insert_house_with_counts(&mut sim, "Americans", 1, 0);
+    let enemy = insert_house_with_counts(&mut sim, "Russians", 0, 0);
+    let civilian = insert_passive_house_with_counts(&mut sim, "Neutral", 0, 0);
+
+    sim.check_defeat(Some(&rules));
+
+    let defeated: Vec<InternedId> = sim
+        .sound_events
+        .iter()
+        .filter_map(|event| match event {
+            SimSoundEvent::PlayerDefeated { house } => Some(*house),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(defeated, vec![enemy]);
+    assert!(!sim.houses[&player].is_defeated);
+    assert!(
+        !sim.houses[&civilian].is_defeated,
+        "passive houses are never evaluated"
+    );
+
+    // A house already flagged defeated is not announced again.
+    sim.sound_events.clear();
+    sim.check_defeat(Some(&rules));
+    assert!(
+        sim.sound_events
+            .iter()
+            .all(|event| !matches!(event, SimSoundEvent::PlayerDefeated { .. }))
+    );
+}

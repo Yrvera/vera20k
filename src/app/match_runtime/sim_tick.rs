@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use crate::app::AppState;
 use crate::app::input::commands::{preferred_local_owner, preferred_local_owner_name};
+use crate::app::match_runtime::eva_producers;
 
 /// Chance in 100 that a techno speaks its `VoiceFeedback=` line on the
 /// half-strength crossing. `TechnoClass::ReceiveDamage @ 0x007026BD
@@ -237,6 +238,18 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
 /// `EVA_YouAreVictorious` (`0x00824C2C`) and `Flag_To_Lose 0x004FCDA1`
 /// `EVA_YouHaveLost` (`0x00824C08`), both with `EDX = -1` (the entry's own
 /// type; stock rows are STANDARD NORMAL). The side column is the consumer's.
+/// `HouseClass::IsHumanPlayer @ 0x0050B6F0` as the EVA sites use it: in a
+/// multiplayer game it is `this == PlayerPtr`, the local player. The sim
+/// carries house identity; the app holds the local name.
+fn owner_is_local(
+    interner: &crate::sim::intern::StringInterner,
+    owner: crate::sim::intern::InternedId,
+    local_owner_name: Option<&str>,
+) -> bool {
+    let owner_str = interner.resolve(owner);
+    local_owner_name.is_some_and(|local| local.eq_ignore_ascii_case(owner_str))
+}
+
 fn outcome_eva_event(kind: crate::sim::house_state::HouseOutcomeKind) -> &'static str {
     match kind {
         crate::sim::house_state::HouseOutcomeKind::Victory => "EVA_YouAreVictorious",
@@ -1746,6 +1759,152 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         GameSoundEvent::Eva {
                             event: event.to_string(),
+                            type_override: None,
+                        }
+                    }
+                    SimSoundEvent::StructureSold { owner } => {
+                        // `BuildingClass::Sell 0x00449CC1 MOV AL,[EBP+0x41A]`
+                        // (`0x0044AB22` on the upgrade path): only the local
+                        // player's own building speaks; `EDX = -1`.
+                        if !owner_is_local(&sim.interner, owner, local_owner_name.as_deref()) {
+                            continue;
+                        }
+                        GameSoundEvent::Eva {
+                            event: eva_producers::EVA_STRUCTURE_SOLD.to_string(),
+                            type_override: None,
+                        }
+                    }
+                    SimSoundEvent::Repairing { owner } => {
+                        // `BuildingClass::ToggleRepair 0x004470A4 CALL
+                        // 0x0050B6F0`: the owner is the local player.
+                        if !owner_is_local(&sim.interner, owner, local_owner_name.as_deref()) {
+                            continue;
+                        }
+                        GameSoundEvent::Eva {
+                            event: eva_producers::EVA_REPAIRING.to_string(),
+                            type_override: None,
+                        }
+                    }
+                    SimSoundEvent::BuildingCaptured {
+                        old_owner,
+                        new_owner,
+                        tech_building,
+                        radar_accepted,
+                        capture_eva_event,
+                    } => {
+                        // `BuildingClass::ChangeOwner 0x004483C6/0x004483D1
+                        // CALL 0x0050B6F0` on the old and the new owner; the
+                        // lines are `eva_producers::capture_eva_events`. Every
+                        // call passes `EDX = -1` (the `0x00448459 QueueVoice`
+                        // passes `-1, -1` too).
+                        let local = local_owner_name.as_deref();
+                        let local_is_old = owner_is_local(&sim.interner, old_owner, local);
+                        let local_is_new = owner_is_local(&sim.interner, new_owner, local);
+                        let capture_event = capture_eva_event.map(|id| sim.interner.resolve(id));
+                        for event in eva_producers::capture_eva_events(
+                            tech_building,
+                            radar_accepted,
+                            capture_event,
+                            local_is_old,
+                            local_is_new,
+                        ) {
+                            state
+                                .match_state
+                                .match_audio
+                                .sound_events
+                                .push(GameSoundEvent::Eva {
+                                    event,
+                                    type_override: None,
+                                });
+                        }
+                        continue;
+                    }
+                    SimSoundEvent::SuperWeaponReady { owner, sw_type } => {
+                        // `HouseClass::Update 0x004F8E42 CMP ESI,[PlayerPtr] ;
+                        // SETZ CL ; PUSH ECX` is `SuperClass::AI_Ready`'s
+                        // announce argument (`0x006CBDCF TEST CL,CL`).
+                        if !owner_is_local(&sim.interner, owner, local_owner_name.as_deref()) {
+                            continue;
+                        }
+                        let type_name = sim.interner.resolve(sw_type);
+                        let Some(event) = resources
+                            .rules
+                            .super_weapon(type_name)
+                            .and_then(|sw| eva_producers::super_weapon_ready_event(sw.kind))
+                        else {
+                            continue;
+                        };
+                        GameSoundEvent::Eva {
+                            event: event.to_string(),
+                            type_override: None,
+                        }
+                    }
+                    SimSoundEvent::SuperWeaponDetected { owner, sw_type } => {
+                        // `BuildingClass::OnConstructionComplete
+                        // 0x004468AD..0x00446995`; the gates are the
+                        // listener's (`eva_producers::super_weapon_detected_allowed`)
+                        // and the line comes off the `[SuperWeaponTypes]`
+                        // list index (`0x00446948` jump table).
+                        let Some(local_name) = local_owner_name.as_deref() else {
+                            continue;
+                        };
+                        let owner_name = sim.interner.resolve(owner).to_string();
+                        let type_name = sim.interner.resolve(sw_type).to_string();
+                        let local_defeated = sim
+                            .interner
+                            .get(local_name)
+                            .and_then(|id| sim.houses.get(&id))
+                            .is_some_and(|house| house.is_defeated);
+                        // `0x004468FA..0x00446935`: `AuxBuilding=` absent, or
+                        // the building's own house owns one
+                        // (`CountOwnedInstances` on `Owner+0x5550`).
+                        let aux_satisfied = match resources
+                            .rules
+                            .super_weapon(&type_name)
+                            .and_then(|sw| sw.aux_building.as_deref())
+                        {
+                            None => true,
+                            Some(aux) => sim.substrate.entities.values().any(|e| {
+                                e.owner == owner
+                                    && !e.dying
+                                    && !e.lifecycle.in_limbo
+                                    && e.category == crate::map::entities::EntityCategory::Structure
+                                    && sim.interner.resolve(e.type_ref).eq_ignore_ascii_case(aux)
+                            }),
+                        };
+                        if !eva_producers::super_weapon_detected_allowed(
+                            &sim.house_alliances,
+                            &owner_name,
+                            local_name,
+                            local_defeated,
+                            sim.session.game_mode_nonzero,
+                            aux_satisfied,
+                        ) {
+                            continue;
+                        }
+                        let Some(event) = resources
+                            .rules
+                            .super_weapon_order
+                            .iter()
+                            .position(|section| section.eq_ignore_ascii_case(&type_name))
+                            .and_then(eva_producers::super_weapon_detected_event)
+                        else {
+                            continue;
+                        };
+                        GameSoundEvent::Eva {
+                            event: event.to_string(),
+                            type_override: None,
+                        }
+                    }
+                    SimSoundEvent::PlayerDefeated { house } => {
+                        // `HouseClass::MPlayer_Defeated 0x004FC1B5 CMP EAX,ESI`
+                        // splits the local branch (`EVA_YouHaveLost`, owned by
+                        // `MatchOutcome`) from the `0x004FC3BC` line.
+                        if owner_is_local(&sim.interner, house, local_owner_name.as_deref()) {
+                            continue;
+                        }
+                        GameSoundEvent::Eva {
+                            event: eva_producers::EVA_PLAYER_DEFEATED.to_string(),
                             type_override: None,
                         }
                     }
