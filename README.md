@@ -17,8 +17,7 @@ VERA20K operates after contributor-owned cooperative principles. Contributors ea
 <small>
 
 **1.**
-A drop-in replacement for `gamemd.exe` focused first on retail-convincing stock
-skirmish.
+Engine true to the original Westwood game: visuals, atmosphere, gameplay.
 
 **2.**
 Constructed from the ground up for large multiplayer — targeting support for up to **30 players** and **20,000 units** on significantly bigger maps.
