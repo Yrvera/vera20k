@@ -29,6 +29,7 @@ pub use self::factory::{
     build_step_time, category_for_object,
 };
 pub use self::factory_lifecycle::{cancel_by_type_for_owner, cancel_last_for_owner, enqueue_by_type};
+pub(crate) use self::factory_lifecycle::{FactoryRestoreError, validate_restored_factory_state};
 pub use self::production_economy::is_harvester_type;
 pub use self::production_placement::{
     active_producer_for_owner_category, cycle_active_producer_for_owner_category,

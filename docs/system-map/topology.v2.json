@@ -433,9 +433,9 @@
       "rust_surfaces": [
         {
           "path": "src/sim/production/factory_lifecycle.rs",
-          "symbol": "enqueue_by_type / publish_completion / ReadyFactoryObject / revalidate_and_step_factories",
+          "symbol": "enqueue_by_type / publish_completion / ReadyFactoryObject / revalidate_and_step_factories / validate_restored_factory_state",
           "coverage": "representative",
-          "observed_at_commit": "73b82957923a824bd4a8a1fddd966b063a497d9f"
+          "observed_at_commit": "923731fb3fc9f5599ff2e29ffc85a1de678daace"
         },
         {
           "path": "src/sim/production/production_placement.rs",
@@ -457,7 +457,7 @@
         }
       ],
       "notes": [
-        "Factory-held construction, cancellation, completion publication and release now finish in factory_lifecycle. Registry lifecycle kernels are production-private; placement settles the matched identity after its world effects. This preserves phase order and does not close malformed-save admission or whole-loop parity.",
+        "Factory-held construction, cancellation, completion publication and release now finish in factory_lifecycle. Registry lifecycle kernels are production-private; placement settles the matched identity after its world effects. This preserves phase order. Before match commit, the same production owner validates loaded factory roots, ready publication and queued type relationships; universal snapshot validation and whole-loop parity remain unclaimed.",
         "Owner of build-ready, placement legality, rejection, and committed foundation handoff.",
         "Feature 12948d89 closes ordinary marked Ground-mobile and live nonempty-overlay rejection in the shared preview/commit predicate, with a sealed-retail Dustbowl GAPOWR oracle through lifecycle, four-cell occupancy, buildup, and power.",
         "Special damaged-wall/ToTile/LaserFence/gate exceptions, delayed-command rejection UI/EVA, and active-retail input/pixel comparison remain explicit residuals."
@@ -1924,6 +1924,10 @@
         "swizzle registrar 0x006CF240"
       ],
       "rust_touchpoints": [
+        {"path": "src/app/persistence/mod.rs", "coverage": "representative", "observed_at_commit": "923731fb3fc9f5599ff2e29ffc85a1de678daace"},
+        {"path": "src/app/persistence/commands.rs", "coverage": "representative", "observed_at_commit": "923731fb3fc9f5599ff2e29ffc85a1de678daace"},
+        {"path": "src/sim/production/factory_lifecycle.rs", "coverage": "representative", "observed_at_commit": "923731fb3fc9f5599ff2e29ffc85a1de678daace"},
+        {"path": "src/app/persistence/tests/factory_restore_tests.rs", "coverage": "representative", "observed_at_commit": "923731fb3fc9f5599ff2e29ffc85a1de678daace"},
         {"path": "src/app_save_load_panel.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/snapshot.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/world/mod.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
@@ -1933,7 +1937,7 @@
         {"order": 1, "system": "GSI-14.12", "action": "Invoke in-game save/load flow."},
         {"order": 2, "system": "GSI-03.08", "action": "Select slot and metadata."},
         {"order": 3, "system": "GSI-17.02", "action": "Serialize object/class state."},
-        {"order": 4, "system": "GSI-17.03", "action": "Persist/fix references and identity."},
+        {"order": 4, "system": "GSI-17.03", "action": "Persist/fix references and identity; after generic reference restoration, the production owner validates factory root, ready and queued type relationships before match commit."},
         {"order": 5, "system": "GSI-17.04", "action": "Restore globals, caches, and registrations."},
         {"order": 6, "system": "GSI-05.02", "action": "Restore active-object order."},
         {"order": 7, "system": "GSI-05.03", "action": "Restore lifecycle membership."},
@@ -1942,7 +1946,7 @@
       ],
       "oracle": {
         "status": "UNVERIFIED",
-        "gate": "Rust bincode snapshot regression is not native SAV parity; membership-byte restoration remains unresolved."
+        "gate": "Factory relationship admission is Rust regression-tested through PreparedLoad, including preservation of the running match on rejection. Rust bincode snapshot regression is not native SAV parity; membership-byte restoration remains unresolved."
       },
       "evidence": [
         "docs/research/SAVELOAD_LOGIC_ACTIVE_VECTOR_RECONSTRUCTION_GHIDRA_REPORT.md",

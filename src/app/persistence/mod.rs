@@ -102,6 +102,8 @@ pub(crate) enum PreparedLoadError {
     Snapshot(#[from] SnapshotError),
     #[error(transparent)]
     Restore(#[from] SnapshotRestoreError),
+    #[error(transparent)]
+    FactoryState(#[from] crate::sim::production::FactoryRestoreError),
 }
 
 /// Fully validated, cache-rebuilt replacement state ready for one infallible commit.
@@ -225,6 +227,7 @@ impl PreparedLoad {
         // seed and Main/MapGen cursors retain their live values.
         simulation.retain_in_scenario_process_state_from(current_simulation);
         simulation.restore_after_snapshot_load()?;
+        crate::sim::production::validate_restored_factory_state(&simulation, rules)?;
         simulation.rebuild_caches_after_load(
             terrain_template,
             terrain_speed_config,
@@ -649,6 +652,8 @@ mod tests {
         last_loaded_save_path: Option<PathBuf>,
         save_list_dirty: bool,
     }
+
+    mod factory_restore_tests;
 
     fn load_fixture_rules() -> RuleSet {
         let ini = IniFile::from_str(
