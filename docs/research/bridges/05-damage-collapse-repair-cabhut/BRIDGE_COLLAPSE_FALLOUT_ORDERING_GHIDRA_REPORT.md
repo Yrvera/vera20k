@@ -17,6 +17,44 @@ Evidence needed to mark COMPLETE: decompile plus assembly context for `BlowUpBri
 
 Stop conditions: stop once ground kill vs deck drop-in order, anim spawn timing, zone/radar/full-redraw side effects, event `0x1F` separation, Rust deltas, and do-not-do notes are covered with no open ordering questions inside this slice.
 
+## Bounded list-ownership update (2026-09-06)
+
+Read-only inspection of the active retail `/gamemd.exe` confirms that
+`0047DD96` saves the ground successor before ReceiveDamage, and
+`0047DDBA..0047DDC9` reads the deck head after ground callbacks and saves each
+successor before DropIn. Native mobile insertion prepends, so a deck list
+`[newer, older]` becomes ground `[older, newer]`. This order can affect an
+already-running Iron Curtain walk, which reads its current receiver's successor
+**after** the nested collapse returns.
+
+Rust now selects the live Bridge list and invokes one world-owned represented
+relayer. It removes the complete foundation footprint from Bridge, preserves the
+existing ground snap and movement reset, records one new serialized entry order,
+reconciles the derived vehicle occupation projection, and re-adds the footprint
+to Ground. Full snapshot restoration uses those entry orders to reproduce the
+same list. The actual hut dispatcher and an Iron Curtain command with a nested
+DeathWeapon exercise both production callers. Unmarked coordinate twins are
+excluded; raw bytes, serialized Drive reservations and building smudges are
+preserved. This is bounded list authority and restoration coverage, not complete
+DropIn or falling parity.
+
+The new native inspection also corrects overly broad callback assumptions:
+CellClass AddContent `0047E8A0` and RemoveContent `0047EA90` explicitly skip their
+raw occupation virtual calls for Infantry (`WhatAmI == 0xF`). DropIn `005F4160`
+sets the falling bytes, removes/re-adds membership around clearing OnBridge,
+then has a locomotor-dependent occupation clear. It does not itself snap XYZ
+or reset the Rust movement state. Reusing the full Rust Mark/Unmark transaction
+would add Infantry callbacks, hard-removal reservation disposal, building smudge
+removal and air-spatial policies that are not established for this call.
+
+Remaining **DRIFT**: exact falling/landing progression and original-Z callback
+inputs, concrete raw occupation writes and the later occupation clear, hidden
+occupation entry for supported building profiles, and the ground ReceiveDamage
+health-alias transaction. The latter distinguishes immunity writes to aliased HP
+from Object kill callbacks and Techno fatal admission; copying current HP into an
+ordinary damage event does not establish equivalence for authored C4 warheads.
+These remain required follow-up mechanisms in the broader ownership goal.
+
 ## 1. Overview
 
 `CellClass::BlowUpBridge` is the per-cell fallout primitive. Its order is: kill ground-list occupants, drop bridge-list occupants via `ObjectClass::DropIn`, enqueue the collapsed cell in a global cell queue, then maybe spawn metallic debris and one bridge-explosion anim.
@@ -49,7 +87,7 @@ Verified order:
 1. Early-out if map editor flag is set.
 2. Walk `CellClass+0xE4` ground list. For each object:
    - snapshot `object+0x30` before mutation;
-   - call vtable `+0x16C` with `RulesClass+C4Warhead`, damage `0`, and force-kill flags.
+   - call vtable `+0x16C` with `&Object.Health` (`+0x6C`), distance `0`, `RulesClass+C4Warhead`, null attacker, `ignoreDefenses=1`, `arg6=1`, and null source House. This is an aliased in/out damage pointer, not damage zero.
 3. Walk `CellClass+0xE8` deck list. For each object:
    - snapshot `object+0x30` before mutation;
    - call vtable `+0xEC`, which is `ObjectClass::DropIn` for normal objects.
@@ -74,9 +112,9 @@ Verified order:
 6. Submit to display layer.
 7. Call vtable `+0x124` with arg `1`.
 
-For normal Techno objects, vtable `+0x124` is `TechnoClass::DoCloak @ 0x004D3780`; mode `0` calls `TechnoClass__ExitCell_RemoveFromMultiCells`, and mode `1` calls `TechnoClass__EnterCell_AddToMultiCells`. The enter/exit helpers read `ObjectClass+0x8C` immediately before `CellClass::RemoveContent`/`AddContent`, so removal observes `OnBridge==1` and insertion observes `OnBridge==0`.
+For normal Techno objects, vtable `+0x124` is `TechnoClass::MarkCellLists @ 0x004D3780`. After MarkAndNotify succeeds and virtual `+0x78` reports display layer 2, mode `0` calls `TechnoClass__ExitCell_RemoveFromMultiCells @ 0x005687F0`; modes `1/3` call `TechnoClass__EnterCell_AddToMultiCells @ 0x005683C0`. The enter/exit helpers read `ObjectClass+0x8C` immediately before `CellClass::RemoveContent`/`AddContent`, so removal observes `OnBridge==1` and insertion observes `OnBridge==0`.
 
-Evidence: decompile `0x005F4160`, `0x004D3780`, `0x005683C0`, `0x005687F0`; assembly `0x005F416A..0x005F41A1`, `0x005684B1`, `0x005688E1`.
+Evidence: decompile `0x005F4160`, `0x004D3780`, `0x005683C0` (enter/add), `0x005687F0` (exit/remove); assembly `0x005F416A..0x005F41A1`, `0x005684B1`, `0x005688E1`.
 
 Active in YR: Yes for ordinary bridge-deck units/infantry; conditional only for exotic non-Techno objects that might occupy the bridge list.
 
@@ -130,7 +168,7 @@ Active in YR: Yes.
 
 ### Occupants
 
-Ground-list occupants die before deck-list occupants are processed. Deck occupants survive via `DropIn` and are relayered into the ground list after `OnBridge` is cleared.
+Ground-list occupants receive forced aliased-HP damage before the deck pass. Deck occupants receive `DropIn` and are relayered into the ground list after `OnBridge` is cleared; this establishes call ordering, not universal survival through later falling or nested effects.
 
 Active in YR: Yes. Evidence: `0x0047DD84..0x0047DDC9`, `0x005F4160`.
 
@@ -171,9 +209,11 @@ Active in YR: Conditional. The bridge call is live, but trigger effects require 
 
 Evidence: decompile `0x00575EE0`, assembly call sites `0x00575F95`, `0x00576007`, `0x0057606C`, `0x005760CC`, `0x00576137`, `0x0057619C`, `0x005761DE`; decompile `0x006E53A0` and `0x0071F680`.
 
-## 6. Current Rust Implementation Status
+## 6. Historical Rust Implementation Scan
 
-Current Rust file scanned: `src/sim/world/bridge_orchestrator.rs`.
+This original scan predates subsequent implementation changes, including the bounded update above. Its deltas are historical observations, not current validation.
+
+Original Rust file scanned: `src/sim/world/bridge_orchestrator.rs`.
 
 Observed cascade order in `apply_bridge_damage_events`:
 
@@ -202,7 +242,7 @@ No Rust was modified by this investigation.
 | `CellClass::BlowUpBridge` ground kill order | verified | decompile `0x0047DD70`; assembly `0x0047DD84..0x0047DDAE` | none |
 | `CellClass::BlowUpBridge` deck `DropIn` order | verified | decompile `0x0047DD70`; assembly `0x0047DDBA..0x0047DDC9` | none |
 | `ObjectClass::DropIn` relayer | verified | decompile `0x005F4160`; assembly `0x005F416A..0x005F41A1` | exotic non-Techno deck occupants not exhaustively classified |
-| Techno list helpers read `OnBridge` at call time | verified | decompile `0x004D3780`, `0x005683C0`, `0x005687F0`; assembly `0x005684B1`, `0x005688E1` | none for normal units |
+| Techno list helpers read `OnBridge` at call time | verified | decompile `0x004D3780`, `0x005683C0` (enter/add), `0x005687F0` (exit/remove); assembly `0x005684B1`, `0x005688E1` | none for normal units |
 | `CollapseBridge_*` anim-before-destroy order | verified | decompile `0x00575BA0`, `0x00575870`, `0x00575540`, `0x00575220` | none |
 | `CollapseBridge_*` tail zone/full-redraw order | verified | decompile same four walkers; tail write `0x00575B91` pattern | none |
 | Damage state-machine zone invalidation tail | verified | decompile `0x00576BA0`; assembly `0x005778CC..0x005778D9` | low-state twin not re-decompiled in this slot |
@@ -211,7 +251,7 @@ No Rust was modified by this investigation.
 | Shroud-edge helper internals | touched-not-exhausted | `0x006D3D10` calls `Tactical_layer_shroud_edges`; prior high-bridge docs | exact helper timing not re-drained here |
 | Event `0x1F` trigger-only path | verified | decompile `0x00575EE0`, `0x006E53A0`; assembly call sites | none for bridge-side hook |
 | Event `0x18` separation | verified | decompile `0x0071F680` | full public trigger enum labels out of scope |
-| Current Rust cascade | verified | `src/sim/world/bridge_orchestrator.rs` scan | exact test coverage not exhaustively audited |
+| Original Rust cascade scan | historical | `src/sim/world/bridge_orchestrator.rs` scan | exact test coverage not exhaustively audited |
 
 ## 8. Open Questions - Final State of the Investigation Log
 
@@ -225,17 +265,19 @@ No Rust was modified by this investigation.
 - `[RESOLVED] OQ-8 - Does `BlowUpBridge` play collapse sound directly? -> No; sounds come from spawned anims' `AnimClass::Middle` path.` (evidence: `0x0047DD70`, `0x00424CE0`)
 - `[RESOLVED] OQ-9 - Does event `0x1F` mutate bridge state? -> No; dispatcher evaluates/queues trigger actions only.` (evidence: `0x00575EE0`, `0x006E53A0`)
 - `[RESOLVED] OQ-10 - Is event `0x1F` the same as destroyed-registry event `0x18`? -> No.` (evidence: `0x0071F680`)
-- `[RESOLVED] OQ-11 - Does current Rust have a direct bridge-collapse sound event? -> No; scan found repair sound only and visual `WorldEffect` bridge explosions.` (evidence: `src/sim/world/mod.rs`, `src/sim/world/bridge_orchestrator.rs`)
-- `[RESOLVED] OQ-12 - Does current Rust run event 31? -> No, `notify_bridge_span_collapse` is an intentional no-op.` (evidence: `src/sim/world/bridge_orchestrator.rs`)
+- `[RESOLVED] OQ-11 - Did the original Rust scan have a direct bridge-collapse sound event? -> No; scan found repair sound only and visual `WorldEffect` bridge explosions.` (evidence: `src/sim/world/mod.rs`, `src/sim/world/bridge_orchestrator.rs`)
+- `[RESOLVED] OQ-12 - Did the original Rust scan run event 31? -> No, `notify_bridge_span_collapse` is an intentional no-op.` (evidence: `src/sim/world/bridge_orchestrator.rs`)
 - `[DEFERRED] OQ-13 - Exact shroud-edge helper internals after bridge collapse.` (category: `bounded-cost-too-high`; reason: this slot verified draw integration and prior docs cover active shroud-edge behavior, but did not re-drain the helper body; next-step-if-pursued: targeted `/re-investigate Tactical_layer_shroud_edges bridge dirty bits`.)
 - `[DEFERRED] OQ-14 - Exotic non-Techno objects in `CellClass+0xE8`.` (category: `out-of-scope`; reason: normal player-visible deck occupants are Techno-derived; next-step-if-pursued: classify all possible `AltObject` occupants and vtable `+0xEC` bindings.)
 
-## 9. Implementation Handoff
+## 9. Historical Implementation Handoff
+
+Original proposed work is retained for context; it is not a current backlog or validation result. The explicitly dated relayer row reflects this update.
 
 | Verified behavior | Evidence | Current Rust delta | Affected Rust surface | Required implementation effect | Acceptance scenario | Risk / do-not-do |
 |---|---|---|---|---|---|---|
 | `BlowUpBridge` applies ground kill, deck `DropIn`, collapsed-cell queue, and its debris block per `BlowUpBridge` cell, in that order. | `0x0047DD84..0x0047E02C` | partial: Rust splits kill over `blow_up_cells` but DropIn/debris over all `destroyed_set` | `src/sim/world/bridge_orchestrator.rs` | Keep fallout scoped to the cells that actually receive `BlowUpBridge`, unless a sibling state-machine report proves additional destroyed cells should get separate visual-only effects. | Collapse a state-machine bridge segment where `destroyed_cells` includes cells without `SetBridgeDirection::BlowUpBridge`; only `BlowUpBridge` cells force-kill/drop/spawn `BlowUpBridge` debris. Proposed test: `bridge_collapse_fallout_runs_only_on_blowupbridge_cells` | Do not treat every destroyed overlay cell as a `BlowUpBridge` cell. |
-| Deck occupants survive by selected-layer relayering: remove while `OnBridge==1`, clear, add while `OnBridge==0`. | `0x005F4178..0x005F41A1`, `0x005684B1`, `0x005688E1` | partial: Rust clears state then uses generic occupancy movement; exact selected-old-layer invariant needs tests | `src/sim/world/bridge_orchestrator.rs`, `src/sim/occupancy.rs` | Preserve old-layer removal before state mutation and ground-layer insertion after state mutation; validate stale duplicate layers rather than silently repairing them. | A tank on a bridge deck over water survives collapse, ends on ground layer in the same cell, and is not present in the bridge layer afterward. Proposed test: `bridge_dropin_relayers_from_bridge_list_to_ground_list_in_order` | Do not kill, drown, despawn, or leave deck units floating on the bridge layer. |
+| [2026-09-06] Deck list traversal captures next before each selected-layer relayer. | `0x0047DDBA..0x0047DDC9`, `0x005F4160` | Bounded Rust list authority now resides in one world operation; full falling/raw/hidden callbacks remain DRIFT. | `src/sim/world/bridge_orchestrator.rs`, `src/sim/world/lifecycle.rs` | Complete footprint removal/re-entry and fresh serialized order; preserve existing raw and reservation state. | Actual hut and nested IC command tests cover order, unmarked exclusion, non-anchor foundation and snapshot restoration. | Do not substitute full Mark/Unmark or claim complete DropIn parity. |
 | `CollapseBridge_*` walker-spawned `BridgeExplosions` occur before `DestroyBridge_*` per axial iteration; `BlowUpBridge` anims are a separate per-cell fallout block. | `0x00575BA0`, `0x00575870`, `0x00575540`, `0x00575220`; `0x0047DFBA`, `0x0047E02C` | partial/unchecked: Rust has one `spawn_bridge_debris` after aggregation | `src/sim/world/bridge_orchestrator.rs`, `src/sim/bridge_state/mod.rs` | If exact visual/RNG parity is pursued, represent walker-spawned three-perpendicular `BridgeExplosions` separately from `BlowUpBridge` metallic/explosion spawns. | Deterministic bounded hut collapse consumes walker anim RNG before each per-cell destruction and consumes `BlowUpBridge` RNG only for cells where `BlowUpBridge` is called. Proposed test: `collapsebridge_spawns_walker_anims_before_destroybridge_rng` | Do not merge all bridge collapse visuals into one post-hoc destroyed-set loop when validating RNG lockstep. |
 | Bridge collapse sound is an anim-start `Report`/`StartSound` consequence, not a direct bridge sound and not `RepairBridgeSound`. | `0x00421EA0`, `0x00424CE0`, `0x0047E02C`; `ini/rulesmd.ini:721` | missing: bridge explosion `WorldEffect` has no anim-start sound routing | `src/sim/world/bridge_orchestrator.rs`, app/audio animation sound routing | Emit selected anim's resolved start/report sound when the delayed bridge explosion begins. | A collapse selecting `TWLT036` emits `Explosion06` after the chosen 1-5 frame delay, not immediately. Proposed test: `bridge_explosion_report_sound_plays_when_delayed_anim_starts` | Do not add a hardcoded `BridgeCollapseSound`; do not reuse `BridgeRepaired`. |
 | Event `0x1F` is trigger-only, cell-tag-gated, and separate from event `0x18`. | `0x00575EE0`, assembly `0x00575F95..0x005761DE`, `0x006E53A0`, `0x0071F680` | acceptable no-op for skirmish; missing campaign trigger runtime | `src/sim/world/bridge_orchestrator.rs`, `src/sim/trigger_runtime.rs` | Keep no-op for skirmish, but future campaign support should deliver numeric event 31 only to tagged span-footprint cells. | A map with event-31 cell tags queues trigger action on collapse; skirmish without tags has no side effects. Proposed test: `bridge_span_event31_is_trigger_only_and_distinct_from_event18` | Do not use event 31 for damage, audio, zone rebuild, or global bridge destroyed notification. |

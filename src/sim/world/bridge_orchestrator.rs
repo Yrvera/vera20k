@@ -1756,71 +1756,23 @@ fn bridge_jittered_subcell(draw: u32) -> SimFixed {
     CELL_CENTER_LEPTON + SimFixed::from_num(offset)
 }
 
-/// Snap bridge-deck entities at `(rx, ry)` to ground level. Mirror of
-/// the binary's `BlowUpBridge` step 2 (HIGH §11.4 + §12.7): walks the
-/// deck entity list and calls `DropIn` on each.
-///
-/// Per HIGH §12.7 / §12.9: NO damage, NO despawn — units survive
-/// stranded even when the destination is unwalkable (water below).
-/// Vanilla has no drown mechanism. This is the parity correction
-/// against the legacy `resolve_bridge_state_changes`, which despawned
-/// deck entities over unwalkable ground.
+/// BlowUpBridge's deck pass (0x0047DDBA..0x0047DDC9): read the selected
+/// head after ground callbacks, capture next BEFORE DropIn removes current.
+/// Membership owns selection, including retained corpses and non-anchor cells.
 fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
-    use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
-    use crate::sim::occupancy::CellListInsertion;
-
-    let ground_level = sim
-        .resolved_terrain
-        .as_ref()
-        .and_then(|t| t.cell(rx, ry))
-        .map(|c| c.level)
-        .unwrap_or(0);
-
-    let to_snap: Vec<u64> = sim
+    use crate::sim::movement::locomotor::MovementLayer;
+    let mut next = sim
         .substrate
-        .entities
-        .iter_sorted()
-        .filter(|(_, e)| e.position.rx == rx && e.position.ry == ry && e.is_on_bridge_layer())
-        .map(|(id, _)| id)
-        .collect();
-
-    for id in to_snap {
-        let mut relayer = None;
-        if let Some(entity) = sim.substrate.entities.get_mut(id) {
-            entity.bridge_occupancy = None;
-            entity.on_bridge = false;
-            entity.position.z = ground_level;
-            entity.position.exact_z_leptons = None;
-            entity.movement_target = None;
-            if let Some(ref mut loco) = entity.locomotor {
-                loco.layer = MovementLayer::Ground;
-                loco.phase = GroundMovePhase::Idle;
-            }
-            relayer = Some((
-                entity.position.rx,
-                entity.position.ry,
-                entity.sub_cell,
-                CellListInsertion::from_category(entity.category),
-            ));
-        }
-        if let Some((rx, ry, sub_cell, insertion)) = relayer {
-            // DropIn relayer (GATE A2 / P6): the deck object list is relayered DOWN
-            // — remove the occupant from the BRIDGE object-list layer (its layer
-            // before the collapse) and re-add it on the GROUND layer in the same
-            // cell. Authoritative two-layer move: the old half observes the deck
-            // layer, the new half the ground layer.
-            sim.substrate.occupancy.move_entity_layered(
-                rx,
-                ry,
-                rx,
-                ry,
-                id,
-                MovementLayer::Bridge,
-                MovementLayer::Ground,
-                sub_cell,
-                insertion,
-            );
-        }
+        .occupancy
+        .get(rx, ry)
+        .and_then(|cell| cell.first_on_layer(MovementLayer::Bridge));
+    while let Some(id) = next {
+        next = sim
+            .substrate
+            .occupancy
+            .get(rx, ry)
+            .and_then(|cell| cell.next_on_layer(MovementLayer::Bridge, id));
+        sim.drop_in_bridge_member(id);
     }
 }
 
@@ -1972,7 +1924,9 @@ mod tests {
     use crate::sim::occupancy::CellListInsertion;
     use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
-    fn seed_bridge_cell(overlay_byte: u8) -> crate::sim::bridge_state::BridgeRuntimeCell {
+    pub(super) fn seed_bridge_cell(
+        overlay_byte: u8,
+    ) -> crate::sim::bridge_state::BridgeRuntimeCell {
         crate::sim::bridge_state::BridgeRuntimeCell {
             deck_present: true,
             destroyable: true,
@@ -1992,7 +1946,7 @@ mod tests {
     /// `deck_level`, ground level=0, water below (`is_water=true`,
     /// `ground_walk_blocked=true`). Used to verify DropIn lets deck units
     /// survive even with no walkable ground.
-    fn water_below_bridge_terrain(deck_level: u8) -> ResolvedTerrainGrid {
+    pub(super) fn water_below_bridge_terrain(deck_level: u8) -> ResolvedTerrainGrid {
         let mut cells = Vec::new();
         for y in 0..=5u16 {
             for x in 0..=5u16 {
@@ -2465,55 +2419,8 @@ mod tests {
         assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
     }
 
-    /// P6 / GATE A2: collapse DropIn relayers the persistent occupancy entry from
-    /// the BRIDGE object-list layer to the GROUND layer (not merely clearing the
-    /// entity's `on_bridge` byte). The deck list is relayered DOWN — a verified
-    /// authoritative two-layer move (remove on Bridge, add on Ground in-place).
-    #[test]
-    fn collapse_dropin_relayers_occupancy_to_ground() {
-        let mut sim = Simulation::new();
-        sim.resolved_terrain = Some(water_below_bridge_terrain(3));
-        let id = spawn_deck_unit(&mut sim);
-        // Occupant starts on the BRIDGE object-list layer at (5,5).
-        sim.substrate.occupancy.add(
-            5,
-            5,
-            id,
-            MovementLayer::Bridge,
-            None,
-            CellListInsertion::PrependNonBuilding,
-        );
-        assert_eq!(
-            sim.substrate
-                .occupancy
-                .count_on_layer(5, 5, MovementLayer::Bridge),
-            1,
-            "precondition: occupant on the bridge layer"
-        );
-
-        drop_in_bridge_deck_entities(&mut sim, 5, 5);
-
-        // After DropIn: the occupant is gone from the bridge layer and present on
-        // the ground layer of the SAME cell.
-        assert_eq!(
-            sim.substrate
-                .occupancy
-                .count_on_layer(5, 5, MovementLayer::Bridge),
-            0,
-            "deck-layer occupancy relayered away"
-        );
-        assert_eq!(
-            sim.substrate
-                .occupancy
-                .count_on_layer(5, 5, MovementLayer::Ground),
-            1,
-            "occupancy dropped in onto the ground layer"
-        );
-        assert!(sim.substrate.occupancy.contains_entity(5, 5, id));
-    }
-
-    /// Build a minimal RuleSet whose `bridge_rules.voxel_max` matches the
-    /// argument. Used by Task 12 debris tests to toggle the voxel-max gate.
+    /// Build a minimal RuleSet whose bridge voxel maximum matches the argument.
+    /// Used by debris tests to toggle the voxel-max gate.
     fn rules_with_voxel_max(voxel_max: u32) -> crate::rules::ruleset::RuleSet {
         let body = format!(
             "[InfantryTypes]\n\
@@ -3715,3 +3622,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "bridge_deck_tests.rs"]
+mod deck_tests;
