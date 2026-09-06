@@ -103,12 +103,6 @@ pub(crate) struct FrontendState {
     pub(crate) frontend_main_rng: crate::sim::rng::SimRng,
     /// Process-lifetime monotonic identity source; zero is permanently reserved.
     pub(crate) next_match_correlation: u64,
-    /// Correlation owned by the currently loading accepted attempt.
-    pub(crate) active_loading_correlation: Option<crate::match_bootstrap::MatchCorrelationId>,
-    /// Accepted startup authority retained after successful installation.
-    pub(crate) loaded_startup: Option<crate::match_bootstrap::PreparedMatchStartup>,
-    /// Immutable pre-first-tick evidence for the loaded accepted startup.
-    pub(crate) rust_l0_receipt: Option<crate::match_bootstrap::RustL0Receipt>,
     /// Generation running on a worker, if any. Generating a map takes long
     /// enough to freeze the window if done inline, which also means the
     /// dialog's "Working / Please Wait" never gets a frame to appear in.

@@ -9,6 +9,7 @@
 //! F12 owner tree: the save/load panel UI and options persistence live here
 //! beside the repository they drive.
 
+pub(crate) mod commands;
 pub(crate) mod options;
 pub(crate) mod options_profile;
 pub(crate) mod save_load_panel;
@@ -18,7 +19,6 @@ use std::time::{Instant, SystemTime};
 
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::match_bootstrap::{MatchCorrelationId, PreparedMatchStartup, RustL0Receipt};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::snapshot::{
     GameSnapshot, GameSnapshotHeader, SnapshotError, SnapshotMapRestoreOutput, SnapshotRestoreError,
@@ -34,8 +34,8 @@ pub(crate) struct PersistenceState {
     pub(crate) options_profile: options_profile::RetailOptionsProfile,
     pub(crate) repository: SaveRepository,
     pub(crate) save_list_cache: SaveListCache,
-    pub(crate) last_save_tick: Option<u64>,
-    pub(crate) last_save_instant: Option<Instant>,
+    last_save_tick: Option<u64>,
+    last_save_instant: Option<Instant>,
     pub(crate) last_loaded_save_path: Option<PathBuf>,
 }
 
@@ -49,6 +49,29 @@ impl PersistenceState {
             last_save_instant: None,
             last_loaded_save_path: None,
         }
+    }
+
+    /// A successful disk write and its UI bookkeeping are one persistence
+    /// operation. Failed writes preserve the previous last-save indication.
+    pub(crate) fn write_save(
+        &mut self,
+        filename: &str,
+        bytes: &[u8],
+        tick: u64,
+    ) -> Result<PathBuf, SaveWriteError> {
+        let path = self.repository.write_named(filename, bytes)?;
+        self.last_save_tick = Some(tick);
+        self.last_save_instant = Some(Instant::now());
+        self.invalidate_save_list();
+        Ok(path)
+    }
+
+    pub(crate) fn last_save_tick(&self) -> Option<u64> {
+        self.last_save_tick
+    }
+
+    pub(crate) fn last_save_instant(&self) -> Option<Instant> {
+        self.last_save_instant
     }
 
     pub(crate) fn refresh_save_list_if_dirty(&mut self) {
@@ -85,7 +108,6 @@ pub(crate) enum PreparedLoadError {
 pub(crate) struct PreparedLoad {
     simulation: Simulation,
     map_restore: SnapshotMapRestoreOutput,
-    preserved_startup: MatchStartupStateSnapshot,
 }
 
 /// Immutable production input to an in-scenario load transaction.
@@ -100,18 +122,36 @@ pub(crate) struct LoadPreparationView<'a> {
     rules: Option<&'a RuleSet>,
     terrain_template: Option<&'a ResolvedTerrainGrid>,
     overlay_registry: Option<&'a OverlayTypeRegistry>,
-    startup: MatchStartupStateView<'a>,
 }
 
 impl<'a> LoadPreparationView<'a> {
-    pub(crate) fn new(
+    /// Production inputs come from the one bound runtime, never shell fallback
+    /// rules or a registry/terrain borrowed from a different match.
+    pub(crate) fn from_runtime(
+        repository: &'a SaveRepository,
+        runtime: Option<&'a crate::sim::runtime::SimRuntime>,
+        expected_map_hash: Option<u64>,
+    ) -> Self {
+        Self {
+            repository,
+            current_simulation: runtime.map(|runtime| &runtime.simulation),
+            expected_map_hash,
+            rules: runtime.map(|runtime| &runtime.resources.rules),
+            terrain_template: runtime
+                .and_then(|runtime| runtime.resources.terrain_template.as_ref()),
+            overlay_registry: runtime.map(|runtime| &runtime.resources.overlay_registry),
+        }
+    }
+
+    // Fault injection for independently missing historical restore inputs.
+    #[cfg(test)]
+    fn new(
         repository: &'a SaveRepository,
         current_simulation: Option<&'a Simulation>,
         expected_map_hash: Option<u64>,
         rules: Option<&'a RuleSet>,
         terrain_template: Option<&'a ResolvedTerrainGrid>,
         overlay_registry: Option<&'a OverlayTypeRegistry>,
-        startup: MatchStartupStateView<'a>,
     ) -> Self {
         Self {
             repository,
@@ -120,71 +160,17 @@ impl<'a> LoadPreparationView<'a> {
             rules,
             terrain_template,
             overlay_registry,
-            startup,
         }
-    }
-}
-
-/// Immutable view of the three slots that jointly own accepted-startup
-/// authority for the running match.
-pub(crate) struct MatchStartupStateView<'a> {
-    active_loading_correlation: &'a Option<MatchCorrelationId>,
-    loaded_startup: &'a Option<PreparedMatchStartup>,
-    rust_l0_receipt: &'a Option<RustL0Receipt>,
-}
-
-impl<'a> MatchStartupStateView<'a> {
-    pub(crate) fn new(
-        active_loading_correlation: &'a Option<MatchCorrelationId>,
-        loaded_startup: &'a Option<PreparedMatchStartup>,
-        rust_l0_receipt: &'a Option<RustL0Receipt>,
-    ) -> Self {
-        Self {
-            active_loading_correlation,
-            loaded_startup,
-            rust_l0_receipt,
-        }
-    }
-}
-
-/// Exact accepted-startup owner values retained across a same-content load.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MatchStartupStateSnapshot {
-    active_loading_correlation: Option<MatchCorrelationId>,
-    loaded_startup: Option<PreparedMatchStartup>,
-    rust_l0_receipt: Option<RustL0Receipt>,
-}
-
-impl MatchStartupStateSnapshot {
-    fn capture(view: &LoadPreparationView<'_>) -> Self {
-        Self {
-            active_loading_correlation: *view.startup.active_loading_correlation,
-            loaded_startup: view.startup.loaded_startup.clone(),
-            rust_l0_receipt: view.startup.rust_l0_receipt.clone(),
-        }
-    }
-
-    pub(crate) fn restore(
-        self,
-        active_loading_correlation: &mut Option<MatchCorrelationId>,
-        loaded_startup: &mut Option<PreparedMatchStartup>,
-        rust_l0_receipt: &mut Option<RustL0Receipt>,
-    ) {
-        *active_loading_correlation = self.active_loading_correlation;
-        *loaded_startup = self.loaded_startup;
-        *rust_l0_receipt = self.rust_l0_receipt;
     }
 }
 
 impl PreparedLoad {
-    /// Capture the live accepted-startup authority, then read and prepare a save
-    /// while holding only immutable references to the running match.
+    /// Read and prepare a save while holding only immutable references.
+    /// Startup admission is match-owned and outside this transaction.
     pub(crate) fn from_repository(
         view: LoadPreparationView<'_>,
         path: &Path,
     ) -> Result<Self, PreparedLoadError> {
-        // This baseline must precede file I/O and every validation/rebuild step.
-        let preserved_startup = MatchStartupStateSnapshot::capture(&view);
         let bytes = view
             .repository
             .read(path)
@@ -200,7 +186,6 @@ impl PreparedLoad {
         Ok(Self {
             simulation,
             map_restore,
-            preserved_startup,
         })
     }
 
@@ -263,26 +248,21 @@ impl PreparedLoad {
         self.map_restore.native_tiberium_stats
     }
 
-    pub(crate) fn into_parts(
+    /// Commit into an existing runtime: immutable match resources cannot be
+    /// replaced or synthesized by a same-content load.
+    pub(crate) fn commit_into(
         mut self,
-    ) -> (
-        Simulation,
-        Vec<crate::map::overlay::OverlayEntry>,
-        MatchStartupStateSnapshot,
-    ) {
+        runtime: &mut crate::sim::runtime::SimRuntime,
+    ) -> Vec<crate::map::overlay::OverlayEntry> {
         // This is the first infallible successful-load seam. Native
         // `MouseClass::Load @ 0x005BE150` reaches
         // `MapClass::Resize @ 0x00565C10` and reconstructs the fixed fallback
         // CellClass here, including its split `+0xDC` reservation state; doing
         // it during candidate preparation would leak mutation from a rejected
         // transactional load into the running match.
-        self.simulation
-            .reconstruct_cellclass_dummy_for_map_resize();
-        (
-            self.simulation,
-            self.map_restore.occupied_overlays,
-            self.preserved_startup,
-        )
+        self.simulation.reconstruct_cellclass_dummy_for_map_resize();
+        runtime.replace_simulation(self.simulation);
+        self.map_restore.occupied_overlays
     }
 }
 
@@ -462,6 +442,7 @@ fn newest_modified_path(
 mod tests {
     use super::*;
     use crate::app::match_runtime::frame_pacer::LocalFramePacer;
+    use crate::app::match_runtime::startup::MatchStartup;
     use crate::map::lighting::CellLightGrid;
     use crate::map::overlay::OverlayEntry;
     use crate::map::resolved_terrain::{DynamicTerrainCellState, ResolvedTerrainCell};
@@ -496,13 +477,7 @@ mod tests {
         }
     }
 
-    fn startup_authority(
-        seed: u32,
-    ) -> (
-        Option<MatchCorrelationId>,
-        Option<PreparedMatchStartup>,
-        Option<RustL0Receipt>,
-    ) {
+    fn startup_authority(seed: u32) -> MatchStartup {
         let launch = SkirmishLaunchSession {
             mode: SkirmishLaunchMode {
                 id: 1,
@@ -552,27 +527,20 @@ mod tests {
             &mut TestClock(seed),
         );
         let initial_simulation = Simulation::with_seed(u64::from(seed));
-        let receipt = crate::match_bootstrap::RustL0Observation {
-            startup: &startup,
-            simulation: &initial_simulation,
-            active_correlation: correlation,
-            prior_receipt: None,
-            screen_is_loading: true,
-            spawn_pick_active: false,
-        }
-        .acknowledge()
-        .expect("valid startup fixture must acknowledge");
-        (Some(correlation), Some(startup), Some(receipt))
+        let mut authority = MatchStartup::default();
+        authority.begin(Some(correlation));
+        authority
+            .acknowledge(startup, Some(&initial_simulation), true, false)
+            .unwrap();
+        authority
     }
 
     struct RunningMatchTestState {
-        simulation: Simulation,
+        runtime: crate::sim::runtime::SimRuntime,
         /// The app-owned diagnostics slot (F10) — represented here so the
         /// baseline proves a failed load leaves the segment untouched.
         replay_log: Option<ReplayLog>,
-        active_loading_correlation: Option<MatchCorrelationId>,
-        loaded_startup: Option<PreparedMatchStartup>,
-        rust_l0_receipt: Option<RustL0Receipt>,
+        startup: MatchStartup,
         screen: GameScreen,
         frame_pacer: LocalFramePacer,
         overlay_render_index: Vec<OverlayEntry>,
@@ -599,8 +567,7 @@ mod tests {
             replay.record_tick(1, Vec::new(), simulation.state_hash());
             let replay_log = Some(replay);
 
-            let (active_loading_correlation, loaded_startup, rust_l0_receipt) =
-                startup_authority(LOAD_FIXTURE_SEED);
+            let startup = startup_authority(LOAD_FIXTURE_SEED);
             let mut frame_pacer = LocalFramePacer::new();
             frame_pacer.record_admitted_frame(32);
             let mut lighting_grid = CellLightGrid::new();
@@ -611,11 +578,9 @@ mod tests {
             persistence.save_list_cache.dirty = false;
 
             Self {
-                simulation,
+                runtime: crate::sim::runtime::SimRuntime::from_simulation(simulation),
                 replay_log,
-                active_loading_correlation,
-                loaded_startup,
-                rust_l0_receipt,
+                startup,
                 screen: GameScreen::InGame,
                 frame_pacer,
                 overlay_render_index: vec![OverlayEntry {
@@ -632,9 +597,9 @@ mod tests {
 
         fn baseline(&self) -> RunningMatchBaseline {
             RunningMatchBaseline {
-                simulation_hash: self.simulation.state_hash(),
+                simulation_hash: self.runtime.simulation.state_hash(),
                 shared_cell_dummy: self.effective_shared_cell_dummy_snapshot(),
-                rng: self.simulation.rng_state(),
+                rng: self.runtime.simulation.rng_state(),
                 replay: self.replay_log.as_ref().map(|replay| {
                     (
                         replay.header.seed,
@@ -642,9 +607,7 @@ mod tests {
                         replay.ticks.first().map(|tick| tick.state_hash),
                     )
                 }),
-                active_loading_correlation: self.active_loading_correlation,
-                loaded_startup: self.loaded_startup.clone(),
-                rust_l0_receipt: self.rust_l0_receipt.clone(),
+                startup: self.startup.clone(),
                 screen: self.screen.clone(),
                 pacer_admits_same_bucket: self.frame_pacer.should_admit(32, 1, false),
                 pacer_admits_next_bucket: self.frame_pacer.should_admit(48, 1, false),
@@ -663,7 +626,10 @@ mod tests {
         fn effective_shared_cell_dummy_snapshot(
             &self,
         ) -> crate::map::resolved_terrain::SharedCellDummySnapshot {
-            self.simulation.effective_shared_cell_dummy().snapshot()
+            self.runtime
+                .simulation
+                .effective_shared_cell_dummy()
+                .snapshot()
         }
     }
 
@@ -673,9 +639,7 @@ mod tests {
         shared_cell_dummy: crate::map::resolved_terrain::SharedCellDummySnapshot,
         rng: SimulationRngState,
         replay: Option<(u64, usize, Option<u64>)>,
-        active_loading_correlation: Option<MatchCorrelationId>,
-        loaded_startup: Option<PreparedMatchStartup>,
-        rust_l0_receipt: Option<RustL0Receipt>,
+        startup: MatchStartup,
         screen: GameScreen,
         pacer_admits_same_bucket: bool,
         pacer_admits_next_bucket: bool,
@@ -793,16 +757,11 @@ mod tests {
         let result = PreparedLoad::from_repository(
             LoadPreparationView::new(
                 repository,
-                Some(&state.simulation),
+                Some(&state.runtime.simulation),
                 expected_map_hash,
                 rules,
                 terrain_template,
                 overlay_registry,
-                MatchStartupStateView::new(
-                    &state.active_loading_correlation,
-                    &state.loaded_startup,
-                    &state.rust_l0_receipt,
-                ),
             ),
             path,
         );
@@ -961,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_same_content_load_preserves_real_startup_authority_slots() {
+    fn successful_same_content_load_preserves_admission_and_bound_resources() {
         let rules = load_fixture_rules();
         let registry = OverlayTypeRegistry::empty();
         let terrain = load_fixture_terrain();
@@ -978,38 +937,36 @@ mod tests {
             .base_reservations
             .reserve(None, -1, 0, 5);
         let path = repository
-            .write_named(
-                "same-content.bin",
-                &snapshot_bytes(&saved, &rules),
-            )
+            .write_named("same-content.bin", &snapshot_bytes(&saved, &rules))
             .expect("write same-content transaction fixture");
 
-        let startup_before = (
-            state.active_loading_correlation,
-            state.loaded_startup.clone(),
-            state.rust_l0_receipt.clone(),
-        );
+        let startup_before = state.startup.clone();
         let baseline = state.baseline();
+        state.runtime.resources.rules = rules;
+        state.runtime.resources.overlay_registry = registry;
+        state.runtime.resources.terrain_template = Some(terrain);
+        state.runtime.resources.height_map.insert((3, 4), 7);
+        state.runtime.resources.waypoints.insert(
+            701,
+            crate::map::waypoints::Waypoint {
+                index: 701,
+                rx: 122,
+                ry: 135,
+            },
+        );
+        let rules_before = state.runtime.resources.rules.simulation_config_hash();
         let prepared = PreparedLoad::from_repository(
-            LoadPreparationView::new(
+            LoadPreparationView::from_runtime(
                 &repository,
-                Some(&state.simulation),
+                Some(&state.runtime),
                 Some(LOAD_FIXTURE_MAP_HASH),
-                Some(&rules),
-                Some(&terrain),
-                Some(&registry),
-                MatchStartupStateView::new(
-                    &state.active_loading_correlation,
-                    &state.loaded_startup,
-                    &state.rust_l0_receipt,
-                ),
             ),
             &path,
         )
         .unwrap_or_else(|error| panic!("same-content transaction must prepare: {error}"));
         assert_eq!(state.baseline(), baseline);
 
-        let live_dummy = state.simulation.effective_shared_cell_dummy();
+        let live_dummy = state.runtime.simulation.effective_shared_cell_dummy();
         assert_eq!(live_dummy.snapshot().coord, (7, 9));
         assert_eq!(
             prepared
@@ -1021,15 +978,22 @@ mod tests {
             "candidate preparation restores real reservation authority verbatim"
         );
         assert_eq!(
-            prepared
-                .simulation
-                .substrate
-                .base_reservations
-                .dummy_mask(),
+            prepared.simulation.substrate.base_reservations.dummy_mask(),
             0,
             "raw snapshot decode reconstructs the process-global dummy cleared"
         );
-        let (mut simulation, _occupied_overlays, preserved_startup) = prepared.into_parts();
+        let runtime = &mut state.runtime;
+        let _occupied_overlays = prepared.commit_into(runtime);
+        assert_eq!(runtime.resources.height_map.get(&(3, 4)), Some(&7));
+        assert_eq!(state.startup, startup_before);
+        assert!(state.startup.admits_exact_step());
+        assert_eq!(
+            runtime.resources.rules.simulation_config_hash(),
+            rules_before
+        );
+        assert!(runtime.resources.terrain_template.is_some());
+        assert_eq!(runtime.resources.waypoints[&701].rx, 122);
+        let simulation = &mut runtime.simulation;
         let restored_dummy = simulation.effective_shared_cell_dummy();
         assert!(restored_dummy.same_identity(&live_dummy));
         assert_eq!(
@@ -1065,26 +1029,11 @@ mod tests {
             accepted_hash,
             "with the shared dummy already zero, reconstruction removes only the hashed stale mask"
         );
-        // Production calls this exact restore after its enumerated commit. Clear
-        // the owner slots first so the assertion proves the snapshot carries the
-        // real option values rather than observing untouched u64 surrogates.
-        state.active_loading_correlation = None;
-        state.loaded_startup = None;
-        state.rust_l0_receipt = None;
-        preserved_startup.restore(
-            &mut state.active_loading_correlation,
-            &mut state.loaded_startup,
-            &mut state.rust_l0_receipt,
-        );
-        assert_eq!(
-            (
-                state.active_loading_correlation,
-                state.loaded_startup,
-                state.rust_l0_receipt,
-            ),
-            startup_before
-        );
-
+        let tick_before = runtime.simulation.session.tick;
+        runtime.advance_frame(&[], 33, crate::sim::world::TickLane::Ordinary);
+        assert_eq!(runtime.simulation.session.tick, tick_before + 1);
+        assert_eq!(state.startup, startup_before);
+        assert!(state.startup.admits_exact_step());
         std::fs::remove_dir_all(directory).expect("remove startup fixture directory");
     }
 
@@ -1144,6 +1093,44 @@ mod tests {
             restored.dynamic_terrain_cells.get(&(0, 0)),
             Some(&DynamicTerrainCellState::capture(&runtime_actual))
         );
+    }
+
+    #[test]
+    fn save_write_updates_readout_and_listing_only_after_success() {
+        let directory = isolated_directory("save-bookkeeping");
+        let mut persistence =
+            PersistenceState::new(options_profile::RetailOptionsProfile::default());
+        persistence.repository = SaveRepository::at(&directory);
+        persistence.refresh_save_list_if_dirty();
+        assert!(persistence.save_list_cache.entries().is_empty());
+        let bytes = snapshot("exact description", 123);
+        let path = persistence.write_save("saved.bin", &bytes, 42).unwrap();
+        assert_eq!(persistence.repository.read(&path).unwrap(), bytes);
+        assert_eq!(persistence.last_save_tick(), Some(42));
+        assert!(persistence.last_save_instant().is_some());
+        persistence.refresh_save_list_if_dirty();
+        assert_eq!(persistence.save_list_cache.entries().len(), 1);
+        let saved_at = persistence.last_save_instant();
+
+        // A directory at the chosen file path forces the actual write stage to fail.
+        std::fs::create_dir(directory.join("blocked.bin")).unwrap();
+        let error = persistence
+            .write_save("blocked.bin", &bytes, 99)
+            .unwrap_err();
+        assert_eq!(error.stage(), SaveWriteStage::WriteFile);
+        assert_eq!(persistence.last_save_tick(), Some(42));
+        assert_eq!(persistence.last_save_instant(), saved_at);
+        assert!(!persistence.save_list_cache.dirty);
+
+        persistence.repository = SaveRepository::at(&path);
+        let error = persistence
+            .write_save("unreachable.bin", &bytes, 100)
+            .unwrap_err();
+        assert_eq!(error.stage(), SaveWriteStage::CreateDirectory);
+        assert_eq!(persistence.last_save_tick(), Some(42));
+        assert_eq!(persistence.last_save_instant(), saved_at);
+        assert!(!persistence.save_list_cache.dirty);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -2216,7 +2216,7 @@ mod tests {
                         .expect("live Anim references restore");
                     restored.retain_in_scenario_process_state_from(&runtime.simulation);
                     assert_eq!(restored.rng_state(), runtime.simulation.rng_state());
-                    runtime = SimRuntime::rebind_restored(Some(runtime), restored);
+                    runtime.replace_simulation(restored);
                     assert_eq!(runtime.simulation.state_hash(), before);
                 }
                 let output = runtime.advance_frame(&[], 67, TickLane::Ordinary);

@@ -588,18 +588,24 @@ impl TacticalCaptureSession {
 
     fn validate_rust_l0(&mut self, state: &AppState) -> Result<()> {
         let profile = self.request.profile();
-        ensure!(state.frontend.screen == GameScreen::InGame, "Rust L0 is not InGame");
         ensure!(
-            state.match_state.local_player_owner.as_deref() == Some(profile.launch.player_name.as_str()),
+            state.frontend.screen == GameScreen::InGame,
+            "Rust L0 is not InGame"
+        );
+        ensure!(
+            state.match_state.local_player_owner.as_deref()
+                == Some(profile.launch.player_name.as_str()),
             "local owner differs from sealed tactical launch"
         );
         let startup = state
-            .frontend.loaded_startup
-            .as_ref()
+            .match_state
+            .startup
+            .startup()
             .context("accepted loaded startup is absent")?;
         let receipt = state
-            .frontend.rust_l0_receipt
-            .as_ref()
+            .match_state
+            .startup
+            .receipt()
             .context("Rust L0 receipt is absent")?;
         ensure!(
             crate::match_bootstrap::accepted_tick_is_admitted(Some(startup), Some(receipt)),
@@ -851,8 +857,8 @@ impl TacticalCaptureSession {
             binary_frame: sim.session.binary_frame,
             wall_elapsed_ms,
             accepted_rust_l0: crate::match_bootstrap::accepted_tick_is_admitted(
-                state.frontend.loaded_startup.as_ref(),
-                state.frontend.rust_l0_receipt.as_ref(),
+                state.match_state.startup.startup(),
+                state.match_state.startup.receipt(),
             ),
             in_game: state.frontend.screen == GameScreen::InGame,
             local_owner: owner.clone(),

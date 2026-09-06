@@ -591,12 +591,7 @@ pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
         .startup()
         .accepted()
         .map(|startup| startup.correlation);
-    replace_match_startup_slots(
-        &mut state.frontend.active_loading_correlation,
-        &mut state.frontend.loaded_startup,
-        &mut state.frontend.rust_l0_receipt,
-        next_active,
-    );
+    state.match_state.startup.begin(next_active);
     clear_loading_state(state);
     let mut session = LoadingSession::from_request(request);
     session.job.ra2_dir = state
@@ -681,28 +676,6 @@ pub(crate) fn clear_loading_state(state: &mut AppState) {
     }
     state.frontend.loading_screen_atlas = None;
     state.frontend.loading_progress = LoadingProgressState::standard_skirmish();
-}
-
-/// Close any prior/in-flight match startup without resetting the process-wide
-/// monotonically increasing correlation allocator.
-pub(crate) fn clear_match_startup_state(state: &mut AppState) {
-    replace_match_startup_slots(
-        &mut state.frontend.active_loading_correlation,
-        &mut state.frontend.loaded_startup,
-        &mut state.frontend.rust_l0_receipt,
-        None,
-    );
-}
-
-fn replace_match_startup_slots(
-    active: &mut Option<crate::match_bootstrap::MatchCorrelationId>,
-    loaded: &mut Option<crate::match_bootstrap::PreparedMatchStartup>,
-    receipt: &mut Option<crate::match_bootstrap::RustL0Receipt>,
-    next_active: Option<crate::match_bootstrap::MatchCorrelationId>,
-) {
-    *active = next_active;
-    *loaded = None;
-    *receipt = None;
 }
 
 /// The handle the player launched this skirmish under, as shown on the loading
@@ -3616,44 +3589,82 @@ mod tests {
     }
 
     #[test]
-    fn replacing_loading_startup_clears_prior_loaded_startup_and_receipt_then_registers_new_correlation()
-     {
+    fn replacing_loading_startup_retires_prior_admission() {
+        use crate::app::match_runtime::startup::MatchStartup;
         let mut next = 1;
         let prior = prepared_startup(&mut next, 0x1111_2222);
         let replacement = prepared_startup(&mut next, 0x3333_4444);
-        let prior_receipt = receipt_for(&prior);
-        let prior_correlation = prior.correlation;
-        let replacement_correlation = replacement.correlation;
-        let mut active = Some(prior_correlation);
-        let mut loaded = Some(prior);
-        let mut receipt = Some(prior_receipt);
+        let mut authority = MatchStartup::default();
+        assert!(authority.admits_ordinary_tick());
+        assert!(!authority.admits_exact_step());
+        authority.begin(Some(prior.correlation));
+        let simulation = crate::sim::world::Simulation::with_seed(u64::from(prior.seed.value));
+        authority
+            .acknowledge(prior.clone(), Some(&simulation), true, false)
+            .unwrap();
+        assert_eq!(authority.receipt(), Some(&receipt_for(&prior)));
+        assert!(authority.admits_exact_step());
 
-        replace_match_startup_slots(
-            &mut active,
-            &mut loaded,
-            &mut receipt,
-            Some(replacement_correlation),
+        // New loading attempt cannot expose the previous pair to captures.
+        authority.begin(Some(replacement.correlation));
+        assert!(authority.accepted().is_none());
+        assert!(!authority.admits_exact_step());
+        let baseline = authority.clone();
+        assert!(
+            authority
+                .acknowledge(prior, Some(&simulation), true, false)
+                .is_err()
         );
-
-        assert_eq!(active, Some(replacement_correlation));
-        assert!(loaded.is_none());
-        assert!(receipt.is_none());
+        assert_eq!(authority, baseline, "stale completion cannot install");
+        let simulation =
+            crate::sim::world::Simulation::with_seed(u64::from(replacement.seed.value));
+        authority
+            .acknowledge(replacement.clone(), Some(&simulation), true, false)
+            .unwrap();
+        assert_eq!(authority.startup(), Some(&replacement));
+        let accepted = authority.clone();
+        assert!(
+            authority
+                .acknowledge(replacement, Some(&simulation), true, false)
+                .is_err()
+        );
+        assert_eq!(
+            authority, accepted,
+            "duplicate completion cannot overwrite evidence"
+        );
+        authority.clear();
+        assert!(authority.accepted().is_none());
+        assert!(authority.admits_ordinary_tick());
+        assert!(!authority.admits_exact_step());
     }
 
     #[test]
-    fn failed_startup_cleanup_clears_all_three_slots() {
+    fn rejected_startup_observation_does_not_publish_partial_admission() {
+        use crate::app::match_runtime::startup::MatchStartup;
         let mut next = 1;
-        let prior = prepared_startup(&mut next, 0x5555_6666);
-        let prior_receipt = receipt_for(&prior);
-        let mut active = Some(prior.correlation);
-        let mut loaded = Some(prior);
-        let mut receipt = Some(prior_receipt);
-
-        replace_match_startup_slots(&mut active, &mut loaded, &mut receipt, None);
-
-        assert!(active.is_none());
-        assert!(loaded.is_none());
-        assert!(receipt.is_none());
+        let prepared = prepared_startup(&mut next, 0x5555_6666);
+        let mut authority = MatchStartup::default();
+        authority.begin(Some(prepared.correlation));
+        let baseline = authority.clone();
+        let simulation = crate::sim::world::Simulation::with_seed(u64::from(prepared.seed.value));
+        for (sim, loading, spawn) in [
+            (None, true, false),
+            (Some(&simulation), false, false),
+            (Some(&simulation), true, true),
+        ] {
+            assert!(
+                authority
+                    .acknowledge(prepared.clone(), sim, loading, spawn)
+                    .is_err()
+            );
+            assert_eq!(authority, baseline);
+            assert!(!authority.admits_exact_step());
+        }
+        authority.clear();
+        assert!(authority.accepted().is_none());
+        authority.begin(None);
+        assert!(authority.admits_ordinary_tick());
+        assert!(!authority.admits_exact_step());
     }
 
     #[test]

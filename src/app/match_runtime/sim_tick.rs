@@ -802,10 +802,7 @@ pub(crate) fn decide_runtime_pass(inputs: RuntimePassInputs) -> RuntimePassDecis
 }
 
 pub(crate) fn advance_in_game_runtime(state: &mut AppState, now_ms: u64) {
-    let startup_admitted = crate::match_bootstrap::accepted_tick_is_admitted(
-        state.frontend.loaded_startup.as_ref(),
-        state.frontend.rust_l0_receipt.as_ref(),
-    );
+    let startup_admitted = state.match_state.startup.admits_ordinary_tick();
     if !startup_admitted {
         log::error!("Accepted match tick blocked: matching Rust L0 receipt is absent");
         // The whole pass is skipped: nothing below may run un-receipted. The
@@ -831,12 +828,7 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, now_ms: u64) {
 pub(crate) fn advance_in_game_runtime_exact_step(
     state: &mut AppState,
 ) -> Result<ExactStepReceipt, ExactStepError> {
-    let admitted = state.frontend.loaded_startup.is_some()
-        && state.frontend.rust_l0_receipt.is_some()
-        && crate::match_bootstrap::accepted_tick_is_admitted(
-            state.frontend.loaded_startup.as_ref(),
-            state.frontend.rust_l0_receipt.as_ref(),
-        );
+    let admitted = state.match_state.startup.admits_exact_step();
     if !admitted {
         return Err(ExactStepError::MissingAcceptedRustL0);
     }

@@ -335,7 +335,7 @@ impl App {
     pub(super) fn leave_mission_result_screen(state: &mut AppState) {
         crate::app::match_runtime::sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
-        crate::app::loading::pump::clear_match_startup_state(state);
+        state.match_state.startup.clear();
         state.match_state.scenario_elapsed_clock.reset();
         state.frontend.score_screen = None;
         state.frontend.score_shell_state = Default::default();

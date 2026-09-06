@@ -39,7 +39,7 @@ impl App {
         // torn down.
         crate::app::match_runtime::sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
-        crate::app::loading::pump::clear_match_startup_state(state);
+        state.match_state.startup.clear();
         state.match_state.scenario_elapsed_clock.reset();
         state.audio.stop_theme();
         // F11: leaving a match silences match audio completely. Previously
@@ -399,7 +399,7 @@ impl App {
 
         match action {
             SaveLoadAction::Load(path) => {
-                dispatch::load_save_file(state, &path);
+                crate::app::persistence::commands::load_save_file(state, &path);
             }
             SaveLoadAction::Delete(path) => {
                 if let Err(e) = state.persistence.repository.delete(&path) {
@@ -447,7 +447,7 @@ impl App {
             })
             .collect();
 
-        let last_save_age: Option<String> = state.persistence.last_save_instant.map(|t| {
+        let last_save_age: Option<String> = state.persistence.last_save_instant().map(|t| {
             let secs = t.elapsed().as_secs();
             if secs < 60 {
                 format!("{secs}s ago")
@@ -504,7 +504,7 @@ impl App {
                 .map(|rt| &rt.simulation)
                 .map_or(0, |s| s.entities().len()),
             save_name_buf: &mut save_name,
-            last_save_tick: state.persistence.last_save_tick,
+            last_save_tick: state.persistence.last_save_tick(),
             last_save_age,
             last_load_available,
             last_load_display,
@@ -584,12 +584,12 @@ impl App {
             }
             DevOverlayAction::SaveAs => {
                 let name = std::mem::take(&mut state.diag.dev_overlay_save_name);
-                dispatch::save_with_name(state, &name);
+                crate::app::persistence::commands::save_with_name(state, &name);
             }
             DevOverlayAction::ReloadLastLoad => {
                 if let Some(path) = state.persistence.last_loaded_save_path.clone() {
                     if state.persistence.repository.exists(&path) {
-                        dispatch::load_save_file(state, &path);
+                        crate::app::persistence::commands::load_save_file(state, &path);
                     } else {
                         log::warn!(
                             "Reload last load: file no longer exists: {}",
@@ -599,7 +599,7 @@ impl App {
                 }
             }
             DevOverlayAction::LoadSave(path) => {
-                dispatch::load_save_file(state, &path);
+                crate::app::persistence::commands::load_save_file(state, &path);
             }
         }
     }
