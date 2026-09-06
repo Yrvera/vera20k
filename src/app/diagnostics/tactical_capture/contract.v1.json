@@ -16,6 +16,7 @@
     "RA2_NORMAL_COUNT",
     "RA2_NORMALS",
     "RA2_QUEUE_FRAME_MS",
-    "RA2_DIR"
+    "RA2_DIR",
+    "RA2_DUMP_SHROUD"
   ]
 }

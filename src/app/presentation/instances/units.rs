@@ -359,7 +359,7 @@ pub(crate) fn build_unit_instances(
         }
         let draw_state = draw_decision.state;
         let tint = vxl_body_tint(
-            &state.match_state.match_presentation.lighting_grid,
+            state.match_state.match_presentation.lighting.grid(),
             (pos.rx, pos.ry),
             entity.category,
             state.rules()

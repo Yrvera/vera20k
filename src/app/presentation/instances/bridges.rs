@@ -222,7 +222,7 @@ pub(crate) fn build_bridge_body_instances(
         atlas,
         &state.match_state.match_presentation.overlay_names,
         &state.height_map(),
-        &state.match_state.match_presentation.lighting_grid,
+        state.match_state.match_presentation.lighting.grid(),
         origin_y,
         world_height,
         state.match_state.input.camera_x,

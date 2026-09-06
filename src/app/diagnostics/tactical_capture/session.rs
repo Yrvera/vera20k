@@ -505,18 +505,19 @@ impl TacticalCaptureSession {
             .context("MCV DeploysInto target has no merged rule")?;
 
         let ledger = &profile.budgets.expected_ledger;
-        let input_delay = u64::from(profile.launch.input_delay_ticks);
-        let power_rate = derive_rate(ledger.power_ready, ledger.yard_active, input_delay, "power")?;
+        // Offline commands are observed one frame after their raw issue stamp.
+        let result_delay = 1;
+        let power_rate = derive_rate(ledger.power_ready, ledger.yard_active, result_delay, "power")?;
         let refinery_rate = derive_rate(
             ledger.refinery_ready,
             ledger.power_active,
-            input_delay,
+            result_delay,
             "refinery",
         )?;
         let radar_rate = derive_rate(
             ledger.radar_ready,
             ledger.refinery_active,
-            input_delay,
+            result_delay,
             "radar",
         )?;
         let stage = |index: usize| StageBudget {
@@ -525,7 +526,6 @@ impl TacticalCaptureSession {
         };
         let config = TacticalScriptConfig {
             owner: owner.clone(),
-            input_delay_ticks: input_delay,
             deployment: DeploymentContract {
                 mcv_type_id,
                 yard_type_id,
@@ -691,7 +691,8 @@ impl TacticalCaptureSession {
         ensure!(
             state.match_state.input.cursor_x == profile.capture.post_load_cursor.x as f32
                 && state.match_state.input.cursor_y == profile.capture.post_load_cursor.y as f32,
-            "post-load cursor differs from the sealed neutral point"
+            "post-load cursor differs from the sealed neutral point: ({}, {})",
+            state.match_state.input.cursor_x, state.match_state.input.cursor_y
         );
 
         let loaded = state
@@ -785,7 +786,11 @@ impl TacticalCaptureSession {
             if factory.owner != owner_id {
                 continue;
             }
-            if let Some(object) = factory.object.as_ref() {
+            // A completed building remains attached to its factory until
+            // placement. It belongs to ready_buildings, not the in-flight list.
+            if let Some(object) = factory.object.as_ref()
+                && factory.progress < crate::sim::production::PRODUCTION_STEPS
+            {
                 queued_production.push(ProductionQueueObservation {
                     type_id: sim.interner.resolve(object.type_id).to_owned(),
                     resolved_rate_frames: factory.step_rate_frames,
@@ -1431,12 +1436,12 @@ fn reject_loose_shadow(path: &Path) -> Result<()> {
 fn derive_rate(
     ready_tick: u64,
     prior_active_tick: u64,
-    input_delay_ticks: u64,
+    result_delay_ticks: u64,
     label: &str,
 ) -> Result<u16> {
     let progress_ticks = ready_tick
         .checked_sub(prior_active_tick)
-        .and_then(|value| value.checked_sub(input_delay_ticks))
+        .and_then(|value| value.checked_sub(result_delay_ticks))
         .and_then(|value| value.checked_sub(1))
         .with_context(|| format!("{label} ledger underflow"))?;
     ensure!(
@@ -1520,13 +1525,17 @@ fn validate_houses_and_slots(
         .map(|country| sim.interner.resolve(country))
         .context("Computer1 country is absent")?;
     let expected_ai_country = profile.launch.opponents[0].country.launch_country();
+    // The sealed fixture uses Easy, zero starting units and stock RULESMD
+    // MultiplayerAICM=400,0,0. Post_Map_Init @ 0x00686A52..0x00686A6B
+    // therefore adds no opening grant (scenario_bootstrap's native evidence).
     ensure!(
         !ai.is_human
             && ai.side_index == expected_ai_country.side_index()
             && ai_country == expected_ai_country.country_name()
             && ai.difficulty == HouseDifficulty::Easy
-            && ai.credits == profile.launch.options.starting_credits * 2,
-        "Computer1 HouseState differs from sealed slot"
+            && ai.credits == profile.launch.options.starting_credits,
+        "Computer1 HouseState differs from sealed slot: credits={}, difficulty={:?}",
+        ai.credits, ai.difficulty
     );
     ensure!(
         sim.session.start_slot_houses.len() == 2
@@ -1551,13 +1560,13 @@ mod tests {
 
     #[test]
     fn sealed_ledgers_derive_current_production_rates() {
-        assert_eq!(derive_rate(619, 33, 2, "power").unwrap(), 11);
-        assert_eq!(derive_rate(2614, 650, 2, "refinery").unwrap(), 37);
-        assert_eq!(derive_rate(3602, 2645, 2, "radar").unwrap(), 18);
+        assert_eq!(derive_rate(617, 32, 1, "power").unwrap(), 11);
+        assert_eq!(derive_rate(2611, 648, 1, "refinery").unwrap(), 37);
+        assert_eq!(derive_rate(3598, 2642, 1, "radar").unwrap(), 18);
     }
 
     #[test]
     fn non_integral_rate_fails_closed() {
-        assert!(derive_rate(620, 33, 2, "power").is_err());
+        assert!(derive_rate(620, 32, 1, "power").is_err());
     }
 }

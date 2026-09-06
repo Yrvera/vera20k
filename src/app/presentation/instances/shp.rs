@@ -303,7 +303,7 @@ pub(crate) fn build_shp_instances(
             parachute_body_depths.insert(entity.stable_id(), depth);
         }
         let tint = shp_body_tint(
-            &state.match_state.match_presentation.lighting_grid,
+            state.match_state.match_presentation.lighting.grid(),
             (pos.rx, pos.ry),
             entity.category,
             state.rules()

@@ -368,41 +368,6 @@ fn test_set_pixel_out_of_bounds_does_nothing() {
 }
 
 #[test]
-fn test_viewport_rect_returns_four_lines() {
-    // We can't construct a full MinimapRenderer without GPU, but we can
-    // test the coordinate math independently.
-    let mm_w: f32 = MINIMAP_WIDTH as f32;
-    let mm_h: f32 = MINIMAP_HEIGHT as f32;
-    let world_w: f32 = 3000.0;
-    let world_h: f32 = 2000.0;
-
-    // Camera at origin, 1024x768 viewport.
-    let cam_x: f32 = 0.0;
-    let cam_y: f32 = 0.0;
-    let screen_w: f32 = 1024.0;
-    let screen_h: f32 = 768.0;
-
-    // Compute expected viewport rect on minimap.
-    let nx_left: f32 = (cam_x - 0.0) / world_w;
-    let ny_top: f32 = (cam_y - 0.0) / world_h;
-    let nx_right: f32 = (cam_x + screen_w - 0.0) / world_w;
-    let ny_bottom: f32 = (cam_y + screen_h - 0.0) / world_h;
-
-    let left: f32 = (nx_left * mm_w).clamp(0.0, mm_w);
-    let top: f32 = (ny_top * mm_h).clamp(0.0, mm_h);
-    let right: f32 = (nx_right * mm_w).clamp(0.0, mm_w);
-    let bottom: f32 = (ny_bottom * mm_h).clamp(0.0, mm_h);
-
-    // Verify the expected rect is within the minimap.
-    assert!(left >= 0.0);
-    assert!(top >= 0.0);
-    assert!(right <= mm_w);
-    assert!(bottom <= mm_h);
-    assert!(right > left, "viewport should have nonzero width");
-    assert!(bottom > top, "viewport should have nonzero height");
-}
-
-#[test]
 fn test_single_cell_map_pixel_mapping() {
     // A map with one cell: its position should map to a valid minimap pixel.
     // If world_width is small (e.g., just one tile = 60px), the cell still

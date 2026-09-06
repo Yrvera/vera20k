@@ -222,7 +222,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         let tint: [f32; 3] = state
             .match_state
             .match_presentation
-            .lighting_grid
+            .lighting.grid()
             .anim_tint_at((fx.rx, fx.ry), cfg);
         // Source-pixel weight the native blitter family gives this frame:
         // a fixed 25/50/75 stage from `Translucency=`, or the progressive
@@ -379,7 +379,7 @@ pub(crate) fn build_anim_class_instances(
         let tint = state
             .match_state
             .match_presentation
-            .lighting_grid
+            .lighting.grid()
             .anim_tint_at((rx, ry), config);
         let key = ShpSpriteKey {
             type_id: type_name.to_string(),
@@ -728,7 +728,7 @@ pub(crate) fn build_overlay_instances(
         let tint: [f32; 3] = state
             .match_state
             .match_presentation
-            .lighting_grid
+            .lighting.grid()
             .overlay_tint_at((entry.rx, entry.ry));
         planned_cells.push(
             crate::app::presentation::render::draw_plan_lowering::PlannedCellInstance {
@@ -827,7 +827,7 @@ pub(crate) fn build_overlay_instances(
         let tint: [f32; 3] = state
             .match_state
             .match_presentation
-            .lighting_grid
+            .lighting.grid()
             .terrain_object_tint_for_type((obj.rx, obj.ry), spawns_tiberium);
 
         let Some(parent) = ground_order.terrain_object_draw(obj.stable_id, obj.rx, obj.ry) else {
@@ -920,7 +920,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         let tint: [f32; 3] = state
             .match_state
             .match_presentation
-            .lighting_grid
+            .lighting.grid()
             .anim_tint_at((flash.rx, flash.ry), cfg);
         let depth: f32 = garrison_flash_depth(
             origin_y,
@@ -1025,7 +1025,7 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
         let tint = state
             .match_state
             .match_presentation
-            .lighting_grid
+            .lighting.grid()
             .anim_tint_at((flash.rx, flash.ry), cfg);
         // Muzzle anims (e.g. GCMUZZLE, VTMUZZLE) carry their art section's
         // ZAdjust= as a sort bias plus the constant -2px anim bias.

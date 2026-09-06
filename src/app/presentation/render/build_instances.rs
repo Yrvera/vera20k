@@ -180,7 +180,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             .and_then(|rt| rt.view().bridge_state());
         crate::render::terrain_instances::build_visible_instances(
             grid,
-            Some(&state.match_state.match_presentation.lighting_grid),
+            Some(state.match_state.match_presentation.lighting.grid()),
             state.match_state.input.camera_x,
             state.match_state.input.camera_y,
             sw,

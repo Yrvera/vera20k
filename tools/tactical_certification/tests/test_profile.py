@@ -14,6 +14,7 @@ from tools.tactical_certification.profile import (
     reject_denied_environment,
     repository_contract_path,
     repository_root,
+    scan_tactical_environment_names,
     validate_contract_source_coverage,
     validate_profile_document,
 )
@@ -104,6 +105,20 @@ class ProfileTests(unittest.TestCase):
             nonfinite.write_text('{"value": Infinity}', encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "non-finite"):
                 load_profile(nonfinite)
+
+    def test_source_scan_distinguishes_override_strings_from_numeric_constants(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "src").mkdir()
+            override = "RA2_" + "FIXTURE_OVERRIDE"
+            constant = "RA2_" + "FIXTURE_NUMBER"
+            (root / "src" / "fixture.rs").write_text(
+                f'const {constant}: u32 = 15;\n'
+                f'const ENV_NAME: &str = "{override}";\n'
+                'fn sample() { let _ = std::env::var(ENV_NAME); }\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(scan_tactical_environment_names(root), {override})
 
     def test_external_contract_is_byte_identical_and_covers_tactical_sources(self) -> None:
         contract = load_contract(repository_contract_path())

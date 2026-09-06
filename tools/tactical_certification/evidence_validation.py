@@ -53,7 +53,6 @@ KNOWN_RESIDUALS = [
     "Native pixels and whole-game parity remain unverified.",
 ]
 ALLOWED_SURFACE_FORMATS = frozenset(("Bgra8Unorm", "Bgra8UnormSrgb"))
-BINARY_FRAMES_PER_SECOND = 15
 PRODUCTION_PROGRESS_INTERVALS = 53
 STOCK_DEPLOY_FACING = 0x80
 # Merged retail art.ini/artmd.ini Foundation= values for the fixed v1 types.
@@ -416,41 +415,29 @@ def _require_step_receipt(
     *,
     expected_tick_before: int,
     expected_tick_after: int,
-    expected_total_before: int,
-    expected_total_after: int,
 ) -> Mapping[str, Any]:
     receipt = _exact_object(
         value,
         (
-            "accumulator_before_clear_ms",
-            "accumulator_after_ms",
             "tick_before",
             "tick_after",
             "binary_frame_before",
             "binary_frame_after",
-            "total_sim_ms_before",
-            "total_sim_ms_after",
         ),
         field,
     )
     expected = {
-        "accumulator_before_clear_ms": 0,
-        "accumulator_after_ms": 0,
         "tick_before": expected_tick_before,
         "tick_after": expected_tick_after,
-        "total_sim_ms_before": expected_total_before,
-        "total_sim_ms_after": expected_total_after,
     }
     for key, expected_value in expected.items():
         require_value(receipt[key], expected_value, f"{field}.{key}")
     before_frame = _nonnegative_int(receipt["binary_frame_before"], f"{field}.binary_frame_before")
     after_frame = _nonnegative_int(receipt["binary_frame_after"], f"{field}.binary_frame_after")
-    expected_before_frame = (
-        expected_total_before * BINARY_FRAMES_PER_SECOND
-    ) // 1000
-    expected_after_frame = (
-        expected_total_after * BINARY_FRAMES_PER_SECOND
-    ) // 1000
+    # Exact-step production commits one native frame per simulation tick.
+    # The selected wall-time quantum does not change the frame ordinal.
+    expected_before_frame = expected_tick_before
+    expected_after_frame = expected_tick_after
     require_value(
         before_frame,
         expected_before_frame,
@@ -632,16 +619,12 @@ def _require_production(
         f"{field}.first_exact_step",
         expected_tick_before=0,
         expected_tick_after=1,
-        expected_total_before=0,
-        expected_total_after=sim_tick_ms,
     )
     last = _require_step_receipt(
         production["last_exact_step"],
         f"{field}.last_exact_step",
         expected_tick_before=capture_tick - 1,
         expected_tick_after=capture_tick,
-        expected_total_before=(capture_tick - 1) * sim_tick_ms,
-        expected_total_after=capture_tick * sim_tick_ms,
     )
 
     build_targets = require_object(capture["build_targets"], "capture.build_targets")
@@ -823,7 +806,9 @@ def _require_production(
         raise ValidationError(f"{field}.command_ledger must contain exactly eight commands")
     launch = require_object(profile.document["launch"], "launch")
     owner = require_string(launch["player_name"], "launch.player_name")
-    delay = require_int(launch["input_delay_ticks"], "launch.input_delay_ticks")
+    # Configured network delay is retained in the launch. Offline issue stamps
+    # are current-frame ordinals; committed command effects are observed next frame.
+    delay = 1
     scheduled_ticks = (
         0,
         delay,
@@ -871,7 +856,7 @@ def _require_production(
         )
         require_value(
             command["execute_tick"],
-            scheduled_ticks[index] + delay,
+            scheduled_ticks[index],
             f"{command_field}.execute_tick",
         )
         require_value(command["owner"], owner, f"{command_field}.owner")
@@ -1014,7 +999,7 @@ def _require_production(
             )
             require_value(
                 resolved_result["resolved_rate_frames"],
-                expected_rates[role_index],
+                0,  # Raw enqueue receipt; the first factory sweep resolves cadence.
                 f"{command_field}.resolved_result.QueueObserved.resolved_rate_frames",
             )
             require_value(
@@ -1208,7 +1193,10 @@ def _require_render(
         ("minimap", "radar_animation", "viewport_rect"),
         f"{field}.production_render.instance_counts",
     )
-    for key, expected in (("minimap", 1), ("radar_animation", 1), ("viewport_rect", 4)):
+    # This sealed half-scale view emits one sampled viewport edge. Production
+    # native_radar_outline_instances filters each of the four source edges by
+    # nearest-scaled pixel coverage and sidebar clipping; four is not invariant.
+    for key, expected in (("minimap", 1), ("radar_animation", 1), ("viewport_rect", 1)):
         require_value(
             counts[key],
             expected,

@@ -3,15 +3,15 @@
 //! each frame (terrain/overlay/waypoint/tag projections, house colors, and the
 //! transient lighting view).
 //!
-//! Rebuilt on every map load from `PresentationLoadAssets` and the parsed map;
-//! process-lifetime GPU objects live in `app::renderer_state::RendererState`.
+//! Map-load handoff replaces per-map resources; the presentation owner remains
+//! allocated while the shell is active.
+//! Process-lifetime GPU objects live in `app::renderer_state::RendererState`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 use crate::map::cell_tags::CellTagMap;
 use crate::map::houses::{HouseColorMap, HouseRoster};
-use crate::map::lighting::{CellLightGrid, LightingConfig};
 use crate::map::overlay::TerrainObject;
 use crate::map::tags::TagMap;
 use crate::map::terrain::TerrainGrid;
@@ -60,23 +60,7 @@ pub(crate) struct MatchPresentationState {
     /// Owner name → house color index mapping for atlas key lookups.
     pub(crate) house_color_map: HouseColorMap,
     pub(crate) house_roster: HouseRoster,
-    /// Cell (rx, ry) -> map lighting bundle. Render paths look up compatibility tints per-frame.
-    pub(crate) lighting_grid: CellLightGrid,
-    /// Complete source list behind the visible grid. Retained so source
-    /// transitions can enumerate only old/new affected areas.
-    pub(crate) applied_lighting_sources: Vec<crate::map::lighting::PointLight>,
-    /// Exact ScenarioClass profile behind the visible grid.
-    pub(crate) applied_lighting_profile: Option<crate::map::lighting::LightingProfileUnits>,
-    /// Native detail mask behind the visible grid.
-    pub(crate) applied_lighting_detail_level: u32,
-    /// YR LightSourceClass-style sampled records. The active grid changes only
-    /// after the complete pending refresh has gathered.
-    pub(crate) pending_lighting_refresh: Option<crate::map::lighting::DeferredCellLightRefresh>,
-    /// Complete derived light-view fingerprint applied to `lighting_grid`.
-    /// App view-state only — never serialized or hashed.
-    pub(crate) last_lighting_view_fingerprint: Option<u64>,
-    /// Parsed map [Lighting] config used to rebuild transient app lighting after load.
-    pub(crate) map_lighting_config: LightingConfig,
+    pub(crate) lighting: super::lighting::MatchLighting,
     pub(crate) combat_lights: crate::app::presentation::combat_lights::CombatLightRuntime,
     pub(crate) minimap: Option<MinimapRenderer>,
     /// Animated radar chrome — plays 33-frame open/close animation when radar gained/lost.
@@ -136,10 +120,10 @@ pub(crate) struct MatchPresentationState {
     ///
     /// DRIFT: gamemd serializes each animation object with its own timer, so a
     /// saved game restores the phases it was saved with. This map is not in the
-    /// snapshot, so loading re-stamps every surviving structure at the load
-    /// frame and the whole base pulses in unison again — the exact symptom the
-    /// per-building phase exists to remove. Fires once per save load, and only
-    /// unwinds as those buildings are replaced.
+    /// snapshot. Entries whose IDs survive replacement retain their old phase;
+    /// newly observed IDs start at the current frame. A reused ID can therefore
+    /// inherit an unrelated phase. Native animation restoration remains DRIFT;
+    /// a blanket reset would also change the current retained-match behavior.
     pub(crate) building_anim_phase_base: std::collections::BTreeMap<u64, u64>,
     // -- Reusable per-frame scratch buffers (avoid allocation each frame) --
     /// Overlay instance scratch vec — cleared and refilled each frame.

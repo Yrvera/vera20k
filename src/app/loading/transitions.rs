@@ -251,91 +251,18 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         .match_state
         .match_presentation
         .tactical_bridge_inverse_map = result.scenario.tactical_bridge_inverse_map;
-    state.match_state.match_presentation.lighting_grid = result.presentation.lighting_grid;
-    state
-        .match_state
-        .match_presentation
-        .applied_lighting_sources
-        .clear();
-    state
-        .match_state
-        .match_presentation
-        .applied_lighting_profile = None;
-    state
-        .match_state
-        .match_presentation
-        .applied_lighting_detail_level = state
-        .match_state
-        .match_presentation
-        .in_game_options
-        .detail_level
-        .min(2);
-    state
-        .match_state
-        .match_presentation
-        .pending_lighting_refresh = None;
-    state.match_state.match_presentation.map_lighting_config = result.scenario.map_lighting_config;
-    state
-        .match_state
-        .match_presentation
-        .last_lighting_view_fingerprint = None;
     // F04: the app no longer stores a second ArtRegistry; presentation
     // borrows the sole copy owned by RuleSet (state.rules).
     state.process_assets.csf = result.presentation.csf;
     state.match_state.match_presentation.theater_name = result.scenario.theater_name;
     state.match_state.match_presentation.theater_ext = result.scenario.theater_ext;
 
-    // The background loader has no access to the live renderer detail option.
-    // Re-derive once at handoff so the first visible frame already uses the
-    // selected detail mask and its corresponding building-light gate.
-    let initial_lighting = match (
-        state.terrain_template(),
-        state
-            .match_state
-            .sim_runtime
-            .as_ref()
-            .map(|rt| &rt.simulation),
-        state.rules(),
-    ) {
-        (Some(terrain), Some(sim), Some(rules)) => {
-            let view = crate::app::loading::init::derive_lighting_view(
-                &state.match_state.match_presentation.map_lighting_config,
-                Some(sim),
-                Some(rules),
-                state
-                    .match_state
-                    .match_presentation
-                    .in_game_options
-                    .detail_level,
-            );
-            let fingerprint = view.fingerprint;
-            let profile = view.profile;
-            let detail_level = view.detail_level;
-            let point_lights = view.point_lights.clone();
-            let grid = crate::app::loading::init::build_lighting_grid_from_view(terrain, &view);
-            Some((fingerprint, profile, detail_level, point_lights, grid))
-        }
-        _ => None,
-    };
-    if let Some((fingerprint, profile, detail_level, point_lights, grid)) = initial_lighting {
-        state.match_state.match_presentation.lighting_grid = grid;
-        state
-            .match_state
-            .match_presentation
-            .last_lighting_view_fingerprint = Some(fingerprint);
-        state
-            .match_state
-            .match_presentation
-            .applied_lighting_profile = Some(profile);
-        state
-            .match_state
-            .match_presentation
-            .applied_lighting_detail_level = detail_level;
-        state
-            .match_state
-            .match_presentation
-            .applied_lighting_sources = point_lights;
-    }
+    let runtime = state.match_state.sim_runtime.as_ref();
+    let live = runtime.and_then(|rt| rt.resources.terrain_template.as_ref()
+        .map(|terrain| (terrain, &rt.simulation, &rt.resources.rules)));
+    let presentation = &mut state.match_state.match_presentation;
+    presentation.lighting.install(result.presentation.lighting_grid,
+        result.scenario.map_lighting_config, presentation.in_game_options.detail_level, live);
     // Map load hands over a world anchor point; the transition applies the
     // active tactical rectangle and live zoom.
     let (tactical_width, tactical_height) = crate::app::input::camera::tactical_viewport_size_px(

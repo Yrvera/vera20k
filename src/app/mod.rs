@@ -22,7 +22,6 @@ use crate::audio::music::MusicPlayer;
 use crate::audio::sfx::SfxPlayer;
 use crate::map::basic::BasicSection;
 use crate::map::houses::HouseRoster;
-use crate::map::lighting::{CellLightGrid, LightingConfig};
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::render::batch::BatchRenderer;

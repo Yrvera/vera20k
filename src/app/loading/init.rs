@@ -39,7 +39,10 @@ use crate::map::basic::{BasicSection, BridgeDestroyabilityMode};
 use crate::map::cell_tags::CellTagMap;
 use crate::map::events::EventMap;
 use crate::map::houses::{self, HouseColorMap, HouseRoster};
-use crate::map::lighting::{self, CellLightGrid, LightingConfig, LightingProfileUnits, PointLight};
+use crate::app::presentation::lighting::rebuild_lighting_grid_from_sim;
+#[cfg(test)]
+use crate::app::presentation::lighting::{derive_lighting_view, build_lighting_grid_from_view};
+use crate::map::lighting::{self, CellLightGrid, LightingConfig};
 use crate::map::map_file::MapFile;
 use crate::map::overlay::{OverlayEntry, TerrainObject};
 use crate::map::overlay_types::OverlayTypeRegistry;
@@ -675,6 +678,146 @@ mod map_wall_owner_candidate_tests {
             "recognized Terrain entries construct in source order while UNKNOWN is skipped"
         );
         assert_eq!(sim.scenario_rng.state(), rng_before);
+    }
+
+    // Exercise the exact owner called by handoff, restore and the frame driver.
+    // Reuse the live-world fixtures below rather than testing forwarded fields.
+    #[test]
+    fn match_lighting_interrupts_pending_refresh_without_partial_visibility() {
+        use crate::app::presentation::lighting::MatchLighting;
+        let terrain = flat_terrain(128, 128);
+        let rules = lighting_rules();
+        let mut sim = Simulation::with_seed(0x1a);
+        sim.session.lighting.current_ambient = 30;
+        let mut lights = MatchLighting::default();
+        lights.install(
+            CellLightGrid::new(),
+            LightingConfig::default(),
+            2,
+            Some((&terrain, &sim, &rules)),
+        );
+        let tint_a = lights.grid().terrain_tile_tint_at((1, 1));
+        lights.refresh(&terrain, &sim, &rules, 2);
+        assert_eq!(lights.grid().terrain_tile_tint_at((1, 1)), tint_a);
+        sim.session.lighting.current_ambient = 60;
+        let grid_b = rebuild_lighting_grid_from_sim(
+            &terrain,
+            &LightingConfig::default(),
+            Some(&sim),
+            Some(&rules),
+            2,
+        );
+        lights.refresh(&terrain, &sim, &rules, 2);
+        for cell in [(1, 1), (127, 127)] {
+            assert_eq!(lights.grid().terrain_tile_tint_at(cell), tint_a);
+        }
+        sim.session.lighting.current_ambient = 90;
+        let grid_c = rebuild_lighting_grid_from_sim(
+            &terrain,
+            &LightingConfig::default(),
+            Some(&sim),
+            Some(&rules),
+            2,
+        );
+        lights.refresh(&terrain, &sim, &rules, 2);
+        assert_ne!(tint_a, grid_b.terrain_tile_tint_at((1, 1)));
+        assert_ne!(
+            grid_b.terrain_tile_tint_at((1, 1)),
+            grid_c.terrain_tile_tint_at((1, 1))
+        );
+        for cell in [(1, 1), (127, 127)] {
+            assert_eq!(
+                lights.grid().terrain_tile_tint_at(cell),
+                grid_b.terrain_tile_tint_at(cell)
+            );
+        }
+        // Same fingerprint must continue gathering the newly queued C batch.
+        lights.refresh(&terrain, &sim, &rules, 2);
+        for cell in [(1, 1), (127, 127)] {
+            assert_eq!(
+                lights.grid().terrain_tile_tint_at(cell),
+                grid_c.terrain_tile_tint_at(cell)
+            );
+        }
+    }
+
+    #[test]
+    fn match_lighting_restore_discards_outgoing_pending_samples() {
+        use crate::app::presentation::lighting::MatchLighting;
+        let terrain = flat_terrain(128, 128);
+        let rules = lighting_rules();
+        let mut sim = Simulation::with_seed(0x1b);
+        sim.session.lighting.current_ambient = 30;
+        let mut lights = MatchLighting::default();
+        lights.install(
+            CellLightGrid::new(),
+            LightingConfig::default(),
+            2,
+            Some((&terrain, &sim, &rules)),
+        );
+        let restored_tint = lights.grid().terrain_tile_tint_at((1, 1));
+        sim.session.lighting.current_ambient = 90;
+        lights.refresh(&terrain, &sim, &rules, 2);
+        sim.session.lighting.current_ambient = 30;
+        lights.restore(&terrain, &sim, &rules, 2);
+        for _ in 0..3 {
+            assert_eq!(lights.grid().terrain_tile_tint_at((1, 1)), restored_tint);
+            lights.refresh(&terrain, &sim, &rules, 2);
+        }
+        assert_eq!(lights.grid().terrain_tile_tint_at((1, 1)), restored_tint);
+    }
+
+    #[test]
+    fn match_lighting_installs_selected_detail_and_removes_live_source_area() {
+        use crate::app::presentation::lighting::MatchLighting;
+        let terrain = flat_terrain(32, 32);
+        let rules = lighting_rules();
+        let mut sim = Simulation::with_seed(0x1c);
+        seed_live_lamp(&mut sim);
+        let mut lights = MatchLighting::default();
+        lights.install(
+            CellLightGrid::new(),
+            LightingConfig::default(),
+            1,
+            Some((&terrain, &sim, &rules)),
+        );
+        assert_eq!(
+            lights
+                .grid()
+                .cell_light_at((4, 5))
+                .unwrap()
+                .raw_additive_intensity,
+            0
+        );
+        lights.refresh(&terrain, &sim, &rules, 2);
+        assert!(
+            lights
+                .grid()
+                .cell_light_at((4, 5))
+                .unwrap()
+                .raw_additive_intensity
+                > 0
+        );
+        let distant = lights.grid().cell_light_at((31, 31)).unwrap().clone();
+        sim.entities_mut().remove(41).expect("remove live lamp");
+        lights.refresh(&terrain, &sim, &rules, 2);
+        let rebuilt = rebuild_lighting_grid_from_sim(
+            &terrain,
+            &LightingConfig::default(),
+            Some(&sim),
+            Some(&rules),
+            2,
+        );
+        for (cell, light) in rebuilt.cells() {
+            let actual = lights.grid().cell_light_at(cell).unwrap();
+            assert_eq!(actual.raw_additive_intensity, light.raw_additive_intensity);
+            assert_eq!(actual.raw_rgb, light.raw_rgb);
+            assert_eq!(
+                lights.grid().terrain_tile_tint_at(cell),
+                rebuilt.terrain_tile_tint_at(cell)
+            );
+        }
+        assert_eq!(lights.grid().cell_light_at((31, 31)).unwrap(), &distant);
     }
 
     fn lighting_rules() -> RuleSet {
@@ -1683,204 +1826,6 @@ pub(crate) fn load_csf(
         .map_err(|err| anyhow::anyhow!("could not parse required ra2md.csf: {err:#}"))?;
     log::info!("Loaded CSF string table: ra2md.csf");
     Ok(csf)
-}
-
-/// Fully-derived render-facing lighting view. The simulation owns only the
-/// scenario controller and source inputs; the per-cell grid remains app state.
-pub(crate) struct DerivedLightingView {
-    pub(crate) profile: LightingProfileUnits,
-    pub(crate) point_lights: Vec<PointLight>,
-    pub(crate) detail_level: u32,
-    pub(crate) fingerprint: u64,
-}
-
-/// Derive the complete visible lighting input from one committed world view.
-pub(crate) fn derive_lighting_view(
-    lighting_config: &LightingConfig,
-    simulation: Option<&Simulation>,
-    rules: Option<&RuleSet>,
-    detail_level: u32,
-) -> DerivedLightingView {
-    let mut fingerprint = LightingFingerprint::new();
-    let profile = simulation.map_or_else(
-        || lighting::normal_profile_units(lighting_config),
-        |sim| {
-            let state = &sim.session.lighting;
-            let selected = match state.selected_profile {
-                crate::sim::scenario_session::ScenarioLightingProfile::Normal => state.normal,
-                crate::sim::scenario_session::ScenarioLightingProfile::Ion => state.ion,
-            };
-            fingerprint.mix_i32(state.target_ambient);
-            fingerprint.mix_u64(match state.selected_profile {
-                crate::sim::scenario_session::ScenarioLightingProfile::Normal => 0,
-                crate::sim::scenario_session::ScenarioLightingProfile::Ion => 1,
-            });
-            fingerprint.mix_i32(state.transition_timer.start_frame());
-            fingerprint.mix_i32(state.transition_timer.duration());
-            LightingProfileUnits {
-                ambient_percent: state.current_ambient,
-                red_percent: selected.red_percent,
-                green_percent: selected.green_percent,
-                blue_percent: selected.blue_percent,
-                ground_units: selected.ground_units,
-                level_units: selected.level_units,
-            }
-        },
-    );
-    fingerprint.mix_profile(profile);
-    fingerprint.mix_u64(u64::from(detail_level));
-
-    let building_lights = collect_live_building_lights(simulation, rules, detail_level);
-    let radiation_lights = match (simulation, rules) {
-        (Some(sim), Some(rules)) => {
-            crate::app::presentation::radiation_light::collect_radiation_lights(sim, rules)
-        }
-        _ => Vec::new(),
-    };
-
-    let mut point_lights = Vec::with_capacity(building_lights.len() + radiation_lights.len());
-    for (stable_id, light) in building_lights {
-        fingerprint.mix_u64(0x42);
-        fingerprint.mix_u64(stable_id);
-        fingerprint.mix_point_light(&light);
-        point_lights.push(light);
-    }
-    for light in radiation_lights {
-        fingerprint.mix_u64(0x52);
-        fingerprint.mix_point_light(&light);
-        point_lights.push(light);
-    }
-
-    DerivedLightingView {
-        profile,
-        point_lights,
-        detail_level: detail_level.min(2),
-        fingerprint: fingerprint.finish(),
-    }
-}
-
-/// Build the cell grid for an already-derived complete view.
-pub(crate) fn build_lighting_grid_from_view(
-    resolved_terrain: &ResolvedTerrainGrid,
-    view: &DerivedLightingView,
-) -> CellLightGrid {
-    let mut grid = lighting::build_cell_light_grid_from_heights_and_units_with_detail(
-        resolved_terrain
-            .iter()
-            .map(|cell| ((cell.rx, cell.ry), cell.level)),
-        view.profile,
-        view.detail_level,
-    );
-    lighting::accumulate_point_lights(&mut grid, &view.point_lights);
-    grid
-}
-
-/// Rebuild transient app lighting from the selected scenario profile plus the
-/// current live building and radiation sources.
-pub(crate) fn rebuild_lighting_grid_from_sim(
-    resolved_terrain: &ResolvedTerrainGrid,
-    lighting_config: &LightingConfig,
-    simulation: Option<&Simulation>,
-    rules: Option<&RuleSet>,
-    detail_level: u32,
-) -> CellLightGrid {
-    let view = derive_lighting_view(lighting_config, simulation, rules, detail_level);
-    build_lighting_grid_from_view(resolved_terrain, &view)
-}
-
-fn collect_live_building_lights(
-    simulation: Option<&Simulation>,
-    rules: Option<&RuleSet>,
-    detail_level: u32,
-) -> Vec<(u64, PointLight)> {
-    let (Some(sim), Some(rules)) = (simulation, rules) else {
-        return Vec::new();
-    };
-    if detail_level < 2 {
-        return Vec::new();
-    }
-    sim.entities()
-        .values()
-        .filter(|entity| {
-            entity.category == crate::map::entities::EntityCategory::Structure
-                && entity.lifecycle.object_alive
-                && !entity.lifecycle.in_limbo
-                && entity.lifecycle.cell_marked
-                && !entity.dying
-                && entity.health.current > 0
-                && crate::sim::power_system::is_building_powered(
-                    &sim.power_states,
-                    rules,
-                    entity,
-                    &sim.interner,
-                )
-        })
-        .filter_map(|entity| {
-            let type_id = sim.interner.resolve(entity.type_ref());
-            let obj = rules.object(type_id)?;
-            let light = lighting::point_light_from_object(
-                entity.position.rx,
-                entity.position.ry,
-                obj.light_visibility,
-                obj.light_intensity,
-                [
-                    obj.light_red_tint,
-                    obj.light_green_tint,
-                    obj.light_blue_tint,
-                ],
-            )?;
-            Some((entity.stable_id(), light))
-        })
-        .collect()
-}
-
-struct LightingFingerprint(u64);
-
-impl LightingFingerprint {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    fn new() -> Self {
-        Self(Self::OFFSET)
-    }
-
-    fn mix_u64(&mut self, value: u64) {
-        for byte in value.to_le_bytes() {
-            self.0 ^= u64::from(byte);
-            self.0 = self.0.wrapping_mul(Self::PRIME);
-        }
-    }
-
-    fn mix_i32(&mut self, value: i32) {
-        self.mix_u64(u64::from(value as u32));
-    }
-
-    fn mix_profile(&mut self, profile: LightingProfileUnits) {
-        self.mix_i32(profile.ambient_percent);
-        self.mix_i32(profile.red_percent);
-        self.mix_i32(profile.green_percent);
-        self.mix_i32(profile.blue_percent);
-        self.mix_i32(profile.ground_units);
-        self.mix_i32(profile.level_units);
-    }
-
-    fn mix_point_light(&mut self, light: &PointLight) {
-        self.mix_u64(u64::from(light.rx));
-        self.mix_u64(u64::from(light.ry));
-        self.mix_i32(light.center_x);
-        self.mix_i32(light.center_y);
-        self.mix_i32(light.radius_leptons);
-        self.mix_i32(light.intensity);
-        for tint in light.tint {
-            self.mix_i32(tint);
-        }
-        self.mix_u64(u64::from(u8::from(light.active)));
-        self.mix_u64(u64::from(u8::from(light.detail)));
-    }
-
-    fn finish(self) -> u64 {
-        self.0
-    }
 }
 
 // Scenario-menu metadata is map-owned (F06); re-exported for app callers.
