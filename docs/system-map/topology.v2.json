@@ -83,6 +83,98 @@
         "Feature 7448a5a5 closes bounded generic sidebar lookup through the active side-1/side-2 archive stack without changing global archive order."
       ]
     },
+    "GSI-03.09": {
+      "native_anchors": [
+        {
+          "symbol": "ScenarioClass::DrawLoadingScreen",
+          "address": "0x00552D60",
+          "evidence": "docs/research/LOADING_FIRST_RENDERER_CORRECTED_COMPOSITION_DATA_READINESS_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "Loading progress callback",
+          "address": "0x0069AE90",
+          "evidence": "docs/research/LOADING_PROGRESS_CALLBACK_VISIBLE_UI_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/app/loading/pump.rs",
+          "symbol": "LoadingSession / LoadingStage / PreparedScenarioLoad; prepare_loading_session; render_loading_screen; after_loading_frame_presented",
+          "coverage": "representative",
+          "observed_at_commit": "d1c6d6d8c567a50740230bcb4bad6745f09e6a87"
+        },
+        {
+          "path": "src/app/frame.rs",
+          "symbol": "App::render_frame",
+          "coverage": "representative",
+          "observed_at_commit": "d1c6d6d8c567a50740230bcb4bad6745f09e6a87"
+        }
+      ],
+      "notes": [
+        "Loading owns consuming map/prefix preparation, first-frame acknowledgement, continuation and terminal disposition. The frame supplies rendering/submission and one post-present call. VERA-internal ownership protocol, gamemd equivalent UNCHECKED; preserves represented prepaint preparation, first raw3 (random1), deferred raw8 and synchronous remaining progress.",
+        "Production source/RMG and cache/lease regressions plus fixed Soviet/Yuri release captures cover the touched route; no native pixel/dwell differential or full remaining-loader decomposition is claimed."
+      ]
+    },
+    "GSI-17.01": {
+      "native_anchors": [
+        {
+          "symbol": "ScenarioClass::Full_Init",
+          "address": "0x00686B20",
+          "evidence": "docs/research/skirmish-ui/SKIRMISH_START_TO_FULL_INIT_SPAWN_TRACE.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/app/loading/pump.rs",
+          "symbol": "LoadingRequest::prepare / prepare_initial; PreparedScenarioLoad",
+          "coverage": "representative",
+          "observed_at_commit": "d1c6d6d8c567a50740230bcb4bad6745f09e6a87"
+        },
+        {
+          "path": "src/app/loading/init.rs",
+          "symbol": "load_map_from_initial",
+          "coverage": "representative",
+          "observed_at_commit": "d1c6d6d8c567a50740230bcb4bad6745f09e6a87"
+        },
+        {
+          "path": "src/app/random_map_lifecycle_tests.rs",
+          "symbol": "gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges",
+          "coverage": "representative",
+          "observed_at_commit": "d1c6d6d8c567a50740230bcb4bad6745f09e6a87"
+        }
+      ],
+      "notes": [
+        "The parsed map, admitted prefix and startup move as one prepared bundle into the existing remaining loader. Setup preview remains presentation-only; accepted generated starts and launch regeneration retain distinct authority. Legacy GSI04.12 in a test name is not the canonical taxonomy.",
+        "Generic startup still rejects typed fresh-scenario admission and follows existing fallback policy. Missing-payload and double-transfer sentinel states are removed, without adding a new supported startup family."
+      ]
+    },
+    "GSI-01.04": {
+      "native_anchors": [
+        {
+          "symbol": "ScenarioClass::Start_Scenario",
+          "address": "0x00683AB0",
+          "evidence": "docs/research/SKIRMISH_START_TO_LOADING_SCREEN_ACTIVATION_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/app/loading/pump.rs",
+          "symbol": "replace_loading_attempt / retire_failed_loading_attempt / retire_loading_attempt",
+          "coverage": "representative",
+          "observed_at_commit": "d1c6d6d8c567a50740230bcb4bad6745f09e6a87"
+        },
+        {
+          "path": "src/app/loading/transitions.rs",
+          "symbol": "apply_map_load_result",
+          "coverage": "representative",
+          "observed_at_commit": "d1c6d6d8c567a50740230bcb4bad6745f09e6a87"
+        }
+      ],
+      "notes": [
+        "Replacement admission precedes old-attempt resource retirement. Failure returns the leased manager; resource-only success retirement preserves the correlation until the unchanged installer acknowledges L0. Process-resident caches remain resident.",
+        "Only loading-attempt ownership and routing are refactored here. The existing fresh-match installer is an observed consumer; broader match install/restore/exit and retained-resource policies remain under review."
+      ]
+    },
     "GSI-03.10": {
       "native_anchors": [
         {
@@ -1612,6 +1704,32 @@
       "evidence": [
         "docs/research/bridges/05-damage-collapse-repair-cabhut/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md"
       ]
+    },
+    {
+      "id": "EDGE-0060-LOADING-PREPARED-SCENARIO",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-03.09",
+      "to": "GSI-17.01",
+      "context": "Fresh loading attempt",
+      "detail": "Composition borrows and continuation consumes the same prepared map, admitted prefix and startup bundle; native preparation precedes first presentation.",
+      "evidence": [
+        "docs/research/LOADING_FIRST_RENDERER_CORRECTED_COMPOSITION_DATA_READINESS_GHIDRA_REPORT.md",
+        "docs/research/skirmish-ui/SKIRMISH_START_TO_FULL_INIT_SPAWN_TRACE.md"
+      ]
+    },
+    {
+      "id": "EDGE-0061-LOADING-TERMINAL-MATCH-HANDOFF",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-03.09",
+      "to": "GSI-01.04",
+      "context": "Loading completion or failure",
+      "detail": "The loading owner returns failed leases and selects native failure or generic fallback; success transfers the lease through the existing installer and preserves admission until L0.",
+      "evidence": [
+        "docs/research/LOADING_FIRST_RENDERER_CORRECTED_COMPOSITION_DATA_READINESS_GHIDRA_REPORT.md",
+        "docs/research/skirmish-ui/SKIRMISH_START_TO_FULL_INIT_SPAWN_TRACE.md"
+      ]
     }
   ],
   "loops": {
@@ -1627,6 +1745,9 @@
         "ScenarioClass::Full_Init 0x00686B20"
       ],
       "rust_touchpoints": [
+        {"path": "src/app/loading/pump.rs", "coverage": "representative", "observed_at_commit": "d1c6d6d8c567a50740230bcb4bad6745f09e6a87"},
+        {"path": "src/app/frame.rs", "coverage": "representative", "observed_at_commit": "d1c6d6d8c567a50740230bcb4bad6745f09e6a87"},
+
         {"path": "src/skirmish_launch.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/app_skirmish_session.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/app_skirmish.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
