@@ -22,6 +22,7 @@ mod hash_schema;
 mod lifecycle;
 mod load_object_lifecycle;
 mod logic_vector;
+mod navigation;
 mod object_turn;
 #[cfg(test)]
 use object_turn::shp_vehicle_counter_admitted;
@@ -1539,17 +1540,24 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_, '
     fn rebuild_cliff_navigation(
         &mut self,
         rules: &RuleSet,
-        borrowed_terrain: &mut Option<crate::map::resolved_terrain::ResolvedTerrainGrid>,
-        borrowed_entities: &mut EntityStore,
-        borrowed_interner: &mut StringInterner,
+        terrain: Option<&ResolvedTerrainGrid>,
+        entities: &EntityStore,
+        interner: &StringInterner,
     ) {
-        std::mem::swap(&mut self.sim.resolved_terrain, borrowed_terrain);
-        std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
-        std::mem::swap(&mut self.sim.interner, borrowed_interner);
-        let _ = self.sim.rebuild_dynamic_navigation(rules);
-        std::mem::swap(&mut self.sim.interner, borrowed_interner);
-        std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
-        std::mem::swap(&mut self.sim.resolved_terrain, borrowed_terrain);
+        let Some(terrain) = terrain else {
+            return;
+        };
+        // CollapseDestroyableCliff calls global RebuildZoneConnectivity at
+        // 0x005812AC / 0x00581995, before footprint cleanup. Rebuild 0x0056C510
+        // reads the retained Map+0x54 bridge vector (0x0056C6CB..0x0056C7CC).
+        // Source: active gamemd.exe instructions and Wave caller 0x0075F4B2.
+        // Read the receiver's live map directly; only navigation caches mutate.
+        navigation::NavigationCaches {
+            terrain_costs: &mut self.sim.terrain_costs,
+            zones: &mut self.sim.zone_grid,
+            path: &mut self.sim.path_grid,
+        }
+        .rebuild_dynamic(terrain, self.bridge_state, entities, interner, rules);
     }
 
     fn mark_cliff_radar_dirty(&mut self, cell: (u16, u16)) {
@@ -2552,9 +2560,9 @@ impl Simulation {
                             .expect("world cliff hook")
                             .rebuild_cliff_navigation(
                                 rules,
-                                &mut transaction.resolved_terrain,
-                                &mut transaction.entities,
-                                &mut transaction.interner,
+                                transaction.resolved_terrain.as_ref(),
+                                &transaction.entities,
+                                &transaction.interner,
                             );
 
                         // Pass three's externally represented effects remain
@@ -5453,37 +5461,18 @@ impl Simulation {
         let Some(terrain) = self.resolved_terrain.as_ref() else {
             return false;
         };
-        let mut grid =
-            PathGrid::from_resolved_terrain_with_bridges(terrain, self.bridge_state.as_ref());
-        self.terrain_costs = build_canonical_terrain_cost_grids(terrain);
-
-        let mut structures: Vec<(u16, u16, String)> = self
-            .substrate
-            .entities
-            .values()
-            .filter_map(|entity| {
-                (entity.category == EntityCategory::Structure).then_some((
-                    entity.position.rx,
-                    entity.position.ry,
-                    self.interner.resolve(entity.type_ref()).to_string(),
-                ))
-            })
-            .collect();
-        structures.sort_by(|a, b| {
-            a.0.cmp(&b.0)
-                .then_with(|| a.1.cmp(&b.1))
-                .then_with(|| a.2.cmp(&b.2))
-        });
-        for (rx, ry, type_id) in structures {
-            let object_type = rules.object(&type_id);
-            let foundation = object_type
-                .map(|object| object.foundation.as_str())
-                .unwrap_or("1x1");
-            let has_bib = object_type.is_some_and(|object| object.bib);
-            grid.block_building_movement_cells(rx, ry, foundation, has_bib);
+        navigation::NavigationCaches {
+            terrain_costs: &mut self.terrain_costs,
+            zones: &mut self.zone_grid,
+            path: &mut self.path_grid,
         }
-
-        self.rebuild_zone_grid(&grid);
+        .rebuild_dynamic(
+            terrain,
+            self.bridge_state.as_ref(),
+            &self.substrate.entities,
+            &self.interner,
+            rules,
+        );
         true
     }
 
@@ -5545,70 +5534,30 @@ impl Simulation {
     /// Tries an incremental update first (diffing against the previous PathGrid).
     /// Falls back to full rebuild if too many cells changed or no previous state.
     pub fn rebuild_zone_grid(&mut self, path_grid: &PathGrid) {
-        if self.resolved_terrain.is_none() {
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
             return;
+        };
+        navigation::NavigationCaches {
+            terrain_costs: &mut self.terrain_costs,
+            zones: &mut self.zone_grid,
+            path: &mut self.path_grid,
         }
-
-        // Try incremental update if we have previous state.
-        if let (Some(prev), Some(zones)) = (self.path_grid.as_deref(), &mut self.zone_grid) {
-            if let Some(changed) = prev.diff_cells(path_grid) {
-                if changed.is_empty()
-                    && self
-                        .resolved_terrain
-                        .as_ref()
-                        .is_some_and(|terrain| zones.movement_classes_match(terrain))
-                {
-                    // PathGrid does not carry CellClass reduced zone type.
-                    // Boolean path state and retained base classes must both
-                    // match before connectivity can be reused.
-                    self.path_grid = Some(Arc::new(path_grid.clone()));
-                    return;
-                }
-                if !changed.is_empty()
-                    && crate::sim::pathfinding::zone_incremental::try_incremental_update(
-                        zones,
-                        &changed,
-                        path_grid,
-                        &self.terrain_costs,
-                        self.resolved_terrain.as_ref(),
-                        self.bridge_state
-                            .as_ref()
-                            .map(|bs| bs.endpoint_records())
-                            .unwrap_or(&[]),
-                    )
-                {
-                    log::trace!("zone: incremental update ({} cells changed)", changed.len(),);
-                    self.path_grid = Some(Arc::new(path_grid.clone()));
-                    return;
-                }
-            }
-        }
-
-        // Full rebuild fallback.
-        self.rebuild_zone_grid_full(path_grid);
+        .rebuild_zones(path_grid, terrain, self.bridge_state.as_ref());
     }
 
     /// Rebuild without the PathGrid-only incremental shortcut. Reduced zone
     /// type can change while boolean walkability stays identical (notably a
     /// live OccupationBits=0 terrain object changing Building to Ground).
     fn rebuild_zone_grid_full(&mut self, path_grid: &PathGrid) {
-        let Some(terrain) = &self.resolved_terrain else {
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
             return;
         };
-        let width = terrain.width();
-        let height = terrain.height();
-        self.zone_grid = Some(ZoneGrid::build_with_terrain(
-            path_grid,
-            &self.terrain_costs,
-            self.resolved_terrain.as_ref(),
-            self.bridge_state
-                .as_ref()
-                .map(|bs| bs.endpoint_records())
-                .unwrap_or(&[]),
-            width,
-            height,
-        ));
-        self.path_grid = Some(Arc::new(path_grid.clone()));
+        navigation::NavigationCaches {
+            terrain_costs: &mut self.terrain_costs,
+            zones: &mut self.zone_grid,
+            path: &mut self.path_grid,
+        }
+        .rebuild_zones_full(path_grid, terrain, self.bridge_state.as_ref());
     }
 
     /// Refresh navigation authority after inline overlay mutation or terrain

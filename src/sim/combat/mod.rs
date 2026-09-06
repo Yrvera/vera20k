@@ -2086,9 +2086,9 @@ pub(crate) trait CombatInlineHooks {
     fn rebuild_cliff_navigation(
         &mut self,
         _rules: &RuleSet,
-        _terrain: &mut Option<crate::map::resolved_terrain::ResolvedTerrainGrid>,
-        _entities: &mut EntityStore,
-        _interner: &mut StringInterner,
+        _terrain: Option<&ResolvedTerrainGrid>,
+        _entities: &EntityStore,
+        _interner: &StringInterner,
     ) {
     }
 
