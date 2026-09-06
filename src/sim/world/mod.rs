@@ -4202,20 +4202,31 @@ impl Simulation {
     /// Exact mode-one query for the stored TechnoClass+0x3D5 writer family.
     /// Absence means there is no live MapClass authority, not rectangular or
     /// permissive fallback authority.
-    fn entity_playfield_membership_mode_one(&self, stable_id: u64) -> Option<bool> {
+    fn entity_playfield_membership_mode_one(
+        &self,
+        stable_id: u64,
+        terrain: Option<&ResolvedTerrainGrid>,
+    ) -> Option<bool> {
         let bounds = self.playfield_bounds?;
         let entity = self.substrate.entities.get(stable_id)?;
         Some(crate::sim::cell_rect::cell_is_in_playfield_height_aware(
             (i32::from(entity.position.rx), i32::from(entity.position.ry)),
             Some(bounds),
-            self.resolved_terrain.as_ref(),
+            terrain,
         ))
     }
 
     /// Unlimbo's exact establishment writer (`TechnoClass::Unlimbo @
     /// 0x006F6CFE`).
-    pub(crate) fn establish_entity_playfield_membership_on_unlimbo(&mut self, stable_id: u64) {
-        let Some(member) = self.entity_playfield_membership_mode_one(stable_id) else {
+    fn establish_entity_playfield_membership_on_unlimbo(
+        &mut self,
+        stable_id: u64,
+        context: UninitContext<'_>,
+    ) {
+        let Some(member) = self.entity_playfield_membership_mode_one(
+            stable_id,
+            context.terrain().or(self.resolved_terrain.as_ref()),
+        ) else {
             return;
         };
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
@@ -4252,7 +4263,8 @@ impl Simulation {
         {
             return;
         }
-        if self.entity_playfield_membership_mode_one(stable_id) == Some(true)
+        if self.entity_playfield_membership_mode_one(stable_id, self.resolved_terrain.as_ref())
+            == Some(true)
             && let Some(entity) = self.substrate.entities.get_mut(stable_id)
         {
             entity.in_playfield = true;
@@ -4262,7 +4274,8 @@ impl Simulation {
     /// Teleport arrival's exceptional exact outside clear (`0x00719A99`). An
     /// inside arrival does not promote a previously-false byte.
     fn clear_entity_playfield_membership_after_teleport(&mut self, stable_id: u64) {
-        if self.entity_playfield_membership_mode_one(stable_id) == Some(false)
+        if self.entity_playfield_membership_mode_one(stable_id, self.resolved_terrain.as_ref())
+            == Some(false)
             && let Some(entity) = self.substrate.entities.get_mut(stable_id)
         {
             entity.in_playfield = false;
