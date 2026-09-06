@@ -335,7 +335,7 @@ def _render_fixture(profile) -> dict[str, object]:
             "instance_counts": {
                 "minimap": 1,
                 "radar_animation": 1,
-                "viewport_rect": 4,
+                "viewport_rect": 1,
             },
             "minimap_aperture": {
                 "height": 60.0,
@@ -742,6 +742,20 @@ class OrchestratorTests(unittest.TestCase):
 
     def test_load_bearing_stable_and_run_mutations_are_invalid(self) -> None:
         mutations = (
+            (
+                "missing sampled viewport edge",
+                ("evidence", "stable", "render", "production_render",
+                 "instance_counts", "viewport_rect"),
+                0,
+                "instance_counts.viewport_rect",
+            ),
+            (
+                "obsolete unfiltered viewport edge count",
+                ("evidence", "stable", "render", "production_render",
+                 "instance_counts", "viewport_rect"),
+                4,
+                "instance_counts.viewport_rect",
+            ),
             (
                 "hidden window",
                 (

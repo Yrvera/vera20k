@@ -1193,7 +1193,10 @@ def _require_render(
         ("minimap", "radar_animation", "viewport_rect"),
         f"{field}.production_render.instance_counts",
     )
-    for key, expected in (("minimap", 1), ("radar_animation", 1), ("viewport_rect", 4)):
+    # This sealed half-scale view emits one sampled viewport edge. Production
+    # native_radar_outline_instances filters each of the four source edges by
+    # nearest-scaled pixel coverage and sidebar clipping; four is not invariant.
+    for key, expected in (("minimap", 1), ("radar_animation", 1), ("viewport_rect", 1)):
         require_value(
             counts[key],
             expected,
