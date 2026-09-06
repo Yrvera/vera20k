@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 
-use crate::map::resolved_terrain::{ResolvedTerrainGrid};
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::terrain_object_type::TerrainObjectType;
 use crate::rules::warhead_type::WarheadType;
@@ -116,13 +116,12 @@ pub(crate) enum TerrainAreaReceiveResult {
     Lethal(TerrainLethalDamage),
 }
 
-/// Transient owner for Terrain authority while an ordered area-damage transaction runs.
-///
-/// None of these fields add snapshot or hash state: the persisted maps/sets and raw
-/// occupation grid are moved out of their existing owners, then restored after commit.
-/// `navigation_changed_cells` and `finalizing_terrain` exist only for the duration of
-/// the outer transaction and are shared by nested receiver commits.
-#[derive(Debug, Default)]
+/// Inputs and outputs for phase-level Terrain receiver fixtures.
+/// The adapter lends these fields to a private world that runs the production
+/// receiver. Production Terrain authority stays resident in Simulation; this
+/// container and its transfers exist only in tests.
+#[cfg(test)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct TerrainAreaState {
     terrain_spawners: BTreeMap<(u16, u16), TerrainSpawnerState>,
     terrain_objects: BTreeMap<u64, TerrainObjectState>,
@@ -134,7 +133,23 @@ pub(crate) struct TerrainAreaState {
     finalizing_terrain: BTreeSet<u64>,
 }
 
+#[cfg(test)]
 impl TerrainAreaState {
+    pub(crate) fn take_fixture_progress(&mut self) -> (Vec<(u16, u16)>, BTreeSet<u64>) {
+        (
+            std::mem::take(&mut self.navigation_changed_cells),
+            std::mem::take(&mut self.finalizing_terrain),
+        )
+    }
+    pub(crate) fn restore_fixture_progress(
+        &mut self,
+        cells: Vec<(u16, u16)>,
+        finalizing: BTreeSet<u64>,
+    ) {
+        self.navigation_changed_cells = cells;
+        self.finalizing_terrain = finalizing;
+    }
+
     pub(crate) fn take_from(
         production: &mut ProductionState,
         raw_occupation: &mut RawCellOccupationGrid,
@@ -153,8 +168,7 @@ impl TerrainAreaState {
         }
     }
 
-    /// Temporarily expose the exact moved authority through `Simulation` during a
-    /// fatal lifecycle callback, then call this again to reclaim its mutations.
+    /// Lend fixture fields to the adapter world, then reclaim its mutations.
     pub(crate) fn swap_authority(
         &mut self,
         production: &mut ProductionState,
@@ -177,8 +191,7 @@ impl TerrainAreaState {
         std::mem::swap(&mut self.raw_occupation, raw_occupation);
     }
 
-    /// Restore Terrain authority and return ordered, first-occurrence-only navigation
-    /// cells for the World-owned cache publication tail.
+    /// Return fixture fields and the receiver's ordered navigation receipts.
     pub(crate) fn restore_into(
         mut self,
         production: &mut ProductionState,
@@ -200,40 +213,15 @@ impl TerrainAreaState {
         &self.terrain_object_cells
     }
 
-    /// Objects whose authoritative terrain finalization made them inactive
-    /// while their LogicClass membership record is still available to repair.
-    pub(crate) fn inactive_logic_ids(&self) -> Vec<u64> {
-        self.terrain_objects
-            .values()
-            .filter(|terrain| !terrain.is_live() && terrain.in_logic_vector)
-            .map(|terrain| terrain.stable_id)
-            .collect()
-    }
-
     pub(crate) fn navigation_changed_cells(&self) -> &[(u16, u16)] {
         &self.navigation_changed_cells
     }
 
-    /// Raw CellClass occupation bytes moved into this receiver transaction.
-    /// Inline building-survivor smudges must read them before world authority
-    /// is restored, while the destroyed building still occupies its cells.
-    pub(crate) fn raw_occupation(&self) -> &RawCellOccupationGrid {
-        &self.raw_occupation
-    }
-
-    /// Terrain-object cells that remain authoritative tiberium sources while
-    /// combat has the production maps moved into this transaction.
-    pub(crate) fn tiberium_spawning_terrain_cells(&self) -> &BTreeSet<(u16, u16)> {
-        &self.tiberium_spawning_terrain_cells
-    }
-
-    #[cfg(test)]
     pub(crate) fn is_finalizing(&self, stable_id: u64) -> bool {
         self.finalizing_terrain.contains(&stable_id)
     }
 
     /// Enter the shared Object damage kernel for one captured Terrain receiver.
-    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn receive_area_damage(
         &mut self,
@@ -245,7 +233,10 @@ impl TerrainAreaState {
         rules: &RuleSet,
         interner: &StringInterner,
     ) -> TerrainAreaReceiveResult {
-        self.receive_area_damage_with_scenario(
+        receive_terrain_area_damage_with_scenario(
+            &mut self.terrain_objects,
+            &self.terrain_object_cells,
+            &mut self.finalizing_terrain,
             stable_id,
             cell,
             raw_damage,
@@ -257,130 +248,30 @@ impl TerrainAreaState {
         )
     }
 
-    /// Scenario-aware shared Object-kernel entry used by production damage
-    /// transactions. The compatibility wrapper above keeps isolated fixtures
-    /// on the ordinary stock-skirmish false path.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn receive_area_damage_with_scenario(
-        &mut self,
-        stable_id: u64,
-        cell: (u16, u16),
-        raw_damage: i32,
-        distance_leptons: i32,
-        warhead: &WarheadType,
-        rules: &RuleSet,
-        interner: &StringInterner,
-        scenario_no_damage: bool,
-    ) -> TerrainAreaReceiveResult {
-        if self.finalizing_terrain.contains(&stable_id)
-            || self.terrain_object_cells.get(&cell) != Some(&stable_id)
-        {
-            return TerrainAreaReceiveResult::Ignored;
-        }
-
-        let Some(snapshot) = self.terrain_objects.get(&stable_id) else {
-            return TerrainAreaReceiveResult::Ignored;
-        };
-        if !snapshot.is_live() || snapshot.cell() != cell {
-            return TerrainAreaReceiveResult::Ignored;
-        }
-        let Some(terrain_type) =
-            rules.terrain_object_type_case_insensitive(interner.resolve(snapshot.type_ref))
-        else {
-            return TerrainAreaReceiveResult::Ignored;
-        };
-        if !warhead.wood || terrain_type.immune {
-            return TerrainAreaReceiveResult::Ignored;
-        }
-
-        let resolved_damage = damage::kernel::apply_warhead_damage(
-            raw_damage,
-            warhead.cell_spread_f64,
-            warhead.percent_at_max_f64,
-            &warhead.verses_f64,
-            damage::ArmorClass(armor_index(&terrain_type.armor) as u8),
-            distance_leptons,
-            scenario_no_damage,
-            rules.combat_damage.max_damage,
-        );
-        if resolved_damage == 0 {
-            return TerrainAreaReceiveResult::Ignored;
-        }
-
-        let terrain = self
-            .terrain_objects
-            .get_mut(&stable_id)
-            .expect("captured Terrain receiver remains represented");
-        if resolved_damage < 0 {
-            terrain.health = terrain
-                .health
-                .wrapping_sub(resolved_damage)
-                .min(terrain.max_health);
-            return TerrainAreaReceiveResult::Damaged {
-                remaining: terrain.health,
-            };
-        }
-
-        let remaining = terrain.health.wrapping_sub(resolved_damage);
-        if remaining > 0 {
-            terrain.health = remaining;
-            return TerrainAreaReceiveResult::Damaged { remaining };
-        }
-
-        terrain.health = 0;
-        self.finalizing_terrain.insert(stable_id);
-        TerrainAreaReceiveResult::Lethal(TerrainLethalDamage {
-            stable_id,
-            cell,
-            spawns_tiberium: terrain_type.spawns_tiberium,
-        })
-    }
-
     /// Complete a lethal receiver after any nested C4 transaction has returned.
     pub(crate) fn finalize_lethal(
         &mut self,
         lethal: TerrainLethalDamage,
         resolved_terrain: Option<&mut ResolvedTerrainGrid>,
     ) -> bool {
-        if !self.finalizing_terrain.contains(&lethal.stable_id) {
-            return false;
-        }
-        if self.terrain_object_cells.get(&lethal.cell) != Some(&lethal.stable_id) {
-            self.finalizing_terrain.remove(&lethal.stable_id);
-            return false;
-        }
-
-        let removed_id = limbo_terrain_object_at_cell_parts(
-            self.authority_parts(),
-            lethal.cell,
+        finalize_terrain_lethal(
+            TerrainAuthorityParts {
+                terrain_spawners: &mut self.terrain_spawners,
+                terrain_objects: &mut self.terrain_objects,
+                terrain_object_cells: &mut self.terrain_object_cells,
+                terrain_occupation_bits: &mut self.terrain_occupation_bits,
+                tiberium_spawning_terrain_cells: &mut self.tiberium_spawning_terrain_cells,
+                raw_occupation: &mut self.raw_occupation,
+            },
+            &mut self.finalizing_terrain,
+            &mut self.navigation_changed_cells,
+            lethal,
             resolved_terrain,
-        );
-        let finalized = removed_id == Some(lethal.stable_id);
-        if finalized {
-            if let Some(terrain) = self.terrain_objects.get_mut(&lethal.stable_id) {
-                terrain.lifecycle = TerrainObjectLifecycle::Destroyed;
-            }
-            if !self.navigation_changed_cells.contains(&lethal.cell) {
-                self.navigation_changed_cells.push(lethal.cell);
-            }
-        }
-        self.finalizing_terrain.remove(&lethal.stable_id);
-        finalized
-    }
-
-    fn authority_parts(&mut self) -> TerrainAuthorityParts<'_> {
-        TerrainAuthorityParts {
-            terrain_spawners: &mut self.terrain_spawners,
-            terrain_objects: &mut self.terrain_objects,
-            terrain_object_cells: &mut self.terrain_object_cells,
-            terrain_occupation_bits: &mut self.terrain_occupation_bits,
-            tiberium_spawning_terrain_cells: &mut self.tiberium_spawning_terrain_cells,
-            raw_occupation: &mut self.raw_occupation,
-        }
+        )
     }
 }
 
-struct TerrainAuthorityParts<'a> {
+pub(crate) struct TerrainAuthorityParts<'a> {
     terrain_spawners: &'a mut BTreeMap<(u16, u16), TerrainSpawnerState>,
     terrain_objects: &'a mut BTreeMap<u64, TerrainObjectState>,
     terrain_object_cells: &'a mut BTreeMap<(u16, u16), u64>,
@@ -481,8 +372,7 @@ pub(crate) fn limbo_terrain_object_at_cell(
     .is_some()
 }
 
-#[cfg(test)]
-fn production_authority_parts<'a>(
+pub(crate) fn production_authority_parts<'a>(
     production: &'a mut ProductionState,
     raw_occupation: &'a mut RawCellOccupationGrid,
 ) -> TerrainAuthorityParts<'a> {
@@ -829,36 +719,6 @@ mod tests {
                 .zone_type,
             before_zone
         );
-    }
-
-    #[test]
-    fn gsi_04_10_terrain_area_state_swaps_one_authoritative_runtime_state() {
-        let rules = terrain_rules("TREE01", true, "TemperateOccupationBits=7\n");
-        let mut sim = Simulation::new();
-        sim.substrate.raw_cell_occupation.mark_ground(0, 0, 0x80);
-        seed_one_at(&mut sim, &rules, "TREE01", (0, 0));
-        let stable_id = sim.production.terrain_object_cells[&(0, 0)];
-
-        let mut area = TerrainAreaState::take_from(
-            &mut sim.production,
-            &mut sim.substrate.raw_cell_occupation,
-        );
-        assert!(sim.production.terrain_objects.is_empty());
-        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(0, 0), 0);
-        assert_eq!(area.terrain_object_cells[&(0, 0)], stable_id);
-        assert_eq!(area.raw_occupation.ground_bits(0, 0), 0x9C);
-
-        area.swap_authority(&mut sim.production, &mut sim.substrate.raw_cell_occupation);
-        assert_eq!(sim.production.terrain_object_cells[&(0, 0)], stable_id);
-        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(0, 0), 0x9C);
-        sim.substrate.raw_cell_occupation.clear_ground(0, 0, 0x80);
-        area.swap_authority(&mut sim.production, &mut sim.substrate.raw_cell_occupation);
-
-        let changed =
-            area.restore_into(&mut sim.production, &mut sim.substrate.raw_cell_occupation);
-        assert!(changed.is_empty());
-        assert_eq!(sim.production.terrain_object_cells[&(0, 0)], stable_id);
-        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(0, 0), 0x1C);
     }
 
     #[test]
@@ -1318,4 +1178,124 @@ mod tests {
             TerrainObjectLifecycle::Destroyed
         );
     }
+}
+
+/// Receive against live Terrain maps. The recursion guard belongs to the
+/// outer damage operation; no persisted authority leaves ProductionState.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn receive_terrain_area_damage_with_scenario(
+    terrain_objects: &mut BTreeMap<u64, TerrainObjectState>,
+    terrain_object_cells: &BTreeMap<(u16, u16), u64>,
+    finalizing_terrain: &mut BTreeSet<u64>,
+    stable_id: u64,
+    cell: (u16, u16),
+    raw_damage: i32,
+    distance_leptons: i32,
+    warhead: &WarheadType,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    scenario_no_damage: bool,
+) -> TerrainAreaReceiveResult {
+    if finalizing_terrain.contains(&stable_id)
+        || terrain_object_cells.get(&cell) != Some(&stable_id)
+    {
+        return TerrainAreaReceiveResult::Ignored;
+    }
+
+    let Some(snapshot) = terrain_objects.get(&stable_id) else {
+        return TerrainAreaReceiveResult::Ignored;
+    };
+    if !snapshot.is_live() || snapshot.cell() != cell {
+        return TerrainAreaReceiveResult::Ignored;
+    }
+    let Some(terrain_type) =
+        rules.terrain_object_type_case_insensitive(interner.resolve(snapshot.type_ref))
+    else {
+        return TerrainAreaReceiveResult::Ignored;
+    };
+    if !warhead.wood || terrain_type.immune {
+        return TerrainAreaReceiveResult::Ignored;
+    }
+
+    let resolved_damage = damage::kernel::apply_warhead_damage(
+        raw_damage,
+        warhead.cell_spread_f64,
+        warhead.percent_at_max_f64,
+        &warhead.verses_f64,
+        damage::ArmorClass(armor_index(&terrain_type.armor) as u8),
+        distance_leptons,
+        scenario_no_damage,
+        rules.combat_damage.max_damage,
+    );
+    if resolved_damage == 0 {
+        return TerrainAreaReceiveResult::Ignored;
+    }
+
+    let terrain = terrain_objects
+        .get_mut(&stable_id)
+        .expect("captured Terrain receiver remains represented");
+    if resolved_damage < 0 {
+        terrain.health = terrain
+            .health
+            .wrapping_sub(resolved_damage)
+            .min(terrain.max_health);
+        return TerrainAreaReceiveResult::Damaged {
+            remaining: terrain.health,
+        };
+    }
+
+    let remaining = terrain.health.wrapping_sub(resolved_damage);
+    if remaining > 0 {
+        terrain.health = remaining;
+        return TerrainAreaReceiveResult::Damaged { remaining };
+    }
+
+    terrain.health = 0;
+    finalizing_terrain.insert(stable_id);
+    TerrainAreaReceiveResult::Lethal(TerrainLethalDamage {
+        stable_id,
+        cell,
+        spawns_tiberium: terrain_type.spawns_tiberium,
+    })
+}
+
+/// Finalize only after nested C4 receivers return, against the same live maps.
+pub(crate) fn finalize_terrain_lethal(
+    authority: TerrainAuthorityParts<'_>,
+    finalizing_terrain: &mut BTreeSet<u64>,
+    navigation_changed_cells: &mut Vec<(u16, u16)>,
+    lethal: TerrainLethalDamage,
+    resolved_terrain: Option<&mut ResolvedTerrainGrid>,
+) -> bool {
+    if !finalizing_terrain.contains(&lethal.stable_id) {
+        return false;
+    }
+    if authority.terrain_object_cells.get(&lethal.cell) != Some(&lethal.stable_id) {
+        finalizing_terrain.remove(&lethal.stable_id);
+        return false;
+    }
+
+    let removed_id = limbo_terrain_object_at_cell_parts(
+        TerrainAuthorityParts {
+            terrain_spawners: &mut *authority.terrain_spawners,
+            terrain_objects: &mut *authority.terrain_objects,
+            terrain_object_cells: &mut *authority.terrain_object_cells,
+            terrain_occupation_bits: &mut *authority.terrain_occupation_bits,
+            tiberium_spawning_terrain_cells: &mut *authority.tiberium_spawning_terrain_cells,
+            raw_occupation: &mut *authority.raw_occupation,
+        },
+        lethal.cell,
+        resolved_terrain,
+    );
+    let finalized = removed_id == Some(lethal.stable_id);
+    if finalized {
+        if let Some(terrain) = authority.terrain_objects.get_mut(&lethal.stable_id) {
+            terrain.lifecycle = TerrainObjectLifecycle::Destroyed;
+        }
+        if !navigation_changed_cells.contains(&lethal.cell) {
+            navigation_changed_cells.push(lethal.cell);
+        }
+    }
+    finalizing_terrain.remove(&lethal.stable_id);
+    finalized
 }

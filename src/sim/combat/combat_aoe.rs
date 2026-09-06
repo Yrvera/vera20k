@@ -3929,6 +3929,8 @@ mod tests {
             (5, 5),
             terrain_state.occupation_bits,
         );
+        sim.substrate.raw_cell_occupation.mark_ground(5, 5, 0x80);
+        sim.substrate.raw_cell_occupation.mark_deck(5, 5, 0xA5);
         crate::sim::terrain_object::mark_terrain_occupation(
             &mut sim.production,
             &terrain_state,
@@ -4003,10 +4005,18 @@ mod tests {
             "the outer Terrain finalizes once after the Wood-enabled C4 re-entry is guarded"
         );
         assert_eq!(
-            sim.substrate.raw_cell_occupation.ground_bits(5, 5) & terrain_state.occupation_bits,
+            sim.substrate.raw_cell_occupation.ground_bits(5, 5)
+                & crate::sim::terrain_object::terrain_raw_occupation_mask(
+                    terrain_state.occupation_bits
+                ),
             0,
             "Terrain-specific raw occupation clears even though the live Techno remains"
         );
+        assert_eq!(
+            sim.substrate.raw_cell_occupation.ground_bits(5, 5) & 0x80,
+            0x80
+        );
+        assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(5, 5), 0xA5);
         let resolved = sim
             .resolved_terrain
             .as_ref()
