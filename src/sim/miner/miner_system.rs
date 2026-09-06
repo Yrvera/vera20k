@@ -1287,6 +1287,17 @@ fn handle_harvest(
         let Some(resource_type) = reduction.resource_type else {
             return;
         };
+        // RESIDUAL (VERA-internal, gamemd equivalent UNCHECKED beyond the
+        // stock map data): native `StorageClass` (`UnitClass+0x33C`) keeps
+        // four per-`TiberiumType` slots and `Mission_Unload` drains them by
+        // `FindFirstNonEmptySlot` in index order 0..3, each slot valued by
+        // its own type's `Value=`; VERA folds every overlay family into
+        // `ResourceType::{Ore, Gem}` (`TiberiumTypeId` 0 / 1 values above).
+        // Trigger: a map placing TIB2/TIB3 (Vinifera/Aboreus) overlays —
+        // no stock skirmish map does. Effect: those bales are valued as
+        // type 0 (Riparius) and drain in the Ore slot, so the unload runs
+        // one 15-frame slot gate fewer than native. Frequency: zero on stock
+        // maps. Downstream: none for the stock ruleset.
         let value = match resource_type {
             ResourceType::Ore => config.ore_bale_value,
             ResourceType::Gem => config.gem_bale_value,
@@ -2212,11 +2223,11 @@ fn select_return_refinery(
 /// - narrow pass only (`wide != 1`, 0x004DEF02): `FUN_0065ADF0` on the
 ///   building with the miner as argument (0x004DEF09) — a free `Contacts[]`
 ///   slot (`+0xE4`, count `+0xE8`) or the miner already tracked. `+0xE8` is
-///   written only by the `RadioClass` ctor (0x0065A764, = 1) and destructor;
-///   no `BuildingClass` writer sets it from `NumberOfDocks=`. Rust derives the
-///   slot capacity from `NumberOfDocks` (VERA-internal, gamemd equivalent
-///   UNCHECKED beyond `+0xE8 == 1` at construction; stock refineries are
-///   `NumberOfDocks=1`, so the derivation is inert for stock play);
+///   1 from the `RadioClass` ctor (0x0065A764) and then set by
+///   `BuildingClass::Constructor` 0x0043BCBD..0x0043BCD0 to
+///   `max([Type+0x1780] NumberOfDocks, 1)` via `Set_Contact_Count`; Rust
+///   derives the slot capacity the same way (stock refineries are
+///   `NumberOfDocks=1`);
 /// - `MapClass::Can_Reach_Zone` from the miner's cell to the building's
 ///   `GetCoords` cell (skipped when `WhatAmI() == Aircraft(2)`, never a
 ///   miner) — see `refinery_zone_reachable`;
@@ -3002,26 +3013,59 @@ pub(crate) fn player_has_purifier(sim: &Simulation, rules: &RuleSet, owner: &str
     count_purifiers_for_owner(sim, rules, owner) > 0
 }
 
-/// Count alive Ore Purifier buildings owned by `owner` (case-insensitive).
+/// Count completed, alive Ore Purifier buildings owned by `owner`
+/// (case-insensitive) — the native `House+0x538C` counter.
 ///
 /// Used by the deposit-bonus formula in `phase_unloading` and by the Slave
 /// Miner deposit path. The bonus is `count × PurifierBonus × amount`, so
 /// every real purifier stacks the bonus linearly.
+///
+/// Native writers of `House+0x538C` (gamemd.exe, read 2026-09-06):
+/// - `BuildingClass::OnConstructionComplete` 0x0044636C..0x0044637C:
+///   `Type+0x16CC` (`OrePurifier=`) → `INC [House+0x538C]` — only when the
+///   build-up finishes, so a purifier still in its construction anim pays
+///   nothing;
+/// - `BuildingClass::ChangeOwner` 0x00448260: `DEC` on the old owner at
+///   0x00448AC2 and `INC` on the new owner at 0x004491EB (the same
+///   register-with-house tail that appends the building to the house's
+///   per-category vectors), so a captured purifier moves with the house;
+/// - `BuildingClass::Limbo` 0x00445925: `DEC` when the building leaves the
+///   map (sale end, destruction).
+///
+/// Rust: `building_up.is_some()` is the construction anim (native
+/// `BSTATE_CONSTRUCTION` before `OnConstructionComplete`), `dying` is the
+/// Limbo'd corpse; a selling building (`building_down`) still counts, as the
+/// native `DEC` only lands at Limbo.
 pub(crate) fn count_purifiers_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -> i32 {
     sim.substrate
         .entities
         .values()
         .filter(|e| {
-            // A Dying purifier corpse (sold/destroyed this tick) must not keep
-            // paying its deposit bonus until the end-of-tick drain.
-            !e.dying
-                && e.category == EntityCategory::Structure
+            counts_as_purifier(sim, rules, e)
                 && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
-                && sim
-                    .object_type(e.type_ref, rules)
-                    .is_some_and(|obj| obj.ore_purifier)
         })
         .count() as i32
+}
+
+/// The owner-independent half of the `House+0x538C` predicate: a completed,
+/// alive, on-map `OrePurifier=` structure. Shared by
+/// [`count_purifiers_for_owner`] and the per-tick economy shadow
+/// (`refresh_economy_shadow`) so both count the same buildings.
+pub(crate) fn counts_as_purifier(
+    sim: &Simulation,
+    rules: &RuleSet,
+    e: &crate::sim::game_entity::GameEntity,
+) -> bool {
+    // A Dying purifier corpse (sold/destroyed this tick) must not keep paying
+    // its deposit bonus until the end-of-tick drain; a limbo'd one already
+    // took the native Limbo `DEC`.
+    !e.dying
+        && !e.lifecycle.in_limbo
+        && e.building_up.is_none()
+        && e.category == EntityCategory::Structure
+        && sim
+            .object_type(e.type_ref, rules)
+            .is_some_and(|obj| obj.ore_purifier)
 }
 
 /// Effective purifier count used in the deposit bonus formula.

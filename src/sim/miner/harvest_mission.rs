@@ -40,16 +40,20 @@
 //! → `mission_assign_exact(Harvest)`, `Command::MinerReturn`) put it back.
 //!
 //! Dispatch gating residual: the host dispatches on Miner-component presence
-//! plus "the committed mission is not Guard", not strictly on
+//! plus "the committed mission is neither Guard nor Move", not strictly on
 //! `current == Harvest`. Guard is gated because the Stop command force-assigns
 //! it to a harvesting miner exactly where the retail IDLE event handler does,
-//! and declining it here is what makes Stop actually stop the miner. A Move or
-//! Attack retask still flips `current` away from Harvest while the legacy FSM
-//! keeps driving the behavior (waits out the player move, then resumes) — the
-//! pre-absorption behavior, kept because nothing returns a miner to Harvest
-//! when such an order completes, so the strict gate would retire it for good.
-//! The strict mission-id gate becomes exact once the creation/idle caller
-//! family (roadmap Track B1) commits missions at those points.
+//! and declining it here is what makes Stop actually stop the miner. Move is
+//! gated because a player Move runs the Foot Move handler (`FootClass::
+//! Mission_Move @ 0x004D4200`), whose arrival `Enter_Idle_Mode(0,1)` takes the
+//! harvester arm of `UnitClass::Enter_Idle_Mode @ 0x00738970` — Harvest, or
+//! Guard for a human whose miner stopped on non-ore land — modelled in
+//! `techno_ai/mission_handlers.rs::harvester_enter_idle_mode_evaluation`; the
+//! re-committed Harvest restarts this handler from state 0. An Attack retask
+//! still flips `current` away from Harvest while the legacy FSM keeps driving
+//! (pre-absorption behaviour, kept until the Attack arrival is modelled). The
+//! strict mission-id gate becomes exact once the creation caller family
+//! (roadmap Track B1) commits missions at those points.
 //!
 //! Depends on: `world::Simulation`, `miner::miner_system`.
 //! Must NOT depend on render/ui/sidebar/audio/net (sim invariant #1).
@@ -136,22 +140,26 @@ fn dispatch_harvest_for_object_with_resource_authority(
             return;
         }
         // The native dispatcher routes on the committed mission id, so a miner
-        // that is NOT on Harvest never reaches this handler. VERA cannot adopt
-        // that gate in full yet: no Rust path returns a miner to Harvest when a
-        // Move or Attack order completes (the native Move handler's arrival
-        // transition is unmodelled), so a strict `current == Harvest` gate would
-        // permanently retire any miner the player ever moved.
+        // that is NOT on Harvest never reaches this handler. VERA adopts that
+        // gate for the two ids it commits authoritatively:
+        // - Guard: the Stop command force-assigns it to a miner on Harvest or
+        //   Return, exactly where the retail IDLE event handler does, and the
+        //   Guard slot is a different handler (the harvester Guard override).
+        //   Declining it here is what makes Stop actually stop a miner.
+        // - Move: a player Move order runs the Foot Move handler; its arrival
+        //   `Enter_Idle_Mode(0,1)` (`FootClass::Mission_Move` 0x004D4242 →
+        //   `UnitClass::Enter_Idle_Mode @ 0x00738970` harvester arm) queues
+        //   Harvest — or Guard for a human miner parked on non-ore land — and
+        //   the promoted Harvest re-enters here at state 0.
         //
-        // What IS modelled is the one id VERA commits authoritatively as a
-        // harvest stop: the Stop command force-assigns Guard to a miner on
-        // Harvest or Return, exactly where the retail IDLE event handler does,
-        // and the Guard slot is a different handler. Declining Guard here is
-        // what makes Stop actually stop a miner instead of stalling it for a
-        // beat; the Guard cadence is then owned by the foot Guard arm.
-        //
-        // RESIDUAL: a miner retasked onto Move/Attack still resumes harvesting
-        // when that order finishes, which retail does not do.
-        if entity.mission.current().known() == Some(crate::sim::mission::MissionType::Guard) {
+        // RESIDUAL: a miner retasked onto Attack still resumes harvesting from
+        // its old cursor when that order finishes (the Attack arrival is not
+        // modelled); the strict `current == Harvest` gate waits on it.
+        if matches!(
+            entity.mission.current().known(),
+            Some(crate::sim::mission::MissionType::Guard)
+                | Some(crate::sim::mission::MissionType::Move)
+        ) {
             return;
         }
         // Native Mission_Dispatch gate: run the handler only when the

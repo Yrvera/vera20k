@@ -6752,6 +6752,71 @@ fn two_purifiers_stack_the_bonus_linearly() {
     );
 }
 
+/// `House+0x538C` is incremented only by `BuildingClass::OnConstructionComplete`
+/// (0x0044636C..0x0044637C), so a purifier still in its build-up anim pays no
+/// deposit bonus; once the build-up completes it pays. One purifier building
+/// up plus one completed ⇒ exactly +25% (count 1), not +50%.
+#[test]
+fn purifier_under_construction_pays_no_bonus_until_complete() {
+    use crate::sim::components::BuildingUp;
+
+    let mut sim = Simulation::new();
+    let rules = purifier_rules(25);
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    spawn_structure(&mut sim, 3, "GAPURI", 20, 20);
+    spawn_structure(&mut sim, 4, "GAPURI", 24, 20);
+    sim.substrate
+        .entities
+        .get_mut(4)
+        .expect("purifier 4")
+        .building_up = Some(BuildingUp {
+        elapsed_ticks: 0,
+        total_ticks: 1000,
+    });
+    assert_eq!(
+        super::miner_system::count_purifiers_for_owner(&sim, &rules, "Americans"),
+        1,
+        "a building-up purifier is not in House+0x538C yet"
+    );
+
+    let credits_before = credits_for_owner(&sim, "Americans");
+    {
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 100,
+        });
+        entity.mission.set_handler_state(MinerState::Dock.cursor());
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+    tick_miners_n(&mut sim, &rules, 200);
+    let delta = credits_for_owner(&sim, "Americans") - credits_before;
+    assert_eq!(
+        delta, 125,
+        "only the completed purifier pays: 100 + 25, got {delta}"
+    );
+
+    // Build-up complete ⇒ the second purifier is counted.
+    sim.substrate
+        .entities
+        .get_mut(4)
+        .expect("purifier 4")
+        .building_up = None;
+    assert_eq!(
+        super::miner_system::count_purifiers_for_owner(&sim, &rules, "Americans"),
+        2
+    );
+}
+
 /// AI player with `is_human=false` should receive the virtual-purifier
 /// bonus from `rules.general.ai_virtual_purifiers[house.difficulty]`. With the
 /// default `[4, 2, 0]` and per-house Hard difficulty (native index 0),
@@ -9439,4 +9504,393 @@ fn damaged_refinery_ore_only_unload_smokes_twice_without_special_anim() {
         "base SpecialAnim is never used as a fallback"
     );
     assert!(get_miner(&sim, miner_id).cargo.is_empty(), "cargo drained");
+}
+
+/// `BuildingClass::ReceiveDamage @ 0x00442230` result-4 arm → `UndockUnit @
+/// 0x004593A0` (0x004424EA): a refinery killed by damage while a miner is on
+/// the pad releases the docked miner THAT frame — the `+0x2E4` link and the
+/// contact go, the remaining cargo stays aboard (no deposit), and the miner is
+/// pushed off along the `0x47` `Force_Track`. Before this landed the miner
+/// only noticed at its next slot-drain gate.
+#[test]
+fn refinery_destroyed_by_damage_undocks_the_unloading_miner_same_tick() {
+    use crate::sim::combat::EntityDamageEvent;
+    use crate::sim::house_state::HouseState;
+
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n0=HARV\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n0=GAREFN\n\
+         [Warheads]\n0=KILLWH\n\
+         [HARV]\n\
+         Name=War Miner\nCost=1400\nStrength=600\nArmor=heavy\nSpeed=4\nROT=5\nSight=5\n\
+         TechLevel=1\nOwner=Americans\nHarvester=yes\nDock=GAREFN\n\
+         [GAREFN]\n\
+         Name=Ore Refinery\nCost=2000\nStrength=900\nArmor=wood\nTechLevel=1\n\
+         Owner=Americans\nFoundation=4x3\nRefinery=yes\n\
+         [KILLWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    );
+    let rules = RuleSet::from_ini(&ini).expect("refinery kill rules");
+
+    let mut sim = Simulation::new();
+    let owner = sim.interner.intern("Americans");
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, false, 0, 10));
+    sim.session.house_order = vec![owner];
+    sim.session.binary_frame = 40;
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 11, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    {
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..4 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        entity.mission.set_handler_state(MinerState::Dock.cursor());
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_active = true;
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+    sim.production.dock_reservations.link_on_pad(2, miner_id);
+    let credits_before = credits_for_owner(&sim, "Americans");
+
+    // Kill the refinery through the damage transaction (not a sale).
+    let warhead = sim.interner.intern("KILLWH");
+    let event = EntityDamageEvent::area(2, 5000, 0, miner_id, Some(owner), warhead);
+    sim.commit_noncombat_aoe_hits(&rules, None, &[event]);
+
+    assert!(
+        sim.substrate
+            .entities
+            .get(2)
+            .is_none_or(|refinery| refinery.dying || refinery.health.current == 0),
+        "the refinery died"
+    );
+    let miner_entity = sim
+        .substrate
+        .entities
+        .get(miner_id)
+        .expect("miner survives");
+    let miner = miner_entity.miner.as_ref().expect("miner component");
+    assert_eq!(miner.reserved_refinery, None, "+0x2E4 link cleared");
+    assert_eq!(miner.dock_phase, RefineryDockPhase::Approach);
+    assert!(!miner.unload_active, "no deposit continues");
+    assert_eq!(miner.cargo.len(), 4, "remaining cargo stays aboard");
+    assert!(
+        miner_entity.radio_contacts.is_empty(),
+        "contact released with the building"
+    );
+    assert!(
+        !sim.production.dock_reservations.has_contact(2, miner_id)
+            && !sim.production.dock_reservations.is_on_pad(2, miner_id)
+    );
+    assert!(
+        miner_entity.forced_drive_track.is_some(),
+        "UndockUnit Head_To(0x47) push-off track installed"
+    );
+    assert_eq!(
+        credits_for_owner(&sim, "Americans"),
+        credits_before,
+        "the cargo on the pad is not deposited"
+    );
+
+    // Nothing pays the bales later either: no refinery is left to dock at.
+    tick_miners_n(&mut sim, &rules, 60);
+    assert_eq!(credits_for_owner(&sim, "Americans"), credits_before);
+    assert_eq!(get_miner(&sim, miner_id).cargo.len(), 4);
+}
+
+/// One object-AI visit of `id` with the miner config wired (the Harvest
+/// dispatch needs it), rules present.
+fn visit_object_ai(sim: &mut Simulation, rules: &RuleSet, id: u64) {
+    let config = MinerConfig::default();
+    sim.session.binary_frame = sim.session.binary_frame.wrapping_add(1);
+    sim.object_ai_visit_one(
+        id,
+        Some(rules),
+        crate::sim::world::ObjectAiCtx {
+            miner_config: Some(&config),
+            ..crate::sim::world::ObjectAiCtx::default()
+        },
+    );
+}
+
+/// `FootClass::Mission_Move @ 0x004D4242` → `UnitClass::Enter_Idle_Mode @
+/// 0x00738970` harvester arm: a war miner whose player Move has finished
+/// (Move committed, NavCom clear, nothing queued) is put back on Harvest by
+/// its own arrival dispatch when it stopped on ore (`LandType == Tiberium`),
+/// and the promoted Harvest restarts the handler from state 0 (`+0xBC = 0`).
+#[test]
+fn player_move_arrival_returns_a_war_miner_to_harvest_on_ore() {
+    use crate::sim::mission::{MissionId, MissionType};
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
+    place_ore(&mut sim, 20, 20, 5);
+    // Mid-harvest cursor, then the player Move takes over (Command::Move's
+    // `queue_megamission_with_teardown(Move)` promoted).
+    let now = sim.session.binary_frame;
+    sim.mission_assign_exact(miner_id, MissionId::from_known(MissionType::Harvest), now)
+        .expect("assign Harvest");
+    sim.substrate
+        .entities
+        .get_mut(miner_id)
+        .unwrap()
+        .mission
+        .set_handler_state(MinerState::MoveToOre.cursor());
+    sim.mission_assign_exact(miner_id, MissionId::from_known(MissionType::Move), now)
+        .expect("assign Move");
+    let cursor_on_move = sim
+        .substrate
+        .entities
+        .get(miner_id)
+        .unwrap()
+        .mission
+        .handler_state();
+
+    // Arrival dispatch: the harvester arm queues Harvest (no RNG draw).
+    let rng_before = sim.scenario_rng.state();
+    visit_object_ai(&mut sim, &rules, miner_id);
+    let e = sim.substrate.entities.get(miner_id).unwrap();
+    assert_eq!(e.mission.current().known(), Some(MissionType::Move));
+    assert_eq!(
+        e.mission.queued().known(),
+        Some(MissionType::Harvest),
+        "Enter_Idle_Mode harvester arm commits Harvest on ore"
+    );
+    assert_eq!(
+        e.mission.handler_state(),
+        cursor_on_move,
+        "Harvest FSM declined the Move dispatch"
+    );
+    assert_eq!(sim.scenario_rng.state(), rng_before, "the arm draws no RNG");
+
+    // Next visit: Ready-to-Commence promotes Harvest with a zeroed cursor and
+    // the Harvest handler runs again from state 0.
+    visit_object_ai(&mut sim, &rules, miner_id);
+    let e = sim.substrate.entities.get(miner_id).unwrap();
+    assert_eq!(e.mission.current().known(), Some(MissionType::Harvest));
+    assert!(
+        e.miner.as_ref().unwrap().target_ore_cell.is_some()
+            || MinerState::from_cursor(e.mission.handler_state()).is_some(),
+        "the Harvest handler dispatched from state 0"
+    );
+}
+
+/// The same arm for a HUMAN house whose miner stopped on non-ore land
+/// (`CellClass+0xEC != 5`) selects Guard (5), not Harvest — and an AI house
+/// on the same cell selects Harvest.
+#[test]
+fn player_move_arrival_off_ore_parks_a_human_miner_on_guard_and_an_ai_miner_on_harvest() {
+    use crate::sim::house_state::HouseState;
+    use crate::sim::mission::{MissionId, MissionType};
+
+    for (is_human, expected) in [(true, MissionType::Guard), (false, MissionType::Harvest)] {
+        let mut sim = Simulation::new();
+        let rules = miner_rules();
+        let owner = sim.interner.intern("Americans");
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, is_human, 0, 10));
+        let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
+        // Ore elsewhere, none under the miner.
+        place_ore(&mut sim, 30, 30, 5);
+        let now = sim.session.binary_frame;
+        sim.mission_assign_exact(miner_id, MissionId::from_known(MissionType::Move), now)
+            .expect("assign Move");
+        visit_object_ai(&mut sim, &rules, miner_id);
+        let e = sim.substrate.entities.get(miner_id).unwrap();
+        assert_eq!(
+            e.mission.queued().known(),
+            Some(expected),
+            "human={is_human}: selector on non-ore land"
+        );
+    }
+}
+
+/// A 64x64 sim carrying the production `CellClass+0xEC` authority: a flat
+/// clear `ResolvedTerrainGrid` plus an `OverlayGrid` with one TIB01 patch on
+/// `cell`, folded into `land_type` by the same `recalc_overlay_passability`
+/// the map loader and every overlay mutation run. No `resource_nodes` exist,
+/// so the legacy fallback in `cell_land_type_is` cannot answer.
+fn sim_with_resolved_tiberium_cell(
+    registry: &crate::map::overlay_types::OverlayTypeRegistry,
+    cell: (u16, u16),
+) -> Simulation {
+    use crate::map::resolved_terrain::ResolvedTerrainGrid;
+    use crate::rules::terrain_rules::LandType;
+    use crate::sim::house_state::HouseState;
+
+    let tib01 = registry.id_for_name("TIB01").expect("TIB01");
+    let mut sim = Simulation::new();
+    let owner = sim.interner.intern("Americans");
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 0, 10));
+    let mut cells = Vec::with_capacity(64 * 64);
+    for ry in 0..64u16 {
+        for rx in 0..64u16 {
+            cells.push(crate::sim::deploy_tests::clear_terrain_cell(rx, ry));
+        }
+    }
+    let mut terrain = ResolvedTerrainGrid::from_cells(64, 64, cells);
+    let mut overlay = OverlayGrid::new(64, 64);
+    overlay.place_overlay(cell.0, cell.1, tib01, 3);
+    assert!(crate::sim::overlay_grid::recalc_overlay_passability(
+        &mut overlay,
+        &mut terrain,
+        registry,
+        cell.0,
+        cell.1,
+    ));
+    assert_eq!(
+        terrain.cell(cell.0, cell.1).unwrap().land_type,
+        LandType::Tiberium.as_index(),
+        "overlay recalc wrote LandType Tiberium (5)"
+    );
+    sim.resolved_terrain = Some(terrain);
+    sim.overlay_grid = Some(overlay);
+    assert!(sim.production.resource_nodes.is_empty());
+    sim
+}
+
+/// Assign Move (no destination) and run one arrival dispatch; returns the
+/// queued selector.
+fn move_arrival_selector(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    miner_id: u64,
+) -> Option<crate::sim::mission::MissionType> {
+    use crate::sim::mission::{MissionId, MissionType};
+
+    let now = sim.session.binary_frame;
+    sim.mission_assign_exact(miner_id, MissionId::from_known(MissionType::Move), now)
+        .expect("assign Move");
+    visit_object_ai(sim, rules, miner_id);
+    sim.substrate
+        .entities
+        .get(miner_id)
+        .unwrap()
+        .mission
+        .queued()
+        .known()
+}
+
+/// The production land-type path: with `resolved_terrain` present the arm
+/// reads `land_type` (not the resource-node fallback), and a human war miner
+/// arriving on a TIB01 overlay cell resumes Harvest.
+#[test]
+fn player_move_arrival_reads_tiberium_land_type_from_resolved_terrain() {
+    use crate::sim::mission::MissionType;
+
+    let (rules, registry) = miner_rules_with_tiberium();
+    let cell = (20u16, 20u16);
+    let mut sim = sim_with_resolved_tiberium_cell(&registry, cell);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, cell.0, cell.1);
+    assert_eq!(
+        move_arrival_selector(&mut sim, &rules, miner_id),
+        Some(MissionType::Harvest),
+        "resolved terrain LandType 5 selects Harvest"
+    );
+}
+
+/// The same cell after the production reducer fully removes its overlay:
+/// `reduce_tiberium`'s full-removal boundary runs `recalc_overlay_passability`
+/// synchronously, `land_type` drops back to Clear, and the human miner's next
+/// arrival parks on Guard.
+#[test]
+fn player_move_arrival_after_full_harvest_parks_a_human_miner_on_guard() {
+    use crate::rules::terrain_rules::LandType;
+    use crate::sim::mission::MissionType;
+    use crate::sim::tiberium::{ReduceTiberiumContext, reduce_tiberium};
+
+    let (rules, registry) = miner_rules_with_tiberium();
+    let cell = (20u16, 20u16);
+    let mut sim = sim_with_resolved_tiberium_cell(&registry, cell);
+    sim.production
+        .ore_growth_state
+        .reset_native_tiberium_classes(rules.tiberium_types.len(), 0);
+    let outcome = {
+        let mut ctx = ReduceTiberiumContext {
+            resource_nodes: &mut sim.production.resource_nodes,
+            overlay_grid: sim.overlay_grid.as_mut(),
+            ore_growth_state: &mut sim.production.ore_growth_state,
+            overlay_registry: Some(&registry),
+            tiberium_types: Some(&rules.tiberium_types),
+            resolved_terrain: sim.resolved_terrain.as_mut(),
+            source_object_cells: None,
+            live_objects: None,
+            rng: None,
+            binary_frame: 0,
+            spread_enabled: false,
+            radar_dirty_cells: None,
+            radar_dirty_generation: None,
+            tactical_dirty_cells: None,
+        };
+        reduce_tiberium(&mut ctx, cell, 4)
+    };
+    assert!(
+        outcome.fully_removed,
+        "density 3 against 4 is a full removal"
+    );
+    assert_eq!(
+        sim.overlay_grid
+            .as_ref()
+            .unwrap()
+            .cell(cell.0, cell.1)
+            .overlay_id,
+        None
+    );
+    assert_eq!(
+        sim.resolved_terrain
+            .as_ref()
+            .unwrap()
+            .cell(cell.0, cell.1)
+            .unwrap()
+            .land_type,
+        LandType::Clear.as_index(),
+        "full removal recalc restored the base land type"
+    );
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, cell.0, cell.1);
+    assert_eq!(
+        move_arrival_selector(&mut sim, &rules, miner_id),
+        Some(MissionType::Guard),
+        "LandType no longer 5 ⇒ a human miner parks on Guard"
+    );
+}
+
+/// `In_Radio_Contact` ⇒ the arm returns without assigning anything: a miner
+/// still linked to a refinery keeps Move and no mission is queued.
+#[test]
+fn player_move_arrival_in_radio_contact_assigns_nothing() {
+    use crate::sim::mission::{MissionId, MissionType};
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    place_ore(&mut sim, 20, 20, 5);
+    sim.substrate
+        .entities
+        .get_mut(miner_id)
+        .unwrap()
+        .radio_contacts
+        .insert(2);
+    let now = sim.session.binary_frame;
+    sim.mission_assign_exact(miner_id, MissionId::from_known(MissionType::Move), now)
+        .expect("assign Move");
+    visit_object_ai(&mut sim, &rules, miner_id);
+    let e = sim.substrate.entities.get(miner_id).unwrap();
+    assert_eq!(e.mission.current().known(), Some(MissionType::Move));
+    assert_eq!(e.mission.queued(), MissionId::NONE);
 }

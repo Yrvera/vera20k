@@ -251,7 +251,9 @@ fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
     id
 }
 
-fn clear_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+/// One flat clear-land cell (also reused by `miner_tests` for the resolved
+/// terrain `LandType` fixture).
+pub(crate) fn clear_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
     ResolvedTerrainCell {
         rx,
         ry,
@@ -1002,9 +1004,10 @@ fn base_plan_recalc_deploy_late_yard_unlimbo_failure_preserves_source_and_plan()
     assert!(!source.dying);
     assert!(!source.lifecycle.in_limbo);
     assert!(
-        sim.substrate.entities.values().all(|entity| {
-            sim.interner.resolve(entity.type_ref) != "GACNST" || entity.dying
-        }),
+        sim.substrate
+            .entities
+            .values()
+            .all(|entity| { sim.interner.resolve(entity.type_ref) != "GACNST" || entity.dying }),
         "the rejected yard constructor leaves no live target"
     );
     let house = &sim.houses[&owner];

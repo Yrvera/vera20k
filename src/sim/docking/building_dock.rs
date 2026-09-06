@@ -89,10 +89,12 @@ pub struct DockState {
     pub service_timer: u32,
     /// Consecutive ticks with insufficient credits (triggers exit after grace).
     pub no_funds_ticks: u32,
-    /// `Mission_Enter` dispatch cadence: the next `0x0E` probe is due when this
-    /// expires (`ftol([Enter] Rate*900) + RandomRanged(0,2)`, 0x004D946C).
-    /// Unarmed ⇒ due, so the first probe fires on the first tick after the
-    /// order, like the freshly assigned Enter mission's zero dispatch delay.
+    /// Mirror of the unit's `Mission_Enter` handler return
+    /// (`ftol([Enter] Rate*900) + RandomRanged(0,2)`, 0x004D946C): the last
+    /// probe's frame and delay. The GATE is the object's own mission dispatch
+    /// timer (`MissionCom`), written by `mission_enter_dispatch` from the
+    /// object-AI slot; this copy only keeps the dock FSM's per-unit cadence
+    /// readable. Kept in place so the snapshot layout is unchanged.
     #[serde(default)]
     pub enter_retry: MissionTimer,
 }
@@ -352,10 +354,121 @@ fn queue_mission(sim: &mut Simulation, id: u64, mission: MissionType) {
     );
 }
 
+/// `FootClass::Mission_Enter @ 0x004D9290` for a repair-depot waiter, run from
+/// the unit's OWN mission-dispatch slot (the Unit `Enter` arm of the object-AI
+/// shell) so the epilogue draw lands where native draws it: inside this
+/// unit's `TechnoClass::AI` visit, interleaved in object order with every
+/// other object's dispatch draws — not as a batch after production.
+///
+/// Native body, every dispatch:
+/// - `Transmit(0x0E)` to `Contacts[0]` / the archive target (0x004D929F);
+///   reply `1` (or `+0x418`) keeps the unit in Enter, the NavCom drives it;
+///   any other reply ⇒ `Mark(3)` + `Enter_Idle_Mode(0,1)` (0x004D92D0,
+///   0x004D92E2), which is the "repaired ⇒ 10" exit;
+/// - no contact and no archive target ⇒ `Enter_Idle_Mode` (0x004D945C);
+/// - then, on EVERY path, `ftol([Enter] Rate*900)` followed by ONE
+///   `RandomRanged(0, 2)` (0x004D946C..0x004D9497, Scenario stream) — the
+///   handler return. So a dispatch that leaves Enter still draws.
+///
+/// Returns that handler delay; `DockState::enter_retry` mirrors it so the
+/// dock FSM's readers keep a per-unit cadence view. The pad-side servicing
+/// and release stay in [`tick_building_docks`] (native: the building's
+/// `MissionRepairAndProduce` 0x0044B780 repair tick), untouched here.
+pub(crate) fn mission_enter_dispatch(sim: &mut Simulation, rules: &RuleSet, id: u64) -> i32 {
+    let now = sim.session.binary_frame;
+    let Some((dock_building_id, phase, hp, max_hp, owner)) =
+        sim.substrate.entities.get(id).and_then(|unit| {
+            let ds = unit.dock_state.as_ref()?;
+            Some((
+                ds.dock_building_id,
+                ds.phase,
+                unit.health.current,
+                unit.health.max,
+                unit.owner,
+            ))
+        })
+    else {
+        return 1;
+    };
+    if matches!(phase, DockPhase::Servicing | DockPhase::ExitDock) {
+        // On the pad the unit natively sits on the queued Sleep the building
+        // assigned it; VERA keeps Enter as the representation and dispatches
+        // it as a no-draw one-frame return (VERA-internal, the base
+        // `Mission_Sleep` return value UNCHECKED). No probe, no draw.
+        return 1;
+    }
+
+    // Depot still a valid probe target (alive, own house, UnitRepair)?
+    let depot_capacity = sim
+        .substrate
+        .entities
+        .get(dock_building_id)
+        .filter(|depot| depot.health.current > 0 && !depot.dying && depot.owner == owner)
+        .and_then(|depot| sim.object_type(depot.type_ref, rules))
+        .filter(|obj| obj.unit_repair)
+        .map(|obj| usize::from(obj.number_of_docks.max(1)));
+
+    if let Some(dock_capacity) = depot_capacity {
+        let linked = sim
+            .substrate
+            .entities
+            .get(id)
+            .is_some_and(|unit| unit.radio_contacts.contains(dock_building_id));
+        if linked && hp >= max_hp {
+            // 0x0043C824..C842: linked sender whose 0x22 answers 10 (ratio >=
+            // 1.0) gets 10 back; Mission_Enter 0x004D92D0 then BREAKs and
+            // calls Enter_Idle_Mode (Guard for a plain unit, 0x00738970).
+            // The unit leaves Enter; the epilogue draw below still happens.
+            break_depot_contact(sim, id, dock_building_id);
+            queue_mission(sim, id, MissionType::Guard);
+            if let Some(unit) = sim.substrate.entities.get_mut(id) {
+                unit.dock_state = None;
+                unit.movement_target = None;
+            }
+        } else if !linked {
+            // 0x0043C8A4..C8C3: not a contact and a slot is free or own ⇒ the
+            // building HELLOs the sender. VERA sends the HELLO unit→depot; the
+            // linked end state (both slots) is identical. Capacity is the
+            // ctor's max(NumberOfDocks, 1) (0x0043BCBD..BCD0), sized grow-only
+            // here rather than at spawn.
+            if let Some(depot) = sim.substrate.entities.get_mut(dock_building_id) {
+                depot.radio_contacts.set_capacity(dock_capacity);
+            }
+            let _ = radio::transmit(
+                sim,
+                id,
+                dock_building_id,
+                RadioMessage::Hello,
+                RadioPayload::default(),
+            );
+        }
+    }
+    // Depot gone: native has no contact and no archive target ⇒
+    // Enter_Idle_Mode; `tick_building_docks` clears the dock state this
+    // frame. The epilogue draw is unconditional either way.
+
+    // Epilogue: ftol(Rate*900) + RandomRanged(0,2), every dispatch.
+    let mut timer = MissionTimer::default();
+    arm_enter_retry(sim, rules, &mut timer);
+    if let Some(ds) = sim
+        .substrate
+        .entities
+        .get_mut(id)
+        .and_then(|unit| unit.dock_state.as_mut())
+    {
+        ds.enter_retry = timer;
+    }
+    debug_assert_eq!(timer.start_frame, now);
+    i32::try_from(timer.duration).unwrap_or(i32::MAX)
+}
+
 /// Advance building dock state machines for all entities with `dock_state`.
 ///
 /// Called once per tick from `advance_tick()`, after `tick_repairs()`.
-/// Uses the two-phase snapshot pattern to avoid borrow conflicts.
+/// Uses the two-phase snapshot pattern to avoid borrow conflicts. The
+/// waiter's `0x0E` probe and its epilogue draw are NOT here — they run in the
+/// unit's own dispatch slot ([`mission_enter_dispatch`]); this pass only
+/// consumes the resulting link state and owns the pad-side service/release.
 pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet, path_grid: Option<&PathGrid>) {
     struct DockSnapshot {
         id: u64,
@@ -370,7 +483,6 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet, path_grid: Opt
         phase: DockPhase,
         service_timer: u32,
         no_funds_ticks: u32,
-        enter_retry: MissionTimer,
     }
 
     let snapshots: Vec<DockSnapshot> = sim
@@ -392,7 +504,6 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet, path_grid: Opt
                 phase: ds.phase,
                 service_timer: ds.service_timer,
                 no_funds_ticks: ds.no_funds_ticks,
-                enter_retry: ds.enter_retry,
             })
         })
         .collect();
@@ -406,7 +517,6 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet, path_grid: Opt
         new_phase: Option<DockPhase>,
         new_timer: Option<u32>,
         new_no_funds: Option<u32>,
-        new_enter_retry: Option<MissionTimer>,
         heal_amount: u16,
         deduct_credits: i32,
         clear_dock: bool,
@@ -421,7 +531,6 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet, path_grid: Opt
             new_phase: None,
             new_timer: None,
             new_no_funds: None,
-            new_enter_retry: None,
             heal_amount: 0,
             deduct_credits: 0,
             clear_dock: false,
@@ -473,51 +582,14 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet, path_grid: Opt
 
         match snap.phase {
             DockPhase::Approach | DockPhase::WaitForDock | DockPhase::EnterDock => {
-                let mut linked = sim
+                // The 0x0E probe (and its draw) already ran in this unit's
+                // own dispatch slot; only the resulting link is read here.
+                let linked = sim
                     .substrate
                     .entities
                     .get(snap.id)
                     .is_some_and(|unit| unit.radio_contacts.contains(snap.dock_building_id));
-
-                // Mission_Enter dispatch: one 0x0E probe per cadence window.
-                if snap.enter_retry.due(sim.session.binary_frame) {
-                    if linked && snap.hp >= snap.max_hp {
-                        // 0x0043C824..C842: linked sender whose 0x22 answers 10
-                        // (ratio >= 1.0) gets 10 back; Mission_Enter 0x004D92D0
-                        // then BREAKs and calls Enter_Idle_Mode (Guard for a
-                        // plain unit, 0x00738970). No re-arm — the unit leaves
-                        // the Enter mission.
-                        break_depot_contact(sim, snap.id, snap.dock_building_id);
-                        queue_mission(sim, snap.id, MissionType::Guard);
-                        m.clear_dock = true;
-                        m.clear_movement = true;
-                        mutations.push(m);
-                        continue;
-                    }
-                    if !linked {
-                        // 0x0043C8A4..C8C3: not a contact and a slot is free or
-                        // own ⇒ the building HELLOs the sender. VERA sends the
-                        // HELLO unit→depot; the linked end state (both slots)
-                        // is identical. Capacity is the ctor's
-                        // max(NumberOfDocks, 1) (0x0043BCBD..BCD0), sized
-                        // grow-only here rather than at spawn.
-                        if let Some(depot) = sim.substrate.entities.get_mut(snap.dock_building_id) {
-                            depot.radio_contacts.set_capacity(dock_capacity);
-                        }
-                        let reply = radio::transmit(
-                            sim,
-                            snap.id,
-                            snap.dock_building_id,
-                            RadioMessage::Hello,
-                            RadioPayload::default(),
-                        );
-                        linked = reply == RadioResponse::Roger;
-                    }
-                    // Epilogue: ftol(Rate*900) + RandomRanged(0,2), every dispatch.
-                    let mut timer = snap.enter_retry;
-                    arm_enter_retry(sim, rules, &mut timer);
-                    m.new_enter_retry = Some(timer);
-                }
+                let _ = dock_capacity;
 
                 if linked {
                     if dist == 0 {
@@ -639,9 +711,6 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet, path_grid: Opt
             }
             if let Some(nf) = m.new_no_funds {
                 ds.no_funds_ticks = nf;
-            }
-            if let Some(retry) = m.new_enter_retry {
-                ds.enter_retry = retry;
             }
         }
 
@@ -963,8 +1032,12 @@ mod tests {
         )
     }
 
+    /// One frame in production order: every unit's own object-AI visit (the
+    /// Enter dispatch with its probe and draw), then the dock pass, then
+    /// movement.
     fn tick(sim: &mut Simulation, rules: &RuleSet, grid: &PathGrid) {
         sim.session.binary_frame = sim.session.binary_frame.wrapping_add(1);
+        visit_units(sim, rules);
         tick_building_docks(sim, rules, Some(grid));
         crate::sim::movement::tick_movement(
             &mut sim.substrate.entities,
@@ -972,6 +1045,26 @@ mod tests {
             &mut sim.pending_lifecycle_requests,
         );
         sim.session.tick += 1;
+    }
+
+    /// The object-AI pass restricted to units, in live-object (stable id)
+    /// order — the slot native `Mission_Enter` dispatches from.
+    fn visit_units(sim: &mut Simulation, rules: &RuleSet) {
+        let units: Vec<u64> = sim
+            .substrate
+            .entities
+            .keys_sorted()
+            .into_iter()
+            .filter(|&id| {
+                sim.substrate
+                    .entities
+                    .get(id)
+                    .is_some_and(|e| e.category == EntityCategory::Unit)
+            })
+            .collect();
+        for id in units {
+            sim.object_ai_visit_one(id, Some(rules), crate::sim::world::ObjectAiCtx::default());
+        }
     }
 
     fn linked(sim: &Simulation, tank: u64) -> bool {
@@ -1081,6 +1174,61 @@ mod tests {
         );
     }
 
+    /// The waiter's `Mission_Enter` epilogue draw sits in the unit's OWN
+    /// object-AI slot, interleaved in live-object order with other objects'
+    /// dispatch draws: visiting waiter 1 draws exactly one `RandomRanged(0,2)`,
+    /// visiting the Guard tank 2 between the waiters draws its own Guard
+    /// cadence jitter, visiting waiter 3 draws one more `(0,2)`, and the
+    /// post-production dock pass draws nothing at all.
+    #[test]
+    fn waiter_probe_draw_sits_in_the_units_own_ai_slot_in_object_order() {
+        let (mut sim, rules, grid) = setup(3);
+        assert!(order_repair(&mut sim, &rules, &grid, 1));
+        assert!(order_repair(&mut sim, &rules, &grid, 3));
+        // Tank 2 idles on Guard with a due dispatch timer.
+        let now = sim.session.binary_frame;
+        sim.mission_assign_exact(2, MissionId::from_known(MissionType::Guard), now)
+            .expect("assign Guard");
+        sim.session.binary_frame += 1;
+        let ctx = crate::sim::world::ObjectAiCtx::default;
+
+        let mut shadow = sim.clone_scenario_rng();
+        sim.object_ai_visit_one(1, Some(&rules), ctx());
+        shadow.next_range_u32_inclusive(0, 2);
+        assert_eq!(
+            sim.scenario_rng.state(),
+            shadow.state(),
+            "waiter 1: exactly one (0,2) draw inside its own AI slot"
+        );
+
+        let before_guard = sim.scenario_rng.state();
+        sim.object_ai_visit_one(2, Some(&rules), ctx());
+        assert_ne!(
+            sim.scenario_rng.state(),
+            before_guard,
+            "the Guard tank's dispatch draws between the two waiters"
+        );
+
+        let mut shadow = sim.clone_scenario_rng();
+        sim.object_ai_visit_one(3, Some(&rules), ctx());
+        shadow.next_range_u32_inclusive(0, 2);
+        assert_eq!(
+            sim.scenario_rng.state(),
+            shadow.state(),
+            "waiter 3: one (0,2) draw after the Guard tank's"
+        );
+
+        let after_ai = sim.scenario_rng.state();
+        tick_building_docks(&mut sim, &rules, Some(&grid));
+        assert_eq!(
+            sim.scenario_rng.state(),
+            after_ai,
+            "the post-production dock pass draws nothing"
+        );
+        assert!(linked(&sim, 1), "first prober holds the slot");
+        assert!(!linked(&sim, 3));
+    }
+
     /// Admission follows whichever waiter's Enter timer fires first after the
     /// pad frees, not arrival order: unit 3's timer is set to fire before
     /// unit 2's, so 3 docks next.
@@ -1103,20 +1251,13 @@ mod tests {
         assert!(!linked(&sim, 1));
         assert_eq!(sim.substrate.entities.get(1).unwrap().health.current, 300);
         assert!(!linked(&sim, 2) && !linked(&sim, 3));
-        // Force the re-probe order: 3 fires before 2.
+        // Force the re-probe order: 3's Enter dispatch timer fires before
+        // 2's (the probe runs from the unit's own mission dispatch slot).
         {
             let e2 = sim.substrate.entities.get_mut(2).unwrap();
-            e2.dock_state
-                .as_mut()
-                .unwrap()
-                .enter_retry
-                .arm(released_at, 10);
+            e2.mission.write_dispatch_epilogue(released_at as i32, 10);
             let e3 = sim.substrate.entities.get_mut(3).unwrap();
-            e3.dock_state
-                .as_mut()
-                .unwrap()
-                .enter_retry
-                .arm(released_at, 3);
+            e3.mission.write_dispatch_epilogue(released_at as i32, 3);
         }
         for _ in 0..5 {
             tick(&mut sim, &rules, &grid);
