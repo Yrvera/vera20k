@@ -29,6 +29,7 @@ pub mod cloak_disguise;
 pub mod command;
 pub mod components;
 pub mod crates; // scenario-start crate placement (Post_Map_Init step 3)
+pub mod credit_income; // oil-derrick ProduceCash + Floating Disc money drain (object-loop money)
 pub mod economy; // per-house wallet/storage/statistics value-type (production+economy substrate)
 pub mod entity_store;
 pub mod game_entity;

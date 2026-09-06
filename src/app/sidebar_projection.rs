@@ -10,6 +10,14 @@ use crate::sidebar::SidebarView;
 use crate::sim::intern::InternedId;
 use crate::sim::world::TickLane;
 
+/// One changed `CreditsClass::AI` step: the `animating(+0xA)` latch plus the
+/// `counting_up(+0x9)` direction that `CreditsClass::Draw @ 0x004A250D` reads
+/// to pick `CreditTicks[0]` (up) or `[1]` (down).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CreditTick {
+    pub(crate) counting_up: bool,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct SidebarProjectionState {
     displayed_credits: HashMap<String, i32>,
@@ -68,19 +76,24 @@ impl SidebarProjectionState {
     /// Advance one native CreditsClass AI step for an already observed owner.
     /// A newly observed owner starts at the actual balance, matching the former
     /// first-view behavior without making a view read mutate state.
-    pub(crate) fn advance_credits(&mut self, owner: &str, actual: i32) {
+    ///
+    /// Returns the step's [`CreditTick`]: `Some(CreditTick { counting_up })`
+    /// when the displayed value changed (native sets `animating(+0xA) = 1` and
+    /// `counting_up(+0x9) = step > 0` at `0x004A2740..0x004A2751` only on a
+    /// changed step), `None` otherwise.
+    pub(crate) fn advance_credits(&mut self, owner: &str, actual: i32) -> Option<CreditTick> {
         use std::collections::hash_map::Entry;
 
         let mut entry = match self.displayed_credits.entry(owner.to_string()) {
             Entry::Vacant(entry) => {
                 entry.insert(actual);
-                return;
+                return None;
             }
             Entry::Occupied(entry) => entry,
         };
         let displayed = entry.get_mut();
         if *displayed == actual {
-            return;
+            return None;
         }
 
         // gamemd `CreditsClass::AI / FUN_004A2600 @ 0x004A2600`:
@@ -88,11 +101,14 @@ impl SidebarProjectionState {
         // does not delay this call's step (SIDEBAR_SYSTEM_GHIDRA_REPORT §30).
         let difference = (i64::from(actual) - i64::from(*displayed)).unsigned_abs();
         let step = (difference / 8).clamp(1, 143) as i32;
-        if actual > *displayed {
+        let before = *displayed;
+        let counting_up = actual > *displayed;
+        if counting_up {
             *displayed = displayed.saturating_add(step).min(actual);
         } else {
             *displayed = displayed.saturating_sub(step).max(actual);
         }
+        (*displayed != before).then_some(CreditTick { counting_up })
     }
 
     #[cfg(test)]
@@ -103,6 +119,20 @@ impl SidebarProjectionState {
 
 pub(crate) fn credits_advance_for_frame(frame_committed: bool, tick_lane: TickLane) -> bool {
     frame_committed && tick_lane == TickLane::Ordinary
+}
+
+/// The `[AudioVisual] CreditTicks` cue for one changed step, or `None` when
+/// the list holds fewer than two names (`CreditsClass::Draw @ 0x004A2505`:
+/// `CMP [Rules+0x6dc],2 / JL skip`). Index 0 while counting up, 1 while
+/// counting down (`0x004A2520`/`0x004A252A`).
+pub(crate) fn credit_tick_sound<'a>(
+    credit_ticks: &'a [String],
+    tick: CreditTick,
+) -> Option<&'a str> {
+    if credit_ticks.len() < 2 {
+        return None;
+    }
+    Some(credit_ticks[usize::from(!tick.counting_up)].as_str())
 }
 
 #[cfg(test)]
@@ -218,6 +248,40 @@ mod tests {
         clamped.displayed_credits_or_seed("Soviets", 10);
         clamped.advance_credits("Soviets", 11);
         assert_eq!(clamped.displayed_credits_for_test("Soviets"), Some(11));
+    }
+
+    /// GSI-09.01 §2.22: `CreditsClass::AI` raises `animating`/`counting_up`
+    /// only on a step that changed the displayed value; `Draw` then plays
+    /// `CreditTicks[0]` (up) / `[1]` (down) once per such step, and nothing on
+    /// a settled counter, on the first observation, or with a short list.
+    #[test]
+    fn credit_tick_up_down_and_no_change() {
+        let ticks = vec!["CreditUp".to_string(), "CreditDown".to_string()];
+        let mut projection = SidebarProjectionState::default();
+        // First observation seeds silently.
+        assert_eq!(projection.advance_credits("Americans", 100), None);
+        // Counting up.
+        let up = projection.advance_credits("Americans", 900);
+        assert_eq!(up, Some(CreditTick { counting_up: true }));
+        assert_eq!(credit_tick_sound(&ticks, up.unwrap()), Some("CreditUp"));
+        // Counting down.
+        let down = projection.advance_credits("Americans", 0);
+        assert_eq!(down, Some(CreditTick { counting_up: false }));
+        assert_eq!(credit_tick_sound(&ticks, down.unwrap()), Some("CreditDown"));
+        // Settle, then no change → no tick.
+        while projection.advance_credits("Americans", 0).is_some() {}
+        assert_eq!(projection.displayed_credits_for_test("Americans"), Some(0));
+        assert_eq!(projection.advance_credits("Americans", 0), None);
+        // A list shorter than two names never plays.
+        let short = vec!["CreditUp".to_string()];
+        assert_eq!(
+            credit_tick_sound(&short, CreditTick { counting_up: true }),
+            None
+        );
+        assert_eq!(
+            credit_tick_sound(&[], CreditTick { counting_up: false }),
+            None
+        );
     }
 
     /// Compose the production seam: credits step only when the runtime

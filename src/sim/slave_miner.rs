@@ -338,7 +338,32 @@ fn handle_slave_return(sim: &Simulation, snap: &mut SlaveSnapshot) {
     // Movement handled by locomotor system.
 }
 
-/// Slave depositing cargo at master — credits awarded immediately per bale.
+/// Slave depositing cargo at master — the whole cargo is credited in one
+/// visit, one call per non-empty storage slot.
+///
+/// gamemd: `SlaveManagerClass::AI_Update @ 0x006AFBB2..0x006AFBD2` (slave cell
+/// == the return cell, slave `+0x5A4 == 0`) calls
+/// `BuildingClass__DepositOreFromStorage @ 0x00522D50` with `ECX = the slave`
+/// and the master building as its stack argument. That body walks the
+/// SLAVE's own `StorageClass` (`LEA EBP,[ECX+0x33c]` at `0x00522D55`) slot by
+/// slot (`FindFirstNonEmptySlot @ 0x006C9820`), and per slot with the MASTER's
+/// owner (`[building+0x21C]`, `0x00522D75`):
+///
+/// ```text
+/// purifiers = owner+0x538C (+ AIVirtualPurifiers[owner+0x184] when
+///             owner+0x1EC == 0 and g_GameMode != 0)        // 0x00522D7B..0x00522DAE
+/// amount    = GetAmount(slot)                              // whole slot, float
+/// bonus_f32 = (float)purifiers * PurifierBonus * amount    // FILD/FMUL/FMUL/FSTP, 0x00522DCD..0x00522DE3
+/// removed   = RemoveAmount(amount, slot)
+/// if removed > 0 { Add_Tiberium_Credits(removed, slot); if bonus > 0 { Add_Tiberium_Credits(bonus, slot) } }
+/// ```
+///
+/// `Add_Tiberium_Credits @ 0x004F9610` is one `ftol(Value × IncomeMult ×
+/// amount + credits)` per call, so the purifier bonus truncates ONCE over
+/// the whole slot (Medium-AI Yuri, 4 ore bales: `trunc(0.5 × 4 × 25) = 50`,
+/// not `4 × trunc(12.5) = 48`). The float32 rounding of `bonus_f32` is exact
+/// for every stock input (scan §2.5 bound); modded fractional
+/// `PurifierBonus`/`IncomeMult` may differ by 1 credit from this integer fold.
 fn handle_slave_deposit(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -350,44 +375,63 @@ fn handle_slave_deposit(
         return;
     }
 
-    // Pop one bale per tick (slaves deposit faster than refinery unload). amount = 1 bale.
-    let bale: CargoBale = snap.harvester.cargo.remove(0);
-    let value: i32 = i32::from(bale.value);
-
-    let owner_str = sim.interner.resolve(snap.owner).to_string();
-    // P7: per-country IncomeMult (single truncation, 1.0/identity on stock). The base
-    // credit + the HarvestedCredits stat (1 bale × 5) accrue first.
+    // The money goes to the MASTER building's owner (`param_1[0x87]`), not
+    // the slave's; both are the same house in every stock path.
+    let master_owner = sim
+        .substrate
+        .entities
+        .get(snap.harvester.master_id)
+        .map_or(snap.owner, |master| master.owner);
+    let owner_str = sim.interner.resolve(master_owner).to_string();
     let income_ppm = income_ppm_for_owner(&sim.houses, &sim.interner, rules, &owner_str);
-    let base_credits = apply_income_mult(value, income_ppm);
-
-    // Ore Purifier bonus stacks per real purifier owned by the slave's owner; non-human
-    // houses also receive the AI virtual-purifier bonus. Single-truncation credit + stat
-    // (the shared economy helpers), amount = 1 bale.
     let purifier_count = effective_purifier_count(sim, rules, &owner_str);
     let bonus_ppm = rules.general.purifier_bonus_ppm;
-    let bonus_credits =
-        crate::sim::economy::purifier_bonus_credits(value, purifier_count, bonus_ppm, income_ppm);
 
-    {
-        let credits: &mut i32 = credits_entry_for_owner(sim, &owner_str);
-        *credits = credits.saturating_add(base_credits.saturating_add(bonus_credits));
-    }
-    // HarvestedCredits stat (statistics-only): base 1 bale × 5, plus the single-truncation
-    // bonus term trunc(count × 0.25 × 1 × 5).
-    if let Some(h) = house_state_for_owner_mut(&mut sim.houses, &owner_str, &sim.interner) {
-        h.economy.add_harvested(1);
-        h.economy
-            .add_harvested_raw(crate::sim::economy::purifier_bonus_harvested(
-                1,
-                purifier_count,
-                bonus_ppm,
-            ));
+    // Slot order: `FindFirstNonEmptySlot` walks slots 0..3 ascending. VERA's
+    // two resource kinds map to Riparius (ore, slot 0) and Cruentus (gems,
+    // slot 1) — the harvester deposit path uses the same order.
+    let cargo: Vec<CargoBale> = std::mem::take(&mut snap.harvester.cargo);
+    for slot_kind in [
+        crate::sim::miner::ResourceType::Ore,
+        crate::sim::miner::ResourceType::Gem,
+    ] {
+        let bales: Vec<&CargoBale> = cargo
+            .iter()
+            .filter(|bale| bale.resource_type == slot_kind)
+            .collect();
+        if bales.is_empty() {
+            continue;
+        }
+        let bale_count = bales.len() as i32;
+        let slot_value: i32 = bales.iter().map(|bale| i32::from(bale.value)).sum();
+
+        // First `Add_Tiberium_Credits(removed, slot)`: the whole slot, one ftol.
+        let base_credits = apply_income_mult(slot_value, income_ppm);
+        // Second call, `bonus > 0` only: one ftol over the whole slot.
+        let bonus_credits = crate::sim::economy::purifier_bonus_credits(
+            slot_value,
+            purifier_count,
+            bonus_ppm,
+            income_ppm,
+        );
+        {
+            let credits: &mut i32 = credits_entry_for_owner(sim, &owner_str);
+            *credits = credits.saturating_add(base_credits.saturating_add(bonus_credits));
+        }
+        // Score `+0x54E8` term (`amount × 5.0`) per call, statistics only.
+        if let Some(h) = house_state_for_owner_mut(&mut sim.houses, &owner_str, &sim.interner) {
+            h.economy.add_harvested(bale_count);
+            h.economy
+                .add_harvested_raw(crate::sim::economy::purifier_bonus_harvested(
+                    bale_count,
+                    purifier_count,
+                    bonus_ppm,
+                ));
+        }
     }
 
-    // Keep depositing until empty. Unload tick interval for slaves is instant
-    // (one bale per tick) since HarvesterDumpRate doesn't apply to slaves.
-    // After empty, we'll transition to SearchOre next tick.
-    let _ = config; // config available for future tuning
+    // Storage is empty after the one visit; the next visit re-scans.
+    let _ = config;
 }
 
 /// Slave idle — periodically re-scan for ore.
@@ -940,6 +984,78 @@ mod tests {
                 .expect("slave remains live");
             assert_eq!(slave.slave_harvester.as_ref().unwrap().master_id, smin);
         }
+    }
+
+    /// GSI-09.01 §2.6: `BuildingClass__DepositOreFromStorage @ 0x00522D50`
+    /// drains the slave's whole slot in one visit with ONE truncation of the
+    /// purifier bonus. Medium-AI Yuri (`AIVirtualPurifiers[1] = 2`, bonus
+    /// `.25`) returning 4 ore bales: base 100 + bonus `trunc(2 × 0.25 × 100)
+    /// = 50` in a single call (the per-bale path paid `4 × trunc(12.5) = 48`
+    /// over four ticks).
+    #[test]
+    fn slave_deposit_credits_the_whole_slot_in_one_call() {
+        use crate::sim::house_state::HouseState;
+        let rules = {
+            use crate::rules::ini_parser::IniFile;
+            let ini_str: &str = "\
+[InfantryTypes]\n1=SLAV\n\
+[VehicleTypes]\n1=SMIN\n\
+[BuildingTypes]\n1=YAREFN\n\
+[SLAV]\nStrength=125\nSpeed=3\nSlaved=yes\nStorage=4\nHarvestRate=150\n\
+[SMIN]\nStrength=2000\nSpeed=3\nEnslaves=SLAV\nSlavesNumber=5\nDeploysInto=YAREFN\nResourceGatherer=yes\nResourceDestination=yes\n\
+[YAREFN]\nStrength=2000\nEnslaves=SLAV\nSlavesNumber=5\nUndeploysInto=SMIN\nFoundation=3x3\n\
+[General]\nPurifierBonus=.25\nAIVirtualPurifiers=4,2,0\n\
+";
+            RuleSet::from_ini(&IniFile::from_str(ini_str)).expect("rules parse")
+        };
+        let mut sim = Simulation::with_seed(0x51A7_E002);
+        let yuri = sim.interner.intern("YuriCountry");
+        let mut house = HouseState::new(yuri, 2, None, false, 0, 10);
+        house.difficulty = crate::sim::house_state::HouseDifficulty::Normal;
+        sim.houses.insert(yuri, house);
+        let heights = std::collections::BTreeMap::new();
+        let master = sim
+            .spawn_object("YAREFN", "YuriCountry", 10, 10, 0, &rules, &heights)
+            .expect("YAREFN spawns");
+        let slave = sim
+            .spawn_object("SLAV", "YuriCountry", 12, 12, 0, &rules, &heights)
+            .expect("SLAV spawns");
+        let mut harvester = SlaveHarvester::new(master, 4);
+        for _ in 0..4 {
+            harvester.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        harvester.state = SlaveHarvestState::Deposit;
+        let mut snap = SlaveSnapshot {
+            entity_id: slave,
+            owner: yuri,
+            rx: 12,
+            ry: 12,
+            harvester,
+        };
+        let config = MinerConfig::default();
+
+        handle_slave_deposit(&mut sim, &rules, &config, &mut snap);
+
+        assert_eq!(
+            sim.houses[&yuri].credits, 150,
+            "100 base + 50 bonus, one call"
+        );
+        assert!(
+            snap.harvester.cargo.is_empty(),
+            "the whole slot drained at once"
+        );
+        assert_eq!(
+            sim.houses[&yuri].economy.harvested_credits,
+            20 + 10,
+            "score term: 4 bales × 5 + trunc(2 × 0.25 × 4 × 5)"
+        );
+        // A second visit with nothing aboard pays nothing and re-scans.
+        handle_slave_deposit(&mut sim, &rules, &config, &mut snap);
+        assert_eq!(sim.houses[&yuri].credits, 150);
+        assert_eq!(snap.harvester.state, SlaveHarvestState::SearchOre);
     }
 
     #[test]

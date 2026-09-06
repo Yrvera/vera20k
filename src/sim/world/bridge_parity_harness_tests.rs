@@ -137,7 +137,13 @@ const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xE1C6_54FA_7B7B_9CB3;
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved.
 const BRIDGE_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x1422_9DF5_DB39_C07B;
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x7D6C_E7BF_2564_FD19;
+// Baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): every
+// entity folds its dead ProduceCash timer and two `None` drain-link halves.
+// The dedicated pre-v135 probe reproduces the prior committed final exactly
+// and every older probe plus the three RNG streams are unchanged, so this is
+// composition-only (no derrick, DrainWeapon or capture in this fixture).
+const BRIDGE_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x7D6C_E7BF_2564_FD19;
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x88D0_BF2F_F9AC_A02B;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
@@ -534,8 +540,13 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
     let pre_crate_authority_hash = rep.state_hash_without_crate_authority_v114();
     let pre_wall_runtime_hash = rep.state_hash_without_wall_runtime_v115();
     let pre_disguise_detect_hash = rep.state_hash_without_disguise_detect_v117();
+    let pre_credit_income_hash = rep.state_hash_without_credit_income_v135();
+    assert_eq!(
+        pre_credit_income_hash, BRIDGE_HARNESS_PRE_CREDIT_INCOME_V135_HASH,
+        "the dedicated pre-v135 probe must reproduce the prior bridge current baseline"
+    );
     println!(
-        "[bridge parity] final_hash={final_hash:016X} pre-v110:{pre_base_plan_hash:016X} pre-v114:{pre_crate_authority_hash:016X} pre-v115:{pre_wall_runtime_hash:016X} pre-v117:{pre_disguise_detect_hash:016X} streams={:016X},{:016X},{:016X}",
+        "[bridge parity] final_hash={final_hash:016X} pre-v110:{pre_base_plan_hash:016X} pre-v114:{pre_crate_authority_hash:016X} pre-v115:{pre_wall_runtime_hash:016X} pre-v117:{pre_disguise_detect_hash:016X} pre-v135:{pre_credit_income_hash:016X} streams={:016X},{:016X},{:016X}",
         rep.scenario_rng.state(),
         rep.main_rng.state(),
         rep.mapgen_rng.state(),

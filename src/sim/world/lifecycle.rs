@@ -2576,6 +2576,10 @@ impl Simulation {
         // at this callback boundary also covers direct UnInit/destruction;
         // Conceal's already-limbo return never reaches it.
         self.remove_build_const_from_owner(expired_id);
+        // `TechnoClass::PointerExpired @ 0x0070785F..0x0070792A` (and the
+        // death arm of `ReceiveDamage @ 0x0070206A`): both halves of a drain
+        // link drop when either object expires.
+        crate::sim::credit_income::clear_drain_links_on_expiry(self, expired_id);
         self.broadcast_pointer_expired(expired_id, PointerExpiryControl::Uninit);
     }
 

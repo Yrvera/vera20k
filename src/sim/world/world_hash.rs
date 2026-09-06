@@ -439,7 +439,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, true, true, true,
         )
     }
 
@@ -452,6 +452,7 @@ impl Simulation {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
             false, false, false, false, false, false, false, false, false, false, false, false,
+            false,
         )
     }
 
@@ -464,6 +465,7 @@ impl Simulation {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
             false, false, false, false, false, false, false, false, false, false, false, false,
+            false,
         )
     }
 
@@ -473,7 +475,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_spark_dummy_level_slope_v107(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, false, false,
-            false, false, false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -484,7 +486,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_naval_build_const_v109(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            false, false, false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -495,7 +497,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_v110(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, false, false, false, false, false, false, false, false, false,
+            true, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -504,7 +506,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_center_v111(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, false, false, false, false, false, false, false, false,
+            true, true, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -513,7 +515,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_deploy_latches_v112(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, false, false, false, false, false, false, false,
+            true, true, true, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -523,7 +525,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_update_activation_v113(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, false, false, false, false, false, false,
+            true, true, true, true, false, false, false, false, false, false, false,
         )
     }
 
@@ -532,7 +534,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_crate_authority_v114(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, false, false, false, false, false,
+            true, true, true, true, true, false, false, false, false, false, false,
         )
     }
 
@@ -544,7 +546,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_disguise_detect_v117(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true, true, false, false, false,
+            true, true, true, true, true, true, true, false, false, false, false,
         )
     }
 
@@ -554,7 +556,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_harvester_no_ore_v132(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true, true, true, false, false,
+            true, true, true, true, true, true, true, true, false, false, false,
         )
     }
 
@@ -565,7 +567,19 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_eva_v133(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true, true, true, true, false,
+            true, true, true, true, true, true, true, true, true, false, false,
+        )
+    }
+
+    /// Test-only provenance probe for the schema-v135 credit-income folds
+    /// (the `BuildingClass+0x6D0` ProduceCash timer and the
+    /// `TechnoClass+0x1CC/+0x1D0` drain link on every entity). It
+    /// reconstructs the committed v133/v134 layout.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_credit_income_v135(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, true, true, false,
         )
     }
 
@@ -575,7 +589,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_wall_runtime_v115(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true, false, false, false, false,
+            true, true, true, true, true, true, false, false, false, false, false,
         )
     }
 
@@ -605,6 +619,7 @@ impl Simulation {
         include_disguise_detect_v117: bool,
         include_house_harvester_no_ore_v132: bool,
         include_house_eva_v133: bool,
+        include_credit_income_v135: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -740,6 +755,7 @@ impl Simulation {
             include_naval_build_const_v109,
             include_base_plan_v110,
             include_disguise_detect_v117,
+            include_credit_income_v135,
         );
         self.hash_anims(&mut hasher);
         self.hash_voxel_anims(&mut hasher);
@@ -1372,9 +1388,19 @@ impl Simulation {
         include_naval_build_const_v109: bool,
         include_base_plan_v110: bool,
         include_disguise_detect_v117: bool,
+        include_credit_income_v135: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
+            if include_credit_income_v135 {
+                // GSI-09.01: the `BuildingClass+0x6D0/+0x6D8` ProduceCash
+                // timer and the `TechnoClass+0x1CC/+0x1D0` drain link pair.
+                // All three drive future wallet writes, so a divergence here
+                // desyncs credits; every object carries them.
+                entity.produce_cash_timer.hash(hasher);
+                entity.drain_target.hash(hasher);
+                entity.draining_me.hash(hasher);
+            }
             if include_techno_constructor_v104
                 && (entity.techno_ctor_random_word != 0 || entity.structure_upgrade_link.is_some())
             {

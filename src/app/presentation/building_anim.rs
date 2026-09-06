@@ -327,6 +327,12 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             GameSoundEvent::UiSound { .. } => {
                 sfx.play_sound(event.sound_id(), registry, assets, audio_indices);
             }
+            // `CreditsClass::Draw @ 0x004A2519`: `PUSH 0x3f000000` — the
+            // credit tick is the one UI cue native plays at half volume,
+            // centred (`EDX = 0x2000`).
+            GameSoundEvent::CreditTick { .. } => {
+                sfx.play_sound_with_volume(event.sound_id(), 0.5, registry, assets, audio_indices);
+            }
             GameSoundEvent::AnimationStarted {
                 anim_id,
                 sound_id,

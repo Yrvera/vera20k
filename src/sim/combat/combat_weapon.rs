@@ -943,7 +943,8 @@ pub(crate) fn attacker_facts(entity: &GameEntity, obj: &ObjectType) -> AttackerF
         gattling_stage: 0,
         deploy_fire_active,
         is_occupied_building,
-        drain_target_active: false,
+        // `TechnoClass+0x1CC DrainTarget`, the live drain link (GSI-09.01).
+        drain_target_active: entity.drain_target.is_some(),
         // `MissionClass::GetCurrentMission @ 0x005B3040`: current, else queued.
         mission_is_unload: entity.mission.effective().known() == Some(MissionType::Unload),
         is_overpowered_building: false,

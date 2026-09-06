@@ -929,6 +929,24 @@ pub struct GameEntity {
     /// Hashed only when non-zero (see `world_hash`).
     #[serde(default)]
     pub transport_unload_keep_count: u32,
+    /// `BuildingClass+0x6D0`/`+0x6D8` ProduceCash timer (oil derricks). Seeded
+    /// to the constructor's dead state (`start = construction frame`,
+    /// `duration = 0`, `BuildingClass::Constructor @ 0x0043B92B`); armed only by
+    /// a capture from a `MultiplayPassive` house. Zero-duration on every
+    /// non-derrick object. Hashed (v135) and persisted.
+    #[serde(default)]
+    pub produce_cash_timer: crate::sim::credit_income::ProduceCashTimer,
+    /// `TechnoClass+0x1CC DrainTarget`: the building this object is draining
+    /// (Floating Disc). Set by `Fire_At`'s `DrainWeapon` arm, cleared by
+    /// `UnitClass::AI`'s cell recheck, the ally check in `AI_Update`, and
+    /// pointer expiry. Hashed (v135) and persisted.
+    #[serde(default)]
+    pub drain_target: Option<u64>,
+    /// `TechnoClass+0x1D0 DrainingMe`: the object draining this one — the
+    /// reciprocal of `drain_target`. The victim's `AI_Update` reads it for the
+    /// money transfer. Hashed (v135) and persisted.
+    #[serde(default)]
+    pub draining_me: Option<u64>,
     /// Debug event log — records movement/state transitions for the inspector panel.
     /// Only allocated when debug inspector is active (X hotkey). Not included in state hashing.
     #[serde(skip)]
@@ -1275,6 +1293,11 @@ impl GameEntity {
             damage_particle_live_until: 0,
             damage_smoke_system_id: None,
             transport_unload_keep_count: 0,
+            produce_cash_timer: crate::sim::credit_income::ProduceCashTimer::constructed(
+                construction_frame,
+            ),
+            drain_target: None,
+            draining_me: None,
             debug_log: None,
         }
     }

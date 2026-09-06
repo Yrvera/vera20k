@@ -4786,6 +4786,12 @@ pub(crate) struct CombatEmit {
     /// gamemd's `Fire_At` hands the target to the parent's `SpawnManager` and
     /// returns NULL, so no bullet, damage or rearm follows.
     pub(crate) spawn_target_updates: Vec<(u64, TargetKind)>,
+    /// (drainer_id, victim_id) — a `DrainWeapon=yes` weapon reached its fire
+    /// point against a `Drainable=yes` Techno. `TechnoClass::Fire_At @
+    /// 0x006FDF5D..0x006FDF9D` hands the pair to `0x0070FD70` (link install,
+    /// gated on the drainer's cell holding the victim) and returns NULL: no
+    /// bullet, no damage, no rearm.
+    pub(crate) drain_links: Vec<(u64, u64)>,
 }
 
 fn projectile_impact_cell(impact: ProjectileCoord) -> (u16, u16, SimFixed, SimFixed, i32) {
@@ -6682,6 +6688,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
         current_weapon_updates: _,
         unit_facing,
         spawn_target_updates,
+        drain_links,
     } = emit;
 
     // Spawner weapons: hand the fire target to the parent's spawn manager.
@@ -6693,6 +6700,26 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             .and_then(|e| e.spawn_manager.as_mut())
         {
             manager.set_target(Some(target));
+        }
+    }
+    // Drain weapons: `0x0070FD70` installs the reciprocal
+    // `DrainTarget`/`DrainingMe` pair when the drainer sits over the victim.
+    // `Fire_At @ 0x006FDF93..0x006FDF97` then calls `[vtable+0x3C8]` =
+    // `TechnoClass::Assign_Target @ 0x006FCDB0` with NULL unconditionally
+    // (the install's own cell gate does not feed back), which clears the
+    // Target (`+0x2B4`), the passive-acquire byte (`+0x50C`), the burst index
+    // (`+0x3B8`) and, when a SpawnManager (`+0x2D0`) exists, its target. The
+    // disc therefore leaves `Fire_At` with no target and its Attack mission
+    // takes the no-target exit into idle mode on its next dispatch. The
+    // `+0x304` link the setter also releases is not modelled (identity
+    // UNCHECKED; no stock drainer carries a SpawnManager or that link).
+    for &(drainer_id, victim_id) in &drain_links {
+        crate::sim::credit_income::install_drain_link(entities, drainer_id, victim_id);
+        if let Some(drainer) = entities.get_mut(drainer_id) {
+            represented_assign_target(drainer, None);
+            if let Some(manager) = drainer.spawn_manager.as_mut() {
+                manager.set_target(None);
+            }
         }
     }
 
@@ -7396,6 +7423,17 @@ pub(crate) fn resolve_attacker_fire(
         }
     };
 
+    // `TechnoClass::GetFireError @ 0x006FC133`: a target that is already this
+    // object's `DrainTarget` (`+0x1CC`) is refused — a linked Floating Disc
+    // fires nothing further at the building it drains (GSI-09.01).
+    if let TargetKind::Entity(target_id) = snap.target
+        && entities
+            .get(snap.stable_id)
+            .is_some_and(|attacker| attacker.drain_target == Some(target_id))
+    {
+        return;
+    }
+
     let target_armor: String = rules
         .object(interner.resolve(target_type_ref))
         .map(|o| o.armor.clone())
@@ -8079,6 +8117,26 @@ pub(crate) fn resolve_attacker_fire(
             .unwrap_or(0);
         if alive > 0 {
             out.spawn_target_updates.push((snap.stable_id, snap.target));
+        }
+        return;
+    }
+
+    // `TechnoClass::Fire_At @ 0x006FDF5D..0x006FDF9D`: a `DrainWeapon=yes`
+    // weapon (`WeaponType+0x142`) against a Techno whose type is
+    // `Drainable=yes` (`+0x5EF`, read at `0x006FDF7B`) calls the link
+    // installer `0x0070FD70`, then `Assign_Target(NULL)` (`[vtable+0x3C8]`
+    // at `0x006FDF97`, applied where the link is installed) and returns NULL
+    // — no bullet, no rearm, no report — so the shot below never runs. A
+    // DrainWeapon aimed at anything else takes the `0x006FDE03` exit
+    // (its identity is UNCHECKED; unreachable in stock, where the selection
+    // ladder's arm K only picks the DrainWeapon against a Drainable target).
+    if weapon.drain_weapon {
+        if let TargetKind::Entity(target_id) = snap.target
+            && rules
+                .object(interner.resolve(target_type_ref))
+                .is_some_and(|target_obj| target_obj.drainable)
+        {
+            out.drain_links.push((snap.stable_id, target_id));
         }
         return;
     }

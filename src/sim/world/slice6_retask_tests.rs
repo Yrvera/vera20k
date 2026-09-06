@@ -355,7 +355,14 @@ const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0x8C10_E3FB_A724_DC45;
 const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x85A5_BAF4_8901_5224;
 const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x1A28_C2A9_C8E5_15BC;
 const SLICE6_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x8A0C_1481_C5DC_F2F9;
-const SLICE6_BASELINE_HASH: u64 = 0xF26E_75C0_F0E0_4633;
+// Re-baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): the
+// `BuildingClass+0x6D0` ProduceCash timer and the `TechnoClass+0x1CC/+0x1D0`
+// drain link pair join the per-entity fold. The dedicated pre-v135 probe
+// reproduces the prior current baseline exactly and every older probe holds;
+// this script has no derrick, DrainWeapon or capture, so only composition
+// moved (each object folds its dead constructor timer and two `None`s).
+const SLICE6_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xF26E_75C0_F0E0_4633;
+const SLICE6_BASELINE_HASH: u64 = 0xB9AD_9B95_BF3D_1130;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -436,9 +443,14 @@ fn replay_hash_stable_through_slice6() {
     let pre_crate_authority_hash = sim.state_hash_without_crate_authority_v114();
     let pre_wall_runtime_hash = sim.state_hash_without_wall_runtime_v115();
     let pre_disguise_detect_hash = sim.state_hash_without_disguise_detect_v117();
+    let pre_credit_income_hash = sim.state_hash_without_credit_income_v135();
     let hash = sim.state_hash();
     println!(
-        "[slice6] hashes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},pre-v115:{pre_wall_runtime_hash:016X},pre-v117:{pre_disguise_detect_hash:016X},current:{hash:016X}"
+        "[slice6] hashes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},pre-v115:{pre_wall_runtime_hash:016X},pre-v117:{pre_disguise_detect_hash:016X},pre-v135:{pre_credit_income_hash:016X},current:{hash:016X}"
+    );
+    assert_eq!(
+        pre_credit_income_hash, SLICE6_PRE_CREDIT_INCOME_V135_HASH,
+        "the dedicated pre-v135 probe must reproduce the prior Slice 6 current baseline"
     );
     assert_eq!(
         pre_lifecycle_hash, SLICE6_PRE_LIFECYCLE_V28_HASH,
