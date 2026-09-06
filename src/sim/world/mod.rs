@@ -25,6 +25,7 @@ mod projectile_collision;
 mod receiver_transaction;
 mod substrate;
 mod techno_ai;
+pub(crate) use techno_ai::harvester_enter_idle_mode_selector;
 #[cfg(test)]
 pub(crate) use techno_ai::ObjectAiCtx;
 pub(crate) mod techno_ai_cloak;
@@ -5123,7 +5124,126 @@ impl Simulation {
         {
             house.build_const_order.push(stable_id);
         }
+        // `TechnoClass::ChangeOwner` closes with the mission half (the
+        // `+0x484` call at 0x00701849 reads the NEW owner's
+        // IsControlledByHuman). A rules-less transfer (tests only) cannot
+        // read the type and skips it.
+        if let Some(rules) = rules {
+            self.change_owner_harvester_idle_arm(stable_id, rules);
+        }
         self.refresh_waypoint_edge_from_committed_structure(stable_id);
+    }
+
+    /// The mission half of `TechnoClass::ChangeOwner @ 0x007014A0` for a
+    /// war/chrono miner (decompiled 2026-09-06):
+    /// - 0x007014E1/0x007014F1: `Assign_Target(0)` (`+0x3C8`) and
+    ///   `Assign_Destination(0, 1)` (`+0x480`);
+    /// - then `Queue_Mission(Guard, commence_now = 1)` (`+0x1E8` =
+    ///   `MissionClass::Queue_Mission @ 0x005B35E0`) unless current is
+    ///   Selling(0x13) — for a ready unit that commits Guard on the spot;
+    /// - after the `+0x21C` house swap: unless the object is in radio contact
+    ///   with a `WeaponsFactory=` building (`BuildingType+0x16BD`, the
+    ///   war-factory exit link; not a refinery), `Assign_Destination(0, 1)`,
+    ///   `Assign_Target(0)` and `Enter_Idle_Mode(0, 1)` at 0x00701849, whose
+    ///   harvester arm ([`harvester_enter_idle_mode_selector`]) re-queues
+    ///   Harvest for the new owner, Guard when that owner is human and the
+    ///   miner stands off ore, and nothing while in radio contact (a miner
+    ///   docked at its refinery) or while the Guard above is still only
+    ///   queued (a miner caught mid-track: current stays Harvest, the arm
+    ///   returns, and the queued Guard promotes when it stops).
+    ///
+    /// The forced Guard is skipped at 0x00701553 when RTTI == Unit,
+    /// `UnitType+0xE13 IsSimpleDeployer` is set and current == Unload — not
+    /// a stock miner, so this arm does not model it.
+    ///
+    /// Stock reach on a miner: mind control (`CaptureManagerClass::CaptureUnit
+    /// @ 0x00471DB8`, `FreeUnit @ 0x004720DA`, `PsychicDominator::
+    /// MindControlArea @ 0x0053B298`) — VERA has no owner-swapping mind
+    /// control yet, so this chokepoint is where it lands when it does.
+    ///
+    /// `+0x484` census (`search_instructions CALL [+0x484]`), the sites a
+    /// miner can reach besides Move arrival, this owner change and the depot
+    /// exit, with their gates; none is run by VERA today:
+    /// - `DriveLocomotionClass::Stop_And_Scatter @ 0x004B48BE` → `+0x484(0,1)`
+    ///   after `Stop_Moving` when the NavQueue is non-empty. VERA scatter is
+    ///   UNCHECKED; natively a human-parked Guard miner scattered on ore
+    ///   would re-queue Harvest through this call.
+    /// - `FootClass::Enter_Destination @ 0x004DA1A6` (call at 0x004DA1C0;
+    ///   callers `EventClass::Execute` 0x004C7453/0x004C759C and
+    ///   `UnitClass::Receive_Radio` 0x00737546) → `+0x484(0,1)` when
+    ///   NavCom == 0, current == Guard and no WeaponsFactory contact.
+    /// - `FootClass::Check_Destination_Is_UnitRepair_Dock @ 0x004DBA15` →
+    ///   `+0x484(0, !depot-contact)` when NavCom == 0 && TarCom == 0
+    ///   (virtual slot; miner reachability unestablished).
+    /// - `FootClass::ReceiveDamage @ 0x004D74C7`, gated on
+    ///   `MissionControl[current].NoThreat && !Zombie`; no retail mission
+    ///   sets either, so the call is unreachable on stock data.
+    ///
+    /// Residual (VERA-internal, gamemd equivalent UNCHECKED): every other
+    /// category takes the same `Queue_Mission(Guard, 1)` natively; a captured
+    /// building or garrison keeps its mission here. Trigger: engineer capture
+    /// / garrison transfer; effect: no forced Guard; frequency: per capture.
+    fn change_owner_harvester_idle_arm(&mut self, stable_id: u64, rules: &RuleSet) {
+        let is_dispatchable_miner = self.substrate.entities.get(stable_id).is_some_and(|e| {
+            e.category == EntityCategory::Unit
+                && e.miner
+                    .as_ref()
+                    .is_some_and(|m| m.kind != crate::sim::miner::MinerKind::Slave)
+        });
+        if !is_dispatchable_miner {
+            return;
+        }
+        use crate::sim::mission::{MissionId, MissionType};
+        let now = self.session.binary_frame;
+        let selling = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|e| e.mission.current().known() == Some(MissionType::Selling));
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            crate::sim::mission::concrete_effects::represented_assign_target(entity, None);
+            crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
+                entity, None,
+            );
+            entity.movement_target = None;
+        }
+        let readiness = crate::sim::mission::authority::LiveReadyInputProvider { rules };
+        if !selling {
+            // `Queue_Mission(Guard, 1)`: the queue write, then Ready_To_Commence
+            // (`+0x200`) and Commence (`+0x1EC`). The immediate promotion runs
+            // through the host's promotion step so the recorded readiness
+            // degradation (absent locomotor producers read as "not moving")
+            // applies here exactly as it does at the per-tick AI position.
+            let _ = self.mission_queue_exact(
+                stable_id,
+                MissionId::from_known(MissionType::Guard),
+                0,
+                now,
+                &readiness,
+            );
+            self.mission_host_promote(stable_id, now, rules);
+        }
+        let in_factory_contact = self.substrate.entities.get(stable_id).is_some_and(|e| {
+            e.radio_contacts.iter_live().any(|other| {
+                self.substrate
+                    .entities
+                    .get(other)
+                    .and_then(|b| self.object_type(b.type_ref, rules))
+                    .is_some_and(|obj| obj.weapons_factory)
+            })
+        });
+        if in_factory_contact {
+            return;
+        }
+        if let Some(selector) = harvester_enter_idle_mode_selector(self, stable_id, rules, false) {
+            let _ = self.mission_queue_exact(
+                stable_id,
+                MissionId::from_known(selector),
+                0,
+                now,
+                &readiness,
+            );
+        }
     }
 
     /// Legacy non-lifecycle contact scrub retained only for separately classified

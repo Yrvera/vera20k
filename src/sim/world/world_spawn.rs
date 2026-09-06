@@ -779,10 +779,20 @@ impl Simulation {
     /// Commit the spawn-time Harvest mission for a freshly stored miner so the
     /// host's mission dispatch has a truthful `current` from birth (cursor
     /// `SearchOre` == the zeroed handler state a fresh Assign writes).
-    /// UNCHECKED: the native creation-mission family (Enter_Idle_Mode /
-    /// initial-unit assigns, roadmap Track B1) is unverified — this preserves
-    /// the legacy spawn-into-SearchOre behavior. Slave Miners are excluded
-    /// (their own system drives them; never Harvest-dispatched).
+    ///
+    /// Native: `TechnoClass::Unlimbo @ 0x006F6CA0` calls `Enter_Idle_Mode(1, 1)`
+    /// at 0x006F6E2A and immediately promotes it (`+0x200` Ready_To_Commence,
+    /// `+0x1EC` Commence). With `param_2 = 1` the harvester arm of
+    /// `UnitClass::Enter_Idle_Mode @ 0x00738970` skips the human/off-ore Guard
+    /// check, so a Harvester=yes unit entering the world always takes Harvest
+    /// — human or AI, on ore or not. `BuildingClass::ExitObject` then
+    /// `Queue_Mission(Harvest)` again at 0x00444ED4, a no-op on an object
+    /// already on Harvest (`MissionClass::Queue_Mission @ 0x005B35E0` skips a
+    /// mission equal to the current one with nothing else queued), so this
+    /// single commit is the whole native outcome — not a double assignment.
+    /// The Unlimbo caller order (idle arm before the ExitObject queue) is not
+    /// otherwise observable. Slave Miners are excluded (their own system drives
+    /// them; never Harvest-dispatched).
     ///
     /// Returns whether the object was a dispatchable miner, i.e. whether this
     /// call owns its spawn mission.

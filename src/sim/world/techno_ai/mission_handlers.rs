@@ -52,10 +52,11 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // Move is the other split: a player Move order puts the miner on
         // `UnitClass::Mission_Move` (slot `+0x22C` = 0x00740A90, tail
         // `FootClass::Mission_Move @ 0x004D4200`), whose arrival
-        // `Enter_Idle_Mode(0,1)` at 0x004D4242 is the ONLY thing that returns
-        // a harvester to Harvest (or Guard) — see
-        // `harvester_enter_idle_mode_evaluation`. The Harvest handler declines
-        // Move for the same single-writer reason.
+        // `Enter_Idle_Mode(0,1)` at 0x004D4242 returns a harvester to Harvest
+        // (or Guard) — see `harvester_enter_idle_mode_evaluation`; the same
+        // slot is also entered from the owner change (0x00701849) and the
+        // depot's repaired-BREAK exit (0x004D92E2). The Harvest handler
+        // declines Move for the same single-writer reason.
         //
         // Enter with a repair-depot `DockState` is the third split: a
         // harvester ordered to a depot (`Command::RepairAtDepot`) dispatches
@@ -166,7 +167,7 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             } else if input.category == EntityCategory::Unit && input.harvester_miner {
                 // The same arrival hook, harvester arm of
                 // `UnitClass::Enter_Idle_Mode @ 0x00738970`.
-                harvester_enter_idle_mode_evaluation(sim, id, rules, input)
+                harvester_enter_idle_mode_evaluation(sim, id, rules)
             } else {
                 // The arrival branch. `FootClass::Mission_Move` calls the class
                 // arrival hook and returns one frame; the hook is the ONLY
@@ -700,20 +701,9 @@ pub(super) fn move_arrival_evaluation(
 /// `DriveLocomotionClass::Process @ 0x004B0763` (destination reached with an
 /// empty NavQueue: `Stop_Moving`, then `Enter_Idle_Mode(0,1)`). Both land in
 /// the same body; the Unit slot `0x00740A90` only precedes the Foot body
-/// with its deploy latches.
-///
-/// Body, decompiled 2026-09-06, no-destination branch for `Harvester=`/
-/// `Weeder=` (`UnitType+0xE0E`/`+0xE0F`):
-/// - `RadioClass::In_Radio_Contact` ⇒ return (nothing assigned);
-/// - current (`+0xAC`) or queued (`+0xB4`) == Harvest(10) ⇒ return;
-/// - selector = Harvest; when `param_2 == 0` (both callers pass 0) AND
-///   `HouseClass::IsControlledByHuman @ 0x0050B730`: the cell under the unit
-///   (`MapClass::Get_CellClass_At_Coord`) has `LandType` (`CellClass+0xEC`)
-///   ≠ 5 (Tiberium; 0xB Weeds for a Weeder) ⇒ selector = Guard(5). An AI
-///   house always takes Harvest;
-/// - `Assign_Target(0)` (`+0x3C8`), `Assign_Destination(0, 1)` (`+0x480`);
-/// - tail gate: current ∉ {Patrol 0x19, AreaGuard 0xB, Unload 0x10, Eaten 9}
-///   ⇒ `+0x1E8(selector, 0)`. Current is Move here, so it always commits.
+/// with its deploy latches. The selector itself is
+/// [`harvester_enter_idle_mode_selector`], shared with the other stock
+/// callers of the same slot (owner change, depot exit).
 ///
 /// So a human's miner moved onto bare ground parks on Guard (the harvester
 /// Guard override's chrono arms or a player order put it back); moved onto
@@ -725,23 +715,79 @@ fn harvester_enter_idle_mode_evaluation(
     sim: &Simulation,
     id: u64,
     rules: &RuleSet,
-    input: MissionHandlerInput,
 ) -> MissionHandlerEvaluation {
-    let Some(entity) = sim.substrate.entities.get(id) else {
+    let Some(selector) = harvester_enter_idle_mode_selector(sim, id, rules, false) else {
         return MissionHandlerEvaluation::cadence(1);
     };
-    if !entity.radio_contacts.is_empty() {
-        return MissionHandlerEvaluation::cadence(1);
+    MissionHandlerEvaluation {
+        delay: 1,
+        clear_stale_attack_target: false,
+        clear_attack_target: true,
+        queue: Some(selector),
     }
-    if input.mission == Some(MissionType::Harvest)
+}
+
+/// The no-destination harvester selector of `UnitClass::Enter_Idle_Mode @
+/// 0x00738970`, for a unit whose `Harvester=`/`Weeder=` flag
+/// (`UnitType+0xE0E`/`+0xE0F`) is set. Returns the mission the body commits
+/// through `Queue_Mission(selector, 0)` (`+0x1E8` = 0x005B35E0), or `None`
+/// on one of its early returns (nothing assigned).
+///
+/// Body, decompiled 2026-09-06:
+/// - `RadioClass::In_Radio_Contact` ⇒ return (nothing assigned);
+/// - current (`+0xAC`) or queued (`+0xB4`) == Harvest(10) ⇒ return;
+/// - selector = Harvest; when `param_2 == 0` AND the OWNER passes
+///   `HouseClass::IsControlledByHuman @ 0x0050B730`: the cell under the unit
+///   (`MapClass::Get_CellClass_At_Coord`) has `LandType` (`CellClass+0xEC`)
+///   ≠ 5 (Tiberium; 0xB Weeds for a Weeder) ⇒ selector = Guard(5). An AI
+///   house always takes Harvest; so does every caller passing `param_2 = 1`
+///   (`TechnoClass::Unlimbo @ 0x006F6E2A` calls `+0x484(1, 1)`, which is why
+///   a freshly built miner always leaves the factory on Harvest);
+/// - `Assign_Target(0)` (`+0x3C8`), `Assign_Destination(0, 1)` (`+0x480`) —
+///   the callers own those writes;
+/// - tail gate: current ∉ {Patrol 0x19, AreaGuard 0xB, Unload 0x10, Eaten 9}
+///   ⇒ `+0x1E8(selector, 0)`.
+///
+/// Stock callers of the slot on a miner and where VERA runs them: the Move
+/// arrival (`FootClass::Mission_Move` 0x004D4242, [`harvester_enter_idle_mode_evaluation`]);
+/// `TechnoClass::ChangeOwner @ 0x00701849` after the house swap
+/// (`Simulation::change_owner_harvester_idle_arm`); `FootClass::Mission_Enter
+/// @ 0x004D92E2` after a depot's "already repaired" BREAK
+/// (`building_dock::mission_enter_dispatch`). The destination-installed
+/// branch (`NavCom != 0 ⇒ Move`) is not modelled here: every VERA caller
+/// reaches the selector with the destination already cleared.
+///
+/// `skip_human_land_check` is native `param_2 != 0`.
+pub(crate) fn harvester_enter_idle_mode_selector(
+    sim: &Simulation,
+    id: u64,
+    rules: &RuleSet,
+    skip_human_land_check: bool,
+) -> Option<MissionType> {
+    let entity = sim.substrate.entities.get(id)?;
+    if !entity.radio_contacts.is_empty() {
+        return None;
+    }
+    let current = entity.mission.current().known();
+    if current == Some(MissionType::Harvest)
         || entity.mission.queued() == MissionId::from_known(MissionType::Harvest)
     {
-        return MissionHandlerEvaluation::cadence(1);
+        return None;
     }
-    let human = sim
-        .houses
-        .get(&entity.owner)
-        .is_none_or(|house| house.is_controlled_by_human(sim.session.game_mode_nonzero));
+    if matches!(
+        current,
+        Some(MissionType::Patrol)
+            | Some(MissionType::AreaGuard)
+            | Some(MissionType::Unload)
+            | Some(MissionType::Eaten)
+    ) {
+        return None;
+    }
+    let human = !skip_human_land_check
+        && sim
+            .houses
+            .get(&entity.owner)
+            .is_none_or(|house| house.is_controlled_by_human(sim.session.game_mode_nonzero));
     let weeder = sim
         .object_type(entity.type_ref, rules)
         .is_some_and(|obj| !obj.harvester && obj.weeder);
@@ -751,17 +797,11 @@ fn harvester_enter_idle_mode_evaluation(
         crate::rules::terrain_rules::LandType::Tiberium
     };
     let land_matches = cell_land_type_is(sim, entity.position.rx, entity.position.ry, wanted_land);
-    let selector = if human && !land_matches {
+    Some(if human && !land_matches {
         MissionType::Guard
     } else {
         MissionType::Harvest
-    };
-    MissionHandlerEvaluation {
-        delay: 1,
-        clear_stale_attack_target: false,
-        clear_attack_target: true,
-        queue: Some(selector),
-    }
+    })
 }
 
 /// `CellClass+0xEC` (`LandType`) of one cell: the resolved terrain's land
