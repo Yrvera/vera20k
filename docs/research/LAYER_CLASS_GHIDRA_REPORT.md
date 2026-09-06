@@ -9,7 +9,7 @@ Yuri's Revenge. Not gated behind a flag.
 This report consolidates and verifies what was previously scattered across
 [DRAW_ORDER_DEPTH_SYSTEM.md](DRAW_ORDER_DEPTH_SYSTEM.md),
 [TACTICAL_RENDER_PIPELINE_GHIDRA_REPORT.md](TACTICAL_RENDER_PIPELINE_GHIDRA_REPORT.md),
-and [GAMEMD_ARCHITECTURE.md](GAMEMD_ARCHITECTURE.md). It adds: the exact
+and the since-removed `GAMEMD_ARCHITECTURE.md` survey. It adds: the exact
 `LayerClass` struct layout, the sorted-insert algorithm (asm-verified), the
 per-position-update re-insertion pattern in locomotors, the complete set of
 `Submit_Object` call sites, and the grow policy.
