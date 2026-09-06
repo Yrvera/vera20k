@@ -9,7 +9,8 @@ same phase; the plan is only the dependency order.
 Briefs are written when a phase is first targeted and updated by the session
 that changes the phase's state (a merged PR, a corrected claim, a new residual).
 Closed phases keep their brief and link the closure record under
-`docs/gap-scans/`; phases that were never targeted have no brief yet.
+`docs/gap-scans/`. Phases closed before briefs existed (Phase 7) have only
+their closure record; phases never targeted have no brief yet.
 
 ## Template
 
@@ -72,7 +73,8 @@ not prescribe one.
 
 **Exhaustive phase close.** Every row in the phase is an ownership hypothesis.
 Scan each row's mechanisms from the binary, build every DRIFT/MISSING mechanism
-with a builder and an independent read-only critic, merge one mechanism per PR,
+with a builder and an independent read-only critic, merge one coherent
+mechanism (or its prerequisite foundation) per PR,
 run a phase-wide reverse audit, and close only when no omission or regression
 remains and `cargo test -p vera20k --lib` passes. Parity stays
 `UNCHECKED`/`DRIFT` in the registry until a gamemd-derived executable
