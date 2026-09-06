@@ -580,9 +580,20 @@ const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xCFDB_4BEB_46CB_4F5D;
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved. The three RNG stream pins are unchanged.
 const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xC161_8558_C9E6_DD47;
+// Baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): the
+// `BuildingClass+0x6D0` ProduceCash timer and the `TechnoClass+0x1CC/+0x1D0`
+// drain link on every entity. The dedicated pre-v135 probe reproduces the
+// prior committed current baseline exactly; this fixture has no derrick, no
+// DrainWeapon and no capture, so only current-schema composition moved (every
+// object folds its dead constructor timer and two `None`s). RNG stream pins
+// unchanged.
+const GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xCDD5_6F8D_8B28_E750;
 // Re-baselined 2026-09-05 for GSI-09.03 harvest bite size (one density level
 // per Harvest_Ore_Tick gate, 0x0073D450); see `FINAL_STREAM_STATES`.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xCDD5_6F8D_8B28_E750;
+// Re-baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01),
+// composition-only: `GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH` holds the
+// prior value and every historical probe and stream pin is unchanged.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x9C72_8D95_EBB4_D7D7;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -906,8 +917,13 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     let pre_crate_authority_hash = rep.state_hash_without_crate_authority_v114();
     let pre_wall_runtime_hash = rep.state_hash_without_wall_runtime_v115();
     let pre_disguise_detect_hash = rep.state_hash_without_disguise_detect_v117();
+    let pre_credit_income_hash = rep.state_hash_without_credit_income_v135();
     println!(
-        "[global parity] probes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},pre-v115:{pre_wall_runtime_hash:016X},pre-v117:{pre_disguise_detect_hash:016X}"
+        "[global parity] probes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},pre-v115:{pre_wall_runtime_hash:016X},pre-v117:{pre_disguise_detect_hash:016X},pre-v135:{pre_credit_income_hash:016X}"
+    );
+    assert_eq!(
+        pre_credit_income_hash, GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH,
+        "the dedicated pre-v135 probe must reproduce the prior global-harness current baseline"
     );
     assert_eq!(
         pre_lifecycle_hash, GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH,

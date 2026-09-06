@@ -56,11 +56,30 @@ pub(crate) fn advance_sidebar_credits_after_frame(
         return;
     };
     let credits = production::credits_for_owner(sim, &owner_name);
-    state
+    let Some(tick) = state
         .match_state
         .match_presentation
         .sidebar_projection
-        .advance_credits(&owner_name, credits);
+        .advance_credits(&owner_name, credits)
+    else {
+        return;
+    };
+    // `CreditsClass::Draw @ 0x004A24F4..0x004A2533`: one `CreditTicks` cue per
+    // changed AI step — `[0]` counting up, `[1]` counting down — at volume
+    // `0.5f`, centre pan, for the local player's counter only (the observer
+    // branch draws elapsed time instead). Native plays it from the next
+    // sidebar draw, which clears the latch; VERA emits at the step itself.
+    let Some(sound_id) = state.rules().and_then(|rules| {
+        crate::app::sidebar_projection::credit_tick_sound(&rules.general.credit_ticks, tick)
+            .map(str::to_string)
+    }) else {
+        return;
+    };
+    state
+        .match_state
+        .match_audio
+        .sound_events
+        .push(crate::audio::events::GameSoundEvent::CreditTick { sound_id });
 }
 
 /// Reconcile state-derived sidebar inputs and replace the retained immutable

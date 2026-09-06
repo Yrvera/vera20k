@@ -484,6 +484,7 @@ fn techno_ai_shell(
         EntityCategory::Infantry => {
             if let Some(rules) = rules {
                 veterancy_promotion_step(sim, id, rules);
+                crate::sim::credit_income::drain_common_step(sim, id, rules);
                 self_heal_step(sim, id, rules);
             }
             clear_passive_target_off_mission(sim, id);
@@ -496,8 +497,16 @@ fn techno_ai_shell(
         EntityCategory::Structure => {
             if let Some(rules) = rules {
                 veterancy_promotion_step(sim, id, rules);
+                // The common-body drain blocks (`TechnoClass::AI_Update
+                // 0x006FA14B`): a `Drainable=yes` building is the stock
+                // victim, so its money leaves here.
+                crate::sim::credit_income::drain_common_step(sim, id, rules);
                 self_heal_step(sim, id, rules);
                 sim.update_building_damage_fire(id, rules);
+                // `BuildingClass::Update @ 0x0043FD2C..0x0043FDD6`: the
+                // ProduceCash timer (oil-derrick income). Sits in Update's
+                // own body ahead of the mission dispatch that follows.
+                crate::sim::credit_income::produce_cash_step(sim, id, rules);
             }
             // Buildings run the SAME common Techno AI body units do — it is the
             // only acquisition path a base defence has. Same order: off-mission
@@ -550,6 +559,7 @@ fn techno_ai_shell(
         EntityCategory::Aircraft => {
             if let Some(rules) = rules {
                 veterancy_promotion_step(sim, id, rules);
+                crate::sim::credit_income::drain_common_step(sim, id, rules);
                 self_heal_step(sim, id, rules);
             }
             drop_unsensed_cloaked_target_step(sim, id);
@@ -801,6 +811,10 @@ fn techno_common_pre(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
     // `0x006FA946`), so a same-frame heal is visible to the cloak's health
     // branch.
     veterancy_promotion_step(sim, id, rules);
+    // `0x006FA14B..0x006FA224`, directly after the rank-cache write at
+    // `0x006FA145`: the drain money transfer (victim) and ally release
+    // (drainer) blocks of the common body.
+    crate::sim::credit_income::drain_common_step(sim, id, rules);
     self_heal_step(sim, id, rules);
     super::techno_ai_cloak::tick_stock_cloak_producer(sim, id, rules);
     let Some(entity) = sim.substrate.entities.get(id) else {
@@ -1028,6 +1042,10 @@ fn unit_techno_bracket(
     // `PrimaryFacing.Current()` every frame; the movement tick only turns
     // objects that hold a movement target, so the idle turn is advanced here.
     crate::sim::transport_unload::refresh_idle_hull_turn(sim, id);
+    // `UnitClass::AI @ 0x007361A9..0x007361E9`: a draining Floating Disc
+    // re-checks the building under it every 16th frame and drops the link
+    // when it has drifted off (after FootClass::AI in the native order).
+    crate::sim::credit_income::drain_unit_ai_step(sim, id);
     // Passive / opportunity target acquisition sits between mission dispatch
     // and the second IsAlive guard, before the object's own locomotion.
     passive_acquire_step(sim, id, rules, ctx);

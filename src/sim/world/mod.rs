@@ -5171,6 +5171,17 @@ impl Simulation {
         if has_spawn_manager {
             crate::sim::spawn_manager::kill_all_spawns(self, stable_id);
         }
+        // `BuildingClass::ChangeOwner @ 0x004482AA..0x004482F9`, still on the
+        // OLD owner: a `MultiplayPassive` old owner and a non-zero
+        // `ProduceCashStartup` credit the NEW owner and arm the ProduceCash
+        // timer (oil derricks). Runs ahead of the Techno owner swap like the
+        // native, before the BuildConst/count moves below. A rules-less
+        // transfer (tests only) cannot read the type and grants nothing.
+        if let Some(rules) = rules {
+            crate::sim::credit_income::produce_cash_on_owner_change(
+                self, stable_id, old_owner, new_owner, rules,
+            );
+        }
         // gamemd-derived: `BuildingClass::ChangeOwner @ 0x00448260` removes
         // this pointer from the old House BuildConst vector before delegating
         // the Techno owner swap, then appends it to the new House tail.

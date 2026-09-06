@@ -636,6 +636,18 @@ pub struct GeneralRules {
     /// entirely when the count is zero and otherwise plays
     /// `items[rand % count]` at the strike coordinate.
     pub lightning_sounds: Vec<String>,
+    /// Displayed-credits tick cues from `[AudioVisual] CreditTicks=` (stock
+    /// `CreditUp,CreditDown`), the `Rules+0x6D0` sound list (count `+0x6DC`).
+    ///
+    /// gamemd: `CreditsClass::Draw @ 0x004A24F4..0x004A2533` plays
+    /// `items[counting_up(+0x9) ? 0 : 1]` through `VocClass::PlayAtPos @
+    /// 0x00750920` at volume `0.5f`, pan `0x2000` (centre), only while the
+    /// `animating(+0xA)` latch set by `CreditsClass::AI @ 0x004A2600` on a
+    /// step that changed the displayed value is up, and only when the list
+    /// holds at least two entries (`0x004A2505 CMP [EAX+0x6dc],2 / JL`).
+    /// Same `ReadSoundList` tokenisation as `lightning_sounds`; resolution
+    /// is deferred to the app audio registry.
+    pub credit_ticks: Vec<String>,
     /// Weather-storm start cue from `[AudioVisual] StormSound=` (stock
     /// `WeatherIntro`), stored at `Rules+0x730`.
     ///
@@ -813,6 +825,16 @@ pub struct GeneralRules {
     /// Slaves scan further than their master since they trust it would reposition if needed.
     /// Default 14.
     pub slave_miner_slave_scan: i32,
+    /// `[General] DrainMoneyFrameDelay=` (`Rules+0x314`, stock 30). The drained
+    /// object's `TechnoClass::AI_Update @ 0x006FA167..0x006FA17B` transfers
+    /// money only on frames where `g_CurrentFrameCounter % delay == 0`
+    /// (signed `IDIV`, remainder test). Constructor default UNCHECKED.
+    pub drain_money_frame_delay: i32,
+    /// `[General] DrainMoneyAmount=` (`Rules+0x318`, stock 30). Per transfer
+    /// `min(amount, Available_Money(victim))` moves from the victim's wallet
+    /// (`Spend_Money @ 0x004F9790`) to the drainer's (`Add_Credits @
+    /// 0x004F9950`) at `0x006FA183..0x006FA1C0`. Constructor default UNCHECKED.
+    pub drain_money_amount: i32,
     /// Slave Miner long scan distance in cells (SlaveMinerLongScan= in [General]).
     /// Used when searching for a new ore field to deploy near. Default 48.
     pub slave_miner_long_scan: i32,
@@ -1268,6 +1290,7 @@ impl Default for GeneralRules {
             building_die_sound: None,
             building_damage_sound: None,
             lightning_sounds: Vec::new(),
+            credit_ticks: Vec::new(),
             storm_sound: None,
             // `RulesClass::Constructor @ 0x006676BC` writes AL, and the last
             // definition of EAX before it is `0x00667202 MOV EAX,0x1`.
@@ -1304,6 +1327,8 @@ impl Default for GeneralRules {
             tiberium_long_scan: 48,
             slave_miner_short_scan: 8,
             slave_miner_slave_scan: 14,
+            drain_money_frame_delay: 30,
+            drain_money_amount: 30,
             slave_miner_long_scan: 48,
             slave_miner_scan_correction: 3,
             slave_miner_kick_frame_delay: 150,
@@ -2034,6 +2059,16 @@ impl GeneralRules {
                         .collect()
                 })
                 .unwrap_or_default(),
+            credit_ticks: audio_visual
+                .map(|section| section.read_string("CreditTicks", "", 0x80))
+                .map(|value| {
+                    value
+                        .split(',')
+                        .filter(|token| !token.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
             storm_sound: audio_visual
                 .and_then(|s| s.get("StormSound"))
                 .map(str::trim)
@@ -2204,6 +2239,8 @@ impl GeneralRules {
             tiberium_long_scan: general.get_i32("TiberiumLongScan").unwrap_or(48),
             slave_miner_short_scan: general.get_i32("SlaveMinerShortScan").unwrap_or(8),
             slave_miner_slave_scan: general.get_i32("SlaveMinerSlaveScan").unwrap_or(14),
+            drain_money_frame_delay: general.get_i32("DrainMoneyFrameDelay").unwrap_or(30),
+            drain_money_amount: general.get_i32("DrainMoneyAmount").unwrap_or(30),
             slave_miner_long_scan: general.get_i32("SlaveMinerLongScan").unwrap_or(48),
             slave_miner_scan_correction: general.get_i32("SlaveMinerScanCorrection").unwrap_or(3),
             slave_miner_kick_frame_delay: general

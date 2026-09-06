@@ -1082,6 +1082,20 @@ pub struct ObjectType {
     /// `Drainable=` (`TechnoTypeClass+0x5EF`, ReadINI `0x007143B0`).
     pub drainable: bool,
 
+    /// `ProduceCashStartup=` (`BuildingTypeClass+0x1558`). Credited to the NEW
+    /// owner by `BuildingClass::ChangeOwner @ 0x004482BD..0x004482D0` when the
+    /// OLD owner's HouseType is `MultiplayPassive` and the value is non-zero;
+    /// the same branch arms the ProduceCash timer (`+0x6D0`/`+0x6D8`).
+    pub produce_cash_startup: i32,
+    /// `ProduceCashAmount=` (`BuildingTypeClass+0x155C`). `BuildingClass::Update
+    /// @ 0x0043FDAA..0x0043FDD1`: `> 0` → `Add_Credits`, `<= 0` →
+    /// `Spend_Money(-amount)`, once per timer expiry while operational.
+    pub produce_cash_amount: i32,
+    /// `ProduceCashDelay=` (`BuildingTypeClass+0x1560`). Timer duration stored
+    /// at `+0x6D8` on arm/re-arm; the timer fires when its remaining count
+    /// reads exactly 1 (`0x0043FD56 CMP ECX,1`), i.e. every `Delay - 1` frames.
+    pub produce_cash_delay: i32,
+
     /// `Overpowerable=` (`BuildingTypeClass+0x1575`, ReadINI `0x00460029`).
     /// Constructor default UNCHECKED; every stock author writes it explicitly.
     pub overpowerable: bool,
@@ -1968,6 +1982,12 @@ impl ObjectType {
             is_gattling: section.get_bool("IsGattling").unwrap_or(false),
             turret_count: section.get_i32("TurretCount").unwrap_or(0),
             drainable: section.get_bool("Drainable").unwrap_or(false),
+            // Constructor defaults UNCHECKED; stock authors write all three
+            // on CAOILD only (rulesmd.ini:13949-13951) and comment them out
+            // elsewhere, so the absent-key value 0 matches the dormant case.
+            produce_cash_startup: section.get_i32("ProduceCashStartup").unwrap_or(0),
+            produce_cash_amount: section.get_i32("ProduceCashAmount").unwrap_or(0),
+            produce_cash_delay: section.get_i32("ProduceCashDelay").unwrap_or(0),
             overpowerable: section.get_bool("Overpowerable").unwrap_or(false),
             attack_cursor_on_friendlies: section
                 .get_bool("AttackCursorOnFriendlies")

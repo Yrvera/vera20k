@@ -350,6 +350,16 @@ pub enum GameSoundEvent {
         /// sound.ini ID for the UI sound.
         sound_id: String,
     },
+
+    /// One displayed-credits counter step: `[AudioVisual] CreditTicks[0]`
+    /// while counting up, `[1]` while counting down. `CreditsClass::Draw @
+    /// 0x004A2510..0x004A2533` plays it through `VocClass::PlayAtPos @
+    /// 0x00750920` at volume `0.5f` (`PUSH 0x3f000000`), pan `0x2000`
+    /// (centre), no handle — so, unlike [`Self::UiSound`], at HALF volume.
+    CreditTick {
+        /// sound.ini ID from the `CreditTicks=` list.
+        sound_id: String,
+    },
 }
 
 impl GameSoundEvent {
@@ -370,6 +380,7 @@ impl GameSoundEvent {
             | Self::UnitPromoted { sound_id, .. }
             | Self::CloakSound { sound_id, .. }
             | Self::UiSound { sound_id }
+            | Self::CreditTick { sound_id }
             | Self::BaseUnderAttackSfx { sound_id }
             | Self::BuildingGarrisonedSfx { sound_id, .. }
             | Self::C4Planted { sound_id, .. }
@@ -561,8 +572,9 @@ impl GameSoundEvent {
 ///   capped and therefore not an exhaustive enumeration of readers). VERA has
 ///   no mind-control release path, no MasterMind overload and no beacons, so
 ///   none of the three has a producer to wire.
-/// - `ImpactWaterSound` (`+0x200`), `CreditTicks` (`+0x6DC`): no producer; the
-///   native readers were not isolated.
+/// - `ImpactWaterSound` (`+0x200`): no producer; the native reader was not
+///   isolated. (`CreditTicks` (`+0x6D0`, count `+0x6DC`) is landed as
+///   [`GameSoundEvent::CreditTick`] — reader `CreditsClass::Draw @ 0x004A24F4`.)
 /// - **Dead on retail data, so not parsed:** `ImpactLandSound` (`+0x204`) and
 ///   `IceCrackSounds` (`+0x644`) are both **empty** in stock `rulesmd.ini`;
 ///   `GateUp`/`GateDown` (`+0x404`/`+0x408`) and `Construction` (`+0x6C8`) are

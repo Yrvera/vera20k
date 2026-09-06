@@ -423,7 +423,13 @@ use crate::sim::world::Simulation;
 // stored dock queue; admission is RadioClass contact capacity, BuildingClass
 // ctor 0x0043BCBD) and `DockState.enter_retry` carries each waiter's
 // `FootClass::Mission_Enter @ 0x004D9290` re-probe timer.
-const SNAPSHOT_VERSION: u32 = 134;
+// v135 (GSI-09.01) appends three fields to `GameEntity`: the
+// `BuildingClass+0x6D0/+0x6D8` ProduceCash timer (oil-derrick income) and the
+// `TechnoClass+0x1CC/+0x1D0` drain link pair (Floating Disc money drain). They
+// sit ahead of the `#[serde(skip)]` debug log, so a v134 record is short by
+// their bytes and bincode would read the next entity's bytes as them; the hash
+// schema also folds all three (`include_credit_income_v135`).
+const SNAPSHOT_VERSION: u32 = 135;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3189,7 +3195,8 @@ mod tests {
     #[test]
     fn house_eva_advice_snapshot_version_is_133() {
         // 133 -> 134: repair-depot docking layout (see the constant's comment).
-        assert_eq!(super::SNAPSHOT_VERSION, 134);
+        // 134 -> 135: GameEntity ProduceCash timer + drain link pair (GSI-09.01).
+        assert_eq!(super::SNAPSHOT_VERSION, 135);
     }
 
     #[test]
