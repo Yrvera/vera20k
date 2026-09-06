@@ -48,7 +48,17 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // FootClass Guard handler every other unit uses; a vehicle on Harvest
         // enters the Harvest handler. Exactly one of the two runs, so the
         // timer keeps a single writer.
-        if entity.miner.is_some() && mission != Some(MissionType::Guard) {
+        //
+        // Move is the other split: a player Move order puts the miner on
+        // `UnitClass::Mission_Move` (slot `+0x22C` = 0x00740A90, tail
+        // `FootClass::Mission_Move @ 0x004D4200`), whose arrival
+        // `Enter_Idle_Mode(0,1)` at 0x004D4242 is the ONLY thing that returns
+        // a harvester to Harvest (or Guard) — see
+        // `harvester_enter_idle_mode_evaluation`. The Harvest handler declines
+        // Move for the same single-writer reason.
+        if entity.miner.is_some()
+            && !matches!(mission, Some(MissionType::Guard) | Some(MissionType::Move))
+        {
             return;
         }
         let moving = entity.movement_target.is_some()
@@ -58,6 +68,8 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         MissionHandlerInput {
             category,
             mission,
+            harvester_miner: entity.miner.is_some(),
+            depot_dock_state: entity.dock_state.is_some(),
             timer_due: entity.mission.dispatch_timer().due(now),
             moving_or_queued: moving || entity.mission.queued() != MissionId::NONE,
             bunker_delegate: entity.bunker_link.installed_in().is_some(),
@@ -138,6 +150,10 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
                     rules,
                     MissionType::Move,
                 ))
+            } else if input.category == EntityCategory::Unit && input.harvester_miner {
+                // The same arrival hook, harvester arm of
+                // `UnitClass::Enter_Idle_Mode @ 0x00738970`.
+                harvester_enter_idle_mode_evaluation(sim, id, rules, input)
             } else {
                 // The arrival branch. `FootClass::Mission_Move` calls the class
                 // arrival hook and returns one frame; the hook is the ONLY
@@ -148,6 +164,15 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
                 // Guard-only arm of the passive-acquire gate.
                 move_arrival_evaluation(rules, input)
             }
+        }
+        // A repair-depot waiter: `FootClass::Mission_Enter @ 0x004D9290` run
+        // from the unit's own dispatch slot so its epilogue `RandomRanged(0,2)`
+        // lands in object-AI order (the building-side servicing stays in
+        // `tick_building_docks`).
+        (EntityCategory::Unit, Some(MissionType::Enter)) if input.depot_dock_state => {
+            MissionHandlerEvaluation::cadence(
+                crate::sim::docking::building_dock::mission_enter_dispatch(sim, rules, id),
+            )
         }
         // `UnitClass::Mission_Attack @ 0x007447A0` is a tail jump to
         // `FootClass::Mission_Attack`, so vehicles belong on this path.
@@ -520,6 +545,13 @@ pub(super) struct MissionHandlerInput {
     /// and every out-of-range id take the switch's default arm rather than
     /// being skipped.
     pub(super) mission: Option<MissionType>,
+    /// The object carries the miner component (`Harvester=`/`Weeder=` type
+    /// flags `UnitTypeClass+0xE0E`/`+0xE0F`): its Move arrival takes the
+    /// harvester arm of `UnitClass::Enter_Idle_Mode`.
+    pub(super) harvester_miner: bool,
+    /// The object holds a repair-depot `DockState`: its Enter dispatch is
+    /// `building_dock::mission_enter_dispatch`.
+    pub(super) depot_dock_state: bool,
     pub(super) timer_due: bool,
     pub(super) moving_or_queued: bool,
     pub(super) bunker_delegate: bool,
@@ -643,6 +675,99 @@ pub(super) fn move_arrival_evaluation(
         clear_attack_target: true,
         queue: Some(MissionType::Guard),
     }
+}
+
+/// The harvester arm of `UnitClass::Enter_Idle_Mode @ 0x00738970` (vtable
+/// `+0x484`), reached from the Move handler's arrival branch.
+///
+/// Callers a player Move order on a war/chrono miner reaches (all verified by
+/// `search_instructions CALL [+0x484]`, 85 sites): `FootClass::Mission_Move @
+/// 0x004D4200` at 0x004D4242 — `NavCom == 0 && !Is_Moving && Queued == -1 ⇒
+/// Enter_Idle_Mode(0,1); return 1` — and the locomotor IDLE event
+/// `DriveLocomotionClass::Process @ 0x004B0763` (destination reached with an
+/// empty NavQueue: `Stop_Moving`, then `Enter_Idle_Mode(0,1)`). Both land in
+/// the same body; the Unit slot `0x00740A90` only precedes the Foot body
+/// with its deploy latches.
+///
+/// Body, decompiled 2026-09-06, no-destination branch for `Harvester=`/
+/// `Weeder=` (`UnitType+0xE0E`/`+0xE0F`):
+/// - `RadioClass::In_Radio_Contact` ⇒ return (nothing assigned);
+/// - current (`+0xAC`) or queued (`+0xB4`) == Harvest(10) ⇒ return;
+/// - selector = Harvest; when `param_2 == 0` (both callers pass 0) AND
+///   `HouseClass::IsControlledByHuman @ 0x0050B730`: the cell under the unit
+///   (`MapClass::Get_CellClass_At_Coord`) has `LandType` (`CellClass+0xEC`)
+///   ≠ 5 (Tiberium; 0xB Weeds for a Weeder) ⇒ selector = Guard(5). An AI
+///   house always takes Harvest;
+/// - `Assign_Target(0)` (`+0x3C8`), `Assign_Destination(0, 1)` (`+0x480`);
+/// - tail gate: current ∉ {Patrol 0x19, AreaGuard 0xB, Unload 0x10, Eaten 9}
+///   ⇒ `+0x1E8(selector, 0)`. Current is Move here, so it always commits.
+///
+/// So a human's miner moved onto bare ground parks on Guard (the harvester
+/// Guard override's chrono arms or a player order put it back); moved onto
+/// ore it resumes Harvest from state 0. The whole arm draws no RNG; the
+/// `Mission_Move` caller returns 1. VERA commits through the queue like
+/// [`move_arrival_evaluation`] (promoted by the next Ready-to-Commence step,
+/// which zeroes the Harvest cursor exactly as native's `+0xBC = 0`).
+fn harvester_enter_idle_mode_evaluation(
+    sim: &Simulation,
+    id: u64,
+    rules: &RuleSet,
+    input: MissionHandlerInput,
+) -> MissionHandlerEvaluation {
+    let Some(entity) = sim.substrate.entities.get(id) else {
+        return MissionHandlerEvaluation::cadence(1);
+    };
+    if !entity.radio_contacts.is_empty() {
+        return MissionHandlerEvaluation::cadence(1);
+    }
+    if input.mission == Some(MissionType::Harvest)
+        || entity.mission.queued() == MissionId::from_known(MissionType::Harvest)
+    {
+        return MissionHandlerEvaluation::cadence(1);
+    }
+    let human = sim
+        .houses
+        .get(&entity.owner)
+        .is_none_or(|house| house.is_controlled_by_human(sim.session.game_mode_nonzero));
+    let weeder = sim
+        .object_type(entity.type_ref, rules)
+        .is_some_and(|obj| !obj.harvester && obj.weeder);
+    let wanted_land = if weeder {
+        crate::rules::terrain_rules::LandType::Weeds
+    } else {
+        crate::rules::terrain_rules::LandType::Tiberium
+    };
+    let land_matches = cell_land_type_is(sim, entity.position.rx, entity.position.ry, wanted_land);
+    let selector = if human && !land_matches {
+        MissionType::Guard
+    } else {
+        MissionType::Harvest
+    };
+    MissionHandlerEvaluation {
+        delay: 1,
+        clear_stale_attack_target: false,
+        clear_attack_target: true,
+        queue: Some(selector),
+    }
+}
+
+/// `CellClass+0xEC` (`LandType`) of one cell: the resolved terrain's land
+/// type when the map carries one (the overlay recompute keeps it current when
+/// ore is placed or removed), else the legacy resource-node fallback (an ore
+/// node ⇒ Tiberium land).
+fn cell_land_type_is(
+    sim: &Simulation,
+    rx: u16,
+    ry: u16,
+    wanted: crate::rules::terrain_rules::LandType,
+) -> bool {
+    if let Some(terrain) = sim.resolved_terrain.as_ref() {
+        return terrain
+            .cell(rx, ry)
+            .is_some_and(|cell| cell.land_type == wanted.as_index());
+    }
+    wanted == crate::rules::terrain_rules::LandType::Tiberium
+        && sim.production.resource_nodes.contains_key(&(rx, ry))
 }
 
 /// The idle-mode selector reached from the Attack handler's no-target exit.

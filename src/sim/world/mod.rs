@@ -20,6 +20,8 @@ mod logic_vector;
 mod projectile_collision;
 mod substrate;
 mod techno_ai;
+#[cfg(test)]
+pub(crate) use techno_ai::ObjectAiCtx;
 pub(crate) mod techno_ai_cloak;
 pub(crate) mod unit_post;
 mod world_commands;
@@ -1972,6 +1974,13 @@ impl Simulation {
                 if !matches!(category, EntityCategory::Unit | EntityCategory::Structure) {
                     return;
                 }
+                // `BuildingClass::ReceiveDamage` result-4 arm: `UndockUnit`
+                // (0x004424EA) runs first, ahead of the CaptureManager
+                // release, the contact kill/scatter loop and the `+0x4EC`
+                // death — see `undock_refinery_unit_on_death`.
+                if category == EntityCategory::Structure {
+                    self.undock_refinery_unit_on_death(rules, stable_id);
+                }
                 let garrison = self.substrate.entities.get(stable_id).and_then(|entity| {
                     if category != EntityCategory::Structure {
                         return None;
@@ -2956,6 +2965,45 @@ impl Simulation {
         );
     }
 
+    /// `BuildingClass::ReceiveDamage @ 0x00442230`, result-4 (destroyed) arm
+    /// calling 0x004424EA: when the docked-unit link `+0x2E4` is set, the
+    /// unit is first removed from the collected contact vector (so the
+    /// contact kill/scatter loop that follows never touches it), then
+    /// `BuildingClass::UndockUnit @ 0x004593A0` runs — all of this BEFORE the
+    /// `vtable+0x4EC` death/limbo call that breaks the radio contacts.
+    ///
+    /// `UndockUnit` body (disassembled 0x004593A0..0x0045946F): for a docked
+    /// `UnitClass` (`WhatAmI == 1`) it calls the locomotor's `Stop`
+    /// (ILocomotion `+0x58`), then `Head_To` (`+0x70`) with track `0x47` from
+    /// the building's `GetCoords` shifted `(-0x80, +0x80)` — the same
+    /// `Force_Track` push-off the unload exit uses — sets the unit speed
+    /// `1.0` (`vtable+0x544`), clears `+0x2E4` on both objects and `Mark(3)`s
+    /// the building. It touches neither the unit's mission, NavCom, `+0x6D1`
+    /// unload latch nor the contact; those go with the building's own
+    /// limbo/`Destroy(false)` BREAK the same frame. The harvester keeps its
+    /// remaining cargo (no deposit) and its next `Mission_Unload` dispatch
+    /// takes the contact-gone abandonment path.
+    ///
+    /// Rust reuses the sale-time `interrupt_refinery_docked_miners` (the same
+    /// `UndockUnit` shape `BuildingClass::Sell` reaches at 0x0044AAB0): break
+    /// the contact, keep the cargo, install the `0x47` push-off track. Its
+    /// dock-phase reset to `Approach` and the FSM cursor rewrite are
+    /// VERA-internal (gamemd leaves the unit on Unload until the abandonment
+    /// path re-dispatches it; the resulting re-selection of a refinery is the
+    /// same player-visible outcome).
+    fn undock_refinery_unit_on_death(&mut self, rules: &RuleSet, dead_id: u64) {
+        let is_refinery = self
+            .substrate
+            .entities
+            .get(dead_id)
+            .filter(|building| building.category == EntityCategory::Structure)
+            .and_then(|building| self.object_type(building.type_ref, rules))
+            .is_some_and(|obj| obj.refinery);
+        if is_refinery {
+            crate::sim::miner::interrupt_refinery_docked_miners(self, rules, dead_id);
+        }
+    }
+
     /// World-owned half of a non-combat damage transaction. Physical death
     /// consequences already happened recursively in combat; this consumes the
     /// same lifecycle/presentation/terrain outputs without leaving an alternate
@@ -2987,6 +3035,7 @@ impl Simulation {
             production::eject_destruction_garrison(self, rules, event);
         }
         for &dead_id in &effects.immediate_uninit_ids {
+            self.undock_refinery_unit_on_death(rules, dead_id);
             if self
                 .substrate
                 .entities
@@ -4774,20 +4823,16 @@ impl Simulation {
     /// O(houses x entities). `rules` is the advance_tick tail's `Option`; with
     /// `None` the purifier count is 0 (no type data to classify structures by).
     pub(crate) fn refresh_economy_shadow(&mut self, rules: Option<&RuleSet>) {
-        use crate::map::entities::EntityCategory;
-        // One pass: accumulate OrePurifier building count per owner. Mirrors
-        // `count_purifiers_for_owner`'s predicate (category == Structure &&
-        // object_type.ore_purifier) but in a single sweep keyed by owner id.
+        // One pass: accumulate OrePurifier building count per owner through
+        // the same `House+0x538C` predicate as `count_purifiers_for_owner`
+        // (`counts_as_purifier`: completed, alive, on-map purifier — a
+        // `building_up` one is still before `OnConstructionComplete`
+        // 0x0044637C and does not count), in a single sweep keyed by owner id.
         let mut purifiers: std::collections::BTreeMap<crate::sim::intern::InternedId, i32> =
             std::collections::BTreeMap::new();
         if let Some(rules) = rules {
             for e in self.substrate.entities.values() {
-                if !e.lifecycle.in_limbo
-                    && e.category == EntityCategory::Structure
-                    && self
-                        .object_type(e.type_ref, rules)
-                        .is_some_and(|obj| obj.ore_purifier)
-                {
+                if crate::sim::miner::miner_system::counts_as_purifier(self, rules, e) {
                     *purifiers.entry(e.owner).or_insert(0) += 1;
                 }
             }
@@ -7750,6 +7795,7 @@ impl Simulation {
                 production::eject_destruction_garrison(self, rules, event);
             }
             for &dead_id in &combat_result.immediate_uninit_ids {
+                self.undock_refinery_unit_on_death(rules, dead_id);
                 // Eject a bunkered unit before the bunker is removed (UndockUnit).
                 if self
                     .substrate

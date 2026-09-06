@@ -3461,6 +3461,8 @@ mod tests {
         let base = MissionHandlerInput {
             category: EntityCategory::Infantry,
             mission: Some(MissionType::Attack),
+            harvester_miner: false,
+            depot_dock_state: false,
             timer_due: true,
             moving_or_queued: false,
             bunker_delegate: false,
@@ -3560,6 +3562,8 @@ mod tests {
         let base = MissionHandlerInput {
             category: EntityCategory::Infantry,
             mission: Some(MissionType::Attack),
+            harvester_miner: false,
+            depot_dock_state: false,
             timer_due: true,
             moving_or_queued: false,
             bunker_delegate: false,
