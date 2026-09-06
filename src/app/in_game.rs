@@ -35,8 +35,8 @@ impl App {
         state.match_state.match_presentation.in_game_menu =
             crate::ui::pause_menu::InGameMenuState::Closed;
         state.match_state.match_presentation.in_game_options_anchor = None;
-        // Persist the deterministic diagnostic log before its owning sim is
-        // torn down.
+        // Persist the deterministic diagnostic log before leaving the scenario.
+        // Runtime and presentation resources remain retained in the shell.
         crate::app::match_runtime::sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
         state.match_state.startup.clear();

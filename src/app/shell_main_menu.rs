@@ -331,7 +331,7 @@ impl App {
 
     /// Shared teardown for both result-screen forms: flush the deterministic log
     /// while its simulation is still alive, hand the scenario stream back to the
-    /// offline shell, then drop the match.
+    /// offline shell, retaining the runtime and presentation resources.
     pub(super) fn leave_mission_result_screen(state: &mut AppState) {
         crate::app::match_runtime::sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);

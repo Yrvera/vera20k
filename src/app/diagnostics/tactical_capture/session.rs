@@ -691,7 +691,8 @@ impl TacticalCaptureSession {
         ensure!(
             state.match_state.input.cursor_x == profile.capture.post_load_cursor.x as f32
                 && state.match_state.input.cursor_y == profile.capture.post_load_cursor.y as f32,
-            "post-load cursor differs from the sealed neutral point"
+            "post-load cursor differs from the sealed neutral point: ({}, {})",
+            state.match_state.input.cursor_x, state.match_state.input.cursor_y
         );
 
         let loaded = state
@@ -1520,13 +1521,17 @@ fn validate_houses_and_slots(
         .map(|country| sim.interner.resolve(country))
         .context("Computer1 country is absent")?;
     let expected_ai_country = profile.launch.opponents[0].country.launch_country();
+    // The sealed fixture uses Easy, zero starting units and stock RULESMD
+    // MultiplayerAICM=400,0,0. Post_Map_Init @ 0x00686A52..0x00686A6B
+    // therefore adds no opening grant (scenario_bootstrap's native evidence).
     ensure!(
         !ai.is_human
             && ai.side_index == expected_ai_country.side_index()
             && ai_country == expected_ai_country.country_name()
             && ai.difficulty == HouseDifficulty::Easy
-            && ai.credits == profile.launch.options.starting_credits * 2,
-        "Computer1 HouseState differs from sealed slot"
+            && ai.credits == profile.launch.options.starting_credits,
+        "Computer1 HouseState differs from sealed slot: credits={}, difficulty={:?}",
+        ai.credits, ai.difficulty
     );
     ensure!(
         sim.session.start_slot_houses.len() == 2

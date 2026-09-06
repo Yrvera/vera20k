@@ -37,7 +37,7 @@ const EXPECTED_FONT_SHA256: &str =
 const EXPECTED_LAYOUT_SHA256: &str =
     "27fe2405990000468b1d6b9f4316d8b6104d72c82bb3386a9942332ba323316c";
 
-const ENVIRONMENT_DENYLIST: [&str; 15] = [
+const ENVIRONMENT_DENYLIST: [&str; 16] = [
     "RA2_QUICKPLAY",
     "RA2_DEV_SKIRMISH_SHELL",
     "RA2_DEBUG_SPAWN_UNITS",
@@ -53,6 +53,7 @@ const ENVIRONMENT_DENYLIST: [&str; 15] = [
     "RA2_NORMALS",
     "RA2_QUEUE_FRAME_MS",
     "RA2_DIR",
+    "RA2_DUMP_SHROUD",
 ];
 
 const STAGE_NAMES: [&str; 9] = [
@@ -468,7 +469,7 @@ impl TacticalCaptureProfile {
         );
         ensure!(capture.app_ui_scale == 0.5, "app UI scale must be 0.5");
         ensure!(
-            capture.post_load_cursor.x == 358 && capture.post_load_cursor.y == 300,
+            capture.post_load_cursor.x == 316 && capture.post_load_cursor.y == 284,
             "post-load cursor must be tactical-interior center"
         );
         ensure!(
@@ -827,10 +828,9 @@ mod tests {
 
     #[test]
     fn tactical_ui_scale_and_cursor_are_code_derived_fixture_values() {
-        let app_ui_scale = 0.5_f64;
-        let scaled_sidebar_width = (168.0 * app_ui_scale) as u32;
-        let tactical_center = ((800 - scaled_sidebar_width) / 2, 600 / 2);
-        assert_eq!(scaled_sidebar_width, 84);
-        assert_eq!(tactical_center, (358, 300));
+        let (width, height) = crate::app::input::camera::tactical_viewport_size_px(800, 600);
+        // Map admission centers the cursor in the native tactical rectangle;
+        // app UI scaling does not rescale its right/bottom exclusions.
+        assert_eq!((width / 2, height / 2), (316, 284));
     }
 }

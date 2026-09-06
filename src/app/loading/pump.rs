@@ -213,6 +213,60 @@ impl LoadingProgressSink for NoopProgressSink {
     fn milestone(&mut self, _percent: u32) {}
 }
 
+/// Select progress policy and its loader metadata once. The phase consumes the
+/// same startup/resources regardless of whether native loading art is available.
+struct LoadingPhaseProgress<'a> {
+    sink: SelectedProgressSink<'a>,
+    native_theater_cache_mismatch: bool,
+    runtime_color_scheme_count: usize,
+}
+
+enum SelectedProgressSink<'a> {
+    Rendering(RenderingProgressSink<'a>),
+    Gated(GatedProgressSink<'a>),
+    Generic(NoopProgressSink),
+}
+
+impl LoadingProgressSink for SelectedProgressSink<'_> {
+    fn milestone(&mut self, raw_percent: u32) {
+        match self {
+            Self::Rendering(sink) => sink.milestone(raw_percent),
+            Self::Gated(sink) => sink.milestone(raw_percent),
+            Self::Generic(sink) => sink.milestone(raw_percent),
+        }
+    }
+}
+
+impl<'a> LoadingPhaseProgress<'a> {
+    fn select(
+        native: Option<&'a mut NativeLoadingScreenState>,
+        mismatch: bool,
+        rendering: impl FnOnce(&'a mut NativeLoadingScreenState) -> RenderingProgressSink<'a>,
+    ) -> Self {
+        let Some(native) = native else {
+            return Self {
+                sink: SelectedProgressSink::Generic(NoopProgressSink),
+                native_theater_cache_mismatch: false,
+                runtime_color_scheme_count: 0,
+            };
+        };
+        let runtime_color_scheme_count = native.runtime_color_scheme_count;
+        let sink = if native.atlas.is_some() {
+            SelectedProgressSink::Rendering(rendering(native))
+        } else {
+            SelectedProgressSink::Gated(GatedProgressSink {
+                cadence: native.progress_cadence,
+                progress: &mut native.progress,
+            })
+        };
+        Self {
+            sink,
+            native_theater_cache_mismatch: mismatch,
+            runtime_color_scheme_count,
+        }
+    }
+}
+
 enum FreshScenarioLoadState {
     Pending,
     Ready(FreshScenarioLoadContextDescriptor),
@@ -832,73 +886,37 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                 state.process_assets.native_rules_mut_with_tile_cache();
             let native_rules_owner =
                 native_rules_owner.expect("native Rules availability checked before split borrow");
-            let load_result = match session.native.as_mut() {
-                // Only repaint when the atlas is present; without it the bar
-                // cannot draw, so fall back to the gate-only sink.
-                Some(native) if native.atlas.is_some() => {
-                    let backing_rgb = native.backing_rgb;
-                    let text_rgb = native.text_rgb;
-                    let cadence = native.progress_cadence;
-                    let runtime_color_scheme_count = native.runtime_color_scheme_count;
-                    let atlas = native.atlas.as_ref().expect("atlas present checked above");
-                    let composition = native.composition.as_ref();
-                    let mut sink = RenderingProgressSink {
-                        gpu: &state.renderer.gpu,
-                        presenter: &state.renderer.shell_surface_presenter,
-                        depth_view: &state.renderer.depth_view,
-                        batch: &state.renderer.batch_renderer,
-                        font: &state.renderer.bit_font,
-                        progress: &mut native.progress,
-                        progress_row: &native.progress_row,
-                        atlas,
-                        composition,
-                        backing_rgb,
-                        text_rgb,
-                        render_size,
-                        cadence,
-                    };
-                    init::load_map_from_initial(
-                        &state.renderer.gpu,
-                        &state.renderer.batch_renderer,
-                        asset_manager,
-                        initial,
-                        startup,
-                        fresh_scenario_context,
-                        &session.request.fallback_skirmish_settings,
-                        native_theater_cache_mismatch,
-                        runtime_color_scheme_count,
-                        state.renderer.vxl_compute.as_mut(),
-                        native_rules_owner,
-                        shared_cell_dummy.clone(),
-                        tile_variant_selector_cache,
-                        &mut sink,
-                    )
-                }
-                Some(native) => {
-                    let cadence = native.progress_cadence;
-                    let runtime_color_scheme_count = native.runtime_color_scheme_count;
-                    let mut sink = GatedProgressSink {
-                        progress: &mut native.progress,
-                        cadence,
-                    };
-                    init::load_map_from_initial(
-                        &state.renderer.gpu,
-                        &state.renderer.batch_renderer,
-                        asset_manager,
-                        initial,
-                        startup,
-                        fresh_scenario_context,
-                        &session.request.fallback_skirmish_settings,
-                        native_theater_cache_mismatch,
-                        runtime_color_scheme_count,
-                        state.renderer.vxl_compute.as_mut(),
-                        native_rules_owner,
-                        shared_cell_dummy.clone(),
-                        tile_variant_selector_cache,
-                        &mut sink,
-                    )
-                }
-                None => init::load_map_from_initial(
+            let load_result = {
+                let mut progress = LoadingPhaseProgress::select(
+                    session.native.as_mut(),
+                    native_theater_cache_mismatch,
+                    |native| {
+                        let backing_rgb = native.backing_rgb;
+                        let text_rgb = native.text_rgb;
+                        let cadence = native.progress_cadence;
+                        let atlas = native
+                            .atlas
+                            .as_ref()
+                            .expect("selected rendering sink has atlas");
+                        let composition = native.composition.as_ref();
+                        RenderingProgressSink {
+                            gpu: &state.renderer.gpu,
+                            presenter: &state.renderer.shell_surface_presenter,
+                            depth_view: &state.renderer.depth_view,
+                            batch: &state.renderer.batch_renderer,
+                            font: &state.renderer.bit_font,
+                            progress: &mut native.progress,
+                            progress_row: &native.progress_row,
+                            atlas,
+                            composition,
+                            backing_rgb,
+                            text_rgb,
+                            render_size,
+                            cadence,
+                        }
+                    },
+                );
+                init::load_map_from_initial(
                     &state.renderer.gpu,
                     &state.renderer.batch_renderer,
                     asset_manager,
@@ -906,15 +924,16 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     startup,
                     fresh_scenario_context,
                     &session.request.fallback_skirmish_settings,
-                    false,
-                    0,
+                    progress.native_theater_cache_mismatch,
+                    progress.runtime_color_scheme_count,
                     state.renderer.vxl_compute.as_mut(),
                     native_rules_owner,
                     shared_cell_dummy,
                     tile_variant_selector_cache,
-                    &mut NoopProgressSink,
-                ),
+                    &mut progress.sink,
+                )
             };
+
             match load_result {
                 Ok(mut result) => {
                     if let Some(native) = session.native.as_mut() {
@@ -3828,15 +3847,42 @@ mod tests {
     }
 
     #[test]
-    fn loading_progress_standard_skirmish_presents_on_advancing_milestones() {
-        let mut progress = LoadingProgressState::standard_skirmish();
-
-        let presents = [3, 8, 12, 25, 30]
-            .into_iter()
-            .filter(|value| progress.advance_progress(*value))
-            .count();
-
-        assert_eq!(presents, 5);
+    fn selected_native_gate_preserves_metadata_and_raw_progress_cadence() {
+        for (cadence, expected) in [
+            (NativeLoadingProgressCadence::SelectedMap, 12.0),
+            (NativeLoadingProgressCadence::RandomMapHalved, 6.0),
+        ] {
+            let mut native = NativeLoadingScreenState::standard_skirmish(
+                LoadingArtVariant::Americans,
+                0,
+                HouseColorIndex(0),
+                LoadingProgressRowSnapshot {
+                    label: "Player".into(),
+                },
+                cadence,
+            );
+            native.runtime_color_scheme_count = 16;
+            {
+                let mut phase = LoadingPhaseProgress::select(Some(&mut native), true, |_| {
+                    panic!("no atlas must select the real gated sink")
+                });
+                assert!(matches!(&phase.sink, SelectedProgressSink::Gated(_)));
+                assert!(phase.native_theater_cache_mismatch);
+                assert_eq!(phase.runtime_color_scheme_count, 16);
+                for raw in [8, 6, 8, 12, 12] {
+                    phase.sink.milestone(raw);
+                }
+            }
+            assert_eq!(native.progress.current_percent(), expected);
+            {
+                let mut phase = LoadingPhaseProgress::select(Some(&mut native), false, |_| {
+                    panic!("no atlas must select the real gated sink")
+                });
+                assert!(!phase.native_theater_cache_mismatch);
+                phase.sink.milestone(cadence.terminal_raw_percent());
+            }
+            assert_eq!(native.progress.current_percent(), 100.0);
+        }
     }
 
     #[test]
@@ -4013,16 +4059,15 @@ mod tests {
     }
 
     #[test]
-    fn loading_progress_duplicate_or_lower_milestones_do_not_present() {
-        let mut progress = LoadingProgressState::standard_skirmish();
-
-        let presents = [8, 6, 8, 12, 12]
-            .into_iter()
-            .filter(|value| progress.advance_progress(*value))
-            .count();
-
-        assert_eq!(presents, 2);
+    fn selected_generic_progress_uses_no_native_loader_metadata() {
+        let mut phase = LoadingPhaseProgress::select(None, true,
+            |_| panic!("generic loading must never construct rendering progress"));
+        assert!(matches!(&phase.sink, SelectedProgressSink::Generic(_)));
+        assert!(!phase.native_theater_cache_mismatch);
+        assert_eq!(phase.runtime_color_scheme_count, 0);
+        for raw in [8, 6, 8, 12, 100, 200] { phase.sink.milestone(raw); }
     }
+
 }
 
 #[cfg(test)]

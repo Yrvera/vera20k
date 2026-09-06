@@ -54,6 +54,7 @@ ENVIRONMENT_DENYLIST = (
     "RA2_NORMALS",
     "RA2_QUEUE_FRAME_MS",
     "RA2_DIR",
+    "RA2_DUMP_SHROUD",
 )
 
 _TOP_KEYS = (
@@ -409,8 +410,8 @@ def validate_profile_document(document: Mapping[str, Any]) -> None:
     cursor = _exact_object(
         capture["post_load_cursor"], ("x", "y"), "capture.post_load_cursor"
     )
-    _fixed(cursor["x"], 358, "capture.post_load_cursor.x")
-    _fixed(cursor["y"], 300, "capture.post_load_cursor.y")
+    _fixed(cursor["x"], 316, "capture.post_load_cursor.x")
+    _fixed(cursor["y"], 284, "capture.post_load_cursor.y")
     targets = _exact_object(
         capture["build_targets"],
         ("power", "refinery", "radar", "refinery_spawned_harvester"),
@@ -570,14 +571,16 @@ def reject_denied_environment(
 
 
 def scan_tactical_environment_names(root: Path | None = None) -> set[str]:
-    """Discover every Rust override plus tactical-wrapper environment name."""
+    """Discover literal RA2-prefixed names in Rust and tactical-wrapper sources."""
 
     repo = repository_root() if root is None else root
     candidates = [
         repo / "src",
         repo / "tools" / "tactical_certification",
     ]
-    pattern = re.compile(r"\bRA2_[A-Z0-9_]+\b")
+    # Names are string values even when passed through a constant or helper.
+    # Bare Rust constants with the same prefix are not environment inputs.
+    pattern = re.compile(r'''["'](RA2_[A-Z0-9_]+)["']''')
     discovered: set[str] = set()
     for candidate in candidates:
         paths = [candidate] if candidate.is_file() else (

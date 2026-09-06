@@ -94,8 +94,8 @@
     "sim_tick_ms": 22,
     "app_ui_scale": 0.5,
     "post_load_cursor": {
-      "x": 358,
-      "y": 300
+      "x": 316,
+      "y": 284
     },
     "cursor_id": "Default",
     "software_cursor_required": true,

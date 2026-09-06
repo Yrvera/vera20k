@@ -75,51 +75,13 @@ pub(crate) fn commit_prepared_load(
     // atlas entries before the first render frame.
     crate::app::match_runtime::sim_tick::refresh_entity_atlases(state);
 
-    // Rebuild transient lighting from the loaded live entity set so destroyed
-    // light-source buildings do not leave stale point lights behind.
-    if let Some(resolved_terrain) = state.terrain_template() {
-        state.match_state.match_presentation.lighting_grid =
-            crate::app::loading::init::rebuild_lighting_grid_from_sim(
-                resolved_terrain,
-                &state.match_state.match_presentation.map_lighting_config,
-                state
-                    .match_state
-                    .sim_runtime
-                    .as_ref()
-                    .map(|rt| &rt.simulation),
-                state.rules(),
-                state
-                    .match_state
-                    .match_presentation
-                    .in_game_options
-                    .detail_level,
-            );
-        state
-            .match_state
-            .match_presentation
-            .pending_lighting_refresh = None;
-        state
-            .match_state
-            .match_presentation
-            .applied_lighting_sources
-            .clear();
-        state
-            .match_state
-            .match_presentation
-            .applied_lighting_profile = None;
-        state
-            .match_state
-            .match_presentation
-            .applied_lighting_detail_level = state
-            .match_state
-            .match_presentation
-            .in_game_options
-            .detail_level
-            .min(2);
-        state
-            .match_state
-            .match_presentation
-            .last_lighting_view_fingerprint = None;
+    // The presentation owner cancels the old timeline's pending light samples.
+    if let Some(runtime) = state.match_state.sim_runtime.as_ref()
+        && let Some(terrain) = runtime.resources.terrain_template.as_ref()
+    {
+        let presentation = &mut state.match_state.match_presentation;
+        presentation.lighting.restore(terrain, &runtime.simulation,
+            &runtime.resources.rules, presentation.in_game_options.detail_level);
     }
 
     // Reset timing to prevent a burst of ticks after the load.

@@ -20,3 +20,5 @@ pub(crate) mod sidebar_text;
 pub(crate) mod spawn_pick;
 pub(crate) mod target_lines;
 pub(crate) mod ui_overlays;
+
+pub(crate) mod lighting;
