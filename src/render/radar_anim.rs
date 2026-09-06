@@ -191,20 +191,3 @@ impl RadarAnimState {
         );
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn phase_transitions() {
-        // Test state machine logic without GPU (can't create textures in unit tests).
-        // Just verify the phase transition rules.
-        assert_eq!(RadarAnimPhase::Offline, RadarAnimPhase::Offline);
-        assert_ne!(RadarAnimPhase::Offline, RadarAnimPhase::Online);
-
-        // Opening should trigger from Offline when has_radar becomes true.
-        // Closing should trigger from Online when has_radar becomes false.
-        // These are verified implicitly by the set_has_radar match arms.
-    }
-}

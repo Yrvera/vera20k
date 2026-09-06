@@ -173,16 +173,16 @@ _STAGE_NAMES = (
 _STAGE_TICKS = (48, 640, 48, 2048, 48, 1024, 48, 96, 18)
 _STAGE_WALL = (15, 90, 15, 270, 15, 140, 15, 20, 10)
 _LEDGER = {
-    "yard_active": 33,
-    "power_ready": 619,
-    "power_active": 650,
-    "refinery_ready": 2614,
-    "refinery_active": 2645,
-    "radar_ready": 3602,
-    "radar_active": 3633,
-    "radar_online": 3699,
-    "second_readiness": 3700,
-    "capture": 3716,
+    "yard_active": 32,
+    "power_ready": 617,
+    "power_active": 648,
+    "refinery_ready": 2611,
+    "refinery_active": 2642,
+    "radar_ready": 3598,
+    "radar_active": 3629,
+    "radar_online": 3694,
+    "second_readiness": 3695,
+    "capture": 3711,
 }
 _OPTIONS: Mapping[str, Any] = {
     "starting_credits": 10000,

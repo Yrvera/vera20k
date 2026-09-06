@@ -519,18 +519,26 @@ impl TacticalCaptureProfile {
                 && self.budgets.absolute_timeout_max_seconds == ABSOLUTE_TIMEOUT_MAX_SECONDS,
             "overall tactical budgets differ"
         );
+        // Current Rust production timing: factory enqueue is observed at N+1,
+        // first progress at N+2, then 53 intervals at the resolved rate.
+        // Radar authority starts during buildup on placement-result tick 3599.
+        // The retained Allied radar.shp (ra2.mix -> sidec01.mix, 33 frames)
+        // opens in ceil(33 * 64 / 22) samples, including that first frame:
+        // 3599 + 96 - 1 = 3694. See power_system::has_active_radar,
+        // presentation::building_anim::update_radar_state and RadarAnimState::tick.
+        // These are Rust regression expectations, not native parity goldens.
         let ledger = &self.budgets.expected_ledger;
         ensure!(
-            ledger.yard_active == 33
-                && ledger.power_ready == 619
-                && ledger.power_active == 650
-                && ledger.refinery_ready == 2614
-                && ledger.refinery_active == 2645
-                && ledger.radar_ready == 3602
-                && ledger.radar_active == 3633
-                && ledger.radar_online == 3699
-                && ledger.second_readiness == 3700
-                && ledger.capture == 3716,
+            ledger.yard_active == 32
+                && ledger.power_ready == 617
+                && ledger.power_active == 648
+                && ledger.refinery_ready == 2611
+                && ledger.refinery_active == 2642
+                && ledger.radar_ready == 3598
+                && ledger.radar_active == 3629
+                && ledger.radar_online == 3694
+                && ledger.second_readiness == 3695
+                && ledger.capture == 3711,
             "expected current-production ledger differs"
         );
         Ok(())

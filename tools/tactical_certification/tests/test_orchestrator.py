@@ -155,7 +155,7 @@ def _production_fixture(profile) -> dict[str, object]:
     ) -> dict[str, object]:
         return {
             "action_id": action_id,
-            "execute_tick": scheduled_tick + 2,
+            "execute_tick": scheduled_tick,
             "expected_result": expected_result,
             "owner": owner,
             "payload": {
@@ -174,7 +174,7 @@ def _production_fixture(profile) -> dict[str, object]:
     ) -> dict[str, object]:
         return {
             "action_id": action_id,
-            "execute_tick": scheduled_tick + 2,
+            "execute_tick": scheduled_tick,
             "expected_result": {
                 "QueueOrReady": {
                     "expected_rate_frames": rate_frames,
@@ -187,7 +187,7 @@ def _production_fixture(profile) -> dict[str, object]:
             },
             "resolved_result": {
                 "QueueObserved": {
-                    "resolved_rate_frames": rate_frames,
+                    "resolved_rate_frames": 0,
                     "type_id": type_id,
                 }
             },
@@ -203,7 +203,7 @@ def _production_fixture(profile) -> dict[str, object]:
     ) -> dict[str, object]:
         return {
             "action_id": action_id,
-            "execute_tick": scheduled_tick + 2,
+            "execute_tick": scheduled_tick,
             "expected_result": {
                 "BuildingPlacedReadyConsumed": {
                     "cell": choice["cell"],
@@ -243,7 +243,7 @@ def _production_fixture(profile) -> dict[str, object]:
         ),
         deploy(
             2,
-            2,
+            1,
             "Second",
             {"YardCreated": {"mcv_id": 119, "yard_type_id": "NACNST"}},
             {
@@ -295,14 +295,10 @@ def _production_fixture(profile) -> dict[str, object]:
         "command_ledger": commands,
         "exact_step_count": capture_tick,
         "first_exact_step": {
-            "accumulator_after_ms": 0,
-            "accumulator_before_clear_ms": 0,
-            "binary_frame_after": 0,
+            "binary_frame_after": 1,
             "binary_frame_before": 0,
             "tick_after": 1,
             "tick_before": 0,
-            "total_sim_ms_after": profile.capture["sim_tick_ms"],
-            "total_sim_ms_before": 0,
         },
         "harvester": {
             "cell": [49, 119],
@@ -310,16 +306,10 @@ def _production_fixture(profile) -> dict[str, object]:
             "type_id": targets["refinery_spawned_harvester"],
         },
         "last_exact_step": {
-            "accumulator_after_ms": 0,
-            "accumulator_before_clear_ms": 0,
-            "binary_frame_after": 1226,
-            "binary_frame_before": 1225,
+            "binary_frame_after": capture_tick,
+            "binary_frame_before": capture_tick - 1,
             "tick_after": capture_tick,
             "tick_before": capture_tick - 1,
-            "total_sim_ms_after": capture_tick * profile.capture["sim_tick_ms"],
-            "total_sim_ms_before": (
-                (capture_tick - 1) * profile.capture["sim_tick_ms"]
-            ),
         },
         "observed_ledger": _observed_ledger(
             profile, capture_complete=capture_tick
@@ -520,7 +510,7 @@ def _stable_fixture(
         "render": render,
         "final_fingerprint": {
             "core": {
-                "binary_frame": 1226,
+                "binary_frame": profile.budgets["expected_ledger"]["capture"],
                 "deterministic_state_hash": 7168770358871354549,
                 "simulation_tick": capture_tick,
                 "total_simulation_ms": (
@@ -841,6 +831,26 @@ class OrchestratorTests(unittest.TestCase):
                     )
 
     def test_contradictory_production_receipts_are_invalid(self) -> None:
+        def delayed_offline_command(manifest: dict[str, object]) -> None:
+            stable = manifest["evidence"]["stable"]
+            for commands in (
+                stable["production"]["command_ledger"],
+                stable["final_fingerprint"]["script"]["commands"],
+            ):
+                commands[0]["execute_tick"] = commands[0]["scheduled_tick"] + 2
+
+        def prematurely_resolved_enqueue_rate(manifest: dict[str, object]) -> None:
+            stable = manifest["evidence"]["stable"]
+            for commands in (
+                stable["production"]["command_ledger"],
+                stable["final_fingerprint"]["script"]["commands"],
+            ):
+                commands[2]["resolved_result"]["QueueObserved"][
+                    "resolved_rate_frames"
+                ] = commands[2]["expected_result"]["QueueOrReady"][
+                    "expected_rate_frames"
+                ]
+
         def bogus_command_results(manifest: dict[str, object]) -> None:
             stable = manifest["evidence"]["stable"]
             for commands in (
@@ -985,6 +995,16 @@ class OrchestratorTests(unittest.TestCase):
                 commands[0]["resolved_result"]["McvTurned"]["facing"] = 0
 
         mutations = (
+            (
+                "offline stamp incorrectly includes network delay",
+                delayed_offline_command,
+                r"command_ledger\[0\]\.execute_tick",
+            ),
+            (
+                "enqueue receipt skips constructor rate",
+                prematurely_resolved_enqueue_rate,
+                r"command_ledger\[2\].*resolved_rate_frames",
+            ),
             (
                 "bogus command result enums",
                 bogus_command_results,
