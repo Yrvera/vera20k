@@ -169,7 +169,7 @@ The refinery docking/dumping is handled in the `IsRefinery` (Type+0x16B3) branch
     - If return 0x21: plays EVA "insufficient funds" warning, still sets state 1
 
 **State 1 (Undock/Exit):**
-- Checks if locomotion path is complete (`PathType::Has_Valid_Steps() == false`)
+- Checks if locomotion path is complete (`RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)() == false`)
 - Clears dock/unload animations (slots 8, 11)
 - Sets repair/active animations
 - If `field_0x58C == 0`: sets mission to Guard (5), marks dirty (`field_0x6DD = 1`)

@@ -144,7 +144,7 @@ This is the main dock-admission gate — the refinery asks "can you dock with me
 2. Call ILocomotion vtable+0x10 (`Is_Moving`) — if (Is_Moving OR `this+0x5a4 != 0` = chrono state active) AND `this+0xAC == 2` (in-queue state): return 0x0A (NACK — not ready). (corrected 2026-05-29: was "Is_Moving AND this+0x169 != 0 AND this+0xAC==2"; binary at 007377f8-0073780d shows second condition reads [ESI+0x5a4] (chrono flag), not 0x169. No read of 0x169 exists anywhere in the case 0x0E body — OPERATOR_OR_ORDER_DRIFT)
 3. Get current destination via `FootClass__GetDestination(0)` at `0x0065ad30`.
 4. If destination != sender (already targeting someone else): compare range — call `FUN_00473460` (distance calc) and compare against sender's `+0x380` (spread/radius) and type's `+0x5e0` (dock range). If out-of-range or spread too large: return 0x0A.
-5. Check `PathType__Has_Valid_Steps` (`0x0065ae30`): if no valid path, transmit `Transmit_Radio(2, sender)` (request new path).
+5. Check `RadioClass__In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) (`0x0065ae30`): if no valid path, transmit `Transmit_Radio(2, sender)` (request new path).
 
 **Part B — Zone/terrain check** (if not chrono-teleporting, `this+0x5a4 == 0`):
 6. Get unit's current map cell via `vtable+0x1b8`.

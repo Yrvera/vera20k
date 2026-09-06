@@ -164,12 +164,12 @@ The Teleporter distinction surfaces inside `BuildingClass__ReleaseDockedHarveste
 ## 8. Edge Cases Verified
 
 ### Storage Empty on Entry
-If `UnitTypeClass+0x5E0 (Storage) < 1` at top-level entry: `CanPassiveAcquire` and `!IsSimpleDeployer` checked. If both: set destination to own cell + random Harvest approach → `return random(0,2) + 14`. Otherwise → `goto LAB_0073d672` → hits Harvester path → `PathType__Has_Valid_Steps` check → ForceScatter + abort.
+If `UnitTypeClass+0x5E0 (Storage) < 1` at top-level entry: `CanPassiveAcquire` and `!IsSimpleDeployer` checked. If both: set destination to own cell + random Harvest approach → `return random(0,2) + 14`. Otherwise → `goto LAB_0073d672` → hits Harvester path → `RadioClass__In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) check → ForceScatter + abort.
 
 ### Refinery Destroyed Mid-Dump (State 3, building lookup returns NULL)
 ```c
 if (this_00 == (BuildingClass *)0x0) {
-    if (PathType__Has_Valid_Steps()) ScanForTargets(3);
+    if (RadioClass__In_Radio_Contact()) ScanForTargets(3);
     SetMission(Harvest=10, 1);
     // returns timer from MissionClass__GetMissionTimerEntry
 }

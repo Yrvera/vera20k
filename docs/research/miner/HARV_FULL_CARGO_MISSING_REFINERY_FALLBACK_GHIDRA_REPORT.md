@@ -117,7 +117,7 @@ In `UnitClass::Mission_Deploy_Building @ 0x0073D630`, state 3 rediscoveres the r
 When the building lookup is null, the branch is:
 
 ```text
-0x0073E313  CALL 0x0065AE30               ; PathType::Has_Valid_Steps
+0x0073E313  CALL 0x0065AE30               ; RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)
 0x0073E318  TEST AL, AL
 0x0073E31A  JZ 0x0073E328
 0x0073E31E  PUSH 0x3
@@ -208,7 +208,7 @@ No Rust files were modified by this investigation.
 - [RESOLVED] OQ-08 - Does non-teleporter HARV use `HarvesterTooFarDistance`? -> Yes, distance is compared with `Rules+0xD78 * 0x100`; stock value is `5`. (evidence: `0x0073EBFB..0x0073EC19`; `rulesmd.ini`)
 - [RESOLVED] OQ-09 - Does missing refinery during state-3 unload drain cargo? -> No; null lookup branches before the drain gate and storage calls. (evidence: `0x0073E30D..0x0073E338`, drain branch `0x0073E355+`)
 - [RESOLVED] OQ-10 - What mission is set after state-3 missing-building abort? -> `SetMission(0x0A, queued=1)`. (evidence: `0x0073E32A..0x0073E330`)
-- [RESOLVED] OQ-11 - Is radio clear sent unconditionally on the missing-building abort? -> No, it is conditional on `PathType::Has_Valid_Steps`. (evidence: `0x0073E313..0x0073E322`)
+- [RESOLVED] OQ-11 - Is radio clear sent unconditionally on the missing-building abort? -> No, it is conditional on `RadioClass::In_Radio_Contact`. (evidence: `0x0073E313..0x0073E322`)
 - [RESOLVED] OQ-12 - What does `Look_up_building_in_cell` consider a refinery/building object? -> It scans `CellClass+0xE4` and returns the first object whose `WhatAmI()==6`; it does not inspect dead/health flags itself. (evidence: live decompile `0x0047C520`)
 - [RESOLVED] OQ-13 - Does stock normal DockUnload rely on reciprocal `+0x2E4`? -> No for normal zero-link completion; reciprocal link is conditional/interrupt context. (evidence: `STANDARD_REFINERY_0X2E4_WRITER_INVENTORY_GHIDRA_REPORT.md`, `0x0073D63B`)
 - [RESOLVED] OQ-14 - Does sell call interrupt cleanup when a reciprocal link exists? -> Yes, `BuildingClass::Sell` checks `field_0x2E4` and calls `UndockUnit`. (evidence: live decompile `0x00449C30`)

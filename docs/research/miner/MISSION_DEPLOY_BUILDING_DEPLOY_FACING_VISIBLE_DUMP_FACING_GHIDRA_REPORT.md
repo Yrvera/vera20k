@@ -50,7 +50,7 @@ The existing reports were recent and high-confidence, so this pass only bridges 
 
 The relevant late path inside `UnitClass__Mission_Deploy_Building` is:
 
-1. Validate the dock path with `PathType::Has_Valid_Steps`.
+1. Validate the dock path with `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps).
 2. Check the facing timer:
    - call `RateTimer::Current` on `Unit+0x388`
    - compute `((current >> 7) + 1) & 0x1FE`
@@ -151,7 +151,7 @@ Correction:
 | Question | Status | Evidence |
 | --- | --- | --- |
 | Is mission `0x10` live for deploy-unload? | Resolved | `MissionClass__Mission_Dispatch @ 0x005B3060` vtable `+0x23C` call |
-| Is there a path gate before unload-start? | Resolved | `UnitClass__Mission_Deploy_Building @ 0x0073D630`, `PathType::Has_Valid_Steps` path |
+| Is there a path gate before unload-start? | Resolved | `UnitClass__Mission_Deploy_Building @ 0x0073D630`, `RadioClass::In_Radio_Contact` path |
 | Is there a facing/rate-timer gate before unload-start? | Resolved | `RateTimer::Current(Unit+0x388)`, formula `((current >> 7) + 1) & 0x1FE == 0x80` |
 | What happens when the facing gate is not ready? | Resolved | optional locomotor vtable `+0x4C(0x4000)`, return delay `5` |
 | Is unload-start a direct body-facing snap? | Resolved | no facing byte write found in unload-start write cluster |

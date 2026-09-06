@@ -92,7 +92,7 @@ Ghidra `analyze_dataflow` at the `0x0073DFF9` store reports `iStack_8` as the st
 0x0073d672 MULTIEQUAL       -> control-flow merge
 ```
 
-The two nearby calls on the live gate path are `PathType::Has_Valid_Steps` at `0x0065AE30` and `RateTimer::Current` at `0x004C93D0`. The RateTimer call receives an output pointer at `[ESP+0x4C]`, not `[ESP+0x78]`. The facing-window block writes and reads `[ESP+0x34]` for `0x4000`, also not `[ESP+0x78]`.
+The two nearby calls on the live gate path are `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) at `0x0065AE30` and `RateTimer::Current` at `0x004C93D0`. The RateTimer call receives an output pointer at `[ESP+0x4C]`, not `[ESP+0x78]`. The facing-window block writes and reads `[ESP+0x34]` for `0x4000`, also not `[ESP+0x78]`.
 
 Implementation consequence: do not invent a semantic coordinate source for `Mission_Deploy_Building` unload-start `+0x104`. If modeling the byte field, the closest verified description is "copied stack scratch dword" for this write.
 

@@ -13,7 +13,7 @@
 
 **Non-goals:** Do not redo accepted-cell vs `GetDockCoord` proof; do not decode full Drive physics, all `PerCellProcess` cases, or full scheduler tick order.
 
-**Evidence needed to mark COMPLETE:** Decompile Drive arrival branch, `Is_Moving_Now`, `PathType::Has_Valid_Steps`, destination getter/setter, `UnitClass::Receive_Radio(0x16)`, and the relevant `PerCellProcess(2)` dock consumers.
+**Evidence needed to mark COMPLETE:** Decompile Drive arrival branch, `Is_Moving_Now`, `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps), destination getter/setter, `UnitClass::Receive_Radio(0x16)`, and the relevant `PerCellProcess(2)` dock consumers.
 
 **Stop conditions:** Stop once accepted-cell arrival visibility is proven and remaining "which `0x15` source wins first" is isolated to Mission_Enter/tick-order slots.
 
@@ -29,7 +29,7 @@ The same Drive arrival path calls owner vtable `+0x504`, which resolves to `Unit
 |---|---|---|---|---|
 | `owner+0x9C/0xA0/0xA4` | Object/Techno | current lepton coordinates; current cell derives from these | `ObjectClass::GetOccupiedCell @ 0x005F6960`, Drive track writes via vtable `+0x1B4` | Yes |
 | `Foot+0x5A4` / `param_1[0x169]` | FootClass | NavCom/destination object; remains the refinery across accepted-cell arrival | `0x004D94B0`, `0x0065AD30`, `0x00737430` | Yes |
-| Path array `+0xE4`, count `+0xE8` | Foot/PathType | `PathType::Has_Valid_Steps` scans nonzero path entries | `0x0065AE30` | Yes |
+| Contact array `+0xE4`, count `+0xE8` | RadioClass | `RadioClass::In_Radio_Contact` returns non-zero if any contact slot in [+0xE4,+0xE8) is non-null | `0x0065AE30` | Yes |
 | Drive `+0x34/+0x38/+0x3C` | DriveLocomotion | active destination coordinate for drive track | cleared on arrival in `0x004B0F20` | Yes |
 | Drive `+0x40/+0x44/+0x48` | DriveLocomotion | active head-to/intermediate coordinate | cleared on arrival in `0x004B0F20` | Yes |
 | Drive `+0x58` | DriveLocomotion | active drive track index; `-1` means no active track | set `-1` on arrival in `0x004B0F20` | Yes |
@@ -41,9 +41,9 @@ The same Drive arrival path calls owner vtable `+0x504`, which resolves to `Unit
 
 ## 3. Core Logic
 
-### 3.1 `PathType::Has_Valid_Steps` is a path-array query, not a Drive-track query
+### 3.1 `RadioClass::In_Radio_Contact` is a path-array query, not a Drive-track query
 
-`PathType__Has_Valid_Steps @ 0x0065AE30` returns true only if `count > 0` and at least one entry in the path array at `+0xE4` is nonzero. It does not inspect Drive `+0x34`, `+0x40`, `+0x58`, or the current lepton position.
+`RadioClass__In_Radio_Contact @ 0x0065AE30` returns true only if `count > 0` and at least one entry in the path array at `+0xE4` is nonzero. It does not inspect Drive `+0x34`, `+0x40`, `+0x58`, or the current lepton position.
 
 **Active in YR:** Yes. This helper is called by Foot/Unit radio and destination logic, including `UnitClass::Receive_Radio(0x0E/0x16)` paths.
 
@@ -162,7 +162,7 @@ Current Rust surfaces scanned:
 | Current cell source | verified | `0x005F6960`, owner coordinate writes in `0x004B0F20` | exact occupancy helper names remain decompiler-label dependent |
 | `Is_Moving_Now` false after arrival | verified | `0x004AFC20` plus Drive arrival clear | none |
 | `Foot+0x5A4` destination remains through arrival | verified | `0x004D94B0`, `0x0065AD30`, no clear in Drive arrival branch | none |
-| `PathType::Has_Valid_Steps` semantics | verified | `0x0065AE30` | exact path-vector element meanings outside scope |
+| `RadioClass::In_Radio_Contact` semantics | verified | `0x0065AE30` | exact path-vector element meanings outside scope |
 | Arrival-time `PerCellProcess(2)` dispatch | verified | `0x004B0F20` owner `+0x504`; `0x00739EC0` vtable data xref | none |
 | `PerCellProcess` GetDockCoord branch at accepted cell | verified | `0x00739EC0` and prior GetDockCoord reports | none |
 | `0x16` direct `0x15` gates | verified | `0x00737430`, `0x006F4AB0`, `0x004AFC20` | exact repeated `0x16` timing belongs to slot 1/2 |
@@ -174,7 +174,7 @@ Current Rust surfaces scanned:
 - `[RESOLVED] OQ-01 - Does Drive arrival physically move the unit from accepted NW+(3,1) to GetDockCoord NW+(2,1)? -> No evidence in scoped Drive path; arrival clears Drive track at the current accepted destination cell, not at GetDockCoord.` (evidence: `0x004B0F20`; prior accepted-cell and GetDockCoord reports)
 - `[RESOLVED] OQ-02 - Is current cell updated before stopped state is visible? -> Yes; Drive arrival updates object coordinates/occupancy before clearing track/head-to and returning.` (evidence: `0x004B0F20`, `0x005F6960`)
 - `[RESOLVED] OQ-03 - Can `Is_Moving_Now` return false while `Foot+0x5A4` destination remains non-null? -> Yes; `Is_Moving_Now` checks timers/Drive head-to/valid movement budget, not destination non-null by itself.` (evidence: `0x004AFC20`, `0x004D94B0`)
-- `[RESOLVED] OQ-04 - Is `PathType::Has_Valid_Steps` the same as Drive track/head-to validity? -> No; it scans the Foot/PathType path array only.` (evidence: `0x0065AE30`)
+- `[RESOLVED] OQ-04 - Is `RadioClass::In_Radio_Contact` the same as Drive track/head-to validity? -> No; it scans the Foot/PathType path array only.` (evidence: `0x0065AE30`)
 - `[RESOLVED] OQ-05 - Does Drive arrival call `PerCellProcess`? -> Yes, owner vtable `+0x504` is called after movement-state clearing in the arrival branch.` (evidence: `0x004B0F20`, `0x00739EC0` vtable data)
 - `[RESOLVED] OQ-06 - Does arrival-time `PerCellProcess` GetDockCoord branch pass at accepted cell for stock refinery? -> No; current cell NW+(3,1) differs from stock `GetDockCoord` NW+(2,1).` (evidence: `0x00739EC0`; prior `BUILDINGCLASS_GETDOCKCOORD...` reports)
 - `[RESOLVED] OQ-07 - Can `0x16` use stopped accepted-cell state? -> Yes, its direct `0x15` branch checks `Is_Moving == false`, contact flag, destination building, and mission 7; it does not check GetDockCoord equality.` (evidence: `0x00737430`)
@@ -196,7 +196,7 @@ Current Rust surfaces scanned:
 
 - Do not make Drive arrival move the unit from accepted NW+(3,1) to `GetDockCoord` NW+(2,1); no scoped Drive path does that. Evidence: `0x004B0F20`.
 - Do not equate `Is_Moving == false` with `Foot+0x5A4 == 0`; destination can remain non-null after Drive head-to/track clears. Evidence: `0x004AFC20`, `0x004D94B0`.
-- Do not treat `PathType::Has_Valid_Steps` as Drive track validity; it scans a separate path array. Evidence: `0x0065AE30`.
+- Do not treat `RadioClass::In_Radio_Contact` as Drive track validity; it scans a separate path array. Evidence: `0x0065AE30`.
 - Do not claim `0x16` itself checks `GetDockCoord`; it checks `Is_Moving`, contact flag, destination type, and mission. Evidence: `0x00737430`.
 - Do not claim `PerCellProcess` has only one possible `0x15` branch; the contact-flag adjacent-building branch also exists, though its first-win timing is outside this slot. Evidence: `0x00739EC0`.
 
@@ -231,7 +231,7 @@ with:
   - `DriveLocomotionClass::Process_Drive_Track @ 0x004B0F20`
   - `DriveLocomotionClass::Is_Moving_Now @ 0x004AFC20`
   - `FootClass::Set_Destination_Internal @ 0x004D94B0`
-  - `PathType::Has_Valid_Steps @ 0x0065AE30`
+  - `RadioClass::In_Radio_Contact @ 0x0065AE30`
   - `FootClass::GetDestination @ 0x0065AD30`
   - `UnitClass::Receive_Radio @ 0x00737430`
   - `UnitClass::PerCellProcess @ 0x00739EC0`

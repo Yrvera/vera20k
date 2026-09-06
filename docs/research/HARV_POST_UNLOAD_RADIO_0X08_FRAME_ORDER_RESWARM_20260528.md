@@ -38,7 +38,7 @@ On the stock zero-link state-4 path, `UnitClass::Mission_Deploy_Building @ 0x007
 3. Clears `unit+0x6D1 = 0` at `0x0073E1F6`.
 4. In the normal branch, calls vtable `+0x1E8` with mission `0x0A` and queued flag `0` at `0x0073E24F..0x0073E254`.
 5. Calls vtable `+0x200`; if false, skips radio and mission-queue advance at `0x0073E25E..0x0073E266`.
-6. Calls `PathType__Has_Valid_Steps @ 0x0065AE30`; in this radio context the helper is a contact-present scan.
+6. Calls `RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps) @ 0x0065AE30`; in this radio context the helper is a contact-present scan.
 7. If a contact exists, pushes `0x03` and calls vtable `+0x274` at `0x0073E275..0x0073E279`.
 8. Calls vtable `+0x1EC` at `0x0073E27F..0x0073E283`, then returns through the mission timer epilogue.
 

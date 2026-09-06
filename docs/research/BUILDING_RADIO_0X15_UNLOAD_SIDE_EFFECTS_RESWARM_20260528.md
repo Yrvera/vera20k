@@ -109,7 +109,7 @@ So `0x15` queues work for a future mission tick. It does not start the mission i
 
 When mission `0x10` dispatches to `UnitClass::Mission_Deploy_Building`, stock harvester unload-start passes through these gates:
 
-- `PathType::Has_Valid_Steps` gate at `0x0073DEE0..0x0073DEE9`; false path returns/cleans up before unload latch writes.
+- `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) gate at `0x0073DEE0..0x0073DEE9`; false path returns/cleans up before unload latch writes.
 - Facing `RateTimer` gate at `0x0073DF56..0x0073DF72`, accepting only `((current >> 7) + 1) & 0x1FE == 0x80`.
 - If not accepted and `Unit+0x6AF` is clear, call locomotor `+0x4C(0x4000)` and return delay `5` without setting `+0x6D1` or state `3`. Evidence: `0x0073DF7A..0x0073DFBC`.
 - If already accepted, proceed to unload-start writes.
@@ -189,7 +189,7 @@ Current Rust has already absorbed part of this correction:
 | `src/sim/miner/mod.rs:100..126` | `MissionEnter`, `FaceSync`, `MissionQueued`, `Pivoting`, `Unloading`, `Departing` are split and documented with `0x15` not being unload start | Directionally aligned |
 | `src/sim/miner/miner_dock_sequence.rs:917..946` | `phase_face_sync` marks contact-entered, syncs facing, waits for Enter retry, then enters `MissionQueued` | Broadly aligned with `0x18/0x16` split; exact mission timing still representation-level |
 | `src/sim/miner/miner_dock_sequence.rs:948..950` | `phase_mission_queued` advances to `Pivoting` | Partial; it represents queued mission `0x10` but not exact MissionClass `+0xAC/+0xB4/+0xB8` dispatch fields |
-| `src/sim/miner/miner_dock_sequence.rs:1000..1030` | `phase_pivoting` waits for mission deploy due, samples facing, schedules five-frame wait when not accepted | Much closer to binary; still no exact `PathType::Has_Valid_Steps` cleanup gate here |
+| `src/sim/miner/miner_dock_sequence.rs:1000..1030` | `phase_pivoting` waits for mission deploy due, samples facing, schedules five-frame wait when not accepted | Much closer to binary; still no exact `RadioClass::In_Radio_Contact` cleanup gate here |
 | `src/sim/miner/miner_dock_sequence.rs:977..994` | `start_unload_deploy` sets `display_type_override`, `unload_active`, `unload_accumulator=0`, timer cluster analogs, and enters `Unloading` | Close in intent but not byte-equivalent: no explicit `+0xF8/+0x100..+0x10C/+0xBC` struct fields, no building slot-7 anim side effect |
 | `src/sim/miner/miner_dock_sequence.rs:1033..1141` | `phase_unloading` drains one resource slot per threshold and delays empty release until the empty gate | Aligned with state-3 slot concept; mechanism still Rust-side accumulator rather than Techno timer cluster |
 | `src/sim/miner/miner_dock.rs:22..36`, `:92..107` | `contact_entered` is separate from `on_pad`; `on_pad` still exists as physical/internal bookkeeping | Risk: stock zero-link unload has no proven `+0x2E4`/physical on-pad field equivalent |

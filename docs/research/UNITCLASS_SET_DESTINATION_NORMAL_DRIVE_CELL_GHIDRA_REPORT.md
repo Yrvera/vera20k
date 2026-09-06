@@ -107,7 +107,7 @@ The function:
 
 ### 3.5 Path validity helper is not NavCom
 
-`PathType__Has_Valid_Steps @ 0x0065AE30` returns true when the path array count at `+0xE8` is positive and at least one entry in the path array pointer at `+0xE4` is nonzero. It does not read `Foot+0x5A4` and does not inspect Drive `+0x30..0x38` destination fields.
+`RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps) @ 0x0065AE30` returns true when the path array count at `+0xE8` is positive and at least one entry in the path array pointer at `+0xE4` is nonzero. It does not read `Foot+0x5A4` and does not inspect Drive `+0x30..0x38` destination fields.
 
 **Evidence:** `0x0065AE30` decompile. **Active in YR:** Yes.
 
@@ -164,7 +164,7 @@ Current Rust surfaces scanned:
 | Chrono/hover/piggyback branches | touched-not-exhausted | live decompile `0x00741970` | intentionally out of scope |
 | `FootClass::Set_Destination_Internal` commit order | verified | live decompile `0x004D94B0` | decompiler-local EBX names remain unresolved but reset writes are verified |
 | Drive `Head_To_Coord` write | verified | live decompile `0x004AFD40` | owner virtual predicate names unresolved |
-| `PathType::Has_Valid_Steps` separation from NavCom | verified | live decompile `0x0065AE30` | no need for this slice |
+| `RadioClass::In_Radio_Contact` separation from NavCom | verified | live decompile `0x0065AE30` | no need for this slice |
 | Current Rust destination surfaces | verified | focused `rg` + file reads listed in section 6 | implementation separate |
 
 ## 8. Open Questions - Final State
@@ -176,7 +176,7 @@ Current Rust surfaces scanned:
 - `[RESOLVED] OQ-05 - Does `Set_Destination_Internal` call the locomotor after writing `NavCom`? -> Yes; if `Foot+0x6AC == 0`, target vtable `+0x4C` supplies the coord and locomotor vtable `+0x44` receives it.` (evidence: `0x004D94B0`)
 - `[RESOLVED] OQ-06 - What does Drive do with the `Head_To_Coord` coordinate? -> It writes Drive destination fields at `+0x30/+0x34/+0x38`, unless one of four owner virtual predicates returns nonzero; bridge cells add `g_BridgeZOffset_Drive` to Z.` (evidence: `0x004AFD40`)
 - `[RESOLVED] OQ-07 - Does `Stop_Moving` clear NavCom? -> Yes, `0x004DF0D0` zeros `Foot+0x5A0` and `Foot+0x5A4` only in the inspected body.` (evidence: `0x004DF0D0`)
-- `[RESOLVED] OQ-08 - Is `PathType::Has_Valid_Steps` equivalent to active Drive destination? -> No, it scans the `PathType` path array and does not inspect `NavCom` or Drive destination fields.` (evidence: `0x0065AE30`)
+- `[RESOLVED] OQ-08 - Is `RadioClass::In_Radio_Contact` equivalent to active Drive destination? -> No, it scans the `PathType` path array and does not inspect `NavCom` or Drive destination fields.` (evidence: `0x0065AE30`)
 - `[UPDATED 2026-05-27] OQ-09 - Does current Rust have a separate `NavCom` owner? -> Partly yes: `NavigationState` now has `nav_com`, `suspended_nav_com`, and `nav_queue`; remaining work is exact Set_Destination guard order, queue producer narrowing, and arrival/PointerExpired lifecycle parity.` (evidence: `src/sim/components.rs`, newer NavCom reports)
 - `[DEFERRED] OQ-10 - Exact player command handler and argument construction for the empty-cell `CellClass*`.` (category: out-of-scope; reason: this slot starts at the verified UnitClass vtable path; next-step-if-pursued: trace command/UI target selection to the virtual call.)
 - `[DEFERRED] OQ-11 - Human-readable names for owner virtual predicates `+0x37C/+0x380/+0x1D4/+0x1D8` in Drive `Head_To_Coord`.` (category: bounded-cost-too-high; reason: not needed to prove that they can suppress the Drive coordinate write; next-step-if-pursued: run a vtable predicate slot audit.)
@@ -225,7 +225,7 @@ No patch was applied in this slot.
   - `0x004D94B0` - `FootClass::Set_Destination_Internal`
   - `0x004AFD40` - `DriveLocomotionClass__Set_Destination` / Drive `Head_To_Coord` coordinate writer
   - `0x004DF0D0` - `FootClass::Stop_Moving`
-  - `0x0065AE30` - `PathType::Has_Valid_Steps`
+  - `0x0065AE30` - `RadioClass::In_Radio_Contact`
   - `0x0065AD30` - `FootClass__GetDestination`
 - Ghidra disassembly dry-runs:
   - `0x00741970..0x00741B00`

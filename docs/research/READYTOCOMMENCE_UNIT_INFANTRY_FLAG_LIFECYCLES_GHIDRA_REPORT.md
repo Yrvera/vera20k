@@ -53,7 +53,7 @@ then transitions state-machine to step 3.
 Verified via `decompile_function 0x0073d630`, annotation in function header, and
 `get_assembly_context 0x0073dee7` (clean path: `if (*(char*)((int)param_1 + 0x6d1) == '\\0') { ... *(undefined1*)((int)param_1 + 0x6d1) = 1; ... param_1[0x2f] = 3; }`).
 
-**Context:** Preceded by `PathType__Has_Valid_Steps()` returning true; rate-timer gate
+**Context:** Preceded by `RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)()` returning true; rate-timer gate
 `((*puVar10 >> 7) + 1 & 0x1FE) == 0x80` gates this to fire once per harvester-cycle period.
 
 ### CLEAR site (= 0) — two sites
@@ -66,7 +66,7 @@ and the normal harvester path.
 Approximate assembly address: `~0x0073E100` / `~0x0073E190` (two symmetric clear sites
 in the two harvest-type branches of state 4).
 
-**Site 2:** `UnitClass__Mission_Deploy_Building` (`0x0073D630`), `PathType::Has_Valid_Steps`
+**Site 2:** `UnitClass__Mission_Deploy_Building` (`0x0073D630`), `RadioClass::In_Radio_Contact`
 returning false (no path):
 `*(undefined1 *)((int)param_1 + 0x6d1) = 0` at `~0x0073DEF0`.
 Verified via `get_assembly_context 0x0073dee7` showing the MOV clear before the locomotor

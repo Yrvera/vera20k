@@ -2,7 +2,7 @@
 
 **Address(es):** `0x0073D630` primary, plus `0x0065AE30`, `0x004595C0`, `0x004593A0`, `0x0043C2D0`, `0x00739EC0`, `0x005B3060`, `0x005B3A00`, `0x0049F2F0`  
 **Investigation Mode:** exhaustive-slice  
-**Claimed Scope:** stock YR `HARV/CMIN -> GAREFN/NAREFN` reachability for `UnitClass::Mission_Deploy_Building @ 0x0073D630`, with emphasis on zero-link versus nonzero `UnitClass+0x2E4`, unload states 3/4, `PathType::Has_Valid_Steps` branch polarity, `ReleaseDockedHarvester`, mission queue/commence behavior, `UnitClass+0x6D1`, and direct returns.  
+**Claimed Scope:** stock YR `HARV/CMIN -> GAREFN/NAREFN` reachability for `UnitClass::Mission_Deploy_Building @ 0x0073D630`, with emphasis on zero-link versus nonzero `UnitClass+0x2E4`, unload states 3/4, `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) branch polarity, `ReleaseDockedHarvester`, mission queue/commence behavior, `UnitClass+0x6D1`, and direct returns.  
 **Non-Scope:** multi-miner contact saturation and exact frame timing from close-return state 3 into first `Mission_Enter` dispatch; those are separate requested follow-ups.  
 **Confidence:** High for static branch reachability and field effects in this slice; medium only for runtime frequency of modded animation waits.  
 **Active in YR:** Yes for stock `HARV/CMIN` unloading at `GAREFN/NAREFN`; conditional branches are called out below.
@@ -53,14 +53,14 @@ This corrects older wording that implied stock miners required the positive `+0x
 
 ### PathType helper semantics and branch polarity
 
-`PathType::Has_Valid_Steps @ 0x0065AE30` scans path entries at `param+0xE4` for `param+0xE8` count and returns true if any entry is nonzero. Empty count or all-zero entries return false.
+`RadioClass::In_Radio_Contact @ 0x0065AE30` scans path entries at `param+0xE4` for `param+0xE8` count and returns true if any entry is nonzero. Empty count or all-zero entries return false.
 
 The first harvester-path guard is:
 
 | Condition | Branch | Effect |
 |---|---|---|
-| `Has_Valid_Steps() != 0` | `0x0073DEE9 JNZ 0x0073DF56` | proceed to RateTimer/facing/state dispatch |
-| `Has_Valid_Steps() == 0` | fall through `0x0073DEEB` | force-scatter cleanup, clear `+0x6D1`, optionally stop/queue, direct-return `1` |
+| `RadioClass__In_Radio_Contact() != 0` | `0x0073DEE9 JNZ 0x0073DF56` | proceed to RateTimer/facing/state dispatch |
+| `RadioClass__In_Radio_Contact() == 0` | fall through `0x0073DEEB` | force-scatter cleanup, clear `+0x6D1`, optionally stop/queue, direct-return `1` |
 
 The direct `return 5` belongs to the later RateTimer/facing branch, not the no-valid-steps branch. Evidence: `0x0073DF56..0x0073DFBC`.
 
@@ -93,7 +93,7 @@ For stock non-weeder HARV/CMIN, state 4 begins at `0x0073E17F`.
 | 2 | if building exists, `Refinery=yes`, and `building+0x57C != 0`, direct-return `1` and keep `+0x6D1` set | `0x0073E1CB..0x0073E1EA` |
 | 3 | clear unload-active latch | `0x0073E1F6 MOV [ESI+0x6D1],0` |
 | 4 | normal stock branch when no override mission is pending: set mission `0x0A` with parameter `0` | `0x0073E24D..0x0073E254` |
-| 5 | if vtable `+0x200` succeeds and `Has_Valid_Steps()` is true, send radio `3` | `0x0073E25A..0x0073E279` |
+| 5 | if vtable `+0x200` succeeds and `RadioClass__In_Radio_Contact()` is true, send radio `3` | `0x0073E25A..0x0073E279` |
 | 6 | queue/commence the next mission through vtable `+0x1EC` | `0x0073E27F..0x0073E283` |
 | 7 | use mission timer epilogue: `GetMissionTimerEntry`, multiply entry `+0x10` by `900.0`, add random `0..2` | `0x0073E289..0x0073E2BE`; `0x005B3A00` |
 
@@ -155,7 +155,7 @@ This remains a valid conditional branch. It is not the stock zero-link unload co
 | `BuildingClass::Receive_Radio @ 0x0043C2D0` | case `0x15` sends sender mission `0x10` for `DockUnload=yes` | decompile `0x0043C2D0` | Yes |
 | `UnitClass::PerCellProcess @ 0x00739EC0` | pad arrival sends radio `0x15`; no reciprocal `+0x2E4` write | decompile `0x00739EC0` | Yes |
 | `UnitClass::Mission_Deploy_Building @ 0x0073D630` | stock unload state machine | decompile/disassembly | Yes |
-| `PathType::Has_Valid_Steps @ 0x0065AE30` | path-step predicate and state-4 radio `3` condition | decompile `0x0065AE30` | Yes |
+| `RadioClass::In_Radio_Contact @ 0x0065AE30` | path-step predicate and state-4 radio `3` condition | decompile `0x0065AE30` | Yes |
 | `Foundation_direction_table_init @ 0x0049F2F0` | initializes adjacent lookup as `(-1,0)` | decompile `0x0049F2F0` | Yes |
 | `BuildingClass::ReleaseDockedHarvester @ 0x004595C0` | conditional nonzero-link release and `Force_Track(0x47)` | decompile/xref | Conditional |
 
@@ -177,7 +177,7 @@ No Rust or repo source files were edited. The current Rust direction already app
 | `0x0073D630` entry split on unit `+0x2E4` | verified | decompile and disassembly `0x0073D63B..0x0073D66D` | none |
 | stock zero-link reachability for HARV/CMIN | verified | `0x0073D641`, `0x0073D672`, INI `Harvester=yes` | none |
 | nonzero-link release helper branch | verified | `0x0073D66D`, `0x004595C0`, xref caller list | runtime frequency outside stock refineries |
-| `PathType::Has_Valid_Steps` helper semantics | verified | decompile `0x0065AE30` | none |
+| `RadioClass::In_Radio_Contact` helper semantics | verified | decompile `0x0065AE30` | none |
 | first PathType guard polarity | verified | `0x0073DEE2..0x0073DEE9` | none |
 | no-valid-steps cleanup | verified | `0x0073DEEB..0x0073DF55` | exact vtable names are not needed for branch polarity |
 | RateTimer direct return `5` | verified | `0x0073DF56..0x0073DFBC` | none |
@@ -197,7 +197,7 @@ No Rust or repo source files were edited. The current Rust direction already app
 - `[RESOLVED] OQ-02 - Is `ReleaseDockedHarvester` reached by normal stock cargo-empty completion? -> No, it is only the nonzero `+0x2E4` entry branch.` (evidence: `0x0073D66D`, `0x004595C0`, xrefs)
 - `[RESOLVED] OQ-03 - Does stock radio `0x15` create reciprocal `+0x2E4` links? -> No; it queues sender mission `0x10` for `DockUnload=yes`.` (evidence: `0x0043C2D0`)
 - `[RESOLVED] OQ-04 - Does pad arrival create reciprocal `+0x2E4` links? -> No; it sends radio `0x15` and performs locomotor/contact work.` (evidence: `0x00739EC0`)
-- `[RESOLVED] OQ-05 - What does `PathType::Has_Valid_Steps` mean? -> True when any stored step entry is nonzero.` (evidence: `0x0065AE30`)
+- `[RESOLVED] OQ-05 - What does `RadioClass::In_Radio_Contact` mean? -> True when any stored step entry is nonzero.` (evidence: `0x0065AE30`)
 - `[RESOLVED] OQ-06 - Which way does the first PathType guard branch? -> True proceeds to RateTimer/state dispatch; false cleans up and returns `1`.` (evidence: `0x0073DEE2..0x0073DF55`)
 - `[RESOLVED] OQ-07 - Which branch returns `5`? -> RateTimer/facing not-ready branch with valid steps.` (evidence: `0x0073DF56..0x0073DFBC`)
 - `[RESOLVED] OQ-08 - When is `+0x6D1` set? -> On first unload init before state 3 is written.` (evidence: `0x0073DFD0..0x0073E093`)
@@ -212,17 +212,17 @@ No Rust or repo source files were edited. The current Rust direction already app
 | Verified behavior | Evidence | Current Rust delta | Affected Rust surface | Required implementation effect | Acceptance scenario | Risk / do-not-do |
 |---|---|---|---|---|---|---|
 | Stock refinery unload completion is zero-link and does not call `ReleaseDockedHarvester` | `0x0073D63B`, `0x0073D641`, `0x0073D66D`, `0x004595C0` | none observed in comments/direction | `src/sim/miner/miner_dock_sequence.rs::phase_departing`, `src/sim/miner/miner_dock.rs` | keep normal GAREFN/NAREFN completion independent from reciprocal `+0x2E4` release semantics | full CMIN unload completes without `Force_Track(0x47)` or release-helper sound/effects | Do not reuse `ReleaseDockedHarvester` as the standard post-unload exit |
-| `Has_Valid_Steps()==true` proceeds to RateTimer/state dispatch; false cleans up and returns `1` | `0x0065AE30`, `0x0073DEE2..0x0073DF55` | unchecked exact low-level equivalent | future mission-level miner parity | preserve polarity if porting this state machine | valid path steps should not trigger the no-steps cleanup path | Do not copy older inverted PathType wording |
+| `RadioClass__In_Radio_Contact()==true` proceeds to RateTimer/state dispatch; false cleans up and returns `1` | `0x0065AE30`, `0x0073DEE2..0x0073DF55` | unchecked exact low-level equivalent | future mission-level miner parity | preserve polarity if porting this state machine | valid path steps should not trigger the no-steps cleanup path | Do not copy older inverted PathType wording |
 | Direct `return 5` is the RateTimer/facing wait, not PathType false | `0x0073DF56..0x0073DFBC` | Rust has higher-level pivot/timer phases | `phase_pivoting`, mission timing scheduler | wait until facing/rate gate before first state-3 init | miner turns/waits before unload rather than dumping while misaligned | Do not attach delay `5` to a no-valid-steps condition |
 | First state-3 entry sets `+0x6D1=1`, initializes animation timer fields, optionally opens slot 7, then writes state 3 | `0x0073DFBD..0x0073E093` | mostly modeled by dock/unloading display state | `phase_unloading`, rendering display override | keep dock-active visual latch through unload | unloading class/render state begins only after pivot/facing gate | Do not clear dock-active before first dump |
 | Empty-cargo transition sets state 4 and direct-returns `1`; normal state-4 handoff happens on a later dispatch | `0x0073E4DC..0x0073E5BD` | approximated by deposit cooldown; exact frame handoff pending trace | `phase_unloading`, `phase_deposit_cooldown`, `phase_departing` | preserve one dispatch separation between last positive drain and state-4 exit | single-slot full miner does not depart on the same dispatch that removes final slot | Defer timing-sensitive changes until the frame trace finishes |
 | State 4 waits on `building+0x57C` before clearing `+0x6D1` | `0x0073E1CB..0x0073E1F6` | likely missing for modded slot-8 anims | building anim integration, `phase_departing` | for modded active close animation, keep unit dock-active until slot clears | custom refinery with close production anim holds miner in dock visual state | Do not treat `+0x57C` as a movement/NavCom field |
-| Normal state 4 sets mission `0x0A`, optionally radios `3` only if `Has_Valid_Steps()` is true, then queues mission | `0x0073E24D..0x0073E283` | Rust explicitly releases reservation and searches ore | `RefineryDockContacts`, `phase_departing`, miner scheduling | ensure contact/retry release and next harvest scheduling are ordered consistently | after unload, miner resumes ore search/harvest and next queued miner can be admitted | Do not send release/contact messages unconditionally without checking queue handoff behavior |
+| Normal state 4 sets mission `0x0A`, optionally radios `3` only if `RadioClass__In_Radio_Contact()` is true, then queues mission | `0x0073E24D..0x0073E283` | Rust explicitly releases reservation and searches ore | `RefineryDockContacts`, `phase_departing`, miner scheduling | ensure contact/retry release and next harvest scheduling are ordered consistently | after unload, miner resumes ore search/harvest and next queued miner can be admitted | Do not send release/contact messages unconditionally without checking queue handoff behavior |
 
 ### Stale Docs / Follow-up Docs
 
 - `docs/research/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`: patch any claim that stock `HARV/CMIN` require `UnitType+0x5E0 > 0`; they can reach the harvester branch through the `<= 0` path and `Harvester=yes`.
-- `docs/research/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`: patch the `PathType::Has_Valid_Steps` polarity if it says valid steps take cleanup or direct `return 5`.
+- `docs/research/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`: patch the `RadioClass::In_Radio_Contact` polarity if it says valid steps take cleanup or direct `return 5`.
 - `docs/research/UNIT_MISSION_DEPLOY_BUILDING_GHIDRA_REPORT.md`: narrow any language that frames `ReleaseDockedHarvester` / `Force_Track(0x47)` as normal stock refinery completion.
 - `docs/research/miner/MISSION_DEPLOY_BUILDING_DAT_0089F6A0_REFINERY_LOOKUP_GHIDRA_REPORT.md`: its earlier uncertainty about `DAT_0089F6A0` value is superseded by `0x0049F2F0`, which initializes the lookup as `(-1,0)`.
 - `docs/research/CHRONO_MINER_NAVCOM_RADIO_SYSTEM_MODEL_SYNTHESIS.md`: remains broadly correct; link this report as the canonical branch-polarity and state-4 evidence.

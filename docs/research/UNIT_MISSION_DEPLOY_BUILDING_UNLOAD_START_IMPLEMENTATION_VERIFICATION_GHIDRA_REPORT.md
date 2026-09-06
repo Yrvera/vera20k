@@ -21,7 +21,7 @@ Stop conditions: Stop after proving the stock mission `0x10` path reaches `0x007
 
 Current Rust is much closer than the older `phase_linked` model: it has a `MissionQueued` phase where `0x15` no longer starts unload immediately, and `Pivoting` gates unload start on the same east-facing window used by gamemd. That is the right high-level split.
 
-The remaining parity gaps are implementation-level. Active gamemd mission `0x10` first checks `PathType::Has_Valid_Steps`, then checks the facing RateTimer window. If facing is not ready it calls locomotor `+0x4C(0x4000)` and returns delay `5`, without setting unload-active fields. Only after path/facing pass does it write `+0xF8=0`, `+0x6D1=1`, initialize the timer cluster at `+0x100..+0x10C`, optionally set refinery anim slot `7`, and finally write `+0xBC=3`.
+The remaining parity gaps are implementation-level. Active gamemd mission `0x10` first checks `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps), then checks the facing RateTimer window. If facing is not ready it calls locomotor `+0x4C(0x4000)` and returns delay `5`, without setting unload-active fields. Only after path/facing pass does it write `+0xF8=0`, `+0x6D1=1`, initialize the timer cluster at `+0x100..+0x10C`, optionally set refinery anim slot `7`, and finally write `+0xBC=3`.
 
 Rust currently starts unload by setting Rust bookkeeping/visual state (`link_on_pad`, `display_type_override`, forced east facing, `DockDeploy`, `unload_timer = interval - 10`) rather than modeling those exact fields and return cadence. That is closer than before but still a DRIFT under the parity bar.
 
@@ -61,7 +61,7 @@ Active in YR: Yes. `ini/rulesmd.ini` has `[CMIN] Harvester=yes`, `Storage=20`, `
 
 ### 3.3 Path gate before unload start
 
-At `0x0073DEE0..0x0073DEE9`, the function calls `PathType::Has_Valid_Steps`. If false, it does cleanup: calls vtable `+0x484(0,1)`, clears `+0x6D1`, may call locomotor stop/mission queue helpers, and returns `1`. It does not initialize state `3`.
+At `0x0073DEE0..0x0073DEE9`, the function calls `RadioClass::In_Radio_Contact`. If false, it does cleanup: calls vtable `+0x484(0,1)`, clears `+0x6D1`, may call locomotor stop/mission queue helpers, and returns `1`. It does not initialize state `3`.
 
 Active in YR: Yes. This gate is in the stock harvester branch and runs before the facing gate and before any unload latch write.
 
@@ -157,7 +157,7 @@ Rust delta: `phase_unloading` drains when `unload_timer <= 0` and seeds `unload_
 
 - `[RESOLVED] OQ-01 - Does mission 0x10 dispatch to UnitClass::Mission_Deploy_Building? -> Yes, Mission_Dispatch calls vtable +0x23C for mission 0x10, and UnitClass +0x23C resolves to 0x0073D630 in prior vtable evidence.` (evidence: `0x005B3060`, `0x005B3260..0x005B3264`, `RADIO_0X15_START_UNLOAD_SIDE_EFFECTS_GHIDRA_REPORT.md`; Active in YR: Yes)
 - `[RESOLVED] OQ-02 - Is this active for stock HARV/CMIN? -> Yes, stock HARV/CMIN set Harvester=yes and stock GAREFN/NAREFN set DockUnload=yes.` (evidence: `ini/rulesmd.ini:7364`, `8228`, `11726`, `12519`; Active in YR: Yes)
-- `[RESOLVED] OQ-03 - Does mission 0x10 check path validity before unload init? -> Yes, PathType::Has_Valid_Steps is called at 0x0073DEE2 and false goes to cleanup/return 1 before unload latch writes.` (evidence: `0x0073DEE0..0x0073DF55`; Active in YR: Yes)
+- `[RESOLVED] OQ-03 - Does mission 0x10 check path validity before unload init? -> Yes, RadioClass::In_Radio_Contact is called at 0x0073DEE2 and false goes to cleanup/return 1 before unload latch writes.` (evidence: `0x0073DEE0..0x0073DF55`; Active in YR: Yes)
 - `[RESOLVED] OQ-04 - What is the facing accept condition? -> `((RateTimerCurrent >> 7) + 1) & 0x1FE == 0x80`.` (evidence: `0x0073DF56..0x0073DF72`; Active in YR: Yes)
 - `[RESOLVED] OQ-05 - What happens when facing is not ready? -> If +0x6AF is clear, locomotor +0x4C(0x4000) is called and the mission returns delay 5 without setting +0x6D1 or +0xBC=3.` (evidence: `0x0073DF7A..0x0073DFBC`; Active in YR: Yes)
 - `[RESOLVED] OQ-06 - What starts unload-active state? -> The first accepted mission 0x10 pass writes +0xF8=0, +0x6D1=1, initializes +0x100..+0x10C, optionally slot 7, then +0xBC=3.` (evidence: `0x0073DFD0..0x0073E093`; Active in YR: Yes)

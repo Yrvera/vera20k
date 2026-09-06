@@ -871,7 +871,7 @@ calls but are not class members.
 | 0x0056d100 | MapClass__Can_Reach_Zone | MapClass | Zone ID comparison for reachability |
 | 0x006ec3a0 | TechnoClass__Clear_Convoy_Chain | TechnoClass | Clear linked convoy chain, set target=0 |
 | 0x004f9a90 | HouseClass__Is_Ally | HouseClass | Alliance bitmask check between two houses |
-| 0x0065ae30 | PathType__Has_Valid_Steps | Global | Check if pathfinding result has at least one step |
+| 0x0065ae30 | RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps) | Global | Returns non-zero if any radio contact slot in [+0xE4,+0xE8) is non-null (not a path check) |
 | 0x004d3920 | FootClass__Find_Path | FootClass | A* pathfinder entry, see PATHFINDING_ASTAR_GHIDRA_REPORT.md |
 | 0x004cbba0 | FootClass__Run_AStar | FootClass | Wrapper: zone precheck → A* → 3 smoothing passes |
 | 0x00429a90 | AStar_main_loop | Global | Cell-level A* with 8+1 directions, dual ground/bridge layers |

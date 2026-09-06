@@ -14,7 +14,7 @@ The verified gamemd model is different:
 - `FootClass::Set_Destination_Internal` owns the destination commit lifecycle.
 - The active locomotor receives `Head_To_Coord` after `NavCom` is written.
 - Drive stores destination, head-to/intermediate coordinate, speed fraction, residual, active track index, track point, and valid flag separately.
-- `PathType::Has_Valid_Steps` is separate from `NavCom`.
+- `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) is separate from `NavCom`.
 - Selected action lines read live target state: `ArchiveTarget`, else last `NavQueue` item, else `NavCom`.
 
 Relevant Rust surfaces:
@@ -88,7 +88,7 @@ This approach is preferred because every verified owner/locomotor/detail item ha
 - Drive track completion clears Drive head-to/track state before owner `NavCom` is necessarily cleared. Source: `docs/research/DRIVELOCOMOTION_ARRIVAL_QUEUE_NULL_DESTINATION_GHIDRA_REPORT.md`.
 - Empty-queue normal arrival calls owner `Set_Destination(NULL,1)` and returns; it does not call `OnArrival` in that branch. Source: `DRIVELOCOMOTION_ARRIVAL_QUEUE_NULL_DESTINATION_GHIDRA_REPORT.md`.
 - Non-empty queue arrival calls `FootClass::Stop_Moving`, then owner `OnArrival(0,1)`, which pops the first queued target and calls `Set_Destination(next,0)`. Source: `DRIVELOCOMOTION_ARRIVAL_QUEUE_NULL_DESTINATION_GHIDRA_REPORT.md`.
-- `PathType::Has_Valid_Steps @ 0x0065AE30` scans path array entries and is not equivalent to `NavCom`, `NavQueue`, or Drive destination state. Source: `UNITCLASS_SET_DESTINATION_NORMAL_DRIVE_CELL_GHIDRA_REPORT.md`.
+- `RadioClass::In_Radio_Contact @ 0x0065AE30` scans path array entries and is not equivalent to `NavCom`, `NavQueue`, or Drive destination state. Source: `UNITCLASS_SET_DESTINATION_NORMAL_DRIVE_CELL_GHIDRA_REPORT.md`.
 - Selected action-line draw requires `ArchiveTarget || NavCom`; `NavQueue` alone does not draw. Source: `docs/research/NAVCOM_NAVQUEUE_ACTION_LINE_ENDPOINT_VISIBILITY_GHIDRA_REPORT.md`.
 - Selected action-line endpoint priority is `ArchiveTarget`, else `NavQueue.Items[Count - 1]`, else `NavCom`; movement bridge-Z adjustment applies after endpoint coordinate resolution. Source: `NAVCOM_NAVQUEUE_ACTION_LINE_ENDPOINT_VISIBILITY_GHIDRA_REPORT.md`.
 

@@ -31,7 +31,7 @@ No stock state-4 instruction seeds `Force_Track(0x47)`, `BunkerWallsDownSound`, 
 | Unit `+0x5A4` | destination/target override pointer | read at `0x0073E1F0` before normal state-4 branch | Yes |
 | Unit `+0x33C` | carried `StorageClass` | `StorageClass__FindFirstNonEmptySlot @ 0x006C9820` from `ESI+0x33C` | Yes |
 | Unit `+0xF8` | dump-rate accumulator | compared against `HarvesterDumpRate * 900.0` at `0x0073E355..0x0073E374` | Yes |
-| Radio contacts `+0xE4/+0xE8` | contact array pointer/capacity | `PathType__Has_Valid_Steps @ 0x0065AE30`; `RadioClass` funcs | Yes |
+| Radio contacts `+0xE4/+0xE8` | contact array pointer/capacity | `RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps) @ 0x0065AE30`; `RadioClass` funcs | Yes |
 | Unit/building `+0x418` | entered/contact byte, not dock link | `TechnoClass__Receive_Radio @ 0x006F4AB0`: `0x18` sets, `0x19` clears | Yes |
 | Building `+0x57C` | slot-8 `ProductionAnim` pointer guard | state-4 wait at `0x0073E1DF` | Yes; stock refineries normally null |
 | Building `+0x584` | slot-10 `SpecialAnim` pointer | state 3 clears slot 10 after empty transition at `0x0073E526..0x0073E534` | Yes |
@@ -71,7 +71,7 @@ For non-Weeder stock HARV, state 4 at `0x0073E17F` performs this order:
 3. Clear `unit+0x6D1 = 0` (`0x0073E1F6`).
 4. If there is no overriding destination/queued mission, call vtable `+0x1E8` with mission `0x0A` and queued flag `0` (`0x0073E24D..0x0073E254`).
 5. Call vtable `+0x200`; if false, skip radio and queue call and proceed to timer epilogue (`0x0073E25A..0x0073E266`).
-6. Call `PathType__Has_Valid_Steps`; if true, send radio `3` via vtable `+0x274` (`0x0073E268..0x0073E279`).
+6. Call `RadioClass__In_Radio_Contact`; if true, send radio `3` via vtable `+0x274` (`0x0073E268..0x0073E279`).
 7. Call vtable `+0x1EC` to queue/advance mission (`0x0073E27F..0x0073E283`).
 8. Return through `MissionClass__GetMissionTimerEntry`, `Math__ftol`, and `RandomRanged(0,2)` (`0x0073E289..0x0073E2BE`).
 
@@ -79,7 +79,7 @@ For non-Weeder stock HARV, state 4 at `0x0073E17F` performs this order:
 
 ### 3.4 Contact cleanup order
 
-`PathType__Has_Valid_Steps @ 0x0065AE30` scans contact array `+0xE4` for `+0xE8` entries and returns true when any contact slot is non-null. In state 4, that means radio `3` is only sent if the miner still has a contact.
+`RadioClass__In_Radio_Contact @ 0x0065AE30` scans contact array `+0xE4` for `+0xE8` entries and returns true when any contact slot is non-null. In state 4, that means radio `3` is only sent if the miner still has a contact.
 
 Radio `3` cleanup is synchronous:
 
@@ -143,7 +143,7 @@ State 4 normal exit calls `SetMission(0x0A,0)` and `QueueMission` / vtable `+0x1
 |---|---|---|
 | `UnitClass__Mission_Deploy_Building @ 0x0073D630` | primary state machine | zero-link stock state 3 empties storage, state 4 clears `+0x6D1`, radios `3`, queues Harvest |
 | `BuildingClass__Receive_Radio @ 0x0043C2D0` | refinery radio receiver | case `0x15` sets sender mission `0x10`; no reciprocal `+0x2E4` write on stock handoff |
-| `PathType__Has_Valid_Steps @ 0x0065AE30` | contact-present test in state 4 | true if any contact slot is non-null |
+| `RadioClass__In_Radio_Contact @ 0x0065AE30` | contact-present test in state 4 | true if any contact slot is non-null |
 | `RadioClass__Transmit_Radio_ToFirst @ 0x0065ACB0` | sends state-4 radio `3` to first contact | returns `0` if no contact |
 | `RadioClass__Transmit_Radio_Impl @ 0x0065A970` | sender-side radio cleanup | radio `3` clears sender contacts before target receive |
 | `BuildingClass__Receive_Radio(3)` + `TechnoClass__Receive_Radio(3)` + `RadioClass__Receive_Radio(3)` | receiver-side cleanup | clears `+0x418` via `0x19` cascade and receiver contact slot |
@@ -203,7 +203,7 @@ Observed delta: current Rust broadly matches the verified stock zero-link handof
 - `[RESOLVED] OQ-10 - When is unload-active `+0x6D1` cleared? -> after the `+0x57C` wait guard passes and before mission/radio cleanup.` (evidence: `0x0073E1F6`)
 - `[RESOLVED] OQ-11 - What mission is scheduled next? -> Harvest mission `0x0A`, queued flag `0`, then vtable `+0x1EC`.` (evidence: `0x0073E24D..0x0073E283`)
 - `[RESOLVED] OQ-12 - When does radio `3` fire? -> after Harvest assignment and successful vtable `+0x200`, only if contacts are non-empty.` (evidence: `0x0073E25A..0x0073E279`; `0x0065AE30`)
-- `[RESOLVED] OQ-13 - What does `PathType__Has_Valid_Steps` mean here? -> It scans contact slots and returns true if any slot is non-null.` (evidence: `0x0065AE30`)
+- `[RESOLVED] OQ-13 - What does `RadioClass__In_Radio_Contact` mean here? -> It scans contact slots and returns true if any slot is non-null.` (evidence: `0x0065AE30`)
 - `[RESOLVED] OQ-14 - What contact side clears first? -> sender-side contacts clear in `Transmit_Radio_Impl(3)` before receiver receives radio.` (evidence: `0x0065A970`)
 - `[RESOLVED] OQ-15 - Does receiver contact and `+0x418` clear? -> Yes; Building delegates to Techno, Techno can cascade `0x19`, base Radio clears receiver slot.` (evidence: `0x0043C2D0`, `0x006F4AB0`, `0x0065A820`)
 - `[RESOLVED] OQ-16 - Is any stock state-4 exit movement/track seeded? -> No; no `Force_Track`, destination, or exit-cell write in the zero-link state-4 branch.` (evidence: `0x0073E17F..0x0073E2BE`)
@@ -262,7 +262,7 @@ Observed delta: current Rust broadly matches the verified stock zero-link handof
 
 ## Sources
 
-- Ghidra decompiled/read-only: `UnitClass__Mission_Deploy_Building @ 0x0073D630`, `BuildingClass__ReleaseDockedHarvester @ 0x004595C0`, `BuildingClass__UndockUnit @ 0x004593A0`, `PathType__Has_Valid_Steps @ 0x0065AE30`, `RadioClass__Transmit_Radio_ToFirst @ 0x0065ACB0`, `RadioClass__Transmit_Radio_Impl @ 0x0065A970`, `RadioClass__Receive_Radio @ 0x0065A820`, `TechnoClass__Receive_Radio @ 0x006F4AB0`, `BuildingClass__Receive_Radio @ 0x0043C2D0`, `UnitClass__Mission_Harvest @ 0x0073E5E0`, `MissionClass__GetMissionTimerEntry @ 0x005B3A00`.
+- Ghidra decompiled/read-only: `UnitClass__Mission_Deploy_Building @ 0x0073D630`, `BuildingClass__ReleaseDockedHarvester @ 0x004595C0`, `BuildingClass__UndockUnit @ 0x004593A0`, `RadioClass__In_Radio_Contact @ 0x0065AE30`, `RadioClass__Transmit_Radio_ToFirst @ 0x0065ACB0`, `RadioClass__Transmit_Radio_Impl @ 0x0065A970`, `RadioClass__Receive_Radio @ 0x0065A820`, `TechnoClass__Receive_Radio @ 0x006F4AB0`, `BuildingClass__Receive_Radio @ 0x0043C2D0`, `UnitClass__Mission_Harvest @ 0x0073E5E0`, `MissionClass__GetMissionTimerEntry @ 0x005B3A00`.
 - Ghidra caller/callee/xref checks: `BuildingClass__ReleaseDockedHarvester` caller only from `UnitClass__Mission_Deploy_Building`; `BuildingClass__UndockUnit` callers from `BuildingClass__ReceiveDamage`, `BuildingClass__Sell`, `TemporalClass__Update`; `UnitClass__Mission_Deploy_Building` callees include release helper, storage, radio contact helper, and timer functions.
 - Prior reports read: `STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_PATHTYPE_STATE4_GHIDRA_REPORT.md`, `TWO_MINER_ONE_REFINERY_ZERO_LINK_HANDOFF_TIMING_GHIDRA_REPORT.md`, `RELEASEDOCKEDHARVESTER_0x4595C0_GHIDRA_REPORT.md`, `BUILDING_UNDOCKUNIT_0x4593A0_CHRONO_MINER_GHIDRA_REPORT.md`.
 - INI checked: `ini/rulesmd.ini`, `rules.ini`, `artmd.ini`, `art.ini`.

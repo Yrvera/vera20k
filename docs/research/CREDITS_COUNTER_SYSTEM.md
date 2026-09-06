@@ -207,8 +207,8 @@ if (animating && credit_ticks_count >= 2) {
 
 ### Sound Timing
 
-- Sound plays **every frame** that `animating` is set — no throttle
-- At 15 fps: up to 15 sound triggers per second during counting
+- Sound plays **once per counter step that changed the displayed value**: `CreditsClass::AI` sets `animating` (+0x0A) only when the step moved `displayed`, and `CreditsClass::Draw` clears `animating` after playing (corrected 2026-09-06; `0x004A2600` / `0x004A2370`)
+- At 15 fps: up to 15 sound triggers per second while the value is still changing
 - Volume: 50% (`0x3F000000` = 0.5f)
 - Pan: center (`0x2000` = 8192)
 - The rapid-fire playback creates the characteristic C&C credit tick sound

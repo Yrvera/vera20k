@@ -137,7 +137,7 @@ UnitClass::Mission_Deploy_Building(param_1):
     |           return timer
     |
     |   // HARVESTER/WEEDER ORE DUMPING PATH
-    |   Check PathType::Has_Valid_Steps
+    |   Check RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)
     |   Check facing alignment
     |   if (byte 0x6D1 == 0): Initialize docking (open door, set state 3)
     |   else if (state == 3): Per-bale dump loop
@@ -333,7 +333,7 @@ This is reached for Harvester/Weeder units after the undocked/docked branch has 
 ### Pre-Check: Path Validity
 
 ```
-cVar2 = PathType__Has_Valid_Steps();
+cVar2 = RadioClass__In_Radio_Contact();
 if (cVar2 == 0) {
     // No valid path steps -- abort docking
     vtable+0x484(0, 1)           // ForceScatter
@@ -499,7 +499,7 @@ Each tick while in state 3:
    ```
    vtable+0x1E8(10, 0)  // SetMission(Harvest)
    if (vtable+0x200()) {  // ShouldScatter
-       if (PathType__Has_Valid_Steps()) {
+       if (RadioClass__In_Radio_Contact()) {
            vtable+0x274(3)  // ScanForTargets
        }
        vtable+0x1EC()  // QueueMission

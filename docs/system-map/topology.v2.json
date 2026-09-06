@@ -154,6 +154,66 @@
       ],
       "notes": ["Engineer mission capture, distinct from CaptureManager mind control."]
     },
+    "GSI-07.15": {
+      "native_anchors": [
+        {
+          "symbol": "UnitClass::Mission_Harvest",
+          "address": "0x0073E5E0",
+          "evidence": "docs/research/miner/HARVESTER_DOCK_UNLOAD.md"
+        },
+        {
+          "symbol": "UnitClass::Harvest_Ore_Tick",
+          "address": "0x0073D450",
+          "evidence": "docs/research/HARVEST_ORE_TICK_TIMING_PARTIAL_FULL_EDGE_CASES_ORE_GEMS_GHIDRA_REPORT.md"
+        }
+      ],
+      "notes": ["Phase 7 (PR #242 harvest bite size, PR #248 harvest idle tail): decisive bodies read; request per gate is min(1.0, Storage-load) at 0x0073D556..0x0073D5A1. Native evidence ANCHORED; parity not demonstrated (regression-tested only)."]
+    },
+    "GSI-07.17": {
+      "native_anchors": [
+        {
+          "symbol": "Mission 12 (Return) vtable stub",
+          "address": "0x005B2ED0",
+          "evidence": "docs/research/GAMEMD_SYSTEM_STATUS_MATRIX_SYSTEM_MODEL_SYNTHESIS.md"
+        }
+      ],
+      "notes": ["Phase 7: stock-inactive / proven dead. Vtable slot +0x234 resolves to the 5-byte stub 0x005B2ED0 in all 8 mission-capable vtables (e.g. BuildingClass 0x007E3EBC+0x234 = 0x007E40F0 -> 0x005B2ED0) and no assigner sets mission 12; recorded as COMPILED_INACTIVE in the status matrix."]
+    },
+    "GSI-07.21": {
+      "native_anchors": [
+        {
+          "symbol": "UnitClass::Mission_Unload",
+          "address": "0x0073D630",
+          "evidence": "docs/research/UNIT_MISSION_DEPLOY_BUILDING_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "AircraftClass::Mission_Unload",
+          "address": "0x004151E0",
+          "evidence": "docs/research/GAMEMD_SYSTEM_STATUS_MATRIX_SYSTEM_MODEL_SYNTHESIS.md"
+        }
+      ],
+      "notes": ["Phase 7 (PR #251 transport/Nighthawk unload through the native Unload mission): decisive bodies read. Native evidence ANCHORED; parity not demonstrated."]
+    },
+    "GSI-07.37": {
+      "native_anchors": [
+        {
+          "symbol": "RadioClass::In_Radio_Contact",
+          "address": "0x0065AE30",
+          "evidence": "docs/research/RADIO_CLASS_PROTOCOL_GHIDRA_REPORT.md"
+        }
+      ],
+      "notes": ["Phase 7 (PR #253): RadioClass::In_Radio_Contact 0x0065AE30 (formerly mislabeled PathType__Has_Valid_Steps) is any-non-null over [+0xE4,+0xE8). Rules+0x16F8 read by ObjectClass::Receive_Radio 0x22 is the constant 1.0 written at 0x0066B32D, not an INI key."]
+    },
+    "GSI-07.38": {
+      "native_anchors": [
+        {
+          "symbol": "BuildingClass::Receive_Radio",
+          "address": "0x0043C2D0",
+          "evidence": "docs/research/SERVICE_REPAIR_RADIO_0X1C_0X22_PATH_GHIDRA_REPORT.md"
+        }
+      ],
+      "notes": ["Phase 7 (PR #253 repair depot eviction): the 0x22->0x17 eviction loop is the Hospital/Armory branch (Type+0x16C1/+0x16C2, 0x0043CB0C); UnitRepair depots take 0x0043C8A4 -> HELLO -> 0x13 -> return 1. Native evidence ANCHORED; parity not demonstrated."]
+    },
     "GSI-07.39": {
       "native_anchors": [
         {
@@ -181,7 +241,7 @@
           "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
         }
       ],
-      "notes": ["Owner of the full harvest-return-dock-credit closed loop."]
+      "notes": ["Owner of the full harvest-return-dock-credit closed loop.", "Phase 7 (PR #245 refinery selection, PR #246 refinery unload anim): decisive bodies read; native evidence ANCHORED; parity not demonstrated."]
     },
     "GSI-07.41": {
       "native_anchors": [
@@ -259,6 +319,54 @@
         }
       ],
       "notes": ["Owner of the attack-through-fatal-damage loop; batch ownership differs from the native live-vector path."]
+    },
+    "GSI-09.01": {
+      "native_anchors": [
+        {
+          "symbol": "CreditsClass::AI",
+          "address": "0x004A2600",
+          "evidence": "docs/research/CREDITS_COUNTER_SYSTEM.md"
+        },
+        {
+          "symbol": "HouseClass::Spend_Money",
+          "address": "0x004F9790",
+          "evidence": "docs/research/FACTORY_CREDIT_SYSTEM_GHIDRA_REPORT.md"
+        }
+      ],
+      "notes": ["Phase 7 (PR #244 AI opening credits): house silo StorageClass is +0x2FC; CreditUp/CreditDown plays once per counter step that changed the value. Native evidence ANCHORED; parity not demonstrated."]
+    },
+    "GSI-09.02": {
+      "native_anchors": [
+        {
+          "symbol": "DepositOreFromStorage",
+          "address": "0x00522D50",
+          "evidence": "docs/research/miner/REFINERY_STORAGE_FLOW_GHIDRA_REPORT.md"
+        }
+      ],
+      "notes": ["Phase 7: 0x00522D50 drains the slave's own +0x33C storage (ECX = slave); HouseClass+0x538C is the OrePurifier building count (Type+0x16CC), not a storage-facility count. Native evidence ANCHORED; Rust PARTIAL; parity not demonstrated."]
+    },
+    "GSI-09.03": {
+      "native_anchors": [
+        {
+          "symbol": "UnitClass::Harvest_Ore_Tick",
+          "address": "0x0073D450",
+          "evidence": "docs/research/HARVEST_ORE_TICK_TIMING_PARTIAL_FULL_EDGE_CASES_ORE_GEMS_GHIDRA_REPORT.md"
+        }
+      ],
+      "notes": ["Phase 7 (PR #242): harvest bite size corrected to one density level per gate; regression-tested, parity remains DRIFT / undemonstrated."]
+    },
+    "GSI-09.04": {
+      "notes": ["Phase 7 (PR #243 skirmish ore growth rate): regression-tested, parity remains DRIFT / undemonstrated."]
+    },
+    "GSI-09.05": {
+      "native_anchors": [
+        {
+          "symbol": "BuildingClass::Receive_Radio",
+          "address": "0x0043C2D0",
+          "evidence": "docs/research/miner/RECEIVE_RADIO_CASE_0x0E_CAN_DOCK_GHIDRA_REPORT.md"
+        }
+      ],
+      "notes": ["Phase 7 (PR #245 refinery selection, PR #248 harvest idle tail): decisive bodies read. Native evidence ANCHORED; parity not demonstrated."]
     },
     "GSI-09.07": {
       "native_anchors": [
@@ -444,6 +552,24 @@
         "Matching map-roster rows intentionally retain priority, including a deliberate launch-name collision; map-load radar animation initialization is separate GSI-13.23 drift and remains hardwired to Allied.",
         "Retail Yuri/side-2 provenance, SHP decode, GCLOCK CPU atlas geometry/frame count, and production instance construction have named executable coverage; GPU pixels, exact conversion/blending, and progress cadence remain unverified."
       ]
+    },
+    "GSI-15.06": {
+      "native_anchors": [
+        {
+          "symbol": "HouseClass::Update (InsufficientFunds producer)",
+          "address": "0x004F8BA0",
+          "evidence": "docs/research/EVA_SYSTEM_DEEP_DIVE_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "SpeedNormalize",
+          "address": "0x005FB2E0",
+          "evidence": "docs/research/EVA_SYSTEM_DEEP_DIVE_GHIDRA_REPORT.md"
+        }
+      ],
+      "notes": ["Phase 7 (PR #249 vox queue, PR #250 predicates, PR #254 producers): InsufficientFunds re-arm = SpeedNormalize(ftol(SpeakDelay x 900.0)) with 900.0 at 0x007E27F8 and the 4x8 speed table at 0x00832CEC; radar event type 10 (capture) has unique=0 at 0x007F0A38 (no dedupe). Native evidence ANCHORED; parity not demonstrated."]
+    },
+    "GSI-15.07": {
+      "notes": ["Phase 7 (PR #247 music theme): decisive bodies read; native evidence ANCHORED; parity not demonstrated."]
     },
     "GSI-17.04": {
       "native_anchors": [

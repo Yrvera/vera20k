@@ -8,7 +8,7 @@
 ## Overview
 
 The RA2/YR credit system has two pools: **cash** (Credits at HouseClass+0x30C) and
-**ore storage** (StorageClass at HouseClass+0x314). Cash is spent first; ore is
+**ore storage** (StorageClass at HouseClass+0x2FC — `Spend_Money` `LEA ESI,[EBX+0x2FC]` at `0x004F9798`; corrected 2026-09-06, `+0x314` is the separate weed StorageClass used by `Add_Tiberium_To_Storage`). Cash is spent first; ore is
 drained from silos only when cash runs out.
 
 ## HouseClass Credit Fields
@@ -20,7 +20,7 @@ drained from silos only when cash runs out.
 | +0x2DC | int | TotalSpent | Cumulative spending (for score screen) |
 | +0x30C | int | Credits | Current cash balance (directly spendable) |
 | +0x310 | int | OreCapacity | Whether storage capacity is nonzero |
-| +0x314 | 16B | StorageClass | 4 floats: ore bails per tiberium type |
+| +0x2FC | 16B | StorageClass | 4 floats: ore bails per tiberium type (corrected 2026-09-06 from +0x314) |
 | +0x54E8 | int | HarvestedCredits | Cumulative ore value harvested (statistics) |
 
 ## Add_Credits (0x004F9950)
@@ -107,7 +107,7 @@ void HouseClass::Spend_Money(int amount) {
         amount = actualSpent;
     }
 
-    Notify_Credit_State_Change(oldStorageTotal);
+    Notify_Credit_State_Change(oldStorageTotal);   // 0x004F9970 — name is a VERA label, unverified
     this->TotalSpent += amount;  // +0x2DC
 }
 ```
@@ -117,7 +117,7 @@ ore storage pool is rarely used. Credits from harvester deposits go directly to
 +0x30C via `Add_Credits`. The two-pool logic is inherited from Tiberian Sun's
 silo system but is mostly vestigial in standard YR gameplay.
 
-## StorageClass Layout (HouseClass+0x314, 16 bytes)
+## StorageClass Layout (HouseClass+0x2FC, 16 bytes)
 
 ```
 +0x00  float  Amount[0]  (Riparius / Ore)
@@ -174,6 +174,8 @@ Step is clamped to max 143, so very large credit changes still animate smoothly.
 | +0x0C | i32 | direction (1=up, 3=down) |
 
 ## Notify_Credit_State_Change (0x004F9970)
+
+> The name `Notify_Credit_State_Change` is a VERA-assigned label for `0x004F9970`; it is not verified against any native symbol (marked 2026-09-06).
 
 Triggers building animation updates when ore storage changes:
 
@@ -259,7 +261,7 @@ void Set_Credits_And_Color(int colorScheme, int unused, int startingCredits) {
 
 Called during `ScenarioClass::Create_Houses` for each player slot. Both
 +0x1DC (preserved reference) and +0x30C (live balance) start at the same value.
-StorageClass at +0x314 starts zeroed.
+StorageClass at +0x2FC starts zeroed.
 
 ## Complete Money Flow
 
@@ -272,7 +274,7 @@ Set_Credits_And_Color → +0x1DC (InitialCredits) + +0x30C (Credits)
     ├─────────────────────────────────────────┐
     │                                         │
     ▼                                         ▼
- +0x30C Credits (Cash)                 +0x314 StorageClass (Ore in Silos)
+ +0x30C Credits (Cash)                 +0x2FC StorageClass (Ore in Silos)
     │                                         │
     │ ◄── Add_Credits (refund, sell)          │ ◄── Add_Tiberium_To_Storage
     │ ◄── DepositOreCredits (harvest)         │     (weed harvester: raw bails)

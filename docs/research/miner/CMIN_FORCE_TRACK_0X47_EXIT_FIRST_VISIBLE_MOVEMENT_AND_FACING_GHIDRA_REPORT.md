@@ -53,7 +53,7 @@ The stock refinery path is the zero-link branch. Its state-4 branch starts at `0
 - `0x0073E1DF` checks `building+0x57C`; `0x0073E1EA` direct-returns while it is non-null.
 - `0x0073E1F6` clears `byte [ESI+0x6D1]`.
 - `0x0073E24F..0x0073E254` pushes `0`, pushes `0x0A`, and calls vtable `+0x1E8`.
-- `0x0073E268..0x0073E279` calls `PathType__Has_Valid_Steps` and conditionally sends radio `3`.
+- `0x0073E268..0x0073E279` calls `RadioClass__In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps) and conditionally sends radio `3`.
 - `0x0073E27F..0x0073E283` calls vtable `+0x1EC`.
 
 There is no call to `ILocomotion+0x58`, no push of `0x47`, no vtable `+0x70` call, no speed-multiplier restore, and no new NavCom/destination in this stock state-4 block.

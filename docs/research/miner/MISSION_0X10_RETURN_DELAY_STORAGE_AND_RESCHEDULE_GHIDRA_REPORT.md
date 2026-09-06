@@ -98,7 +98,7 @@ Active in YR: Yes. Mission id `0x10` is `[Unload]` in stock `rulesmd.ini`, and d
 
 ### 3.3 Direct Return 5 Branch
 
-Inside `UnitClass::Mission_Deploy_Building`, after `PathType::Has_Valid_Steps()` succeeds, the function reads `RateTimer::Current(Unit+0x388)` and applies the accepted-facing window:
+Inside `UnitClass::Mission_Deploy_Building`, after `RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)()` succeeds, the function reads `RateTimer::Current(Unit+0x388)` and applies the accepted-facing window:
 
 ```text
 accepted if (((current >> 7) + 1) & 0x1FE) == 0x80

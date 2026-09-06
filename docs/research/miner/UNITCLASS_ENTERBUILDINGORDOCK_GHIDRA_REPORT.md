@@ -32,7 +32,7 @@ The task scope called this "harvester-side sender of 0x0E/0x16 radio traffic dur
 1. **Null/invalid destination** → clear destination (call `FootClass::Set_Destination_Internal(NULL, flag)`)
 2. **Destination is in-transit** (`vtable+0x54` returns true) → clear destination immediately
 3. **Destination is type 6 (BuildingClass) AND aircraft is type 7 (AircraftClass) or currently in mission 7** → enter the dock-approach logic:
-   - Check path validity (`PathType::Has_Valid_Steps`)
+   - Check path validity (`RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps))
    - If path is valid → run `Filter_AbstractType_InMap` on destination, then attempt `CAN_DOCK(0x0E)` via radio
    - If path is NOT valid (no path yet) → attempt `CAN_DOCK(0x0E)` or `CAN_ENTER(0x0F)` depending on free-slot availability
 4. **After building logic** → walk the current cell's object list for any UnitRepair/UnitReload building and handle locomotor suspension
@@ -114,17 +114,17 @@ if (iVar2 != 7) {
 
 For a standard aircraft (type 2), only the mission==7 path applies. This entire dock block runs only when the aircraft is actively in Mission_Enter.
 
-### Stage 4 — PathType::Has_Valid_Steps check (0x0041AAE2–0x0041AAEF)
+### Stage 4 — RadioClass::In_Radio_Contact check (0x0041AAE2–0x0041AAEF)
 
 ```c
-cVar1 = PathType__Has_Valid_Steps(param_1);  // 0x0065AE30
+cVar1 = RadioClass__In_Radio_Contact(param_1);  // 0x0065AE30
 if (cVar1 != 0) goto PATH_VALID_BRANCH;     // path already computed
 // else: no path yet → NO_PATH_BRANCH
 ```
 
-`PathType::Has_Valid_Steps` at `0x0065AE30` walks `this->Contacts[]` (radio) checking for any non-null entry — verified via `decompile_function 0x0065AE30`. Returns 1 if any contact slot is non-zero.
+`RadioClass::In_Radio_Contact` at `0x0065AE30` walks `this->Contacts[]` (radio) checking for any non-null entry — verified via `decompile_function 0x0065AE30`. Returns 1 if any contact slot is non-zero.
 
-**NOTE:** The Ghidra label `PathType__Has_Valid_Steps` is likely a mislabel — the body actually checks the radio Contacts array (`this+0xE4`, `this+0xE8`). Functionally it answers "does this aircraft already have a radio contact?" This guards the dock-initiation logic.
+**NOTE:** The Ghidra label `RadioClass__In_Radio_Contact` is likely a mislabel — the body actually checks the radio Contacts array (`this+0xE4`, `this+0xE8`). Functionally it answers "does this aircraft already have a radio contact?" This guards the dock-initiation logic.
 
 ### Stage 4a — NO_PATH_BRANCH: First approach (no radio link yet) (0x0041AAF5–0x0041AC4A)
 
@@ -382,7 +382,7 @@ No. The only reply codes checked are ROGER(1) at `0x0041ABDC` and `0x0041AC87`. 
 - **`DynamicVectorClass__Contains` at `0x0065AD50`** = walks `this+0xE4` array up to `this+0xE8` count, returns 1 if param_2 found (verified via `decompile_function 0x0065AD50`).
 - **`FUN_0065adf0` at `0x0065ADF0`** = FindFreeContactSlot — walks `param_1->Contacts[]` (`+0xE4`, capacity `+0xE8`); returns 1 if a zero slot OR a slot matching `param_2` is found (verified via `decompile_function 0x0065ADF0`).
 - **`Filter_AbstractType_InMap` at `0x0040DD70`** = accepts RTTI types 1 (Unit), 2 (Aircraft), 6 (Building), 0xF (Infantry); returns NULL for others (verified via `decompile_function 0x0040DD70`).
-- **`PathType::Has_Valid_Steps` at `0x0065AE30`** — despite its name, walks `this->Contacts[]` (`+0xE4`, `+0xE8`), returning 1 if any contact is non-NULL. Functionally = HasRadioContact. This label appears to be a mislabel.
+- **`RadioClass::In_Radio_Contact` at `0x0065AE30`** — despite its name, walks `this->Contacts[]` (`+0xE4`, `+0xE8`), returning 1 if any contact is non-NULL. Functionally = HasRadioContact. This label appears to be a mislabel.
 - **`0x0041ABCA: XOR EDI,EDI`** — sets `param_2 = NULL` after writing `param_2` to `this+0x500`. This is the unconditional dest-clear after storing the UnitRepair building pointer.
 - **`this+0x500` = offset `0x140*4` = `param_1[0x140]`** — stores the UnitRepair building pointer when the aircraft arrives at a repair pad with no free slot.
 - **`this+0x5A4` = `param_1[0x169]`** — an additional stored building pointer checked in the OVER_AND_OUT path; used as alternate target for SetGhostCell.
@@ -420,7 +420,7 @@ All claims verified via Ghidra MCP in this session:
 - `read_memory 0x007F60F0, 8` → `0x00741970` = TechnoClass::Set_Destination at UnitClass vtable+0x480
 - `read_memory 0x007E9114, 16` → `0x004D94A0` at FootClass vtable+0x480
 - `decompile_function 0x0065ADF0` — FUN_0065adf0 = FindFreeContactSlot
-- `decompile_function 0x0065AE30` — PathType::Has_Valid_Steps (contacts check)
+- `decompile_function 0x0065AE30` — RadioClass::In_Radio_Contact (contacts check)
 - `decompile_function 0x0040DD70` — Filter_AbstractType_InMap
 - `decompile_function 0x0053A130` — stub returning 0
 - `decompile_function 0x0065AD50` — DynamicVectorClass::Contains

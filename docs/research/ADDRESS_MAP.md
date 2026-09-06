@@ -702,7 +702,7 @@ Before implementing from this map, always re-verify via live Ghidra decompilatio
 | `0x004F9A90` | HouseClass::Is_Ally (alliance bitmask check) | ~80 B | DRIVE_LOCOMOTION_CLASS |
 | `0x00578460` | MapClass::Is_Cell_In_Playfield (bounds check) | ~214 B | DRIVE_LOCOMOTION_CLASS |
 | `0x00578AD0` | MapClass::Check_Crushable_Obstacle (scatter infantry) | ~148 B | DRIVE_LOCOMOTION_CLASS |
-| `0x0065AE30` | PathType::Has_Valid_Steps (path result check) | ~36 B | DRIVE_LOCOMOTION_CLASS |
+| `0x0065AE30` | RadioClass::In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps) (any non-null contact in [+0xE4,+0xE8)) | ~36 B | DRIVE_LOCOMOTION_CLASS |
 | `0x006B7D80` | RadioClass::Tether_Count (active tether links) | ~84 B | DRIVE_LOCOMOTION_CLASS |
 
 ### Locomotion — Drive

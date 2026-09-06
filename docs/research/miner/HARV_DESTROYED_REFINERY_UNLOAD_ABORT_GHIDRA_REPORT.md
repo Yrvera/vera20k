@@ -151,7 +151,7 @@ Only the non-null branch reaches the dump gate and credit block:
 
 If the building lookup is null, the function takes the abort branch instead:
 
-- calls `PathType::Has_Valid_Steps`;
+- calls `RadioClass::In_Radio_Contact` (formerly mislabeled PathType__Has_Valid_Steps);
 - if true, sends radio command `3`;
 - calls `SetMission(10, 1)` (`Mission_Harvest`, queued);
 - reaches the timer epilogue.

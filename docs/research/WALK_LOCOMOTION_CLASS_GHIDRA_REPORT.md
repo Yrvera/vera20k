@@ -323,7 +323,7 @@ Identical pattern to Ship's §8.5/§8.6 but with Walk-specific thresholds:
 ```c
 if (Can_Enter_Cell == 6) {
     distance = Distance3D(...);
-    if (distance < RulesClass+0x1718 && !PathType.Has_Valid_Steps()) {
+    if (distance < RulesClass+0x1718 && !PathType.RadioClass__In_Radio_Contact (formerly mislabeled PathType__Has_Valid_Steps)()) {
         z_diff = abs(longer_dest.Z - techno.Z);
         if (z_diff < DAT_00B45C28 * 2) {                 // Walk-specific 2x threshold
             new_cell = Get_Cell_At(techno.Location);
