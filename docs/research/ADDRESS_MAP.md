@@ -6,6 +6,11 @@ via Ghidra MCP decompilation and documented in the source column's report.
 **Usage:** Ctrl+F for an address, function name, or system keyword.
 Before implementing from this map, always re-verify via live Ghidra decompilation.
 
+**Source `GAMEMD_ARCHITECTURE`:** that report (the 2026 "Complete Architecture
+Map" survey) was removed on 2026-09-06 as never audited and superseded by
+`docs/system-map/`. Rows carrying it in the source column have no surviving
+report behind them; treat them as unverified leads.
+
 ---
 
 ## Functions
