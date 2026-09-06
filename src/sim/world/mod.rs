@@ -1684,7 +1684,8 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_, '
                     stage,
                     stable_id,
                     category,
-                    borrowed_terrain,
+                    UninitContext::with_terrain_and_rules(borrowed_terrain, rules)
+                        .with_bridge_state(self.bridge_state),
                 );
             std::mem::swap(&mut self.sim.sound_events, events);
         } else {
@@ -1694,7 +1695,8 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_, '
                     stage,
                     stable_id,
                     category,
-                    borrowed_terrain,
+                    UninitContext::with_terrain_and_rules(borrowed_terrain, rules)
+                        .with_bridge_state(self.bridge_state),
                 );
         }
         if let Some(state) = borrowed_terrain_area_state.as_deref_mut() {
@@ -1867,9 +1869,8 @@ impl Simulation {
         stage: crate::sim::combat::FatalLifecycleStage,
         stable_id: u64,
         category: EntityCategory,
-        terrain: Option<&ResolvedTerrainGrid>,
+        uninit_context: UninitContext<'_>,
     ) {
-        let uninit_context = UninitContext::with_terrain_and_rules(terrain, rules);
         match stage {
             crate::sim::combat::FatalLifecycleStage::MaintainDamageSmoke { state } => {
                 self.maintain_damage_smoke_after_receive(stable_id, state, rules);
