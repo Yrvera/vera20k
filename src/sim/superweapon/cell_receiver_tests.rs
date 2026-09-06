@@ -389,7 +389,7 @@ fn iron_curtain_command_uses_packed_aliases_and_stamps_missing_cells() {
 }
 
 #[test]
-fn iron_curtain_command_follows_current_infantry_after_nested_bridge_drop_in() {
+fn iron_curtain_command_observes_native_deck_order_after_nested_bridge_drop_in() {
     use crate::sim::bridge_state::{
         AnchorSpan, Axis, BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState,
         BridgeheadAnchorClass, DamageState, Direction,
@@ -480,6 +480,10 @@ fn iron_curtain_command_follows_current_infantry_after_nested_bridge_drop_in() {
             .snapshot_layer(MovementLayer::Bridge),
         vec![boomer, tank]
     );
+    let unmarked = sim
+        .construct_object_limbo_at_height("MTNK", "Americans", 5, 5, 0, 4, &rules)
+        .unwrap();
+    sim.substrate.entities.get_mut(unmarked).unwrap().on_bridge = true;
     launch_command(&mut sim, &rules, "IC", 5, 5);
     let current = sim.substrate.entities.get(boomer).unwrap();
     assert!(
@@ -489,8 +493,30 @@ fn iron_curtain_command_follows_current_infantry_after_nested_bridge_drop_in() {
     let recipient = sim.substrate.entities.get(tank).unwrap();
     assert!(!recipient.on_bridge && recipient.health.current > 0);
     assert!(
-        recipient.invulnerability.is_some(),
-        "successor comes from current Ground membership after DropIn"
+        recipient.invulnerability.is_none(),
+        "native deck traversal prepends tank after boomer; current boomer then has no successor"
+    );
+    let ground = sim
+        .substrate
+        .occupancy
+        .get(5, 5)
+        .unwrap()
+        .snapshot_layer(MovementLayer::Ground);
+    assert_eq!(ground, vec![tank, boomer]);
+    let rebuilt = crate::sim::occupancy::OccupancyGrid::rebuild(&sim.substrate.entities);
+    assert_eq!(
+        rebuilt
+            .get(5, 5)
+            .unwrap()
+            .snapshot_layer(MovementLayer::Ground),
+        ground,
+        "serialized re-entry order preserves the live list during restore"
+    );
+    let twin = sim.substrate.entities.get(unmarked).unwrap();
+    assert!(twin.on_bridge && twin.lifecycle.in_limbo && !twin.lifecycle.cell_marked);
+    assert_eq!(
+        twin.position.z, 4,
+        "unmarked deck coordinate is not a DropIn recipient"
     );
     assert_eq!(
         sim.substrate

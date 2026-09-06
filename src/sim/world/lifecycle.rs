@@ -1475,6 +1475,65 @@ impl Simulation {
         }
     }
 
+    /// Own the represented bridge DropIn's complete cell-list relayer.
+    /// Native ObjectClass::DropIn 0x005F4160 removes membership while OnBridge
+    /// is set, then clears it and re-enters through the multi-cell hooks.
+    /// The fresh entry order also owns reconstruction after snapshot restore.
+    ///
+    /// This preserves the existing Rust ground snap and locomotor reset.
+    /// Native falling/unchanged-Z, concrete raw occupation callbacks, and
+    /// hidden-building occupation entry remain DRIFT. Add/RemoveContent skip Infantry raw callbacks;
+    /// full Mark/Unmark would also discard reservations and building smudges.
+    pub(super) fn drop_in_bridge_member(&mut self, stable_id: u64) {
+        use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
+            return;
+        };
+        let cells = entity_occupancy_cells(entity);
+        let current_cell = (entity.position.rx, entity.position.ry);
+        let sub_cell = entity.sub_cell;
+        let insertion = CellListInsertion::from_category(entity.category);
+        let ground_level = self
+            .resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(current_cell.0, current_cell.1))
+            .map_or(0, |cell| cell.level);
+        for &(rx, ry) in &cells {
+            self.substrate
+                .occupancy
+                .remove_on_layer(rx, ry, stable_id, MovementLayer::Bridge);
+        }
+        let order = self.substrate.next_occupancy_enter_order.next();
+        let entity = self
+            .substrate
+            .entities
+            .get_mut(stable_id)
+            .expect("member remains represented");
+        entity.bridge_occupancy = None;
+        entity.on_bridge = false;
+        entity.position.z = ground_level;
+        entity.position.exact_z_leptons = None;
+        entity.movement_target = None;
+        entity.occupancy_enter_order = order;
+        if let Some(loco) = entity.locomotor.as_mut() {
+            loco.layer = MovementLayer::Ground;
+            loco.phase = GroundMovePhase::Idle;
+        }
+        // Rebuild only the derived vehicle projection: serialized head-to,
+        // handoff and current-cleared facts retain their existing owners.
+        self.substrate.cell_occupation.reconcile_entity(entity);
+        for &(rx, ry) in &cells {
+            self.substrate.occupancy.add(
+                rx,
+                ry,
+                stable_id,
+                MovementLayer::Ground,
+                sub_cell,
+                insertion,
+            );
+        }
+    }
+
     /// Test/fixture helper retained at the transaction boundary.  It is
     /// idempotent and updates the authoritative `cell_marked` fact.
     pub(crate) fn add_entity_occupancy(&mut self, stable_id: u64) {
