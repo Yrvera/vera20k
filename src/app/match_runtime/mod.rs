@@ -5,6 +5,7 @@ pub(crate) mod eva_producers;
 pub(crate) mod frame_pacer;
 pub(crate) mod scenario_exit;
 pub(crate) mod sim_tick;
+pub(crate) mod sound_dispatch;
 pub(crate) mod state;
 
 pub(crate) mod restore;
