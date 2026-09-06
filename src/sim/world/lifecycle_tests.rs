@@ -6254,6 +6254,11 @@ fn wave_tail_consumes_wall_roll_before_mandatory_cliff_chance_roll() {
 
 #[test]
 fn wave_cliff_collapse_consumes_exact_body_rng_and_spawns_row_major_anims() {
+    use crate::rules::locomotor_type::MovementZone;
+    use crate::sim::pathfinding::zone_hierarchy::{
+        ZonePrecheckExclusions, ZonePrecheckOutcome, zone_precheck_flat,
+    };
+
     let ini = crate::rules::ini_parser::IniFile::from_str(
         "[CombatDamage]\nCollapseChance=100\n\
          [InfantryTypes]\n\
@@ -6292,28 +6297,95 @@ fn wave_cliff_collapse_consumes_exact_body_rng_and_spawns_row_major_anims() {
         });
     }
     let mut cells = Vec::new();
-    for ry in 0..4 {
-        for rx in 0..6 {
-            let mut cell = common_raw_terrain_cell(rx, ry, 1, false);
-            let sub_tile = (ry * 6 + rx) as u8;
-            if ![0, 5, 18, 23].contains(&usize::from(sub_tile)) {
-                cell.final_tile_index = 100;
-                cell.final_sub_tile = sub_tile;
+    for ry in 0..16 {
+        for rx in 0..16 {
+            let on_bridge = ry == 10 && (10..=11).contains(&rx);
+            let mut cell = common_raw_terrain_cell(rx, ry, 1, on_bridge);
+            if rx < 6 && ry < 4 {
+                let sub_tile = (ry * 6 + rx) as u8;
+                if ![0, 5, 18, 23].contains(&usize::from(sub_tile)) {
+                    cell.final_tile_index = 100;
+                    cell.final_sub_tile = sub_tile;
+                }
+            }
+            // The far bank is isolated by impassable cells. Connectivity to it
+            // must come from the remote bridge's native endpoint record.
+            if on_bridge
+                || ((11..=13).contains(&rx) && (9..=11).contains(&ry) && (rx, ry) != (12, 10))
+            {
+                cell.ground_walk_blocked = true;
+                cell.zone_type = 6;
+            }
+            if ry == 10 && (rx == 9 || rx == 12) {
+                cell.final_tile_index = 1006;
+                cell.final_sub_tile = 4;
             }
             cells.push(cell);
         }
     }
-    let mut terrain = ResolvedTerrainGrid::from_cells(6, 4, cells);
+    let mut terrain = ResolvedTerrainGrid::from_cells(16, 16, cells);
     terrain.test_install_destroyable_cliff_catalog(100);
+    terrain.test_set_high_bridge_set_starts(Some(1000), None);
+    sim.bridge_state = Some(
+        crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(&terrain, true, 1500),
+    );
+    let bridge_records = sim
+        .bridge_state
+        .as_ref()
+        .unwrap()
+        .endpoint_records()
+        .to_vec();
+    assert_eq!(bridge_records.len(), 1);
+    assert!(bridge_records[0].active);
+    assert_eq!(bridge_records[0].endpoint_a, (9, 10));
+    assert_eq!(bridge_records[0].endpoint_b, (12, 10));
     let pristine_terrain = terrain.clone();
     sim.resolved_terrain = Some(terrain);
-    let mut overlay = crate::sim::overlay_grid::OverlayGrid::new(6, 4);
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    let remote_bridge_route = |zones: &crate::sim::pathfinding::zone_map::ZoneGrid| {
+        let hierarchy = zones.hierarchy_for(MovementZone::Normal).unwrap();
+        let start = hierarchy.level(0).unwrap().zone_at(9, 10);
+        let goal = hierarchy.level(0).unwrap().zone_at(12, 10);
+        (
+            zones.can_reach(
+                MovementZone::Normal,
+                (9, 10),
+                MovementLayer::Ground,
+                (12, 10),
+                MovementLayer::Ground,
+            ),
+            matches!(
+                zone_precheck_flat(
+                    hierarchy,
+                    start,
+                    goal,
+                    MovementZone::Normal,
+                    &ZonePrecheckExclusions::default()
+                ),
+                ZonePrecheckOutcome::Passed(_)
+            ),
+        )
+    };
+    assert_eq!(
+        remote_bridge_route(sim.zone_grid.as_ref().unwrap()),
+        (true, true)
+    );
+    let without_bridge_records = crate::sim::pathfinding::zone_map::ZoneGrid::build_with_terrain(
+        sim.path_grid.as_ref().unwrap(),
+        &sim.terrain_costs,
+        sim.resolved_terrain.as_ref(),
+        &[],
+        16,
+        16,
+    );
+    assert_eq!(remote_bridge_route(&without_bridge_records), (false, false));
+    let mut overlay = crate::sim::overlay_grid::OverlayGrid::new(16, 16);
     let decal = overlay_registry.id_for_name("DECAL").expect("test decal");
     overlay.place_overlay(0, 0, decal, 11);
     overlay.place_overlay(1, 0, decal, 12);
     overlay.retain_zero_wall_plane_for_tests();
     sim.overlay_grid = Some(overlay);
-    let mut smudge = crate::sim::smudge_grid::SmudgeGrid::new(6, 4);
+    let mut smudge = crate::sim::smudge_grid::SmudgeGrid::new(16, 16);
     for (rx, frame_offset) in [(0, 0), (1, 1)] {
         smudge.test_force_set(
             rx,
@@ -6383,6 +6455,26 @@ fn wave_cliff_collapse_consumes_exact_body_rng_and_spawns_row_major_anims() {
         expected_rng.logical_state()
     );
     assert_eq!(sim.dynamic_terrain_cells.len(), 20);
+    // Check before any later frame repair: native cliff collapse rebuilds
+    // connectivity synchronously with the retained global bridge vector.
+    assert_eq!(
+        remote_bridge_route(sim.zone_grid.as_ref().unwrap()),
+        (true, true)
+    );
+    assert_eq!(
+        sim.zone_grid.as_ref().unwrap().bridge_records(),
+        bridge_records
+    );
+    let canonical_path = crate::sim::pathfinding::PathGrid::from_resolved_terrain_with_bridges(
+        sim.resolved_terrain.as_ref().unwrap(),
+        sim.bridge_state.as_ref(),
+    );
+    for rx in 9..=12 {
+        assert_eq!(
+            sim.path_grid.as_ref().unwrap().cell(rx, 10),
+            canonical_path.cell(rx, 10)
+        );
+    }
     assert_eq!(sim.radar_terrain_dirty_cells.len(), 20);
     assert_eq!(sim.tactical_dirty_cells.len(), 20);
     let overlay = sim.overlay_grid.as_ref().unwrap();

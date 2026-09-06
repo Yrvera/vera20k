@@ -1,0 +1,120 @@
+//! Navigation cache rebuilds read one explicit live map and bridge view.
+//!
+//! The cache borrows never move gameplay authority out of Simulation. Resident
+//! world rebuilds and synchronous receiver rebuilds share the same policy.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use crate::map::entities::EntityCategory;
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::rules::locomotor_type::SpeedType;
+use crate::rules::ruleset::RuleSet;
+use crate::sim::bridge_state::BridgeRuntimeState;
+use crate::sim::entity_store::EntityStore;
+use crate::sim::intern::StringInterner;
+use crate::sim::pathfinding::PathGrid;
+use crate::sim::pathfinding::terrain_cost::{TerrainCostGrid, build_canonical_terrain_cost_grids};
+use crate::sim::pathfinding::zone_map::ZoneGrid;
+
+pub(super) struct NavigationCaches<'a> {
+    pub(super) terrain_costs: &'a mut BTreeMap<SpeedType, TerrainCostGrid>,
+    pub(super) zones: &'a mut Option<ZoneGrid>,
+    pub(super) path: &'a mut Option<Arc<PathGrid>>,
+}
+
+impl NavigationCaches<'_> {
+    pub(super) fn rebuild_dynamic(
+        &mut self,
+        terrain: &ResolvedTerrainGrid,
+        bridges: Option<&BridgeRuntimeState>,
+        entities: &EntityStore,
+        interner: &StringInterner,
+        rules: &RuleSet,
+    ) {
+        let mut grid = PathGrid::from_resolved_terrain_with_bridges(terrain, bridges);
+        *self.terrain_costs = build_canonical_terrain_cost_grids(terrain);
+
+        let mut structures: Vec<(u16, u16, String)> = entities
+            .values()
+            .filter_map(|entity| {
+                (entity.category == EntityCategory::Structure).then_some((
+                    entity.position.rx,
+                    entity.position.ry,
+                    interner.resolve(entity.type_ref()).to_string(),
+                ))
+            })
+            .collect();
+        structures.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        for (rx, ry, type_id) in structures {
+            let object_type = rules.object(&type_id);
+            let foundation = object_type
+                .map(|object| object.foundation.as_str())
+                .unwrap_or("1x1");
+            let has_bib = object_type.is_some_and(|object| object.bib);
+            grid.block_building_movement_cells(rx, ry, foundation, has_bib);
+        }
+
+        self.rebuild_zones(&grid, terrain, bridges);
+    }
+
+    pub(super) fn rebuild_zones(
+        &mut self,
+        path_grid: &PathGrid,
+        terrain: &ResolvedTerrainGrid,
+        bridges: Option<&BridgeRuntimeState>,
+    ) {
+        if let (Some(prev), Some(zones)) = (self.path.as_deref(), self.zones.as_mut()) {
+            if let Some(changed) = prev.diff_cells(path_grid) {
+                if changed.is_empty() && zones.movement_classes_match(terrain) {
+                    // PathGrid does not carry CellClass reduced zone type.
+                    // Both path state and retained base classes must match.
+                    *self.path = Some(Arc::new(path_grid.clone()));
+                    return;
+                }
+                if !changed.is_empty()
+                    && crate::sim::pathfinding::zone_incremental::try_incremental_update(
+                        zones,
+                        &changed,
+                        path_grid,
+                        self.terrain_costs,
+                        Some(terrain),
+                        bridges
+                            .map(BridgeRuntimeState::endpoint_records)
+                            .unwrap_or(&[]),
+                    )
+                {
+                    log::trace!("zone: incremental update ({} cells changed)", changed.len());
+                    *self.path = Some(Arc::new(path_grid.clone()));
+                    return;
+                }
+            }
+        }
+        self.rebuild_zones_full(path_grid, terrain, bridges);
+    }
+
+    /// Bypass reuse when a changed reduced zone type needs a full rebuild even
+    /// though boolean walkability remains identical (e.g. OccupationBits=0).
+    pub(super) fn rebuild_zones_full(
+        &mut self,
+        path_grid: &PathGrid,
+        terrain: &ResolvedTerrainGrid,
+        bridges: Option<&BridgeRuntimeState>,
+    ) {
+        *self.zones = Some(ZoneGrid::build_with_terrain(
+            path_grid,
+            self.terrain_costs,
+            Some(terrain),
+            bridges
+                .map(BridgeRuntimeState::endpoint_records)
+                .unwrap_or(&[]),
+            terrain.width(),
+            terrain.height(),
+        ));
+        *self.path = Some(Arc::new(path_grid.clone()));
+    }
+}
