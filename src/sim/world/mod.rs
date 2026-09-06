@@ -2176,6 +2176,26 @@ impl Simulation {
         );
     }
 
+    /// Complete one direct object ReceiveDamage call before its caller resumes.
+    /// Unlike Apply_area_damage, a direct call has no collected area or area-wide
+    /// Iron Curtain isolation decision. Nested deaths, world mutations and their
+    /// publication finish before a live cell-list caller reads its successor.
+    pub(crate) fn commit_direct_damage_receiver(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        event: crate::sim::combat::EntityDamageEvent,
+    ) {
+        let mut run = crate::sim::combat::world_receiver::ReceiverRun::default();
+        let (effects, under_attack_events) = crate::sim::combat::world_receiver::commit_entities(
+            self, &mut run, std::slice::from_ref(&event), Some(false), rules, overlay_registry,
+        );
+        let terrain_navigation_changed_cells = run.finish(self);
+        self.absorb_noncombat_damage_effects(
+            rules, overlay_registry, effects, under_attack_events, terrain_navigation_changed_cells,
+        );
+    }
+
     /// Commit one non-combat Apply_area_damage hit list through the ordinary
     /// ReceiveDamage -> death transaction, then hand its deferred outputs back
     /// to the world owner. `hits` remains in CellClass/object-list order; the

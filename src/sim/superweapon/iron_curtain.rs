@@ -1,8 +1,8 @@
 //! IronCurtain superweapon launch handler.
 //!
 //! Applies timed invulnerability to all techno entities in a 3×3 cell grid
-//! centered on the target cell. Infantry are killed instead of protected
-//! (matches InfantryClass::IronCurtain override).
+//! centered on the target cell. Infantry receive forced authored-Strength damage
+//! through the InfantryClass::IronCurtain override.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/, sim/superweapon/{invulnerability,cell_grid},
@@ -13,12 +13,12 @@ use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::WorldEffect;
 use crate::sim::intern::InternedId;
-use crate::sim::superweapon::cell_grid::iter_cells_3x3;
+use crate::sim::superweapon::cell_grid::{live_successor, native_cells_3x3, selected_cell_list};
 use crate::sim::superweapon::invulnerability::{InvulnKind, apply_invulnerability};
 use crate::sim::world::{SimSoundEvent, Simulation};
 
 /// Launch IronCurtain at (target_rx, target_ry). Applies invulnerability or
-/// kills infantry in the 3×3 cell grid centered on the target.
+/// forced authored-Strength damage to infantry in the target’s 3×3 cell grid.
 pub fn launch(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -26,6 +26,7 @@ pub fn launch(
     target_rx: u16,
     target_ry: u16,
     sw_type: InternedId,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> bool {
     let duration = rules.general.iron_curtain_duration;
     let anim_name = rules.general.iron_curtain_invoke_anim.clone();
@@ -34,39 +35,53 @@ pub fn launch(
     // 1. Spawn invoke animation at target.
     spawn_invoke_anim(sim, rules, &anim_name, target_rx, target_ry);
 
-    // 2. Collect entity IDs in the 3×3 grid (snapshot to avoid borrow conflict).
-    let cells: Vec<(u16, u16)> = iter_cells_3x3(target_rx, target_ry).collect();
-    let target_ids: Vec<u64> = sim
-        .substrate
-        .entities
-        .values()
-        .filter(|e| {
-            cells
-                .iter()
-                .any(|(rx, ry)| e.position.rx == *rx && e.position.ry == *ry)
-        })
-        .filter(|e| e.health.current > 0 && !e.dying)
-        .map(|e| e.stable_id())
-        .collect();
-
-    // 3. Apply effect per entity.
-    for id in &target_ids {
-        let mut killed = false;
-        if let Some(entity) = sim.substrate.entities.get_mut(*id) {
-            if entity.category == EntityCategory::Infantry {
-                // `InfantryClass::IronCurtain @ 0x00522632`: `ReceiveDamage`
-                // (`+0x16C`) with the type's full `Strength=` and `C4Warhead=`,
-                // so the kill runs the normal death branch including
-                // `Death_Announcement` (`+0x3B8`, "Unit lost").
-                entity.health.current = 0;
-                entity.dying = true;
-                killed = true;
-            } else {
-                apply_invulnerability(entity, current_frame, duration, InvulnKind::IronCurtain);
+    // SuperClass::Launch case 1 (0x006CCF39..0x006CD035) selects a live
+    // CellClass list, invokes +0x154, then reads that object's +0x30 AFTER the
+    // call. Never snapshot recipients or infer membership from coordinates.
+    // Native also skips external chrono-warp latch +0x27C on Technos. Its
+    // ChronoWarp/action-128 producers have no current Rust implementation; do
+    // not substitute ordinary teleport_state, whose native path leaves it clear.
+    let mut target_count = 0;
+    for (x, y) in native_cells_3x3(target_rx, target_ry) {
+        let Some(((rx, ry), layer)) = selected_cell_list(sim, x, y) else {
+            continue;
+        };
+        let mut next = sim
+            .substrate
+            .occupancy
+            .get(rx, ry)
+            .and_then(|cell| cell.first_on_layer(layer));
+        while let Some(id) = next {
+            if let Some(entity) = sim.substrate.entities.get(id) {
+                let category = entity.category;
+                let type_ref = entity.type_ref();
+                if category == EntityCategory::Infantry {
+                    // InfantryClass::IronCurtain 0x00522600..0x0052263B:
+                    // full authored Strength, distance 0, C4Warhead, null
+                    // attacker, ignoreDefenses=1, arg6=0, launching sourceHouse.
+                    // The shared receiver owns fatal effects and announcements.
+                    if let Some(object) = rules.object(sim.interner.resolve(type_ref)) {
+                        let event = crate::sim::combat::EntityDamageEvent::direct_receiver(
+                            id,
+                            object.strength,
+                            0,
+                            crate::sim::combat::RAD_NO_ATTACKER,
+                            Some(owner),
+                            sim.interner.intern(&rules.bridge_warheads.c4_name),
+                            crate::sim::combat::ReceiverCallFlags {
+                                ignore_defenses: true,
+                                arg6: false,
+                            },
+                        );
+                        sim.commit_direct_damage_receiver(rules, overlay_registry, event);
+                    }
+                } else if let Some(entity) = sim.substrate.entities.get_mut(id) {
+                    // TechnoClass::IronCurtain 0x0070E2B0 has no health gate.
+                    apply_invulnerability(entity, current_frame, duration, InvulnKind::IronCurtain);
+                }
+                target_count += 1;
             }
-        }
-        if killed {
-            sim.announce_unit_lost_at_death_site(rules, *id);
+            next = live_successor(sim, id, (rx, ry), layer);
         }
     }
 
@@ -83,7 +98,7 @@ pub fn launch(
         target_rx,
         target_ry,
         sim.interner.resolve(owner),
-        target_ids.len()
+        target_count
     );
 
     true
@@ -94,40 +109,39 @@ pub fn launch(
 mod tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
-    use crate::sim::components::Health;
-    use crate::sim::game_entity::GameEntity;
     use crate::sim::superweapon::invulnerability::is_invulnerable;
 
     fn test_rules() -> RuleSet {
         let ini = IniFile::from_str(
             "[InfantryTypes]\n0=E1\n[VehicleTypes]\n0=MTNK\n[AircraftTypes]\n[BuildingTypes]\n\
              [E1]\nStrength=125\nArmor=flak\nSpeed=4\n\
-             [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n",
+             [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n\
+             [CombatDamage]\nC4Warhead=C4\n[Warheads]\n0=C4\n\
+             [C4]\nInfDeath=1\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
         );
         RuleSet::from_ini(&ini).expect("test rules")
     }
 
     fn spawn(sim: &mut Simulation, id: u64, type_ref: &str, rx: u16, ry: u16, cat: EntityCategory) {
-        let owner = sim.interner.intern("Americans");
-        let tref = sim.interner.intern(type_ref);
-        let e = GameEntity::new_at_frame_zero_for_test(
-            id,
-            rx,
-            ry,
-            0,
-            0,
-            owner,
-            Health {
-                current: 300,
-                max: 300,
-            },
-            tref,
-            cat,
-            0,
-            5,
-            matches!(cat, EntityCategory::Unit),
-        );
-        sim.substrate.entities.insert(e);
+        let rules = test_rules();
+        sim.intern_rule_type_ids(&rules);
+        sim.resolve_type_handles(&rules);
+        sim.playfield_bounds = Some(super::super::cell_receiver_tests::test_playfield_bounds());
+        if sim.resolved_terrain.is_none() {
+            let cells = (0..20)
+                .flat_map(|y| {
+                    (0..20).map(move |x| super::super::cell_receiver_tests::test_terrain_cell(x, y))
+                })
+                .collect();
+            sim.resolved_terrain =
+                Some(crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(20, 20, cells));
+        }
+        let actual = sim
+            .spawn_object_at_height(type_ref, "Americans", rx, ry, 0, 0, &rules)
+            .expect("production constructor and Mark");
+        assert_eq!(actual, id);
+        assert_eq!(sim.substrate.entities.get(id).unwrap().category, cat);
+        assert!(sim.substrate.occupancy.contains_entity(rx, ry, id));
     }
 
     #[test]
@@ -137,7 +151,7 @@ mod tests {
         let owner = sim.interner.intern("Americans");
         spawn(&mut sim, 1, "MTNK", 10, 10, EntityCategory::Unit);
         let sw_test = sim.interner.intern("SWTEST");
-        assert!(launch(&mut sim, &rules, owner, 10, 10, sw_test));
+        assert!(launch(&mut sim, &rules, owner, 10, 10, sw_test, None));
         let e = sim.substrate.entities.get(1).expect("tank exists");
         assert!(e.invulnerability.is_some());
         assert!(is_invulnerable(
@@ -153,7 +167,7 @@ mod tests {
         let owner = sim.interner.intern("Americans");
         spawn(&mut sim, 1, "E1", 10, 10, EntityCategory::Infantry);
         let sw_test = sim.interner.intern("SWTEST");
-        assert!(launch(&mut sim, &rules, owner, 10, 10, sw_test));
+        assert!(launch(&mut sim, &rules, owner, 10, 10, sw_test, None));
         let e = sim.substrate.entities.get(1).expect("infantry exists");
         assert_eq!(e.health.current, 0);
         assert!(e.dying);
@@ -180,7 +194,7 @@ mod tests {
         spawn(&mut sim, 2, "E1", 11, 11, EntityCategory::Infantry);
         spawn(&mut sim, 3, "MTNK", 9, 9, EntityCategory::Unit);
         let sw_test = sim.interner.intern("SWTEST");
-        assert!(launch(&mut sim, &rules, owner, 10, 10, sw_test));
+        assert!(launch(&mut sim, &rules, owner, 10, 10, sw_test, None));
 
         let lost: Vec<InternedId> = sim
             .sound_events
@@ -201,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn ic_affects_all_3x3_cells() {
+    fn ic_affects_both_diagonals_and_center() {
         let rules = test_rules();
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
@@ -209,7 +223,7 @@ mod tests {
         spawn(&mut sim, 2, "MTNK", 10, 10, EntityCategory::Unit);
         spawn(&mut sim, 3, "MTNK", 11, 11, EntityCategory::Unit);
         let sw_test = sim.interner.intern("SWTEST");
-        launch(&mut sim, &rules, owner, 10, 10, sw_test);
+        launch(&mut sim, &rules, owner, 10, 10, sw_test, None);
         assert!(
             sim.substrate
                 .entities
@@ -243,7 +257,7 @@ mod tests {
         let owner = sim.interner.intern("Americans");
         spawn(&mut sim, 1, "MTNK", 15, 15, EntityCategory::Unit);
         let sw_test = sim.interner.intern("SWTEST");
-        launch(&mut sim, &rules, owner, 10, 10, sw_test);
+        launch(&mut sim, &rules, owner, 10, 10, sw_test, None);
         assert!(
             sim.substrate
                 .entities

@@ -2203,6 +2203,7 @@ impl Simulation {
                             *target_rx,
                             *target_ry,
                             *sw_type_id,
+                            overlay_registry,
                         )
                     }
                     crate::rules::superweapon_type::SuperWeaponKind::ForceShield => {

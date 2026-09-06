@@ -1133,6 +1133,21 @@ impl CellOccupancy {
         self.occupants.iter().filter(move |o| o.layer == layer)
     }
 
+    /// Read the selected CellClass object-list head at the time of the call.
+    pub(crate) fn first_on_layer(&self, layer: MovementLayer) -> Option<u64> {
+        self.iter_layer(layer).next().map(|object| object.entity_id)
+    }
+
+    /// Read the live successor after an object callback. Removal splices the
+    /// list and clears the removed object's next pointer (CellClass::RemoveContent
+    /// 0x0047EA90, clear at 0x0047EAF0), so an absent current member has no successor.
+    /// Callers that require a pre-callback successor must read it before dispatch.
+    pub(crate) fn next_on_layer(&self, layer: MovementLayer, current: u64) -> Option<u64> {
+        let mut objects = self.iter_layer(layer);
+        objects.find(|object| object.entity_id == current)?;
+        objects.next().map(|object| object.entity_id)
+    }
+
     /// Non-infantry occupants on a given layer, preserving layer-list order.
     pub fn blockers(&self, layer: MovementLayer) -> impl Iterator<Item = u64> + '_ {
         self.occupants

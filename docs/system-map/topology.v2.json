@@ -322,9 +322,17 @@
           "symbol": "commit_receiver_health",
           "coverage": "representative",
           "observed_at_commit": "e3d53e1c9f92a3c74fc4b84d4a43f4aa2b4ef2ac"
+        },
+        {
+          "path": "src/sim/world/mod.rs",
+          "symbol": "commit_direct_damage_receiver",
+          "coverage": "representative",
+          "observed_at_commit": "30237eb526137c935976acefac88c0036f821020"
         }
       ],
-      "notes": ["Combat, Bullet, Wave and direct area-damage ingress execute against resident Simulation authority. ReceiverRun owns recursion guards and ordered navigation receipts; the local health borrow ends before synchronous world lifecycle stages. This ownership refactor does not establish whole-loop native parity or close scheduler differences."]
+      "notes": [
+        "Combat, Bullet, Wave and direct area-damage ingress execute against resident Simulation authority. ReceiverRun owns recursion guards and ordered navigation receipts; the local health borrow ends before synchronous world lifecycle stages. This ownership refactor does not establish whole-loop native parity or close scheduler differences."
+      ]
     },
     "GSI-09.01": {
       "native_anchors": [
@@ -461,6 +469,44 @@
         "Owner of build-ready, placement legality, rejection, and committed foundation handoff.",
         "Feature 12948d89 closes ordinary marked Ground-mobile and live nonempty-overlay rejection in the shared preview/commit predicate, with a sealed-retail Dustbowl GAPOWR oracle through lifecycle, four-cell occupancy, buildup, and power.",
         "Special damaged-wall/ToTile/LaserFence/gate exceptions, delayed-command rejection UI/EVA, and active-retail input/pixel comparison remain explicit residuals."
+      ]
+    },
+    "GSI-11.04": {
+      "native_anchors": [
+        {
+          "symbol": "SuperClass::Launch Iron Curtain case",
+          "address": "0x006CCF39",
+          "evidence": "docs/research/IRONCURTAIN_FORCESHIELD_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "InfantryClass::IronCurtain",
+          "address": "0x00522600",
+          "evidence": "docs/research/IRONCURTAIN_FORCESHIELD_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/superweapon/iron_curtain.rs",
+          "symbol": "launch",
+          "coverage": "representative",
+          "observed_at_commit": "30237eb526137c935976acefac88c0036f821020"
+        },
+        {
+          "path": "src/sim/superweapon/cell_grid.rs",
+          "symbol": "selected_cell_list / live_successor",
+          "coverage": "representative",
+          "observed_at_commit": "30237eb526137c935976acefac88c0036f821020"
+        },
+        {
+          "path": "src/sim/superweapon/cell_receiver_tests.rs",
+          "symbol": "actual LaunchSuperWeapon command regressions",
+          "coverage": "representative",
+          "observed_at_commit": "30237eb526137c935976acefac88c0036f821020"
+        }
+      ],
+      "notes": [
+        "Iron Curtain selects canonical cell membership and the native bridge/ground list, then reads the live successor after each callback. Infantry dispatches forced authored-Strength C4 damage through the resident world receiver. This removes the independent coordinate/HP/death-announcement path.",
+        "Production command regressions cover factory-held and unmarked immunity, authored Strength, forced damage and source House, retained Die2, layer/foundation selection, aliases/dummy stamping, nested DeathWeapon order and existing bridge DropIn integration. Manual UnInit proves the attributed receipt, not automatic sequence completion. Shared Infantry terminal cleanup, Genetic conversion and external chrono-warp interaction remain open; no whole-loop or rendered parity claim."
       ]
     },
     "GSI-11.02": {
@@ -1441,6 +1487,30 @@
         "src/render/sidebar_chrome_tests.rs"
       ],
       "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
+    },
+    {
+      "id": "EDGE-0056-IRON-CURTAIN-CELL-MEMBERSHIP",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-11.04",
+      "to": "GSI-04.05",
+      "context": "Iron Curtain command",
+      "detail": "Canonical selected cell membership owns ground/deck recipients and the then-live successor after each object callback, including an existing nested DropIn relayer.",
+      "evidence": [
+        "docs/research/IRONCURTAIN_FORCESHIELD_GHIDRA_REPORT.md"
+      ]
+    },
+    {
+      "id": "EDGE-0057-IRON-CURTAIN-DIRECT-RECEIVER",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-11.04",
+      "to": "GSI-08.10",
+      "context": "Iron Curtain command",
+      "detail": "The Infantry override invokes forced authored-Strength C4 damage through the shared world receiver, completing current nested world receipts before reading the next recipient.",
+      "evidence": [
+        "docs/research/IRONCURTAIN_FORCESHIELD_GHIDRA_REPORT.md"
+      ]
     }
   ],
   "loops": {

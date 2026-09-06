@@ -8,6 +8,8 @@
 //! - Part of sim/ — depends on rules/, sim/power_system, sim/components.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+#[cfg(test)]
+mod cell_receiver_tests;
 pub mod cell_grid;
 pub mod force_shield;
 pub mod genetic_converter;
