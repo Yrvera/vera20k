@@ -1,13 +1,11 @@
 # Clean-Slate System Implementation Order
 
-> **Repository execution note:** use this as the primary dependency-order and
-> system-coverage guide. For an actual clean-slate rebuild, follow the phases
-> and rows in order. In the existing repository, do not blindly reimplement
-> row 1 through row 336: use the System Map row status and the selection
-> procedure below to find the first incomplete mechanism in a player-visible
-> loop. The
-> [`Complete parity work queue`](2026-07-30-complete-parity-work-queue.md)
-> remains a supplemental loop-membership and routing reference.
+> **Repository execution note:** this is the dependency order and the row
+> enumeration, nothing more. Row status lives in the System Map registry and
+> per-phase working state lives in [`phase-briefs/`](phase-briefs/README.md);
+> a goal session reads its phase brief first. For a clean-slate rebuild,
+> follow the phases and rows in order. In the existing repository, never
+> reimplement rows 1–336 blindly.
 >
 > **Reviewed 2026-08-09:** a six-lane evidence review verified taxonomy
 > coverage and the Phase 15 SKIP list, corrected two dead-mission rows
@@ -27,52 +25,25 @@ repository one stable place to answer:
 - what systems exist;
 - which systems precede others;
 - how much production implementation currently exists;
-- how to select the next bounded implementation without rebuilding work that
-  is already present.
+- where the per-phase working state lives (the phase briefs).
 
 This is still an evaluated planning overlay on the System Map, not a claim
 that missing map fields determine priority. Player-visible production loops,
 current Rust, and active `gamemd.exe` evidence decide the actual task.
 
-## How to use this in the existing repository
+## Working briefs
 
-Use the list as a dependency guide around one end-to-end loop, not as 336
-isolated projects:
+This document does not prescribe a working mode. Each targeted phase has a
+brief under [`phase-briefs/`](phase-briefs/README.md) that carries what a
+session needs and this list cannot: current Rust owners per row, native
+anchors, registry status, loop membership, prior PRs, corrections to research
+the rows depend on, inherited residuals, harness coverage and the open
+mechanism queue. The two goal modes (exhaustive phase close, bounded slice)
+are defined there, and the goal prompt names which one applies.
 
-1. Pick one ordinary-stock player loop with a concrete visible result:
-   movement, attack/death, harvest/credit, build/place, factory exit,
-   reveal/radar, transport, save/load, or power recovery.
-2. Enumerate that loop's GSI rows using this document and
-   `system_map/topology.v2.json`.
-3. Reinspect the current committed Rust owner, tests, evidence, relevant INI
-   data, and git history. The System Map row status is a lead, never a
-   substitute for this check.
-4. Trace the loop in its actual runtime stage order and locate its **first
-   player-visible or determinism-relevant divergence**.
-5. Use this document's dependency order to identify the smallest coherent prerequisite
-   capability—not merely the smallest patch—that the divergence needs. This may include
-   bounded foundational work required to avoid duplicate authority, temporary adapters,
-   architectural drift, or predictable rework. Deliver a separable foundation first.
-   Do not implement an entire earlier phase or absorb unrelated backlog.
-6. Independently review the evidence-to-code mapping and run the scoped
-   deterministic plus production-path check.
-7. Rerun the parent loop. If its end-to-end check passes, close it and select
-   the next loop. If it does not, record the residuals and leave the next slice
-   in that same loop. Stop after the bounded slice and handoff.
-
-Phase 0 is therefore a set of standing contracts, not a mandatory prelude that
-must be rebuilt in isolation.
-
-### What each status tells the implementing agent
-
-| Status | What to do |
-|---|---|
-| `VERIFIED_PARITY` | Reuse it. Reopen only when a new production trace demonstrates drift or a substantive code change invalidates its evidence. |
-| `IMPLEMENTED_UNVERIFIED` | Audit or trace it before adding behavior. The likely task is verification or a small drift fix, not a rewrite. |
-| `PARTIAL` | Find the first missing or drifting mechanism exercised by the selected loop and patch only that bounded owner. |
-| `SCAFFOLD` | Verify active-YR behavior and prerequisites, then connect or replace the scaffold with a production owner. |
-| `ABSENT` | Verify active-YR reachability before designing the new owner; absence alone is not permission to port TS or dead code. |
-| `NOT_APPLICABLE_PROVEN` | Skip it for ordinary stock YR. Preserve the negative evidence and do not implement it speculatively. |
+A phase heading below links its brief once one exists and its closure record
+once the phase is closed. Phase 0 is a set of standing contracts, not a
+prelude to rebuild in isolation.
 
 ## Status
 
@@ -87,31 +58,10 @@ until a gamemd-derived executable comparison demonstrates equivalence.
 Each closed phase links a closure record under `docs/gap-scans/` from its
 phase heading below: the disparity scans that enumerated the phase's
 mechanisms, the reverse audits, the merged PR list and the remaining
-residuals. A new session should start from that record, not from a fresh
-enumeration. The 2026-07-30 four-way audit that once filled this section is
-superseded by the registry; its counts are no longer reproduced here.
-
-### Copyable goal-agent contract
-
-```text
-Use docs/plans/2026-07-30-clean-slate-system-implementation-order.md as the
-dependency order, docs/system-map/registry.v2.json as row status, and the
-phase closure record linked from the phase heading as the residual list. Own
-exactly one bounded slice.
-
-Select one ordinary-stock end-to-end loop, enumerate its GSI participants,
-and reconcile current HEAD, Rust production owners, tests, research, INIs,
-parity evidence, git history, dirty files, and parallel ownership. Trace the
-participants in actual runtime stage order and locate the first player-visible
-or determinism-relevant divergence. Use the clean-slate dependency order to identify
-and close the smallest coherent foundational prerequisite capability—not merely the
-smallest patch—the loop needs. Deliver a separable foundation first, with its own
-evidence, validation, and review. Do not rebuild already-present foundations or expand
-into unrelated backlog. Obtain an independent review and run scoped deterministic and
-production-path checks. Rerun the parent loop: close it only
-if its end-to-end check passes; otherwise record residuals and leave the next
-slice in that same loop. Write the handoff, then stop.
-```
+residuals. A new session starts from the phase brief, which links that
+record; it does not re-enumerate. The 2026-07-30 four-way audit that once
+filled this section is superseded by the registry; its counts are no longer
+reproduced here.
 
 ## Legend
 
@@ -331,6 +281,8 @@ slice in that same loop. Write the handoff, then stop.
 165. **GSI-15.07** — Music catalog, selection and transitions
 
 ## Phase 8 — Production, construction, power and radar
+
+> Brief: [`phase-briefs/phase-08-production-power-radar.md`](phase-briefs/phase-08-production-power-radar.md) (OPEN).
 
 166. **GSI-04.08** — Walls, gates, fences, pavement and buildable overlays
 167. **GSI-05.17** — Factory identity, registration and lifecycle
@@ -629,4 +581,4 @@ not a binary-proven dependency chain, because System Map v2 does not encode
 complete causal edges for all 336 rows.
 
 Source registry:
-[`system_map/registry.v2.json`](../../system_map/registry.v2.json).
+[`docs/system-map/registry.v2.json`](../system-map/registry.v2.json).
