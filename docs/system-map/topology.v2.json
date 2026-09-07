@@ -381,6 +381,64 @@
       ],
       "notes": ["Static evidence records concrete load/unload ordering drift; no native executable loop oracle exists."]
     },
+    "GSI-04.14": {
+      "native_anchors": [
+        {
+          "symbol": "MapClass::UpdateBridgeZonesHelper",
+          "address": "0x0056C510",
+          "evidence": "docs/research/bridges/02-cell-state-layering-zones/LOW_BRIDGE_ZONE_PRECHECK_LANDTYPE10_CONNECTIVITY_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/world/bridge_orchestrator.rs",
+          "symbol": "refresh_bridge_zones_if_dirty; collapse and hut callers",
+          "coverage": "representative",
+          "observed_at_commit": "d13e84d449c5cbcc58b75af7326db68325d5d044"
+        },
+        {
+          "path": "src/sim/world/world_orders.rs",
+          "symbol": "tick_bridge_repair_orders_with_overlay_registry",
+          "coverage": "representative",
+          "observed_at_commit": "d13e84d449c5cbcc58b75af7326db68325d5d044"
+        }
+      ],
+      "notes": [
+        "Bridge collapse and repair retain their endpoint-first zone-tail timing and use the shared dynamic navigation owner. The former terrain-only canonical publication lost unrelated building foundations immediately; actual collapse and engineer-arrival regressions cover that loss. This is a VERA-internal projection correction, not whole bridge/native parity closure."
+      ]
+    },
+    "GSI-04.06": {
+      "rust_surfaces": [
+        {
+          "path": "src/sim/world/navigation.rs",
+          "symbol": "NavigationCaches::rebuild_dynamic / rebuild_zones / rebuild_zones_full",
+          "coverage": "representative",
+          "observed_at_commit": "d13e84d449c5cbcc58b75af7326db68325d5d044"
+        },
+        {
+          "path": "src/sim/world/mod.rs",
+          "symbol": "rebuild_dynamic_navigation; finish_terrain_navigation_changes; combat/noncombat and later phase consumers",
+          "coverage": "representative",
+          "observed_at_commit": "d13e84d449c5cbcc58b75af7326db68325d5d044"
+        },
+        {
+          "path": "src/sim/world/world_tests.rs",
+          "symbol": "test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_endpoint",
+          "coverage": "representative",
+          "observed_at_commit": "d13e84d449c5cbcc58b75af7326db68325d5d044"
+        },
+        {
+          "path": "src/sim/world/world_orders_bridge_repair_tests.rs",
+          "symbol": "bridge_repair_preserves_unrelated_foundation_before_next_reader",
+          "coverage": "representative",
+          "observed_at_commit": "d13e84d449c5cbcc58b75af7326db68325d5d044"
+        }
+      ],
+      "notes": [
+        "One world operation consumes synchronous overlay and receiver terrain receipts, starting from navigation published after callbacks. Earlier pinned snapshots remain immutable; subsequent phases receive current canonical navigation, including when there are no receipts. The empty-receipt path reuses its Arc rather than copying the map.",
+        "Regressions cover immediate foundation preservation, stale pre-collapse snapshots with empty/nonempty receipts, actual engineer arrival and RNG, and snapshot/cache reconstruction. A postcombat movement route exercises the consumer but is only a smoke check, not native traversal parity. Existing shared structure-selection policy is unchanged."
+      ]
+    },
     "GSI-04.05": {
       "native_anchors": [
         {
@@ -1728,6 +1786,23 @@
         "docs/research/LOADING_FIRST_RENDERER_CORRECTED_COMPOSITION_DATA_READINESS_GHIDRA_REPORT.md",
         "docs/research/skirmish-ui/SKIRMISH_START_TO_FULL_INIT_SPAWN_TRACE.md"
       ]
+    },
+    {
+      "id": "EDGE-0062-BRIDGE-CANONICAL-NAVIGATION",
+      "plane": "rust",
+      "kind": "emits_to",
+      "from": "GSI-04.14",
+      "to": "GSI-04.06",
+      "context": "Collapse, hut fallout and engineer repair",
+      "detail": "After endpoint updates, bridge mutations publish the shared structure-aware navigation projection. Terrain completion retains that current authority for subsequent world readers.",
+      "evidence": [
+        "docs/research/bridges/05-damage-collapse-repair-cabhut/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md",
+        "src/sim/world/bridge_orchestrator.rs",
+        "src/sim/world/world_orders.rs",
+        "src/sim/world/mod.rs",
+        "src/sim/world/navigation.rs"
+      ],
+      "observed_at_commit": "d13e84d449c5cbcc58b75af7326db68325d5d044"
     }
   ],
   "loops": {
