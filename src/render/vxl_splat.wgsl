@@ -25,8 +25,9 @@ struct SplatParams {
     fill_size: i32,
     half_fill: i32,
     voxel_count: u32,
-    _pad0: u32,
-    _pad1: u32,
+    // Per-draw depth window (see vxl_compute::draw_depth_window).
+    depth_min: f32,
+    depth_scale: f32,   // 65535 / (depth_max - depth_min)
     _pad2: u32,
 };
 
@@ -81,10 +82,11 @@ fn splat_main(@builtin(global_invocation_id) gid: vec3u) {
     let px = (sx_fp + params.buf_off_x_fp) >> 16;
     let py = (sy_fp + params.buf_off_y_fp) >> 16;
 
-    // Quantize depth to 16 bits. Invert so closer (higher world_z) = smaller packed value.
-    // Depth range for VXL sprites is roughly -50..+50; map to 0..65535.
-    let depth_norm = clamp((world_z + 50.0) / 100.0, 0.0, 1.0);
-    let depth_u16 = 65535u - u32(depth_norm * 65535.0);
+    // Quantize depth to 16 bits inside this draw's own window (computed on the
+    // CPU from the transformed limb bounds), inverted so closer = smaller.
+    // The clamp is a guard only: the window already contains every voxel.
+    let depth_q = clamp((world_z - params.depth_min) * params.depth_scale, 0.0, 65535.0);
+    let depth_u16 = 65535u - u32(depth_q);
 
     // Look up VPL page for this normal.
     let page = get_vpl_page(normal_index);

@@ -56,9 +56,66 @@ struct SplatParams {
     fill_size: i32,
     half_fill: i32,
     voxel_count: u32,
-    _pad0: u32,
-    _pad1: u32,
+    /// Smallest screen-space depth any voxel of this draw can reach.
+    depth_min: f32,
+    /// `65535 / (depth_max - depth_min)` for this draw.
+    depth_scale: f32,
     _pad2: u32,
+}
+
+/// The screen-space depth window one draw's voxels can occupy, from the eight
+/// corners of every limb's occupied voxel box pushed through that limb's
+/// `combined` matrix. Every limb of a sprite shares one atomic framebuffer, so
+/// the window is per draw, not per limb.
+///
+/// VERA-internal, gamemd equivalent: none. The original has no per-pixel depth
+/// at all: `VXL_Sort_Rasterize` (0x00754510) bubble-sorts sections by centre
+/// depth and each `g_VXL_RasterizerTable` variant (e.g. 0x007DF7C0) paints
+/// straight into `g_VXL_VisibilityMap` in an axis order chosen by the facing
+/// signs, so nearer voxels simply land last. This GPU path keeps a 16-bit
+/// depth test instead, and that test used to clamp to a fixed -50..+50 model
+/// units. A long hull tilted by the camera runs past that window; every
+/// clamped voxel then ties on depth and `atomicMin` breaks the tie on the
+/// packed page and colour bytes, so the darkest hidden voxel won and the
+/// Amphibious Transport's stern and bow drew as flat dark shapes. Deriving the
+/// window from the actual bounds keeps every voxel strictly ordered.
+/// Intra-section painter's order vs. depth test remains a recorded DRIFT for
+/// coplanar/overlapping voxels within one section.
+pub(crate) fn draw_depth_window(limbs: &[GpuLimb]) -> (f32, f32) {
+    let mut lo: f32 = f32::INFINITY;
+    let mut hi: f32 = f32::NEG_INFINITY;
+    for gl in limbs {
+        if gl.positions.is_empty() {
+            continue;
+        }
+        let (mut min, mut max) = ([u32::MAX; 3], [0u32; 3]);
+        for &p in &gl.positions {
+            let c = [p & 0xFF, (p >> 8) & 0xFF, (p >> 16) & 0xFF];
+            for a in 0..3 {
+                min[a] = min[a].min(c[a]);
+                max[a] = max[a].max(c[a]);
+            }
+        }
+        for corner in 0..8u32 {
+            let pick = |axis: usize| {
+                if corner & (1 << axis) == 0 {
+                    min[axis]
+                } else {
+                    max[axis]
+                }
+            } as f32;
+            let world = gl
+                .combined
+                .transform_point3(glam::Vec3::new(pick(0), pick(1), pick(2)));
+            lo = lo.min(world.z);
+            hi = hi.max(world.z);
+        }
+    }
+    if !lo.is_finite() || !hi.is_finite() {
+        return (-1.0, 1.0);
+    }
+    // One unit of slack on each side so the extreme voxels never saturate.
+    (lo - 1.0, hi + 1.0)
 }
 
 #[repr(C)]
@@ -263,6 +320,10 @@ impl VxlComputeRenderer {
             label: Some("vxl_compute_encoder"),
         });
 
+        // One depth window for the whole draw: every limb shares the atomic FB.
+        let (depth_min, depth_max) = draw_depth_window(limbs);
+        let depth_scale: f32 = 65535.0 / (depth_max - depth_min).max(f32::EPSILON);
+
         // Splat pass: one dispatch per limb (all share the same atomic FB).
         for gl in limbs {
             let voxel_count = gl.positions.len() as u32;
@@ -301,8 +362,8 @@ impl VxlComputeRenderer {
                 fill_size: bounds.fill_size,
                 half_fill: bounds.half_fill,
                 voxel_count,
-                _pad0: 0,
-                _pad1: 0,
+                depth_min,
+                depth_scale,
                 _pad2: 0,
             };
 
@@ -539,5 +600,53 @@ fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
             min_binding_size: None,
         },
         count: None,
+    }
+}
+
+#[cfg(test)]
+mod depth_window_tests {
+    use super::*;
+    use glam::{Mat4, Vec3};
+
+    fn limb(extent: u32, combined: Mat4) -> GpuLimb {
+        // Two voxels at the box extremes along +Y are enough to define the box.
+        GpuLimb {
+            positions: vec![0, extent << 8],
+            data: vec![1, 1],
+            vpl_pages: [0; 256],
+            combined,
+        }
+    }
+
+    #[test]
+    fn window_covers_a_hull_longer_than_the_old_fixed_range() {
+        // The old shader clamped to -50..+50. A 160-unit hull tilted 60 deg by
+        // the camera reaches about +-69 in depth; the window must contain it.
+        let tilt: Mat4 = Mat4::from_rotation_x(-60f32.to_radians());
+        let centred: Mat4 = tilt * Mat4::from_translation(Vec3::new(0.0, -80.0, 0.0));
+        let (lo, hi) = draw_depth_window(&[limb(160, centred)]);
+        let expect: f32 = 80.0 * 60f32.to_radians().sin();
+        assert!(
+            lo <= -expect && hi >= expect,
+            "window {lo}..{hi} must cover +-{expect}"
+        );
+        assert!(
+            lo > -expect - 2.0 && hi < expect + 2.0,
+            "window {lo}..{hi} is too loose"
+        );
+    }
+
+    #[test]
+    fn window_spans_every_limb_of_a_draw() {
+        let near: Mat4 = Mat4::from_translation(Vec3::new(0.0, 0.0, 30.0));
+        let far: Mat4 = Mat4::from_translation(Vec3::new(0.0, 0.0, -90.0));
+        let (lo, hi) = draw_depth_window(&[limb(4, near), limb(4, far)]);
+        assert!(lo <= -90.0 && hi >= 30.0, "{lo}..{hi}");
+    }
+
+    #[test]
+    fn empty_draw_gets_a_finite_window() {
+        let (lo, hi) = draw_depth_window(&[]);
+        assert!(lo < hi && lo.is_finite() && hi.is_finite());
     }
 }
