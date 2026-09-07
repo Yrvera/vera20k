@@ -55,10 +55,10 @@ Complete feature comparison verified from Ghidra decompilation.
 | Terrain per-pixel Z R+W | TMP_TileBlitter | zdepth shader — MATCH |
 | Wall overlay Z R+W | TMP_TileBlitter (if tile has Z-data) | Passthrough (no Z) — DIFFERENT but acceptable |
 | Bridge overlay Z R+W | Blitter 0xC0 (Less compare, R+W) | Passthrough (no Z) — MISSING |
-| SHP sprite Z | 0x800 flag → ignores Z | Passthrough — MATCH |
+| SHP sprite Z | Buildings read+write Z per pixel (flags 0x6E00 → `0x004990e0`); other objects read-only (0x2800 → `0x00494b60`/`0x00497fd0`) | Passthrough — DRIFT (corrected 2026-09-07, see ZBUFFER_DEPTH_SYSTEM.md Overview) |
 | Cliff redraw | Not in gamemd.exe | zdepth + Less — OUR IMPROVEMENT |
 | Per-scanline Z gradient | 3-entry Bresenham table | MISSING — cosmetic |
-| BUILDNGZ.SHA | Loaded but unreachable (dead code) | Not loaded — MATCH (both unused) |
+| BUILDNGZ.SHA | Consumed per pixel by the building body blitter, placed by ZShapePointMove | Not loaded — DRIFT (corrected 2026-09-07, see ZBUFFER_DEPTH_SYSTEM.md Overview) |
 
 ---
 

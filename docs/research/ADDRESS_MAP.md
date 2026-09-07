@@ -189,7 +189,7 @@ report behind them; treat them as unverified leads.
 | `0x004941E0` | `Blitter_Scanline_Blend50pct_Remap` | 50% blend (cloaking), no Z | ZBUFFER_DEPTH |
 | `0x00497CF0` | `Blitter_ZWriteOnly_RLE_Remap_NoZWrite` | 50% RLE (cloaking), ignores Z | ZBUFFER_DEPTH |
 | `0x00495BC0` | `Blitter_ZBuf_Intensity25pct_WritesZ` | Z R+W 25% (unreachable w/ 0x800) | ZBUFFER_DEPTH |
-| `0x00497100` | `Blitter_ZClip_Plain16_WritesZ` | Z R+W BUILDNGZ (unreachable w/ 0x800) | ZBUFFER_DEPTH |
+| `0x00497100` | `Blitter_ZClip_Plain16_WritesZ` | Z R+W BUILDNGZ; extended-selector default arm, not the normal body route (the live body leaves are `0x004990e0`/`0x004958d0`, corrected 2026-09-07, see ZBUFFER_DEPTH_SYSTEM.md Overview) | ZBUFFER_DEPTH |
 
 ### Rendering — Blitter Vtables
 
