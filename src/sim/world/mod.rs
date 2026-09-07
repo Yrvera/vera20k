@@ -5686,6 +5686,58 @@ impl Simulation {
     /// tooling advance exclusively through `SimRuntime::advance_frame`, whose
     /// resources are bound at construction and cannot be substituted per call.
     #[cfg(test)]
+    /// `DriveLocomotionClass::Process` (0x004B0823 region; ships share the
+    /// drive locomotor's process, hover runs the same test in its `Move` at
+    /// 0x00514AC3) spawns `Rules->Wake` (Rules+0x94) when `Is_Moving_Now`
+    /// (vtable +0x80) holds, `g_CurrentFrameCounter % 10 == 0`, the unit is
+    /// not on a bridge (`+0x8C`), and its cell's `CellClass+0xEC` land type is
+    /// 2 (Water). The anim goes at the unit's exact `PositionCoord`
+    /// (+0xA0/+0xA4), not the cell centre, so each wake stays where the hull
+    /// was and the trail forms behind it as the unit advances. The earlier
+    /// form here spawned every 8 frames at the cell centre for any unit with
+    /// a movement target, which put the foam mid-hull and under stationary
+    /// ships.
+    pub(crate) fn spawn_wakes_for_frame(&mut self, rules: &RuleSet) {
+        if self.session.binary_frame % 10 != 0 {
+            return;
+        }
+        let binary_frame = self.session.binary_frame;
+        let terrain = self.resolved_terrain.as_ref();
+        let wake_positions: Vec<(u16, u16, SimFixed, SimFixed, u8)> = self
+            .substrate
+            .entities
+            .keys_sorted()
+            .iter()
+            .filter_map(|id| wake_anchor_for(self.substrate.entities.get(*id)?, terrain, binary_frame))
+            .collect();
+        if wake_positions.is_empty() {
+            return;
+        }
+        let wake_name_str = &rules.general.wake.name;
+        let wake_rate = rules.general.wake.frame_delay;
+        let wake_frames = rules.effect_frame_count(wake_name_str).unwrap_or(8);
+        let wake_id = self.interner.intern(wake_name_str);
+        for (rx, ry, sub_x, sub_y, z) in wake_positions {
+            self.world_effects.push(WorldEffect {
+                anim_spawn: None,
+                shp_name: wake_id,
+                rx,
+                ry,
+                sub_x,
+                sub_y,
+                z,
+                frame: 0,
+                total_frames: wake_frames,
+                frame_delay: wake_rate,
+                elapsed_frames: 0,
+                translucent: true,
+                delay_frames: 0,
+                start_sound_id: None,
+                start_sound_emitted: false,
+            });
+        }
+    }
+
     pub(crate) fn advance_tick(
         &mut self,
         commands: &[CommandEnvelope],
@@ -5925,54 +5977,10 @@ impl Simulation {
             crate::sim::aircraft::tick_aircraft_missions(self, rules, active_path_grid);
         }
 
-        // Spawn wake effects behind moving ships on water (every 8 native frames).
-        if self.session.binary_frame & 7 == 0 {
-            if let Some(rules) = rules {
-                let wake_name_str = &rules.general.wake.name;
-                let wake_rate = rules.general.wake.frame_delay;
-                let wake_frames = rules.effect_frame_count(wake_name_str).unwrap_or(8);
-                // Collect positions to avoid borrow conflict (read entities, write world_effects).
-                let wake_positions: Vec<(u16, u16, u8)> = self
-                    .substrate
-                    .entities
-                    .keys_sorted()
-                    .iter()
-                    .filter_map(|id| {
-                        let e = self.substrate.entities.get(*id)?;
-                        if e.movement_target.is_none() {
-                            return None;
-                        }
-                        let loco = e.locomotor.as_ref()?;
-                        let is_water_mover = loco.movement_zone.is_water_mover();
-                        if !is_water_mover {
-                            return None;
-                        }
-                        Some((e.position.rx, e.position.ry, e.position.z))
-                    })
-                    .collect();
-                if !wake_positions.is_empty() {
-                    let wake_id = self.interner.intern(wake_name_str);
-                    for (rx, ry, z) in wake_positions {
-                        self.world_effects.push(WorldEffect {
-                            anim_spawn: None,
-                            shp_name: wake_id,
-                            rx,
-                            ry,
-                            sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
-                            sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
-                            z,
-                            frame: 0,
-                            total_frames: wake_frames,
-                            frame_delay: wake_rate,
-                            elapsed_frames: 0,
-                            translucent: true,
-                            delay_frames: 0,
-                            start_sound_id: None,
-                            start_sound_emitted: false,
-                        });
-                    }
-                }
-            }
+        // Wake anims under moving units on water (native gate and cadence in
+        // `spawn_wakes_for_frame`).
+        if let Some(rules) = rules {
+            self.spawn_wakes_for_frame(rules);
         }
 
         // --- Phase 3: Vision refresh ---
@@ -6707,3 +6715,29 @@ mod radar_dirty_ack_tests;
 #[cfg(test)]
 #[path = "bridge_parity_harness_tests.rs"]
 mod bridge_parity_harness_tests;
+
+/// The wake gate for one unit this frame: moving now, not on a bridge, on a
+/// cell whose `CellClass+0xEC` mirror is Water, anchored at its exact leptons.
+pub(crate) fn wake_anchor_for(
+    entity: &crate::sim::game_entity::GameEntity,
+    terrain: Option<&ResolvedTerrainGrid>,
+    binary_frame: u32,
+) -> Option<(u16, u16, SimFixed, SimFixed, u8)> {
+    if !crate::sim::movement::ready_producer::is_moving_now_for(entity, binary_frame) {
+        return None;
+    }
+    if entity.is_on_bridge_layer() {
+        return None;
+    }
+    let cell = terrain?.cell(entity.position.rx, entity.position.ry)?;
+    if cell.yr_cell_land_type != crate::rules::terrain_rules::LandType::Water.as_index() {
+        return None;
+    }
+    Some((
+        entity.position.rx,
+        entity.position.ry,
+        entity.position.sub_x,
+        entity.position.sub_y,
+        entity.position.z,
+    ))
+}
