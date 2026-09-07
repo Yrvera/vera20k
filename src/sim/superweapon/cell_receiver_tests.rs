@@ -171,6 +171,188 @@ fn iron_curtain_command_does_not_damage_factory_held_or_unmarked_infantry() {
     held_infantry_survives_launch("IC");
 }
 
+#[test]
+fn genetic_converter_command_does_not_damage_factory_held_or_unmarked_infantry() {
+    held_infantry_survives_launch("GM");
+}
+
+fn marked_brutes(sim: &Simulation) -> Vec<u64> {
+    sim.substrate
+        .entities
+        .values()
+        .filter(|entity| {
+            sim.interner.resolve(entity.type_ref()) == "BRUTE" && entity.lifecycle.cell_marked
+        })
+        .map(|entity| entity.stable_id())
+        .collect()
+}
+
+#[test]
+fn genetic_converter_command_preserves_stable_id_batch_replacement_order() {
+    let (mut sim, rules) = fixture();
+    // Native cell order is center then east; existing Rust replacement order
+    // is stable-ID order. Keep that compatibility decision explicit.
+    let east = sim
+        .spawn_object_at_height("E1", "Soviet", 6, 5, 0, 0, &rules)
+        .unwrap();
+    let center = sim
+        .spawn_object_at_height("E1", "Soviet", 5, 5, 0, 0, &rules)
+        .unwrap();
+    launch_command(&mut sim, &rules, "GM", 5, 5);
+    let brutes = marked_brutes(&sim);
+    assert_eq!(brutes, vec![center + 1, center + 2]);
+    let owner = sim.interner.intern("Americans");
+    for (brute, (rx, ry)) in brutes.into_iter().zip([(6, 5), (5, 5)]) {
+        let object = sim.substrate.entities.get(brute).unwrap();
+        assert_eq!(
+            (object.position.rx, object.position.ry, object.position.z),
+            (rx, ry, 0)
+        );
+        assert_eq!(object.owner(), owner);
+        assert_eq!(object.health.current, 200);
+    }
+    for victim in [east, center] {
+        let object = sim.substrate.entities.get(victim).unwrap();
+        assert!(object.health.current == 0 && object.dying);
+        assert!(
+            object.lifecycle.cell_marked && object.in_logic_vector,
+            "legacy per-cell corpse membership is retained by this admission change"
+        );
+    }
+    assert!(sim.substrate.pending_delete.is_empty());
+}
+
+#[test]
+fn genetic_converter_command_uses_selected_bridge_membership_and_original_victims_only() {
+    let (mut sim, rules) = fixture();
+    let ground = sim
+        .spawn_object_at_height("E1", "Americans", 5, 5, 0, 0, &rules)
+        .unwrap();
+    {
+        let cell = sim
+            .resolved_terrain
+            .as_mut()
+            .unwrap()
+            .cell_mut(5, 5)
+            .unwrap();
+        cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+        cell.has_bridge_deck = true;
+        cell.bridge_walkable = true;
+        cell.bridge_deck_level = 4;
+    }
+    let mut deck = Vec::new();
+    for _ in 0..2 {
+        let id = sim
+            .construct_object_limbo_at_height("E1", "Soviet", 5, 5, 0, 4, &rules)
+            .unwrap();
+        sim.substrate.entities.get_mut(id).unwrap().on_bridge = true;
+        assert!(matches!(
+            sim.reveal(id),
+            crate::sim::world::RevealOutcome::Revealed { .. }
+        ));
+        deck.push(id);
+    }
+    launch_command(&mut sim, &rules, "GM", 5, 5);
+    assert_eq!(
+        sim.substrate.entities.get(ground).unwrap().health.current,
+        100
+    );
+    for &id in &deck {
+        assert_eq!(sim.substrate.entities.get(id).unwrap().health.current, 0);
+    }
+    // Replacement retains legacy Z=0 even for a deck victim. It is not a
+    // native AnimToInfantry placement claim. Both original victims get one attempt.
+    let brutes: Vec<_> = sim
+        .substrate
+        .entities
+        .values()
+        .filter(|e| sim.interner.resolve(e.type_ref()) == "BRUTE")
+        .collect();
+    assert_eq!(brutes.len(), 2);
+    for object in brutes {
+        assert_eq!(object.position.z, 0);
+        assert_eq!(
+            object.health.current, 200,
+            "new replacements never re-enter selection"
+        );
+    }
+    assert_eq!(sim.allocate_stable_id(), deck[1] + 3);
+}
+
+#[test]
+fn genetic_converter_command_missing_brute_keeps_kills_and_consumes_readiness() {
+    let (mut sim, rules) =
+        fixture_with_extra("[InfantryTypes]\n1=NO_BRUTE\n[NO_BRUTE]\nStrength=200\nSpeed=4\n");
+    assert!(rules.object("BRUTE").is_none());
+    let victim = sim
+        .spawn_object_at_height("E1", "Americans", 5, 5, 0, 0, &rules)
+        .unwrap();
+    launch_command(&mut sim, &rules, "GM", 5, 5);
+    let corpse = sim.substrate.entities.get(victim).unwrap();
+    assert!(corpse.health.current == 0 && corpse.dying);
+    assert!(marked_brutes(&sim).is_empty());
+}
+
+#[test]
+fn genetic_converter_explosion_command_admits_replacements_after_nested_damage() {
+    for (other_x, expected_replacements) in [(5, 2), (6, 1)] {
+        let (mut sim, mut rules) = fixture_with_extra(
+            "[Warheads]\n3=MutationAoE\n[SpecialWeapons]\nMutateExplosionWarhead=MutationAoE\n\
+             [MutationAoE]\nCellSpread=1\nPercentAtMax=1\nInfDeath=1\n\
+             Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        );
+        rules.general.mutate_explosion = true;
+        let boomer = sim
+            .spawn_object_at_height("BOOM", "Soviet", 5, 5, 0, 0, &rules)
+            .unwrap();
+        let other = sim
+            .spawn_object_at_height("E1", "Soviet", other_x, 5, 0, 0, &rules)
+            .unwrap();
+        let tank = sim
+            .spawn_object_at_height("MTNK", "Soviet", 5, 6, 0, 0, &rules)
+            .unwrap();
+        if other_x == 6 {
+            // The east infantry is (320,-64) leptons from the mutation's
+            // cell-center impact: outside radius256. It is exactly256 from
+            // BOOM's off-center DeathWeapon, so it dies only as collateral.
+            for id in [boomer, other] {
+                let position = &sim.substrate.entities.get(id).unwrap().position;
+                assert_eq!(
+                    (
+                        position.sub_x.to_num::<i32>(),
+                        position.sub_y.to_num::<i32>()
+                    ),
+                    (192, 64)
+                );
+            }
+        }
+        launch_command(&mut sim, &rules, "GM", 5, 5);
+        for victim in [boomer, other, tank] {
+            assert!(
+                sim.substrate
+                    .entities
+                    .get(victim)
+                    .is_some_and(|e| e.health.current == 0 && e.dying)
+            );
+        }
+        let brutes = marked_brutes(&sim);
+        assert_eq!(
+            brutes.len(),
+            expected_replacements,
+            "only original infantry receivers get replacements; tank damage and collateral deaths still commit"
+        );
+        assert!(brutes.iter().all(|id| *id > tank));
+        for id in brutes {
+            let object = sim.substrate.entities.get(id).unwrap();
+            assert_eq!(
+                object.health.current, 200,
+                "replacement must not be exposed to the earlier nested DeathWeapon"
+            );
+            assert_eq!((object.position.rx, object.position.ry), (5, 5));
+        }
+    }
+}
+
 // Retail rulesmd.ini:818 selects C4Warhead=Super; [Super] uses InfDeath=2.
 // Native ordinary death retains membership during action 0xC (0x00518635).
 #[test]
@@ -333,26 +515,44 @@ fn iron_curtain_command_runs_nested_death_before_the_next_native_cell() {
 
 #[test]
 fn iron_curtain_command_uses_packed_aliases_and_stamps_missing_cells() {
+    command_uses_packed_aliases_and_stamps_missing_cells("IC", "MTNK");
+}
+
+#[test]
+fn genetic_converter_command_uses_packed_aliases_and_stamps_missing_cells() {
+    command_uses_packed_aliases_and_stamps_missing_cells("GM", "E1");
+}
+
+fn command_uses_packed_aliases_and_stamps_missing_cells(name: &str, object_type: &str) {
     for (x, y) in [(512, 1), (u16::MAX, 2)] {
         let (mut sim, rules) = fixture();
-        let tank = sim
-            .spawn_object_at_height("MTNK", "Americans", 0, 2, 0, 0, &rules)
+        let victim = sim
+            .spawn_object_at_height(object_type, "Americans", 0, 2, 0, 0, &rules)
             .unwrap();
-        launch_command(&mut sim, &rules, "IC", x, y);
-        assert!(
-            sim.substrate
-                .entities
-                .get(tank)
-                .unwrap()
-                .invulnerability
-                .is_some(),
-            "fixed-stride alias / independent word wrap reaches actual cell (0,2)"
-        );
+        launch_command(&mut sim, &rules, name, x, y);
+        let object = sim.substrate.entities.get(victim).unwrap();
+        if name == "GM" {
+            assert!(object.health.current == 0 && object.dying);
+            let brutes = marked_brutes(&sim);
+            assert_eq!(brutes.len(), 1);
+            let replacement = sim.substrate.entities.get(brutes[0]).unwrap();
+            assert_eq!(
+                (replacement.position.rx, replacement.position.ry),
+                (0, 2),
+                "replacement uses the actual victim cell after fixed-stride alias / word wrap"
+            );
+        } else {
+            assert!(
+                object.invulnerability.is_some(),
+                "fixed-stride alias / independent word wrap reaches actual cell (0,2)"
+            );
+        }
     }
     let (mut sim, rules) = fixture();
-    let tank = sim
-        .spawn_object_at_height("MTNK", "Americans", 5, 5, 0, 0, &rules)
+    let victim = sim
+        .spawn_object_at_height(object_type, "Americans", 5, 5, 0, 0, &rules)
         .unwrap();
+    let original_hp = sim.substrate.entities.get(victim).unwrap().health.current;
     let allocated: Vec<_> = (0..16)
         .flat_map(|y| (0..16).map(move |x| (x, y)))
         .filter(|&cell| cell != (5, 5))
@@ -361,31 +561,21 @@ fn iron_curtain_command_uses_packed_aliases_and_stamps_missing_cells() {
         .as_mut()
         .unwrap()
         .test_set_native_allocated_cells(&allocated);
-    launch_command(&mut sim, &rules, "IC", 5, 5);
-    assert!(
-        sim.substrate
-            .entities
-            .get(tank)
-            .unwrap()
-            .invulnerability
-            .is_none()
-    );
-    assert_eq!(sim.effective_shared_cell_dummy().snapshot().coord, (5, 5));
-    sim.resolved_terrain = None;
-    launch_command(&mut sim, &rules, "IC", 5, 5);
-    assert!(
-        sim.substrate
-            .entities
-            .get(tank)
-            .unwrap()
-            .invulnerability
-            .is_none()
-    );
-    assert_eq!(
-        sim.effective_shared_cell_dummy().snapshot().coord,
-        (6, 6),
-        "mapless command updates the retained process dummy through the final native visit"
-    );
+    for mapless in [false, true] {
+        if mapless {
+            sim.resolved_terrain = None;
+        }
+        launch_command(&mut sim, &rules, name, 5, 5);
+        let object = sim.substrate.entities.get(victim).unwrap();
+        assert_eq!(object.health.current, original_hp);
+        assert!(!object.dying && object.invulnerability.is_none());
+        assert!(marked_brutes(&sim).is_empty());
+        assert_eq!(
+            sim.effective_shared_cell_dummy().snapshot().coord,
+            if mapless { (6, 6) } else { (5, 5) },
+            "missing lookup stamps the process dummy; mapless visits through the final native cell"
+        );
+    }
 }
 
 #[test]
