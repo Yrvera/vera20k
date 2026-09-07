@@ -3718,7 +3718,8 @@ impl Simulation {
         let order = self.substrate.logic.as_slice();
         let mut seen = std::collections::BTreeSet::new();
         for &id in order {
-            debug_assert!(seen.insert(id), "logic order has duplicate id {id}");
+            let first_occurrence = seen.insert(id);
+            debug_assert!(first_occurrence, "logic order has duplicate id {id}");
             debug_assert!(
                 self.substrate
                     .entities
