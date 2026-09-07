@@ -586,6 +586,54 @@ fn engineer_at_intact_cabhut_emits_sound_no_mutation() {
     );
 }
 
+/// Exercise the arrival owner directly: a later frame rebuild must not mask
+/// an incomplete path projection published by the repair's zone refresh.
+#[test]
+fn bridge_repair_preserves_unrelated_foundation_before_next_reader() {
+    let (mut sim, rules, _) = build_sim();
+    let unrelated = spawn_cabhut(&mut sim, 1, 1);
+    let target = spawn_cabhut(&mut sim, 9, 10);
+    let engineer = spawn_engineer(&mut sim, 9, 10);
+    sim.substrate
+        .entities
+        .get_mut(engineer)
+        .unwrap()
+        .capture_target = Some(target);
+    seed_destroyed_bridge(&mut sim);
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    let pinned = sim.path_grid_snapshot().unwrap();
+    assert!(!pinned.is_walkable(1, 1));
+    assert!(sim.substrate.occupancy.contains_entity(1, 1, unrelated));
+    let gameplay_rng = (sim.scenario_rng.state(), sim.main_rng.state());
+    let mut expected_mapgen = sim.mapgen_rng.clone();
+    let _ = expected_mapgen.next_range_u32_inclusive_scaled(0, 3);
+
+    assert!(
+        sim.tick_bridge_repair_orders_with_overlay_registry(&rules, None, &Default::default(),)
+    );
+
+    assert!(sim.substrate.entities.get(engineer).unwrap().dying);
+    assert!(sim.substrate.occupancy.contains_entity(1, 1, unrelated));
+    assert!(
+        !sim.path_grid().unwrap().is_walkable(1, 1),
+        "engineer repair lost an unrelated foundation before the next reader"
+    );
+    assert!(!pinned.is_walkable(1, 1));
+    assert_eq!(
+        gameplay_rng,
+        (sim.scenario_rng.state(), sim.main_rng.state())
+    );
+    assert_eq!(sim.mapgen_rng.state(), expected_mapgen.state());
+    for &(rx, ry) in ENGINEER_REPAIR_STRIP_CELLS {
+        assert!(
+            sim.bridge_state
+                .as_ref()
+                .unwrap()
+                .is_bridge_walkable(rx, ry)
+        );
+    }
+}
+
 #[test]
 fn consecutive_engineers_second_bridge_repair_waits_for_next_tick() {
     let (mut sim, rules, heights) = build_sim();
@@ -1973,8 +2021,7 @@ fn generated_map_bridge_repair_continues_post_rmg_mapgen_stream() {
             usize::try_from(generated.index_b).expect("test MapGen cursor B is non-negative"),
         )
     };
-    let mut expected =
-        crate::sim::rng::SimRng::from_mapgen_continuation(continuation());
+    let mut expected = crate::sim::rng::SimRng::from_mapgen_continuation(continuation());
     let expected_variant = expected.next_range_u32_inclusive_scaled(0, 3) as u8;
 
     let (mut sim, _rules, _heights) = build_sim();
@@ -1982,8 +2029,7 @@ fn generated_map_bridge_repair_continues_post_rmg_mapgen_stream() {
     sim.mapgen_rng = crate::sim::rng::SimRng::from_mapgen_continuation(continuation());
     let scenario_before = sim.scenario_rng.state();
     let main_before = sim.main_rng.state();
-    let scan: Vec<(u16, u16)> =
-        crate::sim::bridge_state::cells_in_5x5_scan((9, 10)).collect();
+    let scan: Vec<(u16, u16)> = crate::sim::bridge_state::cells_in_5x5_scan((9, 10)).collect();
     let outcome = if let (Some(bridges), Some(terrain)) =
         (sim.bridge_state.as_mut(), sim.resolved_terrain.as_ref())
     {

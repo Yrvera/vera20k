@@ -565,6 +565,7 @@ impl Simulation {
             // the collapse cascade's `refresh_bridge_zones_if_dirty` call.
             crate::sim::world::bridge_orchestrator::refresh_bridge_zones_if_dirty(
                 self,
+                rules,
                 outcome.zones_dirty,
             );
 

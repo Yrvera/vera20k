@@ -155,7 +155,7 @@ pub(crate) fn apply_bridge_damage_events_with_overlay_registry(
     // Cascade Step 6: zone graph rebuild (HIGH §12.8). Triggered when
     // any final-stage walker cell flagged the bridge endpoint records
     // dirty.
-    refresh_bridge_zones_if_dirty(sim, any_zones_dirty);
+    refresh_bridge_zones_if_dirty(sim, rules, any_zones_dirty);
 
     // BR-16: feed the minimap radar-dirty channel — the collapsed triple plus
     // every cascade-leaf cell touched (carried in each outcome's `radar_cells`),
@@ -552,7 +552,7 @@ fn apply_hut_bridge_execution(
     update_adjacent_bridges(sim, &rim_cells);
     project_pending_low_bridge_overlay_writes(sim, overlay_registry);
     notify_bridge_span_collapse(sim, &destroyed_set);
-    refresh_bridge_zones_if_dirty(sim, any_zones_dirty);
+    refresh_bridge_zones_if_dirty(sim, rules, any_zones_dirty);
 
     // BR-16: feed the minimap radar-dirty channel (see apply_bridge_damage_events).
     radar_dirty.extend(destroyed_set.iter().copied());
@@ -1576,24 +1576,27 @@ pub(crate) fn reconcile_low_bridge_surface_after_cache_load(
 ///      cell damage state — first destroyed cell in a group flips its
 ///      endpoint pair to `active = false`. Replaces the side-effect of
 ///      the legacy single-shot `apply_damage`.
-///   2. Rebuild the path grid from the post-collapse bridge state.
-///   3. Rerun `Simulation::rebuild_zone_grid` so cross-bridge
-///      passability reflects the new connectivity.
-pub(crate) fn refresh_bridge_zones_if_dirty(sim: &mut Simulation, any_zones_dirty: bool) {
+///   2. Ask the world navigation owner to publish current terrain costs,
+///      structure blockers, bridge passability and zone connectivity together.
+pub(crate) fn refresh_bridge_zones_if_dirty(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    any_zones_dirty: bool,
+) {
     if !any_zones_dirty {
         return;
     }
     if let Some(bs) = sim.bridge_state.as_mut() {
         bs.refresh_endpoint_active_flags();
     }
-    let Some(terrain) = sim.resolved_terrain.as_ref() else {
-        return;
-    };
-    let path_grid = crate::sim::pathfinding::PathGrid::from_resolved_terrain_with_bridges(
-        terrain,
-        sim.bridge_state.as_ref(),
-    );
-    sim.rebuild_zone_grid(&path_grid);
+    // VERA-internal projection ownership, gamemd equivalent UNCHECKED.
+    // This publishes the canonical path as well as zones. Use the shared
+    // structure/terrain projection so unrelated foundations survive bridge
+    // changes before the next reader; endpoint refresh must stay first.
+    // Native zone-tail ordering: BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md
+    // in docs/research/bridges/05-damage-collapse-repair-cabhut/, section
+    // "Zone/path invalidation" (UpdateBridgeZonesHelper @ 0x0056C510).
+    let _ = sim.rebuild_dynamic_navigation(rules);
 }
 
 /// Per-cell debris spawn. Mirror of binary `BlowUpBridge` step 4. RNG draw
@@ -2181,6 +2184,7 @@ mod tests {
         use crate::rules::terrain_rules::LandType;
 
         let registry = gsi_04_13_stock_low_registry();
+        let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str("")).unwrap();
         let road_speed = registry
             .flags(0x4A)
             .and_then(|flags| flags.land_speed_costs)
@@ -2243,7 +2247,7 @@ mod tests {
         };
         assert!(zones_dirty);
         project_pending_low_bridge_overlay_writes(&mut sim, Some(&registry));
-        refresh_bridge_zones_if_dirty(&mut sim, zones_dirty);
+        refresh_bridge_zones_if_dirty(&mut sim, &rules, zones_dirty);
         gsi_04_13_assert_ground_surface(&sim, LandType::Rough.as_index());
         assert_eq!(
             sim.terrain_costs
@@ -2294,7 +2298,7 @@ mod tests {
         };
         assert!(repair.zones_dirty);
         project_pending_low_bridge_overlay_writes(&mut sim, Some(&registry));
-        refresh_bridge_zones_if_dirty(&mut sim, repair.zones_dirty);
+        refresh_bridge_zones_if_dirty(&mut sim, &rules, repair.zones_dirty);
         gsi_04_13_assert_ground_surface(&sim, LandType::Road.as_index());
         for ry in 0..3 {
             let overlay = sim.overlay_grid.as_ref().expect("overlay grid").cell(0, ry);

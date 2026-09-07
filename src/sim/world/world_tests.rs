@@ -2875,9 +2875,15 @@ fn sonic_tail_order_test_rules() -> RuleSet {
 }
 
 fn admit_test_wave(sim: &mut Simulation, rules: &RuleSet, event: &SimFireEvent) {
-    let wave = sim.prepare_fired_wave(
-        rules, event, &sim.substrate.entities, &sim.interner, sim.resolved_terrain.as_ref(),
-    ).expect("wave prepared");
+    let wave = sim
+        .prepare_fired_wave(
+            rules,
+            event,
+            &sim.substrate.entities,
+            &sim.interner,
+            sim.resolved_terrain.as_ref(),
+        )
+        .expect("wave prepared");
     let terrain = sim.resolved_terrain.take();
     sim.admit_fired_wave(event.attacker_id, wave, terrain.as_ref());
     sim.resolved_terrain = terrain;
@@ -4740,7 +4746,25 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
         .collect();
 
     let mut rules = combat_test_rules();
+    let mut building = make_test_entity("GACNST", EntityCategory::Structure);
+    building.cell_x = 0;
+    building.cell_y = 0;
+    let mut mover = make_test_entity("E1", EntityCategory::Infantry);
+    mover.cell_x = 6;
+    mover.cell_y = 0;
+    assert_eq!(
+        sim.spawn_from_map(&[building, mover], Some(&rules), &empty_heights()),
+        2
+    );
     sim.resolve_type_handles(&rules);
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    let before_path = sim.path_grid_snapshot().unwrap();
+    for ry in 0..3 {
+        for rx in 0..4 {
+            assert!(sim.substrate.occupancy.contains_entity(rx, ry, 1));
+            assert!(!before_path.is_walkable(rx, ry));
+        }
+    }
     let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
@@ -4754,6 +4778,18 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
         }],
     );
 
+    // A bridge refresh must publish the complete world projection before the
+    // next reader, including unrelated foundations. No end-frame repair here.
+    for ry in 0..3 {
+        for rx in 0..4 {
+            assert!(sim.substrate.occupancy.contains_entity(rx, ry, 1));
+            assert!(
+                !sim.path_grid().unwrap().is_walkable(rx, ry),
+                "bridge collapse lost unrelated foundation blocker at {rx},{ry}"
+            );
+            assert!(!before_path.is_walkable(rx, ry), "pinned reader changed");
+        }
+    }
     let bs = sim.bridge_state.as_ref().unwrap();
     assert_eq!(
         bs.cell(5, 5).unwrap().damage_state,
@@ -4770,6 +4806,63 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
              (pre={pre_active:?}, post={post_active:?})"
         );
     }
+    let collapsed = sim.path_grid_snapshot().unwrap();
+    assert_ne!(before_path.cell(5, 5), collapsed.cell(5, 5));
+    // The combat frame's fallback predates bridge fallout. Both receipt paths
+    // must return and publish the current projection without mutating that Arc.
+    for changed_cells in [&[][..], &[(6, 0)][..]] {
+        let tail = sim
+            .finish_terrain_navigation_changes(Some(&before_path), changed_cells)
+            .unwrap();
+        assert_eq!(tail.as_ref(), collapsed.as_ref());
+        if changed_cells.is_empty() {
+            assert!(
+                Arc::ptr_eq(&tail, &collapsed),
+                "no-change readers reuse the immutable projection"
+            );
+        }
+        assert_eq!(sim.path_grid(), Some(collapsed.as_ref()));
+        assert_ne!(before_path.cell(5, 5), tail.cell(5, 5));
+
+        // Real Phase-6 order resumption consumes the returned grid alongside
+        // the live zone owner, before any frame-final projection rebuild.
+        let unit = sim.substrate.entities.get_mut(2).unwrap();
+        unit.movement_target = None;
+        unit.order_intent = Some(crate::sim::components::OrderIntent::AttackMove {
+            goal_rx: 6,
+            goal_ry: 3,
+        });
+        sim.tick_order_intents_post_combat(Some(&tail), Some(&rules));
+        let target = sim
+            .substrate
+            .entities
+            .get(2)
+            .unwrap()
+            .movement_target
+            .as_ref()
+            .unwrap();
+        assert_eq!(target.path.last(), Some(&(6, 3)));
+        assert!(target.path.iter().all(|&(rx, ry)| !(rx < 4 && ry < 3)));
+    }
+
+    // The persisted bridge/entity owners must reconstruct the same navigation
+    // projection; a save/load must not be what repairs a lost foundation.
+    let expected_path = sim.path_grid_snapshot().unwrap();
+    let terrain_cache = sim.resolved_terrain.as_ref().unwrap().clone();
+    let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "bridge-nav", 0);
+    let mut restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
+        .unwrap()
+        .sim;
+    restored.restore_after_snapshot_load().unwrap();
+    restored.rebuild_caches_after_load(
+        terrain_cache,
+        Default::default(),
+        Vec::new(),
+        Vec::new(),
+        BTreeMap::new(),
+    );
+    assert!(restored.rebuild_dynamic_navigation(&rules));
+    assert_eq!(restored.path_grid(), Some(expected_path.as_ref()));
 }
 
 /// Determinism: two independent simulations with identical seeds, identical
