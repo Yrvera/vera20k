@@ -227,10 +227,23 @@ pub fn diffuse_shade(normal: Vec3, light_dir: Vec3, ambient: f32, diffuse: f32) 
 /// the literal (0xBF3504E6, 0xBF3504E6, 0) = (-0.707107, -0.707107, 0) through
 /// it: x' = x*cos45 + z*sin45 = -0.5, y' = -0.707107, z' = -x*sin45 + z*cos45 =
 /// +0.5. The result is stored at `g_VXL_LightDirection` (0x00887470) and never
-/// rewritten. The +Z half is what lights every top face; the earlier Rust
-/// constant (-0.707, -0.707, 0) had no Z term and left tops and far sides on the
-/// darkest VPL page.
-const YR_WORLD_LIGHT: Vec3 = Vec3::new(-0.5, -0.707_107, 0.5);
+/// rewritten.
+///
+/// **Sign of Z in this frame.** The binary's vector is (-0.5, -0.707107, +0.5)
+/// in gamemd's matrix frame. Carried into *this* renderer's model frame it is
+/// (-0.5, -0.707107, **-0.5**): a retail capture of the Iron Gull fixture
+/// (pipeline `.local/game`, `gamemd.exe -win`, 2026-09-07) has container tops
+/// at unittem.pal index 103-108 rendering around VPL page 3-4 (137,78,56 after
+/// the map's unit tint); the CPU rasteriser reproduces that only with Z = -0.5
+/// (118,70,51 untinted, a uniform ~1.2x below retail on both containers and
+/// hull grey, which is the ExtraUnitLight tint the tool does not apply), while
+/// Z = +0.5 puts the same faces on page 12-18 (172-200 red, deck near white).
+/// The earlier (-0.707, -0.707, 0) sat between the two. The mirror is a frame
+/// difference between this renderer's model space and gamemd's (the camera
+/// pitch/screen-Y conventions cancel for geometry but not for a model-space
+/// light); VERA-internal, gamemd equivalent UNCHECKED until that frame map is
+/// derived from the view-matrix bodies rather than fitted from a capture.
+const YR_WORLD_LIGHT: Vec3 = Vec3::new(-0.5, -0.707_107, -0.5);
 
 /// Viewer direction the original feeds Blinn-Phong: `VXL_Init_BlinnPhong`
 /// (0x00753D00) transforms (0, 0, 1) through the inverse of the matrix at
@@ -380,13 +393,16 @@ mod tests {
     }
 
     #[test]
-    fn world_light_lights_top_faces_at_identity() {
-        // A +Z normal sees diffuse 0.5 from the native (-0.5, -0.707, +0.5)
-        // light; the old Z-less light gave it 0 and only specular remained.
+    fn top_faces_sit_on_the_dark_pages_like_retail_container_tops() {
+        // Retail renders the Iron Gull's flat container tops around VPL page
+        // 3-4 (voxels.vpl page 8 is identity). In this frame that needs the
+        // light's Z to be negative: a +Z normal then gets no diffuse term and
+        // only the specular ~0.25, i.e. page 4. A positive Z would put it on
+        // page 18 (near-white decks), which the capture rules out.
         let page: u8 = native_page(Vec3::Z, YR_WORLD_LIGHT);
         assert!(
-            page >= 8,
-            "top faces must not sit on the dark pages: {page}"
+            (3..=5).contains(&page),
+            "top-face page must match retail: {page}"
         );
         let table_top: u8 = blinn_phong_pages(4, Mat3::IDENTITY)[240];
         assert_eq!(
