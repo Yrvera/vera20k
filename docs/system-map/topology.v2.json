@@ -31,6 +31,21 @@
     }
   ],
   "systems": {
+    "GSI-16.02": {
+      "native_anchors": [],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/world/command_schedule.rs",
+          "symbol": "queue_commands / take_due_replay_commands / apply_due_frame_ingress_commands / apply_due_commands",
+          "coverage": "representative",
+          "observed_at_commit": "351ebf73c275c46bbac4c214a9111d76b726d94b"
+        }
+      ],
+      "notes": [
+        "Private command_schedule groups existing queue admission, due filtering, house ordering and staged group destinations. Serialized state remains on Simulation; world_commands owns individual payloads. Master-frame and AI call positions are unchanged. This is a physical module reorganization, not a new runtime authority or native-parity claim.",
+        "Retained production-path tests cover speed ingress, batch admission, replay isolation, group destinations, wall navigation before later commands and same-frame exit."
+      ]
+    },
     "GSI-01.05": {
       "native_anchors": [
         {
@@ -100,18 +115,31 @@
           "path": "src/app/loading/pump.rs",
           "symbol": "LoadingSession / LoadingStage / PreparedScenarioLoad; prepare_loading_session; render_loading_screen; after_loading_frame_presented",
           "coverage": "representative",
-          "observed_at_commit": "d1c6d6d8c567a50740230bcb4bad6745f09e6a87"
+          "observed_at_commit": "351ebf73c275c46bbac4c214a9111d76b726d94b"
         },
         {
           "path": "src/app/frame.rs",
           "symbol": "App::render_frame",
           "coverage": "representative",
           "observed_at_commit": "d1c6d6d8c567a50740230bcb4bad6745f09e6a87"
+        },
+        {
+          "path": "src/app/loading/pump/render.rs",
+          "symbol": "encode_native_loading_frame / present_native_loading; private drawing helpers and geometry regressions",
+          "coverage": "representative",
+          "observed_at_commit": "351ebf73c275c46bbac4c214a9111d76b726d94b"
+        },
+        {
+          "path": "src/app/loading/pump/tests.rs",
+          "symbol": "request, source admission, lease, failure and progress regressions",
+          "coverage": "representative",
+          "observed_at_commit": "351ebf73c275c46bbac4c214a9111d76b726d94b"
         }
       ],
       "notes": [
         "Loading owns consuming map/prefix preparation, first-frame acknowledgement, continuation and terminal disposition. The frame supplies rendering/submission and one post-present call. VERA-internal ownership protocol, gamemd equivalent UNCHECKED; preserves represented prepaint preparation, first raw3 (random1), deferred raw8 and synchronous remaining progress.",
-        "Production source/RMG and cache/lease regressions plus fixed Soviet/Yuri release captures cover the touched route; no native pixel/dwell differential or full remaining-loader decomposition is claimed."
+        "Production source/RMG and cache/lease regressions plus fixed Soviet/Yuri release captures cover the touched route; no native pixel/dwell differential or full remaining-loader decomposition is claimed.",
+        "The private render child owns frame drawing while pump retains preparation, cadence, failure and after-present policy. Redundant test-only milestone ledgers were removed; actual loader ordering remains supported by production traces, not synthetic gate inputs."
       ]
     },
     "GSI-17.01": {
