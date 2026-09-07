@@ -942,3 +942,120 @@ fn nighthawk_failed_ejection_keeps_cargo_and_leaves_for_guard() {
     );
     assert_eq!(fx.cargo_ids(shad), held, "cargo still retained");
 }
+
+#[test]
+fn cargo_departure_ground_reveal_rejection_preserves_route_retry_state() {
+    use crate::sim::combat::combat_weapon::WeaponOverride;
+    use crate::sim::movement::locomotor::MovementLayer;
+    for aircraft in [false, true] {
+        for already_revealed in [false, true] {
+            let mut fx = Fixture::new(|_, _| false);
+            let transport = fx.spawn(if aircraft { "SHAD" } else { "FV" }, 20, 20, 0);
+            let passenger = fx.board(transport, 1)[0];
+            let peer = fx.spawn("E1", 30, 30, 0);
+            if already_revealed {
+                assert!(matches!(
+                    fx.sim.reveal(passenger),
+                    crate::sim::world::RevealOutcome::Revealed { .. }
+                ));
+            } else {
+                // Deliberately inconsistent cargo fixture: reach actual Reveal's
+                // early marked-object rejection after the caller clears Inside.
+                fx.sim
+                    .substrate
+                    .entities
+                    .get_mut(passenger)
+                    .unwrap()
+                    .lifecycle
+                    .cell_marked = true;
+            }
+            fx.sim
+                .substrate
+                .entities
+                .get_mut(peer)
+                .unwrap()
+                .mark_live_contact_with(passenger);
+            {
+                let carrier = fx.sim.substrate.entities.get_mut(transport).unwrap();
+                carrier.weapon_override = Some(WeaponOverride::IfvSlot(99));
+                let cargo = carrier.passenger_role.cargo_mut().unwrap();
+                // Admission-time size differs from current E1 Size=1.
+                cargo.passenger_sizes[0] = 7;
+                cargo.total_size = 7;
+            }
+            let held = serde_json::to_value(
+                fx.sim
+                    .substrate
+                    .entities
+                    .get(transport)
+                    .unwrap()
+                    .passenger_role
+                    .cargo(),
+            )
+            .unwrap();
+            let rng_before = fx.sim.scenario_rng.state();
+            if aircraft {
+                assert!(!super::eject_from_aircraft(
+                    &mut fx.sim,
+                    &fx.rules,
+                    Some(&fx.grid),
+                    None,
+                    transport
+                ));
+            } else {
+                assert!(matches!(
+                    super::eject_head_passenger(
+                        &mut fx.sim,
+                        &fx.rules,
+                        Some(&fx.grid),
+                        None,
+                        transport
+                    ),
+                    super::EjectOutcome::Failed
+                ));
+            }
+            let carrier = fx.sim.substrate.entities.get(transport).unwrap();
+            assert_eq!(
+                serde_json::to_value(carrier.passenger_role.cargo()).unwrap(),
+                held
+            );
+            assert_eq!(
+                carrier.weapon_override,
+                if aircraft {
+                    None
+                } else {
+                    Some(WeaponOverride::IfvSlot(1))
+                }
+            );
+            let pax = fx.sim.substrate.entities.get(passenger).unwrap();
+            assert_eq!(pax.passenger_role.inside_transport_id(), Some(transport));
+            assert!(pax.lifecycle.in_limbo);
+            assert_eq!(pax.lifecycle.cell_marked, !already_revealed);
+            assert!(!pax.in_logic_vector);
+            assert_eq!(pax.locomotor.as_ref().unwrap().layer, MovementLayer::Ground);
+            assert_eq!(
+                fx.sim
+                    .substrate
+                    .entities
+                    .get(peer)
+                    .unwrap()
+                    .has_live_contact_with(passenger),
+                !already_revealed
+            );
+            assert!(
+                fx.sim
+                    .sound_events
+                    .iter()
+                    .all(|event| !matches!(event, SimSoundEvent::LeaveTransport { .. }))
+            );
+            // Real placement still consumed its draw before Reveal rejected.
+            assert_ne!(fx.sim.scenario_rng.state(), rng_before);
+            println!(
+                "CARGO_TRACE ground {aircraft} {already_revealed} {:?} {:?} {:?}",
+                fx.sim.scenario_rng.state(),
+                held,
+                pax.position
+            );
+        }
+    }
+}

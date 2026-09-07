@@ -397,18 +397,39 @@
       "rust_surfaces": [
         {
           "path": "src/sim/passenger.rs",
-          "symbol": "passenger cargo and unload",
+          "symbol": "cargo state, boarding and garrison departure",
           "coverage": "representative",
-          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+          "observed_at_commit": "a8d49528a7f3b31e55bf7a2b8df52409d889d491"
         },
         {
           "path": "src/sim/radio",
           "symbol": "transport radio protocol",
           "coverage": "representative",
           "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/passenger/departure.rs",
+          "symbol": "depart_cargo_head / restore_departure",
+          "coverage": "representative",
+          "observed_at_commit": "a8d49528a7f3b31e55bf7a2b8df52409d889d491"
+        },
+        {
+          "path": "src/sim/transport_unload.rs",
+          "symbol": "eject_head_passenger / eject_from_aircraft",
+          "coverage": "representative",
+          "observed_at_commit": "a8d49528a7f3b31e55bf7a2b8df52409d889d491"
+        },
+        {
+          "path": "src/sim/aircraft/drop_payload.rs",
+          "symbol": "try_drop",
+          "coverage": "representative",
+          "observed_at_commit": "a8d49528a7f3b31e55bf7a2b8df52409d889d491"
         }
       ],
-      "notes": ["Static evidence records concrete load/unload ordering drift; no native executable loop oracle exists."]
+      "notes": [
+        "Static evidence records concrete load/unload ordering drift; no native executable loop oracle exists.",
+        "Retryable garrison, vehicle, landed-aircraft and paradrop departure now shares one synchronous owner for stored cargo size, head removal and phase-specific restoration. Geometry, cadence and ordered success effects remain in their production callers. Bulk sell/destruction ejection has distinct lifetime ordering and remains separate. Rust baseline/candidate regression traces match; this does not establish native loop parity."
+      ]
     },
     "GSI-04.14": {
       "native_anchors": [
@@ -2262,27 +2283,118 @@
         "cargo head pop 0x00473430"
       ],
       "rust_touchpoints": [
-        {"path": "src/sim/passenger.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
-        {"path": "src/sim/radio", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
-        {"path": "src/sim/movement", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
-        {"path": "src/sim/pathfinding", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+        {
+          "path": "src/sim/passenger.rs",
+          "coverage": "representative",
+          "observed_at_commit": "a8d49528a7f3b31e55bf7a2b8df52409d889d491"
+        },
+        {
+          "path": "src/sim/radio",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/movement",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/pathfinding",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/passenger/departure.rs",
+          "coverage": "representative",
+          "observed_at_commit": "a8d49528a7f3b31e55bf7a2b8df52409d889d491"
+        },
+        {
+          "path": "src/sim/transport_unload.rs",
+          "coverage": "representative",
+          "observed_at_commit": "a8d49528a7f3b31e55bf7a2b8df52409d889d491"
+        },
+        {
+          "path": "src/sim/aircraft/drop_payload.rs",
+          "coverage": "representative",
+          "observed_at_commit": "a8d49528a7f3b31e55bf7a2b8df52409d889d491"
+        }
       ],
       "stages": [
-        {"order": 1, "system": "GSI-14.03", "action": "Resolve enter action."},
-        {"order": 2, "system": "GSI-14.07", "action": "Build board order."},
-        {"order": 3, "system": "GSI-07.01", "action": "Admit owned order."},
-        {"order": 4, "system": "GSI-07.12", "action": "Run Mission Enter."},
-        {"order": 5, "system": "GSI-06.01", "action": "Admit approach movement."},
-        {"order": 6, "system": "GSI-06.03", "action": "Path to transport."},
-        {"order": 7, "system": "GSI-06.07", "action": "Commit boarding cell transition."},
-        {"order": 8, "system": "GSI-07.37", "action": "Negotiate boarding radio."},
-        {"order": 9, "system": "GSI-07.42", "action": "Insert passenger/cargo order."},
-        {"order": 10, "system": "GSI-14.08", "action": "Issue deploy/unload input."},
-        {"order": 11, "system": "GSI-07.21", "action": "Run unload mission."},
-        {"order": 12, "system": "GSI-07.42", "action": "Pop passenger and select destination."},
-        {"order": 13, "system": "GSI-06.01", "action": "Admit unload destination."},
-        {"order": 14, "system": "GSI-06.07", "action": "Commit passenger exit occupancy."},
-        {"order": 15, "system": "GSI-13.06", "action": "Render unloaded infantry sequence."}
+        {
+          "order": 1,
+          "system": "GSI-14.03",
+          "action": "Resolve enter action."
+        },
+        {
+          "order": 2,
+          "system": "GSI-14.07",
+          "action": "Build board order."
+        },
+        {
+          "order": 3,
+          "system": "GSI-07.01",
+          "action": "Admit owned order."
+        },
+        {
+          "order": 4,
+          "system": "GSI-07.12",
+          "action": "Run Mission Enter."
+        },
+        {
+          "order": 5,
+          "system": "GSI-06.01",
+          "action": "Admit approach movement."
+        },
+        {
+          "order": 6,
+          "system": "GSI-06.03",
+          "action": "Path to transport."
+        },
+        {
+          "order": 7,
+          "system": "GSI-06.07",
+          "action": "Commit boarding cell transition."
+        },
+        {
+          "order": 8,
+          "system": "GSI-07.37",
+          "action": "Negotiate boarding radio."
+        },
+        {
+          "order": 9,
+          "system": "GSI-07.42",
+          "action": "Insert passenger/cargo order."
+        },
+        {
+          "order": 10,
+          "system": "GSI-14.08",
+          "action": "Issue deploy/unload input."
+        },
+        {
+          "order": 11,
+          "system": "GSI-07.21",
+          "action": "Run unload mission."
+        },
+        {
+          "order": 12,
+          "system": "GSI-07.42",
+          "action": "Run cargo-head departure through placement and complete any route-specific retry before returning."
+        },
+        {
+          "order": 13,
+          "system": "GSI-06.01",
+          "action": "Admit unload destination."
+        },
+        {
+          "order": 14,
+          "system": "GSI-06.07",
+          "action": "Commit passenger exit occupancy."
+        },
+        {
+          "order": 15,
+          "system": "GSI-13.06",
+          "action": "Render unloaded infantry sequence."
+        }
       ],
       "oracle": {
         "status": "UNVERIFIED",
