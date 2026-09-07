@@ -201,14 +201,20 @@ if (accum_init == field[3]) { accum_init = 0; base_z += step_dir; }
 - `YOrigin` = Z-buffer `+0x04` (viewport top)
 - `screenY` / `screenY_offset` = sprite's screen position components
 - `spriteHeight` = draw rect height in pixels
-- `z_height` = elevation-based Z parameter from caller
+- `z_height` = **CC_Draw_Shape stack slot 7 = DrawSHP a7 (z-adjust, pixels) − 2**
+  (corrected 2026-09-07: forwarded at `0x004AF227` to `SHP_StandardBlitter`
+  `[ESP+0x74]`, added at `0x0043753E`; brightness (slot 9) and tint (slot 10)
+  never enter the Z block `0x004374BB–0x004375A7`). The older "CC param_10"
+  naming was Ghidra's off-by-one. Building body a7 = `NormalZAdjust −
+  AdjustForZ(Location.Z)`; see section 4.
 - Building formula subtracts spriteHeight and quantizes to 3-unit boundaries
 - **Tile `heightLevel`**: `CellClass+0x11B` (signed char, typically 0–14). Moves tile
-  upward by `heightLevel * 15` pixels. The actual Z formula parameter is
-  `cellZAdjust` (`CellClass+0x10C`, signed short) — runtime-computed from
-  `heightLevel * gradient_factor - offset`, scaled by tile intensity factor
-  (16.16 fixed-point at `CellClass+0x104`, default `0x10000` = 1.0).
-  Initialization: `FUN_00484680` during map load.
+  upward by `heightLevel * 15` pixels **and is the tile Z parameter**: both
+  `TMP_TileBlitter` callers push `MOVSX [cell+0x11B]` as slot 10 and the base Z
+  is `(DefaultZ + YOrigin − y − tileH) − tileH * heightLevel / 2`
+  (`DAT_00AA1104`). `CellClass+0x10C` is pushed as slot 11 but used only as the
+  palette-LUT brightness row (`0x00547D9C`, `*0x105 >> 11`, `<< 9`); it is a
+  lighting value (section 8 correction, 2026-09-07).
 - **Animation `z_height`**: `YDrawOffset + ZAdjust - AdjustForZ() - 2` (non-flat)
   or `- 3` (flat). `ZAdjust` from art.ini stored at `AnimTypeClass+0x348`,
   instance copy at `AnimClass+0x100`.
@@ -540,14 +546,37 @@ The Z term of a `DrawSHP` call is therefore **a7** (z-adjust in pixels): bib
 `-1 - AdjustForZ`, unit TooBig branch `-16`, VXL walkers `+0x2EC(gradient)`
 (locomotor Z_Adjust), infantry the global `[0x00825500]`. This matches the
 OpenTS `Techno_Draw_Object` argument order (`zadjust - 2, zgrad, brightness,
-zshapefile, ...`). UNCHECKED: the building body's a7 at `0x0043D85F`, and
-whether section 1's "z_height = CC param_10" in the walker's base-Z formula is
-a7 mis-numbered (Ghidra drops CC arg 2, so its `param_N` is stack arg N-1);
-re-read `SHP_StandardBlitter 0x004373B0` at `0x00437415`/`0x004374FA` with the
-push sequence at `0x0070642B` before using the formula's `z_height` term.
-Section 8's naming of `cell+0x10A/+0x10C` as "Z-adjust" fields also needs a
-re-read: `base + gradient * heightLevel - offset` scaled by an intensity factor
-is the lighting formula (`ambient + level * z - ground`), not a depth.
+zshapefile, ...`).
+
+**Building body a7 and the walker Z source (established from bodies, third
+pass 2026-09-07).** `BuildingClass_DrawBody` loads `Type+0x1520` =
+`NormalZAdjust` (INI read `0x004613A6`, store `0x004613B6`) into a local at
+`0x0043D31C/0x0043D324`, overridden to −20 (`0x0043D6D3`) for the rubble image
+`Type+0x14e4` and −40 (`0x0043D7D6`) for `Type+0x14fc`. At `0x0043D836` it
+calls `vtable+0x1D0` (`0x005F5F30`, `Location.Z`), then
+`Tactical__AdjustForZ 0x006D20E0`, and pushes `NormalZAdjust − AdjustForZ(Z)`
+as a7 (`0x0043D847/0x0043D84D`). Site `0x0043D683` pushes the same a7; it
+differs only in a10 (`cell+0x10A` without `Type+0x1548` = `ExtraLight`, INI
+read `0x004613F1`). Inside DrawSHP a7 is forwarded untouched for buildings and
+becomes CC slot 7 as `a7 − 2` (`0x0070641E`, `0x00706430`). In
+`CC_Draw_Shape` slot 7 → `SHP_StandardBlitter` `[ESP+0x74]` (`0x004AF227`),
+slot 8 → `[ESP+0x78]` gradient index, slot 9 (brightness) → `[ESP+0x7c]`
+leaf-only, slot 10 (tint) → `[ESP+0x80]` leaf selection. The Z block
+`0x004374BB–0x004375A7` reads only `[ESP+0x74]`, the gradient table, rect and
+`g_ZBuffer`. The shadow call pushes literal 1000 in slot 9, confirming slot 9
+is intensity. Retail YR sets `NormalZAdjust` only on GAFSDF (−10).
+
+**`cell+0x10A/+0x10C/+0x10E` are lighting, not Z (established from
+`0x00484680`).** `[+0x10A] = [+0x10E] = Scenario[+0x352c]*10 + cell[+0x108]`,
+then `+= Level * int8(cell+0x11B) − Ground` (Level/Ground word pairs selected
+by the ion-storm / dominator / nuke globals: `+0x355C/+0x3558`,
+`+0x3590/+0x358C`, `+0x3574/+0x3570`, default `+0x3544/+0x3540`); `+0x10E`
+uses `level + 4`; `[+0x10C] = ([+0x10A] * cell[+0x104]) >> 16`, all clamped
+0..2000. DrawSHP itself loads `cell+0x10C` into the a10 brightness slot at
+`0x00705F52` and `0x007060FF`. The tile blitter derives Z from the height level
+alone (section 1). Section 8's `Cell_ComputeZAdjust` / `cellZAdjust` naming
+is wrong; the addresses and formulas there are right, the interpretation is
+lighting.
 
 Foundation subtraction at the building body site (before `0x0043D85F`):
 `x = W*0x100 - 0x100`, `y = H*0x100 - 0x100` (leptons of `(W-1, H-1)`) →
@@ -742,9 +771,17 @@ The constant +4 means bridge decks are always 4 height levels (60 pixels) above
 the ground beneath them. `GetEffectiveHeight` (`0x00487d50`) uses the same formula
 for unit positioning: `heightLevel + ((cell_flags >> 7) & 1) * 4`.
 
-### Three Pre-Computed Z-Adjust Fields
+### Three Pre-Computed Cell Lighting Fields (formerly "Z-Adjust")
 
-`Cell_ComputeZAdjust` (`0x00484680`) computes three Z-adjust values per cell:
+> Correction 2026-09-07: `0x00484680` computes per-cell **lighting
+> intensities** (1000 = normal; Scenario Ambient/Level/Ground, scaled by the
+> 16.16 factor at `+0x104`), not depths. `TMP_TileBlitter` uses `+0x10C` as its
+> palette brightness row and takes Z from the height level `+0x11B`; the
+> bridge body's `+0x10E` push below lands in `CC_Draw_Shape` slot 9, the
+> intensity slot. Formulas and offsets in this subsection are correct; read
+> "Z-adjust" as "light". See section 4.
+
+`0x00484680` computes three per-cell values:
 
 | Field | Offset | Formula | Used By |
 |-------|--------|---------|---------|
@@ -773,7 +810,8 @@ In `CellOverlay_TileDraw` (`0x00480350`):
 
 TMP_TileBlitter Z formula:
 ```c
-base_z = (DefaultZ + YOrigin - screenY - spriteHeight) - (spriteHeight * cellZAdjust) / 2;
+base_z = (DefaultZ + YOrigin - screenY - spriteHeight) - (spriteHeight * heightLevel) / 2;
+// heightLevel = cell+0x11B (slot 10); cell+0x10C (slot 11) is the brightness row, not Z
 // Per pixel: if (z_shape_value + base_z <= zbuffer[pixel]) { write; }
 ```
 
@@ -796,7 +834,7 @@ CC_Draw_Shape(shp, frame, &pos, clip_rect,
     0,
     effective_height * -15 - 2, // Y-adjust
     0,                          // gradient type 0
-    cell.cellZAdjust_bottom,    // Z-height from +0x10E (bridge-level Z!)
+    cell.light_bottom,          // +0x10E: CC slot 9 = brightness at level+4 (not Z; corrected 2026-09-07)
     0, 0, 0, 0, 0);
 ```
 
@@ -908,7 +946,7 @@ Xrefs:
 | `0x00754510` | VXL_Sort_Rasterize | Bubble-sort sections by Z, then rasterize |
 | `0x00757120` | VXL_Rasterizer_Mirror | Per-pixel depth test in g_VXL_DepthMap |
 | `0x00422ca0` | AnimClass::DrawIt | Anim draw with ZAdjust + gradient type 0 or 2 |
-| `0x00484680` | Cell Z-adjust init | Computes cellZAdjust from heightLevel |
+| `0x00484680` | Cell lighting init | Computes per-cell light (+0x10A/+0x10C/+0x10E) from Scenario Ambient/Level/Ground and heightLevel (not Z) |
 
 ### Global Data
 

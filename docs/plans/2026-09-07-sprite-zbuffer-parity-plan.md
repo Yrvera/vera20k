@@ -79,10 +79,12 @@ Still open, and they block only the numbers, not the pipelines:
    consumer is correct. The Z term is DrawSHP **a7** (z-adjust px, OpenTS
    `zadjust - 2` order): bib `-1 - AdjustForZ`, infantry global
    `[0x00825500]`, units locomotor `Z_Adjust` via `+0x2EC(gradient)`.
-   **Still open:** the building body's a7 at `0x0043D85F`, and whether the
-   section 1 base-Z formula's `z_height = CC param_10` is a7 mis-numbered.
-   Re-read `SHP_StandardBlitter 0x004373B0` against the push sequence at
-   `0x0070642B` before coding the base Z.
+   **Closed (third pass):** building body a7 = `NormalZAdjust −
+   AdjustForZ(Location.Z)` (`0x0043D836–0x0043D84D`; retail default 0, GAFSDF
+   −10; −20/−40 for rubble variants). The walker's base-Z term is CC slot 7 =
+   `a7 − 2`; brightness and tint never enter the Z block. The cell fields
+   `+0x10A/+0x10C/+0x10E` are lighting; tile Z comes from the height level
+   `+0x11B` alone. Doc sections 1, 4 and 8 updated.
 2. Whether an anim's `+0x190` can carry `0x4000` (write). Assume no.
 3. Locomotor `Z_Gradient` overrides (`loco+0x3C`) for non-default locomotors
    (hover, fly, jumpjet). Default 2 covers ground vehicles.
@@ -135,11 +137,13 @@ tiles and sprites are the case to decide on; note the choice in the shader.
   DefaultZ + YOrigin - spriteHeight - screenY + 1 + z_adjust`, quantised to
   3-row steps, then +1 Z per 3 rows going down. In VERA depth: the top row of
   the quad is nearest, depth grows by `1/world_height` every third row. The
-  `z_adjust` term is DrawSHP a7 (pixels), not the brightness arg a10; the
-  building body's a7 value and the walker's exact use of it are the open items
-  above. Map it onto the existing `compute_sprite_depth` inputs and keep the
+  `z_adjust` term is CC slot 7 = DrawSHP a7 − 2, with a7 = `NormalZAdjust −
+  AdjustForZ(Location.Z)` for the body (bib: `−1 − AdjustForZ`). Parse
+  `NormalZAdjust=` alongside `ZShapePointMove=` (only GAFSDF sets it, −10).
+  Map it onto the existing `compute_sprite_depth` inputs and keep the
   quantisation (integer steps are what the retail capture will show at the
-  occlusion boundary).
+  occlusion boundary). Tile depth stays keyed on the height level; the cell
+  lighting fields are not Z inputs anywhere.
 - **Pipeline.** A building-body pipeline: depth compare `Less`, depth write
   on, fragment shader emits `frag_depth = row_depth(frag_y) -
   zshape(frag_xy) / world_height`. Either extend `zdepth_shader.wgsl` with a
