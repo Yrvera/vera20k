@@ -22,8 +22,10 @@ use crate::render::sprite_atlas::{self, SpriteAtlas};
 use crate::render::tile_atlas::{self, TileAtlas};
 use crate::render::unit_atlas::{self, UnitAtlas};
 use crate::rules::art_data::ArtRegistry;
-use crate::rules::ini_parser::{IniFile};
-use crate::rules::native_processing::{NativeTypeConstructionTrace, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack};
+use crate::rules::ini_parser::IniFile;
+use crate::rules::native_processing::{
+    NativeTypeConstructionTrace, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack,
+};
 use crate::rules::process_owner::NativeRulesProcessOwner;
 use crate::rules::ruleset::RuleSet;
 
@@ -269,14 +271,7 @@ impl LoadedRules {
         })
     }
 
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        RuleSet,
-        IniFile,
-        NativeTypeConstructionTrace,
-        IniFile,
-    ) {
+    pub(crate) fn into_parts(self) -> (RuleSet, IniFile, NativeTypeConstructionTrace, IniFile) {
         (
             self.rules,
             self.processed_ini,
@@ -284,7 +279,6 @@ impl LoadedRules {
             self.fixed_art_ini,
         )
     }
-
 }
 
 /// Compose the active YR rules passes in retail order.
@@ -297,13 +291,22 @@ fn compose_rules_layers(
 ) -> Result<ProcessedRulesLayers, crate::rules::error::RulesError> {
     let mut layers = RulesLayerStack::new(rulesmd);
     if let Some(langrule) = langrule {
-        layers.push(crate::rules::native_processing::RulesLayerKind::LangRule, langrule.clone());
+        layers.push(
+            crate::rules::native_processing::RulesLayerKind::LangRule,
+            langrule.clone(),
+        );
     }
     if let Some(mode) = mode {
-        layers.push(crate::rules::native_processing::RulesLayerKind::GameMode, mode.clone());
+        layers.push(
+            crate::rules::native_processing::RulesLayerKind::GameMode,
+            mode.clone(),
+        );
     }
     if let Some(map) = map {
-        layers.push(crate::rules::native_processing::RulesLayerKind::Scenario, map.clone());
+        layers.push(
+            crate::rules::native_processing::RulesLayerKind::Scenario,
+            map.clone(),
+        );
     }
     layers.process_with_fixed_art(fixed_art)
 }
@@ -334,13 +337,7 @@ pub(crate) struct StartupRulesLoad {
 }
 
 impl StartupRulesLoad {
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        Option<RuleSet>,
-        Option<IniFile>,
-        NativeRulesProcessOwner,
-    ) {
+    pub(crate) fn into_parts(self) -> (Option<RuleSet>, Option<IniFile>, NativeRulesProcessOwner) {
         (
             self.compatibility_rules,
             self.compatibility_projection,
@@ -360,31 +357,26 @@ pub(crate) fn load_startup_rules(asset_manager: &AssetManager) -> Option<Startup
         log::warn!("artmd.ini not found or could not be parsed during native rules startup");
         None
     })?;
-    let native_owner = NativeRulesProcessOwner::from_cold_start_sources(
-        rulesmd,
-        langrule,
-        fixed_art,
-    )
-    .map_err(|error| log::warn!("Native rules cold startup failed: {error}"))
-    .ok()?;
+    let native_owner =
+        NativeRulesProcessOwner::from_cold_start_sources(rulesmd, langrule, fixed_art)
+            .map_err(|error| log::warn!("Native rules cold startup failed: {error}"))
+            .ok()?;
 
-    let (compatibility_rules, compatibility_projection) =
-        match native_owner.startup_compatibility_projection() {
-            Ok(processed) => {
-                let compatibility_rules = RuleSet::from_processed_rules(&processed)
-                    .map_err(|error| {
-                        log::warn!("Failed to parse startup rules projection: {error}")
-                    })
-                    .ok();
-                let compatibility_projection =
-                    processed.into_projection_discarding_native_receipt();
-                (compatibility_rules, Some(compatibility_projection))
-            }
-            Err(error) => {
-                log::warn!("Failed to build startup rules projection: {error}");
-                (None, None)
-            }
-        };
+    let (compatibility_rules, compatibility_projection) = match native_owner
+        .startup_compatibility_projection()
+    {
+        Ok(processed) => {
+            let compatibility_rules = RuleSet::from_processed_rules(&processed)
+                .map_err(|error| log::warn!("Failed to parse startup rules projection: {error}"))
+                .ok();
+            let compatibility_projection = processed.into_projection_discarding_native_receipt();
+            (compatibility_rules, Some(compatibility_projection))
+        }
+        Err(error) => {
+            log::warn!("Failed to build startup rules projection: {error}");
+            (None, None)
+        }
+    };
 
     Some(StartupRulesLoad {
         compatibility_rules,
@@ -398,14 +390,8 @@ fn load_retail_rules_source_with_fixed_art(
 ) -> Option<(IniFile, IniFile)> {
     let (rulesmd, langrule) = load_retail_rules_root(asset_manager)?;
     let fixed_art = load_retail_ini(asset_manager, "artmd.ini")?;
-    let processed = compose_rules_layers(
-        rulesmd,
-        langrule.as_ref(),
-        None,
-        None,
-        &fixed_art,
-    )
-    .ok()?;
+    let processed =
+        compose_rules_layers(rulesmd, langrule.as_ref(), None, None, &fixed_art).ok()?;
     Some((
         processed.into_projection_discarding_native_receipt(),
         fixed_art,
@@ -550,6 +536,15 @@ pub(crate) fn scheduler_anim_roots(
             .map(|anim| anim.anim_name.trim().to_ascii_uppercase())
             .filter(|name| !name.is_empty()),
     );
+    // [General] Wake= is constructed as an ordinary AnimClass by the drive
+    // locomotor's process (0x004B0823 region), so it needs the same loader
+    // bounds as every other scheduler-owned anim or its constructor refuses it.
+    {
+        let wake = rules.general.wake.name.trim().to_ascii_uppercase();
+        if !wake.is_empty() {
+            roots.insert(wake);
+        }
+    }
     roots.extend(
         [
             rules.crate_rules.wood_crate_img.as_deref(),
@@ -875,8 +870,8 @@ mod tests {
     use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::map::resolved_terrain::TerrainTileAnimation;
     use crate::rules::art_data::ArtRegistry;
-    use crate::rules::ini_parser::{IniFile};
-use crate::rules::native_processing::{NativeTypeConstructorFamily, RulesLayerStack};
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::native_processing::{NativeTypeConstructorFamily, RulesLayerStack};
     use crate::rules::ruleset::RuleSet;
     use crate::rules::terrain_rules::{LandType, SpeedCostProfile};
     use crate::sim::components::Health;
@@ -946,7 +941,10 @@ use crate::rules::native_processing::{NativeTypeConstructorFamily, RulesLayerSta
                 "CUSTOM_FALLS",
                 "CUSTOM_MOUTH",
                 "FIRE_A",
-                "FIRE_B"
+                "FIRE_B",
+                // [General] Wake= default: constructed as a scheduler AnimClass
+                // by the drive locomotor, so it is bound with the roots.
+                "WAKE1"
             ]
         );
     }
@@ -1167,7 +1165,10 @@ use crate::rules::native_processing::{NativeTypeConstructorFamily, RulesLayerSta
         let map = IniFile::from_str(
             "[Basic]\nName=Fixture\n[General]\nBuildSpeed=1\n[CombatDamage]\nC4Delay=.06\n",
         );
-        layers.push(crate::rules::native_processing::RulesLayerKind::Scenario, map);
+        layers.push(
+            crate::rules::native_processing::RulesLayerKind::Scenario,
+            map,
+        );
         let rules = RuleSet::from_rules_layers(&layers).expect("ordered rules parse");
         // C4Delay is minutes: ticks = minutes * 60 * 15 => .06 -> 54.
         assert_eq!(rules.c4_delay_ticks, 54);
@@ -1181,7 +1182,10 @@ use crate::rules::native_processing::{NativeTypeConstructorFamily, RulesLayerSta
     fn map_without_overrides_leaves_rules_unchanged() {
         let mut with_map = RulesLayerStack::new(IniFile::from_str(RULES_BASE));
         let map = IniFile::from_str("[Basic]\nName=Clean\n[Waypoints]\n0=45035\n");
-        with_map.push(crate::rules::native_processing::RulesLayerKind::Scenario, map);
+        with_map.push(
+            crate::rules::native_processing::RulesLayerKind::Scenario,
+            map,
+        );
         let a = RuleSet::from_rules_layers(&with_map).expect("parse");
         let b = RuleSet::from_ini(&IniFile::from_str(RULES_BASE)).expect("parse");
         assert_eq!(a.c4_delay_ticks, b.c4_delay_ticks);
@@ -1502,7 +1506,10 @@ use crate::rules::native_processing::{NativeTypeConstructorFamily, RulesLayerSta
         let no_override = RuleSet::from_ini(&IniFile::from_str(RULES_BASE)).expect("parse");
 
         let mut with_override = RulesLayerStack::new(IniFile::from_str(RULES_BASE));
-        with_override.push(crate::rules::native_processing::RulesLayerKind::Scenario, IniFile::from_str("[General]\nBuildSpeed=2\n"));
+        with_override.push(
+            crate::rules::native_processing::RulesLayerKind::Scenario,
+            IniFile::from_str("[General]\nBuildSpeed=2\n"),
+        );
         let overridden = RuleSet::from_rules_layers(&with_override).expect("parse");
 
         assert_ne!(
