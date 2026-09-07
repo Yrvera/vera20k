@@ -155,6 +155,15 @@ pub struct ArtEntry {
     pub undeploy_frames: Option<u16>,
     /// Middle integer of `DeployedFire=<start>,<frames>,<rate>` in the sequence.
     pub deployed_fire_frames: Option<u16>,
+    /// `ZShapePointMove=X,Y` (`BuildingTypeClass +0x1530/+0x1534`): pixel
+    /// shift of the BUILDNGZ z-shape a building body writes its depth through
+    /// (`BuildingClass_DrawBody 0x0043D6EF..0x0043D77A`). Retail sets it on
+    /// ten tall structures; default 0,0.
+    pub z_shape_point_move: (i32, i32),
+    /// `NormalZAdjust=` (`BuildingTypeClass +0x1520`, read at `0x004613A6`):
+    /// the building body's own Z term before the height lift is cancelled.
+    /// Retail sets it only on GAFSDF (-10); default 0.
+    pub normal_z_adjust: i32,
 }
 
 /// One native building-damage-fire art offset.
@@ -1138,6 +1147,11 @@ impl ArtRegistry {
             };
             let add_occupy = parse_numbered_cell_offsets(section, "AddOccupy");
             let remove_occupy = parse_numbered_cell_offsets(section, "RemoveOccupy");
+            let z_shape_point_move: (i32, i32) = section
+                .get("ZShapePointMove")
+                .and_then(parse_i32_pair)
+                .unwrap_or((0, 0));
+            let normal_z_adjust: i32 = section.get_i32("NormalZAdjust").unwrap_or(0);
 
             let section_key = section_name.to_uppercase();
             can_hide_things.insert(section_key.clone(), can_hide);
@@ -1200,6 +1214,8 @@ impl ArtRegistry {
                     deploy_frames,
                     undeploy_frames,
                     deployed_fire_frames,
+                    z_shape_point_move,
+                    normal_z_adjust,
                 },
             );
         }

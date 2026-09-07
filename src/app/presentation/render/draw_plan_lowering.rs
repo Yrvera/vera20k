@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use crate::render::batch::SpriteInstance;
 use crate::render::tactical_draw_plan::{
     BlitPolicy, BuildingOwnedPlan, BuildingPiece, BuildingPieceKind, CellDraw, CellDrawKind,
-    DrawId, ObjectDraw, SpriteEncoding, TacticalCoord, TacticalDrawInput, TacticalDrawPlan,
-    TacticalLayer,
+    DrawId, ObjectDraw, RenderZPolicy, SpriteEncoding, TacticalCoord, TacticalDrawInput,
+    TacticalDrawPlan, TacticalLayer,
 };
 
 /// A cell-pass instance paired with the metadata needed by `YR TacticalClass::Draw`.
@@ -46,6 +46,9 @@ pub(crate) enum GroundTexture {
 /// One already-resolved sprite owned by one Ground-layer parent object.
 pub(crate) struct GroundPieceInstance {
     pub target: GroundTexture,
+    /// Which depth pipeline draws it (`RenderZPolicy::None` passthrough,
+    /// `ReadOnly` Z-tested, `ReadWrite` Z-tested and written).
+    pub render_z: RenderZPolicy,
     pub instance: SpriteInstance,
 }
 
@@ -78,6 +81,7 @@ impl PlannedGroundObjectInstance {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GroundDrawRun {
     pub target: GroundTexture,
+    pub render_z: RenderZPolicy,
     pub start: u32,
     pub count: u32,
 }
@@ -150,13 +154,19 @@ impl NativeGroundOrder {
         y_sort_adjust: i32,
         encoding: SpriteEncoding,
     ) -> Option<ObjectDraw> {
+        // Non-building objects test render Z per pixel and never write it;
+        // terrain objects (trees) keep the untraced passthrough.
+        let policy = match encoding {
+            SpriteEncoding::Terrain => BlitPolicy::z_none(encoding),
+            _ => BlitPolicy::z_read(encoding),
+        };
         Some(ObjectDraw {
             id,
             layer: TacticalLayer(2),
             coord,
             y_sort_adjust,
             registration_order: *self.registrations.get(&id)?,
-            policy: BlitPolicy::opaque(encoding),
+            policy,
         })
     }
 
@@ -266,6 +276,7 @@ pub(crate) fn lower_ground_object_instances(
                                 piece_id,
                                 GroundPieceInstance {
                                     target: piece.target,
+                                    render_z: piece.policy.render_z,
                                     instance: piece.instance,
                                 },
                             )
@@ -335,15 +346,16 @@ fn push_ground_piece(pass: &mut GroundObjectPass, owner: DrawId, piece: GroundPi
     #[cfg(not(test))]
     let _ = owner;
     let start = pass.instances.len() as u32;
-    if let Some(run) = pass
-        .runs
-        .last_mut()
-        .filter(|run| run.target == piece.target && run.start + run.count == start)
-    {
+    if let Some(run) = pass.runs.last_mut().filter(|run| {
+        run.target == piece.target
+            && run.render_z == piece.render_z
+            && run.start + run.count == start
+    }) {
         run.count += 1;
     } else {
         pass.runs.push(GroundDrawRun {
             target: piece.target,
+            render_z: piece.render_z,
             start,
             count: 1,
         });
@@ -402,6 +414,7 @@ mod tests {
     fn marked_piece(target: GroundTexture, marker: u32) -> GroundPieceInstance {
         GroundPieceInstance {
             target,
+            render_z: RenderZPolicy::ReadOnly,
             instance: SpriteInstance {
                 draw_state: DrawState {
                     fx_flags: marker,

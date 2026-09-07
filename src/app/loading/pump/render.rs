@@ -69,6 +69,7 @@ pub(super) fn encode_native_loading_frame(
         0.0,
         0.0,
         1.0,
+        crate::render::batch::DepthAxis::NONE,
     );
     let Some((buffer, count)) = renderer
         .batch_renderer
@@ -535,6 +536,7 @@ pub(super) fn present_native_loading(
         0.0,
         0.0,
         1.0,
+        crate::render::batch::DepthAxis::NONE,
     );
     let Some((buffer, count)) = batch.create_instance_buffer(gpu, &instances) else {
         return Err(anyhow::anyhow!(
@@ -633,6 +635,7 @@ fn push_entry_scaled(
         tint,
         alpha: 1.0,
         draw_state: DrawState::default(),
+        ..Default::default()
     });
 }
 
@@ -678,6 +681,7 @@ fn push_entry_clipped(
         tint: [1.0, 1.0, 1.0],
         alpha: 1.0,
         draw_state: DrawState::default(),
+        ..Default::default()
     });
 }
 
@@ -717,6 +721,7 @@ fn push_progress_fill(
         tint: [1.0, 1.0, 1.0],
         alpha: 1.0,
         draw_state: DrawState::default(),
+        ..Default::default()
     });
 }
 

@@ -248,6 +248,7 @@ pub(crate) fn render_single_player_shell(
         0.0,
         0.0,
         1.0,
+        crate::render::batch::DepthAxis::NONE,
     );
     let movie_buffer = state
         .renderer.batch_renderer

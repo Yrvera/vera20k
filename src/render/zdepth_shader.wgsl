@@ -1,23 +1,34 @@
-// Per-pixel Z-depth shader for the base terrain pass.
+// Per-pixel Z-depth shader for TMP terrain tiles and high-bridge bodies.
 //
-// Same vertex shader as batch_shader.wgsl. Fragment shader samples an R8 depth
-// atlas (binding 2) at the same UV as the color texture, then writes per-pixel
-// frag_depth. This allows cliff tiles to have correct per-pixel occlusion
-// instead of uniform depth per quad.
+// Same vertex shader as batch_shader.wgsl. The fragment shader samples an R8
+// depth atlas (binding 2) at the colour UV and derives the native Z of the
+// pixel from the instance's canvas top row:
+//
+//   tiles   (`TMP_TileBlitter @ 0x00547CF0`): Z = base + zdata,
+//           base = DefaultZ + YOrigin - diamond_top - tileH - tileH*level/2,
+//           carried here as z_adjust = draw_offset.y - tileH - 15*level and
+//           z_sign = +1 (zdata added: higher Z-data is farther);
+//   bridges (`CellClass::DrawOverlay_Body @ 0x0047F6A0` through the extended
+//           blitter with gradient entry 0): Z = seed - row, carried as
+//           z_adjust = -15*(level+4) - 2 and z_sign = -1 with the atlas
+//           storing the row index.
+//
+// depth = 1 - (row - world_origin_y) / world_height, where row is the ground
+// row the Z stands for: row = canvas_top - (z_adjust + z_sign * byte). One
+// native Z unit is exactly one world pixel row, shared with the sprite paths.
 
 struct Camera {
     screen_size: vec2f,
     camera_pos: vec2f,
-    // Zoom level: 1.0 = native, >1.0 = zoomed in, <1.0 = zoomed out.
     zoom: f32,
-    pad0: f32,
+    world_origin_y: f32,
+    world_height: f32,
+    pad1: f32,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 
-// Color texture + sampler (same as batch_shader).
 @group(1) @binding(0) var t_sprite: texture_2d<f32>;
 @group(1) @binding(1) var s_sprite: sampler;
-// R8 depth atlas — parallel to color atlas, same UV layout.
 @group(1) @binding(2) var t_zdepth: texture_2d<f32>;
 
 struct Instance {
@@ -29,14 +40,16 @@ struct Instance {
     @location(5) tint: vec3f,
     @location(6) alpha: f32,
     @location(9) fx_params: vec4f,
+    @location(11) z_adjust: f32,
 };
 
 struct VertexOutput {
     @builtin(position) position: vec4f,
     @location(0) uv: vec2f,
     @location(1) tint: vec3f,
-    @location(2) base_depth: f32,
-    @location(3) depth_scale: f32,
+    @location(2) @interpolate(flat) canvas_top: f32,
+    @location(3) @interpolate(flat) z_adjust: f32,
+    @location(4) @interpolate(flat) z_sign: f32,
 };
 
 @vertex
@@ -67,8 +80,10 @@ fn vs_main(
     output.position = vec4f(clip_x, clip_y, 0.5, 1.0);
     output.uv = instance.uv_origin + quad_uv[idx] * instance.uv_size;
     output.tint = instance.tint;
-    output.base_depth = instance.depth;
-    output.depth_scale = instance.fx_params.w;
+    output.canvas_top = instance.position.y;
+    output.z_adjust = instance.z_adjust;
+    // fx_params.w carries the Z-data sign (+1 tiles, -1 bridges); zero keeps +1.
+    output.z_sign = select(1.0, -1.0, instance.fx_params.w < 0.0);
     return output;
 }
 
@@ -110,17 +125,11 @@ fn fs_main(input: VertexOutput) -> FragOutput {
         discard;
     }
 
-    // Sample R8 depth atlas: value 0..1 (from 0..255 byte).
-    let z_sample: f32 = textureSample(t_zdepth, s_sprite, input.uv).r;
-
-    // Depth formula: base_depth is the tile's Y-sorted depth (0=near, 1=far).
-    // z_sample offsets per-pixel: higher values push terrain pixels closer to
-    // the camera (lower depth) in the shared terrain depth buffer.
-    // Bridge bodies carry 255/world_height in fx_params.w so an R8 row value
-    // advances exactly one normalized world pixel. Zero retains the terrain
-    // atlas's established scale.
-    let depth_scale: f32 = select(0.0002, input.depth_scale, input.depth_scale > 0.0);
-    let frag_depth: f32 = clamp(input.base_depth - z_sample * depth_scale, 0.001, 0.999);
+    // R8 depth atlas: byte 0..255 stored as 0..1.
+    let z_byte: f32 = round(textureSample(t_zdepth, s_sprite, input.uv).r * 255.0);
+    let ground_row: f32 = input.canvas_top - (input.z_adjust + input.z_sign * z_byte);
+    let world_height: f32 = max(camera.world_height, 1.0);
+    let frag_depth: f32 = clamp(1.0 - (ground_row - camera.world_origin_y) / world_height, 0.001, 0.999);
 
     var output: FragOutput;
     output.color = vec4f(palette_light(color.rgb, input.tint), color.a);

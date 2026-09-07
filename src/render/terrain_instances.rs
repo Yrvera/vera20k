@@ -9,10 +9,11 @@ use crate::map::terrain::{
     HEIGHT_STEP, TILE_HEIGHT, TILE_WIDTH, TerrainCell, TerrainGrid, TilePlacement, UvLookupFn,
 };
 use crate::render::batch::SpriteInstance;
+use crate::render::draw_state::DrawState;
+use crate::render::native_z;
 
 /// Cull margin in screen pixels beyond the viewport on every side.
 const CULL_MARGIN: f32 = 120.0;
-
 
 /// Visible ordinary terrain instances drawn in the base terrain pass.
 pub struct TerrainInstances {
@@ -74,14 +75,22 @@ pub fn build_visible_instances(
         // feather could not darken — hard south-facing shroud edges wherever
         // the feather extended past the last drawn tile.
 
-        // Depth: reconstruct elevation-free iso row, then normalize.
-        // Lower screen_y → larger depth (drawn behind). Elevation bias ensures
-        // elevated tiles draw in front of same-row ground tiles.
+        // Sort depth: the elevation-free iso row of the diamond top. The
+        // zdepth pipeline ignores it and derives each pixel's depth from the
+        // native tile Z (`TMP_TileBlitter @ 0x00547CF0`):
+        //   base = DefaultZ + YOrigin - diamond_top - tileH - tileH*level/2,
+        //   pixel = base + zdata, drawn and stored when `pixel <= zbuf`.
+        // `z_adjust` is that base relative to the instance's canvas top
+        // (extra-data tiles start above the diamond by `draw_offset.y`), and
+        // `fx_params.w = +1` tells the shader the Z-data byte is added.
         let signed_z = f32::from(cell.z as i8);
         let iso_row: f32 = cell.screen_y + signed_z * HEIGHT_STEP;
-        let normalized: f32 = ((iso_row - grid.origin_y) / grid.world_height).clamp(0.0, 1.0);
-        let z_bias: f32 = signed_z * 0.0001;
-        let depth: f32 = (1.0 - normalized - z_bias).clamp(0.001, 0.999);
+        let depth: f32 = native_z::depth_for_row(iso_row, grid.origin_y, grid.world_height);
+        let tile_z_adjust = |draw_offset_y: f32| -> f32 {
+            draw_offset_y
+                - (native_z::TILE_HEIGHT_ROWS as f32)
+                - ((native_z::TILE_HEIGHT_ROWS * i32::from(cell.z as i8)) / 2) as f32
+        };
 
         // Bridge cells with baked damaged-variant TMP data ignore the
         // map-load PRNG variant and instead route to the per-frame
@@ -139,6 +148,8 @@ pub fn build_visible_instances(
             let tint = lighting_grid
                 .map(|lights| lights.terrain_tile_tint_at((cell.rx, cell.ry)))
                 .unwrap_or(cell.tint);
+            let mut draw_state = DrawState::default();
+            draw_state.fx_params[3] = 1.0;
             let inst = SpriteInstance {
                 position: [
                     cell.screen_x + p.draw_offset[0],
@@ -150,6 +161,8 @@ pub fn build_visible_instances(
                 depth,
                 tint,
                 alpha: 1.0,
+                draw_state,
+                z_adjust: tile_z_adjust(p.draw_offset[1]),
                 ..Default::default()
             };
             instances.normal.push(inst);

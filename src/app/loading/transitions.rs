@@ -89,6 +89,7 @@ pub(crate) fn fallback_map_load_result() -> init::MapLoadResult {
         },
         presentation: init::PresentationLoadAssets {
             tile_atlas: None,
+            building_zshape: None,
             unit_atlas: None,
             palette_set: None,
             sprite_atlas: None,
@@ -117,6 +118,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     // InGame (SpawnPick remains outside the scenario elapsed span).
     state.match_state.scenario_elapsed_clock.reset();
     state.match_state.match_presentation.tile_atlas = result.presentation.tile_atlas;
+    state.match_state.match_presentation.building_zshape = result.presentation.building_zshape;
     crate::app::loading::pump::clear_loading_state(state);
     state.match_state.map_basic = result.scenario.basic;
     state.match_state.loaded_map_source = Some(result.scenario.map_source);
@@ -258,11 +260,19 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.match_state.match_presentation.theater_ext = result.scenario.theater_ext;
 
     let runtime = state.match_state.sim_runtime.as_ref();
-    let live = runtime.and_then(|rt| rt.resources.terrain_template.as_ref()
-        .map(|terrain| (terrain, &rt.simulation, &rt.resources.rules)));
+    let live = runtime.and_then(|rt| {
+        rt.resources
+            .terrain_template
+            .as_ref()
+            .map(|terrain| (terrain, &rt.simulation, &rt.resources.rules))
+    });
     let presentation = &mut state.match_state.match_presentation;
-    presentation.lighting.install(result.presentation.lighting_grid,
-        result.scenario.map_lighting_config, presentation.in_game_options.detail_level, live);
+    presentation.lighting.install(
+        result.presentation.lighting_grid,
+        result.scenario.map_lighting_config,
+        presentation.in_game_options.detail_level,
+        live,
+    );
     // Map load hands over a world anchor point; the transition applies the
     // active tactical rectangle and live zoom.
     let (tactical_width, tactical_height) = crate::app::input::camera::tactical_viewport_size_px(

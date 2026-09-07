@@ -9,11 +9,11 @@ use super::frontend::list_maps;
 use super::presentation::render;
 use super::{
     ActiveEventLoop, App, AppState, Arc, AssetManager, BTreeMap, BasicSection, BatchRenderer,
-    BitFont, DEV_SKIRMISH_SHELL_ENV, EguiIntegration, GameConfig, GameScreen,
-    GpuContext, HashMap, HashSet, HouseRoster, Instant, ModifiersState,
-    MusicPlayer, PhysicalSize, PlatformState, RandomMapGenerationRetention, Result, SelectionState,
-    SfxPlayer, SidebarChromeLayoutSpec, SidebarTab, StartupAudioDisposition, Window,
-    WindowAttributes, auto_detect_ui_scale, frontend::startup_splash, should_load_audio_indices,
+    BitFont, DEV_SKIRMISH_SHELL_ENV, EguiIntegration, GameConfig, GameScreen, GpuContext, HashMap,
+    HashSet, HouseRoster, Instant, ModifiersState, MusicPlayer, PhysicalSize, PlatformState,
+    RandomMapGenerationRetention, Result, SelectionState, SfxPlayer, SidebarChromeLayoutSpec,
+    SidebarTab, StartupAudioDisposition, Window, WindowAttributes, auto_detect_ui_scale,
+    frontend::startup_splash, should_load_audio_indices,
 };
 
 fn startup_window_projection(
@@ -520,6 +520,7 @@ impl App {
                     retail_screenshot_requested: false,
                 },
                 match_presentation: crate::app::presentation::state::MatchPresentationState {
+                    building_zshape: None,
                     power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
                     sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
                     in_game_gadgets: crate::app::input::gadget_input::InGameGadgets::new(),

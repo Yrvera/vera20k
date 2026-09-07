@@ -416,6 +416,10 @@ pub(crate) fn build_anim_class_instances(
             .unwrap_or((0.0, 1.0));
         let fire_depth = compute_sprite_depth_params(origin_y, world_height, center_y, z);
         debug_assert!(!anim.terrain_attached || anim.use_cell_drawer);
+        // Native Z (`AnimClass__DrawIt @ 0x00422CA0`): 0x2800, gradient entry
+        // 2 (0 when Flat), `YDrawOffset + ZAdjust - AdjustForZ - 2`; tests Z
+        // per pixel and never writes. YDrawOffset is already in the atlas
+        // offset, so only ZAdjust - 2 remains beside the lift cancel.
         let instance = SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
             size: entry.pixel_size,
@@ -428,6 +432,15 @@ pub(crate) fn build_anim_class_instances(
             ),
             tint,
             alpha,
+            z_adjust: super::helpers::ground_z_adjust(z, anim.z_adjust + ANIM_DRAW_DEPTH_BIAS_PX),
+            z_gradient: crate::render::native_z::pack_z_gradient(
+                if config.is_some_and(|c| c.flat) {
+                    crate::render::native_z::ZGradient::Flat
+                } else {
+                    crate::render::native_z::ZGradient::Vertical
+                },
+                false,
+            ),
             ..Default::default()
         };
         match anim_render_destination(
@@ -444,6 +457,7 @@ pub(crate) fn build_anim_class_instances(
                         target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(
                             entry.page as usize,
                         ),
+                        render_z: parent.policy.render_z,
                         instance,
                     }],
                 ),
@@ -838,6 +852,7 @@ pub(crate) fn build_overlay_instances(
                 parent,
                 vec![crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
                     target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::OverlayAtlas,
+                    render_z: parent.policy.render_z,
                     instance: SpriteInstance {
                         position: [
                             screen_x + TILE_WIDTH / 2.0 + spr.offset_x,
@@ -1374,6 +1389,10 @@ pub(crate) fn build_parachute_instances(
                     crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(
                         entry.page as usize,
                     ),
+                // VERA-internal: the chute's native Z term (an anim ZAdjust of
+                // -10 above a descending body) is not carried by this piece,
+                // so it draws without a Z test rather than with a wrong one.
+                render_z: crate::render::tactical_draw_plan::RenderZPolicy::None,
                 instance: SpriteInstance {
                     position: [cx, cy],
                     size: entry.pixel_size,
@@ -1534,6 +1553,7 @@ mod tests {
                 parent,
                 vec![crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
                     target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(0),
+                    render_z: crate::render::tactical_draw_plan::RenderZPolicy::ReadOnly,
                     instance: crate::render::batch::SpriteInstance::default(),
                 }],
             )

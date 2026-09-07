@@ -9,6 +9,8 @@
 use crate::app::AppState;
 use crate::map::entities::EntityCategory;
 use crate::map::terrain;
+use crate::render::batch::DepthAxis;
+use crate::render::native_z;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::components::Position;
 use crate::sim::game_entity::GameEntity;
@@ -337,23 +339,34 @@ pub(crate) fn ground_sort_row(entity: &GameEntity, drawn_row_y: f32) -> f32 {
 
 /// Compute depth for a sprite from screen position.
 ///
-/// The depth value serves two roles: it is the painter's sort key for
-/// sprite-vs-sprite ordering (merge pass sorts instances by depth
-/// descending — largest = furthest back = drawn first), and it feeds the
-/// terrain-occlusion (cliff) depth test. Sprites do not write the depth
-/// buffer themselves.
+/// The depth value is the painter's sort key for the residual depth-sorted
+/// streams (largest = furthest back = drawn first) and the flat depth of
+/// draws that go through the passthrough or depth-test pipelines. The
+/// Z-tested pipelines recompute their per-pixel depth from `z_adjust` /
+/// `z_gradient` on the same axis (`render::native_z`), so a sort depth and a
+/// native Z are directly comparable: one native Z unit is one world row.
 ///
-/// Lower screen_y → larger depth (further from camera).
-/// Higher elevation (z) → slightly smaller depth (closer to camera).
+/// Lower screen_y → larger depth (further from camera). The height lift is
+/// taken back off so the row is the ground-projected one, exactly as every
+/// native class folds `-AdjustForZ(Location.Z)` into its Z term.
 pub(crate) fn compute_sprite_depth(state: &AppState, screen_y: f32, z: u8) -> f32 {
-    let (origin_y, world_height) = state
+    let axis = depth_axis(state);
+    compute_sprite_depth_params(axis.origin_y, axis.world_height, screen_y, z)
+}
+
+/// The normalised depth axis of the loaded map (`DepthAxis::NONE` outside a
+/// match): what `BatchRenderer::update_camera` uploads for the shaders.
+pub(crate) fn depth_axis(state: &AppState) -> DepthAxis {
+    state
         .match_state
         .match_presentation
         .terrain_grid
         .as_ref()
-        .map(|g| (g.origin_y, g.world_height))
-        .unwrap_or((0.0, 1.0));
-    compute_sprite_depth_params(origin_y, world_height, screen_y, z)
+        .map(|g| DepthAxis {
+            origin_y: g.origin_y,
+            world_height: g.world_height,
+        })
+        .unwrap_or(DepthAxis::NONE)
 }
 
 /// Compute sprite depth from explicit parameters.
@@ -366,9 +379,14 @@ pub(crate) fn compute_sprite_depth_params(
     z: u8,
 ) -> f32 {
     let iso_row: f32 = screen_y + z as f32 * terrain::HEIGHT_STEP;
-    let normalized: f32 = ((iso_row - origin_y) / world_height).clamp(0.0, 1.0);
-    let z_bias: f32 = z as f32 * 0.0001;
-    (1.0 - normalized - z_bias).clamp(0.001, 0.999)
+    native_z::depth_for_row(iso_row, origin_y, world_height)
+}
+
+/// `SpriteInstance::z_adjust` for a draw whose rows are drawn lifted by
+/// `z` height levels: the class term with the lift cancelled
+/// (`native_z::ground_anchored_z_adjust`).
+pub(crate) fn ground_z_adjust(z: u8, class_term: i32) -> f32 {
+    native_z::ground_anchored_z_adjust(i32::from(z), class_term) as f32
 }
 
 /// Extra depth bias carried by every anim SHP draw in the original engine's

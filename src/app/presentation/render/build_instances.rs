@@ -56,10 +56,6 @@ pub(super) struct WorldInstances {
     /// Kept flat so atlas page changes cannot reorder Top-layer submissions.
     pub top_shp: Vec<SpriteInstance>,
     pub top_shp_pages: Vec<usize>,
-    /// Selected buildings' bodies again, for the depth-only stamp that lets a
-    /// building's own art clip its selection-bracket redraw. Empty whenever no
-    /// structure is selected.
-    pub selected_building_depth_paged: Vec<Vec<SpriteInstance>>,
     /// Per-particle SpriteInstances (Layer 3). Drawn at Step 7.5 — above
     /// all ground objects + cliffs, below debug/shroud/UI.
     pub particle_paged: Vec<Vec<SpriteInstance>>,
@@ -241,8 +237,6 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     let mut top_shp_pages: Vec<usize> = Vec::new();
     let mut top_shp_ids: Vec<u64> = Vec::new();
     let mut particle_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
-    let mut selected_building_depth_paged: Vec<Vec<SpriteInstance>> =
-        vec![Vec::new(); shp_page_count];
 
     // VXL units (ground + bridge) — sorted by depth descending.
     // shp_paged is passed in so harvest overlays (OREGATH SHP) route to the
@@ -305,7 +299,6 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut top_shp_pages,
         &mut top_shp_ids,
         &mut parachute_body_depths,
-        &mut selected_building_depth_paged,
         &mut ground_objects,
         &ground_order,
     );
@@ -401,7 +394,6 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         top_unit_pages,
         top_shp,
         top_shp_pages,
-        selected_building_depth_paged,
         particle_paged,
         cell_sparkles,
         weapon_waves,

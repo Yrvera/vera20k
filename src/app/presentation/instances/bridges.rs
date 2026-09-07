@@ -115,8 +115,16 @@ fn compute_bridge_body_depth(
     apply_shape_z_adjust(base_depth, BRIDGE_BODY_Z_ADJUST_PX, world_height)
 }
 
-fn bridge_body_depth_scale(world_height: f32) -> f32 {
-    255.0 / world_height.max(1.0)
+/// `fx_params.w` for the zdepth shader: the bridge depth atlas stores the
+/// canvas row index and the extended blitter's entry-0 walk subtracts one Z
+/// unit per row, so the byte is subtracted (negative sign).
+const BRIDGE_ZDATA_SIGN: f32 = -1.0;
+
+/// `SpriteInstance::z_adjust` of a high-bridge body: the seed relative to the
+/// canvas top, `-(bridge level + 4) * 15 - 2`, so `canvas_top - z_adjust`
+/// is the row the existing sort depth already stands on.
+fn bridge_body_z_adjust(depth_z: u8) -> f32 {
+    (BRIDGE_BODY_Z_ADJUST_PX - i32::from(depth_z) * crate::render::native_z::HEIGHT_LEVEL_PX) as f32
 }
 
 /// Build sprite instances for the bridge body pass (RE doc §3.3, Step 5
@@ -179,7 +187,7 @@ pub fn build_bridge_body_instances_inner(
         let depth_z = z.saturating_add(BRIDGE_HEIGHT_BONUS);
         let depth = compute_bridge_body_depth(origin_y, world_height, body_y, depth_z);
         let mut draw_state = DrawState::default();
-        draw_state.fx_params[3] = bridge_body_depth_scale(world_height);
+        draw_state.fx_params[3] = BRIDGE_ZDATA_SIGN;
         let tint: [f32; 3] = lighting_grid.bridge_body_tint_at((rx, ry));
         out.push(SpriteInstance {
             position: [body_x, body_y],
@@ -190,6 +198,7 @@ pub fn build_bridge_body_instances_inner(
             tint,
             alpha: 1.0,
             draw_state,
+            z_adjust: bridge_body_z_adjust(depth_z),
             ..Default::default()
         });
     }
@@ -822,10 +831,11 @@ mod tests {
             apply_shape_z_adjust(expected_base, BRIDGE_BODY_Z_ADJUST_PX, world_height);
         assert_eq!(instance.position[1], expected_top);
         assert!((instance.depth - expected_depth).abs() < f32::EPSILON);
-        assert_eq!(
-            instance.draw_state.fx_params[3],
-            bridge_body_depth_scale(world_height)
-        );
+        // The zdepth shader subtracts the atlas row byte (sign -1) from the
+        // canvas-top seed `-(level + 4) * 15 - 2`, one native Z unit per row.
+        assert_eq!(instance.draw_state.fx_params[3], BRIDGE_ZDATA_SIGN);
+        assert_eq!(instance.z_adjust, bridge_body_z_adjust(8));
+        assert_eq!(instance.z_adjust, -(8.0 * 15.0) - 2.0);
     }
 
     #[test]
@@ -938,10 +948,14 @@ mod tests {
 
     #[test]
     fn gsi_13_09_adjacent_body_rows_step_exactly_one_over_world_height() {
-        let world_height = 4096.0;
-        let scale = bridge_body_depth_scale(world_height);
-        let row_73 = (73.0 / 255.0) * scale;
-        let row_74 = (74.0 / 255.0) * scale;
-        assert!(((row_74 - row_73) - 1.0 / world_height).abs() < f32::EPSILON);
+        // `row = canvas_top - (z_adjust + sign * byte)`; with sign -1 each
+        // atlas row byte moves the ground row one world pixel down (nearer),
+        // which the shared depth axis maps to exactly 1 / world_height.
+        let world_height: f32 = 4096.0;
+        let z_adjust = bridge_body_z_adjust(8);
+        let row = |byte: f32| 500.0 - (z_adjust + BRIDGE_ZDATA_SIGN * byte);
+        let d73 = crate::render::native_z::depth_for_row(row(73.0), 0.0, world_height);
+        let d74 = crate::render::native_z::depth_for_row(row(74.0), 0.0, world_height);
+        assert!(((d73 - d74) - 1.0 / world_height).abs() < f32::EPSILON);
     }
 }

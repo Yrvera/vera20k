@@ -15,6 +15,7 @@ use crate::render::unit_atlas::UnitAtlas;
 use crate::render::unit_slope_transition_cache::VxlSlopeTransitionCache;
 
 use super::draw_plan_lowering::{GroundObjectPass, GroundTexture};
+use crate::render::tactical_draw_plan::RenderZPolicy;
 
 /// Which pipeline a `DrawGroup` should dispatch through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,6 +239,7 @@ pub(super) fn draw_native_ground_object_pass<'a>(
     transition_cache: &'a VxlSlopeTransitionCache,
     sprite_atlas: Option<&'a SpriteAtlas>,
     palette_set: Option<&'a PaletteSet>,
+    zshape: &'a wgpu::BindGroup,
 ) {
     let Some((buffer, count)) = pool.get("ground_objects") else {
         return;
@@ -292,13 +294,37 @@ pub(super) fn draw_native_ground_object_pass<'a>(
             }
             GroundTexture::ShpPage(page) => {
                 if let Some(texture) = sprite_atlas.and_then(|atlas| atlas.page(page)) {
-                    batch.draw_passthrough_range(
-                        pass,
-                        &texture.texture,
-                        buffer,
-                        run.start,
-                        run.count,
-                    );
+                    // The plan's Z policy selects the native leaf family:
+                    // buildings write (`0x6E00` -> `0x004990e0`), everything
+                    // else tests only (`0x2E00` -> `0x00494b60`).
+                    match run.render_z {
+                        RenderZPolicy::None => batch.draw_passthrough_range(
+                            pass,
+                            &texture.texture,
+                            buffer,
+                            run.start,
+                            run.count,
+                        ),
+                        RenderZPolicy::ReadOnly => batch.draw_zsprite_range(
+                            pass,
+                            &texture.texture,
+                            zshape,
+                            buffer,
+                            run.start,
+                            run.count,
+                            false,
+                        ),
+                        RenderZPolicy::ReadWrite | RenderZPolicy::AlphaReadWrite => batch
+                            .draw_zsprite_range(
+                                pass,
+                                &texture.texture,
+                                zshape,
+                                buffer,
+                                run.start,
+                                run.count,
+                                true,
+                            ),
+                    }
                 }
             }
         }

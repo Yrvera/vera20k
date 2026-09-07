@@ -8,7 +8,8 @@
 
 use super::helpers::{
     EntityDrawBand, apply_bridge_depth_bias, compute_sprite_depth, entity_draw_band,
-    ground_sort_row, in_view, is_under_bridge_render_state, tactical_entity_render_admission,
+    ground_sort_row, ground_z_adjust, in_view, is_under_bridge_render_state,
+    tactical_entity_render_admission,
 };
 use crate::app::AppState;
 use crate::app::presentation::render::draw_plan_lowering::{
@@ -19,7 +20,9 @@ use crate::map::lighting;
 use crate::map::terrain::{TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
 use crate::render::draw_state::{DrawState, FX_SHADOW, ObserverDrawContext};
+use crate::render::native_z::{SHP_DRAW_Z_ADJUST_PX, ZGradient, pack_z_gradient};
 use crate::render::sprite_atlas::ShpSpriteKey;
+use crate::render::tactical_draw_plan::RenderZPolicy;
 use crate::render::unit_atlas::{
     UnitSpriteEntry, UnitSpriteKey, VxlLayer, canonical_turret_facing, canonical_unit_facing,
 };
@@ -491,6 +494,8 @@ pub(crate) fn build_unit_instances(
                     tint,
                     alpha,
                     draw_state,
+                    z_adjust: voxel_z_adjust(interp_z),
+                    z_gradient: VOXEL_Z_GRADIENT,
                     ..Default::default()
                 };
                 push_unit_sprite(
@@ -526,6 +531,7 @@ pub(crate) fn build_unit_instances(
                     if collect_ground {
                         ground_pieces.push(GroundPieceInstance {
                             target: GroundTexture::ShpPage(page),
+                            render_z: RenderZPolicy::ReadOnly,
                             instance,
                         });
                     } else if let Some(bucket) = shp_paged.get_mut(page) {
@@ -802,6 +808,11 @@ fn emit_unit_shadow_sprite(
         tint: lighting::DEFAULT_TINT,
         alpha: 1.0,
         draw_state: shadow_state,
+        // Same Z as the hull it belongs to (VERA-internal: the native shadow
+        // blit's own Z family is not traced; a shadow behind a nearer building
+        // is hidden with its hull).
+        z_adjust: voxel_z_adjust(entity.position.z),
+        z_gradient: VOXEL_Z_GRADIENT,
         ..Default::default()
     };
     push_unit_sprite(
@@ -835,6 +846,7 @@ fn push_unit_sprite(
         };
         ground_pieces.push(GroundPieceInstance {
             target,
+            render_z: RenderZPolicy::ReadOnly,
             instance: sprite,
         });
         return;
@@ -960,6 +972,8 @@ fn emit_turret_unit_sprites(
             tint,
             alpha,
             draw_state,
+            z_adjust: voxel_z_adjust(z),
+            z_gradient: VOXEL_Z_GRADIENT,
             ..Default::default()
         };
         push_unit_sprite(
@@ -991,6 +1005,8 @@ fn emit_turret_unit_sprites(
                 tint,
                 alpha,
                 draw_state,
+                z_adjust: voxel_z_adjust(z),
+                z_gradient: VOXEL_Z_GRADIENT,
                 ..Default::default()
             };
             push_unit_sprite(
@@ -1067,9 +1083,23 @@ fn emit_harvest_overlay(
             tint,
             alpha: 1.0,
             draw_state,
+            // An SHP draw of the harvester (`TechnoClass_DrawSHP`, a7 - 2).
+            z_adjust: ground_z_adjust(z, SHP_DRAW_Z_ADJUST_PX),
+            z_gradient: pack_z_gradient(ZGradient::Vertical, false),
             ..Default::default()
         },
     ))
+}
+
+/// Native VXL blits walk gradient entry 2 (locomotor `Z_Gradient`, default
+/// for every stock ground locomotor) with `FootClass::GetZAdjustment`, whose
+/// base term `-AdjustForZ(Location.Z)` cancels the height lift. The
+/// situational fudges (ramp/rock/cliff/column/tunnel/bridge, a few pixels)
+/// are a recorded residual.
+const VOXEL_Z_GRADIENT: u32 = pack_z_gradient(ZGradient::Vertical, false);
+
+fn voxel_z_adjust(z: u8) -> f32 {
+    ground_z_adjust(z, 0)
 }
 
 /// Convert the oregath arm offset (30 leptons) into isometric screen pixels.

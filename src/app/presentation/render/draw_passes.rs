@@ -228,6 +228,12 @@ pub(super) fn dispatch_draw_passes(
         &transition_cache,
         state.match_state.match_presentation.sprite_atlas.as_ref(),
         state.match_state.match_presentation.palette_set.as_ref(),
+        state
+            .match_state
+            .match_presentation
+            .building_zshape
+            .as_ref()
+            .map_or(state.renderer.batch_renderer.default_zshape_bind_group(), |z| &z.bind_group),
     );
 
     // Scheduler-owned effects not yet carrying verified class-specific
@@ -450,36 +456,13 @@ pub(super) fn dispatch_draw_passes(
         bracket_tex,
         "building_radius_rings",
     );
-    // Stamp the selected buildings' own art into the depth buffer, colour
-    // masked off, so the bracket redraw below can be clipped by it. gamemd's
-    // building blit writes Z as it paints and its line rasteriser tests every
-    // pixel against that Z, which is why a selected Construction Yard there
-    // shows only the marks that clear its own silhouette. This runs here, after
-    // every colour pass that reads depth, so the stamp cannot disturb anything
-    // but the bracket test that immediately follows.
-    const SELECTED_DEPTH_KEYS: [&str; 4] = [
-        "shp_selected_depth_p0",
-        "shp_selected_depth_p1",
-        "shp_selected_depth_p2",
-        "shp_selected_depth_p3",
-    ];
-    for (i, key) in SELECTED_DEPTH_KEYS.iter().enumerate() {
-        if let Some(page) = state.match_state.match_presentation.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
-            if let Some((buf, count)) = pool.get(key) {
-                state.renderer.batch_renderer.draw_with_buffer_depth_stamp(
-                    &mut pass,
-                    &page.texture,
-                    buf,
-                    count,
-                );
-            }
-        }
-    }
     // Final selected-building front bracket redraw: gamemd line pixels test Z
     // but do not write it — the store back into Z sits behind a caller flag
     // this path leaves clear. Each pixel carries its ground-footprint corner's
-    // depth, so the marks that fall behind the building art lose the test. The
-    // CPU instance builder already samples the tactical ABuffer for this
+    // depth, so the marks that fall behind the building art lose the test
+    // against the Z the building body wrote in the Ground pass (BUILDNGZ
+    // shaped, `0x004990e0`); no separate depth stamp is needed. The CPU
+    // instance builder already samples the tactical ABuffer for this
     // post-shroud redraw.
     draw_pooled_depth_test_texture(
         &mut pass,
