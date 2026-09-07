@@ -520,18 +520,34 @@ same pair and no Z-shape argument at all.
 `FootClass +0x510` (`0x004DAF10`) adds the locomotor `+0x2C` draw-point offset
 and forwards W.arg8 → Draw a8 (z-height), W.arg10 → a9, W.arg9 → a10.
 
-`vtable+0x464` (Building `0x00456F80`, Techno `0x0070D190`) is a Z-height
-adjuster: `if (this+0xF0 & 2) z = (z > 1500) ? z - 500 : z + 500`.
+**DrawSHP a10 is brightness, not Z (established 2026-09-07, second pass).**
+`Rules+0x17D8` is written by `[AudioVisual] ExtraInfantryLight` in
+`RulesClass__ReadAudioVisual` (`0x006691E0`; key string `0x0083A23C`, PUSH
+`0x0066B6E7`, store `0x0066B6FF`, ctor default 0 at `0x00665650`; stored as
+value x 1000). Neighbours: `+0x17D4` `ExtraUnitLight`, `+0x17DC`
+`ExtraAircraftLight`. Rules instance pointer is `0x008871E0`. At
+`InfantryClass Draw_It 0x00518F90` the sum `cell+0x10A + height x lighting
+Level + Rules+0x17D8` (built `0x00519444-0x00519457`) is pushed as a10
+(`0x005195B4`) and `TechnoClass_DrawSHP` feeds it to `vtable+0x464`
+(`0x0070631F` → `0x00706328`), then through the temporal/warp-in visual-phase
+scalers, into `CC_Draw_Shape`'s intensity parameter. So `vtable+0x464`
+(Building `0x00456F80`, Techno `0x0070D190`: `if (this+0xF0 & 2) v = (v > 1500)
+? v - 500 : v + 500`) is a brightness adjuster, `cell+0x10A` is the cell light
+scalar, and VERA's `src/map/lighting.rs::infantry_tint_at` citation of this site
+stands. The first pass's "z-height" reading of a10 / `+0x464` is withdrawn.
 
-z-height sources: building a10 = `(short)cell[+0x10A] + (short)Type[+0x1548]`
-(body and bib). Infantry a10 = `cell[+0x10A] + Rules[+0x17D8]` plus a
-`height / (DAT_00A8F240 * 2) * Scenario[...]` term; the cell flag `0x10000`
-case uses `cell[+0x10A] - 500`. **Open conflict:** the Ghidra plate on
-`0x00518F90` labels `cell+0x10A` "light scalar" and `Rules+0x17D8`
-"ExtraInfantryLight", and VERA's `src/map/lighting.rs` cites that site for
-`infantry_tint_at`; the `+0x464` 1500/±500 logic says these are Z heights.
-Resolve by reading the `Rules+0x17D8` writer in `RulesClass::ReadINI` (which key
-string) before either consumer relies on it.
+The Z term of a `DrawSHP` call is therefore **a7** (z-adjust in pixels): bib
+`-1 - AdjustForZ`, unit TooBig branch `-16`, VXL walkers `+0x2EC(gradient)`
+(locomotor Z_Adjust), infantry the global `[0x00825500]`. This matches the
+OpenTS `Techno_Draw_Object` argument order (`zadjust - 2, zgrad, brightness,
+zshapefile, ...`). UNCHECKED: the building body's a7 at `0x0043D85F`, and
+whether section 1's "z_height = CC param_10" in the walker's base-Z formula is
+a7 mis-numbered (Ghidra drops CC arg 2, so its `param_N` is stack arg N-1);
+re-read `SHP_StandardBlitter 0x004373B0` at `0x00437415`/`0x004374FA` with the
+push sequence at `0x0070642B` before using the formula's `z_height` term.
+Section 8's naming of `cell+0x10A/+0x10C` as "Z-adjust" fields also needs a
+re-read: `base + gradient * heightLevel - offset` scaled by an intensity factor
+is the lighting formula (`ambient + level * z - ground`), not a depth.
 
 Foundation subtraction at the building body site (before `0x0043D85F`):
 `x = W*0x100 - 0x100`, `y = H*0x100 - 0x100` (leptons of `(W-1, H-1)`) →

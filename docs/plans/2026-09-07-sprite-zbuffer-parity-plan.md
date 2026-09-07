@@ -73,13 +73,16 @@ uncompressed 396x477 frame, 169,488 non-zero pixels.
 
 Still open, and they block only the numbers, not the pipelines:
 
-1. **Infantry z-height conflict.** `InfantryClass Draw_It` builds a10 from
-   `cell+0x10A + Rules+0x17D8`; the Ghidra plate calls those "light scalar" and
-   "ExtraInfantryLight", and `src/map/lighting.rs::infantry_tint_at` cites that
-   site. `vtable+0x464` treats the value as a Z height (1500/±500 logic). Read
-   the `Rules+0x17D8` writer in `RulesClass::ReadINI` for its key string. If it
-   is not `ExtraInfantryLight`, the lighting consumer is a separate DRIFT to
-   record, not to absorb here.
+1. **Resolved: the "z-height" arg is brightness.** `Rules+0x17D8` is
+   `[AudioVisual] ExtraInfantryLight` (read at `0x0066B6E7`); DrawSHP a10 is
+   the intensity term and `vtable+0x464` a brightness adjuster. VERA's lighting
+   consumer is correct. The Z term is DrawSHP **a7** (z-adjust px, OpenTS
+   `zadjust - 2` order): bib `-1 - AdjustForZ`, infantry global
+   `[0x00825500]`, units locomotor `Z_Adjust` via `+0x2EC(gradient)`.
+   **Still open:** the building body's a7 at `0x0043D85F`, and whether the
+   section 1 base-Z formula's `z_height = CC param_10` is a7 mis-numbered.
+   Re-read `SHP_StandardBlitter 0x004373B0` against the push sequence at
+   `0x0070642B` before coding the base Z.
 2. Whether an anim's `+0x190` can carry `0x4000` (write). Assume no.
 3. Locomotor `Z_Gradient` overrides (`loco+0x3C`) for non-default locomotors
    (hover, fly, jumpjet). Default 2 covers ground vehicles.
@@ -129,11 +132,12 @@ tiles and sprites are the case to decide on; note the choice in the shader.
   `(Width*256 - 256, Height*256 - 256)`. Foundation width `>= 8` → no
   z-shape (gamemd value; OpenTS uses 6).
 - **Base Z.** Gradient entry 2 (section 1, `field[5]=0` variant): `raw =
-  DefaultZ + YOrigin - spriteHeight - screenY + 1 + z_height`, quantised to
+  DefaultZ + YOrigin - spriteHeight - screenY + 1 + z_adjust`, quantised to
   3-row steps, then +1 Z per 3 rows going down. In VERA depth: the top row of
   the quad is nearest, depth grows by `1/world_height` every third row. The
-  building's `z_height` comes from `vtable+0x464` (cell height + `Type+0x1548`);
-  map it onto the existing `compute_sprite_depth` inputs and keep the
+  `z_adjust` term is DrawSHP a7 (pixels), not the brightness arg a10; the
+  building body's a7 value and the walker's exact use of it are the open items
+  above. Map it onto the existing `compute_sprite_depth` inputs and keep the
   quantisation (integer steps are what the retail capture will show at the
   occlusion boundary).
 - **Pipeline.** A building-body pipeline: depth compare `Less`, depth write
