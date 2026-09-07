@@ -5681,11 +5681,6 @@ impl Simulation {
         diagnostics
     }
 
-    /// Fixture-only frame adapter (F09): unit tests drive one Main_Tick-shaped
-    /// frame with explicitly supplied rules/heights/navigation. Production and
-    /// tooling advance exclusively through `SimRuntime::advance_frame`, whose
-    /// resources are bound at construction and cannot be substituted per call.
-    #[cfg(test)]
     /// `DriveLocomotionClass::Process` (0x004B0823 region; ships share the
     /// drive locomotor's process, hover runs the same test in its `Move` at
     /// 0x00514AC3) spawns `Rules->Wake` (Rules+0x94) when `Is_Moving_Now`
@@ -5738,6 +5733,11 @@ impl Simulation {
         }
     }
 
+    /// Fixture-only frame adapter (F09): unit tests drive one Main_Tick-shaped
+    /// frame with explicitly supplied rules/heights/navigation. Production and
+    /// tooling advance exclusively through `SimRuntime::advance_frame`, whose
+    /// resources are bound at construction and cannot be substituted per call.
+    #[cfg(test)]
     pub(crate) fn advance_tick(
         &mut self,
         commands: &[CommandEnvelope],
