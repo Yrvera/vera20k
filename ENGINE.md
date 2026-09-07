@@ -92,8 +92,9 @@ Preserve unique/local data; use `sync` for complex cleanup.
 
 - Working Rust: `cargo check -p vera20k` as needed; focused
   `cargo test -p vera20k --lib <module_path>::`.
-- Rust PR readiness: one full `cargo test -p vera20k --lib` for the final candidate;
-  repeat only if later changes/failures invalidate it.
+- Rust PR readiness: one full `cargo test -p vera20k --lib` plus
+  `cargo clippy -p vera20k --lib` for the final candidate; repeat only if later
+  changes/failures invalidate it.
 - Docs/skills: validate content, links/examples and tooling; no Cargo suite.
 - Every `cargo test` uses `--lib`; report literal `test result:` output.
 
