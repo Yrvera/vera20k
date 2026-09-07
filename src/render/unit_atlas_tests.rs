@@ -339,6 +339,7 @@ fn test_facing_config_for_layer() {
         VxlLayer::Composite,
         VxlLayer::Turret,
         VxlLayer::Barrel,
+        VxlLayer::Shadow,
     ] {
         let (step, buckets) = super::facing_config_for_layer(layer);
         assert_eq!(step, 8, "{layer:?} facing step");

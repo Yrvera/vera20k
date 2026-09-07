@@ -258,6 +258,12 @@ fn seed_unit_variant_keys(
             is_ground_vehicle,
         );
     }
+    // Ground vehicles and ships cast a voxel shadow (one frame, every facing
+    // and slope). Aircraft use FlyLocomotion's own shadow matrix and point,
+    // which are not modelled yet, so they get none (recorded residual).
+    if is_ground_vehicle {
+        insert_unit_layer_keys(needed, &variant.type_id, VxlLayer::Shadow, 1, true);
+    }
 }
 
 /// Collect the set of unit sprite keys needed by the current ECS world.
@@ -736,6 +742,7 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
             VxlLayer::Composite => {
                 composite_unit_vxl_cpu(asset_manager, &vxl, hva.as_ref(), &image, &params, vpl)
             }
+            VxlLayer::Shadow => vxl_raster::render_vxl_shadow(&vxl, hva.as_ref(), &params),
             VxlLayer::Body | VxlLayer::Turret | VxlLayer::Barrel => {
                 let body_sprite: VxlSprite =
                     vxl_raster::render_vxl(&vxl, hva.as_ref(), &params, vpl);
@@ -1006,7 +1013,9 @@ pub fn canonical_turret_facing(facing_u16: u16) -> u8 {
 /// Get the facing quantization step and bucket count for a given VxlLayer.
 fn facing_config_for_layer(layer: VxlLayer) -> (u8, u16) {
     match layer {
-        VxlLayer::Body | VxlLayer::Composite => (UNIT_FACING_STEP, UNIT_FACING_BUCKETS),
+        VxlLayer::Body | VxlLayer::Composite | VxlLayer::Shadow => {
+            (UNIT_FACING_STEP, UNIT_FACING_BUCKETS)
+        }
         VxlLayer::Turret | VxlLayer::Barrel => (TURRET_FACING_STEP, TURRET_FACING_BUCKETS),
     }
 }

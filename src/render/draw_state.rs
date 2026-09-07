@@ -23,6 +23,10 @@ pub const FX_WARP: u32 = 1 << 3;
 /// Explicit residual: no dedicated YR mirror material mutation is proven.
 pub const FX_MIRROR: u32 = 1 << 4;
 pub const FX_DISGUISE: u32 = 1 << 5;
+/// The instance is a ground shadow stencil (`VxlLayer::Shadow`): the voxel
+/// sprite shader ignores the palette and darkens whatever is beneath, the way
+/// the native shadow blitter (`Blitter_selector(0x2001)`) does.
+pub const FX_SHADOW: u32 = 1 << 6;
 
 /// Native cloak state values consumed by YR draw selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

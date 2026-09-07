@@ -588,6 +588,10 @@ pub enum VxlLayer {
     Turret,
     /// Barrel only ({IMAGE}BARL.VXL).
     Barrel,
+    /// Ground shadow of the main voxel: each section's occupied (x, y) columns
+    /// flattened onto z = 0 and shifted by the shadow light vector, always at
+    /// motion frame 0. See `render::vxl_raster::render_vxl_shadow`.
+    Shadow,
 }
 
 /// Per-entity voxel HVA animation state.

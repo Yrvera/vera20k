@@ -139,6 +139,10 @@ pub(crate) fn detect_hva_frame_count(
         VxlLayer::Composite | VxlLayer::Body => art_data::voxel_asset_names(&image).1,
         VxlLayer::Turret => format!("{}TUR.HVA", image),
         VxlLayer::Barrel => format!("{}BARL.HVA", image),
+        // The shadow is rendered from motion frame 0 regardless of the body's
+        // HVA length (`Get_Layer_Matrix(layer, 0)` in the TS shadow path, and
+        // the RA2 shadow key folds only slope and facing: 0x0055A7D0).
+        VxlLayer::Shadow => return 1,
     };
 
     let frame_count: u32 = asset_manager
