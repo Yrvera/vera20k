@@ -15,7 +15,7 @@
 //! - Part of render/ — depends on assets/ (VxlFile, HvaFile, VplFile).
 //! - Uses glam for vector/matrix math.
 
-use glam::{Mat4, Quat, Vec3, Vec4};
+use glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 
 use crate::assets::hva_file::HvaFile;
 use crate::assets::vpl_file::VplFile;
@@ -458,9 +458,6 @@ pub fn prepare_limb_data(
     // Facing is quantized to 32 steps before the rotation matrix is built, so
     // every voxel body, turret and barrel renders at exactly 1 of 32 orientations.
     let facing_step: u8 = voxel_facing_step(params.facing);
-    // Equivalent continuous facing for the lighting LUT, quantized in lockstep
-    // with the body so a sprite's shading cannot disagree with its geometry.
-    let facing_rad: f32 = (facing_step as f32) * VOXEL_FACING_STEP_RAD;
     let scale: f32 = params.scale;
 
     // The simple (no-rock) draw path builds `slope_matrix * facing_rotation`, then
@@ -476,6 +473,12 @@ pub fn prepare_limb_data(
     let camera_view: Mat4 = voxel_camera_view();
     let body_facing: Mat4 = Mat4::from_rotation_z(voxel_facing_angle(facing_step));
 
+    // Terrain slope is a property of the cell, not the limb: one matrix per draw.
+    let slope_mat: Mat4 = params
+        .slope_blend
+        .map(compute_slope_blend_rotation)
+        .unwrap_or_else(|| compute_slope_rotation(params.slope_type));
+
     let mut limb_data: Vec<LimbRenderData> = Vec::new();
     let mut max_footprint: f32 = 1.0;
 
@@ -484,7 +487,21 @@ pub fn prepare_limb_data(
             continue;
         }
 
-        let vpl_pages: [u8; 256] = vxl_normals::blinn_phong_pages(limb.normals_mode, facing_rad);
+        // Lighting sees the same draw rotation the geometry uses (slope x body
+        // facing, camera excluded): `TechnoClass::Render` (0x00706ED0) passes
+        // the locomotor draw matrix to `VXL_Init_BlinnPhong` (0x00753D00), which
+        // inverts it and carries `g_VXL_LightDirection` into model space.
+        //
+        // DRIFT (recorded): that init runs once per hull `Render`; the turret
+        // and barrel draws (`VXL_turret_draw` 0x00706BD0 via `FUN_00707280`)
+        // never re-run it and rasterise with the hull's `g_VXL_NormalLUT`, so
+        // natively a turret's normals are dotted with the light in *hull*
+        // model space. This path lights each layer with its own facing, as
+        // it always has. Trigger: every turreted voxel unit whose turret is
+        // not aligned with the hull; effect: per-page shading differences on
+        // the turret only; frequency: constant.
+        let draw_rotation: Mat3 = Mat3::from_mat4(slope_mat * body_facing);
+        let vpl_pages: [u8; 256] = vxl_normals::blinn_phong_pages(limb.normals_mode, draw_rotation);
 
         // Section scale: maps grid coordinates to model-space units.
         let sx: f32 = if limb.size_x > 0 {
@@ -516,10 +533,6 @@ pub fn prepare_limb_data(
         };
 
         let section_transform: Mat4 = section_translate * bone_mat * section_scale;
-        let slope_mat: Mat4 = params
-            .slope_blend
-            .map(compute_slope_blend_rotation)
-            .unwrap_or_else(|| compute_slope_rotation(params.slope_type));
         let combined: Mat4 = camera_view * slope_mat * body_facing * section_transform;
 
         let footprint: f32 = compute_voxel_footprint(&combined, scale);

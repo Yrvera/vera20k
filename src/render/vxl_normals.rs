@@ -10,7 +10,7 @@
 //! ## Dependency rules
 //! - Part of render/ — depends only on glam.
 
-use glam::Vec3;
+use glam::{Mat3, Vec3};
 
 /// Number of normals in RA2 mode (normals_mode = 4).
 const RA2_NORMAL_COUNT: usize = 245;
@@ -218,44 +218,58 @@ pub fn diffuse_shade(normal: Vec3, light_dir: Vec3, ambient: f32, diffuse: f32) 
     (ambient + diffuse * n_dot_l).clamp(0.0, 1.0)
 }
 
-/// Light direction for YR: -X rotated 45 degrees around Z.
-/// Transform(-UnitX, RotationZ(45°)) = (-cos45, -sin45, 0) = (-0.707, -0.707, 0)
-const YR_LIGHT_BASE: [f32; 3] = [-0.707_107, -0.707_107, 0.0];
+/// The original engine's world-space light direction.
+///
+/// `Init_Game` (call at 0x0052BDF5) runs `VXL_LightDirection_Setup` (0x00754C00)
+/// with the angle constant at 0x007E1E68 = 0x3F490E56 = pi/4. That routine builds
+/// an identity, post-multiplies `Matrix_rotate_y_axis` (0x005AF080) -- which mixes
+/// matrix columns 0 and 2, i.e. a rotation about **Y**, not Z -- and transforms
+/// the literal (0xBF3504E6, 0xBF3504E6, 0) = (-0.707107, -0.707107, 0) through
+/// it: x' = x*cos45 + z*sin45 = -0.5, y' = -0.707107, z' = -x*sin45 + z*cos45 =
+/// +0.5. The result is stored at `g_VXL_LightDirection` (0x00887470) and never
+/// rewritten. The +Z half is what lights every top face; the earlier Rust
+/// constant (-0.707, -0.707, 0) had no Z term and left tops and far sides on the
+/// darkest VPL page.
+const YR_WORLD_LIGHT: Vec3 = Vec3::new(-0.5, -0.707_107, 0.5);
 
-/// Build the 256-slot VPL page lookup table for a given facing.
+/// Viewer direction the original feeds Blinn-Phong: `VXL_Init_BlinnPhong`
+/// (0x00753D00) transforms (0, 0, 1) through the inverse of the matrix at
+/// 0x00887430, which `Init_Game` sets to identity (`Matrix3x4_SetIdentity`
+/// 0x005AE860 at 0x0052BDDD) and nothing rewrites, so the viewer stays +Z.
+const YR_VIEWER: Vec3 = Vec3::Z;
+
+/// Normal-index -> VPL page table for one draw, the way `VXL_Init_BlinnPhong`
+/// (0x00753D00) + `VXL_BlinnPhongLighting` (0x007586F0) build `g_VXL_NormalLUT`.
 ///
-/// Uses the Blinn-Phong reflection model matching the original engine's lighting calculation.
-/// Returns a 256-element array mapping normal_index → VPL page (brightness level).
-/// The VPL page is then used with `VplFile::get_palette_index(page, color)` to get
-/// the final shaded palette color.
+/// `model_rotation` is the rotation part of the locomotor draw matrix the
+/// original hands `TechnoClass::Render` (0x00706ED0) -- `slope_matrix x
+/// facing_rotation` on the simple path -- **without** the camera. The native
+/// init inverts that matrix (`FUN_005AFC20`, a rigid inverse) and transforms
+/// `g_VXL_LightDirection` through its 3x3 (`FUN_005AF4D0`), so the light lands
+/// in model space and is dotted with the model-space normal table. The viewer
+/// stays world +Z (see `YR_VIEWER`); the original does not bring it into model
+/// space, and neither does this.
 ///
-/// `facing_rad`: the model's facing rotation in radians (0–2PI).
-/// `normals_mode`: 2 (TS, 36 normals) or 4 (RA2, 245 normals).
-pub fn blinn_phong_pages(normals_mode: u8, facing_rad: f32) -> [u8; 256] {
+/// Residual (VERA-internal, gamemd equivalent UNCHECKED): the original
+/// normalises the halfway vector with `Sqrt_Approx` (0x004CAC40) on an x87
+/// double and skips the divide when the length is exactly 0; this uses glam's
+/// exact `normalize`. A page can differ by one only where 16 x brightness
+/// lands within the approximation error of an integer boundary.
+pub fn blinn_phong_pages(normals_mode: u8, model_rotation: Mat3) -> [u8; 256] {
     // Native leaves shared-LUT slots 245–252 stale. Rust deliberately starts
     // them at a deterministic safe default; retail VXLs never reference them.
     let mut result: [u8; 256] = [0u8; 256];
 
-    // Rotate the base YR light direction by the model's facing.
-    // Transform(YRLight, RotZ(rotation - 45°)).
-    // The base YR light is already at 45°, so rotating by (facing - 45°) = net facing.
-    let rot_angle: f32 = facing_rad - std::f32::consts::FRAC_PI_4;
-    let cos_a: f32 = rot_angle.cos();
-    let sin_a: f32 = rot_angle.sin();
-    let light: Vec3 = Vec3::new(
-        YR_LIGHT_BASE[0] * cos_a - YR_LIGHT_BASE[1] * sin_a,
-        YR_LIGHT_BASE[0] * sin_a + YR_LIGHT_BASE[1] * cos_a,
-        YR_LIGHT_BASE[2],
-    );
-
-    // Viewer direction (looking down Z axis from above).
-    let viewer: Vec3 = Vec3::Z;
+    // Rigid inverse of the draw rotation applied to the world light.
+    let light: Vec3 = model_rotation.transpose() * YR_WORLD_LIGHT;
+    let viewer: Vec3 = YR_VIEWER;
 
     // Blinn-Phong halfway vector between light and viewer.
     let halfway: Vec3 = (light + viewer).normalize();
 
-    // YR specular strength constant. Schlick exponent in the original
-    // Blinn-Phong approximation; verified against the binary's call site.
+    // Specular constant: `TechnoClass::Render` pushes 0x40400000 = 3.0 at
+    // 0x00706F23 and it reaches `VXL_BlinnPhongLighting` as the Schlick
+    // denominator term.
     const SPECULAR_STRENGTH: f32 = 3.0;
 
     let table: &[[f32; 3]] = match normals_mode {
@@ -281,7 +295,8 @@ pub fn blinn_phong_pages(normals_mode: u8, facing_rad: f32) -> [u8; 256] {
         };
 
         let brightness: f32 = diffuse + specular;
-        // Map brightness to VPL page (0–255): brightness * 16.
+        // `FMUL [0x007F6960]` = 16.0, then `Math__ftol` (0x007C5F00, chop):
+        // page = trunc(16 x (diffuse + specular)).
         let page: u8 = (brightness * 16.0).clamp(0.0, 255.0) as u8;
         result[i] = page;
     }
@@ -315,7 +330,7 @@ mod tests {
         assert_eq!(get_normal(4, 244), final_native);
         assert_eq!(get_normal(4, 245), Vec3::Z);
 
-        let pages = blinn_phong_pages(4, 0.0);
+        let pages = blinn_phong_pages(4, Mat3::IDENTITY);
         assert_eq!(pages[244], pages[240]);
         assert_ne!(pages[244], 0, "the final native entry must be processed");
         assert_eq!(&pages[245..253], &[0; 8]);
@@ -346,12 +361,56 @@ mod tests {
         // page regardless of mode or facing.
         for facing in [0.0_f32, 1.3, 4.2] {
             for mode in [2u8, 4u8] {
-                let pages = blinn_phong_pages(mode, facing);
+                let pages = blinn_phong_pages(mode, Mat3::from_rotation_z(facing));
                 assert_eq!(pages[253], AMBIENT_PAGE, "mode {mode} facing {facing}");
                 assert_eq!(pages[254], AMBIENT_PAGE, "mode {mode} facing {facing}");
                 assert_eq!(pages[255], AMBIENT_PAGE, "mode {mode} facing {facing}");
             }
         }
+    }
+
+    /// Page for one normal under the native formula, so tests can state the
+    /// expected value from the established chain rather than from prior Rust.
+    fn native_page(normal: Vec3, light: Vec3) -> u8 {
+        let halfway: Vec3 = (light + Vec3::Z).normalize();
+        let diffuse: f32 = normal.dot(light).max(0.0);
+        let h: f32 = normal.dot(halfway);
+        let specular: f32 = (h / (3.0 - h * 3.0 + h)).max(0.0);
+        ((diffuse + specular) * 16.0) as u8
+    }
+
+    #[test]
+    fn world_light_lights_top_faces_at_identity() {
+        // A +Z normal sees diffuse 0.5 from the native (-0.5, -0.707, +0.5)
+        // light; the old Z-less light gave it 0 and only specular remained.
+        let page: u8 = native_page(Vec3::Z, YR_WORLD_LIGHT);
+        assert!(
+            page >= 8,
+            "top faces must not sit on the dark pages: {page}"
+        );
+        let table_top: u8 = blinn_phong_pages(4, Mat3::IDENTITY)[240];
+        assert_eq!(
+            table_top,
+            native_page(Vec3::from_array(RA2_NORMALS[240]), YR_WORLD_LIGHT)
+        );
+    }
+
+    #[test]
+    fn model_rotation_moves_the_light_by_its_inverse() {
+        // The light is carried into model space by the transpose (rigid
+        // inverse) of the draw rotation, as FUN_005AFC20 + FUN_005AF4D0 do.
+        let rot: Mat3 = Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let pages: [u8; 256] = blinn_phong_pages(4, rot);
+        let expected_light: Vec3 = rot.transpose() * YR_WORLD_LIGHT;
+        for (i, n) in RA2_NORMALS.iter().enumerate().take(245) {
+            assert_eq!(
+                pages[i],
+                native_page(Vec3::from_array(*n), expected_light),
+                "normal {i}"
+            );
+        }
+        let identity_pages: [u8; 256] = blinn_phong_pages(4, Mat3::IDENTITY);
+        assert!(pages[..245] != identity_pages[..245]);
     }
 
     #[test]

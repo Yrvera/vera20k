@@ -840,6 +840,11 @@ pub fn build_sprite_atlas(
             effect_names.push(r.general.warp_in.name.clone());
             effect_names.push(r.general.warp_out.name.clone());
             effect_names.push(r.general.warp_away.name.clone());
+            // [General] Wake= (WAKE1): spawned as a WorldEffect behind ships.
+            // Stock art sets no AltPalette= and its Theater= line is commented
+            // out, so it is an anim.pal draw like every other AnimType; left
+            // out of this set it fell through to unit.pal and drew green.
+            effect_names.push(r.general.wake.name.clone());
             // Add damage fire types (FIRE01, FIRE02, FIRE03 by default).
             for fire_ref in &r.general.damage_fire_types {
                 if !effect_names
