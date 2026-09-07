@@ -222,7 +222,7 @@ How objects are sorted front-to-back for correct occlusion.
 | Building depth | Foundation bottom Y based | Foundation bottom Y based | APPROX |
 | Unit depth | Screen Y of feet | Screen Y + sprite bottom | APPROX |
 | Per-pixel Z (terrain) | TMP Z-data per tile | zdepth shader (terrain/overlays only) | MATCH |
-| Per-pixel Z (buildings) | BUILDNGZ loaded but ignored by blitter | Removed (single depth per sprite) | MATCH |
+| Per-pixel Z (buildings) | BUILDNGZ consumed per pixel by the building body leaf `0x004990e0` (read, `<` test, write); other objects Z-read only | Removed (single depth per sprite, passthrough) | DRIFT (corrected 2026-09-07, see ZBUFFER_DEPTH_SYSTEM.md Overview) |
 
 ---
 
