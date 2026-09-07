@@ -77,6 +77,32 @@ struct FragOutput {
     @builtin(frag_depth) depth: f32,
 };
 
+
+// --- Map-light tint in the original's colour space -------------------------
+// gamemd lights a palette entry by scaling its 8-bit RGB bytes: LightConvert's
+// palette pass (FUN_00556090 -> FUN_007DE200 for RGB565) computes
+// (byte * scale16) >> 16 with scale16 = light_milli * 65536 / 1000 (three LEA x5
+// and a SHL 3 then the double 0.065536 at 0x007ED0B0) and clamps the product to
+// 255 before packing. That multiply happens on the palette bytes, i.e. in
+// sRGB-encoded space. These textures are sRGB-typed, so the sampled value is
+// already linear; multiplying it by the tint here would apply the light in
+// linear space, which reads as tint^(1/2.2) on screen (a 1.2 unit light became
+// ~1.09). Re-encode, scale, clamp, decode. The RGB565 quantisation that
+// follows natively is not modelled (DRIFT, sub-pixel colour).
+fn srgb_encode(c: vec3f) -> vec3f {
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(max(c, vec3f(0.0)), vec3f(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c <= vec3f(0.0031308));
+}
+fn srgb_decode(c: vec3f) -> vec3f {
+    let lo = c / 12.92;
+    let hi = pow((c + 0.055) / 1.055, vec3f(2.4));
+    return select(hi, lo, c <= vec3f(0.04045));
+}
+fn palette_light(rgb_linear: vec3f, tint: vec3f) -> vec3f {
+    return srgb_decode(clamp(srgb_encode(rgb_linear) * tint, vec3f(0.0), vec3f(1.0)));
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> FragOutput {
     let color: vec4f = textureSample(t_sprite, s_sprite, input.uv);
@@ -97,7 +123,7 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     let frag_depth: f32 = clamp(input.base_depth - z_sample * depth_scale, 0.001, 0.999);
 
     var output: FragOutput;
-    output.color = vec4f(color.rgb * input.tint, color.a);
+    output.color = vec4f(palette_light(color.rgb, input.tint), color.a);
     output.depth = frag_depth;
     return output;
 }
