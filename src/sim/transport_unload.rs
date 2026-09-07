@@ -32,11 +32,11 @@ use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::ready_producer::is_moving_now_for;
 use crate::sim::passenger::{
-    PassengerRole, restore_unloaded_passenger_after_reveal_failure, reveal_unloaded_passenger,
+    DepartureFailure, DepartureRoute, depart_cargo_head, reveal_unloaded_passenger,
 };
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::passability::LandType;
-use crate::sim::world::{RevealOutcome, SimSoundEvent, Simulation};
+use crate::sim::world::{SimSoundEvent, Simulation};
 use crate::util::fixed_math::SIM_ZERO;
 use crate::util::lepton::CELL_CENTER_LEPTON;
 
@@ -493,23 +493,6 @@ fn queue_guard(sim: &mut Simulation, id: u64) {
     );
 }
 
-/// Pop the cargo head (`FUN_004DE710` → `CargoClass::RemoveFirstPassenger @
-/// 0x00473430`). The wrapper's `Type+0x805 && count == 0 → vtable+0x4D8`
-/// tail is the Gunner weapon reset once the hold is empty; VERA's
-/// representation of that swap is the transport's `weapon_override`.
-fn pop_cargo_head(sim: &mut Simulation, transport_id: u64) -> Option<(u64, u32)> {
-    let transport = sim.substrate.entities.get_mut(transport_id)?;
-    let popped = transport.passenger_role.cargo_mut()?.unload_first()?;
-    if transport
-        .passenger_role
-        .cargo()
-        .is_some_and(|cargo| cargo.is_empty())
-    {
-        transport.weapon_override = None;
-    }
-    Some(popped)
-}
-
 /// Outcome of one state-3 ejection attempt.
 enum EjectOutcome {
     /// Placed at the exit cell; the passenger was given `dest`.
@@ -561,213 +544,150 @@ fn eject_head_passenger(
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     transport_id: u64,
 ) -> EjectOutcome {
-    let Some((pax_id, pax_size)) = pop_cargo_head(sim, transport_id) else {
-        return EjectOutcome::Failed;
-    };
-    let (base, facing, transport_z, leave_sound) = {
-        let transport = sim
-            .substrate
-            .entities
-            .get(transport_id)
-            .expect("transport resolved before the head pop");
-        let obj = sim.object_type(transport.type_ref(), rules);
-        (
-            (transport.position.rx, transport.position.ry),
-            transport.facing,
-            transport.position.z,
-            obj.and_then(|o| o.leave_transport_sound.clone()),
-        )
-    };
-    let Some(passenger_snapshot) = sim.substrate.entities.get(pax_id) else {
-        // A cargo id that no longer resolves cannot be placed; keep the
-        // native failure shape (re-insert) so the count stays coherent.
-        restore_head(sim, rules, transport_id, pax_id, pax_size);
-        return EjectOutcome::Failed;
-    };
-    let passenger_is_infantry = passenger_snapshot.category == EntityCategory::Infantry;
+    match depart_cargo_head(
+        sim,
+        rules,
+        transport_id,
+        DepartureRoute::Vehicle,
+        |sim, pax_id| {
+            let (base, facing, transport_z, leave_sound) = {
+                let transport = sim
+                    .substrate
+                    .entities
+                    .get(transport_id)
+                    .expect("transport resolved before the head pop");
+                let obj = sim.object_type(transport.type_ref(), rules);
+                (
+                    (transport.position.rx, transport.position.ry),
+                    transport.facing,
+                    transport.position.z,
+                    obj.and_then(|o| o.leave_transport_sound.clone()),
+                )
+            };
+            let Some(passenger_snapshot) = sim.substrate.entities.get(pax_id) else {
+                // A cargo id that no longer resolves cannot be placed; keep the
+                // native failure shape (re-insert) so the count stays coherent.
+                return Err(DepartureFailure::MissingPassenger);
+            };
+            let passenger_is_infantry = passenger_snapshot.category == EntityCategory::Infantry;
 
-    let facing16 = u16::from(facing) << 8;
-    let start = ((((u32::from(facing16.wrapping_add(0x7FFF))) >> 12) + 1) >> 1) as usize & 7;
-    let mut strict_pass = true;
-    let mut i: usize = 0;
-    // `(exit cell, beyond cell on the strict pass, octant)`.
-    let mut placement: Option<((u16, u16), Option<(u16, u16)>, usize)> = None;
-    while i < 8 {
-        let octant = (start + i) & 7;
-        let exit_cell = cell_from(base, OCTANT_OFFSETS[octant]);
-        let beyond_cell = exit_cell.and_then(|cell| cell_from(cell, OCTANT_OFFSETS[octant]));
-        let (adjacent_ok, beyond_ok) = match (exit_cell, beyond_cell) {
-            (Some(exit), Some(beyond)) => {
+            let facing16 = u16::from(facing) << 8;
+            let start =
+                ((((u32::from(facing16.wrapping_add(0x7FFF))) >> 12) + 1) >> 1) as usize & 7;
+            let mut strict_pass = true;
+            let mut i: usize = 0;
+            // `(exit cell, beyond cell on the strict pass, octant)`.
+            let mut placement: Option<((u16, u16), Option<(u16, u16)>, usize)> = None;
+            while i < 8 {
+                let octant = (start + i) & 7;
+                let exit_cell = cell_from(base, OCTANT_OFFSETS[octant]);
+                let beyond_cell =
+                    exit_cell.and_then(|cell| cell_from(cell, OCTANT_OFFSETS[octant]));
+                let (adjacent_ok, beyond_ok) = match (exit_cell, beyond_cell) {
+                    (Some(exit), Some(beyond)) => {
+                        let passenger = sim
+                            .substrate
+                            .entities
+                            .get(pax_id)
+                            .expect("passenger resolved above");
+                        (
+                            passenger_can_enter(sim, rules, path_grid, passenger, exit),
+                            passenger_can_enter(sim, rules, path_grid, passenger, beyond),
+                        )
+                    }
+                    _ => (false, false),
+                };
+                let accept = adjacent_ok && (beyond_ok || !strict_pass);
+                if !accept {
+                    if strict_pass && i == 7 {
+                        strict_pass = false;
+                        i = 1;
+                    } else {
+                        i += 1;
+                    }
+                    continue;
+                }
+                let (exit, beyond) = (
+                    exit_cell.expect("accepted cell exists"),
+                    beyond_cell.expect("accepted cell exists"),
+                );
+                if cell_has_structural_bridge(sim, path_grid, exit) {
+                    i += 1;
+                    continue;
+                }
+                placement = Some((exit, strict_pass.then_some(beyond), octant));
+                break;
+            }
+
+            let Some((exit, strict_beyond, octant)) = placement else {
+                return Err(DepartureFailure::Placement);
+            };
+
+            // Placement coordinate: the exit cell centre (`x * 256 + 0x80`).
+            let (place_cell, sub_cell) = if passenger_is_infantry {
+                // `PlaceInfantryInCell` from the cell centre: quadrant 0, so the
+                // centre-row `RandomRanged(0, 3)` draw is made on the Scenario stream.
+                let occupancy = sim.substrate.occupancy.get(exit.0, exit.1);
+                let spot = bump_crush::allocate_sub_cell_with_preference(
+                    occupancy,
+                    MovementLayer::Ground,
+                    None,
+                    CELL_CENTER_LEPTON,
+                    CELL_CENTER_LEPTON,
+                    &mut sim.scenario_rng,
+                );
+                (exit, spot)
+            } else {
                 let passenger = sim
                     .substrate
                     .entities
                     .get(pax_id)
                     .expect("passenger resolved above");
-                (
-                    passenger_can_enter(sim, rules, path_grid, passenger, exit),
-                    passenger_can_enter(sim, rules, path_grid, passenger, beyond),
-                )
+                let cell = find_nearby_passable_for(sim, rules, path_grid, passenger, exit, None)
+                    .unwrap_or(exit);
+                (cell, None)
+            };
+            if passenger_is_infantry && sub_cell.is_none() {
+                return Err(DepartureFailure::Placement);
             }
-            _ => (false, false),
-        };
-        let accept = adjacent_ok && (beyond_ok || !strict_pass);
-        if !accept {
-            if strict_pass && i == 7 {
-                strict_pass = false;
-                i = 1;
-            } else {
-                i += 1;
+            // Relaxed pass: `[ESP+0x14]` — the exit cell for infantry, the FNPC
+            // placement cell for a vehicle (`0x0073DAE8` overwrote the slot).
+            let dest = strict_beyond.unwrap_or(place_cell);
+
+            if let Some(passenger) = sim.substrate.entities.get_mut(pax_id) {
+                passenger.sub_cell = sub_cell;
+                passenger.facing = ((octant as u32) << 5) as u8;
+                if let Some(loco) = passenger.locomotor.as_mut() {
+                    loco.layer = MovementLayer::Ground;
+                }
             }
-            continue;
-        }
-        let (exit, beyond) = (
-            exit_cell.expect("accepted cell exists"),
-            beyond_cell.expect("accepted cell exists"),
-        );
-        if cell_has_structural_bridge(sim, path_grid, exit) {
-            i += 1;
-            continue;
-        }
-        placement = Some((exit, strict_pass.then_some(beyond), octant));
-        break;
-    }
+            let z = cell_level_or(sim, place_cell, transport_z);
+            reveal_unloaded_passenger(sim, transport_id, pax_id, place_cell.0, place_cell.1, z)?;
 
-    let Some((exit, strict_beyond, octant)) = placement else {
-        restore_head(sim, rules, transport_id, pax_id, pax_size);
-        return EjectOutcome::Failed;
-    };
+            // OpenTopped: `TechnoClass::ClearInOpenTransport` (`0x007104A0`) drops the
+            // passenger's in-transport firing membership; VERA's open-topped registry
+            // is the logic-object registration the Reveal above re-establishes.
+            if let Some(passenger) = sim.substrate.entities.get_mut(pax_id) {
+                passenger.attack_target = None;
+                passenger.passively_acquired_target = false;
+                passenger.order_intent = None;
+            }
+            sim.queue_megamission_with_teardown(pax_id, MissionType::Move, DockTeardown::None);
+            issue_pathed_move(sim, rules, path_grid, overlay_registry, pax_id, dest);
 
-    // Placement coordinate: the exit cell centre (`x * 256 + 0x80`).
-    let (place_cell, sub_cell) = if passenger_is_infantry {
-        // `PlaceInfantryInCell` from the cell centre: quadrant 0, so the
-        // centre-row `RandomRanged(0, 3)` draw is made on the Scenario stream.
-        let occupancy = sim.substrate.occupancy.get(exit.0, exit.1);
-        let spot = bump_crush::allocate_sub_cell_with_preference(
-            occupancy,
-            MovementLayer::Ground,
-            None,
-            CELL_CENTER_LEPTON,
-            CELL_CENTER_LEPTON,
-            &mut sim.scenario_rng,
-        );
-        (exit, spot)
-    } else {
-        let passenger = sim
-            .substrate
-            .entities
-            .get(pax_id)
-            .expect("passenger resolved above");
-        let cell =
-            find_nearby_passable_for(sim, rules, path_grid, passenger, exit, None).unwrap_or(exit);
-        (cell, None)
-    };
-    if passenger_is_infantry && sub_cell.is_none() {
-        restore_head(sim, rules, transport_id, pax_id, pax_size);
-        return EjectOutcome::Failed;
-    }
-    // Relaxed pass: `[ESP+0x14]` — the exit cell for infantry, the FNPC
-    // placement cell for a vehicle (`0x0073DAE8` overwrote the slot).
-    let dest = strict_beyond.unwrap_or(place_cell);
-
-    if let Some(passenger) = sim.substrate.entities.get_mut(pax_id) {
-        passenger.sub_cell = sub_cell;
-        passenger.facing = ((octant as u32) << 5) as u8;
-        if let Some(loco) = passenger.locomotor.as_mut() {
-            loco.layer = MovementLayer::Ground;
-        }
-    }
-    let z = cell_level_or(sim, place_cell, transport_z);
-    let outcome =
-        reveal_unloaded_passenger(sim, transport_id, pax_id, place_cell.0, place_cell.1, z);
-    if !matches!(outcome, RevealOutcome::Revealed { .. }) {
-        restore_unloaded_passenger_after_reveal_failure(
-            sim,
-            rules,
-            transport_id,
-            pax_id,
-            pax_size,
-            outcome,
-        );
-        reapply_gunner_weapon(sim, rules, transport_id, pax_id);
-        return EjectOutcome::Failed;
-    }
-
-    // OpenTopped: `TechnoClass::ClearInOpenTransport` (`0x007104A0`) drops the
-    // passenger's in-transport firing membership; VERA's open-topped registry
-    // is the logic-object registration the Reveal above re-establishes.
-    if let Some(passenger) = sim.substrate.entities.get_mut(pax_id) {
-        passenger.passenger_role = PassengerRole::None;
-        passenger.attack_target = None;
-        passenger.passively_acquired_target = false;
-        passenger.order_intent = None;
-    }
-    sim.queue_megamission_with_teardown(pax_id, MissionType::Move, DockTeardown::None);
-    issue_pathed_move(sim, rules, path_grid, overlay_registry, pax_id, dest);
-
-    if let Some(sound) = leave_sound {
-        let sound_id = sim.interner.intern(&sound);
-        sim.sound_events.push(SimSoundEvent::LeaveTransport {
-            sound_id,
-            rx: base.0,
-            ry: base.1,
-        });
-    }
-    EjectOutcome::Placed
-}
-
-/// The failure tail of the vehicle handler (`0x0073DC71`..`0x0073DCA6`):
-/// `CargoClass::AddPassenger @ 0x004733A0` re-inserts the passenger at the
-/// head, then `Type+0x805 (Gunner=)` calls UnitClass vtable `+0x4D4`
-/// (`0x00746420`, undefined as a Ghidra function; decoded from bytes) with
-/// the passenger: it re-adopts the passenger's `+0x274` attachment and
-/// applies `InfantryType+0x688 (IFVMode=)` through `FUN_0070DC70`, i.e. the
-/// gunner weapon swap that the pop's `+0x4D8` (`0x007464E0`, the inverse)
-/// undid when the hold emptied. Aircraft/Techno bind those slots to the
-/// three-byte stubs `0x004DE750`/`0x004DE760`, so only a Gunner unit swaps.
-fn restore_head(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    transport_id: u64,
-    pax_id: u64,
-    pax_size: u32,
-) {
-    if let Some(passenger) = sim.substrate.entities.get_mut(pax_id) {
-        passenger.passenger_role = PassengerRole::Inside { transport_id };
-    }
-    if let Some(cargo) = sim
-        .substrate
-        .entities
-        .get_mut(transport_id)
-        .and_then(|transport| transport.passenger_role.cargo_mut())
-    {
-        cargo.restore_front(pax_id, pax_size);
-    }
-    reapply_gunner_weapon(sim, rules, transport_id, pax_id);
-}
-
-/// UnitClass `+0x4D4` (`0x00746420`) for a `Gunner=yes` transport: the
-/// re-added head passenger's `IFVMode=` becomes the transport's weapon slot
-/// again. VERA's representation of that swap is `weapon_override`.
-fn reapply_gunner_weapon(sim: &mut Simulation, rules: &RuleSet, transport_id: u64, pax_id: u64) {
-    let Some(transport) = sim.substrate.entities.get(transport_id) else {
-        return;
-    };
-    if !sim
-        .object_type(transport.type_ref(), rules)
-        .is_some_and(|obj| obj.gunner)
-    {
-        return;
-    }
-    let Some(passenger) = sim.substrate.entities.get(pax_id) else {
-        return;
-    };
-    let ifv_mode = sim
-        .object_type(passenger.type_ref(), rules)
-        .map_or(0, |obj| obj.ifv_mode);
-    if let Some(transport) = sim.substrate.entities.get_mut(transport_id) {
-        transport.weapon_override = Some(
-            crate::sim::combat::combat_weapon::WeaponOverride::IfvSlot(ifv_mode),
-        );
+            if let Some(sound) = leave_sound {
+                let sound_id = sim.interner.intern(&sound);
+                sim.sound_events.push(SimSoundEvent::LeaveTransport {
+                    sound_id,
+                    rx: base.0,
+                    ry: base.1,
+                });
+            }
+            Ok(())
+        },
+    ) {
+        Ok(()) => EjectOutcome::Placed,
+        Err(_) => EjectOutcome::Failed,
     }
 }
 
@@ -1057,7 +977,7 @@ const AIRCRAFT_EXIT_SCAN: [usize; 9] = [4, 5, 3, 7, 1, 0, 6, 2, 4];
 /// dispatch ejects the next passenger. VERA-internal bounded escape instead
 /// (trigger: three infantry already standing in the aircraft cell, rare;
 /// DRIFT — native loses the unit): the passenger goes back to the cargo head
-/// ([`restore_head`]), this returns `false`, and the caller leaves Unload for
+/// (cargo departure restoration), this returns `false`, and the caller leaves Unload for
 /// Guard through the empty-hold exit, so nothing retries and no further
 /// epilogue draws happen. Returns `true` when the passenger left the hold. On
 /// success: `Queue_Mission(Move)` (`0x00415C05`), `Set_Destination(scan
@@ -1070,89 +990,83 @@ fn eject_from_aircraft(
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     aircraft_id: u64,
 ) -> bool {
-    let Some((pax_id, pax_size)) = pop_cargo_head(sim, aircraft_id) else {
-        return false;
-    };
-    let (cell, z, sub_x, sub_y) = match sim.substrate.entities.get(aircraft_id) {
-        Some(aircraft) => (
-            (aircraft.position.rx, aircraft.position.ry),
-            aircraft.position.z,
-            aircraft.position.sub_x,
-            aircraft.position.sub_y,
-        ),
-        None => return false,
-    };
-    let Some(passenger_snapshot) = sim.substrate.entities.get(pax_id) else {
-        restore_head(sim, rules, aircraft_id, pax_id, pax_size);
-        return false;
-    };
-    let is_infantry = passenger_snapshot.category == EntityCategory::Infantry;
+    depart_cargo_head(
+        sim,
+        rules,
+        aircraft_id,
+        DepartureRoute::LandedAircraft,
+        |sim, pax_id| {
+            let (cell, z, sub_x, sub_y) = match sim.substrate.entities.get(aircraft_id) {
+                Some(aircraft) => (
+                    (aircraft.position.rx, aircraft.position.ry),
+                    aircraft.position.z,
+                    aircraft.position.sub_x,
+                    aircraft.position.sub_y,
+                ),
+                None => unreachable!("aircraft resolved before cargo departure"),
+            };
+            let Some(passenger_snapshot) = sim.substrate.entities.get(pax_id) else {
+                return Err(DepartureFailure::MissingPassenger);
+            };
+            let is_infantry = passenger_snapshot.category == EntityCategory::Infantry;
 
-    let mut index = 8usize;
-    let mut scan_cell: Option<(u16, u16)> = None;
-    for (i, &octant) in AIRCRAFT_EXIT_SCAN[..8].iter().enumerate() {
-        let candidate = cell_from(cell, OCTANT_OFFSETS[octant & 7]);
-        scan_cell = candidate;
-        let passenger = sim
-            .substrate
-            .entities
-            .get(pax_id)
-            .expect("passenger resolved above");
-        if candidate.is_some_and(|c| passenger_can_enter(sim, rules, path_grid, passenger, c)) {
-            index = i;
-            break;
-        }
-    }
-    let facing = ((AIRCRAFT_EXIT_SCAN[index] & 7) as u32 * 32) as u8;
+            let mut index = 8usize;
+            let mut scan_cell: Option<(u16, u16)> = None;
+            for (i, &octant) in AIRCRAFT_EXIT_SCAN[..8].iter().enumerate() {
+                let candidate = cell_from(cell, OCTANT_OFFSETS[octant & 7]);
+                scan_cell = candidate;
+                let passenger = sim
+                    .substrate
+                    .entities
+                    .get(pax_id)
+                    .expect("passenger resolved above");
+                if candidate
+                    .is_some_and(|c| passenger_can_enter(sim, rules, path_grid, passenger, c))
+                {
+                    index = i;
+                    break;
+                }
+            }
+            let facing = ((AIRCRAFT_EXIT_SCAN[index] & 7) as u32 * 32) as u8;
 
-    let sub_cell = if is_infantry {
-        let occupancy = sim.substrate.occupancy.get(cell.0, cell.1);
-        let spot = bump_crush::allocate_sub_cell_with_preference(
-            occupancy,
-            MovementLayer::Ground,
-            None,
-            sub_x,
-            sub_y,
-            &mut sim.scenario_rng,
-        );
-        if spot.is_none() {
-            restore_head(sim, rules, aircraft_id, pax_id, pax_size);
-            return false;
-        }
-        spot
-    } else {
-        None
-    };
-    if let Some(passenger) = sim.substrate.entities.get_mut(pax_id) {
-        passenger.sub_cell = sub_cell;
-        passenger.facing = facing;
-        if let Some(loco) = passenger.locomotor.as_mut() {
-            loco.layer = MovementLayer::Ground;
-        }
-    }
-    let outcome = reveal_unloaded_passenger(sim, aircraft_id, pax_id, cell.0, cell.1, z);
-    if !matches!(outcome, RevealOutcome::Revealed { .. }) {
-        restore_unloaded_passenger_after_reveal_failure(
-            sim,
-            rules,
-            aircraft_id,
-            pax_id,
-            pax_size,
-            outcome,
-        );
-        return false;
-    }
-    if let Some(passenger) = sim.substrate.entities.get_mut(pax_id) {
-        passenger.passenger_role = PassengerRole::None;
-        passenger.attack_target = None;
-        passenger.passively_acquired_target = false;
-        passenger.order_intent = None;
-    }
-    sim.queue_megamission_with_teardown(pax_id, MissionType::Move, DockTeardown::None);
-    if let Some(dest) = scan_cell {
-        issue_pathed_move(sim, rules, path_grid, overlay_registry, pax_id, dest);
-    }
-    true
+            let sub_cell = if is_infantry {
+                let occupancy = sim.substrate.occupancy.get(cell.0, cell.1);
+                let spot = bump_crush::allocate_sub_cell_with_preference(
+                    occupancy,
+                    MovementLayer::Ground,
+                    None,
+                    sub_x,
+                    sub_y,
+                    &mut sim.scenario_rng,
+                );
+                if spot.is_none() {
+                    return Err(DepartureFailure::Placement);
+                }
+                spot
+            } else {
+                None
+            };
+            if let Some(passenger) = sim.substrate.entities.get_mut(pax_id) {
+                passenger.sub_cell = sub_cell;
+                passenger.facing = facing;
+                if let Some(loco) = passenger.locomotor.as_mut() {
+                    loco.layer = MovementLayer::Ground;
+                }
+            }
+            reveal_unloaded_passenger(sim, aircraft_id, pax_id, cell.0, cell.1, z)?;
+            if let Some(passenger) = sim.substrate.entities.get_mut(pax_id) {
+                passenger.attack_target = None;
+                passenger.passively_acquired_target = false;
+                passenger.order_intent = None;
+            }
+            sim.queue_megamission_with_teardown(pax_id, MissionType::Move, DockTeardown::None);
+            if let Some(dest) = scan_cell {
+                issue_pathed_move(sim, rules, path_grid, overlay_registry, pax_id, dest);
+            }
+            Ok(())
+        },
+    )
+    .is_ok()
 }
 
 #[cfg(test)]

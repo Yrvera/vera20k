@@ -4,7 +4,9 @@
 //! (CanBeOccupied=yes), IFV weapon swapping (Gunner=yes), and passenger
 //! death on transport destruction. Vehicle/aircraft unloading is the Unload
 //! mission handler in `crate::sim::transport_unload`; only garrison eviction
-//! stays on the per-tick `OrderIntent::Unloading` path here.
+//! stays on the per-tick `OrderIntent::Unloading` path here. The private
+//! departure module owns cargo-head removal and complete retry restoration for
+//! garrisons, vehicles, landed aircraft and paradrops.
 //!
 //! ## Original engine reference
 //! The original engine uses a linked-list at offsets +0x1D0/+0x1CC for passenger
@@ -13,6 +15,11 @@
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/ (ObjectType), sim/game_entity, sim/entity_store.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
+
+mod departure;
+pub(crate) use departure::{
+    DepartureFailure, DepartureRoute, depart_cargo_head, reveal_unloaded_passenger,
+};
 
 use std::collections::BTreeMap;
 
@@ -24,12 +31,8 @@ use crate::sim::house_state::HouseState;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::movement;
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::world::{
-    ConcealOutcome, PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, SimSoundEvent,
-    Simulation,
-};
+use crate::sim::world::{ConcealOutcome, SimSoundEvent, Simulation};
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
-use crate::util::lepton;
 
 /// Passenger cargo state, attached as `Option<PassengerCargo>` on transport entities.
 ///
@@ -124,7 +127,7 @@ impl PassengerCargo {
 
     /// Remove and return the list HEAD (the most recently boarded passenger)
     /// and its recorded size — `CargoClass::RemoveFirstPassenger @ 0x00473430`.
-    pub fn unload_first(&mut self) -> Option<(u64, u32)> {
+    fn unload_first(&mut self) -> Option<(u64, u32)> {
         if self.passengers.is_empty() {
             None
         } else {
@@ -137,7 +140,7 @@ impl PassengerCargo {
 
     /// Restore a failed head-pop at the cargo head (the native failure path
     /// re-runs `AddPassenger`, which prepends).
-    pub fn restore_front(&mut self, stable_id: u64, passenger_size: u32) {
+    fn restore_front(&mut self, stable_id: u64, passenger_size: u32) {
         self.passengers.insert(0, stable_id);
         self.passenger_sizes.insert(0, passenger_size);
         self.total_size += passenger_size;
@@ -713,187 +716,25 @@ fn reconcile_civilian_garrison_owner_for_building(
     false
 }
 
-/// Snapshot-then-mutate: process entities that are trying to board a transport.
-/// Returns `true` if any entity ownership changed. Boarding itself does not
-/// transfer civilian garrison ownership.
+/// Test driver for the production boarding operation. Snapshot admission IDs
+/// without running the separate building ownership reconciliation phase.
 #[cfg(test)]
 fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
-    let ownership_changed = false;
-    // Snapshot entities with Boarding role — must collect fully before mutating.
-    let keys: Vec<u64> = sim.substrate.entities.keys_sorted();
-    let boarding_snapshot: Vec<(u64, u64)> = keys
-        .iter()
-        .filter_map(|&id| {
-            let e = sim.substrate.entities.get(id)?;
-            if let PassengerRole::Boarding {
-                target_transport_id,
-                ..
-            } = &e.passenger_role
-            {
-                Some((id, *target_transport_id))
-            } else {
-                Option::None
-            }
+    let boarding_ids: Vec<u64> = sim
+        .substrate
+        .entities
+        .keys_sorted()
+        .into_iter()
+        .filter(|&id| {
+            sim.substrate.entities.get(id).is_some_and(|entity| {
+                matches!(entity.passenger_role, PassengerRole::Boarding { .. })
+            })
         })
         .collect();
-
-    for (pax_id, transport_id) in boarding_snapshot {
-        // Check transport still exists and is alive.
-        let transport_alive = sim
-            .substrate
-            .entities
-            .get(transport_id)
-            .is_some_and(|t| t.is_alive() && !t.dying);
-        if !transport_alive {
-            // Transport gone — cancel boarding.
-            if let Some(e) = sim.substrate.entities.get_mut(pax_id) {
-                e.passenger_role = PassengerRole::None;
-            }
-            continue;
-        }
-
-        // Get positions to check distance.
-        let (pax_rx, pax_ry) = match sim.substrate.entities.get(pax_id) {
-            Some(e) => (e.position.rx, e.position.ry),
-            None => continue,
-        };
-        let (trx, try_) = match sim.substrate.entities.get(transport_id) {
-            Some(e) => (e.position.rx, e.position.ry),
-            None => continue,
-        };
-
-        // Chebyshev distance between passenger and transport.
-        let dx = (pax_rx as i32 - trx as i32).unsigned_abs();
-        let dy = (pax_ry as i32 - try_ as i32).unsigned_abs();
-        let dist = dx.max(dy);
-
-        if dist <= BOARD_DISTANCE {
-            // Passenger has arrived — attempt boarding.
-            let pax_type_str = sim
-                .substrate
-                .entities
-                .get(pax_id)
-                .map(|e| sim.interner.resolve(e.type_ref).to_string())
-                .unwrap_or_default();
-            let transport_type_str = sim
-                .substrate
-                .entities
-                .get(transport_id)
-                .map(|e| sim.interner.resolve(e.type_ref).to_string())
-                .unwrap_or_default();
-
-            let pax_size = rules.object(&pax_type_str).map(|obj| obj.size).unwrap_or(1);
-
-            let transport_obj = rules.object(&transport_type_str);
-            let transport_gunner = transport_obj.map(|obj| obj.gunner).unwrap_or(false);
-            let transport_open_topped = transport_obj.map(|obj| obj.open_topped).unwrap_or(false);
-
-            let pax_obj = rules.object(&pax_type_str);
-            let pax_ifv_mode = pax_obj.map(|obj| obj.ifv_mode).unwrap_or(0);
-            let pax_open_transport_weapon =
-                pax_obj.map(|obj| obj.open_transport_weapon).unwrap_or(-1);
-            let entering_owner = sim.substrate.entities.get(pax_id).map(|pax| pax.owner);
-
-            // Try to board.
-            let can_board = sim
-                .substrate
-                .entities
-                .get(transport_id)
-                .and_then(|t| t.passenger_role.cargo())
-                .is_some_and(|cargo| cargo.can_accept(pax_size));
-
-            if can_board {
-                if sim.techno_limbo_with_rules(pax_id, rules) != ConcealOutcome::Concealed {
-                    continue;
-                }
-                let boarded = sim
-                    .substrate
-                    .entities
-                    .get_mut(transport_id)
-                    .and_then(|t| t.passenger_role.cargo_mut())
-                    .is_some_and(|cargo| cargo.board(pax_id, pax_size));
-                debug_assert!(boarded, "boarding admission changed during one transaction");
-                if !boarded {
-                    let _ = sim.reveal(pax_id);
-                    continue;
-                }
-
-                // Garrison sound/EVA: emit on first occupant entry only.
-                // gamemd AddGarrisonOccupant fires EVA + BuildingGarrisonedSound
-                // when count transitions 0→1; subsequent occupants are silent.
-                let first_occupant = sim
-                    .substrate
-                    .entities
-                    .get(transport_id)
-                    .and_then(|t| t.passenger_role.cargo())
-                    .map_or(false, |c| c.count() == 1);
-                if first_occupant
-                    && rules
-                        .object(&transport_type_str)
-                        .map_or(false, |o| o.can_be_occupied)
-                {
-                    if let (Some(owner), Some(t)) =
-                        (entering_owner, sim.substrate.entities.get(transport_id))
-                    {
-                        let rx = t.position.rx;
-                        let ry = t.position.ry;
-                        sim.sound_events
-                            .push(SimSoundEvent::StructureGarrisoned { owner });
-                        sim.sound_events.push(SimSoundEvent::BuildingGarrisonedSfx {
-                            owner,
-                            rx,
-                            ry,
-                        });
-                    }
-                }
-
-                if let Some(pax) = sim.substrate.entities.get_mut(pax_id) {
-                    pax.passenger_role = PassengerRole::Inside { transport_id };
-                    pax.movement_target = None;
-                    pax.attack_target = None;
-                    pax.passively_acquired_target = false;
-                    pax.order_intent = None;
-                }
-                if transport_open_topped {
-                    let registered = sim.register_open_topped_passenger(pax_id);
-                    debug_assert!(
-                        registered,
-                        "accepted open-topped passenger must remain active"
-                    );
-                }
-                // Transport weapon override: Gunner=yes transports swap their
-                // own weapon to weapon_list[IFVMode]; open-topped non-Gunner
-                // transports fire the passenger's own Primary/Secondary based
-                // on the passenger's OpenTransportWeapon slot.
-                let new_override = if transport_gunner {
-                    Some(crate::sim::combat::combat_weapon::WeaponOverride::IfvSlot(
-                        pax_ifv_mode,
-                    ))
-                } else if transport_open_topped && pax_open_transport_weapon >= 0 {
-                    Some(
-                        crate::sim::combat::combat_weapon::WeaponOverride::OpenTransport(
-                            pax_open_transport_weapon as u32,
-                        ),
-                    )
-                } else {
-                    None
-                };
-                if new_override.is_some() {
-                    if let Some(t) = sim.substrate.entities.get_mut(transport_id) {
-                        t.weapon_override = new_override;
-                    }
-                }
-            } else {
-                // Transport full — cancel boarding.
-                if let Some(pax) = sim.substrate.entities.get_mut(pax_id) {
-                    pax.passenger_role = PassengerRole::None;
-                }
-            }
-        }
-        // If still approaching (movement_target present), let movement continue.
-        // If movement finished but not close enough, the unit just stops.
+    for id in boarding_ids {
+        process_boarding_passenger(sim, rules, id);
     }
-    ownership_changed
+    false
 }
 
 /// Process transports with `OrderIntent::Unloading` — eject one passenger per tick.
@@ -910,76 +751,6 @@ fn is_can_be_occupied_unloading_transport(
     }
     sim.object_type(entity.type_ref(), rules)
         .is_some_and(|obj| obj.can_be_occupied)
-}
-
-/// Reveal a cargo passenger at an exit cell. The passenger's `sub_cell` and
-/// `facing` must already be written by the caller; its role is cleared here.
-pub(crate) fn reveal_unloaded_passenger(
-    sim: &mut Simulation,
-    transport_id: u64,
-    passenger_id: u64,
-    rx: u16,
-    ry: u16,
-    z: u8,
-) -> RevealOutcome {
-    let sub_cell = sim
-        .substrate
-        .entities
-        .get(passenger_id)
-        .and_then(|passenger| passenger.sub_cell);
-    let (sub_x, sub_y) = lepton::subcell_lepton_offset(sub_cell);
-    if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
-        debug_assert!(matches!(
-            passenger.passenger_role,
-            PassengerRole::Inside {
-                transport_id: current_transport
-            } if current_transport == transport_id
-        ));
-        passenger.passenger_role = PassengerRole::None;
-    }
-    sim.try_reveal_entity(
-        passenger_id,
-        RevealRequest {
-            position: RevealPosition {
-                rx,
-                ry,
-                z,
-                sub_x,
-                sub_y,
-            },
-            // The caller already selected an unoccupied exit cell. The
-            // still-blocked native admission oracle is not fabricated here.
-            placement: PlacementEvidence::MarkSucceeded,
-            logic_eligible: true,
-        },
-    )
-}
-
-pub(crate) fn restore_unloaded_passenger_after_reveal_failure(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    transport_id: u64,
-    passenger_id: u64,
-    passenger_size: u32,
-    outcome: RevealOutcome,
-) {
-    if outcome == RevealOutcome::AlreadyRevealed {
-        // Defensive only: a cargo passenger should be limbo. Re-establish a
-        // coherent cargo state through lifecycle authority if that invariant
-        // was already broken before this call.
-        let _ = sim.techno_limbo_with_rules(passenger_id, rules);
-    }
-    if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
-        passenger.passenger_role = PassengerRole::Inside { transport_id };
-    }
-    if let Some(cargo) = sim
-        .substrate
-        .entities
-        .get_mut(transport_id)
-        .and_then(|transport| transport.passenger_role.cargo_mut())
-    {
-        cargo.restore_front(passenger_id, passenger_size);
-    }
 }
 
 /// `FootClass::GetCurrentSpeed @ 0x004DB1A0` for an ejected passenger.
@@ -1042,74 +813,63 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
         return;
     };
 
-    let passenger = sim
-        .substrate
-        .entities
-        .get_mut(transport_id)
-        .and_then(|t| t.passenger_role.cargo_mut())
-        .and_then(|cargo| cargo.unload_first());
+    let result = depart_cargo_head(
+        sim,
+        rules,
+        transport_id,
+        DepartureRoute::Garrison,
+        |sim, pax_id| {
+            let pax_type_str = sim
+                .substrate
+                .entities
+                .get(pax_id)
+                .map(|e| sim.interner.resolve(e.type_ref()).to_string())
+                .unwrap_or_default();
+            reveal_unloaded_passenger(sim, transport_id, pax_id, exit_rx, exit_ry, tz)?;
 
-    let Some((pax_id, pax_size)) = passenger else {
-        if let Some(t) = sim.substrate.entities.get_mut(transport_id) {
-            t.order_intent = None;
-        }
-        return;
-    };
-
-    let pax_type_str = sim
-        .substrate
-        .entities
-        .get(pax_id)
-        .map(|e| sim.interner.resolve(e.type_ref()).to_string())
-        .unwrap_or_default();
-    let reveal_outcome = reveal_unloaded_passenger(sim, transport_id, pax_id, exit_rx, exit_ry, tz);
-    if !matches!(reveal_outcome, RevealOutcome::Revealed { .. }) {
-        restore_unloaded_passenger_after_reveal_failure(
-            sim,
-            rules,
-            transport_id,
-            pax_id,
-            pax_size,
-            reveal_outcome,
-        );
-        return;
-    }
-
-    // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: a veteran passenger scatters at
-    // its FASTER speed like any other ordered move.
-    let scatter_speed = scatter_speed_for_passenger(sim, rules, pax_id, &pax_type_str);
-    let start_dir = sim.scatter_rng().next_u32() as usize % 8;
-    for i in 0..8 {
-        let (dx, dy) = NEIGHBORS[(start_dir + i) % 8];
-        let sx = exit_rx as i32 + dx as i32;
-        let sy = exit_ry as i32 + dy as i32;
-        if sx >= 0 && sy >= 0 {
-            let dest = (sx as u16, sy as u16);
-            let occupied = occupied_cells
-                .iter()
-                .any(|&(ox, oy)| ox == dest.0 && oy == dest.1);
-            if !occupied {
-                movement::issue_direct_move(
-                    &mut sim.substrate.entities,
-                    pax_id,
-                    dest,
-                    scatter_speed,
-                );
-                break;
+            // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: a veteran passenger scatters at
+            // its FASTER speed like any other ordered move.
+            let scatter_speed = scatter_speed_for_passenger(sim, rules, pax_id, &pax_type_str);
+            let start_dir = sim.scatter_rng().next_u32() as usize % 8;
+            for i in 0..8 {
+                let (dx, dy) = NEIGHBORS[(start_dir + i) % 8];
+                let sx = exit_rx as i32 + dx as i32;
+                let sy = exit_ry as i32 + dy as i32;
+                if sx >= 0 && sy >= 0 {
+                    let dest = (sx as u16, sy as u16);
+                    let occupied = occupied_cells
+                        .iter()
+                        .any(|&(ox, oy)| ox == dest.0 && oy == dest.1);
+                    if !occupied {
+                        movement::issue_direct_move(
+                            &mut sim.substrate.entities,
+                            pax_id,
+                            dest,
+                            scatter_speed,
+                        );
+                        break;
+                    }
+                }
             }
-        }
-    }
 
-    let cargo_empty = sim
-        .substrate
-        .entities
-        .get(transport_id)
-        .and_then(|t| t.passenger_role.cargo())
-        .is_some_and(|c| c.is_empty());
-    if cargo_empty {
-        if let Some(t) = sim.substrate.entities.get_mut(transport_id) {
-            t.weapon_override = None;
-            t.order_intent = None;
+            let cargo_empty = sim
+                .substrate
+                .entities
+                .get(transport_id)
+                .and_then(|t| t.passenger_role.cargo())
+                .is_some_and(|c| c.is_empty());
+            if cargo_empty {
+                if let Some(t) = sim.substrate.entities.get_mut(transport_id) {
+                    t.weapon_override = None;
+                    t.order_intent = None;
+                }
+            }
+            Ok(())
+        },
+    );
+    if result == Err(DepartureFailure::NoCargo) {
+        if let Some(transport) = sim.substrate.entities.get_mut(transport_id) {
+            transport.order_intent = None;
         }
     }
 }
@@ -1120,6 +880,8 @@ mod tests {
     use crate::map::entities::EntityCategory;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::ruleset::RuleSet;
+    use crate::sim::world::RevealOutcome;
+    use crate::util::lepton;
 
     fn garrison_test_rules() -> RuleSet {
         let ini_str = "\
@@ -1417,20 +1179,6 @@ ConditionYellow=50%
         assert_eq!(cargo.unload_first(), None);
         assert!(cargo.is_empty());
         assert!(cargo.passenger_sizes.is_empty());
-    }
-
-    #[test]
-    fn failed_unload_restores_id_size_and_total_at_head() {
-        let mut cargo = PassengerCargo::new(5, 0);
-        cargo.board(100, 3);
-        cargo.board(101, 1);
-
-        let entry = cargo.unload_first().expect("head passenger");
-        cargo.restore_front(entry.0, entry.1);
-
-        assert_eq!(cargo.passengers, vec![101, 100]);
-        assert_eq!(cargo.passenger_sizes, vec![1, 3]);
-        assert_eq!(cargo.total_size, 4);
     }
 
     #[test]
@@ -2472,5 +2220,72 @@ ConditionYellow=50%
             "blocked occupant must reach UnInit and the shared test drain"
         );
         assert!(!sim.substrate.pending_delete.contains(&pax));
+    }
+    #[test]
+    fn cargo_departure_garrison_reveal_failure_retains_order_and_recorded_size() {
+        use crate::sim::combat::combat_weapon::WeaponOverride;
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let building = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let passenger = spawn_boarding_occupier(&mut sim, "E1", "Americans", building, 10, 11);
+        process_boarding_passenger(&mut sim, &rules, passenger);
+        {
+            let carrier = sim.substrate.entities.get_mut(building).unwrap();
+            carrier.weapon_override = Some(WeaponOverride::IfvSlot(99));
+            carrier.order_intent = Some(OrderIntent::Unloading);
+            let cargo = carrier.passenger_role.cargo_mut().unwrap();
+            cargo.passenger_sizes[0] = 7;
+            cargo.total_size = 7;
+        }
+        sim.substrate
+            .entities
+            .get_mut(passenger)
+            .unwrap()
+            .lifecycle
+            .cell_marked = true;
+        let held = serde_json::to_value(
+            sim.substrate
+                .entities
+                .get(building)
+                .unwrap()
+                .passenger_role
+                .cargo(),
+        )
+        .unwrap();
+        let rng_before = sim.scenario_rng.state();
+        sim.sound_events.clear();
+        process_unloading_transport(&mut sim, &rules, building);
+        let carrier = sim.substrate.entities.get(building).unwrap();
+        assert_eq!(
+            serde_json::to_value(carrier.passenger_role.cargo()).unwrap(),
+            held
+        );
+        assert_eq!(carrier.weapon_override, Some(WeaponOverride::IfvSlot(99)));
+        assert!(matches!(carrier.order_intent, Some(OrderIntent::Unloading)));
+        let pax = sim.substrate.entities.get(passenger).unwrap();
+        assert_eq!(pax.passenger_role.inside_transport_id(), Some(building));
+        assert!(pax.lifecycle.in_limbo && pax.lifecycle.cell_marked);
+        assert!(!pax.in_logic_vector);
+        assert_eq!(sim.scenario_rng.state(), rng_before);
+        assert!(sim.sound_events.is_empty());
+        println!(
+            "CARGO_TRACE garrison {:?} {:?}",
+            sim.scenario_rng.state(),
+            held
+        );
+        sim.substrate
+            .entities
+            .get_mut(passenger)
+            .unwrap()
+            .lifecycle
+            .cell_marked = false;
+        process_unloading_transport(&mut sim, &rules, building);
+        let carrier = sim.substrate.entities.get(building).unwrap();
+        assert!(carrier.passenger_role.cargo().unwrap().is_empty());
+        assert_eq!(carrier.passenger_role.cargo().unwrap().total_size, 0);
+        assert!(carrier.weapon_override.is_none() && carrier.order_intent.is_none());
+        let pax = sim.substrate.entities.get(passenger).unwrap();
+        assert!(!pax.passenger_role.is_inside_transport());
+        assert!(pax.lifecycle.cell_marked && pax.in_logic_vector);
     }
 }

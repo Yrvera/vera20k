@@ -22,7 +22,7 @@ use crate::sim::cell_rect::{
 use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::parachute_descent::begin_parachute_descent;
-use crate::sim::passenger::PassengerRole;
+use crate::sim::passenger::{DepartureFailure, DepartureRoute, PassengerRole, depart_cargo_head};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::{
     PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, SimSoundEvent, Simulation,
@@ -87,22 +87,6 @@ pub enum DropResult {
     NoCargo,
 }
 
-fn restore_passenger_to_cargo_head(
-    sim: &mut Simulation,
-    aircraft_id: u64,
-    passenger_id: u64,
-    passenger_size: u32,
-) {
-    if let Some(cargo) = sim
-        .substrate
-        .entities
-        .get_mut(aircraft_id)
-        .and_then(|a| a.passenger_role.cargo_mut())
-    {
-        cargo.restore_front(passenger_id, passenger_size);
-    }
-}
-
 /// Attempt to drop one passenger from the carrier aircraft's cargo.
 ///
 /// Pre-conditions (caller-enforced):
@@ -133,224 +117,204 @@ pub fn try_drop(
             None => return DropResult::NoCargo,
         };
 
-    // 2. Pop FIFO passenger from cargo.
-    let (passenger_id, passenger_size) = match sim
-        .substrate
-        .entities
-        .get_mut(aircraft_id)
-        .and_then(|a| a.passenger_role.cargo_mut())
-        .and_then(|c| c.unload_first())
-    {
-        Some(entry) => entry,
-        None => return DropResult::NoCargo,
-    };
-
-    let (
-        passenger_category,
-        passenger_ready_for_reveal,
-        passenger_speed_type,
-        passenger_movement_zone,
-        prior_movement_layer,
-    ) = match sim.substrate.entities.get(passenger_id) {
-        Some(passenger) => {
-            let object_type = sim.object_type(passenger.type_ref(), rules);
-            (
-                passenger.category,
-                passenger.lifecycle.object_alive && passenger.lifecycle.in_limbo,
-                passenger
-                    .locomotor
-                    .as_ref()
-                    .map(|locomotor| locomotor.speed_type)
-                    .or_else(|| object_type.map(|object_type| object_type.speed_type))
-                    .unwrap_or(crate::rules::locomotor_type::SpeedType::Foot),
-                passenger
-                    .locomotor
-                    .as_ref()
-                    .map(|locomotor| locomotor.movement_zone)
-                    .or_else(|| object_type.map(|object_type| object_type.movement_zone))
-                    .unwrap_or(crate::rules::locomotor_type::MovementZone::Normal),
-                passenger
-                    .locomotor
-                    .as_ref()
-                    .map(|locomotor| locomotor.layer)
-                    .unwrap_or(MovementLayer::Ground),
-            )
-        }
-        None => {
-            sim.clear_radio_contacts_for(passenger_id);
-            restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
-            return DropResult::AttachFailedRetry;
-        }
-    };
-    if !passenger_ready_for_reveal {
-        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
-        return DropResult::AttachFailedRetry;
-    }
-
-    // 3. Compute V-offset in leptons, then split into (cell, sub-cell).
-    // Using `div_euclid`/`rem_euclid` so negative offsets cross cell
-    // boundaries correctly (left-side drops walk one cell west when the
-    // aircraft is in the western half of its cell).
-    let payload_count_post = payload_count_pre_dec.saturating_sub(1);
-    let (dx, dy) = v_offset(facing, payload_count_post);
-    let drop_x_lep = aircraft_x_lep + dx;
-    let drop_y_lep = aircraft_y_lep + dy;
-    let drop_rx = drop_x_lep.div_euclid(256).clamp(0, u16::MAX as i32) as u16;
-    let drop_ry = drop_y_lep.div_euclid(256).clamp(0, u16::MAX as i32) as u16;
-    let drop_sub_x = SimFixed::from_num(drop_x_lep.rem_euclid(256));
-    let drop_sub_y = SimFixed::from_num(drop_y_lep.rem_euclid(256));
-
-    // Native: ObjectClass::SpawnParachuted computes the landing plane and then
-    // calls CellClass::IsClearToMove before virtual Unlimbo. Zone identity is
-    // not threaded into this Rust caller, so only that unavailable comparison
-    // remains omitted; terrain, bridge plane, and raw occupation are live.
-    let land_passable = sim
-        .resolved_terrain
-        .as_ref()
-        .and_then(|terrain| terrain.cell(drop_rx, drop_ry))
-        .map(|cell| {
-            cell.speed_costs
-                .cost_for_speed_type(passenger_speed_type)
-                .is_none_or(|cost| cost > 0)
-        })
-        .unwrap_or_else(|| path_grid.is_none_or(|grid| grid.is_walkable(drop_rx, drop_ry)));
-    let passability = if path_grid.is_none() && sim.resolved_terrain.is_none() {
-        // Headless construction tests have no Cell substrate. Keep their
-        // established admission explicit; live calls always thread map data.
-        IsClearToMoveResult::Clear {
-            selected_layer: MovementLayer::Ground,
-        }
-    } else {
-        evaluate_live_cell_passability(LiveCellPassabilityQuery {
-            target: (drop_rx, drop_ry),
-            speed_type: passenger_speed_type,
-            movement_zone: passenger_movement_zone,
-            requested_zone: None,
-            actual_zone: 0,
-            requested_layer: None,
-            ignore_infantry: false,
-            ignore_vehicles: false,
-            land_passable,
-            path_grid,
-            resolved_terrain: sim.resolved_terrain.as_ref(),
-            raw_occupation: Some(&sim.substrate.raw_cell_occupation),
-        })
-    };
-    let landing_layer = match passability {
-        IsClearToMoveResult::Clear { selected_layer } => selected_layer,
-        IsClearToMoveResult::ClearWinged => MovementLayer::Ground,
-        _ => {
-            restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
-            return DropResult::ImpassableRetry;
-        }
-    };
-    if !matches!(landing_layer, MovementLayer::Ground | MovementLayer::Bridge) {
-        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
-        return DropResult::ImpassableRetry;
-    }
-
-    let selected_sub_cell = if passenger_category == EntityCategory::Infantry {
-        let occ = sim.substrate.occupancy.get(drop_rx, drop_ry);
-        match bump_crush::allocate_sub_cell_with_preference(
-            occ,
-            landing_layer,
-            None,
-            drop_sub_x,
-            drop_sub_y,
-            // sub-cell placement — scenario stream. Direct field: `occ` may borrow
-            // &sim.substrate.occupancy, so the subcell_rng() accessor could conflict.
-            &mut sim.scenario_rng,
-        ) {
-            Some(sub_cell) => Some(sub_cell),
-            None => {
-                restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
-                return DropResult::ImpassableRetry;
-            }
-        }
-    } else {
-        None
-    };
-    let (final_sub_x, final_sub_y) = selected_sub_cell
-        .map(|sub_cell| lepton::subcell_lepton_offset(Some(sub_cell)))
-        .unwrap_or((drop_sub_x, drop_sub_y));
-
-    // 5. Supply caller-owned subcell/role state while the passenger is still
-    // limbo. Parachute attachment follows; Reveal is the success boundary.
-    // Do NOT touch
-    // `loco.altitude` here: normal paradropped infantry keep their base
-    // locomotor identity, while descent altitude lives in ParachuteDescentState.
-    if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
-        passenger.sub_cell = selected_sub_cell;
-        passenger.passenger_role = PassengerRole::None;
-        if let Some(locomotor) = passenger.locomotor.as_mut() {
-            locomotor.layer = landing_layer;
-        }
-    }
-    // 6. Attach parachute descent while the passenger is still limbo. Reveal
-    // is the local success boundary; an attach retry is not Techno Limbo.
-    if !begin_parachute_descent(&mut sim.substrate.entities, passenger_id, altitude) {
-        // Preserve the separately classified legacy retry scrub. No common
-        // Reveal state has been committed yet.
-        sim.clear_radio_contacts_for(passenger_id);
-        if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
-            passenger.passenger_role = PassengerRole::Inside {
-                transport_id: aircraft_id,
+    // Remove the native cargo HEAD (last boarded), and complete any retry here.
+    let result = depart_cargo_head(
+        sim,
+        rules,
+        aircraft_id,
+        DepartureRoute::Paradrop,
+        |sim, passenger_id| {
+            let (
+                passenger_category,
+                passenger_ready_for_reveal,
+                passenger_speed_type,
+                passenger_movement_zone,
+                prior_movement_layer,
+            ) = match sim.substrate.entities.get(passenger_id) {
+                Some(passenger) => {
+                    let object_type = sim.object_type(passenger.type_ref(), rules);
+                    (
+                        passenger.category,
+                        passenger.lifecycle.object_alive && passenger.lifecycle.in_limbo,
+                        passenger
+                            .locomotor
+                            .as_ref()
+                            .map(|locomotor| locomotor.speed_type)
+                            .or_else(|| object_type.map(|object_type| object_type.speed_type))
+                            .unwrap_or(crate::rules::locomotor_type::SpeedType::Foot),
+                        passenger
+                            .locomotor
+                            .as_ref()
+                            .map(|locomotor| locomotor.movement_zone)
+                            .or_else(|| object_type.map(|object_type| object_type.movement_zone))
+                            .unwrap_or(crate::rules::locomotor_type::MovementZone::Normal),
+                        passenger
+                            .locomotor
+                            .as_ref()
+                            .map(|locomotor| locomotor.layer)
+                            .unwrap_or(MovementLayer::Ground),
+                    )
+                }
+                None => {
+                    return Err(DepartureFailure::MissingPassenger);
+                }
             };
-            if let Some(locomotor) = passenger.locomotor.as_mut() {
-                locomotor.layer = prior_movement_layer;
+            if !passenger_ready_for_reveal {
+                return Err(DepartureFailure::NotReady);
             }
-        }
-        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
-        return DropResult::AttachFailedRetry;
-    }
 
-    let landing_z = sim
-        .resolved_terrain
-        .as_ref()
-        .and_then(|terrain| terrain.cell(drop_rx, drop_ry))
-        .map_or(0, |cell| {
-            cell.level
-                .wrapping_add(u8::from(landing_layer == MovementLayer::Bridge) * 4)
-        });
-    let reveal_outcome = sim.try_reveal_entity(
-        passenger_id,
-        RevealRequest {
-            position: RevealPosition {
+            // 3. Compute V-offset in leptons, then split into (cell, sub-cell).
+            // Using `div_euclid`/`rem_euclid` so negative offsets cross cell
+            // boundaries correctly (left-side drops walk one cell west when the
+            // aircraft is in the western half of its cell).
+            let payload_count_post = payload_count_pre_dec.saturating_sub(1);
+            let (dx, dy) = v_offset(facing, payload_count_post);
+            let drop_x_lep = aircraft_x_lep + dx;
+            let drop_y_lep = aircraft_y_lep + dy;
+            let drop_rx = drop_x_lep.div_euclid(256).clamp(0, u16::MAX as i32) as u16;
+            let drop_ry = drop_y_lep.div_euclid(256).clamp(0, u16::MAX as i32) as u16;
+            let drop_sub_x = SimFixed::from_num(drop_x_lep.rem_euclid(256));
+            let drop_sub_y = SimFixed::from_num(drop_y_lep.rem_euclid(256));
+
+            // Native: ObjectClass::SpawnParachuted computes the landing plane and then
+            // calls CellClass::IsClearToMove before virtual Unlimbo. Zone identity is
+            // not threaded into this Rust caller, so only that unavailable comparison
+            // remains omitted; terrain, bridge plane, and raw occupation are live.
+            let land_passable = sim
+                .resolved_terrain
+                .as_ref()
+                .and_then(|terrain| terrain.cell(drop_rx, drop_ry))
+                .map(|cell| {
+                    cell.speed_costs
+                        .cost_for_speed_type(passenger_speed_type)
+                        .is_none_or(|cost| cost > 0)
+                })
+                .unwrap_or_else(|| path_grid.is_none_or(|grid| grid.is_walkable(drop_rx, drop_ry)));
+            let passability = if path_grid.is_none() && sim.resolved_terrain.is_none() {
+                // Headless construction tests have no Cell substrate. Keep their
+                // established admission explicit; live calls always thread map data.
+                IsClearToMoveResult::Clear {
+                    selected_layer: MovementLayer::Ground,
+                }
+            } else {
+                evaluate_live_cell_passability(LiveCellPassabilityQuery {
+                    target: (drop_rx, drop_ry),
+                    speed_type: passenger_speed_type,
+                    movement_zone: passenger_movement_zone,
+                    requested_zone: None,
+                    actual_zone: 0,
+                    requested_layer: None,
+                    ignore_infantry: false,
+                    ignore_vehicles: false,
+                    land_passable,
+                    path_grid,
+                    resolved_terrain: sim.resolved_terrain.as_ref(),
+                    raw_occupation: Some(&sim.substrate.raw_cell_occupation),
+                })
+            };
+            let landing_layer = match passability {
+                IsClearToMoveResult::Clear { selected_layer } => selected_layer,
+                IsClearToMoveResult::ClearWinged => MovementLayer::Ground,
+                _ => {
+                    return Err(DepartureFailure::Placement);
+                }
+            };
+            if !matches!(landing_layer, MovementLayer::Ground | MovementLayer::Bridge) {
+                return Err(DepartureFailure::Placement);
+            }
+
+            let selected_sub_cell = if passenger_category == EntityCategory::Infantry {
+                let occ = sim.substrate.occupancy.get(drop_rx, drop_ry);
+                match bump_crush::allocate_sub_cell_with_preference(
+                    occ,
+                    landing_layer,
+                    None,
+                    drop_sub_x,
+                    drop_sub_y,
+                    // sub-cell placement — scenario stream. Direct field: `occ` may borrow
+                    // &sim.substrate.occupancy, so the subcell_rng() accessor could conflict.
+                    &mut sim.scenario_rng,
+                ) {
+                    Some(sub_cell) => Some(sub_cell),
+                    None => {
+                        return Err(DepartureFailure::Placement);
+                    }
+                }
+            } else {
+                None
+            };
+            let (final_sub_x, final_sub_y) = selected_sub_cell
+                .map(|sub_cell| lepton::subcell_lepton_offset(Some(sub_cell)))
+                .unwrap_or((drop_sub_x, drop_sub_y));
+
+            // 5. Supply caller-owned subcell/role state while the passenger is still
+            // limbo. Parachute attachment follows; Reveal is the success boundary.
+            // Do NOT touch
+            // `loco.altitude` here: normal paradropped infantry keep their base
+            // locomotor identity, while descent altitude lives in ParachuteDescentState.
+            if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
+                passenger.sub_cell = selected_sub_cell;
+                passenger.passenger_role = PassengerRole::None;
+                if let Some(locomotor) = passenger.locomotor.as_mut() {
+                    locomotor.layer = landing_layer;
+                }
+            }
+            // 6. Attach parachute descent while the passenger is still limbo. Reveal
+            // is the local success boundary; an attach retry is not Techno Limbo.
+            if !begin_parachute_descent(&mut sim.substrate.entities, passenger_id, altitude) {
+                return Err(DepartureFailure::ParachuteAttach(prior_movement_layer));
+            }
+
+            let landing_z = sim
+                .resolved_terrain
+                .as_ref()
+                .and_then(|terrain| terrain.cell(drop_rx, drop_ry))
+                .map_or(0, |cell| {
+                    cell.level
+                        .wrapping_add(u8::from(landing_layer == MovementLayer::Bridge) * 4)
+                });
+            let reveal_outcome = sim.try_reveal_entity(
+                passenger_id,
+                RevealRequest {
+                    position: RevealPosition {
+                        rx: drop_rx,
+                        ry: drop_ry,
+                        z: landing_z,
+                        sub_x: final_sub_x,
+                        sub_y: final_sub_y,
+                    },
+                    placement: PlacementEvidence::MarkSucceeded,
+                    logic_eligible: true,
+                },
+            );
+            if !matches!(reveal_outcome, RevealOutcome::Revealed { .. }) {
+                return Err(DepartureFailure::ParachuteReveal(
+                    reveal_outcome,
+                    prior_movement_layer,
+                ));
+            }
+
+            // 7. ChuteSound at drop cell.
+            sim.sound_events.push(SimSoundEvent::ChuteSound {
                 rx: drop_rx,
                 ry: drop_ry,
-                z: landing_z,
-                sub_x: final_sub_x,
-                sub_y: final_sub_y,
-            },
-            placement: PlacementEvidence::MarkSucceeded,
-            logic_eligible: true,
+            });
+
+            Ok(())
         },
     );
-    if !matches!(reveal_outcome, RevealOutcome::Revealed { .. }) {
-        if reveal_outcome == RevealOutcome::AlreadyRevealed {
-            let _ = sim.techno_limbo_with_rules(passenger_id, rules);
-        }
-        sim.clear_radio_contacts_for(passenger_id);
-        if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
-            passenger.parachute_state = None;
-            passenger.passenger_role = PassengerRole::Inside {
-                transport_id: aircraft_id,
-            };
-            if let Some(locomotor) = passenger.locomotor.as_mut() {
-                locomotor.layer = prior_movement_layer;
-            }
-        }
-        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
-        return DropResult::AttachFailedRetry;
+    match result {
+        Ok(()) => DropResult::Success,
+        Err(DepartureFailure::NoCargo) => DropResult::NoCargo,
+        Err(DepartureFailure::Placement) => DropResult::ImpassableRetry,
+        Err(
+            DepartureFailure::MissingPassenger
+            | DepartureFailure::NotReady
+            | DepartureFailure::ParachuteAttach(_)
+            | DepartureFailure::ParachuteReveal(..),
+        ) => DropResult::AttachFailedRetry,
+        Err(DepartureFailure::GroundReveal(_)) => unreachable!("ground reveal in paradrop"),
     }
-
-    // 7. ChuteSound at drop cell.
-    sim.sound_events.push(SimSoundEvent::ChuteSound {
-        rx: drop_rx,
-        ry: drop_ry,
-    });
-
-    DropResult::Success
 }
 
 #[cfg(test)]
@@ -667,5 +631,116 @@ mod tests {
                 .has_live_contact_with(missing_passenger_id),
             "attach-failed retry should clear stale peer radio contacts"
         );
+    }
+    #[test]
+    fn cargo_departure_paradrop_preserves_early_state_and_unwinds_reveal_failure() {
+        use crate::sim::combat::combat_weapon::WeaponOverride;
+        use crate::sim::movement::locomotor::LocomotorState;
+        for post_attach in [false, true] {
+            let mut sim = Simulation::new();
+            let rules = drop_test_rules();
+            insert_loaded_paradrop_pair(&mut sim, 1, 2);
+            let mut loco = LocomotorState::from_object_type(rules.object("E1").unwrap(), 0, 0);
+            loco.layer = MovementLayer::Bridge;
+            {
+                let passenger = sim.substrate.entities.get_mut(2).unwrap();
+                passenger.locomotor = Some(loco);
+                passenger.lifecycle.object_alive = post_attach;
+                passenger.lifecycle.cell_marked = post_attach;
+            }
+            let mut peer = GameEntity::test_default(9, "E1", "Americans", 30, 30);
+            peer.mark_live_contact_with(2);
+            sim.substrate.entities.insert(peer);
+            {
+                let aircraft = sim.substrate.entities.get_mut(1).unwrap();
+                aircraft.weapon_override = Some(WeaponOverride::IfvSlot(99));
+                let cargo = aircraft.passenger_role.cargo_mut().unwrap();
+                cargo.passenger_sizes[0] = 7;
+                cargo.total_size = 7;
+                cargo.board_forced(1234, 3);
+                // Put the real passenger back at the head, preserving mixed sizes.
+                cargo.passengers.swap(0, 1);
+                cargo.passenger_sizes.swap(0, 1);
+            }
+            let held = serde_json::to_value(
+                sim.substrate
+                    .entities
+                    .get(1)
+                    .unwrap()
+                    .passenger_role
+                    .cargo(),
+            )
+            .unwrap();
+            let rng_before = sim.scenario_rng.state();
+            assert_eq!(
+                try_drop(&mut sim, &rules, 1, 4, None),
+                DropResult::AttachFailedRetry
+            );
+            let aircraft = sim.substrate.entities.get(1).unwrap();
+            assert_eq!(
+                serde_json::to_value(aircraft.passenger_role.cargo()).unwrap(),
+                held
+            );
+            assert_eq!(aircraft.weapon_override, Some(WeaponOverride::IfvSlot(99)));
+            let passenger = sim.substrate.entities.get(2).unwrap();
+            assert_eq!(passenger.passenger_role.inside_transport_id(), Some(1));
+            assert!(passenger.lifecycle.in_limbo);
+            assert_eq!(passenger.lifecycle.cell_marked, post_attach);
+            assert!(!passenger.in_logic_vector);
+            assert!(passenger.parachute_state.is_none());
+            assert_eq!(
+                passenger.locomotor.as_ref().unwrap().layer,
+                MovementLayer::Bridge
+            );
+            assert_eq!(
+                sim.substrate
+                    .entities
+                    .get(9)
+                    .unwrap()
+                    .has_live_contact_with(2),
+                !post_attach
+            );
+            assert!(sim.sound_events.is_empty());
+            if !post_attach {
+                assert_eq!(sim.scenario_rng.state(), rng_before);
+            }
+            println!(
+                "CARGO_TRACE paradrop {post_attach} {:?} {:?} {:?}",
+                sim.scenario_rng.state(),
+                held,
+                passenger.position
+            );
+            if post_attach {
+                sim.substrate
+                    .entities
+                    .get_mut(2)
+                    .unwrap()
+                    .lifecycle
+                    .cell_marked = false;
+                assert_eq!(try_drop(&mut sim, &rules, 1, 4, None), DropResult::Success);
+                let cargo = sim
+                    .substrate
+                    .entities
+                    .get(1)
+                    .unwrap()
+                    .passenger_role
+                    .cargo()
+                    .unwrap();
+                assert_eq!(cargo.passengers, vec![1234]);
+                assert_eq!(cargo.passenger_sizes, vec![3]);
+                assert_eq!(cargo.total_size, 3);
+                let passenger = sim.substrate.entities.get(2).unwrap();
+                assert!(passenger.parachute_state.is_some());
+                assert!(passenger.lifecycle.cell_marked && passenger.in_logic_vector);
+                assert!(!passenger.passenger_role.is_inside_transport());
+                assert_eq!(
+                    sim.sound_events
+                        .iter()
+                        .filter(|event| matches!(event, SimSoundEvent::ChuteSound { .. }))
+                        .count(),
+                    1
+                );
+            }
+        }
     }
 }
