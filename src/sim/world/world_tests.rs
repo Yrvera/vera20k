@@ -488,7 +488,18 @@ Naval=yes
 ",
     );
     let mut rules = RuleSet::from_ini(&ini).expect("drive boat rules should parse");
-    rules.set_effect_frame_count_for_test("WAKE1", 5, 5);
+    // Stock artmd.ini [WAKE1]: ground layer, sorted under the hull.
+    rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(
+        "[WAKE1]
+Layer=ground
+YSortAdjust=-288
+Translucent=yes
+Rate=120
+",
+    )));
+    rules
+        .art_registry
+        .bind_anim_frame_count_for_test("WAKE1", 15);
     let mut sim = Simulation::new();
     let boat_id = sim
         .spawn_object("BOAT", "Americans", 0, 0, 64, &rules, &empty_heights())
@@ -501,32 +512,20 @@ Naval=yes
         cell.yr_cell_land_type = crate::rules::terrain_rules::LandType::Water.as_index();
     }
     sim.resolved_terrain = Some(terrain);
-    let boat = sim
-        .substrate
-        .entities
-        .get_mut(boat_id)
-        .expect("boat entity");
-    boat.movement_target = Some(MovementTarget {
-        path: vec![(0, 0), (1, 0)],
-        path_layers: vec![MovementLayer::Ground, MovementLayer::Ground],
-        next_index: 1,
-        speed: SimFixed::from_num(1),
-        current_speed: SimFixed::from_num(1),
-        move_dir_x: SimFixed::from_num(256),
-        move_dir_y: SIM_ZERO,
-        move_dir_len: SimFixed::from_num(256),
-        ..Default::default()
-    });
-    // The native gate is the locomotor's `Is_Moving_Now` slot: a live
-    // destination/head-to coordinate and a positive owner speed.
     {
+        let boat = sim
+            .substrate
+            .entities
+            .get_mut(boat_id)
+            .expect("boat entity");
+        // The native gate is the locomotor's `Is_Moving_Now` slot: a live
+        // destination/head-to coordinate and a positive owner speed. BOAT's
+        // drive runtime is created lazily by the first movement step, so seed it.
         let ahead = crate::sim::components::DriveCoord {
             x: 256 + 128,
             y: 128,
             z: 0,
         };
-        // BOAT carries no Locomotor= key, so it runs the drive family; its
-        // runtime is created lazily by the first movement step, so seed it.
         let drive = boat
             .drive_locomotion
             .get_or_insert_with(crate::sim::components::DriveLocomotionRuntime::default);
@@ -540,25 +539,36 @@ Naval=yes
     // frame the native cadence accepts.
     assert_eq!(sim.session.binary_frame % 10, 0);
     sim.spawn_wakes_for_frame(&rules);
-    let wake = sim.world_effects.first().expect("wake effect").clone();
+
+    let wake_anims: Vec<u64> = sim
+        .tactical_registration_order()
+        .iter()
+        .copied()
+        .filter(|id| {
+            sim.anim(*id)
+                .is_some_and(|anim| sim.interner.resolve(anim.type_id) == "WAKE1")
+        })
+        .collect();
+    assert_eq!(wake_anims.len(), 1, "one wake AnimClass per moving boat");
+    let wake = sim.anim(wake_anims[0]).expect("wake anim");
     // Exact lepton position, not the cell centre (native `PositionCoord`).
-    let boat_after = sim.substrate.entities.get(boat_id).expect("boat");
-    assert_eq!(
-        (wake.rx, wake.ry),
-        (boat_after.position.rx, boat_after.position.ry)
+    let boat = sim.substrate.entities.get(boat_id).expect("boat");
+    let expected = crate::sim::anim_class::AnimWorldCoord::from_cell_sub_z(
+        boat.position.rx,
+        boat.position.ry,
+        boat.position.sub_x,
+        boat.position.sub_y,
+        boat.position.z,
     );
     assert_eq!(
-        (wake.sub_x, wake.sub_y),
-        (boat_after.position.sub_x, boat_after.position.sub_y)
+        (wake.world_coord.x, wake.world_coord.y),
+        (expected.x, expected.y)
     );
-    // Stationary (owner speed 0) or off-cadence frames spawn nothing.
-    sim.world_effects.clear();
+    assert_eq!(wake.draw_flags, 0x600);
+
+    // Off-cadence frames and a unit that is not moving now spawn nothing.
     sim.session.binary_frame = 5;
     sim.spawn_wakes_for_frame(&rules);
-    assert!(
-        sim.world_effects.is_empty(),
-        "off-cadence frame must not spawn"
-    );
     sim.session.binary_frame = 10;
     sim.substrate
         .entities
@@ -569,12 +579,18 @@ Naval=yes
         .expect("drive runtime")
         .owner_current_speed = 0;
     sim.spawn_wakes_for_frame(&rules);
-    assert!(
-        sim.world_effects.is_empty(),
-        "a unit that is not moving now casts no wake"
+    let count_after = sim
+        .tactical_registration_order()
+        .iter()
+        .filter(|id| {
+            sim.anim(**id)
+                .is_some_and(|a| sim.interner.resolve(a.type_id) == "WAKE1")
+        })
+        .count();
+    assert_eq!(
+        count_after, 1,
+        "off-cadence or stationary must not add wakes"
     );
-    assert_eq!(sim.interner.resolve(wake.shp_name), "WAKE1");
-    assert_eq!(wake.total_frames, 5);
 }
 
 #[test]
