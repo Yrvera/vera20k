@@ -18,7 +18,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::lighting;
 use crate::map::terrain::{TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
-use crate::render::draw_state::{DrawState, ObserverDrawContext};
+use crate::render::draw_state::{DrawState, FX_SHADOW, ObserverDrawContext};
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::unit_atlas::{
     UnitSpriteEntry, UnitSpriteKey, VxlLayer, canonical_turret_facing, canonical_unit_facing,
@@ -260,15 +260,21 @@ pub(crate) fn build_unit_instances(
     ground_objects: &mut Vec<PlannedGroundObjectInstance>,
     ground_order: &NativeGroundOrder,
 ) {
-    let (sim, atlas) = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.unit_atlas) {
+    let (sim, atlas) = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.unit_atlas,
+    ) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
     let z = state.match_state.input.zoom_level;
     // Presentation runs after the just-completed simulation frame; snapshot
     // the one binary frame used by every Drive/Ship Draw_Matrix in this pass.
-    let display_binary_frame =
-        display_binary_frame_for_committed_session(sim.session.binary_frame);
+    let display_binary_frame = display_binary_frame_for_committed_session(sim.session.binary_frame);
     let (cam_x, cam_y, sw, sh) = (
         state.match_state.input.camera_x,
         state.match_state.input.camera_y,
@@ -278,10 +284,10 @@ pub(crate) fn build_unit_instances(
     let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|o| sim.interner.get(o));
     let ignore_visibility = state.match_state.sandbox_full_visibility;
-    let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.rules().map(|rules| &rules.art_registry);
+    let art_reg: Option<&crate::rules::art_data::ArtRegistry> =
+        state.rules().map(|rules| &rules.art_registry);
 
-    let encounter_order =
-        super::helpers::tactical_entity_encounter_order(sim, state.rules());
+    let encounter_order = super::helpers::tactical_entity_encounter_order(sim, state.rules());
     for stable_id in encounter_order {
         let Some(entity) = sim.entities().get(stable_id) else {
             continue;
@@ -298,7 +304,8 @@ pub(crate) fn build_unit_instances(
         // miner dock sub-FSM's UnloadingClass (HORV/CMON) hint.
         let active_disguise = entity.disguise.as_ref().filter(|state| state.disguised);
         let base_type = sim.interner.resolve(entity.type_ref());
-        let no_spawn_alt = state.rules()
+        let no_spawn_alt = state
+            .rules()
             .and_then(|rules| rules.object(base_type))
             .is_some_and(|object| object.no_spawn_alt);
         let no_spawn_alt_type =
@@ -325,7 +332,9 @@ pub(crate) fn build_unit_instances(
             .map(|id| sim.interner.resolve(id))
             .unwrap_or(owner_str);
         let hc: HouseColorIndex = state
-            .match_state.match_presentation.house_color_map
+            .match_state
+            .match_presentation
+            .house_color_map
             .get(remap_owner)
             .copied()
             .unwrap_or_default();
@@ -362,9 +371,11 @@ pub(crate) fn build_unit_instances(
             state.match_state.match_presentation.lighting.grid(),
             (pos.rx, pos.ry),
             entity.category,
-            state.rules()
+            state
+                .rules()
                 .map_or(0, |rules| rules.general.extra_unit_light),
-            state.rules()
+            state
+                .rules()
                 .map_or(0, |rules| rules.general.extra_aircraft_light),
         );
         let center_x: f32 = sx;
@@ -453,6 +464,24 @@ pub(crate) fn build_unit_instances(
             {
                 let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1] + dock_depth_y_offset;
                 let depth: f32 = body_sort_depth(state, entity, band, depth_y, interp_z);
+                emit_unit_shadow_sprite(
+                    target_instances,
+                    target_instance_pages,
+                    atlas,
+                    entity,
+                    type_str,
+                    center_x,
+                    center_y,
+                    depth,
+                    draw_state,
+                    slope_state,
+                    transition_instances,
+                    bridge_transition_instances,
+                    is_bridge_unit,
+                    band,
+                    collect_ground,
+                    &mut ground_pieces,
+                );
                 let sprite = SpriteInstance {
                     position: [center_x + entry.offset_x, center_y + entry.offset_y],
                     size: entry.pixel_size,
@@ -513,7 +542,8 @@ pub(crate) fn build_unit_instances(
                 z: i32::from(pos.z),
             };
             let parent = if entity.category == EntityCategory::Structure {
-                state.rules()
+                state
+                    .rules()
                     .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref())))
                     .and_then(|object_type| {
                         ground_order.building_object_draw(
@@ -673,8 +703,11 @@ fn unit_entry_for_slope_state(
 ) -> Option<(UnitSpriteEntry, UnitTextureSource)> {
     if let Some(transition_key) = transition_key_for_unit(key, slope_state) {
         if let Some(asset_manager) = state.process_assets.manager() {
-            if let Some(TransitionUnitSpriteEntry { page, entry }) =
-                state.renderer.vxl_slope_transition_cache.borrow_mut().get_or_render(
+            if let Some(TransitionUnitSpriteEntry { page, entry }) = state
+                .renderer
+                .vxl_slope_transition_cache
+                .borrow_mut()
+                .get_or_render(
                     &state.renderer.gpu,
                     &state.renderer.batch_renderer,
                     asset_manager,
@@ -702,6 +735,86 @@ fn push_transition_sprite(
         transition_instances.resize_with(page + 1, Vec::new);
     }
     transition_instances[page].push(sprite);
+}
+
+/// The hull's ground shadow as one more piece of the unit's draw.
+///
+/// Natively the shadow is the *last* call of `UnitClass::DrawVoxelBody`
+/// (0x0073C5C4, after every `Draw_Voxel` and the composite blit) and its
+/// blitter is Z-tested against the body's depth, so the hull is never darkened
+/// by its own shadow. This pipeline writes no depth for sprites, so the same
+/// result is had by emitting the shadow first and letting the body paint over
+/// it. `Techno_Draw_Voxel_Shadow` (0x00706BD0) returns for any cloak state,
+/// so cloaking, cloaked and uncloaking units cast none. Ground-band vehicles
+/// and ships only: aircraft shadows follow FlyLocomotion's own matrix and drop
+/// point, which are not modelled yet, and structures' voxel turrets cast none.
+/// The stencil lives in the unit atlas under `VxlLayer::Shadow` (frame 0, same
+/// facing and slope as the body) and is drawn through the voxel pipeline with
+/// `FX_SHADOW`, untinted.
+///
+/// Residual (VERA-internal, gamemd equivalent UNCHECKED): with no depth
+/// writes, a later unit's shadow darkens any earlier unit's body it overlaps;
+/// whether the native Z-tested shadow blit would also darken a farther body
+/// depends on the body blit's Z writes, which were not read.
+#[allow(clippy::too_many_arguments)]
+fn emit_unit_shadow_sprite(
+    stable_instances: &mut Vec<SpriteInstance>,
+    stable_instance_pages: &mut Vec<usize>,
+    atlas: &crate::render::unit_atlas::UnitAtlas,
+    entity: &crate::sim::game_entity::GameEntity,
+    type_id: &str,
+    center_x: f32,
+    center_y: f32,
+    depth: f32,
+    draw_state: DrawState,
+    slope_state: UnitRenderSlopeState,
+    transition_instances: &mut Vec<Vec<SpriteInstance>>,
+    bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
+    is_bridge_unit: bool,
+    band: EntityDrawBand,
+    collect_ground: bool,
+    ground_pieces: &mut Vec<GroundPieceInstance>,
+) {
+    if entity.category != EntityCategory::Unit || band != EntityDrawBand::Ground {
+        return;
+    }
+    if draw_state.fx_flags & crate::render::draw_state::FX_CLOAK != 0 {
+        return;
+    }
+    let key = UnitSpriteKey {
+        type_id: type_id.to_string(),
+        facing: canonical_unit_facing(entity.facing),
+        layer: VxlLayer::Shadow,
+        frame: 0,
+        slope_type: stable_slope_for_key(slope_state),
+    };
+    let Some(entry) = atlas.get(&key).copied() else {
+        return;
+    };
+    let mut shadow_state: DrawState = draw_state;
+    shadow_state.fx_flags |= FX_SHADOW;
+    let sprite = SpriteInstance {
+        position: [center_x + entry.offset_x, center_y + entry.offset_y],
+        size: entry.pixel_size,
+        uv_origin: entry.uv_origin,
+        uv_size: entry.uv_size,
+        depth,
+        tint: lighting::DEFAULT_TINT,
+        alpha: 1.0,
+        draw_state: shadow_state,
+        ..Default::default()
+    };
+    push_unit_sprite(
+        stable_instances,
+        stable_instance_pages,
+        transition_instances,
+        bridge_transition_instances,
+        is_bridge_unit,
+        UnitTextureSource::Stable(entry.page),
+        sprite,
+        collect_ground,
+        ground_pieces,
+    );
 }
 
 fn push_unit_sprite(
@@ -814,6 +927,27 @@ fn emit_turret_unit_sprites(
         None => center_y + dock_depth_y_offset,
     };
     let entity_depth: f32 = body_sort_depth(state, entity, band, entity_depth_y, z);
+
+    // The hull's ground shadow goes down first, then body, turret, barrel (see
+    // `emit_unit_shadow_sprite` for why first rather than the native last).
+    emit_unit_shadow_sprite(
+        instances,
+        instance_pages,
+        atlas,
+        entity,
+        type_id,
+        center_x,
+        center_y,
+        entity_depth,
+        draw_state,
+        slope_state,
+        transition_instances,
+        bridge_transition_instances,
+        is_bridge_unit,
+        band,
+        collect_ground,
+        ground_pieces,
+    );
 
     // Emit body first (always). Uses frame fallback for mismatched HVA counts.
     if let Some((entry, texture_source)) = body_entry_opt {
@@ -1117,7 +1251,9 @@ mod tests {
         sim.substrate.entities.insert(entity);
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "slope display selector", 3);
-        let restored = GameSnapshot::load(&bytes).expect("current slope snapshot").sim;
+        let restored = GameSnapshot::load(&bytes)
+            .expect("current slope snapshot")
+            .sim;
         let display_binary_frame =
             display_binary_frame_for_committed_session(restored.session.binary_frame);
         assert_eq!(display_binary_frame, 50);

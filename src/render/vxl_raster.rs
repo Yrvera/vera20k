@@ -366,6 +366,9 @@ fn axis_order(size: u8, depth_contribution: f32) -> AxisIter {
 pub struct LimbRenderData {
     pub grid: Vec<PackedVoxel>,
     pub combined: Mat4,
+    /// `slope × body facing × section` — the draw matrix before the camera,
+    /// kept so the shadow bake can flatten in world space.
+    pub model_to_world: Mat4,
     pub vpl_pages: [u8; 256],
     pub normals_mode: u8,
     pub size_x: u8,
@@ -545,6 +548,7 @@ pub fn prepare_limb_data(
         limb_data.push(LimbRenderData {
             grid,
             combined,
+            model_to_world: slope_mat * body_facing * section_transform,
             vpl_pages,
             normals_mode: limb.normals_mode,
             size_x: limb.size_x,
@@ -554,6 +558,137 @@ pub fn prepare_limb_data(
     }
 
     (limb_data, max_footprint)
+}
+
+/// Stencil value written for shadow pixels; the voxel sprite shader only tests
+/// non-zero when `FX_SHADOW` is set, so the value itself is not a palette index.
+pub const SHADOW_STENCIL_INDEX: u8 = 1;
+
+/// Screen-space shift of the shadow footprint, in pixels.
+///
+/// `VXL_LightDirection_Setup` (0x00754C00) stores, next to the light vector,
+/// `(-6 × light.x, 0, 0)` at 0x00887420 (constant -6.0 at 0x007F6950): the
+/// voxel shadow light vector. With the binary's light.x = -0.5 that is
+/// (3, 0, 0), added to every flattened corner after the camera transform and
+/// before the Y flip in `VXL_Submit_Billboard` (0x00753F90), i.e. three pixels
+/// to the right. Kept as the binary's constant rather than derived from this
+/// renderer's fitted light, whose frame differs (see `vxl_normals`).
+const SHADOW_LIGHT_OFFSET_PX: f32 = 3.0;
+
+/// Ground shadow of a voxel model, the way gamemd draws it.
+///
+/// Native chain: `UnitClass::DrawVoxelBody` (0x0073B470) ends with the shadow
+/// call at 0x0073C5C4 -> `Techno_Draw_Voxel_Shadow` (0x00706BD0; returns for
+/// any cloak state at +0x220 or `NoShadow` at Type+0xD98) ->
+/// `Techno_Render_Voxel_Shadow` (0x00707280), which submits only the hull
+/// voxel (`Type+0xB0`, layer `Type+0x7FC`) with matrix
+/// `IsoView x Shadow_Matrix x HVA(layer, frame 0)`. `Shadow_Matrix`
+/// (Drive 0x004B0410 / Ship, both through `Build_Shadow_Matrix` 0x0055A7D0)
+/// is `VXL_GetFacingMatrix(cell slope byte) x RotateZ(facing quantised to
+/// 32)`: the ordinary draw matrix, no interpolation. `VXL_Submit_Billboard`
+/// (0x00753F90) pushes the section's four z-min bounding-box corners
+/// (tailer +0x40..+0x64) through that matrix, zeroes Z (a no-op for the
+/// screen x/y once the iso view is inside the matrix), transforms by
+/// 0x00887430 (identity), adds the shadow light vector and negates Y;
+/// `VXL_Quad_Rasterizer` (0x00756860) then walks the section's (x, y)
+/// columns (tailer +0xA0/+0xA1, never Z), writing a stencil for every column
+/// whose span table is not -1, mapped by the parallelogram of those corners.
+/// No lighting. The blit halves the encoded 16-bit destination word
+/// (`Blitter_selector(0x2001)` -> 0x00492D20 / cached 0x00496820,
+/// `dst = (dst >> 1) & mask`, Z-tested).
+///
+/// So the native shadow is the hull's bottom face projected through the full
+/// draw matrix: on flat ground a flat footprint, on a ramp a parallelogram
+/// lying on the ramp. This renderer does the same: `camera x model_to_world`
+/// applied to each occupied column's `(x, y, 0)` grid point (grid z = 0 is the
+/// z-min face), shifted by `SHADOW_LIGHT_OFFSET_PX`, plotted with the body's
+/// fill rectangle. Turret and barrel are not part of it; neither is any
+/// `ConsideredAircraft` half-scale (0x00707319, unmodelled) or `NoShadow`
+/// (no stock ground-band user).
+pub fn render_vxl_shadow(
+    vxl: &VxlFile,
+    hva: Option<&HvaFile>,
+    params: &VxlRenderParams,
+) -> VxlSprite {
+    let (limbs, _) = prepare_limb_data(vxl, hva, params);
+    if limbs.is_empty() {
+        return VxlSprite {
+            palette_indices: vec![0u8; 4],
+            depth: Vec::new(),
+            width: 2,
+            height: 2,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        };
+    }
+    let scale: f32 = params.scale;
+    let shift: Mat4 = Mat4::from_translation(Vec3::new(SHADOW_LIGHT_OFFSET_PX, 0.0, 0.0));
+    let camera: Mat4 = voxel_camera_view();
+
+    // Bottom-face limbs: same grids, the full draw matrix, one voxel of height
+    // so the shared bounds routine measures the z-min face's parallelogram.
+    let flat: Vec<LimbRenderData> = limbs
+        .iter()
+        .map(|ld| LimbRenderData {
+            grid: Vec::new(),
+            combined: shift * camera * ld.model_to_world,
+            model_to_world: ld.model_to_world,
+            vpl_pages: ld.vpl_pages,
+            normals_mode: ld.normals_mode,
+            size_x: ld.size_x,
+            size_y: ld.size_y,
+            size_z: 1,
+        })
+        .collect();
+    let mut max_footprint: f32 = 1.0;
+    for ld in &flat {
+        max_footprint = max_footprint.max(compute_voxel_footprint(&ld.combined, scale));
+    }
+    let bounds: SpriteBounds = compute_sprite_bounds(&flat, scale, max_footprint);
+    let width: u32 = bounds.width;
+    let height: u32 = bounds.height;
+    let mut stencil: Vec<u8> = vec![0u8; (width * height) as usize];
+    let fill_size: i32 = bounds.fill_size;
+    let half_fill: i32 = bounds.half_fill;
+
+    for (src, ld) in limbs.iter().zip(flat.iter()) {
+        let sy: usize = src.size_y as usize;
+        let sz: usize = src.size_z as usize;
+        for ix in 0..src.size_x {
+            for iy in 0..src.size_y {
+                let base: usize = ix as usize * sy * sz + iy as usize * sz;
+                if !src.grid[base..base + sz].iter().any(|&v| v != 0) {
+                    continue;
+                }
+                let world: Vec3 = ld
+                    .combined
+                    .transform_point3(Vec3::new(ix as f32, iy as f32, 0.0));
+                let sx_fp: i32 = (world.x * scale * FP_SCALE) as i32;
+                let sy_fp: i32 = (-world.y * scale * FP_SCALE) as i32;
+                let px: i32 = (sx_fp + bounds.buf_off_x_fp) >> FP_SHIFT;
+                let py: i32 = (sy_fp + bounds.buf_off_y_fp) >> FP_SHIFT;
+                for dy in -half_fill..=(fill_size - 1 - half_fill) {
+                    for dx in -half_fill..=(fill_size - 1 - half_fill) {
+                        let fx: i32 = px + dx;
+                        let fy: i32 = py + dy;
+                        if fx < 0 || fy < 0 || fx >= width as i32 || fy >= height as i32 {
+                            continue;
+                        }
+                        stencil[fy as usize * width as usize + fx as usize] = SHADOW_STENCIL_INDEX;
+                    }
+                }
+            }
+        }
+    }
+
+    VxlSprite {
+        palette_indices: stencil,
+        depth: Vec::new(),
+        width,
+        height,
+        offset_x: bounds.offset_x,
+        offset_y: bounds.offset_y,
+    }
 }
 
 /// Compute the sprite bounding box from precomputed limb transforms.
@@ -947,6 +1082,88 @@ mod tests {
         let truly_empty: PackedVoxel = 0;
         assert_eq!(unpack_color(truly_empty), 0);
         assert_eq!(unpack_normal(truly_empty), 0);
+    }
+
+    #[test]
+    fn shadow_marks_every_occupied_column_and_nothing_else() {
+        // The fixture has voxels in columns (1,1) and (0,0) only; the shadow is
+        // those two columns flattened, shifted right, and nothing more.
+        let vxl: VxlFile = make_test_vxl();
+        let params: VxlRenderParams = VxlRenderParams::default();
+        let shadow: VxlSprite = render_vxl_shadow(&vxl, None, &params);
+        let lit: usize = shadow.palette_indices.iter().filter(|&&b| b != 0).count();
+        assert!(lit > 0, "shadow must have pixels");
+        assert!(
+            shadow
+                .palette_indices
+                .iter()
+                .all(|&b| b == 0 || b == SHADOW_STENCIL_INDEX),
+            "shadow bytes are a stencil, not palette indices"
+        );
+        assert!(shadow.depth.is_empty());
+
+        // A model with an empty column casts nothing there: on a wider grid
+        // (8x8x2, columns (0,0) and (7,7) far apart on screen) removing the
+        // (0,0) voxel must shrink the shadow.
+        let mut wide: VxlFile = make_test_vxl();
+        {
+            let limb = &mut wide.limbs[0];
+            limb.size_x = 8;
+            limb.size_y = 8;
+            limb.bounds = [-4.0, -4.0, -1.0, 4.0, 4.0, 1.0];
+            limb.voxels[0].x = 7;
+            limb.voxels[0].y = 7;
+        }
+        let shadow_wide: VxlSprite = render_vxl_shadow(&wide, None, &params);
+        let lit: usize = shadow_wide
+            .palette_indices
+            .iter()
+            .filter(|&&b| b != 0)
+            .count();
+        let mut one: VxlFile = make_test_vxl();
+        {
+            let limb = &mut one.limbs[0];
+            limb.size_x = 8;
+            limb.size_y = 8;
+            limb.bounds = [-4.0, -4.0, -1.0, 4.0, 4.0, 1.0];
+            limb.voxels[0].x = 7;
+            limb.voxels[0].y = 7;
+            limb.voxels.retain(|v| !(v.x == 0 && v.y == 0));
+        }
+        let shadow_one: VxlSprite = render_vxl_shadow(&one, None, &params);
+        let lit_one: usize = shadow_one
+            .palette_indices
+            .iter()
+            .filter(|&&b| b != 0)
+            .count();
+        assert!(lit_one < lit, "{lit_one} vs {lit}");
+    }
+
+    #[test]
+    fn shadow_is_the_bottom_face_through_the_draw_matrix_shifted_right() {
+        // Each occupied column's shadow point is its (x, y, 0) grid point through
+        // camera x model_to_world, plus 3 px right: on a slope the footprint
+        // follows the ramp because the slope matrix is inside model_to_world.
+        let vxl: VxlFile = make_test_vxl();
+        let flat_params: VxlRenderParams = VxlRenderParams::default();
+        let ramp_params: VxlRenderParams = VxlRenderParams {
+            slope_type: 4,
+            ..VxlRenderParams::default()
+        };
+        let (flat_limbs, _) = prepare_limb_data(&vxl, None, &flat_params);
+        let (ramp_limbs, _) = prepare_limb_data(&vxl, None, &ramp_params);
+        let m_flat: Mat4 = voxel_camera_view() * flat_limbs[0].model_to_world;
+        let m_ramp: Mat4 = voxel_camera_view() * ramp_limbs[0].model_to_world;
+        let p_flat: Vec3 = m_flat.transform_point3(Vec3::new(1.0, 1.0, 0.0));
+        let p_ramp: Vec3 = m_ramp.transform_point3(Vec3::new(1.0, 1.0, 0.0));
+        assert!(
+            (p_flat.y - p_ramp.y).abs() > 1e-4,
+            "the ramp must move the bottom face on screen"
+        );
+        let shifted: Mat4 =
+            Mat4::from_translation(Vec3::new(SHADOW_LIGHT_OFFSET_PX, 0.0, 0.0)) * m_flat;
+        let sp: Vec3 = shifted.transform_point3(Vec3::new(1.0, 1.0, 0.0));
+        assert!((sp.x - p_flat.x - 3.0).abs() < 1e-5 && (sp.y - p_flat.y).abs() < 1e-5);
     }
 
     #[test]

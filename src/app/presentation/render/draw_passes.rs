@@ -139,14 +139,14 @@ pub(super) fn dispatch_draw_passes(
 
     // --- Step 3.5: Overlay shadows — bridge decks ---
     //
-    // **This is the only shadow pass in the renderer.** GSI-13.11 covers three
-    // — ground, object and voxel — and the other two do not exist: a
-    // repo-wide search finds no shadow instance emission for infantry,
-    // vehicles, buildings or aircraft, and no voxel shadow in any shader. So
-    // every tank, soldier, structure and plane in an ordinary skirmish is
-    // missing its ground shadow. Recorded, not closed. Trigger: every frame
-    // with any unit or building on screen. Player effect: the scene reads flat
-    // against retail, which shadows every object. Frequency: continuous.
+    // **This is the only separate shadow pass in the renderer.** GSI-13.11
+    // covers three — ground, object and voxel. Voxel ground vehicles and ships
+    // now cast their shadow as the first piece of their own draw (see
+    // `instances::units::emit_unit_shadow_sprite`, `VxlLayer::Shadow`).
+    // Still missing: infantry and SHP vehicle shadow halves, building shadows,
+    // and aircraft (FlyLocomotion shadow matrix/point). Recorded, not closed.
+    // Trigger: every frame with such an object on screen. Player effect: those
+    // objects read flat against retail. Frequency: continuous.
     // Downstream risk: the SHP-blitter contract the bridge path already honours
     // (1-bit stencil half, composited darken) is the shape the object pass has
     // to reuse, and `BRIDGE_SHADOW_DARKEN_ALPHA` already carries its own

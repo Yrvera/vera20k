@@ -145,6 +145,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         discard;
     }
 
+    // Ground shadow stencil (FX_SHADOW = 1 << 6): every non-zero atlas byte
+    // darkens the destination. The native darken blitter halves the encoded
+    // 16-bit word; this pass alpha-blends black in linear space against an
+    // sRGB target, so the alpha that halves an encoded value is
+    // 1 - 0.5^2.2 = 0.782 rather than 0.5 (the bridge shadow's 128/255 is a
+    // recorded lighter drift; this path takes the closer value).
+    if ((in.fx_flags & 64u) != 0u) {
+        return vec4f(0.0, 0.0, 0.0, 0.782 * in.alpha);
+    }
+
     // RGB substitution: bytes in [16, 32) sample the per-house ramp; all
     // others sample the theater palette directly.
     var rgb: vec3f;
