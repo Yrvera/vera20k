@@ -704,6 +704,40 @@
         "Special damaged-wall/ToTile/LaserFence/gate exceptions, delayed-command rejection UI/EVA, and active-retail input/pixel comparison remain explicit residuals."
       ]
     },
+    "GSI-11.08": {
+      "native_anchors": [
+        {
+          "symbol": "SuperClass::Launch GeneticConverter per-cell selection",
+          "address": "0x006CD954",
+          "evidence": "docs/research/SUPERWEAPON_LAUNCH_HANDLERS_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/superweapon/genetic_converter/mutation.rs",
+          "symbol": "execute / apply_mutate_per_cell / apply_mutate_explosion",
+          "coverage": "representative",
+          "observed_at_commit": "bb479d3b6231084bff81687b4f340ca96664e2fd"
+        },
+        {
+          "path": "src/sim/superweapon/cell_grid.rs",
+          "symbol": "native_cells_3x3 / selected_cell_list",
+          "coverage": "representative",
+          "observed_at_commit": "bb479d3b6231084bff81687b4f340ca96664e2fd"
+        },
+        {
+          "path": "src/sim/superweapon/cell_receiver_tests.rs",
+          "symbol": "Genetic LaunchSuperWeapon command regressions",
+          "coverage": "representative",
+          "observed_at_commit": "bb479d3b6231084bff81687b4f340ca96664e2fd"
+        }
+      ],
+      "notes": [
+        "One private mutation operation owns selection, completion of the original receiver batch, killed-position observation and all replacement attempts. Launch receives only the completed count. Per-cell recipients come from canonical marked cell membership and selected bridge/ground lists; held/unmarked coordinates no longer confer eligibility.",
+        "Retains current stable-ID per-cell snapshot order, AoE receiver order, collateral-only exclusion from replacements and immediate BRUTE owner/facing/Z/failure policy. Production commands cover held factory state, bridge membership, original victims, aliases, dummy lookup, missing replacement type and recursive damage before admission. The unused saturating iterator and its four tests were removed.",
+        "Infantry terminal disposition remains open: represented raw mutation and animated shared InfDeath9 can retain looping Stand. Native receiver policy, deferred AnimToInfantry and full airborne Crash parity are not established by this bounded membership/admission change."
+      ]
+    },
     "GSI-11.04": {
       "native_anchors": [
         {
