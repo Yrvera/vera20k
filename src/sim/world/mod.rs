@@ -159,9 +159,9 @@ pub struct TickResult {
     /// An entity's owner changed (garrison reconciliation, engineer capture) — sprite
     /// atlas needs rebuild for the new house color.
     pub ownership_changed: bool,
-    /// A bridge cell transitioned to `DamageState::Destroyed` this tick; the
-    /// frame finalizer publishes the collapsed navigation snapshot for the next
-    /// tick. Matches gamemd's one-tick-delayed visibility.
+    /// Bridge state changed this tick. Mutation owners publish navigation at
+    /// their synchronous reader boundary; the frame finalizer also rebuilds
+    /// the projection before committing the frame for subsequent ticks.
     pub bridge_state_changed: bool,
     pub movement: movement::MovementTickStats,
 }
@@ -2346,23 +2346,10 @@ impl Simulation {
             );
         }
 
-        let mut navigation_changed_cells = self
-            .overlay_grid
-            .as_mut()
-            .map(|grid| grid.take_synchronous_navigation_cells())
-            .unwrap_or_default();
-        for cell in terrain_navigation_changed_cells {
-            if !navigation_changed_cells.contains(&cell) {
-                navigation_changed_cells.push(cell);
-            }
-        }
-        if !navigation_changed_cells.is_empty() {
-            let prior_path_grid = self.path_grid.as_deref().cloned();
-            let _ = self.refresh_navigation_after_terrain_changes(
-                prior_path_grid.as_ref(),
-                &navigation_changed_cells,
-            );
-        }
+        let _ = self.finish_terrain_navigation_changes(
+            None,
+            &terrain_navigation_changed_cells,
+        );
 
         for building in &effects.destroyed_crewed_buildings {
             production::eject_destruction_survivors(
@@ -5034,6 +5021,35 @@ impl Simulation {
         .rebuild_zones_full(path_grid, terrain, self.bridge_state.as_ref());
     }
 
+    /// Consume terrain/overlay receipts at their existing world-reader boundary.
+    /// VERA-internal projection protocol, gamemd equivalent UNCHECKED. A pinned
+    /// pre-callback grid is only a fallback: bridge and wall callbacks may have
+    /// already published newer canonical navigation. Never rebuild over it from
+    /// a stale reader snapshot. The returned projection serves subsequent phases.
+    fn finish_terrain_navigation_changes(
+        &mut self,
+        fallback_path_grid: Option<&PathGrid>,
+        terrain_changed_cells: &[(u16, u16)],
+    ) -> Option<Arc<PathGrid>> {
+        let mut changed_cells = self
+            .overlay_grid
+            .as_mut()
+            .map(|grid| grid.take_synchronous_navigation_cells())
+            .unwrap_or_default();
+        for &cell in terrain_changed_cells {
+            if !changed_cells.contains(&cell) {
+                changed_cells.push(cell);
+            }
+        }
+        let canonical = self.path_grid_snapshot();
+        if changed_cells.is_empty() {
+            return canonical.or_else(|| fallback_path_grid.cloned().map(Arc::new));
+        }
+        let current = canonical.as_deref().or(fallback_path_grid);
+        self.refresh_navigation_after_terrain_changes(current, &changed_cells)?;
+        self.path_grid_snapshot()
+    }
+
     /// Refresh navigation authority after inline overlay mutation or terrain
     /// object destruction. The incoming grid carries dynamic structure and
     /// wall blockers, so only synchronously changed cells are replaced from the
@@ -6489,7 +6505,7 @@ impl Simulation {
         let mut spawned_entities = false;
         let mut destroyed_structure = false;
         let mut placed_building_owners = Vec::new();
-        let mut tail_path_grid: Option<PathGrid> = None;
+        let mut tail_path_grid: Option<Arc<PathGrid>> = None;
         // No command-boundary drain: command-applied deaths (sell, MCV/slave
         // deploy-undeploy, engineer capture) now stay in the Dying window like
         // combat deaths, freed only by the single end-of-tick drain — matching
@@ -6919,28 +6935,12 @@ impl Simulation {
                     overlay_registry,
                 );
             }
-            let mut navigation_changed_cells = self
-                .overlay_grid
-                .as_mut()
-                .map(|grid| grid.take_synchronous_navigation_cells())
-                .unwrap_or_default();
-            for cell in combat_result
-                .terrain_navigation_changed_cells
-                .iter()
-                .copied()
-            {
-                if !navigation_changed_cells.contains(&cell) {
-                    navigation_changed_cells.push(cell);
-                }
-            }
-            if !navigation_changed_cells.is_empty() {
-                tail_path_grid = self.refresh_navigation_after_terrain_changes(
-                    active_post_combat_path_grid,
-                    &navigation_changed_cells,
-                );
-            }
+            tail_path_grid = self.finish_terrain_navigation_changes(
+                active_post_combat_path_grid,
+                &combat_result.terrain_navigation_changed_cells,
+            );
             let post_terrain_path_grid = tail_path_grid
-                .as_ref()
+                .as_deref()
                 .or(active_post_combat_path_grid);
             // Apply RevealOnFire events from combat.
             for ev in &combat_result.reveal_events {
@@ -7217,7 +7217,7 @@ impl Simulation {
         // behavior-preserving.) Native-spine note: gamemd runs HouseClass updates
         // (incl. defeat) in the tail and commits the frame counter late; AI
         // placement is project-deferred and kept in its current slot.
-        let late_path_grid = tail_path_grid.as_ref().or(path_grid);
+        let late_path_grid = tail_path_grid.as_deref().or(path_grid);
         let frame_committed = self.run_late_region(
             if lane == TickLane::Ordinary {
                 commands
