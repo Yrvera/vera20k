@@ -1,7 +1,8 @@
-//! Command dispatch for the Simulation.
+//! Individual command payload behavior for the Simulation.
 //!
 //! Contains `apply_command()` and its helper methods: selection snapshots,
-//! ownership checks, and friendship queries. Split from world.rs for size.
+//! ownership checks, and friendship queries. `command_schedule` owns queue
+//! admission and scheduled batch order.
 //!
 //! Dependency rules: same as sim/ (depends on rules/, map/; never render/ui/audio/net).
 
