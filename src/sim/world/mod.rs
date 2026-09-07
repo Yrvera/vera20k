@@ -91,7 +91,7 @@ use crate::sim::bridge_state::{BridgeRuntimeState, DamageState};
 use crate::sim::combat;
 use crate::sim::combat::combat_weapon::WeaponSlot;
 use crate::sim::command::{Command, CommandEnvelope};
-use crate::sim::components::{Position, WorldEffect};
+use crate::sim::components::{AnimClassSpawnDescriptor, Position};
 use crate::sim::docking::aircraft_dock;
 use crate::sim::docking::building_dock;
 use crate::sim::entity_store::EntityStore;
@@ -5708,28 +5708,22 @@ impl Simulation {
         if wake_positions.is_empty() {
             return;
         }
-        let wake_name_str = &rules.general.wake.name;
-        let wake_rate = rules.general.wake.frame_delay;
-        let wake_frames = rules.effect_frame_count(wake_name_str).unwrap_or(8);
-        let wake_id = self.interner.intern(wake_name_str);
+        // `new AnimClass(Wake, &coord, 0, 1, 0x600, 0, 0)`: delay 0, one
+        // loop, draw flags 0x600, no ZAdjust, not reversed. Going through the
+        // AnimClass constructor puts the wake on the sorted ground layer with
+        // its art `YSortAdjust=-288`, so it sorts under the hull instead of
+        // over it.
+        let wake_name = self.interner.intern(&rules.general.wake.name);
         for (rx, ry, sub_x, sub_y, z) in wake_positions {
-            self.world_effects.push(WorldEffect {
-                anim_spawn: None,
-                shp_name: wake_id,
-                rx,
-                ry,
-                sub_x,
-                sub_y,
-                z,
-                frame: 0,
-                total_frames: wake_frames,
-                frame_delay: wake_rate,
-                elapsed_frames: 0,
-                translucent: true,
-                delay_frames: 0,
-                start_sound_id: None,
-                start_sound_emitted: false,
-            });
+            let descriptor = AnimClassSpawnDescriptor {
+                loop_count: 1,
+                draw_flags: WAKE_DRAW_FLAGS,
+                ..AnimClassSpawnDescriptor::new(wake_name, rx, ry, sub_x, sub_y, z)
+            };
+            let world = crate::sim::anim_class::AnimWorldCoord::from_cell_sub_z(rx, ry, sub_x, sub_y, z);
+            if let Err(error) = self.spawn_anim_at_world(rules, descriptor, world) {
+                log::debug!("wake [{}] did not construct: {error}", rules.general.wake.name);
+            }
         }
     }
 
@@ -6715,6 +6709,10 @@ mod radar_dirty_ack_tests;
 #[cfg(test)]
 #[path = "bridge_parity_harness_tests.rs"]
 mod bridge_parity_harness_tests;
+
+/// Draw flags the drive locomotor passes to the wake `AnimClass` constructor
+/// (0x004B0823 region: `PUSH 0x600`).
+const WAKE_DRAW_FLAGS: u32 = 0x600;
 
 /// The wake gate for one unit this frame: moving now, not on a bridge, on a
 /// cell whose `CellClass+0xEC` mirror is Water, anchored at its exact leptons.
