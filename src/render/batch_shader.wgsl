@@ -88,7 +88,37 @@ fn apply_fx(color: vec4f, _flags: u32, params: vec4f, effect_tint: vec4f) -> vec
     // branch mirrors the voxel shader so SHP and VXL share one DrawState ABI.
     // YR resolves selector opacity and invulnerability brightness before either
     // SHP or VXL submission. EMP and mirror deliberately remain no-op residuals.
-    return vec4f(color.rgb * effect_tint.rgb, color.a * params.x);
+    // Invulnerability/temporal brightness is folded into the gamma-space
+    // light multiply by the caller (natively 0x0070E380 scales the brightness
+    // argument itself, which selects the same LightConvert row); only opacity
+    // is applied here.
+    return vec4f(color.rgb, color.a * params.x);
+}
+
+
+// --- Map-light tint in the original's colour space -------------------------
+// gamemd lights a palette entry by scaling its 8-bit RGB bytes: LightConvert's
+// palette pass (FUN_00556090 -> FUN_007DE200 for RGB565) computes
+// (byte * scale16) >> 16 with scale16 = light_milli * 65536 / 1000 (three LEA x5
+// and a SHL 3 then the double 0.065536 at 0x007ED0B0) and clamps the product to
+// 255 before packing. That multiply happens on the palette bytes, i.e. in
+// sRGB-encoded space. These textures are sRGB-typed, so the sampled value is
+// already linear; multiplying it by the tint here would apply the light in
+// linear space, which reads as tint^(1/2.2) on screen (a 1.2 unit light became
+// ~1.09). Re-encode, scale, clamp, decode. The RGB565 quantisation that
+// follows natively is not modelled (DRIFT, sub-pixel colour).
+fn srgb_encode(c: vec3f) -> vec3f {
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(max(c, vec3f(0.0)), vec3f(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c <= vec3f(0.0031308));
+}
+fn srgb_decode(c: vec3f) -> vec3f {
+    let lo = c / 12.92;
+    let hi = pow((c + 0.055) / 1.055, vec3f(2.4));
+    return select(hi, lo, c <= vec3f(0.04045));
+}
+fn palette_light(rgb_linear: vec3f, tint: vec3f) -> vec3f {
+    return srgb_decode(clamp(srgb_encode(rgb_linear) * tint, vec3f(0.0), vec3f(1.0)));
 }
 
 @fragment
@@ -102,7 +132,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     // Map lighting happens before the shared DrawState effect branch, matching
     // the voxel fragment path. Alpha 1.0 = opaque; no draw state changes order.
     return apply_fx(
-        vec4f(color.rgb * input.tint, color.a * input.alpha),
+        vec4f(palette_light(color.rgb, input.tint * input.effect_tint.rgb), color.a * input.alpha),
         input.fx_flags,
         input.fx_params,
         input.effect_tint,
