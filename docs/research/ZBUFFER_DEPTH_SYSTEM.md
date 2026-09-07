@@ -57,7 +57,14 @@ if (base_z - zshape[x] < zbuffer[x]) { screen[x] = color; }   // zshape row is a
 | flags | standard slot -> vtable -> leaf | extended slot -> vtable -> leaf | Z behaviour |
 |---|---|---|---|
 | `0x6E00` (building body) | `+0xbc` -> `0x007e5630` -> `0x004958d0` | `+0x158` -> `0x007e53a0` -> `0x004990e0` | read, `<` test, **write** |
-| `0x2800` (`TechnoClass__Draw` `0x00706640` normal objects; VXL cache blit) | `+0x98` -> `0x007e56f0` -> `0x00494b60` | `+0x138` -> `0x007e5420` -> `0x00497fd0` | read, `<` test, no write |
+| `0x2E00` (`TechnoClass_DrawSHP` non-building callers: a8 != -1, a9 = 0, `0x800`, `0x600` ORed at `0x0070643b`) and `0x2800` (`TechnoClass__Draw` `0x00706640`; VXL cache blit) | `+0x98` -> `0x007e56f0` -> `0x00494b60` | `+0x138` -> `0x007e5420` -> `0x00497fd0` | read, `<` test, no write |
+
+Both selectors (`0x00490b90`, `0x00490e50`) reach these slots through
+`TEST [0x0081dc24]/[0x0081dc28], EAX` with both globals equal to `0x3000`
+(critic re-read 2026-09-07); `0x200` and `0x400` are never tested, so `0x2E00`
+and `0x2800` route identically. `Blitter_init 0x0048ebf0` fills the four slots
+only on its 16-bpp branch, which is why two of the leaves lack Ghidra function
+bodies.
 
 - `0x004990e0` (`ExtendedBlitter__RLEZero_RemapIntensity_ZReadWrite`) is the
   live building path: building SHPs such as GACNST.SHP are format 3 on every
@@ -79,8 +86,9 @@ if (base_z - zshape[x] < zbuffer[x]) { screen[x] = color; }   // zshape row is a
   pointer, and step base Z per scanline from the gradient table (section 4).
   The gradient is per row; the test is per pixel.
 - The `0x74/0x78/0x130` slots (cloak z-modes) and the `0x10c` slot
-  (`0x007e54d0` -> `0x00497100`, the extended selector's default arm) exist but
-  are not the normal-object path. The old "0x124 opaque, no Z" claim for z-mode
+  (`0x007e54d0` -> `0x00497100`, the extended selector's `0x4000`-set /
+  `0x800`-clear arm at `0x00490f45`; the true fallthrough arms are
+  `+0x124`/`+0xd0`) exist but are not the normal-object path. The old "0x124 opaque, no Z" claim for z-mode
   0 was also wrong: z-mode 0 reaches the slots in the table above.
 
 **Inferred (not re-traced in the same pass):**
@@ -89,12 +97,17 @@ if (base_z - zshape[x] < zbuffer[x]) { screen[x] = color; }   // zshape row is a
   building wrote a nearer Z (its tall parts) and visible beside its base. Units
   do not write Z, so units never occlude each other through the Z-buffer;
   unit-vs-unit order is the layer Y-sort (section 7).
-- The infantry SHP body draw site was not located in this pass, so its arg 8/9
-  values (0x4000, write-vs-test) are UNCHECKED. Direct `TechnoClass_DrawSHP`
-  callers found: `0x0043d030`, `0x0043d290`, `0x0043da80`, plus a wrapper at
-  `0x0041c0e0` (`CALL 0x00705e00; RET 0x40`) with no found references.
-  `vtable+0x43c` (gated by `HouseClass__IsHumanPlayer` and `vtable+0xc4`) can
-  replace the flag word and was not examined.
+- Infantry: `InfantryClass Draw_It 0x00518F90` calls `vtable+0x50c` at
+  `0x005195E2`; Infantry `+0x50c` = `0x0041c090`, which forwards all 16 args to
+  `0x00705e00` (`RET 0x40`). Pushes: a8 = 2, a9 = 0 (`0x005195b5`), a7 =
+  `[0x00825500]`, a12..a16 = 0, so no `0x4000` (section 4 table; critic
+  re-read 2026-09-07).
+- `vtable+0x43c` (Building `0x007e3ebc+0x43c` and Infantry alike) is
+  `TechnoClass__ModifyCloakDrawFlags 0x0070ED80`, gated by
+  `HouseClass__IsHumanPlayer` and `+0xc4` (`0x0041C010`, returns byte
+  `this+0x1d8`). It returns `flags`, `flags|2` or `flags|4` only: it can move a
+  human-owned object into the translucent slot family but cannot strip
+  `0x4000`/`0x2000`/`0x800`. Closed.
 - OpenTS (Tiberian Sun 2.03 reconstruction, `Documents\OpenTS`) has the same
   design: `BuildingClass::Draw_It` passes `zwrite = true` with the
   `BUILDNGZ.SHP` z-shape (`building.cpp:873-890`) and lands in
@@ -448,7 +461,9 @@ The gradient type flows from `BuildingClass::DrawBody` (param_9 = 2) through
 `TechnoClass::DrawSHP` to `CC_Draw_Shape` **param_11** (not param_10), then
 to `FUN_004373b0` param_9 (at `ESP+0x78` after stack setup). Verified from
 assembly at `0x00437415`: `LEA EDX,[EAX*0x8 + 0x817710]` where EAX comes
-from `ESP+0x78` = CC param_11. CC param_10 carries z_height (separate value).
+from `ESP+0x78` = CC param_11. CC param_10 carries z_height (separate value). (Ghidra's `param_N` here is
+stack slot N-1; section 1 names the same values "slot 7" (z) and "slot 8"
+(gradient).)
 **Buildings pass gradient type 2.**
 
 Entry 2 (used by buildings): going DOWN the sprite (top-to-bottom rendering),
@@ -508,8 +523,8 @@ a16 clear-mask. VXL draws go through `TechnoClass__Draw` (`0x00706640`,
 | Building body `0x0043D85F` (`0x0043D683` alt) | 2 / 1 / `g_BUILDNGZ_SHA` (null if `GetFoundationWidth() > 7`) | `0x6E00` | `+0xbc`/`+0x158` | read + write | body |
 | Building bib `0x0043D9C9` (`Type+0x1518`, gated `this+0x534 != 0`) | **0** / 1 / 0 (a7 = `-1 - AdjustForZ`) | `0x6E00` | same | read + write, gradient entry 0 | body |
 | Building damaged extras `0x0043D8E9` / `0x0043DA67` (`Type+0x14EC` / `+0x1504`) | 0 / 1 / 0 | `0x6E00` | same | read + write | body |
-| Infantry body (`InfantryClass Draw_It 0x00518F90`, call `0x005195E2`; locomotor path `0x00519286`) | **2** / 0 / 0, a16 = 0 | `0x2800` (+state bits) | `+0x98`/`+0x138` | read, no write | body (a8/a9); leaf per Overview |
-| Unit SHP, no turret (`0x0073CE0D`, call `0x0073CEAD`) | `vtable+0x2F0` result = locomotor `Z_Gradient` (`0x004DB0A0` → `loco+0x3C`, **default 2**) / 0 / 0; TooBig branch a8 = 0, a7 = -16 | `0x2800` | `+0x98` | read, no write | body |
+| Infantry body (`InfantryClass Draw_It 0x00518F90`, call `0x005195E2`; locomotor path `0x00519286`) | **2** / 0 / 0, a16 = 0 | `0x2E00` (`+2`/`+4` when `ModifyCloakDrawFlags` selects the translucent family) | `+0x98`/`+0x138` | read, no write | body (a8/a9, `+0x50c` = `0x0041c090`); leaf per Overview |
+| Unit SHP, no turret (`0x0073CE0D`, call `0x0073CEAD`) | `vtable+0x2F0` result = locomotor `Z_Gradient` (`0x004DB0A0` → `loco+0x3C`, **default 2**) / 0 / 0; TooBig branch a8 = 0, a7 = -16 | `0x2E00` | `+0x98` | read, no write | body |
 | Unit SHP with turret (`0x0073CC36` body, `0x0073CD08` turret) | 0 / 0 / 0 with a16 = `0x2800`/`0x2820` → flags `0x620`/`0x600` | into temp surface `DAT_00B1D13C` (`g_PrimarySurface` swapped at `0x0073C7C3`) | `+0x08`/`+0x0C` | no Z while compositing; the composite blit (`vtable+0x55C` = `0x0073B140`) uses `0x2800` → `+0x98` | body |
 | Unit VXL body/turret (`UnitClass__DrawVoxelBody 0x0073B470` → `+0x510` → `0x00706640`) | a10 mask `0x2800` → Draw flags 0 (or 4/6) | temp surface | `+0x0C` | Z applied only by the composite `0x0073B140`: `0x2800` → `+0x98`, read, no write | body; leftover push count inferred |
 | Aircraft (`AircraftClass__Draw_It 0x004144B0` → `+0x510`) | Draw a8 = `cell+0x10A + Rules+0x17DC + height term`, a9 = 0, mask 0 | `0x2800` (+state) → `VXL_CacheBlit` p5 / `Render` p8, `flags & ~0x10` | `+0x98` | read, no write, direct to screen | body |
@@ -584,8 +599,11 @@ Foundation subtraction at the building body site (before `0x0043D85F`):
 `off.y = (Type+0x1534 + 0x1BE) - out.y`. The `Type+0x1530/+0x1534` terms are
 omitted for building types `0x12`/`0x13` (not identified).
 
-Not found: Building `+0x50C` (`0x0070F020`) body; the Anim `+0x190` flag
-source; `Extended_SHP_blitter` / `FUN_004AF2A0` parameter semantics (the
+Withdrawn: the earlier "Building `+0x50C` = `0x0070F020`" identity was
+mis-based (`0x0070F020` sits at `vtable_BuildingClass+0x4AC` and is a
+`XOR AL,AL; RET` stub; Building `+0x50c` holds `0x0045AAB0`). Buildings call
+`0x00705e00` directly, so nothing depends on it. Not found: the Anim `+0x190`
+flag source; `Extended_SHP_blitter` / `FUN_004AF2A0` parameter semantics (the
 null Z-shape is positional inference); the `+0x2EC` locomotor slot number.
 
 ### Status in Rust Engine

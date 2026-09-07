@@ -92,6 +92,11 @@ Still open, and they block only the numbers, not the pipelines:
    (positional inference only).
 5. One breakpoint on `0x004990e0` and `0x00494b60` in a retail run remains the
    cheap positive proof; do it during the capture session of scenario 1.
+6. Closed by the read-only critic (2026-09-07): `vtable+0x43c` is
+   `TechnoClass__ModifyCloakDrawFlags 0x0070ED80` and only adds the `2`/`4`
+   translucency bits; it cannot remove the Z bits. Non-building `DrawSHP`
+   callers carry `0x2E00` (`0x600` ORed at `0x0070643b`), which the selectors
+   route exactly like `0x2800`.
 
 ## Required deltas
 
