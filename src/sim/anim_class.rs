@@ -753,7 +753,11 @@ impl Simulation {
             start_sound_active: false,
             stop_sound_id,
         };
-        debug_assert!(self.substrate.anims.insert(object).is_none());
+        // The insert must run in every build profile: wrapped in
+        // `debug_assert!` it was compiled out of release binaries and no
+        // scheduler anim ever existed in a shipped build.
+        let previous = self.substrate.anims.insert(object);
+        debug_assert!(previous.is_none());
         // Native registry insertion precedes Reveal, and Reveal precedes the
         // delay-zero constructor-time Middle call.
         self.reveal_anim(stable_id);
@@ -826,7 +830,11 @@ impl Simulation {
             start_sound_active: false,
             stop_sound_id,
         };
-        debug_assert!(self.substrate.anims.insert(object).is_none());
+        // The insert must run in every build profile: wrapped in
+        // `debug_assert!` it was compiled out of release binaries and no
+        // scheduler anim ever existed in a shipped build.
+        let previous = self.substrate.anims.insert(object);
+        debug_assert!(previous.is_none());
 
         let rate_reload = self.choose_anim_rate(&config);
         let frame_timer =
