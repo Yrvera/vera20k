@@ -2,76 +2,144 @@
 
 Reverse-engineered via Ghidra MCP (live decompilation of Yuri's Revenge `gamemd.exe`).
 Documents the per-pixel Z-buffer system used for depth ordering between sprites.
+Overview, sections 1, 3, 7 and 10 corrected 2026-09-07 after reading the live
+leaf blitters; see the correction note in the Overview.
 
 ---
 
 ## Overview
 
-The original engine uses a **16-bit per-pixel Z-buffer** (`DAT_00887644`) that determines
-visibility at every pixel. Only **terrain tiles** actively read+write the Z-buffer per pixel:
+> **Correction (2026-09-07).** Earlier revisions claimed that SHP sprites drawn
+> through `TechnoClass::DrawSHP` never read or write the Z-buffer per pixel, that
+> the Z-writing blitters were dead code, and that BUILDNGZ.SHA was loaded but
+> ignored. All three claims were wrong. They came from tracing the vtable slots at
+> 0x74/0x78/0x130, which are the cloak/warp translucency path (z-mode 1-4), not the
+> normal-object path. The live leaf blitters for normal objects were read from
+> their bodies on 2026-09-07 (Ghidra, `gamemd.exe`) and do per-pixel Z work.
+> VERA code and docs written against the old claim (the sprite "passthrough"
+> depth contract, the BUILDNGZ removal in section 10) are DRIFT, not parity.
+
+The original engine uses a **16-bit per-pixel Z-buffer** (`g_ZBuffer`,
+`DAT_00887644`). Three blit families touch it:
 
 ```c
-// TMP tiles (per-pixel from tile Z-data) — the ONLY active Z-buffer read+write path:
+// TMP tiles (FUN_00547cf0) - per-pixel Z from tile Z-data, read + write, <= test:
 pixel_z = z_shape_value + base_z;
-if (pixel_z <= zbuffer[pixel]) {         // <= for terrain
-    zbuffer[pixel] = pixel_z;
-    screen[pixel] = color;
-}
+if (pixel_z <= zbuffer[pixel]) { zbuffer[pixel] = pixel_z; screen[pixel] = color; }
+
+// Building bodies (flags 0x6E00 -> 0x004990e0 / 0x004958d0) - read + write, < test,
+// per-pixel Z-shape from BUILDNGZ.SHA:
+if (base_z - zshape[x] < zbuffer[x]) { screen[x] = remap[...]; zbuffer[x] = base_z - zshape[x]; }
+
+// Normal objects (flags 0x2800 -> 0x00494b60 / 0x00497fd0) - read + test only, no write:
+if (base_z - zshape[x] < zbuffer[x]) { screen[x] = color; }   // zshape row is all-zero without a Z-shape
 ```
 
-**Critical finding:** SHP sprite blitters selected through `TechnoClass::DrawSHP`
-(which always ORs `0x800`) do **NOT** read or write the Z-buffer per pixel. The
-per-scanline blitter functions at vtable offsets 0x74/0x78/0x130 (selected when
-`0x800` is set) perform alpha compositing only — Z-buffer pointer and Z-value
-parameters are passed but **completely ignored** by these leaf functions.
+**Established from bodies (2026-09-07):**
 
-Z-writing blitters exist (e.g. `0x00497100` at offset 0x10c, `0x00495bc0` at
-vtable `0x007e5600`) but are **unreachable** through the normal flag dispatch when
-`0x800` is set. They appear to be dead code for standard game object rendering.
+- `TechnoClass_DrawSHP` (`0x00705e00`, `RET 0x40`, 16 args) builds the flag word
+  as: `0x2000` when arg 8 != -1 (`0x00706129`), `0x4000` when byte arg 9 != 0
+  (`0x00706136`), `0x800` unconditionally (`0x00706148`), `&= ~arg16`
+  (`0x00706175`), then `|= 0x600` immediately before `CC_Draw_Shape`
+  (`0x0070643b`). Z-mode bits 2/4/6 come only from the `vtable+0x68`
+  visual-state result 1-4 (cloak/warp); jump table at `0x00706620`, case 0 ->
+  `0x007063ff` (body draw, then a shadow pass with `(flags & ~6) | 0x601`).
+- `BuildingClass_DrawBody` (`0x0043d290`, body site `0x0043d85f`) passes arg 8 = 2
+  (gradient type), arg 9 = 1 (Z-write request), arg 12 = `g_BUILDNGZ_SHA`
+  (`0x0089ddbc`; nulled only when the foundation width >= 8), arg 13 = 0
+  (Z-shape frame), args 14/15 = `Type+0x1530/+0x1534` (`ZShapePointMove`) +
+  (0xc6, 0x1be) - CellToPixel(foundation). **Building body flags = 0x6E00.**
+  Bit 0x10 is never set: `CC_Draw_Shape` ORs it only when its stack arg 6 != 0
+  (`0x004af101..0x004af115`) and DrawSHP pushes literal 0 (`0x0070643e`).
+- `Blitter_selector` (`0x00490b90`) and `Blitter_selector_extended`
+  (`0x00490e50`), with 0x10 clear and bits 1/2/4/0x20 clear:
 
-**Depth ordering for SHP sprites relies on:**
-1. **Terrain Z-values** — written by `TMP_TileBlitter` in Phase 1 (terrain pass)
-2. **Screen-Y sort order** — objects within Phase 2 are sorted by screen position
-3. **Layer ordering** — 5 display layers rendered in sequence
+| flags | standard slot -> vtable -> leaf | extended slot -> vtable -> leaf | Z behaviour |
+|---|---|---|---|
+| `0x6E00` (building body) | `+0xbc` -> `0x007e5630` -> `0x004958d0` | `+0x158` -> `0x007e53a0` -> `0x004990e0` | read, `<` test, **write** |
+| `0x2800` (`TechnoClass__Draw` `0x00706640` normal objects; VXL cache blit) | `+0x98` -> `0x007e56f0` -> `0x00494b60` | `+0x138` -> `0x007e5420` -> `0x00497fd0` | read, `<` test, no write |
 
-Lower Z = closer to camera. Terrain tiles use `<=` (can overwrite at equal depth).
+- `0x004990e0` (`ExtendedBlitter__RLEZero_RemapIntensity_ZReadWrite`) is the
+  live building path: building SHPs such as GACNST.SHP are format 3 on every
+  frame, so `SHP_GetFrameCompressionFlag` (`0x0069e900`) selects the extended
+  blitter. Its inner loop subtracts the Z-shape byte (`param_11`: the BUILDNGZ
+  row, or the 32-byte all-zero table at `0x0089c568` when there is no Z-shape)
+  per pixel, tests `< *zbuf`, and stores `base_z - zshape` on success.
+- `0x004958d0` (format-1 fallback, undefined in Ghidra, read from bytes at
+  `0x00495930-0x0049596d`): `MOV BX,[EDX]; CMP ECX,EBX; JGE skip; ...
+  MOV [EDI],CX; MOV [EDX],CX` with `EDX += 2` per pixel and Z-buffer wrap.
+  Z read, strict-less test, Z write.
+- `0x00494b60` (0x2800, standard): `MOV AX,[EDX]; ADD EDX,2; CMP EBX,EAX; JGE
+  skip; ... MOV [EDI],AX`. Z read + test, no store.
+- `0x00497fd0` (0x2800, extended, also the VXL cache blit): `MOVSX EDX,[ECX]`
+  (Z-shape byte), `EDI = base_z - EDX`, `CMP EDI,[EBX-2]; JGE skip`. Z read +
+  test with per-pixel Z-shape, no store.
+- Both walkers (`SHP_StandardBlitter` `0x004373b0`, `SHP_ExtendedBlitter`
+  `0x00437a10`) fetch `g_ZBuffer` globally, hand the leaf a per-row 16-bit
+  pointer, and step base Z per scanline from the gradient table (section 4).
+  The gradient is per row; the test is per pixel.
+- The `0x74/0x78/0x130` slots (cloak z-modes) and the `0x10c` slot
+  (`0x007e54d0` -> `0x00497100`, the extended selector's default arm) exist but
+  are not the normal-object path. The old "0x124 opaque, no Z" claim for z-mode
+  0 was also wrong: z-mode 0 reaches the slots in the table above.
 
-**Z-mode flags** (from `vtable+0x68` / `GetVisualState` dispatch in `TechnoClass::DrawSHP`):
+**Inferred (not re-traced in the same pass):**
 
-| Return | Z-flags | Visual state | Blitter selected (with 0x800) |
-|--------|---------|-------------|-------------------------------|
-| **0** | `0x00` | **Normal (opaque)** | Offset 0x124: `Blitter_Opaque_RLE_Remap` (`0x004978c0`) — opaque, no Z |
-| 1 | `0x02` | Uncloaking (early) | Offset 0x12c: translucent, Z-read |
-| 2 | `0x04` | Uncloaking (late) | Offset 0x130: 50% blend, no Z-write |
+- A unit drawn after a building in the Ground layer is hidden wherever the
+  building wrote a nearer Z (its tall parts) and visible beside its base. Units
+  do not write Z, so units never occlude each other through the Z-buffer;
+  unit-vs-unit order is the layer Y-sort (section 7).
+- The infantry SHP body draw site was not located in this pass, so its arg 8/9
+  values (0x4000, write-vs-test) are UNCHECKED. Direct `TechnoClass_DrawSHP`
+  callers found: `0x0043d030`, `0x0043d290`, `0x0043da80`, plus a wrapper at
+  `0x0041c0e0` (`CALL 0x00705e00; RET 0x40`) with no found references.
+  `vtable+0x43c` (gated by `HouseClass__IsHumanPlayer` and `vtable+0xc4`) can
+  replace the flag word and was not examined.
+- OpenTS (Tiberian Sun 2.03 reconstruction, `Documents\OpenTS`) has the same
+  design: `BuildingClass::Draw_It` passes `zwrite = true` with the
+  `BUILDNGZ.SHP` z-shape (`building.cpp:873-890`) and lands in
+  `RLEBlitTransXlatAlphaZReadWrite` (`rlerle.h:240-306`); units and infantry
+  pass `zwrite = false` and land in `RLEBlitTransXlatAlphaZRead`. Supporting
+  evidence only; gamemd is the authority.
+
+**Depth ordering for SHP sprites therefore relies on:**
+1. **Terrain Z** written per pixel by `TMP_TileBlitter` in Phase 1
+2. **Building Z** written per pixel (BUILDNGZ-shaped) by building body draws
+3. **Per-pixel Z read** by every other object draw (test, no write)
+4. **Screen-Y sort** within a layer and the **5-layer order**, which decide
+   everything the Z-buffer does not (units vs units, equal depth)
+
+Lower Z = closer to camera. Tiles test `<=`; sprite leaves test `<`.
+
+**Visual-state z-mode** (from `vtable+0x68` / `GetVisualState` dispatch in
+`TechnoClass::DrawSHP`). These bits select the cloak/warp translucency path;
+they do not decide Z behaviour for normal objects:
+
+| Return | Z-mode bits | Visual state | Path |
+|--------|-------------|-------------|------|
+| **0** | none | **Normal (opaque)** | `0x007063ff`; slots per the flags table above (Z read, and Z write for buildings) |
+| 1 | `0x02` | Uncloaking (early) | `0x007064d4`; translucent slot family (0x74/0x78/0x12c) |
+| 2 | `0x04` | Uncloaking (late) | `0x007065a3`; 50% blend slot family (0x130) |
 | 3 | `0x04` | Cloaking (visible) | Same as case 2 |
-| 4 | varies | Cloaking (depends) | `param_1[0x89]` flag → 0x02 or 0x04 |
-| 5 | — | Fully cloaked | Draw skipped |
+| 4 | varies | Cloaking (depends) | `param_1[0x89]` flag -> 0x02 or 0x04 |
+| 5 | - | Fully cloaked | Draw skipped |
 
-**ALL normal (non-cloaked) objects return 0** — buildings, infantry, vehicles, and
+**ALL normal (non-cloaked) objects return 0** - buildings, infantry, vehicles, and
 aircraft. The dispatch chain: `BuildingClass_GetVisualState` (`0x004544a0`,
 delegates when `+0x6ED = 0`) or `FootClass::GetVisualState` (`0x004da4e0`,
-asks locomotor first) → `TechnoClass_GetVisualState` (`0x00703860`) → returns 0
+asks locomotor first) -> `TechnoClass_GetVisualState` (`0x00703860`) -> returns 0
 when CloakState (`this[0x88]`) is 0. The only non-zero returns come from:
-- **Cloaking/uncloaking** (CloakState != 0) → returns 1–5 based on progress
-- **TunnelLocomotionClass** in burrowed state → returns 4 or 5
-
-The blitter at offset 0x124 (vtable `0x007e5470`, function `Blitter_Opaque_RLE_Remap`
-at `0x004978c0`) performs **opaque RLE rendering** — direct pixel assignment with
-remap/intensity lookup, no Z-buffer read or write, no alpha blend.
-
-Cases 2/3 select **50% translucent blitters** (for cloaking visual effects only).
-
-**Confirmed across all ~100 CC_Draw_Shape call sites:** every caller that sets
-Z-bits (0x02/0x04/0x06) also sets 0x800. The Z-writing blitters at offset 0x10c
-are **dead code** — unreachable in normal gameplay.
+- **Cloaking/uncloaking** (CloakState != 0) -> returns 1-5 based on progress
+- **TunnelLocomotionClass** in burrowed state -> returns 4 or 5
 
 The Z-buffer is cleared to `0xFFFF` per dirty rect (not the whole surface)
 via `FUN_007bcfb0`, called from `FUN_006d2b60` which iterates the dirty rect
 list at `DAT_00b0ce7c`. Three separate subsystems provide the Z-shape depth data:
 
-1. **TMP Z-data** — per-pixel depth baked into terrain tile files
-2. **BUILDNGZ.SHA** — per-pixel depth overlay for building sprites
-3. **Per-scanline Z-gradient table** — row-by-row depth accumulator
+1. **TMP Z-data** - per-pixel depth baked into terrain tile files
+2. **BUILDNGZ.SHA** - per-pixel depth overlay for building sprites
+3. **Per-scanline Z-gradient table** - row-by-row depth accumulator
+
 
 ---
 
@@ -149,25 +217,23 @@ Objects further DOWN the screen get LOWER Z values (closer to camera).
 
 ### Z-Buffer Flags in Draw Calls
 
-The draw flags parameter controls Z-buffer behavior via **bits 1–2**:
+Corrected 2026-09-07. Z behaviour is **not** selected by bits 1-2. Those bits
+(`0x02`/`0x04`/`0x06`) are the cloak/warp translucency modes from `vtable+0x68`.
+For normal objects (z-mode 0) `Blitter_selector` (`0x00490b90`) and
+`Blitter_selector_extended` (`0x00490e50`) dispatch on:
 
-| Bit | Value | Meaning |
+| Bit(s) | Value | Meaning |
 |-----|-------|---------|
-| 1 | `0x02` | Z-buffer read/test enabled |
-| 2 | `0x04` | Z-buffer write enabled |
-| 1+2 | `0x06` | Both read and write (cloaked/warping objects) |
-| 4 | `0x10` | Z-shape overlay present (set in CC_Draw_Shape when `param_7 != 0`) |
-| 11 | `0x800` | Always set by `TechnoClass::DrawSHP`; selects intensity-aware blitters |
+| 4 | `0x10` | Set in `CC_Draw_Shape` only when its stack arg 6 != 0 (`0x004af101..0x004af115`); `TechnoClass_DrawSHP` pushes literal 0 (`0x0070643e`), so object draws never carry it |
+| 9 | `0x200` | Sprite centering (subtracts half frame width/height; `0x004af002`: `TEST AH, 0x2`). ORed by DrawSHP as part of `0x600` |
+| 11 | `0x800` | Always set by `TechnoClass::DrawSHP` (`0x00706148`); selects the intensity-aware blitter families |
+| 12-13 | `0x3000` | `0x2000` set when DrawSHP arg 8 (gradient type) != -1 (`0x00706129`) |
+| 14 | `0x4000` | Set when DrawSHP byte arg 9 != 0 (`0x00706136`): Z-write request. `BuildingClass_DrawBody` passes 1 |
 
-The blitter selector (`FUN_00490b90`) dispatches on `flags & 6` to pick the
-correct blitter object (read-only, write-only, or read+write Z modes),
-then further selects based on `0x800`, `0x3000` (bits 12–13), and `0x4000`.
+Resulting slots: `0x6E00` -> `+0xbc` / `+0x158` (Z read + write, buildings);
+`0x2800` -> `+0x98` / `+0x138` (Z read only, other objects). Bit 10 (`0x400`)
+is not tested in `CC_Draw_Shape` or the selectors.
 
-Note: `TechnoClass::DrawSHP` also ORs `0x200` (bit 9) and `0x800` (bit 11)
-into the flags before calling `CC_Draw_Shape`. Bit 9 (`0x200`) controls
-**sprite centering** (subtracts half SHP frame width from X and half frame
-height from Y, verified at `0x004af002`: `TEST AH, 0x2`). Bit 10 (`0x400`)
-is not tested in CC_Draw_Shape or the blitter selector.
 
 ---
 
@@ -279,23 +345,28 @@ if (buildngz_ptr != 0) {
 }
 ```
 
-**IMPORTANT: Unreachable in normal building rendering.** The Z-shape data is loaded
-and the context is allocated, but the per-scanline blitter selected for buildings
-(offset 0x130, vtable `0x007e5440`, function `0x00497cf0`) **ignores the Z-shape
-parameter entirely**. It performs 50% alpha blending without any Z-buffer access.
+**Reachable, and used (corrected 2026-09-07).** The Z-shape surface built here
+is passed only to `SHP_ExtendedBlitter` (`0x00437a10`, call at `0x004af1bf`);
+`SHP_StandardBlitter` (`0x004373b0`) has no Z-shape parameter. Building SHPs are
+format 3 on every frame (GACNST.SHP checked via `asset_info`), so the extended
+path is the normal one. With building flags `0x6E00` the extended selector
+returns slot `+0x158` -> vtable `0x007e53a0` -> leaf `0x004990e0`
+(`ExtendedBlitter__RLEZero_RemapIntensity_ZReadWrite`):
 
-The Z-writing blitter at offset 0x10c (`Blitter_ZClip_Plain16_WritesZ`, `0x00497100`)
-would use the BUILDNGZ data for per-pixel Z-tests:
 ```c
-if (base_z - *z_shape_ptr < *zbuffer_ptr) {
-    *dest = remap_table[pixel_index * 2];   // write color
-    *zbuffer_ptr = base_z - *z_shape_ptr;   // update zbuffer
+if (param_6 - *param_11 < (int)*param_7) {        // base_z - zshape[x] < zbuf[x]
+    *dest = remap[...];
+    *param_7 = (short)param_6 - (short)*param_11;  // write Z
 }
-z_shape_ptr++;
+param_7++; param_11++;                             // per pixel
 ```
-However, offset 0x10c is **never returned** by `Blitter_selector_extended` when
-`0x800` is set (which `TechnoClass::DrawSHP` always sets). This Z-writing path
-is effectively dead code for normal game rendering.
+
+`param_11` is the BUILDNGZ row pointer (or the 32-byte all-zero table at
+`0x0089c568` when there is no Z-shape). The format-1 fallback leaf `0x004958d0`
+(slot `+0xbc`) does the same strict-less test and Z write without a Z-shape.
+The earlier text naming slot `0x130` / `0x00497cf0` described the cloak-mode
+path (z-mode bits set), not normal building rendering. The `-0x41` signed remap
+from the loader applies: the leaf subtracts the remapped byte.
 
 ### Building Draw Call Parameters
 
@@ -337,22 +408,19 @@ Only gate buildings use this:
 
 ### Status in Rust Engine
 
-`BUILDNGZ.SHA` **is loaded and used** via `load_buildngz()` in
-`src/render/sprite_atlas.rs`. The depth data is blitted into an R8 depth atlas
-by `blit_buildngz_depth()` and sampled per-pixel by `zdepth_shader.wgsl`.
+**Not implemented (DRIFT).** BUILDNGZ per-pixel depth was implemented once via
+the zdepth atlas, then removed (section 10) on the strength of the old, wrong
+"loaded but ignored" claim. No `buildngz` reference remains in `src/` as of
+2026-09-07. Building bodies draw through the passthrough pipeline (no depth read
+or write), so a unit is never partially hidden behind a building's tall part.
+Reinstating it needs:
 
-**Differences from original engine:**
-- **Frame index: MATCHES.** Both engines use frame 0. The original engine passes
-  frame index 0 as CC_Draw_Shape param_14 (verified from assembly at `0x007065f4`:
-  `PUSH EDX` where EDX = `[TechnoClass entry+0x34]` = param_14 = 0). The loader
-  (`FUN_0045e8f0`) also remaps frame 0 via `FUN_0069e740(0)`.
-- **Missing -65 remap.** The original engine subtracts 0x41 from each non-zero
-  BUILDNGZ pixel in `FUN_0045e8f0`, converting raw bytes to signed depth offsets.
-  Our loader uses raw SHP pixel values directly as unsigned depth in the shader
-  (`base_depth - z_sample * 0.0002`), while the original uses signed char
-  subtraction (`base_z - (signed char)z_shape`). This produces different depth
-  distributions — our engine treats all non-zero values as positive (push closer),
-  while the original has a signed range centered around value 65.
+- frame 0 of BUILDNGZ.SHA with the `-0x41` signed remap (the removed version
+  used raw unsigned bytes, see the difference noted above)
+- placement at `(0xc6, 0x1be) + ZShapePointMove - CellToPixel(foundation)`
+  relative to the building draw point, dropped when the foundation width >= 8
+- a building-body pipeline that tests and writes depth, with the section 4
+  gradient for base Z, and a depth-tested no-write pipeline for other objects
 
 ---
 
@@ -501,6 +569,8 @@ Z-read/write comes from bits 1–2:
 | 0x119 set, Scorch=true | `0x06` | Z-READ + WRITE |
 | Translucent (DetailLevel based) | `0x02`/`0x04`/`0x06` | Varies by translucency % |
 
+Re-examination pending (2026-09-07): this table predates the Overview correction. Its "Z-flags" column reads the cloak-mode bits 0x02/0x04, which the selectors do not use for Z. Anims carry `0x2000 | 0x800`; if they reach the same selector slots as `0x2800` objects they Z-test per pixel. UNCHECKED.
+
 **Key differences from TechnoClass::DrawSHP:**
 - Animations DO add `0x800` **unless bit 0 (shadow mode) is set**:
   `if ((flags & 1) == 0) { flags |= 0x800; }` — shadow draws skip 0x800
@@ -527,11 +597,12 @@ string table at `0x0081da78`; name↔index conversion via `FUN_0048e050`/`FUN_00
 | Air | 3 | `Air` | Aircraft, projectiles | Varies |
 | Top | 4 | `Top` | Parachutes, top-layer effects | Varies |
 
-Z-buffer mode is set **per-object** in `TechnoClass::DrawSHP` based on the
-`vtable+0x68` virtual call result (see Z-mode table in Overview), not per-layer.
-Buildings (case 2/3) use Z-WRITE ONLY — they unconditionally draw and write Z
-but do not test against existing Z values for the main body. Per-pixel Z-testing
-for buildings comes only from the BUILDNGZ.SHA Z-shape overlay path.
+Z behaviour is set per draw by the flag word `TechnoClass::DrawSHP` builds
+(section 1), not per layer. Building bodies request Z write (arg 9 = 1 ->
+`0x4000`) and carry the BUILDNGZ Z-shape, so they read, test and write Z per
+pixel. Other objects drawn with `0x2800` read and test per pixel without
+writing. The `vtable+0x68` visual state only switches to the cloak/warp
+translucent slot families.
 
 After layer 2 (Ground), building turrets are drawn from `g_BuildingClass_Array`.
 
@@ -556,28 +627,26 @@ controlled by `param_4`: Phase 1 (`param_4 == 1`) for terrain, Phase 2
 
 9. `FUN_006d8db0` — Layer object rendering (buildings, units, aircraft, etc.)
 
-**Critical finding (verified from full assembly trace):** SHP sprite blitters
-selected for buildings do **NOT** read or write the Z-buffer per pixel. The
-blitter at offset 0x130 (selected when `0x800` + Z-write-only flags) performs
-50% alpha blending but ignores all Z-buffer parameters.
+**Corrected 2026-09-07.** Building pixels are Z-tested per pixel and write Z
+(leaves `0x004990e0` / `0x004958d0`, section 3); units and voxel cache blits are
+Z-tested per pixel without writing (`0x00494b60` / `0x00497fd0`). Depth
+ordering between walls, buildings and units therefore works as follows:
 
-Depth ordering between walls and buildings works as follows:
+1. Wall pixels (Phase 1, step 7) write `wall_z` via `TMP_TileBlitter`
+   (`pixel_z <= zbuffer`).
+2. Building pixels (Phase 2) test `base_z - zshape < zbuffer` against
+   terrain/wall Z and write their own Z where they win. A building can lose
+   pixels to a nearer wall or cliff.
+3. Unit, infantry (UNCHECKED flag word, see Overview) and aircraft pixels test
+   against everything written so far and never write. A unit behind a
+   building's tall part is hidden per pixel; a unit beside its base is drawn.
+4. Units vs units: no Z interaction. Order is the layer Y-sort.
 
-1. Wall pixels (Phase 1, step 7) write `wall_z` to Z-buffer via `TMP_TileBlitter`
-   per-pixel Z-test (`pixel_z <= zbuffer`) — this is the **only** active Z-write
-2. Building pixels (Phase 2) are drawn **unconditionally** — the blitter neither
-   tests nor writes Z-buffer values. Buildings always overwrite walls.
-3. Correct visual ordering relies on **screen-Y sorting** within Phase 2 and the
-   **layer system** (5 layers rendered in order)
-
-The BUILDNGZ.SHA Z-shape overlay data IS loaded and allocated per building draw,
-but the selected blitter **ignores it**. The Z-writing blitter at offset 0x10c
-(which would use BUILDNGZ data) is unreachable when `0x800` is set.
-
-**Implication for our engine:** The original engine's depth ordering for buildings
-is simpler than previously documented — it's painter's algorithm (draw order)
-rather than per-pixel Z-buffer testing. Our GPU Z-buffer approach with BUILDNGZ
-depth atlas may actually provide BETTER depth precision than the original engine.
+**Implication for our engine:** the sprite "passthrough" contract (no depth read
+or write for SHP sprites, building bodies included) is DRIFT. Native parity
+needs building depth writes shaped by BUILDNGZ and a depth-tested sprite
+pipeline. The earlier "painter's algorithm, buildings always overwrite walls"
+conclusion is withdrawn.
 
 ---
 
@@ -739,6 +808,10 @@ Xrefs:
 | `0x006bb9a0` | WinMain | Creates Z-buffer, sets DefaultZ = 0x8000 |
 | `0x00497100` | Blitter_ZClip_Plain16_WritesZ | Per-pixel Z-shape blitter: `base_z - z_shape` |
 | `0x00495bc0` | Blitter_ZBuf_Intensity25pct_WritesZ | Per-pixel Z R+W with 25% blend |
+| `0x004990e0` | ExtendedBlitter__RLEZero_RemapIntensity_ZReadWrite | Live building body leaf (flags 0x6E00, slot +0x158): per-pixel `base_z - zshape < zbuf`, writes Z (2026-09-07) |
+| `0x004958d0` | (undefined in Ghidra) | Building body leaf, format-1 frames (slot +0xbc): per-pixel Z read, `<` test, write (2026-09-07) |
+| `0x00494b60` | (standard, slot +0x98) | Normal-object leaf (flags 0x2800): per-pixel Z read + test, no write (2026-09-07) |
+| `0x00497fd0` | (extended, slot +0x138) | Normal-object / VXL cache leaf (flags 0x2800): per-pixel Z read + test with Z-shape byte, no write (2026-09-07) |
 | `0x0048ebf0` | Blitter_Init_All | Creates all blitter objects with vtables |
 | `0x00456f80` | BuildingClass_AdjustZHeight | vtable+0x464: ±500 (threshold 1500) |
 | `0x006d3f50` | TacticalClass_Draw | Two-phase renderer (1=terrain, 2=objects, 3=both) |
@@ -789,8 +862,10 @@ Xrefs:
 
 ### How Our Engine Renders Depth
 
-Our engine uses painter's algorithm (draw order) for sprite-vs-sprite layering,
-matching gamemd.exe. The GPU depth buffer handles terrain occlusion only:
+Our engine uses painter's algorithm (draw order) for sprite-vs-sprite layering.
+**This does not match gamemd.exe** (correction 2026-09-07, see Overview): native
+building bodies write per-pixel Z and every other object reads it. The GPU depth
+buffer currently handles terrain occlusion only:
 
 - **Terrain tiles** — `zdepth_shader.wgsl` samples per-pixel TMP Z-data from an R8
   depth atlas, writes `@builtin(frag_depth)`. Depth write ON. Matches the original's
@@ -800,9 +875,11 @@ matching gamemd.exe. The GPU depth buffer handles terrain occlusion only:
   write Z via TMP_TileBlitter in terrain pass step 7.
 - **Non-wall overlays (ore, terrain objects)** — `zdepth_shader.wgsl` with depth
   write OFF. Read terrain depth for cliff occlusion only.
-- **All sprites (buildings, units, infantry, damage fires)** — `zdepth_shader.wgsl`
-  with depth write OFF (`LessEqual`). Sprites read terrain depth for cliff occlusion
-  but don't write depth. Sprite-vs-sprite ordering is pure draw order.
+- **All sprites (buildings, units, infantry, damage fires)** — as of 2026-09-07
+  the SHP sprite pipeline is `overlay_passthrough_pipeline` (`src/render/batch.rs`,
+  compare `Always`, no depth write); voxel sprites test `LessEqual` without
+  writing. Sprite-vs-sprite ordering is pure draw order. **DRIFT**: native
+  building bodies write Z (BUILDNGZ-shaped) and other objects Z-test per pixel.
 - **Unified Y-sorted object pass** — VXL units and SHP entities are merged into a
   single Y-sorted draw pass via multi-way merge, matching gamemd.exe Layer 2 only
   if each class uses its native virtual `GetYSort` key. Base `ObjectClass::GetYSort`
@@ -813,21 +890,25 @@ matching gamemd.exe. The GPU depth buffer handles terrain occlusion only:
   gamemd.exe's turret pass after the ground layer.
 - **Damage fires** — Y-sorted with buildings in the object pass (not a separate
   terrain pass), matching gamemd.exe where FIRE anims are Layer 2 objects.
-- **Cliff redraw** — terrain cliff tiles redrawn after entities with depth write ON
-  so cliff pixels occlude sprites behind them.
+- **Cliff occlusion** — terrain is drawn once through the zdepth pipeline with
+  depth write ON; there is no separate cliff redraw pass any more
+  (`src/app/presentation/render/draw_passes.rs`, checked 2026-09-07). Cliff
+  pixels occlude voxel sprites (which depth-test) but not SHP sprites (which do
+  not).
 - **Depth function** — single `compute_sprite_depth()` for all sprites. No per-type
   bias constants. Depth only determines terrain occlusion, not sprite ordering.
 
 Source note: the per-class `GetYSort` details above come from
 `docs/research/PERCLASS_VTABLE_B8_YSORT_OVERRIDE_CENSUS_GHIDRA_REPORT.md`.
 
-### BUILDNGZ.SHA — Removed
+### BUILDNGZ.SHA — Removed (removal was a mistake)
 
-BUILDNGZ.SHA is loaded but **not used** in the original engine (the Z-writing blitter
-at offset 0x10c is unreachable when `0x800` flag is set). Our engine previously used
-it for per-pixel building depth via the zdepth shader, but this caused edge artifacts
-with walls. It has been completely removed from the rendering pipeline to match the
-original's behavior.
+BUILDNGZ.SHA was removed from the pipeline on the strength of the old claim that
+the original never used it. That claim was wrong (section 3): building bodies
+consume it per pixel through `0x004990e0`. The earlier implementation also used
+raw unsigned bytes instead of the `-0x41` signed remap, which is a plausible
+cause of the wall edge artifacts it showed. Reinstating it, with the signed
+remap and `ZShapePointMove` placement, is required for parity.
 
 ### Draw Pass Order
 
@@ -837,7 +918,7 @@ original's behavior.
 3. Non-wall overlays — passthrough pipeline (depth compare Always, no test)
 4. UNIFIED MERGE    — VXL + SHP + damage fires, Y-sorted, interleaved draw calls
 5. Building turrets — zdepth overlay no-write (after all layer-2 objects)
-6. Cliff redraw     — overlay pipeline (depth write ON)
+6. (removed)        — the cliff redraw pass no longer exists (2026-09-07)
 7. Debug/fog/UI     — overlay pipeline
 ```
 
@@ -846,20 +927,21 @@ original's behavior.
 | Aspect | Original (gamemd.exe) | Our engine | Match? |
 |--------|----------------------|------------|--------|
 | Terrain per-pixel Z | TMP tile blitter, Z R+W | zdepth shader, frag_depth | Match |
-| Wall Z | TMP blitter Z R+W (flag 0x02), but sprites ignore Z (0x800) | passthrough (no depth test — wall Z-writes only affect TMP rendering in original, not sprites) | Match |
+| Wall Z | TMP blitter Z R+W; sprites Z-test against it | passthrough (no depth test) | **DRIFT** (sprites should lose pixels to nearer walls) |
 | Non-wall overlay Z | TMP blitter skips Z (flag 0x02 clear) | passthrough pipeline (Always compare) | Match |
-| SHP sprite Z | No Z interaction (0x800 flag) | passthrough (no depth test, painter's alg) | Match |
+| SHP sprite Z | Buildings read+write Z (BUILDNGZ-shaped); other objects read-only | passthrough (no depth test, painter's alg) | **DRIFT** |
 | Object sort | Layer 2 sorted by virtual `GetYSort`: base `X+Y`, plus AnimClass and BuildingClass overrides | depth-sorted (iso_row based), multi-way merge | Partial: missing proven per-class `GetYSort` deltas |
 | Building turrets | Separate pass after layer 2 | Separate pass after merged objects | Match |
 | Damage fires | AnimClass in Layer 2, Y-sorted | In SHP pass, Y-sorted with buildings | Match |
 | Building sort key | `BuildingClass::GetYSort = ObjectClass::GetYSort` plus conditional `+32` / `-16` type flags | screen_y from foundation | Partial: missing conditional deltas |
-| BUILDNGZ per-pixel | Loaded but ignored | Removed | Match |
-| Cliff occlusion | No cliff-over-building Z test | Cliff redraw pass | Ours is better |
+| BUILDNGZ per-pixel | Consumed per pixel by building body blitter | Removed | **DRIFT** |
+| Cliff occlusion | Buildings and units Z-test against tile Z | zdepth terrain write; only voxel sprites test | Partial |
 | Per-scanline gradient | 3-entry Bresenham table | Not implemented | Missing (cosmetic) |
 | Shadows | Drawn before sprite per object | Not implemented | Missing |
 | Flat anims | Terrain pass step 8 (below objects) | Mixed into SHP pass | Missing |
 | Smudges | Terrain pass step 5 | Not implemented | Missing |
 
 ### Intentional Improvements Over Original
-- **Cliff occlusion** — our cliff redraw pass provides correct building-behind-cliff
-  rendering that the original lacks (original draws buildings over cliff terrain)
+- (withdrawn 2026-09-07) The "cliff occlusion the original lacks" entry rested on
+  the wrong no-Z-test claim; the original does Z-test buildings and units
+  against tile Z.
