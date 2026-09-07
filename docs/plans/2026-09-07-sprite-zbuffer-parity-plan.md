@@ -46,29 +46,47 @@ when the foundation width is `>= 8`.
 Ordering authority is unchanged: `tactical_draw_plan.rs` still decides
 submission order. Depth only rejects fragments.
 
-## Prerequisite: close the evidence gaps (Ghidra, read-only)
+## Prerequisite results (Ghidra, read-only, 2026-09-07)
 
-These are UNCHECKED and change the pipeline assignment; resolve before coding
-the sprite side.
+Recorded in `ZBUFFER_DEPTH_SYSTEM.md` section 4 "Per-class Z policy and
+gradient". What the deltas consume:
 
-1. **Infantry body flag word.** Locate the infantry SHP body draw
-   (`TechnoClass_DrawSHP` callers beyond `0x0043d030 / 0x0043d290 / 0x0043da80`;
-   the wrapper `0x0041c0e0`; `vtable+0x43c` replacement). Record arg 8
-   (gradient type) and arg 9 (Z-write). Expected `0x2800`-family, read-only.
-2. **Gradient type per class.** Arg 8 for units (`TechnoClass__Draw
-   0x00706640`), aircraft, and the VXL cache blit (`VXL_CacheBlit 0x00707480`
-   → `SHP_ExtendedBlitter`). Doc section 4 says entries 0/1 are "standard
-   objects" without naming which class uses which.
-3. **Anims.** Section 6's table predates the correction. Confirm whether
-   anims (`0x2000 | 0x800`, no `0x4000`) reach the read-only slots. Damage
-   fires and building anims sit in the same sort stream as buildings.
-4. **Cheap negative/positive proof.** One `debugger_set_breakpoint` on
-   `0x004990e0` and `0x00494b60` during a retail run confirms the leaves are
-   hit for a building and a unit (ENGINE.md: unreachable claims need a
-   breakpoint or flag-to-leaf trace).
+| Class | Z policy | Gradient entry | Z-shape |
+|---|---|---|---|
+| Building body | read + write | 2 | BUILDNGZ (none when foundation width > 7) |
+| Building bib, damaged extras | read + write | 0 | none |
+| Infantry | read only | 2 | none |
+| Vehicle SHP (no turret) | read only | locomotor `Z_Gradient`, default 2 | none |
+| Vehicle SHP (turret) / vehicle VXL | composited off-screen without Z, then one read-only blit with `0x2800` | locomotor, default 2 | none |
+| Aircraft | read only | locomotor | none |
+| Building VXL turret | read only | (z-height `cell+0x10A`) | none |
+| Anim (normal) | read only | 2 (0 when Flat) | none |
+| Anim shadow, object shadow pass | shadow family | — | — |
 
-Deliverable: a short addendum to `ZBUFFER_DEPTH_SYSTEM.md` sections 1/4/6
-with the values, and the class → policy table this plan's step 3 consumes.
+Gradient table bytes confirmed. Foundation offset: `CellToPixel((W-1)*256,
+(H-1)*256)` subtracted from `(0xC6, 0x1BE) + ZShapePointMove`; the
+`ZShapePointMove` term is skipped for building types `0x12`/`0x13`
+(unidentified). Retail YR `ZShapePointMove` is set on ten structures (GAWEAP,
+NAWEAP, YAWEAP, GAREFN, NAREFN, YAREFN, GAAIRC, GADEPT, NADEPT, CASANF09);
+everything else is 0,0. `BUILDNGZ.SHA` is in `ra2md.mix -> conqmd.mix`: one
+uncompressed 396x477 frame, 169,488 non-zero pixels.
+
+Still open, and they block only the numbers, not the pipelines:
+
+1. **Infantry z-height conflict.** `InfantryClass Draw_It` builds a10 from
+   `cell+0x10A + Rules+0x17D8`; the Ghidra plate calls those "light scalar" and
+   "ExtraInfantryLight", and `src/map/lighting.rs::infantry_tint_at` cites that
+   site. `vtable+0x464` treats the value as a Z height (1500/±500 logic). Read
+   the `Rules+0x17D8` writer in `RulesClass::ReadINI` for its key string. If it
+   is not `ExtraInfantryLight`, the lighting consumer is a separate DRIFT to
+   record, not to absorb here.
+2. Whether an anim's `+0x190` can carry `0x4000` (write). Assume no.
+3. Locomotor `Z_Gradient` overrides (`loco+0x3C`) for non-default locomotors
+   (hover, fly, jumpjet). Default 2 covers ground vehicles.
+4. `Extended_SHP_blitter` parameter semantics for the zeroed Z-shape positions
+   (positional inference only).
+5. One breakpoint on `0x004990e0` and `0x00494b60` in a retail run remains the
+   cheap positive proof; do it during the capture session of scenario 1.
 
 ## Required deltas
 

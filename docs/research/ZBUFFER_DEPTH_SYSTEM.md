@@ -486,6 +486,63 @@ Note: field[0]==field[2] and field[1]==field[3] for all three gradient entries,
 so older docs referencing field[0]/field[1] produce correct results numerically.
 The code actually reads offsets +0x08 and +0x0C (fields 2 and 3).
 
+### Per-class Z policy and gradient (established 2026-09-07, read-only Ghidra pass)
+
+Table bytes at `0x00817710` re-read: `{1,1,1,1,-1,1}`, `{2,3,2,3,-1,1}`,
+`{1,3,1,3,+1,0}` — confirmed exactly.
+
+`TechnoClass_DrawSHP` (`0x00705E00`) stack args: a7 z-adjust px, a8 gradient
+index (`-1` suppresses `0x2000`), a9 Z-write byte, **a10 z-height** (fed to
+`vtable+0x464` at `0x00706328`), a12 Z-shape ptr, a14/a15 Z-shape offset,
+a16 clear-mask. VXL draws go through `TechnoClass__Draw` (`0x00706640`,
+`vtable+0x444`), whose a8 is the z-height and a10 the clear-mask.
+
+| Draw site | a8 gradient / a9 write / a12 z-shape | flags | slot | Z | status |
+|---|---|---|---|---|---|
+| Building body `0x0043D85F` (`0x0043D683` alt) | 2 / 1 / `g_BUILDNGZ_SHA` (null if `GetFoundationWidth() > 7`) | `0x6E00` | `+0xbc`/`+0x158` | read + write | body |
+| Building bib `0x0043D9C9` (`Type+0x1518`, gated `this+0x534 != 0`) | **0** / 1 / 0 (a7 = `-1 - AdjustForZ`) | `0x6E00` | same | read + write, gradient entry 0 | body |
+| Building damaged extras `0x0043D8E9` / `0x0043DA67` (`Type+0x14EC` / `+0x1504`) | 0 / 1 / 0 | `0x6E00` | same | read + write | body |
+| Infantry body (`InfantryClass Draw_It 0x00518F90`, call `0x005195E2`; locomotor path `0x00519286`) | **2** / 0 / 0, a16 = 0 | `0x2800` (+state bits) | `+0x98`/`+0x138` | read, no write | body (a8/a9); leaf per Overview |
+| Unit SHP, no turret (`0x0073CE0D`, call `0x0073CEAD`) | `vtable+0x2F0` result = locomotor `Z_Gradient` (`0x004DB0A0` → `loco+0x3C`, **default 2**) / 0 / 0; TooBig branch a8 = 0, a7 = -16 | `0x2800` | `+0x98` | read, no write | body |
+| Unit SHP with turret (`0x0073CC36` body, `0x0073CD08` turret) | 0 / 0 / 0 with a16 = `0x2800`/`0x2820` → flags `0x620`/`0x600` | into temp surface `DAT_00B1D13C` (`g_PrimarySurface` swapped at `0x0073C7C3`) | `+0x08`/`+0x0C` | no Z while compositing; the composite blit (`vtable+0x55C` = `0x0073B140`) uses `0x2800` → `+0x98` | body |
+| Unit VXL body/turret (`UnitClass__DrawVoxelBody 0x0073B470` → `+0x510` → `0x00706640`) | a10 mask `0x2800` → Draw flags 0 (or 4/6) | temp surface | `+0x0C` | Z applied only by the composite `0x0073B140`: `0x2800` → `+0x98`, read, no write | body; leftover push count inferred |
+| Aircraft (`AircraftClass__Draw_It 0x004144B0` → `+0x510`) | Draw a8 = `cell+0x10A + Rules+0x17DC + height term`, a9 = 0, mask 0 | `0x2800` (+state) → `VXL_CacheBlit` p5 / `Render` p8, `flags & ~0x10` | `+0x98` | read, no write, direct to screen | body |
+| Building VXL turret (`FUN_0043DA80` → `+0x444`, `0x0043E2FF`) | a8 = `cell+0x10A`, a9 = remap bits, a10 = 0 | `0x2800` | `+0x98` | read, no write | decompile only |
+| Anim (`AnimClass__DrawIt 0x00422CA0`, normal call `0x004236F7`) | CC 8th arg gradient = **2** (0 in the Flat branch `0x0042389E`; 2 in the tiled loop `0x00423827`); no Z-write arg; no z-shape | `this+0x190 OR trans(2/4/6) OR 0x800 (unless bit 0) OR 0x2000` = `0x2800` normally | `+0x98` | read, no write; `0x4000` only if `+0x190` carries it (source not traced) | flags body; `+0x190` inferred |
+| Anim shadow | `0x2601` (`0x004233E9`), second pass `& ~6, OR 0x601` when `Type+0x372` | shadow family | `+0x10`/`+0x2C` | — | body |
+
+VXL walkers: `VXL_CacheBlit 0x00707480` calls `Blitter_selector_extended(flags & ~0x10)`,
+gradient = `this->+0x2F0()` (locomotor `Z_Gradient`, default 2), z-adjust =
+`+0x2EC(gradient)`, and passes `0, 0, 0` in the Z-shape/offset positions.
+`TechnoClass__Render 0x00706ED0` calls `Blitter_selector(flags & ~0x10)` with the
+same pair and no Z-shape argument at all.
+
+`FootClass +0x510` (`0x004DAF10`) adds the locomotor `+0x2C` draw-point offset
+and forwards W.arg8 → Draw a8 (z-height), W.arg10 → a9, W.arg9 → a10.
+
+`vtable+0x464` (Building `0x00456F80`, Techno `0x0070D190`) is a Z-height
+adjuster: `if (this+0xF0 & 2) z = (z > 1500) ? z - 500 : z + 500`.
+
+z-height sources: building a10 = `(short)cell[+0x10A] + (short)Type[+0x1548]`
+(body and bib). Infantry a10 = `cell[+0x10A] + Rules[+0x17D8]` plus a
+`height / (DAT_00A8F240 * 2) * Scenario[...]` term; the cell flag `0x10000`
+case uses `cell[+0x10A] - 500`. **Open conflict:** the Ghidra plate on
+`0x00518F90` labels `cell+0x10A` "light scalar" and `Rules+0x17D8`
+"ExtraInfantryLight", and VERA's `src/map/lighting.rs` cites that site for
+`infantry_tint_at`; the `+0x464` 1500/±500 logic says these are Z heights.
+Resolve by reading the `Rules+0x17D8` writer in `RulesClass::ReadINI` (which key
+string) before either consumer relies on it.
+
+Foundation subtraction at the building body site (before `0x0043D85F`):
+`x = W*0x100 - 0x100`, `y = H*0x100 - 0x100` (leptons of `(W-1, H-1)`) →
+`TacticalClass__CellToPixel(&out, &{x, y})`; `off.x = (Type+0x1530 + 0xC6) - out.x`,
+`off.y = (Type+0x1534 + 0x1BE) - out.y`. The `Type+0x1530/+0x1534` terms are
+omitted for building types `0x12`/`0x13` (not identified).
+
+Not found: Building `+0x50C` (`0x0070F020`) body; the Anim `+0x190` flag
+source; `Extended_SHP_blitter` / `FUN_004AF2A0` parameter semantics (the
+null Z-shape is positional inference); the `+0x2EC` locomotor slot number.
+
 ### Status in Rust Engine
 
 Not implemented. Could be approximated in the vertex/fragment shader by computing
@@ -569,7 +626,7 @@ Z-read/write comes from bits 1–2:
 | 0x119 set, Scorch=true | `0x06` | Z-READ + WRITE |
 | Translucent (DetailLevel based) | `0x02`/`0x04`/`0x06` | Varies by translucency % |
 
-Re-examination pending (2026-09-07): this table predates the Overview correction. Its "Z-flags" column reads the cloak-mode bits 0x02/0x04, which the selectors do not use for Z. Anims carry `0x2000 | 0x800`; if they reach the same selector slots as `0x2800` objects they Z-test per pixel. UNCHECKED.
+Resolved 2026-09-07 (section 4 per-class table): a normal anim carries `0x2800` (`this+0x190 | trans | 0x800 | 0x2000`) with gradient entry 2 (0 in the Flat branch), reaching the read-only slot `+0x98`: per-pixel Z-test, no write. The "Z-flags" column above reads the cloak-mode bits, which the selectors do not use for Z; whether `+0x190` can carry `0x4000` is still untraced.
 
 **Key differences from TechnoClass::DrawSHP:**
 - Animations DO add `0x800` **unless bit 0 (shadow mode) is set**:
