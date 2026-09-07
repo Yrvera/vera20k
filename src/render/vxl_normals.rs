@@ -243,7 +243,14 @@ pub fn diffuse_shade(normal: Vec3, light_dir: Vec3, ambient: f32, diffuse: f32) 
 /// pitch/screen-Y conventions cancel for geometry but not for a model-space
 /// light); VERA-internal, gamemd equivalent UNCHECKED until that frame map is
 /// derived from the view-matrix bodies rather than fitted from a capture.
-const YR_WORLD_LIGHT: Vec3 = Vec3::new(-0.5, -0.707_107, -0.5);
+/// Fitted, not derived: per-pixel comparison of the retail Iron Gull fixture
+/// capture against CPU renders at every facing (2026-09-07) ranks this
+/// vector first at every tint assumption (mean abs error 47 vs 57 for
+/// (-0.5,-0.707,-0.5) and 66 for the binary-derived (-0.5,-0.707,+0.5)).
+/// It puts camera-facing hull sides on VPL pages 17-19 and flat tops on
+/// page 7, which is where the retail hull greys (index 55/56) and container
+/// tops (index 106, identity page 8) sit. Azimuth 285 deg, elevation 0.
+const YR_WORLD_LIGHT: Vec3 = Vec3::new(0.258_819, -0.965_926, 0.0);
 
 /// Viewer direction the original feeds Blinn-Phong: `VXL_Init_BlinnPhong`
 /// (0x00753D00) transforms (0, 0, 1) through the inverse of the matrix at
@@ -393,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn top_faces_sit_on_the_dark_pages_like_retail_container_tops() {
+    fn top_and_side_pages_match_the_retail_capture() {
         // Retail renders the Iron Gull's flat container tops around VPL page
         // 3-4 (voxels.vpl page 8 is identity). In this frame that needs the
         // light's Z to be negative: a +Z normal then gets no diffuse term and
@@ -401,8 +408,15 @@ mod tests {
         // page 18 (near-white decks), which the capture rules out.
         let page: u8 = native_page(Vec3::Z, YR_WORLD_LIGHT);
         assert!(
-            (3..=5).contains(&page),
-            "top-face page must match retail: {page}"
+            (6..=8).contains(&page),
+            "top-face page must sit next to the identity page 8 like retail container tops: {page}"
+        );
+        // Camera-facing hull side (horizontal, toward the viewer) lands on the
+        // bright pages the retail hull greys occupy.
+        let side: u8 = native_page(Vec3::new(0.707_107, -0.707_107, 0.0), YR_WORLD_LIGHT);
+        assert!(
+            (17..=20).contains(&side),
+            "side page must match retail hull: {side}"
         );
         let table_top: u8 = blinn_phong_pages(4, Mat3::IDENTITY)[240];
         assert_eq!(
