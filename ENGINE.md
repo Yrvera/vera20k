@@ -26,7 +26,8 @@ GitHub issues use “Player-visible problem” and “Current Rust mismatch”.
 Establish native behavior before sim changes from bodies and active callers,
 directly or through cited research. Recheck uncertain, conflicting or consequential
 claims against the binary/retail data. Research, labels and other engines can be
-wrong. Confirm active-YR reachability; never invent offsets, identities or behavior.
+wrong. Confirm active-YR reachability; unreachable claims need a breakpoint or
+flag-to-leaf trace. Never invent offsets, identities or behavior.
 
 Priority follows player visibility and frequency; it does not establish equivalence.
 Behavior/output differences remain **DRIFT** until equivalence is demonstrated.
