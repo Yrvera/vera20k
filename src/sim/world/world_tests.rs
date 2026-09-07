@@ -465,13 +465,42 @@ fn app_and_headless_frames_hash_identically_for_particle_frame_timing() {
 
 #[test]
 fn moving_water_unit_spawns_rules_bound_wake_without_preinterned_effect_name() {
-    let mut rules = naval_bridge_test_rules();
+    // A drive-family boat: the native wake gate is the drive locomotor's
+    // `Is_Moving_Now` slot, so the fixture names the Drive locomotor.
+    let ini: IniFile = IniFile::from_str(
+        "[InfantryTypes]
+
+         [VehicleTypes]
+0=BOAT
+
+         [AircraftTypes]
+
+         [BuildingTypes]
+
+         [BOAT]
+Strength=300
+Armor=heavy
+Speed=6
+MovementZone=Water
+SpeedType=Float
+Naval=yes
+         Locomotor={4A582741-9839-11d1-B709-00A024DDAFD1}
+",
+    );
+    let mut rules = RuleSet::from_ini(&ini).expect("drive boat rules should parse");
     rules.set_effect_frame_count_for_test("WAKE1", 5, 5);
     let mut sim = Simulation::new();
     let boat_id = sim
         .spawn_object("BOAT", "Americans", 0, 0, 64, &rules, &empty_heights())
         .expect("spawn boat");
     assert!(sim.interner.get("WAKE1").is_none());
+    // The native gate reads CellClass+0xEC == 2 (Water); the fixture's water
+    // grid carries land type 4 for movement, so stamp the binary's mirror.
+    let mut terrain = water_terrain(2, 1);
+    for cell in &mut terrain.cells {
+        cell.yr_cell_land_type = crate::rules::terrain_rules::LandType::Water.as_index();
+    }
+    sim.resolved_terrain = Some(terrain);
     let boat = sim
         .substrate
         .entities
@@ -488,18 +517,62 @@ fn moving_water_unit_spawns_rules_bound_wake_without_preinterned_effect_name() {
         move_dir_len: SimFixed::from_num(256),
         ..Default::default()
     });
+    // The native gate is the locomotor's `Is_Moving_Now` slot: a live
+    // destination/head-to coordinate and a positive owner speed.
+    {
+        let ahead = crate::sim::components::DriveCoord {
+            x: 256 + 128,
+            y: 128,
+            z: 0,
+        };
+        // BOAT carries no Locomotor= key, so it runs the drive family; its
+        // runtime is created lazily by the first movement step, so seed it.
+        let drive = boat
+            .drive_locomotion
+            .get_or_insert_with(crate::sim::components::DriveLocomotionRuntime::default);
+        drive.destination = Some(ahead);
+        drive.head_to = Some(ahead);
+        drive.owner_current_speed = 256;
+    }
 
-    let result = sim.advance_tick(
-        &[],
-        Some(&rules),
-        &empty_heights(),
-        Some(&PathGrid::new(2, 1)),
-        None,
-        67,
+    // The movement step of a full tick would rewrite the drive runtime from
+    // the fixture's (non-)motion, so exercise the spawn owner directly at a
+    // frame the native cadence accepts.
+    assert_eq!(sim.session.binary_frame % 10, 0);
+    sim.spawn_wakes_for_frame(&rules);
+    let wake = sim.world_effects.first().expect("wake effect").clone();
+    // Exact lepton position, not the cell centre (native `PositionCoord`).
+    let boat_after = sim.substrate.entities.get(boat_id).expect("boat");
+    assert_eq!(
+        (wake.rx, wake.ry),
+        (boat_after.position.rx, boat_after.position.ry)
     );
-
-    assert!(result.frame_committed);
-    let wake = sim.world_effects.first().expect("wake effect");
+    assert_eq!(
+        (wake.sub_x, wake.sub_y),
+        (boat_after.position.sub_x, boat_after.position.sub_y)
+    );
+    // Stationary (owner speed 0) or off-cadence frames spawn nothing.
+    sim.world_effects.clear();
+    sim.session.binary_frame = 5;
+    sim.spawn_wakes_for_frame(&rules);
+    assert!(
+        sim.world_effects.is_empty(),
+        "off-cadence frame must not spawn"
+    );
+    sim.session.binary_frame = 10;
+    sim.substrate
+        .entities
+        .get_mut(boat_id)
+        .expect("boat")
+        .drive_locomotion
+        .as_mut()
+        .expect("drive runtime")
+        .owner_current_speed = 0;
+    sim.spawn_wakes_for_frame(&rules);
+    assert!(
+        sim.world_effects.is_empty(),
+        "a unit that is not moving now casts no wake"
+    );
     assert_eq!(sim.interner.resolve(wake.shp_name), "WAKE1");
     assert_eq!(wake.total_frames, 5);
 }
@@ -1740,7 +1813,13 @@ fn gsi_04_07_damage_fatal_transport_lifecycle_brackets_nested_death_weapon() {
     let attacker = fatal.substrate.entities.get(20).unwrap();
     assert!(!attacker.radio_contacts.contains(10));
     assert!(attacker.attack_target.is_none());
-    assert!(result.consequences.effects().immediate_uninit_ids.is_empty());
+    assert!(
+        result
+            .consequences
+            .effects()
+            .immediate_uninit_ids
+            .is_empty()
+    );
     assert_eq!(
         fatal.overlay_grid.as_ref().unwrap().cell(8, 5).overlay_id,
         None
@@ -1777,7 +1856,13 @@ fn gsi_04_07_damage_fatal_transport_lifecycle_brackets_nested_death_weapon() {
         assert_eq!(listener.health.current, listener.health.max);
         assert_eq!(listener.last_attacker_id, None);
     }
-    assert!(boundary_result.consequences.effects().under_attack_events.is_empty());
+    assert!(
+        boundary_result
+            .consequences
+            .effects()
+            .under_attack_events
+            .is_empty()
+    );
     assert_eq!(
         boundary
             .substrate
@@ -1889,8 +1974,20 @@ fn gsi_04_11_bullet_ore_reduction_precedes_outer_crater_anim_start() {
             .is_some(),
         "the outer crater must observe the already-cleared overlay cell"
     );
-    assert!(result.consequences.effects().tiberium_reduction_requests.is_empty());
-    assert!(result.consequences.effects().smudge_spawn_requests.is_empty());
+    assert!(
+        result
+            .consequences
+            .effects()
+            .tiberium_reduction_requests
+            .is_empty()
+    );
+    assert!(
+        result
+            .consequences
+            .effects()
+            .smudge_spawn_requests
+            .is_empty()
+    );
     let mut expected_rng = crate::sim::rng::SimRng::new(1);
     let _ = expected_rng.next_range_u32(1);
     assert_eq!(sim.scenario_rng.state(), expected_rng.state());
@@ -1964,8 +2061,20 @@ fn gsi_04_11_missile_outer_anim_precedes_per_cell_ore_reduction() {
         "RocketLocomotion starts its crater Anim before the later ore sweep"
     );
     assert_eq!(sim.scenario_rng.state(), before_rng);
-    assert!(result.consequences.effects().tiberium_reduction_requests.is_empty());
-    assert!(result.consequences.effects().smudge_spawn_requests.is_empty());
+    assert!(
+        result
+            .consequences
+            .effects()
+            .tiberium_reduction_requests
+            .is_empty()
+    );
+    assert!(
+        result
+            .consequences
+            .effects()
+            .smudge_spawn_requests
+            .is_empty()
+    );
 }
 
 #[test]
