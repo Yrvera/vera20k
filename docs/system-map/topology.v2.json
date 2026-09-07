@@ -44,10 +44,11 @@
           "path": "src/sim/world/mod.rs",
           "symbol": "Simulation::advance_tick",
           "coverage": "representative",
-          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+          "observed_at_commit": "0534b96535edf4b29d3c5d15dff36723c4aebd0d"
         }
       ],
-      "notes": ["Global scheduler and active-object order are load-bearing consumers of almost every gameplay loop."]
+      "notes": ["Global scheduler and active-object order are load-bearing consumers of almost every gameplay loop.",
+        "The frame retains bullet admission, appended-wave visits, turret/facing updates and SpawnManager before consuming ordinary damage consequences once. The shared world owner returns structure/bridge change flags and the post-callback navigation snapshot for subsequent phases."]
     },
     "GSI-02.01": {
       "native_anchors": [
@@ -531,6 +532,12 @@
       ],
       "rust_surfaces": [
         {
+          "path": "src/sim/world/damage_consequences.rs",
+          "symbol": "DamageConsequences::commit",
+          "coverage": "representative",
+          "observed_at_commit": "0534b96535edf4b29d3c5d15dff36723c4aebd0d"
+        },
+        {
           "path": "src/sim/combat/damage",
           "symbol": "damage kernel",
           "coverage": "representative",
@@ -556,7 +563,8 @@
         }
       ],
       "notes": [
-        "Combat, Bullet, Wave and direct area-damage ingress execute against resident Simulation authority. ReceiverRun owns recursion guards and ordered navigation receipts; the local health borrow ends before synchronous world lifecycle stages. This ownership refactor does not establish whole-loop native parity or close scheduler differences."
+        "Combat, Bullet, Wave and direct area-damage ingress execute against resident Simulation authority. ReceiverRun owns recursion guards and ordered navigation receipts; the local health borrow ends before synchronous world lifecycle stages. This ownership refactor does not establish whole-loop native parity or close scheduler differences.",
+        "Ordinary combat and immediate Bullet/Wave/direct ingress now share one consuming world consequence owner. Weapon emission and recursive fatalities accumulate DeathEffects once. Ordinary radiation and death sounds retain their earlier receiver barriers; other settlement preserves constructor, navigation and notification ordering. Fatal garrison ejection remains synchronous, and wall mutation/expiry traces are test-only, never replayed. This is Rust ownership and regression evidence, not native postlude parity."
       ]
     },
     "GSI-09.01": {

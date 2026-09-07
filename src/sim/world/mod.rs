@@ -22,6 +22,7 @@ mod lifecycle;
 mod load_object_lifecycle;
 mod logic_vector;
 mod navigation;
+pub(crate) mod damage_consequences;
 mod object_turn;
 #[cfg(test)]
 use object_turn::shp_vehicle_counter_admitted;
@@ -46,6 +47,8 @@ mod house_ai_activation_tests;
 mod eva_dispatch_tests;
 #[cfg(test)]
 mod lifecycle_tests;
+#[cfg(test)]
+mod damage_consequence_tests;
 #[cfg(test)]
 mod team_script_vm_tests;
 
@@ -1349,6 +1352,7 @@ pub(crate) fn repair_wall_damage_navigation_authorities(
 /// already available as disjoint Simulation fields.
 pub(crate) struct SimulationWallRuntimeHost<'a> {
     pub(crate) entities: &'a mut EntityStore,
+    #[cfg(test)]
     pub(crate) detach_trace: &'a mut Vec<crate::sim::combat::combat_aoe::CellTargetDetach>,
     pub(crate) radar_dirty_cells: &'a mut Vec<(u16, u16)>,
     pub(crate) radar_dirty_generation: &'a mut u64,
@@ -1396,6 +1400,7 @@ impl WallDamageTransactionHost for SimulationWallRuntimeHost<'_> {
                 self.entities,
                 rx,
                 ry,
+                #[cfg(test)]
                 self.detach_trace,
             );
         }
@@ -1604,7 +1609,7 @@ impl Simulation {
             self, &mut run, rules, overlay_registry, tick_ms, logic_order,
             fire_suppressed, projectile_detonations, wave_damage_events,
         );
-        result.terrain_navigation_changed_cells = run.finish(self);
+        result.consequences.finish_navigation(run.finish(self));
         result
     }
 
@@ -2008,9 +2013,10 @@ impl Simulation {
                 {
                     let _chain_reaction_no_op = flags.chain_reaction;
                     if flags.wall {
-                        let wall = {
+                        let _wall = {
                             let mut host = SimulationWallRuntimeHost {
                                 entities: &mut self.substrate.entities,
+                                #[cfg(test)]
                                 detach_trace: &mut effects.cell_target_detaches,
                                 radar_dirty_cells: &mut self.radar_terrain_dirty_cells,
                                 radar_dirty_generation: &mut self.radar_terrain_dirty_generation,
@@ -2031,10 +2037,8 @@ impl Simulation {
                                 Some(&mut host),
                             )
                         };
-                        effects.wall_mutations.extend(wall.mutations);
-                        effects
-                            .wall_radar_dirty_cells
-                            .extend(wall.radar_dirty_cells);
+                        #[cfg(test)]
+                        effects.wall_mutations.extend(_wall.mutations);
                     }
                 }
 
@@ -2076,6 +2080,7 @@ impl Simulation {
                                 &mut self.substrate.entities,
                                 coord.0,
                                 coord.1,
+                                #[cfg(test)]
                                 &mut effects.cell_target_detaches,
                             );
                             self.mark_radar_terrain_dirty_cells([coord]);
@@ -2282,121 +2287,15 @@ impl Simulation {
     /// same lifecycle/presentation/terrain outputs without leaving an alternate
     /// zero-HP object registered for the next LogicClass visit.
     fn absorb_noncombat_damage_effects(
-        &mut self,
-        rules: &RuleSet,
+        &mut self, rules: &RuleSet,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-        mut effects: crate::sim::combat::DeathEffects,
+        effects: crate::sim::combat::DeathEffects,
         under_attack_events: Vec<crate::sim::combat::UnderAttackEvent>,
         terrain_navigation_changed_cells: Vec<(u16, u16)>,
     ) {
-        // Wall tactical/radar state was published inside DestroyOverlay before
-        // combat restored these moved-out authorities. The retained result
-        // list is diagnostic only and must never be replayed here.
-
-        let dead_infos: Vec<(InternedId, EntityCategory)> = effects
-            .despawned_ids
-            .iter()
-            .filter_map(|&dead_id| {
-                self.substrate
-                    .entities
-                    .get(dead_id)
-                    .map(|entity| (entity.owner(), entity.category))
-            })
-            .collect();
-
-        for event in &effects.destroyed_garrison_buildings {
-            production::eject_destruction_garrison(self, rules, event);
-        }
-        for &dead_id in &effects.immediate_uninit_ids {
-            self.undock_refinery_unit_on_death(rules, dead_id);
-            if self
-                .substrate
-                .entities
-                .get(dead_id)
-                .and_then(|building| building.bunker_occupant)
-                .is_some()
-            {
-                crate::sim::docking::bunker_link::release_sell_destroy(self, dead_id);
-            }
-            self.release_move_sound(dead_id);
-            self.uninit_with_rules(dead_id, rules);
-        }
-
-        let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events_with_overlay_registry(
-            self,
-            rules,
-            &effects.bridge_damage_events,
-            overlay_registry,
-        );
-        debug_assert!(effects.tiberium_reduction_requests.is_empty());
-        for request in &effects.tiberium_reduction_requests {
-            self.reduce_tiberium_at_with_native_context(
-                (request.rx, request.ry),
-                request.amount,
-                Some(rules),
-                overlay_registry,
-            );
-        }
-        for detonation in effects.rad_detonations.drain(..) {
-            self.radiation.apply_detonation(
-                detonation,
-                self.session.binary_frame,
-                &rules.radiation,
-                self.resolved_terrain.as_ref(),
-            );
-        }
-
-        let _ = self.finish_terrain_navigation_changes(
-            None,
-            &terrain_navigation_changed_cells,
-        );
-
-        for building in &effects.destroyed_crewed_buildings {
-            production::eject_destruction_survivors(
-                self,
-                rules,
-                building.type_id,
-                building.owner,
-                building.rx,
-                building.ry,
-                building.z,
-            );
-        }
-        if self.session.game_options.super_weapons && effects.structure_destroyed {
-            let mut refreshed = Vec::new();
-            for &(owner, category) in &dead_infos {
-                if category == EntityCategory::Structure && !refreshed.contains(&owner) {
-                    refreshed.push(owner);
-                    crate::sim::superweapon::refresh_super_weapons_for_owner(self, rules, owner);
-                }
-            }
-        }
-
-        self.admit_death_debris(std::mem::take(&mut effects.voxel_debris));
-        // Explosion animations from a non-combat area-damage transaction.
-        // `AnimClass` instances, not legacy world effects: only the real
-        // constructor reaches `AnimClass::Start @ 0x00424CE0`, which is what
-        // plays the art type's `Report=`/`StartSound=`, and only the real
-        // AnimType carries its `Translucent=` and `Rate=`.
-        for fx in std::mem::take(&mut effects.explosion_effects) {
-            self.spawn_combat_explosion_anim(
-                rules, fx.shp_name, fx.rx, fx.ry, fx.sub_x, fx.sub_y, fx.z,
-            );
-        }
-        self.invulnerability_impact_effects
-            .append(&mut effects.invulnerability_impact_effects);
-        for (die_sound_id, rx, ry) in effects.death_sounds.drain(..) {
-            self.sound_events.push(SimSoundEvent::EntityDied {
-                die_sound_id,
-                rx,
-                ry,
-            });
-        }
-        self.dispatch_under_attack_events(&under_attack_events);
-        self.dispatch_unit_lost_events(&effects.unit_lost_events);
-        debug_assert!(effects.smudge_spawn_requests.is_empty());
-        self.pending_smudge_requests
-            .append(&mut effects.smudge_spawn_requests);
+        let _ = damage_consequences::DamageConsequences::immediate(
+            effects, under_attack_events, terrain_navigation_changed_cells,
+        ).commit(self, rules, overlay_registry, None);
     }
 
     /// `HouseClass::NotifyUnderAttack @ 0x004F93E0` for one damaged asset,
@@ -5143,9 +5042,11 @@ impl Simulation {
             return;
         }
         let Some(grid) = self.overlay_grid.as_mut() else { return; };
+        #[cfg(test)]
         let mut cell_target_detaches = Vec::new();
         let mut host = SimulationWallRuntimeHost {
             entities: &mut self.substrate.entities,
+            #[cfg(test)]
             detach_trace: &mut cell_target_detaches,
             radar_dirty_cells: &mut self.radar_terrain_dirty_cells,
             radar_dirty_generation: &mut self.radar_terrain_dirty_generation,
@@ -6817,7 +6718,7 @@ impl Simulation {
                 .map(|(&stable_id, _)| stable_id)
                 .collect::<BTreeSet<_>>();
             let fire_suppressed = tube_turn_owned_ids.clone();
-            let mut combat_result = self.tick_combat_with_fatal_lifecycle(
+            let combat_result = self.tick_combat_with_fatal_lifecycle(
                 rules,
                 overlay_registry,
                 tick_ms,
@@ -6870,218 +6771,13 @@ impl Simulation {
                 &ordinary_logic_order,
                 overlay_registry,
             );
-            destroyed_structure |= combat_result.structure_destroyed;
-            let combat_dead_infos: Vec<(InternedId, EntityCategory)> = combat_result
-                .despawned_ids
-                .iter()
-                .filter_map(|&dead_id| {
-                    self.substrate
-                        .entities
-                        .get(dead_id)
-                        .map(|entity| (entity.owner(), entity.category))
-                })
-                .collect();
-            // Animated infantry remain represented and live until their death
-            // sequence itself reaches UnInit. Immediate classes enter the
-            // common lifecycle below.
-            let mut sw_refresh_owners: Vec<InternedId> = Vec::new();
-            if self.session.game_options.super_weapons && combat_result.structure_destroyed {
-                for &(owner_id, category) in &combat_dead_infos {
-                    if category == EntityCategory::Structure
-                        && !sw_refresh_owners.contains(&owner_id)
-                    {
-                        sw_refresh_owners.push(owner_id);
-                    }
-                }
-            }
-            // Destroyed garrisons detach/eject their cargo while the building is
-            // still alive and represented. Generic carrier recursion must not
-            // consume those occupants first.
-            for event in &combat_result.destroyed_garrison_buildings {
-                production::eject_destruction_garrison(self, rules, event);
-            }
-            for &dead_id in &combat_result.immediate_uninit_ids {
-                self.undock_refinery_unit_on_death(rules, dead_id);
-                // Eject a bunkered unit before the bunker is removed (UndockUnit).
-                if self
-                    .substrate
-                    .entities
-                    .get(dead_id)
-                    .and_then(|b| b.bunker_occupant)
-                    .is_some()
-                {
-                    crate::sim::docking::bunker_link::release_sell_destroy(self, dead_id);
-                }
-                self.release_move_sound(dead_id);
-                self.uninit_with_rules(dead_id, rules);
-            }
-            // Bridge damage: 4-path dispatcher + cascade
-            // (kill ground occupants → DropIn deck → debris → rim refresh
-            // → TriggerEvent 31 → zone rebuild). Replaces the legacy
-            // 2-call pipeline.
-            bridge_state_changed |=
-                crate::sim::world::bridge_orchestrator::apply_bridge_damage_events_with_overlay_registry(
-                    self,
-                    rules,
-                    &combat_result.bridge_damage_events,
-                    overlay_registry,
-                );
-            debug_assert!(combat_result.tiberium_reduction_requests.is_empty());
-            for req in &combat_result.tiberium_reduction_requests {
-                self.reduce_tiberium_at_with_native_context(
-                    (req.rx, req.ry),
-                    req.amount,
-                    Some(rules),
-                    overlay_registry,
-                );
-            }
-            tail_path_grid = self.finish_terrain_navigation_changes(
-                active_post_combat_path_grid,
-                &combat_result.terrain_navigation_changed_cells,
+            let receipt = combat_result.consequences.commit(
+                self, rules, overlay_registry, active_post_combat_path_grid,
             );
-            let post_terrain_path_grid = tail_path_grid
-                .as_deref()
-                .or(active_post_combat_path_grid);
-            // Apply RevealOnFire events from combat.
-            for ev in &combat_result.reveal_events {
-                vision::reveal_radius(&mut self.fog, ev.owner, ev.rx, ev.ry, ev.radius);
-            }
-            // Eject survivors from crewed buildings destroyed in combat.
-            for bldg in &combat_result.destroyed_crewed_buildings {
-                production::eject_destruction_survivors(
-                    self,
-                    rules,
-                    bldg.type_id,
-                    bldg.owner,
-                    bldg.rx,
-                    bldg.ry,
-                    bldg.z,
-                );
-            }
-            // Refresh superweapon grants for owners who lost structures in combat.
-            if self.session.game_options.super_weapons && combat_result.structure_destroyed {
-                for owner_id in sw_refresh_owners {
-                    crate::sim::superweapon::refresh_super_weapons_for_owner(self, rules, owner_id);
-                }
-            }
-            self.admit_death_debris(std::mem::take(&mut combat_result.voxel_debris));
-            // Spawn explosion animations from combat deaths. `AnimClass`
-            // instances, not legacy world effects: only the real constructor
-            // reaches `AnimClass::Start @ 0x00424CE0`, which is what plays the
-            // art type's `Report=`/`StartSound=`.
-            let explosion_spawns = combat_result
-                .explosion_effects
-                .iter()
-                .map(|fx| (fx.shp_name, fx.rx, fx.ry, fx.sub_x, fx.sub_y, fx.z))
-                .collect::<Vec<_>>();
-            for (shp_name, rx, ry, sub_x, sub_y, z) in explosion_spawns {
-                self.spawn_combat_explosion_anim(rules, shp_name, rx, ry, sub_x, sub_y, z);
-            }
-            // gamemd-derived: `EBolt::Init @ 0x004C2A60` creates one spark
-            // system per electric bolt at `0x004C2B30`, passing
-            // `Rules+0x1020` (`[CombatDamage] DefaultSparkSystem`) and the
-            // bolt's TARGET endpoint — `EBolt+0x0C..0x14`, which
-            // `TechnoClass::CreateElectricBolt @ 0x006FD516` fills from the
-            // target object's coordinate virtual, and which `EBolt::Init`
-            // then hands the constructor by address. Owner house,
-            // attachment object and target object are all NULL; the
-            // fallback aim coordinate is `0x008A0E50`, a static all-zero
-            // triple, and `AI_Spark` never reads it. The handle is
-            // discarded: the system lives on the global particle list and
-            // expires on its own `Lifetime`.
-            //
-            // The path consumes no `ScenarioClass::Random` draws.
-            // `EBolt::Init` does take one `RandomRanged(0, 0x100)` at
-            // `0x004C2AA3`, but on the cosmetic `RandomClass` at
-            // `0x00886B88` — the one `LaserDrawClass::Draw` and
-            // `ThemeClass::Next_Song` also use — not the lockstep scenario
-            // stream, so it is not modelled here.
-            //
-            // VERA-internal ordering, gamemd equivalent UNCHECKED: native
-            // constructs the system inside `Fire_At`, i.e. during the
-            // firer's own AI. Whether that means it is visited by the SAME
-            // frame's object walk is UNCHECKED — the constructor's two
-            // appends (`0x0062DD7A` into the ParticleSystemClass instance
-            // registry at `0x00A80208`, and `0x0062DEF6` into the abstracts
-            // registry at `0x00B0F730`) are neither of them the per-frame
-            // walker, and the walker itself was not identified. This engine
-            // creates it in the post-combat walk that already admits Sonic
-            // and Magnetron waves from the same event list — after the
-            // logic walk — so its first burst lands no earlier than
-            // native's, and one frame later if native does visit
-            // same-frame. Bolt rendering itself is not implemented; the
-            // sparks are the part of the discharge that is a simulation
-            // object.
-            if let Some(spark_system_name) = rules.combat_damage.default_spark_system.as_deref()
-            {
-                for event in &combat_result.fire_events {
-                    let Some(weapon) = rules.weapon(self.interner.resolve(event.weapon_id))
-                    else {
-                        continue;
-                    };
-                    if !weapon.is_electric_bolt {
-                        continue;
-                    }
-                    let Some(system_type) = rules.ps_type_id_by_name(spark_system_name) else {
-                        continue;
-                    };
-                    let coords = match event.target {
-                        crate::sim::combat::TargetKind::Entity(id) => {
-                            let Some(entity) = self.substrate.entities.get(id) else {
-                                continue;
-                            };
-                            glam::IVec3::new(
-                                i32::from(entity.position.rx) * 256
-                                    + entity.position.sub_x.to_num::<i32>(),
-                                i32::from(entity.position.ry) * 256
-                                    + entity.position.sub_y.to_num::<i32>(),
-                                i32::from(entity.position.z)
-                                    * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
-                            )
-                        }
-                        // VERA-internal, gamemd equivalent UNCHECKED: native
-                        // takes the bolt endpoint from the TARGET OBJECT's
-                        // coordinate virtual, and a cell target has no object
-                        // to ask, so ground height is not folded in here.
-                        crate::sim::combat::TargetKind::Cell(rx, ry) => glam::IVec3::new(
-                            i32::from(rx) * 256 + 128,
-                            i32::from(ry) * 256 + 128,
-                            0,
-                        ),
-                    };
-                    self.spawn_particle_system(
-                        system_type,
-                        coords,
-                        None,
-                        None,
-                        glam::IVec3::ZERO,
-                        None,
-                        rules,
-                    );
-                }
-            }
-            // Collect fire events for render-side muzzle flash / projectile origin.
-            self.invulnerability_impact_effects
-                .extend(combat_result.invulnerability_impact_effects.iter().copied());
-            self.fire_events.extend(combat_result.fire_events);
-            // Emit radar events for combat occurrences.
-            for ev in &combat_result.reveal_events {
-                self.radar_events.push(RadarEventType::Combat, ev.rx, ev.ry);
-            }
-            // Player-asset damage pings: owner-scoped radar diamond + EVA
-            // dispatch (voice gated app-side to the local player; the queue's
-            // dedup result rides along as `eva_allowed`, BridgeRepaired-style).
-            self.dispatch_under_attack_events(&combat_result.under_attack_events);
-            self.dispatch_unit_lost_events(&combat_result.unit_lost_events);
-            // Production commits every request at its native producer. The
-            // vectors remain only on hookless combat fixtures; a live world
-            // request here would be an ordering regression.
-            debug_assert!(self.pending_smudge_requests.is_empty());
-            debug_assert!(combat_result.smudge_spawn_requests.is_empty());
-            self.flush_smudge_dirty();
-            // Always clear pending — even if grids were unbound (headless
-            // tests). The vec is per-tick ephemeral state.
-            self.pending_smudge_requests.clear();
+            destroyed_structure |= receipt.structure_destroyed;
+            bridge_state_changed |= receipt.bridge_state_changed;
+            tail_path_grid = receipt.path_grid;
+            let post_terrain_path_grid = tail_path_grid.as_deref().or(active_post_combat_path_grid);
 
             // No end-of-Phase-5 drain: combat-killed structures/voxels stay in
             // the Dying window through the Phase 5.5-8.5 consumers and are freed

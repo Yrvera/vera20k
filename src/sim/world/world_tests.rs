@@ -1727,20 +1727,20 @@ fn gsi_04_07_damage_fatal_transport_lifecycle_brackets_nested_death_weapon() {
     // takes `BuildingClass::ReceiveDamage` case 4, whose stock 8-frame timer
     // runs `ObjectClass::UnInit` (`0x005F6625` clears `IsAlive +0x90`) before
     // the `0x00442905` re-test, so `NotifyUnderAttack` never runs for it.
-    assert_eq!(result.under_attack_events.len(), 1);
+    assert_eq!(result.consequences.effects().under_attack_events.len(), 1);
     assert_eq!(
         (
-            result.under_attack_events[0].rx,
-            result.under_attack_events[0].ry
+            result.consequences.effects().under_attack_events[0].rx,
+            result.consequences.effects().under_attack_events[0].ry
         ),
         (8, 5)
     );
-    assert!(result.under_attack_events[0].structure);
+    assert!(result.consequences.effects().under_attack_events[0].structure);
     assert!(!fatal.substrate.occupancy.contains_entity(8, 5, 10));
     let attacker = fatal.substrate.entities.get(20).unwrap();
     assert!(!attacker.radio_contacts.contains(10));
     assert!(attacker.attack_target.is_none());
-    assert!(result.immediate_uninit_ids.is_empty());
+    assert!(result.consequences.effects().immediate_uninit_ids.is_empty());
     assert_eq!(
         fatal.overlay_grid.as_ref().unwrap().cell(8, 5).overlay_id,
         None
@@ -1777,7 +1777,7 @@ fn gsi_04_07_damage_fatal_transport_lifecycle_brackets_nested_death_weapon() {
         assert_eq!(listener.health.current, listener.health.max);
         assert_eq!(listener.last_attacker_id, None);
     }
-    assert!(boundary_result.under_attack_events.is_empty());
+    assert!(boundary_result.consequences.effects().under_attack_events.is_empty());
     assert_eq!(
         boundary
             .substrate
@@ -1889,8 +1889,8 @@ fn gsi_04_11_bullet_ore_reduction_precedes_outer_crater_anim_start() {
             .is_some(),
         "the outer crater must observe the already-cleared overlay cell"
     );
-    assert!(result.tiberium_reduction_requests.is_empty());
-    assert!(result.smudge_spawn_requests.is_empty());
+    assert!(result.consequences.effects().tiberium_reduction_requests.is_empty());
+    assert!(result.consequences.effects().smudge_spawn_requests.is_empty());
     let mut expected_rng = crate::sim::rng::SimRng::new(1);
     let _ = expected_rng.next_range_u32(1);
     assert_eq!(sim.scenario_rng.state(), expected_rng.state());
@@ -1964,8 +1964,8 @@ fn gsi_04_11_missile_outer_anim_precedes_per_cell_ore_reduction() {
         "RocketLocomotion starts its crater Anim before the later ore sweep"
     );
     assert_eq!(sim.scenario_rng.state(), before_rng);
-    assert!(result.tiberium_reduction_requests.is_empty());
-    assert!(result.smudge_spawn_requests.is_empty());
+    assert!(result.consequences.effects().tiberium_reduction_requests.is_empty());
+    assert!(result.consequences.effects().smudge_spawn_requests.is_empty());
 }
 
 #[test]

@@ -1203,14 +1203,17 @@ pub struct WallDamageResult {
     pub destroyed_cells: Vec<(u16, u16)>,
     /// Exact mutation order. This is deliberately a wall-local trace, not a
     /// generalized gameplay event system.
+    #[cfg(test)]
     pub mutations: Vec<WallMutation>,
     /// Diagnostic trace of packed CellStruct values submitted to
     /// MarkTerrainDirty, deduplicated in first-call order. Production mutation
     /// authority is the synchronous host callback, never replay of this list.
     /// True-dummy coordinates retain their raw signed-word bit patterns.
+    #[cfg(test)]
     pub radar_dirty_cells: Vec<(u16, u16)>,
 }
 
+#[cfg(test)]
 fn push_wall_radar_dirty(result: &mut WallDamageResult, coord: (u16, u16)) {
     if !result.radar_dirty_cells.contains(&coord) {
         result.radar_dirty_cells.push(coord);
@@ -1219,15 +1222,16 @@ fn push_wall_radar_dirty(result: &mut WallDamageResult, coord: (u16, u16)) {
 
 fn publish_wall_dirty_step(
     host: &mut Option<&mut dyn WallDamageTransactionHost>,
-    result: &mut WallDamageResult,
+    _result: &mut WallDamageResult,
     step: WallDirtyStep,
     packed_coord: (u16, u16),
 ) {
     if let Some(host) = host.as_deref_mut() {
         host.dirty_step(step, packed_coord);
     }
+    #[cfg(test)]
     if step == WallDirtyStep::Radar {
-        push_wall_radar_dirty(result, packed_coord);
+        push_wall_radar_dirty(_result, packed_coord);
     }
 }
 
@@ -1422,6 +1426,7 @@ fn damage_wall_recursive(
         if let NativeRuntimeOverlayCell::Real(rx, ry) = target {
             grid.dirty_cells.push((rx, ry));
             result.changed_cells.push((rx, ry));
+            #[cfg(test)]
             result.mutations.push(WallMutation {
                 rx,
                 ry,
@@ -1435,6 +1440,7 @@ fn damage_wall_recursive(
     clear_native_runtime_overlay_target(grid, resolved_terrain.as_deref(), target, false);
     if let NativeRuntimeOverlayCell::Real(rx, ry) = target {
         result.destroyed_cells.push((rx, ry));
+        #[cfg(test)]
         result.mutations.push(WallMutation {
             rx,
             ry,
@@ -1971,6 +1977,7 @@ fn cleanup_wall_neighbors_into(
                 RecomputeResult::NoChange => {}
                 RecomputeResult::Updated => {
                     result.changed_cells.push((nx, ny));
+                    #[cfg(test)]
                     result.mutations.push(WallMutation {
                         rx: nx,
                         ry: ny,
@@ -1979,6 +1986,7 @@ fn cleanup_wall_neighbors_into(
                 }
                 RecomputeResult::Destroyed => {
                     result.destroyed_cells.push((nx, ny));
+                    #[cfg(test)]
                     result.mutations.push(WallMutation {
                         rx: nx,
                         ry: ny,

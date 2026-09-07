@@ -258,10 +258,10 @@ pub(crate) fn commit_area(
                         append_fixture_tiberium(world, &mut effects.tiberium_reduction_requests);
                         collected
                     };
+                    #[cfg(test)]
                     effects.wall_mutations.extend(aoe.wall_mutations);
-                    effects
-                        .wall_radar_dirty_cells
-                        .extend(aoe.wall_radar_dirty_cells);
+
+                    #[cfg(test)]
                     effects
                         .cell_target_detaches
                         .extend(aoe.cell_target_detaches);
@@ -888,13 +888,13 @@ pub(crate) fn handle_death(
     let mut despawned_ids: Vec<u64> = Vec::new();
     let mut immediate_uninit_ids: Vec<u64> = Vec::new();
     let mut destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding> = Vec::new();
-    let mut destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding> = Vec::new();
     let mut explosion_effects: Vec<ExplosionEffect> = Vec::new();
     let mut voxel_debris: Vec<crate::sim::voxel_anim::VoxelDebrisSpawn> = Vec::new();
     let mut invulnerability_impact_effects: Vec<InvulnerabilityImpactEffect> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
+    #[cfg(test)]
     let mut wall_mutations: Vec<WallMutation> = Vec::new();
-    let mut wall_radar_dirty_cells: Vec<(u16, u16)> = Vec::new();
+    #[cfg(test)]
     let mut cell_target_detaches: Vec<combat_aoe::CellTargetDetach> = Vec::new();
     let mut smudge_spawn_requests: Vec<SmudgeSpawnRequest> = Vec::new();
     let mut concrete_smudge_plans: Vec<ConcreteDeathSmudgePlan> = Vec::new();
@@ -1031,49 +1031,9 @@ pub(crate) fn handle_death(
                 }
             }
 
-            // Generic transport cargo remains attached and untouched here so
-            // the carrier's world-owned UnInit can recurse in cargo order. The
-            // snapshot is only exported for the distinct garrison-eject path.
-            let passenger_ids: Vec<u64> = world
-                .substrate
-                .entities
-                .get(dead_id)
-                .and_then(|e| e.passenger_role.cargo())
-                .map(|c| c.passengers.clone())
-                .unwrap_or_default();
-
-            // Garrisoned CanBeOccupied buildings use the same gamemd
-            // SellBuilding occupant-eject contract as sell. Generic transports
-            // deliberately emit no passenger-side mutations from combat.
-            //
-            // Re-resolve the type string here because earlier mutable borrows
-            // of `interner` (death_weapon_aoe, intern calls) ended its prior
-            // immutable borrow.
-            let type_id_str_for_branch = world.interner.resolve(type_id);
-            let is_garrison_building = rules
-                .object(type_id_str_for_branch)
-                .map(|obj| obj.can_be_occupied)
-                .unwrap_or(false)
-                && category == EntityCategory::Structure
-                && !passenger_ids.is_empty();
-
-            if is_garrison_building {
-                let (foundation_w, foundation_h) = rules
-                    .object(type_id_str_for_branch)
-                    .map(|obj| crate::sim::production::foundation_dimensions(&obj.foundation))
-                    .unwrap_or((1, 1));
-                destroyed_garrison_buildings.push(DestroyedGarrisonBuilding {
-                    building_id: dead_id,
-                    type_id,
-                    owner,
-                    rx,
-                    ry,
-                    z,
-                    foundation_w,
-                    foundation_h,
-                    passenger_ids,
-                });
-            }
+            // The world fatal prelude already owns garrison ejection before
+            // the nested death weapon. Generic cargo remains attached only in
+            // callback-disabled receiver fixtures, for their UnInit assertions.
 
             // Look up the warhead that dealt the killing blow for InfDeath
             // selection below. The AnimList anim + smudge are emitted at
@@ -1247,8 +1207,10 @@ pub(crate) fn handle_death(
                 append_fixture_tiberium(world, &mut tiberium_reduction_requests);
                 collected
             };
+            #[cfg(test)]
             wall_mutations.extend(aoe.wall_mutations);
-            wall_radar_dirty_cells.extend(aoe.wall_radar_dirty_cells);
+
+            #[cfg(test)]
             cell_target_detaches.extend(aoe.cell_target_detaches);
             if !scenario_no_damage && !routed_wall && warhead.wall && *dmg > 0 {
                 let wh_iid = *wh_id;
@@ -1283,13 +1245,14 @@ pub(crate) fn handle_death(
             immediate_uninit_ids.append(&mut nested.immediate_uninit_ids);
             structure_destroyed |= nested.structure_destroyed;
             destroyed_crewed_buildings.append(&mut nested.destroyed_crewed_buildings);
-            destroyed_garrison_buildings.append(&mut nested.destroyed_garrison_buildings);
             explosion_effects.append(&mut nested.explosion_effects);
             voxel_debris.append(&mut nested.voxel_debris);
             invulnerability_impact_effects.append(&mut nested.invulnerability_impact_effects);
             bridge_damage_events.append(&mut nested.bridge_damage_events);
+            #[cfg(test)]
             wall_mutations.append(&mut nested.wall_mutations);
-            wall_radar_dirty_cells.append(&mut nested.wall_radar_dirty_cells);
+
+            #[cfg(test)]
             cell_target_detaches.append(&mut nested.cell_target_detaches);
             tiberium_reduction_requests.append(&mut nested.tiberium_reduction_requests);
             death_sounds.append(&mut nested.death_sounds);
@@ -1372,13 +1335,13 @@ pub(crate) fn handle_death(
         immediate_uninit_ids,
         structure_destroyed,
         destroyed_crewed_buildings,
-        destroyed_garrison_buildings,
         explosion_effects,
         voxel_debris,
         invulnerability_impact_effects,
         bridge_damage_events,
+        #[cfg(test)]
         wall_mutations,
-        wall_radar_dirty_cells,
+        #[cfg(test)]
         cell_target_detaches,
         tiberium_reduction_requests,
         death_sounds,
@@ -1423,7 +1386,8 @@ fn emit_one_projectile_detonation(
     if let Some(weapon) = rules.weapon(world.interner.resolve(detonation.payload.weapon))
         && weapon.rad_level > 0
     {
-        out.rad_detonations
+        out.effects
+            .rad_detonations
             .push(crate::sim::radiation::RadDetonation {
                 rx: impact_rx,
                 ry: impact_ry,
@@ -1511,19 +1475,22 @@ fn emit_one_projectile_detonation(
                     air_impact,
                     impact_z,
                 );
-                append_fixture_tiberium(world, &mut out.tiberium_reduction_requests);
+                append_fixture_tiberium(world, &mut out.effects.tiberium_reduction_requests);
                 collected
             };
-            out.wall_mutations.extend(aoe.wall_mutations);
-            out.wall_radar_dirty_cells
-                .extend(aoe.wall_radar_dirty_cells);
-            out.cell_target_detaches.extend(aoe.cell_target_detaches);
+            #[cfg(test)]
+            out.effects.wall_mutations.extend(aoe.wall_mutations);
+
+            #[cfg(test)]
+            out.effects
+                .cell_target_detaches
+                .extend(aoe.cell_target_detaches);
             out.damage_events.extend(aoe.receivers);
 
             if !scenario_no_damage && detonation.payload.base_damage > 0 {
                 let damage = detonation.payload.base_damage.min(i32::from(u16::MAX)) as u16;
                 if !routed_wall && warhead.wall {
-                    out.bridge_damage_events.push(BridgeDamageEvent {
+                    out.effects.bridge_damage_events.push(BridgeDamageEvent {
                         rx: impact_rx,
                         ry: impact_ry,
                         damage,
@@ -1558,8 +1525,8 @@ fn emit_one_projectile_detonation(
         impact_z_byte(impact_z),
         world_z_leptons,
         &mut world.interner,
-        &mut out.explosion_effects,
-        &mut out.smudge_spawn_requests,
+        &mut out.effects.explosion_effects,
+        &mut out.effects.smudge_spawn_requests,
     );
 }
 
@@ -1604,13 +1571,12 @@ pub(crate) fn commit_projectile_detonations_inline(
     overlay_registry: Option<&OverlayTypeRegistry>,
     projectile_detonations: &[ProjectileDetonation],
     emit: &mut CombatEmit,
-    death: &mut DeathEffects,
     under_attack_events: &mut Vec<UnderAttackEvent>,
 ) {
     for detonation in projectile_detonations {
         let damage_start = emit.damage_events.len();
-        let explosion_start = emit.explosion_effects.len();
-        let smudge_start = emit.smudge_spawn_requests.len();
+        let explosion_start = emit.effects.explosion_effects.len();
+        let smudge_start = emit.effects.smudge_spawn_requests.len();
         emit_projectile_detonations(
             world,
             rules,
@@ -1618,8 +1584,8 @@ pub(crate) fn commit_projectile_detonations_inline(
             std::slice::from_ref(detonation),
             emit,
         );
-        let outer_explosion_effects = emit.explosion_effects.split_off(explosion_start);
-        let outer_anim_requests = emit.smudge_spawn_requests.split_off(smudge_start);
+        let outer_explosion_effects = emit.effects.explosion_effects.split_off(explosion_start);
+        let outer_anim_requests = emit.effects.smudge_spawn_requests.split_off(smudge_start);
         let (inline_death, mut pings) = commit_area(
             world,
             run,
@@ -1627,14 +1593,16 @@ pub(crate) fn commit_projectile_detonations_inline(
             rules,
             overlay_registry,
         );
-        absorb_inline_death_effects(emit, death, inline_death);
-        emit.explosion_effects.extend(outer_explosion_effects);
+        emit.effects.append(inline_death);
+        emit.effects
+            .explosion_effects
+            .extend(outer_explosion_effects);
         commit_smudges(
             world,
             rules,
             overlay_registry,
             outer_anim_requests,
-            &mut emit.smudge_spawn_requests,
+            &mut emit.effects.smudge_spawn_requests,
         );
         under_attack_events.append(&mut pings);
     }
@@ -1648,7 +1616,6 @@ pub(crate) fn commit_projectiles(
     overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> LogicProjectileCommit {
     let mut emit = CombatEmit::default();
-    let mut effects = DeathEffects::default();
     let mut under_attack_events = Vec::new();
     commit_projectile_detonations_inline(
         world,
@@ -1657,34 +1624,9 @@ pub(crate) fn commit_projectiles(
         overlay_registry,
         detonations,
         &mut emit,
-        &mut effects,
         &mut under_attack_events,
     );
 
-    // Physical warhead/death outputs share the world's existing synchronous
-    // non-combat handoff. The remaining CombatEmit fields belong exclusively
-    // to Techno fire and therefore cannot be produced by this bounded path.
-    effects
-        .bridge_damage_events
-        .append(&mut emit.bridge_damage_events);
-    effects.wall_mutations.append(&mut emit.wall_mutations);
-    effects
-        .wall_radar_dirty_cells
-        .append(&mut emit.wall_radar_dirty_cells);
-    effects
-        .cell_target_detaches
-        .append(&mut emit.cell_target_detaches);
-    effects
-        .tiberium_reduction_requests
-        .append(&mut emit.tiberium_reduction_requests);
-    effects
-        .explosion_effects
-        .append(&mut emit.explosion_effects);
-    effects.voxel_debris.append(&mut emit.voxel_debris);
-    effects
-        .smudge_spawn_requests
-        .append(&mut emit.smudge_spawn_requests);
-    effects.rad_detonations.append(&mut emit.rad_detonations);
     debug_assert!(emit.remove_attack.is_empty());
     debug_assert!(emit.retarget_events.is_empty());
     debug_assert!(emit.fire_events.is_empty());
@@ -1700,7 +1642,7 @@ pub(crate) fn commit_projectiles(
 
     LogicProjectileCommit {
         projectile_spawns: emit.projectile_spawns,
-        effects,
+        effects: emit.effects,
         under_attack_events,
     }
 }
@@ -1746,13 +1688,13 @@ fn emit_missile_detonations(
             &mut outer_explosions,
             &mut outer_smudges,
         );
-        out.explosion_effects.extend(outer_explosions);
+        out.effects.explosion_effects.extend(outer_explosions);
         commit_smudges(
             world,
             rules,
             overlay_registry,
             outer_smudges,
-            &mut out.smudge_spawn_requests,
+            &mut out.effects.smudge_spawn_requests,
         );
         let aoe = {
             let collected = collect_area(
@@ -1766,13 +1708,16 @@ fn emit_missile_detonations(
                 air_impact,
                 impact_z,
             );
-            append_fixture_tiberium(world, &mut out.tiberium_reduction_requests);
+            append_fixture_tiberium(world, &mut out.effects.tiberium_reduction_requests);
             collected
         };
-        out.wall_mutations.extend(aoe.wall_mutations);
-        out.wall_radar_dirty_cells
-            .extend(aoe.wall_radar_dirty_cells);
-        out.cell_target_detaches.extend(aoe.cell_target_detaches);
+        #[cfg(test)]
+        out.effects.wall_mutations.extend(aoe.wall_mutations);
+
+        #[cfg(test)]
+        out.effects
+            .cell_target_detaches
+            .extend(aoe.cell_target_detaches);
         out.damage_events.extend(aoe.receivers);
     }
 }
@@ -3079,18 +3024,21 @@ pub(super) fn resolve_attacker_fire(
                 air_impact,
                 impact_z,
             );
-            append_fixture_tiberium(world, &mut out.tiberium_reduction_requests);
+            append_fixture_tiberium(world, &mut out.effects.tiberium_reduction_requests);
             collected
         };
-        out.wall_mutations.extend(aoe.wall_mutations);
-        out.wall_radar_dirty_cells
-            .extend(aoe.wall_radar_dirty_cells);
-        out.cell_target_detaches.extend(aoe.cell_target_detaches);
+        #[cfg(test)]
+        out.effects.wall_mutations.extend(aoe.wall_mutations);
+
+        #[cfg(test)]
+        out.effects
+            .cell_target_detaches
+            .extend(aoe.cell_target_detaches);
 
         out.damage_events.extend(aoe.receivers);
         if !scenario_no_damage && base_damage > 0 && !routed_wall && warhead.wall {
             let wh_iid = world.interner.intern(&warhead.id);
-            out.bridge_damage_events.push(BridgeDamageEvent {
+            out.effects.bridge_damage_events.push(BridgeDamageEvent {
                 rx: target_rx,
                 ry: target_ry,
                 damage: base_damage.min(i32::from(u16::MAX)) as u16,
@@ -3105,7 +3053,8 @@ pub(super) fn resolve_attacker_fire(
         // Radiation-emitting detonation: one site request per shot at the impact
         // cell. Spread is the warhead's CellSpread truncated to whole cells.
         if weapon.rad_level > 0 {
-            out.rad_detonations
+            out.effects
+                .rad_detonations
                 .push(crate::sim::radiation::RadDetonation {
                     rx: target_rx,
                     ry: target_ry,
@@ -3150,8 +3099,8 @@ pub(super) fn resolve_attacker_fire(
             effect_z,
             world_z_leptons,
             &mut world.interner,
-            &mut out.explosion_effects,
-            &mut out.smudge_spawn_requests,
+            &mut out.effects.explosion_effects,
+            &mut out.effects.smudge_spawn_requests,
         );
     }
 
@@ -3298,26 +3247,14 @@ pub(crate) fn tick_combat(
     if tick_ms == 0 {
         return CombatTickResult {
             projectile_spawns: Vec::new(),
-            reveal_events: Vec::new(),
-            despawned_ids: Vec::new(),
-            immediate_uninit_ids: Vec::new(),
-            structure_destroyed: false,
-            bridge_damage_events: Vec::new(),
-            wall_mutations: Vec::new(),
-            wall_radar_dirty_cells: Vec::new(),
-            cell_target_detaches: Vec::new(),
-            terrain_navigation_changed_cells: Vec::new(),
-            tiberium_reduction_requests: Vec::new(),
-            fire_events: Vec::new(),
-            destroyed_crewed_buildings: Vec::new(),
-            destroyed_garrison_buildings: Vec::new(),
-            explosion_effects: Vec::new(),
-            voxel_debris: Vec::new(),
-            invulnerability_impact_effects: Vec::new(),
-            smudge_spawn_requests: Vec::new(),
             unit_facing: Vec::new(),
-            under_attack_events: Vec::new(),
-            unit_lost_events: Vec::new(),
+            consequences: crate::sim::world::damage_consequences::DamageConsequences::ordinary(
+                DeathEffects::default(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
         };
     }
 
@@ -3326,7 +3263,6 @@ pub(crate) fn tick_combat(
     // recursive death weapon before the next detonation or attacker reads
     // wall, target, health, or RNG state.
     let mut emit = CombatEmit::default();
-    let mut death = DeathEffects::default();
     let mut under_attack_events = Vec::new();
     commit_projectile_detonations_inline(
         world,
@@ -3335,7 +3271,6 @@ pub(crate) fn tick_combat(
         overlay_registry,
         projectile_detonations,
         &mut emit,
-        &mut death,
         &mut under_attack_events,
     );
     for detonation in &missile_detonations {
@@ -3354,7 +3289,7 @@ pub(crate) fn tick_combat(
             rules,
             overlay_registry,
         );
-        absorb_inline_death_effects(&mut emit, &mut death, inline_death);
+        emit.effects.append(inline_death);
         under_attack_events.append(&mut pings);
     }
 
@@ -3814,8 +3749,8 @@ pub(crate) fn tick_combat(
         let n_retarget = emit.retarget_events.len();
         let n_remove = emit.remove_attack.len();
         let damage_start = emit.damage_events.len();
-        let explosion_start = emit.explosion_effects.len();
-        let smudge_start = emit.smudge_spawn_requests.len();
+        let explosion_start = emit.effects.explosion_effects.len();
+        let smudge_start = emit.effects.smudge_spawn_requests.len();
         let current_weapon_start = emit.current_weapon_updates.len();
         let fire_event_start = emit.fire_events.len();
         resolve_attacker_fire(
@@ -3830,8 +3765,8 @@ pub(crate) fn tick_combat(
             active_wave_owners.contains(&live_snap.stable_id),
             &mut emit,
         );
-        let outer_explosion_effects = emit.explosion_effects.split_off(explosion_start);
-        let outer_anim_requests = emit.smudge_spawn_requests.split_off(smudge_start);
+        let outer_explosion_effects = emit.effects.explosion_effects.split_off(explosion_start);
+        let outer_anim_requests = emit.effects.smudge_spawn_requests.split_off(smudge_start);
         for &(entity_id, weapon_index, weapon_ref) in
             &emit.current_weapon_updates[current_weapon_start..]
         {
@@ -3847,14 +3782,16 @@ pub(crate) fn tick_combat(
             rules,
             overlay_registry,
         );
-        absorb_inline_death_effects(&mut emit, &mut death, inline_death);
-        emit.explosion_effects.extend(outer_explosion_effects);
+        emit.effects.append(inline_death);
+        emit.effects
+            .explosion_effects
+            .extend(outer_explosion_effects);
         commit_smudges(
             world,
             rules,
             overlay_registry,
             outer_anim_requests,
-            &mut emit.smudge_spawn_requests,
+            &mut emit.effects.smudge_spawn_requests,
         );
         under_attack_events.append(&mut pings);
         let wave_fire_events = emit.fire_events[fire_event_start..].to_vec();
@@ -3964,21 +3901,13 @@ pub(crate) fn tick_combat(
     }
     // Destructure back into the named locals for post-fire state updates.
     let CombatEmit {
+        mut effects,
         projectile_spawns,
         mut damage_events,
-        rad_detonations,
         mut remove_attack,
         retarget_events,
         fire_events,
         reveal_events,
-        mut bridge_damage_events,
-        mut wall_mutations,
-        mut wall_radar_dirty_cells,
-        mut cell_target_detaches,
-        mut tiberium_reduction_requests,
-        mut explosion_effects,
-        mut voxel_debris,
-        mut smudge_spawn_requests,
         burst_updates,
         ammo_deduct,
         garrison_advance,
@@ -4120,7 +4049,7 @@ pub(crate) fn tick_combat(
     // death pipeline as weapon damage (death anim selection via the
     // RadSiteWarhead, owned-count bookkeeping, survivor ejection).
     if let Some(rad) = radiation_enabled.then_some(&mut world.radiation) {
-        for &det in &rad_detonations {
+        for det in effects.rad_detonations.drain(..) {
             rad.apply_detonation(
                 det,
                 binary_frame,
@@ -4210,21 +4139,9 @@ pub(crate) fn tick_combat(
             );
         }
     }
-    bridge_damage_events.append(&mut late_death.bridge_damage_events);
-    wall_mutations.append(&mut late_death.wall_mutations);
-    wall_radar_dirty_cells.append(&mut late_death.wall_radar_dirty_cells);
-    cell_target_detaches.append(&mut late_death.cell_target_detaches);
-    tiberium_reduction_requests.append(&mut late_death.tiberium_reduction_requests);
-    explosion_effects.append(&mut late_death.explosion_effects);
-    // `death` collects the deaths committed before the late radiation pass, so
-    // its debris is stamped first. It is empty in every path today —
-    // `absorb_inline_death_effects` drains `death.voxel_debris` into
-    // `CombatEmit` before the lifecycle append — but taking it in the wrong
-    // order here would invert the spawn ids the moment it stopped being empty.
-    voxel_debris.append(&mut death.voxel_debris);
-    voxel_debris.append(&mut late_death.voxel_debris);
-    smudge_spawn_requests.append(&mut late_death.smudge_spawn_requests);
-    death.append(late_death);
+    // Earlier emission and recursive death already share this accumulator;
+    // append the late radiation slice without rebuilding parallel vectors.
+    effects.append(late_death);
     under_attack_events.append(&mut late_pings);
 
     // Phase 5: remove AttackTarget from finished attackers.
@@ -4242,7 +4159,7 @@ pub(crate) fn tick_combat(
     // entity UnInit itself remains the world-owned deferred handoff.
     if sound_enabled {
         let sink = &mut world.sound_events;
-        for (die_id, rx, ry) in death.death_sounds {
+        for (die_id, rx, ry) in effects.death_sounds.drain(..) {
             sink.push(SimSoundEvent::EntityDied {
                 die_sound_id: die_id,
                 rx,
@@ -4261,26 +4178,14 @@ pub(crate) fn tick_combat(
 
     CombatTickResult {
         projectile_spawns,
-        reveal_events,
-        despawned_ids: death.despawned_ids,
-        immediate_uninit_ids: death.immediate_uninit_ids,
-        structure_destroyed: death.structure_destroyed,
-        bridge_damage_events,
-        wall_mutations,
-        wall_radar_dirty_cells,
-        cell_target_detaches,
-        terrain_navigation_changed_cells: run.navigation_changed_cells.clone(),
-        tiberium_reduction_requests,
-        fire_events,
-        destroyed_crewed_buildings: death.destroyed_crewed_buildings,
-        destroyed_garrison_buildings: death.destroyed_garrison_buildings,
-        explosion_effects,
-        voxel_debris,
-        invulnerability_impact_effects: death.invulnerability_impact_effects,
-        smudge_spawn_requests,
         unit_facing,
-        under_attack_events,
-        unit_lost_events: death.unit_lost_events,
+        consequences: crate::sim::world::damage_consequences::DamageConsequences::ordinary(
+            effects,
+            under_attack_events,
+            run.navigation_changed_cells.clone(),
+            reveal_events,
+            fire_events,
+        ),
     }
 }
 

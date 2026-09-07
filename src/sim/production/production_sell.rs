@@ -622,7 +622,8 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
 ///
 /// Returns the count of occupants successfully ejected (excludes those killed
 /// when no edge cell can be used).
-pub fn eject_destruction_garrison(
+#[cfg(test)]
+pub(crate) fn eject_destruction_garrison(
     sim: &mut Simulation,
     rules: &RuleSet,
     event: &DestroyedGarrisonBuilding,
