@@ -16,7 +16,9 @@ use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::cell_rect::canonical_cell_coord;
 use crate::sim::combat;
-use crate::sim::combat::combat_aoe::{CellTargetDetach, expire_cell_target_references};
+use crate::sim::combat::combat_aoe::expire_cell_target_references;
+#[cfg(test)]
+use crate::sim::combat::combat_aoe::CellTargetDetach;
 use crate::sim::command::{
     COMMAND_RECORD_LEN, Command, CommandEnvelope, CommandRecord, ExitRecord, MegaMissionMoveRecord,
     SellWallAtCellRecord,
@@ -434,11 +436,13 @@ impl Simulation {
         // Selling invokes exactly one PostDestructionWallCleanup at the sold
         // cell: N, E, S, W, self. It is not damage's four-cardinal fan-out.
         const CROSS: [(i32, i32); 5] = [(0, -1), (1, 0), (0, 1), (-1, 0), (0, 0)];
+        #[cfg(test)]
         let mut detach_trace: Vec<CellTargetDetach> = Vec::new();
         for (dx, dy) in CROSS {
             let visit = {
                 let mut host = SimulationWallRuntimeHost {
                     entities: &mut self.substrate.entities,
+                    #[cfg(test)]
                     detach_trace: &mut detach_trace,
                     radar_dirty_cells: &mut self.radar_terrain_dirty_cells,
                     radar_dirty_generation: &mut self.radar_terrain_dirty_generation,
@@ -527,7 +531,7 @@ impl Simulation {
         }
         self.mark_radar_terrain_dirty_cells([(rx, ry)]);
 
-        expire_cell_target_references(&mut self.substrate.entities, rx, ry, &mut detach_trace);
+        expire_cell_target_references(&mut self.substrate.entities, rx, ry, #[cfg(test)] &mut detach_trace);
 
         if let Some(tail_grid) = tail_grid {
             if self.zone_grid.is_some() {

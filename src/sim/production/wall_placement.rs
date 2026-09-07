@@ -137,9 +137,11 @@ pub(super) fn stamp_wall(
         return false;
     }
 
+    #[cfg(test)]
     let mut detach_trace = Vec::new();
     let mut host = SimulationWallRuntimeHost {
         entities: &mut sim.substrate.entities,
+        #[cfg(test)]
         detach_trace: &mut detach_trace,
         radar_dirty_cells: &mut sim.radar_terrain_dirty_cells,
         radar_dirty_generation: &mut sim.radar_terrain_dirty_generation,

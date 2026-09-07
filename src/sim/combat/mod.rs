@@ -104,7 +104,9 @@ use crate::sim::mission::authority::{
 };
 use crate::sim::mission::concrete_effects::represented_assign_target;
 use crate::sim::mission::{MissionId, MissionType};
-use crate::sim::overlay_grid::{OverlayGrid, WallMutation};
+#[cfg(test)]
+use crate::sim::overlay_grid::WallMutation;
+use crate::sim::overlay_grid::OverlayGrid;
 #[cfg(test)]
 use crate::sim::power_system::PowerState;
 use crate::sim::projectile::{
@@ -1336,8 +1338,8 @@ pub struct DestroyedCrewedBuilding {
 
 /// A `CanBeOccupied` building destroyed in combat with live occupants —
 /// gamemd routes this through `BuildingClass::SellBuilding @ 0x00457DE0`, the
-/// same occupant-eject helper used by sell. The world layer owns the deferred
-/// repositioning because it has access to `Simulation` and the occupancy grid.
+/// same occupant-eject helper used by sell. The world fatal prelude consumes
+/// this plan synchronously, before the nested death weapon and carrier UnInit.
 pub struct DestroyedGarrisonBuilding {
     pub building_id: u64,
     pub type_id: InternedId,
@@ -1567,69 +1569,16 @@ pub struct TiberiumReductionRequest {
     pub amount: i32,
 }
 
-/// Result of a combat tick: reveal events + stable IDs of despawned entities.
+/// Ordinary fire prelude plus one consuming deferred-consequence packet.
+/// The frame admits bullets and applies facing before committing the packet at
+/// its existing post-SpawnManager boundary.
 pub struct CombatTickResult {
-    /// Ordinary projectiles created by fire this frame, to admit after the
-    /// current BulletClass pass. New bullets never advance recursively.
+    /// Bullets admitted after the current BulletClass pass; no recursive advance.
     pub projectile_spawns: Vec<ProjectileSpawn>,
-    pub reveal_events: Vec<RevealEvent>,
-    pub despawned_ids: Vec<u64>,
-    /// IDs that should enter world-owned UnInit immediately this tick.
-    /// `despawned_ids` also includes SHP deaths that remain in-store for their
-    /// death animation; this list is the immediate structure/voxel handoff only.
-    pub immediate_uninit_ids: Vec<u64>,
-    /// A structure was destroyed — PathGrid needs footprint unblock.
-    pub structure_destroyed: bool,
-    /// Bridge impact cells that should apply terrain damage after combat resolution.
-    pub bridge_damage_events: Vec<BridgeDamageEvent>,
-    /// Wall writes committed inline in exact cell/recursive cleanup order.
-    pub wall_mutations: Vec<WallMutation>,
-    /// Diagnostic first-unique trace of packed wall radar coordinates. Live
-    /// production publication already occurred through the world receiver.
-    pub wall_radar_dirty_cells: Vec<(u16, u16)>,
-    /// Scanned-cell pointer-expiry visits committed inline in forward stable-ID
-    /// order, clearing before conditional Restore.
-    /// Runtime applies them in-place; tests retain the ledger as an order audit.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
-    /// Terrain cells whose inline receiver removed live spatial authority.
-    /// World rebuilds cost/path/zone caches from the already-mutated resolved
-    /// terrain before later same-frame consumers.
-    pub terrain_navigation_changed_cells: Vec<(u16, u16)>,
-    /// Tiberium cells that should be reduced through the shared cell reducer.
-    pub tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
-    /// Fire events for render-side muzzle flash / projectile origin computation.
-    pub fire_events: Vec<SimFireEvent>,
-    /// Crewed buildings destroyed this tick — survivors should be ejected by the caller.
-    pub destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding>,
-    /// Garrisoned buildings destroyed this tick — occupants should be ejected
-    /// by the caller via `production::eject_destruction_garrison`.
-    pub destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
-    /// Explosion animations to spawn at death/impact locations.
-    pub explosion_effects: Vec<ExplosionEffect>,
-    /// `VoxelAnimClass` debris a death threw. Built inside the combat
-    /// transaction, which does not hold the shared object-id allocator, so the
-    /// world stamps ids and reveals in this order.
-    pub voxel_debris: Vec<crate::sim::voxel_anim::VoxelDebrisSpawn>,
-    /// Receiver-ordered IC/ForceShield transient combat-light requests.
-    pub invulnerability_impact_effects: Vec<InvulnerabilityImpactEffect>,
-    /// Hookless-test adapter for smudge requests. Empty on the production world
-    /// path because each producer commits before returning.
-    pub smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
-    /// Per-Unit post-Foot Facing slot output — captured at Phase-2 entry before
-    /// current-frame attacker damage; that Unit's own explicit retarget/remove
-    /// may replace it, and its `Fire_At_Target` case-2 hull turn is appended
-    /// during the fire pass. Applied post-batch by
-    /// `unit_post::apply_unit_facing`. Transient — never stored, serialized, or
-    /// hashed.
+    /// Phase-2 entry facing slots, amended by explicit retarget/removal and
+    /// Fire_At_Target hull turns, applied by unit_post before SpawnManager.
     pub unit_facing: Vec<UnitFacingUpdate>,
-    /// Base-structure / harvester enemy-damage pings produced at the damage
-    /// apply site. Drained by the world into BaseUnderAttack/MinerUnderAttack
-    /// radar events + the local player's EVA dispatch.
-    pub under_attack_events: Vec<UnderAttackEvent>,
-    /// `Death_Announcement` inputs from this tick's damage kills; the world
-    /// applies the human-owner gate and the radar type-7 dedupe.
-    pub unit_lost_events: Vec<UnitLostEvent>,
+    pub(crate) consequences: crate::sim::world::damage_consequences::DamageConsequences,
 }
 
 /// A "your asset is being shot" ping: a Structure or harvester took damage
@@ -1979,24 +1928,26 @@ fn death_weapon_aoe(
     ))
 }
 
-/// Collected side-effects from processing entity deaths in a single tick.
+/// One ordered accumulator for weapon emission and recursive receiver effects.
+/// DamageConsequences consumes its deferred work at the world delivery boundary.
 #[derive(Default)]
 pub(crate) struct DeathEffects {
+    /// Fatal receivers, including SHP deaths that remain represented for animation.
     pub(crate) despawned_ids: Vec<u64>,
+    /// Remaining world UnInit requests; distinct from all fatal receiver IDs.
     pub(crate) immediate_uninit_ids: Vec<u64>,
     pub(crate) structure_destroyed: bool,
     pub(crate) destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding>,
-    pub(crate) destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
     pub(crate) explosion_effects: Vec<ExplosionEffect>,
-    /// `VoxelAnimClass` debris the death block built but could not admit: the
-    /// combat transaction borrows the entity store out of the world, so it does
-    /// not hold the shared object-id allocator. The world stamps ids and
-    /// reveals in this order.
+    /// `VoxelAnimClass` debris planned by the death block for admission at the
+    /// world consequence boundary. The live receiver has allocator access;
+    /// deferred admission preserves the existing allocation and Logic order.
     pub(crate) voxel_debris: Vec<crate::sim::voxel_anim::VoxelDebrisSpawn>,
     pub(crate) invulnerability_impact_effects: Vec<InvulnerabilityImpactEffect>,
     pub(crate) bridge_damage_events: Vec<BridgeDamageEvent>,
+    #[cfg(test)]
     pub(crate) wall_mutations: Vec<WallMutation>,
-    pub(crate) wall_radar_dirty_cells: Vec<(u16, u16)>,
+    #[cfg(test)]
     pub(crate) cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
     pub(crate) tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
     pub(crate) death_sounds: Vec<(InternedId, u16, u16)>,
@@ -2077,17 +2028,16 @@ impl DeathEffects {
         self.structure_destroyed |= other.structure_destroyed;
         self.destroyed_crewed_buildings
             .append(&mut other.destroyed_crewed_buildings);
-        self.destroyed_garrison_buildings
-            .append(&mut other.destroyed_garrison_buildings);
         self.explosion_effects.append(&mut other.explosion_effects);
         self.voxel_debris.append(&mut other.voxel_debris);
         self.invulnerability_impact_effects
             .append(&mut other.invulnerability_impact_effects);
         self.bridge_damage_events
             .append(&mut other.bridge_damage_events);
+        #[cfg(test)]
         self.wall_mutations.append(&mut other.wall_mutations);
-        self.wall_radar_dirty_cells
-            .append(&mut other.wall_radar_dirty_cells);
+
+        #[cfg(test)]
         self.cell_target_detaches
             .append(&mut other.cell_target_detaches);
         self.tiberium_reduction_requests
@@ -2705,58 +2655,25 @@ fn area_near_center_ic_isolation_armed(
 
 
 
-/// Keep physical death consequences in the emission trace at the exact source
-/// boundary while retaining lifecycle requests for the tick's deferred handoff.
-fn absorb_inline_death_effects(
-    out: &mut CombatEmit,
-    lifecycle: &mut DeathEffects,
-    mut death: DeathEffects,
-) {
-    out.bridge_damage_events
-        .append(&mut death.bridge_damage_events);
-    out.wall_mutations.append(&mut death.wall_mutations);
-    out.wall_radar_dirty_cells
-        .append(&mut death.wall_radar_dirty_cells);
-    out.cell_target_detaches
-        .append(&mut death.cell_target_detaches);
-    out.tiberium_reduction_requests
-        .append(&mut death.tiberium_reduction_requests);
-    out.explosion_effects.append(&mut death.explosion_effects);
-    out.voxel_debris.append(&mut death.voxel_debris);
-    out.smudge_spawn_requests
-        .append(&mut death.smudge_spawn_requests);
-    out.rad_detonations.append(&mut death.rad_detonations);
-    lifecycle.append(death);
-}
-
 /// Transient per-tick bag of the Phase-2 fire-emission outputs. Bundles the
 /// emit vectors so the per-attacker fire body (`resolve_attacker_fire`) can push
 /// through one `&mut` handle. Never stored on `Simulation`, never serialized,
 /// never hashed — destructured back into the named locals after the Phase-2 loop.
 #[derive(Default)]
 pub(crate) struct CombatEmit {
+    /// One receiver-ordered consequence accumulator shared by weapon emission
+    /// and fatal damage. Radiation is drained at its earlier ordinary phase.
+    pub(crate) effects: DeathEffects,
     /// Persistent ordinary bullets admitted by accepted weapon fire. The world
     /// inserts them only after this frame's BulletClass pass has completed.
     pub(crate) projectile_spawns: Vec<ProjectileSpawn>,
     /// Native-order ReceiveDamage calls, including raw area records.
     pub(crate) damage_events: Vec<combat_aoe::AreaDamageReceiver>,
-    /// Radiation-emitting detonations (weapon RadLevel > 0), folded into
-    /// `RadiationState` before the damage-application phase.
-    pub(crate) rad_detonations: Vec<crate::sim::radiation::RadDetonation>,
     pub(crate) remove_attack: Vec<u64>,
     /// (attacker_id, new_target_id)
     pub(crate) retarget_events: Vec<(u64, u64)>,
     pub(crate) fire_events: Vec<SimFireEvent>,
     pub(crate) reveal_events: Vec<RevealEvent>,
-    pub(crate) bridge_damage_events: Vec<BridgeDamageEvent>,
-    pub(crate) wall_mutations: Vec<WallMutation>,
-    pub(crate) wall_radar_dirty_cells: Vec<(u16, u16)>,
-    pub(crate) cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
-    pub(crate) tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
-    pub(crate) explosion_effects: Vec<ExplosionEffect>,
-    /// Death-thrown `VoxelAnimClass` debris awaiting an object id.
-    pub(crate) voxel_debris: Vec<crate::sim::voxel_anim::VoxelDebrisSpawn>,
-    pub(crate) smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
     /// (id, burst_rem, burst_delay, rof_cd)
     pub(crate) burst_updates: Vec<(u64, u8, u8, u16)>,
     /// aircraft that fired this tick
@@ -3899,7 +3816,7 @@ mod impact_height_tests {
         );
 
         let effect = result
-            .explosion_effects
+            .consequences.effects().explosion_effects
             .first()
             .expect("force-fire should emit the warhead's impact animation");
         assert_eq!((effect.rx, effect.ry), (5, 6));

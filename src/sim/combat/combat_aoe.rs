@@ -30,8 +30,10 @@ use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{
     OccupancyGrid, air_spatial_query_bucket_order, air_spatial_tracks_entity,
 };
+#[cfg(test)]
+use crate::sim::overlay_grid::WallMutation;
 use crate::sim::overlay_grid::{
-    OverlayGrid, WallDamageTransactionHost, WallDirtyStep, WallMutation, WallPointerTarget,
+    OverlayGrid, WallDamageTransactionHost, WallDirtyStep, WallPointerTarget,
     WallZoneRepairKind, damage_wall_overlay_with_runtime_host,
 };
 use crate::sim::rng::SimRng;
@@ -102,6 +104,7 @@ pub(crate) trait AoECellPrelude {
 
 struct AoEWallDamageHost<'borrow, 'prelude> {
     entities: &'borrow mut EntityStore,
+    #[cfg(test)]
     trace: &'borrow mut Vec<CellTargetDetach>,
     prelude: &'borrow mut Option<&'prelude mut dyn AoECellPrelude>,
 }
@@ -127,7 +130,7 @@ impl WallDamageTransactionHost for AoEWallDamageHost<'_, '_> {
 
     fn pointer_expired(&mut self, target: WallPointerTarget) {
         if let WallPointerTarget::Real(rx, ry) = target {
-            expire_cell_target_references(self.entities, rx, ry, self.trace);
+            expire_cell_target_references(self.entities, rx, ry, #[cfg(test)] self.trace);
         }
     }
 }
@@ -242,6 +245,7 @@ pub(crate) fn air_impact_from_entity(
     })
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CellTargetDetach {
     pub listener_id: u64,
@@ -256,9 +260,9 @@ pub(crate) struct AoEDamageResult {
     /// callers consume `receivers`, which is the sole ordered authority.
     #[cfg(test)]
     pub hits: Vec<EntityDamageEvent>,
+    #[cfg(test)]
     pub wall_mutations: Vec<WallMutation>,
-    /// Diagnostic trace only; a production prelude publishes radar inline.
-    pub wall_radar_dirty_cells: Vec<(u16, u16)>,
+    #[cfg(test)]
     pub cell_target_detaches: Vec<CellTargetDetach>,
 }
 
@@ -691,7 +695,7 @@ fn route_wall_before_cell_objects(
     warhead: &WarheadType,
     context: &mut AoELayerContext<'_>,
     cell_prelude: &mut Option<&mut dyn AoECellPrelude>,
-    result: &mut AoEDamageResult,
+    _result: &mut AoEDamageResult,
 ) {
     let (Some(grid), Some(registry), Some(rng)) = (
         context.overlay_grid.as_deref_mut(),
@@ -720,10 +724,11 @@ fn route_wall_before_cell_objects(
         return;
     };
 
-    let wall_result = {
+    let _wall_result = {
         let mut host = AoEWallDamageHost {
             entities,
-            trace: &mut result.cell_target_detaches,
+            #[cfg(test)]
+            trace: &mut _result.cell_target_detaches,
             prelude: cell_prelude,
         };
         damage_wall_overlay_with_runtime_host(
@@ -737,10 +742,8 @@ fn route_wall_before_cell_objects(
             Some(&mut host),
         )
     };
-    result.wall_mutations.extend(wall_result.mutations);
-    result
-        .wall_radar_dirty_cells
-        .extend(wall_result.radar_dirty_cells);
+    #[cfg(test)]
+    _result.wall_mutations.extend(_wall_result.mutations);
 }
 
 /// Broadcast one CellClass pointer-expiry notification to represented Techno
@@ -750,7 +753,7 @@ pub(crate) fn expire_cell_target_references(
     entities: &mut EntityStore,
     rx: u16,
     ry: u16,
-    trace: &mut Vec<CellTargetDetach>,
+    #[cfg(test)] trace: &mut Vec<CellTargetDetach>,
 ) {
     let listener_ids = entities.keys_sorted();
     for listener_id in listener_ids {
@@ -767,10 +770,11 @@ pub(crate) fn expire_cell_target_references(
         let mission_was_suspended =
             entity.mission.suspended() != crate::sim::mission::MissionId::NONE;
         represented_assign_target(entity, None);
-        let restored = mission_was_suspended && restore_entity_after_target_expiry(entity);
+        let _restored = mission_was_suspended && restore_entity_after_target_expiry(entity);
+        #[cfg(test)]
         trace.push(CellTargetDetach {
             listener_id,
-            restored,
+            restored: _restored,
             cleared: true,
         });
     }

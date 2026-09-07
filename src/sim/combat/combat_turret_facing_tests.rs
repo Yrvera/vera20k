@@ -1175,7 +1175,7 @@ fn gsi_08_03_homing_projectile_widens_the_fire_tolerance_to_0x1000() {
             facing_from_5_5_to_5_9().wrapping_add(offset),
             5,
         ));
-        !run_combat_direct(&mut sim, rules).fire_events.is_empty()
+        !run_combat_direct(&mut sim, rules).consequences.fire_events().is_empty()
     }
 
     let straight = rules_with_homing_projectile(0);
@@ -1286,7 +1286,7 @@ TurretAnimIsVoxel={}\n\n\
         sim.reveal(1);
         sim.reveal(2);
         use_test_interner(&mut sim);
-        !run_combat_direct(&mut sim, &rules).fire_events.is_empty()
+        !run_combat_direct(&mut sim, &rules).consequences.fire_events().is_empty()
     }
 
     // ROT=1 means one step is 0x0100.
@@ -1332,7 +1332,7 @@ fn gsi_08_04_rotation_latch_refuses_the_shot_until_the_arc_finishes() {
             5,
         ));
         attacker.turret_rotation_latch = latch;
-        !run_combat_direct(&mut sim, &rules).fire_events.is_empty()
+        !run_combat_direct(&mut sim, &rules).consequences.fire_events().is_empty()
     }
 
     // Exactly on target, so nothing but the latch can be doing the refusing.
@@ -1373,7 +1373,7 @@ fn gsi_08_04_rotation_latch_refuses_the_shot_until_the_arc_finishes() {
             5,
         ));
         attacker.turret_rotation_latch = latch;
-        !run_combat_direct(&mut sim, &rules).fire_events.is_empty()
+        !run_combat_direct(&mut sim, &rules).consequences.fire_events().is_empty()
     }
     assert!(
         fires_with_latch_omni(false),
