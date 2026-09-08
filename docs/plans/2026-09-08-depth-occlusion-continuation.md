@@ -101,3 +101,30 @@ parse errors. Archive hashes and counts are in local
 therefore have no demonstrated stock trigger. Stock cliff geometry must
 still be compared in the corrected fixture. The old
 fixture-1 screenshot report is historical, not validation of this candidate.
+
+## Screenshot follow-up and fixture correction
+
+The user's two comparison screenshots align at (+34,+36) pixels from the
+first to the second. Visible construction-yard and war-factory overlap
+boundaries show no definite depth mismatch. Unit movement and animation prevent
+using all differences as depth evidence. The user has not yet identified which
+image is native. No unit clearly intersects the cliff, and neither image has
+the intended wall ring, so those acceptance cases remain open.
+
+The missing walls were a shared fixture error: `[OverlayTypes]` begins
+`1=GASAND, 2=CYCL, 3=GAWALL, 4=BARB`, but OverlayPack indexes the zero-based
+declaration array, not the INI key. `RulesClass::Process` at 0x668BF0 and
+`ReadMapOverlayPacks` at 0x5FD2E0 confirm this. The original generator's ID 3
+selected BARB, which has no active retail section/SHP; GAWALL is ID 2.
+The generator now emits ID 2 and keeps the near-wall GI outside the ring.
+A Python regression decodes both generated maps and resolves their identities
+against the retail declaration prefix; it passes for both variants.
+
+V2 changes only 12 overlay identity bytes and that GI's cell. Terrain and wall
+connectivity planes are unchanged. The corrected cliff fixture SHA-256 is
+`6bc6d34dad3be8c5faf9639e3112ff38d5eef1532b046cc440bbed5746339828`.
+Task-local file: `target/depth-comparison/depth-walls-cliff-v2.map`.
+The isolated native campaign's existing `depthwalls20260908.map` now has these
+same bytes; restart the Soviet test mission to load them. The previous map is
+preserved in the task's comparison folder. No renderer changes or rebuild were
+needed for this fixture correction. New wall-boundary screenshots remain due.

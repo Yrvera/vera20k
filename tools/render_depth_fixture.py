@@ -120,7 +120,10 @@ def pack_lcw(data: bytes) -> str:
 
 CLEAR_TILE = 0
 CLIFF_TILE = 49  # temperatmd.ini TileSet0010 starts at Cliff01.tem (2x3).
-GAWALL = 3  # rulesmd.ini [OverlayTypes] 3=GAWALL.
+# OverlayPack stores dense zero-based declaration ordinals, not INI key text.
+# Retail starts 1=GASAND, 2=CYCL, 3=GAWALL, 4=BARB: GAWALL is ordinal 2.
+# Native RulesClass::Process @ 0x00668BF0 -> ReadMapOverlayPacks @ 0x005FD2E0.
+GAWALL = 2
 C = 48
 
 
@@ -195,7 +198,7 @@ def build_fixture(*, walls_only: bool = False) -> str:
     ]
     gis = [
         (C - 1, C, 2, 64), (C + 1, C - 1, 3, 64), (C + 4, C + 2, 2, 192),
-        (C - 1, C + 5, 2, 64), (px - 1, py + 1, 2, 64),
+        (C - 1, C + 5, 2, 64), (px - 2, py + 1, 2, 64),
     ]
     infantry = [
         f'{i}=Americans,E1,256,{x},{y},{s},Guard,{f},None,0,-1,0,1,1'
