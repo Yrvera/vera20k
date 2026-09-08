@@ -366,7 +366,14 @@ const SLICE6_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x1B22_7781_2679_7BB6;
 // this script has no derrick, DrainWeapon or capture, so only composition
 // moved (each object folds its dead constructor timer and two `None`s).
 const SLICE6_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xAB86_7AE4_CD6A_1874;
-const SLICE6_BASELINE_HASH: u64 = 0x34D6_7612_D63B_1A87;
+const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x34D6_7612_D63B_1A87;
+// v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
+// reproduces the ramp branch's current baseline exactly; older probes and RNG pins
+// are unchanged. This is Rust hash-composition provenance, not native parity.
+// 2026-09-08 integration of main 33f36d79 with ramp branch 5f41f2ea:
+// the pre-v136 probe and all older probes pass, isolating this new current
+// value to main's retained InfantryTerminal fold; existing command checks hold.
+const SLICE6_BASELINE_HASH: u64 = 0xBD1A_450A_FE28_594E;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -448,6 +455,11 @@ fn replay_hash_stable_through_slice6() {
     let pre_wall_runtime_hash = sim.state_hash_without_wall_runtime_v115();
     let pre_disguise_detect_hash = sim.state_hash_without_disguise_detect_v117();
     let pre_credit_income_hash = sim.state_hash_without_credit_income_v135();
+    assert_eq!(
+        sim.state_hash_without_infantry_terminal_v136(),
+        SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH,
+        "pre-v136 composition must reproduce the prior Slice 6 baseline"
+    );
     let hash = sim.state_hash();
     println!(
         "[slice6] hashes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},pre-v115:{pre_wall_runtime_hash:016X},pre-v117:{pre_disguise_detect_hash:016X},pre-v135:{pre_credit_income_hash:016X},current:{hash:016X}"

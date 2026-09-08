@@ -560,7 +560,6 @@ impl App {
                     pending_fire_effects: Vec::new(),
                     garrison_muzzle_flashes: Vec::new(),
                     weapon_muzzle_flashes: Vec::new(),
-                    projectile_visuals: Vec::new(),
                     parachute_anims: Vec::new(),
                     idle_anim_elapsed_ms: 0,
                     building_anim_phase_base: std::collections::BTreeMap::new(),

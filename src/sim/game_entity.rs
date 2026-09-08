@@ -791,6 +791,8 @@ pub struct GameEntity {
     /// Whether this entity is playing its death animation (health=0, not yet despawned).
     /// Dying entities are excluded from combat targeting, pathfinding, and selection.
     pub dying: bool,
+    /// Retained Infantry lifetime policy; sprite animation stores progress only.
+    pub(crate) infantry_terminal: Option<crate::sim::world::InfantryTerminal>,
     /// Ticks remaining before a permanently blocked infantry scatters sideways.
     /// Set when movement is stuck on a non-temporary obstacle; counts down each tick.
     /// When it reaches 0, the unit scatters to a random adjacent cell instead of
@@ -1293,6 +1295,7 @@ impl GameEntity {
             zfudge_bridge: 0,
             too_big_to_fit_under_bridge: false,
             dying: false,
+            infantry_terminal: None,
             blocked_scatter_timer: 0,
             move_sound_active: false,
             move_sound_countdown: 0,

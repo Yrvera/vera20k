@@ -597,7 +597,14 @@ const GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x8CA1_75A9_1A1A_7699;
 // Re-baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01),
 // composition-only: `GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH` holds the
 // prior value and every historical probe and stream pin is unchanged.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x53C3_17DD_E1B0_51F6;
+const GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x53C3_17DD_E1B0_51F6;
+// v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
+// reproduces the ramp branch's current baseline exactly; older probes and RNG pins
+// are unchanged. This is Rust hash-composition provenance, not native parity.
+// 2026-09-08 integration of main 33f36d79 with ramp branch 5f41f2ea:
+// the pre-v136 probe and all older probes pass, isolating this new current
+// value to main's retained InfantryTerminal fold; replay and RNG pins hold.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x71EC_0BD6_ED9D_45CC;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -922,6 +929,11 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     let pre_wall_runtime_hash = rep.state_hash_without_wall_runtime_v115();
     let pre_disguise_detect_hash = rep.state_hash_without_disguise_detect_v117();
     let pre_credit_income_hash = rep.state_hash_without_credit_income_v135();
+    assert_eq!(
+        rep.state_hash_without_infantry_terminal_v136(),
+        GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH,
+        "pre-v136 composition must reproduce the prior global baseline"
+    );
     println!(
         "[global parity] probes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},pre-v115:{pre_wall_runtime_hash:016X},pre-v117:{pre_disguise_detect_hash:016X},pre-v135:{pre_credit_income_hash:016X}"
     );

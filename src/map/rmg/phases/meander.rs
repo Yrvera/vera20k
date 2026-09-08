@@ -46,7 +46,7 @@ const STEP_HALF: f64 = 0.5;
 const STEP_LOG_FLOOR: f64 = 1.0;
 
 /// Heading drift per step, as a multiple of the Gaussian.
-const HEADING_DRIFT: f64 = 0.785_398_163_397_448_3; // π/4
+const HEADING_DRIFT: f64 = std::f64::consts::FRAC_PI_4;
 
 const PI: f64 = std::f64::consts::PI;
 const TAU: f64 = std::f64::consts::TAU;

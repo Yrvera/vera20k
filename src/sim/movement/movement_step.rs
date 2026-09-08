@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 
+use super::cell_arrival::CellArrival;
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::LocomotorKind;
@@ -26,8 +27,7 @@ use crate::sim::movement::movement_occupancy::{
     evaluate_runtime_can_enter_cell_with_transition, naval_terrain_diag,
     runtime_can_enter_cell_args,
 };
-use crate::sim::movement::movement_reservation::reserve_destination_after_transition;
-use crate::sim::occupancy::{CellListInsertion, CellOccupationGrid, OccupancyGrid};
+use crate::sim::occupancy::{CellOccupationGrid, OccupancyGrid};
 use crate::sim::pathfinding::LayeredEntityBlockMap;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
@@ -2360,57 +2360,26 @@ pub(super) fn process_cell_crossings(
         } else {
             MovementLayer::Ground
         };
-        // Update occupancy grid: move entity from old cell to new cell, removing
-        // on the OLD layer and inserting on the NEW layer (verified two-layer
-        // order). Uses current sub_cell (from old cell). For infantry,
-        // reserve_destination below may allocate a new sub-cell and correct it
-        // via update_sub_cell.
-        let insertion = CellListInsertion::from_category(category);
-        let order = next_occupancy_enter_order.next();
-        *occupancy_enter_order = order;
-        occupancy.move_entity_layered(
-            old_rx,
-            old_ry,
-            nx,
-            ny,
+        CellArrival {
             entity_id,
-            old_occupancy_layer,
-            new_occupancy_layer,
-            *sub_cell,
-            insertion,
-        );
-        if category == EntityCategory::Unit
-            && let Some(drive) = drive_locomotion.as_mut()
-        {
-            crate::sim::occupancy::mark_current_drive_occupation_after_crossing(
-                drive,
-                cell_occupation,
-                entity_id,
-                (nx, ny),
-                new_occupancy_layer,
-            );
-        }
-        active_layer = next_layer;
-        if let Some(loco) = locomotor {
-            loco.layer = next_layer;
-        }
-        reserve_destination_after_transition(
             category,
-            entity_id,
-            locomotor,
+            from: (old_rx, old_ry),
+            to: (nx, ny),
+            old_list_layer: old_occupancy_layer,
+            new_list_layer: new_occupancy_layer,
             position,
+            locomotor,
+            drive_locomotion,
             sub_cell,
-            next_layer,
-            nx,
-            ny,
+            occupancy_enter_order,
+            next_occupancy_enter_order,
             occupancy,
-            snap.sub_cell_priority_mission && snap.nav_com_cell == Some((nx, ny)),
-        );
-        // After reservation, infantry sub_cell may have changed.
-        if category == EntityCategory::Infantry {
-            occupancy.update_sub_cell(nx, ny, entity_id, *sub_cell);
+            cell_occupation,
+            stats,
+            priority: snap.sub_cell_priority_mission && snap.nav_com_cell == Some((nx, ny)),
         }
-        stats.moved_steps = stats.moved_steps.saturating_add(1);
+        .ordinary(next_layer);
+        active_layer = next_layer;
 
         configure_motion_after_transition(
             target,

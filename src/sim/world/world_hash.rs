@@ -540,6 +540,12 @@ impl Simulation {
         self.state_hash_with_schema(HashSchema::Before(135))
     }
 
+    /// Reconstruct the v135 composition before the Infantry terminal-policy fold.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_infantry_terminal_v136(&self) -> u64 {
+        self.state_hash_with_schema(HashSchema::Before(136))
+    }
+
     /// Test-only provenance probe for the schema-v115 retained wall-count and
     /// shared-dummy overlay folds.
     #[cfg(test)]
@@ -1322,6 +1328,9 @@ impl Simulation {
                 entity.dying.hash(hasher);
                 entity.dirty_rect_eligible.hash(hasher);
                 entity.owned_count_released.hash(hasher);
+            }
+            if schema.includes(HashFeature::InfantryTerminal) {
+                entity.infantry_terminal.hash(hasher);
             }
             if schema.includes(HashFeature::TechnoPlayfield) {
                 // TechnoClass+0x3D5 is mutable admission state, not a derived

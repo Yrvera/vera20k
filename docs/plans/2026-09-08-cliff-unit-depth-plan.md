@@ -307,3 +307,45 @@ so the log does not independently identify the map. No pixels were inspected by 
 the bridge drawing/entrance comparison remains a user acceptance check.
 The Cargo slot was explicitly returned after this task's release build finished;
 a separate owner's active build was left untouched.
+
+## Integration for publication
+
+The user authorized publication and merge on 2026-09-08, followed by the separate
+bridge work. Integrated `origin/main` at `33f36d79699687afa16e64eef8a6a471910efc7e`
+into the existing depth branch at `5f41f2ea`. Main's shared `CellArrival` and entity
+construction owners are retained. Walk height still precedes arrival bookkeeping;
+paid Drive/Ship height follows it, while residual crossings preserve the prior raw Z.
+
+Snapshot version 138 combines main's v136 Infantry terminal field and this branch's
+v137 movement-resume contract. The earlier runnable v137 build lacked that field,
+so accepting its saves with the merged layout would be unsafe. Existing version
+rejection and terminal restore tests remain active.
+
+Three current replay fingerprints were composed with main's new Infantry terminal
+hash fold. Each pre-v136 projection exactly reproduces the premerge depth branch,
+and every older projection passes. The initial integration run reached only the
+three final current-hash assertions; its 738 other world tests passed. The current
+versus pre-v136 hash policies differ only by the `InfantryTerminal` field fold.
+An independent critic checked the source, observed values and assertion order.
+
+| Fixture | Pre-v136 / premerge depth branch | Integrated current hash |
+| --- | --- | --- |
+| Global | `53C317DDE1B051F6` | `71EC0BD6ED9D45CC` |
+| Bridge | `964B448BA90BD06A` | `3CCCDF294DDA4D4F` |
+| Slice6 | `34D67612D63B1A87` | `BD1A450AFE28594E` |
+
+These are Rust composition/regression checks, not native replay equivalence.
+The global RNG pins, bridge route and replay assertions, Slice6 command checks,
+and S2 position fingerprint remain unchanged.
+
+Final integrated library run:
+`test result: ok. 8535 passed; 0 failed; 88 ignored; 0 measured; 0 filtered out; finished in 26.36s`.
+Only two test comments were clarified after compilation; no test logic or production
+code changed. Focused checks separately passed 12 ground-height, 85 movement-arrival
+and 86 snapshot tests. Actual GPU validation:
+`test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 8615 filtered out; finished in 0.80s`.
+Both native oracles reproduce all 158 height and 85 Foot-depth cases with the
+explicit original executable path. The System Map checker reports zero errors.
+
+The bridge split/composite and under-span walking limits above remain separate;
+integration does not close them or claim whole-scene visual parity.

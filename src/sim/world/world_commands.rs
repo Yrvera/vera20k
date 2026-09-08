@@ -34,7 +34,7 @@ use crate::sim::movement::jumpjet_movement;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::teleport_movement;
 use crate::sim::overlay_grid::{
-    RecomputeResult, recalc_overlay_passability, runtime_wall_cleanup_visit_at,
+    NavigationPublication, OverlayRecalcOutcome, RecomputeResult, runtime_wall_cleanup_visit_at,
 };
 use crate::sim::passenger;
 use crate::sim::pathfinding::PathGrid;
@@ -423,9 +423,13 @@ impl Simulation {
             // eight neighbour contributions permanently.
             grid.clear_overlay(rx, ry);
             if let Some(terrain) = self.resolved_terrain.as_mut() {
-                let changed = recalc_overlay_passability(grid, terrain, overlays, rx, ry);
-                grid.record_synchronous_passability_change_at(rx, ry, changed);
-                changed
+                grid.recalculate_runtime_cell(
+                    terrain,
+                    overlays,
+                    (rx, ry),
+                    NavigationPublication::NextPathReader,
+                )
+                .navigation_changed
             } else {
                 false
             }
@@ -478,28 +482,17 @@ impl Simulation {
                 continue;
             };
             let result = visit.recomputed;
-            let mut navigation_changed = false;
-            let old_zone = self
-                .resolved_terrain
-                .as_ref()
-                .and_then(|terrain| terrain.cell(nx, ny))
-                .map(|cell| cell.zone_type);
-            if let Some(grid) = self.overlay_grid.as_mut() {
-                if let Some(terrain) = self.resolved_terrain.as_mut() {
-                    navigation_changed =
-                        recalc_overlay_passability(grid, terrain, overlays, nx, ny);
-                    grid.record_synchronous_passability_change_at(nx, ny, navigation_changed);
-                }
-            }
-            self.refresh_wall_sale_recalc_prefix(&mut tail_grid, nx, ny, navigation_changed);
-            let cleanup_zone_changed = old_zone
-                .zip(
-                    self.resolved_terrain
-                        .as_ref()
-                        .and_then(|terrain| terrain.cell(nx, ny))
-                        .map(|cell| cell.zone_type),
-                )
-                .is_some_and(|(old, new)| old != new);
+            let recalc = match (self.overlay_grid.as_mut(), self.resolved_terrain.as_mut()) {
+                (Some(grid), Some(terrain)) => grid.recalculate_runtime_cell(
+                    terrain,
+                    overlays,
+                    (nx, ny),
+                    NavigationPublication::NextPathReader,
+                ),
+                _ => OverlayRecalcOutcome::default(),
+            };
+            self.refresh_wall_sale_recalc_prefix(&mut tail_grid, nx, ny, recalc.navigation_changed);
+            let cleanup_zone_changed = recalc.zone_changed;
             if cleanup_zone_changed && let Some(prefix_grid) = tail_grid.as_ref() {
                 self.repair_wall_sale_zone_prefix(
                     prefix_grid,

@@ -35,14 +35,22 @@ impl NavigationCaches<'_> {
         let mut grid = PathGrid::from_resolved_terrain_with_bridges(terrain, bridges);
         *self.terrain_costs = build_canonical_terrain_cost_grids(terrain);
 
+        // Cell membership owns footprint presence, not EntityStore residency.
+        // Native: Techno enter/exit (0x005683C0 / 0x005687F0) call CellClass
+        // AddContent/RemoveContent (0x0047E8A0 / 0x0047EA90), which mark/clear
+        // occupation; see docs/research/bridges/02-cell-state-layering-zones/
+        // BRIDGE_OCCUPANCY_OBJECT_LISTS_GHIDRA_REPORT.md. Held factory objects
+        // and retained attached upgrades have no independent marked footprint.
+        // A dying structure still blocks until the lifecycle owner unmarks it.
         let mut structures: Vec<(u16, u16, String)> = entities
             .values()
             .filter_map(|entity| {
-                (entity.category == EntityCategory::Structure).then_some((
-                    entity.position.rx,
-                    entity.position.ry,
-                    interner.resolve(entity.type_ref()).to_string(),
-                ))
+                (entity.category == EntityCategory::Structure && entity.lifecycle.cell_marked)
+                    .then_some((
+                        entity.position.rx,
+                        entity.position.ry,
+                        interner.resolve(entity.type_ref()).to_string(),
+                    ))
             })
             .collect();
         structures.sort_by(|a, b| {

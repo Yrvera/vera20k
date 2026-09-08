@@ -3004,9 +3004,12 @@ impl Simulation {
     }
 
     pub(crate) fn uninit_with_context(&mut self, stable_id: u64, context: UninitContext<'_>) {
-        if !self.substrate.entities.contains(stable_id) {
+        let Some(entity) = self.substrate.entities.get_mut(stable_id) else {
             return;
-        }
+        };
+        // Consume deferred/retained Infantry lifetime before pointer-expiry
+        // callbacks, including an UnInit that overtakes receiver delivery.
+        entity.infantry_terminal = None;
 
         self.run_represented_uninit_pre_hook(stable_id);
         self.uninit_carried_passengers(stable_id, context);

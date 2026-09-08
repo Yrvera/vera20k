@@ -303,6 +303,8 @@ fn unit_authoritative_fire_kills_target_via_advance_tick() {
     let rules = rules_with_mtnk_rot(100);
     sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
 
+    sim.substrate.entities.get_mut(1).unwrap().mark_live_contact_with(2);
+    sim.substrate.entities.get_mut(2).unwrap().mark_live_contact_with(1);
     let start_hp = sim.substrate.entities.get(2).unwrap().health.current;
     let mut fired = false;
     let mut target_gone = false;
@@ -325,6 +327,9 @@ fn unit_authoritative_fire_kills_target_via_advance_tick() {
         target_gone,
         "repeated fire should have killed and despawned the target"
     );
+    let survivor = sim.substrate.entities.get(1).unwrap();
+    assert!(survivor.attack_target.is_none());
+    assert!(!survivor.has_live_contact_with(2));
 }
 
 // --- S3 per-object facing-destination tests (read in the P2 window) ---

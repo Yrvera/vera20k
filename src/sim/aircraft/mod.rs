@@ -723,9 +723,12 @@ pub fn tick_aircraft_missions(
         // ReceiveDamage 0x004165C0`, result 4 → `+0x3B8` at `0x00416613`)
         // announces, and that runs through the combat kill loop.
         if m.self_destruct {
+            let infantry_terminal = sim.begin_raw_infantry_death(m.id, None);
             if let Some(entity) = sim.substrate.entities.get_mut(m.id) {
-                entity.health.current = 0;
-                entity.dying = true;
+                if !infantry_terminal {
+                    entity.health.current = 0;
+                    entity.dying = true;
+                }
                 entity.aircraft_mission = None;
             }
             continue;
@@ -884,9 +887,12 @@ pub fn tick_aircraft_missions(
     // (`+0xF8`) with no `Death_Announcement` (`+0x3B8`).
     for m in &mutations {
         if m.paradrop_silent_despawn {
+            let infantry_terminal = sim.begin_raw_infantry_death(m.id, None);
             if let Some(entity) = sim.substrate.entities.get_mut(m.id) {
-                entity.health.current = 0;
-                entity.dying = true;
+                if !infantry_terminal {
+                    entity.health.current = 0;
+                    entity.dying = true;
+                }
                 entity.aircraft_mission = None;
             }
         }

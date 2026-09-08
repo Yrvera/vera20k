@@ -1121,53 +1121,30 @@ pub(crate) fn handle_death(
                 }
             }
 
-            if has_animation {
-                // Transitional Infantry/SHP handoff: health was already reduced
-                // to zero by damage processing. Combat owns only the Rust death
-                // gate and sequence selection until Mission/Foot owns cadence.
-                // Select InfDeath variant from the killing warhead (default Die1).
-                let inf_death: u8 = killing_warhead
-                    .as_ref()
-                    .map(|(wh, _)| wh.inf_death)
-                    .unwrap_or(1);
-                // The two arms are mutually exclusive in native: the jump
-                // table at 0x00518D58 either runs `Do_Action(Die1|Die2)` with
-                // no anim (InfDeath 1, 2) or spawns an anim with no sequence
-                // (InfDeath 3..10), and InfDeath 0 or > 10 does neither.
-                if category == EntityCategory::Infantry
-                    && crate::sim::animation::inf_death_spawns_anim(inf_death)
-                {
-                    concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Infantry {
-                        inf_death,
-                        rx,
-                        ry,
-                        sub_x,
-                        sub_y,
-                        z,
-                        world_z_leptons,
-                    });
-                }
+            let inf_death = killing_warhead.as_ref().map_or(1, |(wh, _)| wh.inf_death);
+            if category == EntityCategory::Infantry {
+                let postlude = world.begin_infantry_receiver_death(
+                    dead_id,
+                    inf_death,
+                    &mut immediate_uninit_ids,
+                );
+                concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Infantry(postlude));
+                despawned_ids.push(dead_id);
+            } else if has_animation {
+                // Non-Infantry SHP lifetime remains on its existing path.
                 if let Some(entity) = world.substrate.entities.get_mut(dead_id) {
                     entity.dying = true;
-                    if let Some(sequence) =
-                        crate::sim::animation::death_sequence_for_inf_death(inf_death)
-                    {
-                        if let Some(ref mut anim) = entity.animation {
-                            anim.switch_to(sequence);
-                        }
+                    if let (Some(sequence), Some(anim)) = (
+                        crate::sim::animation::death_sequence_for_inf_death(inf_death),
+                        entity.animation.as_mut(),
+                    ) {
+                        anim.switch_to(sequence);
                     }
                 }
-                // Still report as "despawned" for fog/path updates — entity is
-                // functionally dead even though the sprite lingers for the animation.
                 despawned_ids.push(dead_id);
-                log::trace!("Entity {} dying (death animation)", dead_id);
             } else {
-                // Structures and voxel vehicles remain otherwise intact. The
-                // world consumes this request through ordered UnInit, which owns
-                // deselection, targets, radio, cell/logic state, and passengers.
                 immediate_uninit_ids.push(dead_id);
                 despawned_ids.push(dead_id);
-                log::trace!("Entity {} destroyed", dead_id);
             }
         }
     }
@@ -1286,51 +1263,7 @@ pub(crate) fn handle_death(
             );
         }
     }
-
-    // Concrete InfDeath AnimClass and building destruction smudges are the
-    // receiver postlude. The structure is intentionally still represented and
-    // its raw occupation bytes remain live in the world during dispatch.
-    for plan in concrete_smudge_plans {
-        let mut requests = Vec::new();
-        match plan {
-            ConcreteDeathSmudgePlan::Infantry {
-                inf_death,
-                rx,
-                ry,
-                sub_x,
-                sub_y,
-                z,
-                world_z_leptons,
-            } => emit_infantry_death_anim(
-                &rules.general,
-                inf_death,
-                rx,
-                ry,
-                sub_x,
-                sub_y,
-                z,
-                world_z_leptons,
-                &mut world.interner,
-                &mut explosion_effects,
-                &mut requests,
-            ),
-            ConcreteDeathSmudgePlan::Building {
-                rx,
-                ry,
-                z,
-                foundation,
-            } => append_building_smudge_requests(&mut requests, rx, ry, z, &foundation),
-        }
-        commit_smudges(
-            world,
-            rules,
-            overlay_registry,
-            requests,
-            &mut smudge_spawn_requests,
-        );
-    }
-
-    DeathEffects {
+    let mut effects = DeathEffects {
         despawned_ids,
         immediate_uninit_ids,
         structure_destroyed,
@@ -1351,7 +1284,31 @@ pub(crate) fn handle_death(
         unit_lost_events,
         #[cfg(test)]
         receiver_stage_trace,
+    };
+
+    // The receiver owns the recursion boundary; each concrete owner consumes
+    // its captured postlude here without moving constructor/smudge RNG earlier.
+    for plan in concrete_smudge_plans {
+        match plan {
+            ConcreteDeathSmudgePlan::Infantry(postlude) => {
+                postlude.commit(world, rules, overlay_registry, &mut effects);
+            }
+            ConcreteDeathSmudgePlan::Building {
+                rx, ry, z, foundation,
+            } => {
+                let mut requests = Vec::new();
+                append_building_smudge_requests(&mut requests, rx, ry, z, &foundation);
+                commit_smudges(
+                    world,
+                    rules,
+                    overlay_registry,
+                    requests,
+                    &mut effects.smudge_spawn_requests,
+                );
+            }
+        }
     }
+    effects
 }
 
 fn emit_one_projectile_detonation(
@@ -3967,6 +3924,9 @@ pub(crate) fn tick_combat(
     }
     for &(attacker_id, sequence) in &animation_switches {
         if let Some(entity) = world.substrate.entities.get_mut(attacker_id) {
+            if entity.infantry_terminal.is_some() {
+                continue;
+            }
             if let Some(ref mut anim) = entity.animation {
                 anim.switch_to(sequence);
             }

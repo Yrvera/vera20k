@@ -119,7 +119,6 @@ fn factory_restore_preserves_supported_held_states_and_constructor_graphs() {
         ("mobile-retry", "MTNK", ProductionCategory::Vehicle),
         ("absent-house", "E1", ProductionCategory::Infantry),
         ("retained-playfield", "E1", ProductionCategory::Infantry),
-        ("damaged-held", "E1", ProductionCategory::Infantry),
         ("unrelated-limbo", "PARENT", ProductionCategory::Building),
         ("empty-registry", "PARENT", ProductionCategory::Building),
     ] {
@@ -171,13 +170,6 @@ fn factory_restore_preserves_supported_held_states_and_constructor_graphs() {
             }
             "absent-house" => {
                 saved.houses.remove(&owner);
-            }
-            "damaged-held" => {
-                // Current coordinate-based superweapon ingress can create this
-                // live state; admission must not reclassify it as save corruption.
-                let entity = saved.substrate.entities.get_mut(parent).unwrap();
-                entity.health.current = 0;
-                entity.dying = true;
             }
             "unrelated-limbo" => {
                 saved
