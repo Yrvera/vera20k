@@ -874,10 +874,12 @@ fn recalc_real_crate_mark_cell(
     else {
         return;
     };
-    let changed = crate::sim::overlay_grid::recalc_overlay_passability(
-        grid, terrain, registry, cell.0, cell.1,
+    grid.recalculate_runtime_cell(
+        terrain,
+        registry,
+        cell,
+        crate::sim::overlay_grid::NavigationPublication::NextPathReader,
     );
-    grid.record_synchronous_passability_change_at(cell.0, cell.1, changed);
 }
 
 fn set_crate_mark_data(sim: &mut Simulation, cell: (u16, u16), data: u8) {
@@ -2107,6 +2109,123 @@ pub(crate) mod tests {
             assert_eq!(written.overlay_id, registry.id_for_name(name));
             assert_eq!(written.overlay_data, expected_data, "configured {name}");
         }
+    }
+
+    #[test]
+    fn crate_mark_publishes_navigation_before_next_reader_and_frame_delivery() {
+        use crate::sim::overlay_grid::NavigationPublication;
+        use crate::sim::world::TickLane;
+        use std::sync::Arc;
+
+        let registry = OverlayTypeRegistry::from_ini(
+            &IniFile::from_str(
+                "[OverlayTypes]\n0=ROADBOX\n[ROADBOX]\nLand=Road\n[Road]\nFoot=37%\nTrack=100%\n",
+            ),
+            None,
+        );
+        let rules = crate_ruleset_with_images("ROADBOX", "ROADBOX", "ROADBOX", "CrateMinimum=0\n");
+        let mut sim = sim_with_grid(0xDA7A_0020);
+        // Mark is invoked below; autonomous crate spawning is outside this fixture.
+        sim.session.game_options.crates = false;
+        sim.production.ore_growth_config.grows = false;
+        sim.production.ore_growth_config.spreads = false;
+        assert!(sim.rebuild_dynamic_navigation(&rules));
+        let cells = [(12, 13), (6, 13)];
+        for cell in cells {
+            assert_eq!(
+                sim.terrain_costs[&SpeedType::Foot].cost_at(cell.0, cell.1),
+                100
+            );
+            assert_eq!(
+                validate_and_stamp_candidate(
+                    &mut sim,
+                    &rules.crate_rules,
+                    &registry,
+                    cell,
+                    ForcedPostPrecheckFailure::None,
+                ),
+                AcceptedCellResult::Visible
+            );
+            let projected = sim
+                .resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(cell.0, cell.1)
+                .unwrap();
+            assert_eq!(projected.land_type, LandType::Road.as_index());
+            assert_eq!(projected.speed_costs.foot, Some(37));
+            assert_eq!(
+                sim.terrain_costs[&SpeedType::Foot].cost_at(cell.0, cell.1),
+                100,
+                "canonical navigation waits for the next-reader boundary"
+            );
+        }
+        let repeated = sim.overlay_grid.as_mut().unwrap().recalculate_runtime_cell(
+            sim.resolved_terrain.as_mut().unwrap(),
+            &registry,
+            cells[0],
+            NavigationPublication::NextPathReader,
+        );
+        assert!(!repeated.navigation_changed);
+        let mut pending = sim.overlay_grid.as_ref().unwrap().clone();
+        assert_eq!(pending.take_synchronous_navigation_cells(), cells);
+        assert_eq!(
+            pending.take_dirty_cells_with_passability_signal(),
+            (cells.to_vec(), true)
+        );
+
+        // Even an empty receiver batch executes the production consequence settlement.
+        // It must publish pending crate terrain before its next navigation reader.
+        sim.commit_noncombat_aoe_receivers(&rules, Some(&registry), &[]);
+        for cell in cells {
+            assert_eq!(
+                sim.terrain_costs[&SpeedType::Foot].cost_at(cell.0, cell.1),
+                37
+            );
+        }
+        let mut pending = sim.overlay_grid.as_ref().unwrap().clone();
+        assert!(pending.take_synchronous_navigation_cells().is_empty());
+        assert_eq!(
+            pending.take_dirty_cells_with_passability_signal(),
+            (cells.to_vec(), true),
+            "next-reader settlement does not consume presentation dirtiness or the frame signal"
+        );
+        let settled = sim.path_grid_snapshot().unwrap();
+        let first = sim.advance_app_frame(
+            &[],
+            Some(&rules),
+            &std::collections::BTreeMap::new(),
+            Some(&registry),
+            67,
+            TickLane::Ordinary,
+            None,
+        );
+        assert_eq!(
+            first
+                .overlay_updates
+                .iter()
+                .map(|entry| (entry.rx, entry.ry))
+                .collect::<Vec<_>>(),
+            cells
+        );
+        assert_eq!(first.tick.state_hash, sim.state_hash());
+        let published = sim.path_grid_snapshot().unwrap();
+        assert!(
+            !Arc::ptr_eq(&settled, &published),
+            "the independent frame signal also publishes"
+        );
+        let second = sim.advance_app_frame(
+            &[],
+            Some(&rules),
+            &std::collections::BTreeMap::new(),
+            Some(&registry),
+            67,
+            TickLane::Ordinary,
+            None,
+        );
+        assert!(second.overlay_updates.is_empty());
+        assert!(Arc::ptr_eq(&published, &sim.path_grid_snapshot().unwrap()));
+        assert_eq!(second.tick.state_hash, sim.state_hash());
     }
 
     #[test]

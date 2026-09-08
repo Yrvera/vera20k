@@ -12,42 +12,14 @@ use crate::map::overlay::{OverlayDataPack, OverlayEntry};
 use crate::map::overlay_types::{
     OverlayTypeRegistry, clears_tiberium_on_slope, is_bridge_overlay_index,
 };
-use crate::map::resolved_terrain::{
-    ResolvedTerrainGrid,
-};
-#[cfg(test)]
-use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::sim::intern::InternedId;
-use crate::sim::occupancy::OBJECT_OCCUPATION_BIT;
 use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
 use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 use std::collections::BTreeSet;
 
 const MARK_MAX_SLOPE: u8 = 4;
 const MARK_STEEP_SLOPE_EXCEPTION_ID: u8 = 0xB2;
-
-/// Result of the ordinary, non-editor overlay placement boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeOverlayPlacementResult {
-    Placed,
-    RejectedUnallocatedCell,
-    RejectedTerrainObject,
-    RejectedUnknownType,
-    RejectedSteepSlope,
-    RejectedPassability,
-    RejectedProtectedOverlay,
-}
-
-/// Live CellClass facts consumed by ordinary non-editor OverlayClass::Mark.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct NativeOverlayMarkContext {
-    /// Exact TerrainClass presence in the target cell's active ground list.
-    pub terrain_object_present: bool,
-    /// Cell+0x124 or Cell+0x128, selected by the live bridge-layer rule.
-    pub selected_occupation_bits: u8,
-    /// True when CheckCellPassability selected the bridge occupation plane.
-    pub bridge_layer_selected: bool,
-}
 
 /// Universal pre-stamp slope gate shared by native-style Mark entry points.
 fn mark_rejects_steep_slope(slope_type: u8, overlay_id: u8) -> bool {
@@ -151,6 +123,23 @@ pub struct OverlayGrid {
     /// Drained by `World` before post-combat order readers rebuild paths/zones.
     #[serde(skip, default)]
     synchronous_navigation_cells: Vec<(u16, u16)>,
+}
+
+/// Which existing world-reader boundary needs the synchronous projection.
+/// VERA-internal delivery policy, gamemd equivalent UNCHECKED. Native callback
+/// order remains with the mutation owner; these receipts do not run callbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NavigationPublication {
+    /// The owner already publishes inline, or its first reader is the frame tail.
+    FrameBoundary,
+    /// Publish the changed cell before the next path/zone reader as well.
+    NextPathReader,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OverlayRecalcOutcome {
+    pub navigation_changed: bool,
+    pub zone_changed: bool,
 }
 
 /// `OverlayClass::Mark @ 0x005FC570`'s wall tail (`0x005FC758..0x005FC775`):
@@ -500,7 +489,7 @@ impl OverlayGrid {
         // Native wall lifecycle evidence: OverlayClass::Mark increments at
         // 0x005FC762..0x005FC775; DestroyOverlay decrements at
         // 0x00481070..0x00481082; cleanup auto-removal's conditional decrement
-        // is finalized by recalc_wall_mutation_passability below.
+        // uses the zone comparison returned by recalculate_runtime_cell below.
         let (width, height) = (self.width, self.height);
         let Some(counts) = self.retained_wall_neighbor_counts.as_mut() else {
             return;
@@ -604,65 +593,6 @@ impl OverlayGrid {
             };
             self.dirty_cells.push((rx, ry));
         }
-    }
-
-    /// Ordinary native-style runtime placement. Raw loaders and specialized
-    /// writers retain [`OverlayGrid::place_overlay`] for intentional bypasses.
-    pub fn place_overlay_native_runtime(
-        &mut self,
-        resolved_terrain: &mut ResolvedTerrainGrid,
-        registry: &OverlayTypeRegistry,
-        mark_context: NativeOverlayMarkContext,
-        rx: u16,
-        ry: u16,
-        overlay_id: u8,
-    ) -> NativeOverlayPlacementResult {
-        let Some(terrain_cell) = resolved_terrain.cell(rx, ry) else {
-            return NativeOverlayPlacementResult::RejectedUnallocatedCell;
-        };
-        if mark_context.terrain_object_present {
-            return NativeOverlayPlacementResult::RejectedTerrainObject;
-        }
-        let Some(new_flags) = registry.flags(overlay_id) else {
-            return NativeOverlayPlacementResult::RejectedUnknownType;
-        };
-        if mark_rejects_steep_slope(terrain_cell.slope_type, overlay_id) {
-            return NativeOverlayPlacementResult::RejectedSteepSlope;
-        }
-        let existing_flags = self
-            .cell(rx, ry)
-            .overlay_id
-            .and_then(|existing| registry.flags(existing));
-        if mark_context.selected_occupation_bits & OBJECT_OCCUPATION_BIT != 0
-            || existing_flags.is_some_and(|flags| flags.wall)
-            || (!mark_context.bridge_layer_selected && terrain_cell.speed_costs.track == Some(0))
-        {
-            return NativeOverlayPlacementResult::RejectedPassability;
-        }
-        if existing_flags.is_some_and(|flags| flags.overrides) {
-            return NativeOverlayPlacementResult::RejectedProtectedOverlay;
-        }
-        let Some(idx) = index_of(self.width, self.height, rx, ry) else {
-            return NativeOverlayPlacementResult::RejectedUnallocatedCell;
-        };
-        self.cells[idx] = OverlayCell {
-            overlay_id: Some(overlay_id),
-            overlay_data: if new_flags.crate_type { u8::MAX } else { 0 },
-            wall_owner: None,
-        };
-        self.dirty_cells.push((rx, ry));
-        if new_flags.wall {
-            refresh_wall_connectivity_after_placement(
-                self,
-                registry,
-                Some(&mut *resolved_terrain),
-                rx,
-                ry,
-            );
-            self.add_retained_wall_neighbor_source(Some(resolved_terrain), rx, ry);
-        }
-        recalc_overlay_passability(self, resolved_terrain, registry, rx, ry);
-        NativeOverlayPlacementResult::Placed
     }
 
     /// Write the two literal CellClass overlay fields without running the
@@ -924,24 +854,39 @@ impl OverlayGrid {
         self.take_dirty_cells_with_passability_signal().0
     }
 
-    /// Preserve a passability-change result from a required synchronous recalc
-    /// until the end-of-frame finalizer can rebuild paths and zones.
-    pub(crate) fn record_synchronous_passability_change_at(
+    /// Recalculate one runtime mutation and retain its delivery obligations.
+    /// A later unchanged projection cannot erase an earlier change. The
+    /// next-reader receipt preserves first-seen order independently of the
+    /// presentation dirty list and the frame signal.
+    ///
+    /// Zone comparison serves ordered wall cleanup: CellClass cleanup
+    /// @ 0x00480630 runs Recalc @ 0x00480969, compares old/new zone at
+    /// 0x0048096E..0x00480977, then repairs the graph before its neighbor-count
+    /// tail. The caller still owns those callbacks in their native slots.
+    pub(crate) fn recalculate_runtime_cell(
         &mut self,
-        rx: u16,
-        ry: u16,
-        changed: bool,
-    ) {
-        self.synchronous_passability_changed |= changed;
-        if changed && !self.synchronous_navigation_cells.contains(&(rx, ry)) {
-            self.synchronous_navigation_cells.push((rx, ry));
+        terrain: &mut ResolvedTerrainGrid,
+        registry: &OverlayTypeRegistry,
+        cell: (u16, u16),
+        publication: NavigationPublication,
+    ) -> OverlayRecalcOutcome {
+        let old_zone = terrain.cell(cell.0, cell.1).map(|cell| cell.zone_type);
+        let navigation_changed =
+            recalc_overlay_passability(self, terrain, registry, cell.0, cell.1);
+        let zone_changed = old_zone
+            .zip(terrain.cell(cell.0, cell.1).map(|cell| cell.zone_type))
+            .is_some_and(|(old, new)| old != new);
+        self.synchronous_passability_changed |= navigation_changed;
+        if navigation_changed
+            && publication == NavigationPublication::NextPathReader
+            && !self.synchronous_navigation_cells.contains(&cell)
+        {
+            self.synchronous_navigation_cells.push(cell);
         }
-    }
-
-    /// Legacy signal-only recorder for non-wall overlay owners. Batch B records
-    /// coordinates only for wall damage/removal.
-    pub(crate) fn record_synchronous_passability_change(&mut self, changed: bool) {
-        self.synchronous_passability_changed |= changed;
+        OverlayRecalcOutcome {
+            navigation_changed,
+            zone_changed,
+        }
     }
 
     /// Drain movement-authority changes after all inline overlay callbacks that
@@ -969,7 +914,12 @@ impl OverlayGrid {
 ///
 /// Mirrors gamemd.exe RecalcAttributes stage 3a, scoped to overlay->passability +
 /// overlay->LandType (+0xEC).
-pub fn recalc_overlay_passability(
+///
+/// Receipt-free projection for map admission, snapshot reconstruction, frame
+/// finalizer replay and bridge-owned immediate publication. Ordinary runtime
+/// overlay mutations use `OverlayGrid::recalculate_runtime_cell` to keep projection
+/// and downstream notification together.
+pub(crate) fn recalc_overlay_passability(
     overlay_grid: &mut OverlayGrid,
     resolved_terrain: &mut ResolvedTerrainGrid,
     registry: &OverlayTypeRegistry,
@@ -992,49 +942,6 @@ pub fn recalc_overlay_passability(
     // Do not short circuit the projection when literal storage was cleared.
     let projection_changed = resolved_terrain.apply_overlay_attributes(rx, ry, flags, land_flags);
     cleared_resource_for_slope || projection_changed
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct WallRecalcOutcome {
-    pub navigation_changed: bool,
-    pub zone_changed: bool,
-}
-
-/// Finish one ordered wall mutation's Recalc projection. The owning native
-/// transaction must perform any required graph repair before a cleanup-removal
-/// counter tail.
-///
-/// Native evidence: CellClass::PostDestructionWallCleanup @ 0x00480630
-/// clears the wall, runs Recalc at 0x00480969, compares the old/new zone at
-/// 0x0048096E..0x00480977, repairs the changed zone, and only then decrements
-/// the eight CellClass+0x122 neighbors at 0x004809DD..0x004809EF.
-pub(crate) fn recalc_wall_mutation_passability(
-    overlay_grid: &mut OverlayGrid,
-    resolved_terrain: &mut ResolvedTerrainGrid,
-    registry: &OverlayTypeRegistry,
-    mutation: &WallMutation,
-) -> WallRecalcOutcome {
-    let old_zone = resolved_terrain
-        .cell(mutation.rx, mutation.ry)
-        .map(|cell| cell.zone_type);
-    let navigation_changed = recalc_overlay_passability(
-        overlay_grid,
-        resolved_terrain,
-        registry,
-        mutation.rx,
-        mutation.ry,
-    );
-    let zone_changed = old_zone
-        .zip(
-            resolved_terrain
-                .cell(mutation.rx, mutation.ry)
-                .map(|cell| cell.zone_type),
-        )
-        .is_some_and(|(old, new)| old != new);
-    WallRecalcOutcome {
-        navigation_changed,
-        zone_changed,
-    }
 }
 
 /// A request to damage a wall overlay at a specific cell.
@@ -1454,17 +1361,21 @@ fn damage_wall_recursive(
     if let NativeRuntimeOverlayCell::Real(rx, ry) = target
         && let Some(terrain) = resolved_terrain.as_deref_mut()
     {
-        let changed = recalc_overlay_passability(grid, terrain, registry, rx, ry);
-        if host.is_some() {
-            grid.record_synchronous_passability_change(changed);
-        } else {
-            grid.record_synchronous_passability_change_at(rx, ry, changed);
-        }
+        let recalc = grid.recalculate_runtime_cell(
+            terrain,
+            registry,
+            (rx, ry),
+            if host.is_some() {
+                NavigationPublication::FrameBoundary
+            } else {
+                NavigationPublication::NextPathReader
+            },
+        );
         if let Some(host) = host.as_deref_mut() {
             host.navigation_step(
                 terrain,
                 (rx, ry),
-                changed,
+                recalc.navigation_changed,
                 WallZoneRepairKind::AssignOrphaned,
             );
         }
@@ -1823,26 +1734,16 @@ pub(crate) fn refresh_wall_connectivity_after_placement_with_host(
             continue;
         };
         if was_wall && let Some(terrain) = resolved_terrain.as_deref_mut() {
-            let kind = if result == RecomputeResult::Destroyed {
-                WallMutationKind::CleanupRemoved
-            } else {
-                WallMutationKind::CleanupUpdated
-            };
-            let recalc = recalc_wall_mutation_passability(
-                grid,
+            let recalc = grid.recalculate_runtime_cell(
                 terrain,
                 registry,
-                &WallMutation {
-                    rx: nx,
-                    ry: ny,
-                    kind,
+                (nx, ny),
+                if host.is_some() {
+                    NavigationPublication::FrameBoundary
+                } else {
+                    NavigationPublication::NextPathReader
                 },
             );
-            if host.is_some() {
-                grid.record_synchronous_passability_change(recalc.navigation_changed);
-            } else {
-                grid.record_synchronous_passability_change_at(nx, ny, recalc.navigation_changed);
-            }
             if recalc.zone_changed
                 && let Some(host) = host.as_deref_mut()
             {
@@ -1967,12 +1868,6 @@ fn cleanup_wall_neighbors_into(
                 // no real-cell mutation or zone/count output exists.
                 continue;
             };
-            let recalc_kind = match recomputed {
-                RecomputeResult::Destroyed => WallMutationKind::CleanupRemoved,
-                RecomputeResult::NoChange | RecomputeResult::Updated => {
-                    WallMutationKind::CleanupUpdated
-                }
-            };
             match recomputed {
                 RecomputeResult::NoChange => {}
                 RecomputeResult::Updated => {
@@ -1999,25 +1894,16 @@ fn cleanup_wall_neighbors_into(
             // removal's retained-count reversal is completed here only after
             // that Recalc proves the reduced zone changed.
             if let Some(terrain) = resolved_terrain.as_deref_mut() {
-                let recalc = recalc_wall_mutation_passability(
-                    grid,
+                let recalc = grid.recalculate_runtime_cell(
                     terrain,
                     registry,
-                    &WallMutation {
-                        rx: nx,
-                        ry: ny,
-                        kind: recalc_kind,
+                    (nx, ny),
+                    if host.is_some() {
+                        NavigationPublication::FrameBoundary
+                    } else {
+                        NavigationPublication::NextPathReader
                     },
                 );
-                if host.is_some() {
-                    grid.record_synchronous_passability_change(recalc.navigation_changed);
-                } else {
-                    grid.record_synchronous_passability_change_at(
-                        nx,
-                        ny,
-                        recalc.navigation_changed,
-                    );
-                }
                 if recalc.zone_changed
                     && let Some(host) = host.as_deref_mut()
                 {
@@ -2905,140 +2791,7 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_07_placement_runtime_mark_slope_gate_is_exact_and_non_mutating() {
-        let registry = gsi_04_07_placement_steep_slope_registry();
-        let mut terrain = clear_terrain_grid(1, 1);
-        terrain.cells[0].slope_type = 5;
-        let mut grid = OverlayGrid::new(1, 1);
-        grid.place_owned_wall(0, 0, 0, 37, InternedId::from_index(8));
-        grid.take_dirty_cells();
-
-        let cell_before = *grid.cell(0, 0);
-        let terrain_before = format!("{:?}", terrain.cell(0, 0).expect("terrain cell"));
-        let rejected = grid.place_overlay_native_runtime(
-            &mut terrain,
-            &registry,
-            NativeOverlayMarkContext::default(),
-            0,
-            0,
-            0xAB,
-        );
-
-        assert_eq!(rejected, NativeOverlayPlacementResult::RejectedSteepSlope);
-        assert_eq!(*grid.cell(0, 0), cell_before);
-        assert_eq!(
-            format!("{:?}", terrain.cell(0, 0).expect("terrain cell")),
-            terrain_before,
-            "a rejected Mark must not recalculate or otherwise mutate terrain",
-        );
-        assert!(grid.take_dirty_cells().is_empty());
-
-        let placed = grid.place_overlay_native_runtime(
-            &mut terrain,
-            &registry,
-            NativeOverlayMarkContext::default(),
-            0,
-            0,
-            MARK_STEEP_SLOPE_EXCEPTION_ID,
-        );
-        assert_eq!(placed, NativeOverlayPlacementResult::Placed);
-        assert_eq!(
-            *grid.cell(0, 0),
-            OverlayCell {
-                overlay_id: Some(MARK_STEEP_SLOPE_EXCEPTION_ID),
-                overlay_data: 0,
-                wall_owner: None,
-            },
-        );
-    }
-
-    #[test]
-    fn retained_wall_plane_runtime_placement_and_damage_update_once() {
-        use crate::rules::ini_parser::IniFile;
-
-        let ini = IniFile::from_str(
-            "[OverlayTypes]\n0=WALL\n\
-             [WALL]\nWall=yes\nStrength=100\n",
-        );
-        let art = IniFile::from_str("[WALL]\nDamageLevels=3\n");
-        let registry = OverlayTypeRegistry::from_ini(&ini, Some(&art));
-        let mut terrain = clear_terrain_grid(5, 5);
-        let payload =
-            FinalizedOverlayPayload::from_cells_for_test(5, 5, vec![(-1, 0); 25], vec![0; 25]);
-        let mut grid = OverlayGrid::from_finalized_map_payload(payload);
-
-        assert_eq!(
-            grid.place_overlay_native_runtime(
-                &mut terrain,
-                &registry,
-                NativeOverlayMarkContext::default(),
-                2,
-                2,
-                0,
-            ),
-            NativeOverlayPlacementResult::Placed
-        );
-        let placed = grid
-            .retained_wall_neighbor_counts()
-            .expect("retained authority");
-        for index in [6usize, 7, 8, 11, 13, 16, 17, 18] {
-            assert_eq!(placed[index], 1);
-        }
-        assert_eq!(placed[12], 0);
-
-        let mut rng = crate::sim::rng::SimRng::new(1);
-        let before_partial = grid
-            .retained_wall_neighbor_counts()
-            .expect("retained authority")
-            .to_vec();
-        let _ = grid.take_synchronous_navigation_cells();
-        let partial = damage_wall_overlay_with_terrain(
-            &mut grid,
-            &registry,
-            Some(&mut terrain),
-            2,
-            2,
-            100,
-            &mut rng,
-        );
-        assert!(partial.destroyed_cells.is_empty());
-        assert_eq!(partial.changed_cells, vec![(2, 2)]);
-        assert_eq!(grid.cell(2, 2).overlay_data, 0x10);
-        assert!(
-            grid.take_synchronous_navigation_cells().is_empty(),
-            "partial damage returns before native's direct-removal Recalc"
-        );
-        assert_eq!(
-            grid.retained_wall_neighbor_counts(),
-            Some(before_partial.as_slice()),
-            "nonterminal damage must not change retained counts"
-        );
-
-        let result = damage_wall_overlay_with_terrain(
-            &mut grid,
-            &registry,
-            Some(&mut terrain),
-            2,
-            2,
-            -1,
-            &mut rng,
-        );
-        assert_eq!(result.destroyed_cells, vec![(2, 2)]);
-        assert_eq!(
-            grid.take_synchronous_navigation_cells(),
-            vec![(2, 2)],
-            "direct removal publishes its Recalc before cleanup completes"
-        );
-        assert!(
-            grid.retained_wall_neighbor_counts()
-                .expect("retained authority")
-                .iter()
-                .all(|&count| count == 0)
-        );
-    }
-
-    #[test]
-    fn retained_wall_plane_tracks_cleanup_removal_and_fixed_aliases() {
+    fn retained_wall_plane_tracks_cleanup_removal_with_changed_and_unchanged_zones() {
         use crate::rules::ini_parser::IniFile;
 
         let ini = IniFile::from_str(
@@ -3119,53 +2872,6 @@ mod tests {
             "cleanup removal retains its source when Recalc leaves zone type unchanged"
         );
 
-        let mut alias_terrain = clear_terrain_grid(512, 2);
-        let mut alias_grid =
-            OverlayGrid::from_finalized_map_payload(FinalizedOverlayPayload::from_cells_for_test(
-                512,
-                2,
-                vec![(-1, 0); 1024],
-                vec![0; 1024],
-            ));
-        alias_grid.place_overlay(511, 0, 0, 0);
-        assert_eq!(
-            alias_grid.place_overlay_native_runtime(
-                &mut alias_terrain,
-                &registry,
-                NativeOverlayMarkContext::default(),
-                0,
-                1,
-                0,
-            ),
-            NativeOverlayPlacementResult::Placed
-        );
-        assert_eq!(
-            alias_grid.cell(0, 1).overlay_data & 0x0F,
-            0x08,
-            "anchor connects west through fixed-stride alias"
-        );
-        assert_eq!(
-            alias_grid.cell(511, 0).overlay_data & 0x0F,
-            0x02,
-            "aliased real wall connects east back to anchor"
-        );
-        assert_eq!(
-            alias_grid
-                .retained_wall_neighbor_counts()
-                .expect("retained authority")[511],
-            1,
-            "west fixed-stride alias resolves to real slot 511"
-        );
-        assert_eq!(
-            alias_grid
-                .retained_wall_neighbor_counts()
-                .expect("retained authority")
-                .iter()
-                .map(|&count| u32::from(count))
-                .sum::<u32>(),
-            5,
-            "three true-dummy neighbors produce no retained output"
-        );
     }
 
     #[test]
@@ -3208,168 +2914,6 @@ mod tests {
         );
         let mut rng = crate::sim::rng::SimRng::new(1);
         let _ = damage_wall_overlay(&mut grid, &registry, 0, 0, -1, &mut rng);
-    }
-
-    #[test]
-    fn gsi_04_07_placement_protected_overlay_rejects_without_any_cell_change() {
-        let registry = gsi_04_07_placement_registry();
-        let mut terrain = clear_terrain_grid(1, 1);
-        let mut grid = OverlayGrid::new(1, 1);
-        grid.place_owned_wall(0, 0, 0, 37, InternedId::from_index(8));
-        grid.take_dirty_cells();
-
-        let result = grid.place_overlay_native_runtime(
-            &mut terrain,
-            &registry,
-            NativeOverlayMarkContext::default(),
-            0,
-            0,
-            2,
-        );
-
-        assert_eq!(
-            result,
-            NativeOverlayPlacementResult::RejectedProtectedOverlay
-        );
-        assert_eq!(
-            *grid.cell(0, 0),
-            OverlayCell {
-                overlay_id: Some(0),
-                overlay_data: 37,
-                wall_owner: Some(InternedId::from_index(8)),
-            }
-        );
-        assert!(!terrain.cell(0, 0).unwrap().overlay_blocks);
-        assert!(grid.take_dirty_cells().is_empty());
-    }
-
-    #[test]
-    fn gsi_04_07_placement_replaceable_overlay_stamps_data_zero_and_recalculates() {
-        let registry = gsi_04_07_placement_registry();
-        let mut terrain = clear_terrain_grid(1, 1);
-        let mut grid = OverlayGrid::new(1, 1);
-        grid.place_overlay(0, 0, 1, 37);
-        grid.take_dirty_cells();
-
-        let result = grid.place_overlay_native_runtime(
-            &mut terrain,
-            &registry,
-            NativeOverlayMarkContext::default(),
-            0,
-            0,
-            2,
-        );
-
-        assert_eq!(result, NativeOverlayPlacementResult::Placed);
-        assert_eq!(grid.cell(0, 0).overlay_id, Some(2));
-        assert_eq!(grid.cell(0, 0).overlay_data, 0);
-        assert_eq!(grid.cell(0, 0).wall_owner, None);
-        assert!(terrain.cell(0, 0).unwrap().overlay_blocks);
-    }
-
-    #[test]
-    fn gsi_04_07_placement_terrain_object_presence_rejects_before_stamp() {
-        let registry = gsi_04_07_placement_registry();
-        let mut terrain = clear_terrain_grid(1, 1);
-        let mut grid = OverlayGrid::new(1, 1);
-        grid.place_overlay(0, 0, 1, 37);
-        grid.take_dirty_cells();
-
-        let result = grid.place_overlay_native_runtime(
-            &mut terrain,
-            &registry,
-            NativeOverlayMarkContext {
-                terrain_object_present: true,
-                ..NativeOverlayMarkContext::default()
-            },
-            0,
-            0,
-            2,
-        );
-
-        assert_eq!(result, NativeOverlayPlacementResult::RejectedTerrainObject);
-        assert_eq!(grid.cell(0, 0).overlay_id, Some(1));
-        assert_eq!(grid.cell(0, 0).overlay_data, 37);
-        assert_eq!(terrain.cells[0].terrain_object_occupation, None);
-        assert!(grid.take_dirty_cells().is_empty());
-    }
-
-    #[test]
-    fn gsi_04_07_placement_runtime_mark_uses_exact_passability_facts() {
-        let registry = gsi_04_07_placement_registry();
-
-        let mut track_blocked = clear_terrain_grid(1, 1);
-        track_blocked.cells[0].speed_costs.track = Some(0);
-        let mut grid = OverlayGrid::new(1, 1);
-        grid.place_overlay(0, 0, 1, 37);
-        grid.take_dirty_cells();
-        let before = *grid.cell(0, 0);
-        assert_eq!(
-            grid.place_overlay_native_runtime(
-                &mut track_blocked,
-                &registry,
-                NativeOverlayMarkContext::default(),
-                0,
-                0,
-                2,
-            ),
-            NativeOverlayPlacementResult::RejectedPassability,
-        );
-        assert_eq!(*grid.cell(0, 0), before);
-        assert!(grid.take_dirty_cells().is_empty());
-
-        assert_eq!(
-            grid.place_overlay_native_runtime(
-                &mut track_blocked,
-                &registry,
-                NativeOverlayMarkContext {
-                    selected_occupation_bits: 0x20,
-                    bridge_layer_selected: true,
-                    ..NativeOverlayMarkContext::default()
-                },
-                0,
-                0,
-                2,
-            ),
-            NativeOverlayPlacementResult::Placed,
-            "the selected bridge plane bypasses the ground Track row and bit 0x20 is masked out",
-        );
-
-        let mut clear = clear_terrain_grid(1, 1);
-        let mut aircraft_blocked = OverlayGrid::new(1, 1);
-        assert_eq!(
-            aircraft_blocked.place_overlay_native_runtime(
-                &mut clear,
-                &registry,
-                NativeOverlayMarkContext {
-                    selected_occupation_bits: OBJECT_OCCUPATION_BIT,
-                    ..NativeOverlayMarkContext::default()
-                },
-                0,
-                0,
-                2,
-            ),
-            NativeOverlayPlacementResult::RejectedPassability,
-            "the two native occupation masks intersect at exactly bit 0x40",
-        );
-
-        let mut wall_blocked = OverlayGrid::new(1, 1);
-        wall_blocked.place_overlay(0, 0, 5, 11);
-        wall_blocked.take_dirty_cells();
-        assert_eq!(
-            wall_blocked.place_overlay_native_runtime(
-                &mut clear,
-                &registry,
-                NativeOverlayMarkContext::default(),
-                0,
-                0,
-                2,
-            ),
-            NativeOverlayPlacementResult::RejectedPassability,
-            "MovementZone Normal rejects an existing Wall before Overrides is consulted",
-        );
-        assert_eq!(wall_blocked.cell(0, 0).overlay_id, Some(5));
-        assert_eq!(wall_blocked.cell(0, 0).overlay_data, 11);
     }
 
     #[test]
