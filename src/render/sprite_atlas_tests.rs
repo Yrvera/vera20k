@@ -2,6 +2,161 @@
 
 use super::*;
 
+struct StoredFrameTestDirectory(std::path::PathBuf);
+
+impl StoredFrameTestDirectory {
+    fn new() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "vera20k-shp-stored-frame-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir(&path).expect("create SHP loader fixture directory");
+        Self(path)
+    }
+
+    fn write_raw_and_rle_frames(&self, name: &str, canvas: [u16; 2], frame: [u16; 4]) {
+        let [x, y, width, height] = frame;
+        let mut pixels = vec![0; usize::from(width) * usize::from(height)];
+        // Keep transparent margins inside the stored frame: its dimensions
+        // must come from the SHP header, not a new alpha-tight bounding box.
+        pixels[usize::from(width) + 2] = 1;
+        pixels[usize::from(height - 2) * usize::from(width) + usize::from(width - 3)] = 2;
+        let mut rle = Vec::new();
+        for row in pixels.chunks_exact(usize::from(width)) {
+            let mut encoded = Vec::new();
+            for &index in row {
+                if index == 0 {
+                    encoded.extend_from_slice(&[0, 1]);
+                } else {
+                    encoded.push(index);
+                }
+            }
+            rle.extend_from_slice(&((encoded.len() + 2) as u16).to_le_bytes());
+            rle.extend_from_slice(&encoded);
+        }
+
+        let mut bytes = Vec::new();
+        for value in [0, canvas[0], canvas[1], 2] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let mut offset = 8 + 2 * 24;
+        for (format, payload) in [(1u8, &pixels), (3u8, &rle)] {
+            let mut header = [0; 24];
+            for (slot, value) in [x, y, width, height].into_iter().enumerate() {
+                header[slot * 2..slot * 2 + 2].copy_from_slice(&value.to_le_bytes());
+            }
+            header[8] = format;
+            header[20..24].copy_from_slice(&(offset as u32).to_le_bytes());
+            bytes.extend_from_slice(&header);
+            offset += payload.len();
+        }
+        bytes.extend_from_slice(&pixels);
+        bytes.extend_from_slice(&rle);
+        std::fs::write(self.0.join(name), bytes).expect("write raw/RLE SHP loader fixture");
+    }
+}
+
+impl Drop for StoredFrameTestDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn loader_uses_stored_shp_rect_for_depth_but_retains_logical_canvas_for_picking() {
+    // Retail-shaped headers: GI canvas 78x66, stored frame (32,7,13,29);
+    // building canvas 284x226, stored frame (37,74,212,148). Payloads are
+    // synthetic markers, so this is loader regression coverage, not a retail
+    // visual parity claim. CC_Draw_Shape 0x4AED70 centers the logical canvas
+    // and then adds the stored frame origin before handing it to the blitter.
+    let directory = StoredFrameTestDirectory::new();
+    directory.write_raw_and_rle_frames("DEPTHGI.SHP", [78, 66], [32, 7, 13, 29]);
+    directory.write_raw_and_rle_frames("DEPTHBUILDING.SHP", [284, 226], [37, 74, 212, 148]);
+    let assets = AssetManager::from_loose_root_for_test(&directory.0);
+    let mut palette_bytes = [0; 768];
+    palette_bytes[3..6].copy_from_slice(&[4, 8, 12]);
+    palette_bytes[6..9].copy_from_slice(&[14, 18, 22]);
+    let palette = Palette::from_bytes(&palette_bytes).expect("fixture palette");
+
+    for (name, size, offset, canvas, first_marker, last_marker) in [
+        (
+            "DEPTHGI",
+            [13, 29],
+            [-7.0, -26.0],
+            [-39.0, -33.0, 78.0, 66.0],
+            [-5.0, -25.0],
+            [3.0, 1.0],
+        ),
+        (
+            "DEPTHBUILDING",
+            [212, 148],
+            [-105.0, -39.0],
+            [-142.0, -113.0, 284.0, 226.0],
+            [-103.0, -38.0],
+            [104.0, 107.0],
+        ),
+    ] {
+        let mut raw_rgba = None;
+        for frame in 0..2 {
+            let key = ShpSpriteKey {
+                type_id: name.to_string(),
+                facing: 0,
+                frame,
+                house_color: crate::rules::house_colors::NO_REMAP,
+            };
+            let rendered =
+                render_shp_sprite(&assets, &palette, &key, "tem", "TEMPERATE", None, None)
+                    .expect("actual loose-asset SHP loader must accept fixture");
+            assert_eq!(
+                [rendered.width, rendered.height],
+                size,
+                "{name} frame {frame}"
+            );
+            assert_eq!([rendered.offset_x, rendered.offset_y], offset);
+            assert_eq!(
+                rendered.canvas_rect, canvas,
+                "preserve logical picking/sort rect"
+            );
+            assert_eq!(rendered.extended, frame == 1, "dispatch from format bit 1");
+            assert_eq!(rendered.rgba.len(), (size[0] * size[1] * 4) as usize);
+            let colored: Vec<_> = rendered
+                .rgba
+                .chunks_exact(4)
+                .enumerate()
+                .filter(|(_, rgba)| rgba[3] != 0)
+                .map(|(index, rgba)| {
+                    (
+                        [
+                            rendered.offset_x + (index as u32 % rendered.width) as f32,
+                            rendered.offset_y + (index as u32 / rendered.width) as f32,
+                        ],
+                        rgba.to_vec(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                colored,
+                vec![
+                    (first_marker, vec![16, 32, 48, 255]),
+                    (last_marker, vec![56, 72, 88, 255]),
+                ],
+                "stored-frame upload must preserve former canvas-relative color placement"
+            );
+            if let Some(raw) = &raw_rgba {
+                assert_eq!(
+                    &rendered.rgba, raw,
+                    "raw format 1 and RLE format 3 must agree"
+                );
+            } else {
+                raw_rgba = Some(rendered.rgba);
+            }
+        }
+    }
+}
+
 fn make_shp_key(type_id: &str, facing: u8) -> ShpSpriteKey {
     ShpSpriteKey {
         type_id: type_id.to_string(),
@@ -60,6 +215,8 @@ fn rendered_test_sprite(type_id: &str, rgba: Vec<u8>) -> RenderedShpSprite {
         height: 1,
         offset_x: -1.0,
         offset_y: -2.0,
+        canvas_rect: [-1.0, -2.0, 1.0, 1.0],
+        extended: false,
     }
 }
 
@@ -72,6 +229,8 @@ fn incremental_refresh_failure_restores_the_exact_prior_rendered_cache() {
         pixel_size: [1.0, 1.0],
         offset_x: -1.0,
         offset_y: -2.0,
+        canvas_rect: [-1.0, -2.0, 1.0, 1.0],
+        extended: false,
         page: 0,
     };
     let mut prior = SpriteAtlas {
@@ -277,7 +436,11 @@ fn cell_anim_remap_registration_covers_every_bound_frame_for_its_color() {
             house_color: HouseColorIndex(1),
         }));
     }
-    assert!(needed.iter().all(|key| key.house_color != HouseColorIndex(2)));
+    assert!(
+        needed
+            .iter()
+            .all(|key| key.house_color != HouseColorIndex(2))
+    );
 }
 
 #[test]

@@ -819,6 +819,7 @@ fn render_skirmish_shell_with_atlas(
         0.0,
         0.0,
         1.0,
+        crate::render::batch::DepthAxis::NONE,
     );
 
     let Some((buffer, count)) = state

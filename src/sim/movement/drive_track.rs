@@ -4161,8 +4161,8 @@ const INTERP_TRUST_BUDGET: i32 = 3;
 /// Output of `interp_sub_step`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InterpSubStepResult {
-    /// Sub-cell X to write to `Position.sub_x`. Always within the saved cell's
-    /// or the full-step cell's [0, 256) lepton range.
+    /// X relative to the saved cell. It may lie in the full-step cell;
+    /// ordinary movement then normalizes it in a residual crossing transaction.
     pub sub_x: SimFixed,
     /// Sub-cell Y to write to `Position.sub_y`.
     pub sub_y: SimFixed,
@@ -4175,8 +4175,9 @@ pub(crate) struct InterpSubStepResult {
 /// `saved_sub_x/saved_sub_y` are the lepton sub-cell coords AFTER the discrete
 /// step loop ran (the result of `advance_drive_track`). The cell anchor
 /// (`Position.rx/ry`) is implicit — the L4 safety gate uses cell-relative
-/// offsets, so the absolute cell coords are not needed here. The mid-track
-/// normal path guarantees rx/ry are unchanged from tick entry.
+/// offsets, so the absolute cell coords are not needed here. A result outside
+/// the saved cell requires caller-owned cell/list/OnBridge updates while
+/// retaining raw Z; this helper only computes the coordinate.
 /// `next_delta_x/next_delta_y` are from `DriveTrackAdvance.next_step_delta_*`.
 /// `residual` is `state.residual` (range `0..=7` after a normal step-loop exit).
 pub(crate) fn interp_sub_step(

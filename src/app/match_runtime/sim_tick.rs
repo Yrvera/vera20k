@@ -761,6 +761,7 @@ fn advance_in_game_runtime_mode(
         state.match_state.input.camera_x,
         state.match_state.input.camera_y,
         state.match_state.input.zoom_level,
+        crate::app::presentation::instances::depth_axis(state),
     );
 }
 

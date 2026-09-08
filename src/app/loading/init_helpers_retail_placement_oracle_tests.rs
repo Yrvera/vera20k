@@ -3,7 +3,7 @@
 //! This test stays headless: it loads sealed retail rules, art, theater, and a
 //! real MMX map, then drives the ordinary placement command through the sim.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use super::load_rules_with_merged_ini;
@@ -350,14 +350,42 @@ fn retail_dustbowl_gapowr_blocked_then_valid_placement_oracle() {
     let category = crate::sim::production::category_for_object(
         rules.object(POWER_PLANT).expect("stock GAPOWR profile"),
     );
+    let held_id = sim
+        .production
+        .factory_shadow
+        .view(owner_id, category)
+        .unwrap()
+        .object
+        .unwrap()
+        .entity_id
+        .expect("enqueue constructs the held GAPOWR identity");
     assert!(
         sim.production
             .factory_shadow
             .test_arm_ready(owner_id, category)
     );
-    sim.production
-        .ready_by_owner
-        .insert(owner_id, VecDeque::from([gapowr_id]));
+    // The factory owns completion accounting and its ready projection.
+    assert!(
+        !crate::sim::production::tick_production_with_overlay_registry(
+            &mut sim,
+            &rules,
+            &height_map,
+            Some(&path_grid),
+            Some(&overlay_registry),
+        )
+    );
+    let completed = sim
+        .production
+        .factory_shadow
+        .view(owner_id, category)
+        .unwrap()
+        .object
+        .unwrap();
+    assert!(completed.completion_accounted);
+    assert_eq!(completed.entity_id, Some(held_id));
+    assert_eq!(ready_buildings_for_owner(&sim, &rules, OWNER).len(), 1);
+    let held = sim.substrate.entities.get(held_id).unwrap();
+    assert!(held.lifecycle.in_limbo && !held.lifecycle.cell_marked);
 
     let blocked_cells = rect_cells(fixture.blocked, 2, 2);
     let resource_before: BTreeMap<(u16, u16), ResourceNode> = blocked_cells
@@ -432,6 +460,17 @@ fn retail_dustbowl_gapowr_blocked_then_valid_placement_oracle() {
         occupancy_generation_before
     );
     assert_eq!(ready_buildings_for_owner(&sim, &rules, OWNER).len(), 1);
+    assert_eq!(
+        sim.production
+            .factory_shadow
+            .view(owner_id, category)
+            .unwrap()
+            .object
+            .unwrap()
+            .entity_id,
+        Some(held_id),
+        "rejected placement keeps the original factory identity"
+    );
     assert_eq!(
         blocked_cells
             .iter()
@@ -513,6 +552,10 @@ fn retail_dustbowl_gapowr_blocked_then_valid_placement_oracle() {
     assert!(placed.in_logic_vector);
     assert!(placed.building_up.is_some());
     let placed_id = placed.stable_id;
+    assert_eq!(
+        placed_id, held_id,
+        "placement reuses the completed identity"
+    );
     assert_eq!(
         sim.substrate.occupancy.generation(),
         generation_before_valid + 4

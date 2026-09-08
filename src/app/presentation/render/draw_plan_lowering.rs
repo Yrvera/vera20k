@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use crate::render::batch::SpriteInstance;
 use crate::render::tactical_draw_plan::{
     BlitPolicy, BuildingOwnedPlan, BuildingPiece, BuildingPieceKind, CellDraw, CellDrawKind,
-    DrawId, ObjectDraw, SpriteEncoding, TacticalCoord, TacticalDrawInput, TacticalDrawPlan,
-    TacticalLayer,
+    DrawId, ObjectDraw, RenderZPolicy, SpriteEncoding, TacticalCoord, TacticalDrawInput,
+    TacticalDrawPlan, TacticalLayer,
 };
 
 /// A cell-pass instance paired with the metadata needed by `YR TacticalClass::Draw`.
@@ -46,6 +46,9 @@ pub(crate) enum GroundTexture {
 /// One already-resolved sprite owned by one Ground-layer parent object.
 pub(crate) struct GroundPieceInstance {
     pub target: GroundTexture,
+    /// Which depth pipeline draws it (`RenderZPolicy::None` passthrough,
+    /// `ReadOnly` Z-tested, `ReadWrite` Z-tested and written).
+    pub render_z: RenderZPolicy,
     pub instance: SpriteInstance,
 }
 
@@ -78,6 +81,7 @@ impl PlannedGroundObjectInstance {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GroundDrawRun {
     pub target: GroundTexture,
+    pub render_z: RenderZPolicy,
     pub start: u32,
     pub count: u32,
 }
@@ -150,13 +154,19 @@ impl NativeGroundOrder {
         y_sort_adjust: i32,
         encoding: SpriteEncoding,
     ) -> Option<ObjectDraw> {
+        // Non-building objects test render Z per pixel and never write it;
+        // terrain objects (trees) keep the untraced passthrough.
+        let policy = match encoding {
+            SpriteEncoding::Terrain => BlitPolicy::z_none(encoding),
+            _ => BlitPolicy::z_read(encoding),
+        };
         Some(ObjectDraw {
             id,
             layer: TacticalLayer(2),
             coord,
             y_sort_adjust,
             registration_order: *self.registrations.get(&id)?,
-            policy: BlitPolicy::opaque(encoding),
+            policy,
         })
     }
 
@@ -209,7 +219,17 @@ impl NativeGroundOrder {
 ///
 /// `TacticalDrawPlan` owns the family ordering; this adapter only maps ordered
 /// IDs back to the existing instances. Duplicate IDs are rejected at the source.
+#[cfg(test)]
 pub(crate) fn lower_cell_instances(entries: Vec<PlannedCellInstance>) -> Vec<SpriteInstance> {
+    lower_cell_instances_with_policy(entries).0
+}
+
+/// Keep the fixed-cell policy beside each lowered instance. An overlay's
+/// native SHP depth behavior must survive lowering without sorting walls into
+/// a separate batch or moving the still unsupported slope-shape draws.
+pub(crate) fn lower_cell_instances_with_policy(
+    entries: Vec<PlannedCellInstance>,
+) -> (Vec<SpriteInstance>, Vec<RenderZPolicy>) {
     let mut instances = BTreeMap::new();
     let inputs = entries.into_iter().map(|entry| {
         assert!(
@@ -220,6 +240,7 @@ pub(crate) fn lower_cell_instances(entries: Vec<PlannedCellInstance>) -> Vec<Spr
     });
     let plan = TacticalDrawPlan::build(inputs);
     let mut ordered = Vec::with_capacity(instances.len());
+    let mut render_z = Vec::with_capacity(instances.len());
     for draw in plan
         .cell_pass
         .terrain
@@ -228,13 +249,14 @@ pub(crate) fn lower_cell_instances(entries: Vec<PlannedCellInstance>) -> Vec<Spr
         .chain(&plan.cell_pass.overlays)
         .chain(&plan.cell_pass.primary_objects)
     {
+        render_z.push(draw.policy.render_z);
         ordered.push(
             instances
                 .remove(&draw.id)
                 .expect("plan entry must resolve to its existing GPU instance"),
         );
     }
-    ordered
+    (ordered, render_z)
 }
 
 /// Lower all visible Ground parents through the live native-shaped layer plan.
@@ -266,6 +288,7 @@ pub(crate) fn lower_ground_object_instances(
                                 piece_id,
                                 GroundPieceInstance {
                                     target: piece.target,
+                                    render_z: piece.policy.render_z,
                                     instance: piece.instance,
                                 },
                             )
@@ -335,15 +358,16 @@ fn push_ground_piece(pass: &mut GroundObjectPass, owner: DrawId, piece: GroundPi
     #[cfg(not(test))]
     let _ = owner;
     let start = pass.instances.len() as u32;
-    if let Some(run) = pass
-        .runs
-        .last_mut()
-        .filter(|run| run.target == piece.target && run.start + run.count == start)
-    {
+    if let Some(run) = pass.runs.last_mut().filter(|run| {
+        run.target == piece.target
+            && run.render_z == piece.render_z
+            && run.start + run.count == start
+    }) {
         run.count += 1;
     } else {
         pass.runs.push(GroundDrawRun {
             target: piece.target,
+            render_z: piece.render_z,
             start,
             count: 1,
         });
@@ -399,9 +423,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cell_lowering_preserves_mixed_depth_policies_beside_their_instances() {
+        let mut wall = cell(3, true);
+        wall.draw.policy.render_z = RenderZPolicy::ReadWrite;
+        wall.instance.z_adjust = -62.0;
+        wall.instance.z_gradient = 2;
+        let (lowered, policies) =
+            lower_cell_instances_with_policy(vec![cell(4, false), wall, cell(2, false)]);
+        assert_eq!(
+            policies,
+            [
+                RenderZPolicy::None,
+                RenderZPolicy::ReadWrite,
+                RenderZPolicy::None
+            ]
+        );
+        assert_eq!(
+            lowered
+                .iter()
+                .map(|i| i.draw_state.fx_flags)
+                .collect::<Vec<_>>(),
+            [4, 3, 2]
+        );
+        assert_eq!((lowered[1].z_adjust, lowered[1].z_gradient), (-62.0, 2));
+    }
+
     fn marked_piece(target: GroundTexture, marker: u32) -> GroundPieceInstance {
         GroundPieceInstance {
             target,
+            render_z: RenderZPolicy::ReadOnly,
             instance: SpriteInstance {
                 draw_state: DrawState {
                     fx_flags: marker,

@@ -66,6 +66,27 @@ impl BlitPolicy {
             translucent: true,
         }
     }
+
+    /// Opaque blit that tests render Z per pixel without writing it: every
+    /// non-building object (`TechnoClass_DrawSHP` a9 = 0 -> flags `0x2E00`,
+    /// VXL cache blits `0x2800`; leaves `0x00494b60` / `0x00497fd0`).
+    pub const fn z_read(encoding: SpriteEncoding) -> Self {
+        Self {
+            encoding,
+            render_z: RenderZPolicy::ReadOnly,
+            translucent: false,
+        }
+    }
+
+    /// Opaque blit that neither reads nor writes render Z (VERA passthrough
+    /// for draws whose native Z behaviour is not yet traced).
+    pub const fn z_none(encoding: SpriteEncoding) -> Self {
+        Self {
+            encoding,
+            render_z: RenderZPolicy::None,
+            translucent: false,
+        }
+    }
 }
 
 /// Families drawn during the fixed per-cell pass.

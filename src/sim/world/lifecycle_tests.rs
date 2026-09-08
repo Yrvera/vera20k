@@ -542,12 +542,205 @@ pub(super) fn install_common_raw_terrain(
 }
 
 #[test]
+fn grounded_ramp_reveal_commits_native_height_before_occupation() {
+    // Ground=52 and deck=468 are original-code results in
+    // tools/ramp_height_vectors.json: ramp_1_sub_128_128 and
+    // signed_level_0_bridge_1. Elevated input is a coarse API preservation case.
+    for (category, kind) in [
+        (EntityCategory::Unit, LocomotorKind::Drive),
+        (EntityCategory::Unit, LocomotorKind::Ship),
+        (EntityCategory::Infantry, LocomotorKind::Walk),
+    ] {
+        for (on_bridge, requested_level, expected_z, deck) in [
+            (false, 0, 52, false),
+            (true, 4, 468, true),
+            (false, 4, 416, false),
+            (true, 7, 728, true),
+        ] {
+            let mut sim = Simulation::with_seed(71);
+            install_common_raw_terrain(&mut sim, 8, 8, 0, Some((2, 2)));
+            sim.resolved_terrain
+                .as_mut()
+                .unwrap()
+                .cell_mut(2, 2)
+                .unwrap()
+                .slope_type = 1;
+            insert_entity(&mut sim, 1, category);
+            let entity = sim.substrate.entities.get_mut(1).unwrap();
+            entity.locomotor = Some(LocomotorState::for_test_kind(kind));
+            entity.on_bridge = on_bridge;
+            let before_rng = sim.scenario_rng.logical_state();
+            assert!(matches!(
+                sim.try_reveal_entity(1, common_raw_request(2, 2, requested_level, 128, 128)),
+                RevealOutcome::Revealed { .. }
+            ));
+            assert_eq!(
+                sim.substrate
+                    .entities
+                    .get(1)
+                    .unwrap()
+                    .position
+                    .exact_z_leptons,
+                Some(expected_z),
+                "{kind:?} bridge={on_bridge} level={requested_level}"
+            );
+            assert_eq!(
+                sim.substrate.raw_cell_occupation.deck_bits(2, 2) != 0,
+                deck,
+                "Mark(PUT) must read the committed ramp/deck coordinate"
+            );
+            assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+        }
+    }
+}
+
+#[test]
+fn grounded_ramp_reveal_preserves_independent_height_owners_and_headless_inputs() {
+    for kind in [
+        LocomotorKind::Hover,
+        LocomotorKind::Fly,
+        LocomotorKind::Jumpjet,
+        LocomotorKind::Rocket,
+    ] {
+        let mut sim = Simulation::new();
+        install_common_raw_terrain(&mut sim, 8, 8, 0, None);
+        sim.resolved_terrain
+            .as_mut()
+            .unwrap()
+            .cell_mut(2, 2)
+            .unwrap()
+            .slope_type = 1;
+        insert_entity(&mut sim, 1, EntityCategory::Unit);
+        sim.substrate.entities.get_mut(1).unwrap().locomotor =
+            Some(LocomotorState::for_test_kind(kind));
+        assert!(matches!(
+            sim.try_reveal_entity(1, common_raw_request(2, 2, 0, 128, 128)),
+            RevealOutcome::Revealed { .. }
+        ));
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .position
+                .exact_z_leptons,
+            None,
+            "{kind:?}"
+        );
+    }
+
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    sim.substrate.entities.get_mut(1).unwrap().locomotor =
+        Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
+    assert!(matches!(
+        sim.try_reveal_entity(1, common_raw_request(2, 2, 3, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .position
+            .exact_z_leptons,
+        None
+    );
+
+    // Actual paradrop ordering: attach while limbo, then Reveal. The ground
+    // adapter must not reinstate a stale exact Z over the descent integrator.
+    install_common_raw_terrain(&mut sim, 8, 8, 0, None);
+    insert_entity(&mut sim, 2, EntityCategory::Infantry);
+    let entity = sim.substrate.entities.get_mut(2).unwrap();
+    entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
+    entity.position.exact_z_leptons = Some(52);
+    assert!(
+        crate::sim::movement::parachute_descent::begin_parachute_descent(
+            &mut sim.substrate.entities,
+            2,
+            SimFixed::from_num(1200)
+        )
+    );
+    assert!(matches!(
+        sim.try_reveal_entity(2, common_raw_request(2, 2, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    let entity = sim.substrate.entities.get(2).unwrap();
+    assert_eq!(entity.position.exact_z_leptons, None);
+    assert_eq!(
+        entity.parachute_state.as_ref().unwrap().altitude,
+        SimFixed::from_num(1200)
+    );
+}
+
+#[test]
+fn grounded_ramp_position_survives_snapshot_and_idle_continuation() {
+    let mut sim = Simulation::with_seed(71);
+    assert_eq!(sim.allocate_stable_id(), 1);
+    install_common_raw_terrain(&mut sim, 8, 8, 0, None);
+    sim.resolved_terrain
+        .as_mut()
+        .unwrap()
+        .cell_mut(2, 2)
+        .unwrap()
+        .slope_type = 1;
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    sim.substrate.entities.get_mut(1).unwrap().locomotor =
+        Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    assert!(matches!(
+        sim.try_reveal_entity(1, common_raw_request(2, 2, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    // Native snapshot load resets this stream. Canonicalize the original too
+    // so whole-world comparison measures continuation, not that load policy.
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+    let bytes = GameSnapshot::save(&sim, 0, 0, "ramp-height", 0);
+    let mut restored = GameSnapshot::load(&bytes).expect("ramp snapshot").sim;
+    restored
+        .restore_after_snapshot_load()
+        .expect("ramp restore");
+    install_common_raw_terrain(&mut restored, 8, 8, 0, None);
+    restored
+        .resolved_terrain
+        .as_mut()
+        .unwrap()
+        .cell_mut(2, 2)
+        .unwrap()
+        .slope_type = 1;
+    assert_eq!(
+        restored
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .position
+            .exact_z_leptons,
+        Some(52)
+    );
+    for _ in 0..3 {
+        sim.advance_tick(&[], None, &BTreeMap::new(), None, None, 66);
+        restored.advance_tick(&[], None, &BTreeMap::new(), None, None, 66);
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .position
+                .exact_z_leptons,
+            Some(52)
+        );
+        assert_eq!(restored.state_hash(), sim.state_hash());
+    }
+}
+
+#[test]
 fn drive_ship_slope_production_spawn_unlimbo_snaps_without_manual_rocking_state() {
     let rules = drive_ship_slope_rules();
-    for (type_id, cell, slope) in [
-        ("DRIVE", (2, 2), 5),
-        ("SHIP", (4, 2), 9),
-        ("TTRAIN", (6, 2), 12),
+    for (type_id, cell, slope, native_z) in [
+        ("DRIVE", (2, 2), 5, 0),
+        ("SHIP", (4, 2), 9, 104),
+        ("TTRAIN", (6, 2), 12, 104),
     ] {
         let mut sim = Simulation::with_seed(0x51_0f_e);
         sim.session.binary_frame = 37;
@@ -591,6 +784,9 @@ fn drive_ship_slope_production_spawn_unlimbo_snaps_without_manual_rocking_state(
             )
             .expect("production spawn/unlimbo");
         let entity = sim.substrate.entities.get(stable_id).unwrap();
+        // Original-code ramp_{5,9,12}_sub_128_128 fixtures; this reaches the
+        // production constructor and Reveal, with no preloaded exact pose.
+        assert_eq!(entity.position.exact_z_leptons, Some(native_z));
         assert!(
             entity.rocking.is_none(),
             "slope state is not manually injected"

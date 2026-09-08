@@ -17,10 +17,10 @@ use crate::map::tags::TagMap;
 use crate::map::terrain::TerrainGrid;
 use crate::map::waypoints::Waypoint;
 use crate::render::bridge_atlas::BridgeAtlas;
-use crate::render::minimap::MinimapRenderer;
-use crate::render::selection_overlay::SelectionOverlay;
 use crate::render::bridge_railing_atlas::BridgeRailingAtlas;
+use crate::render::minimap::MinimapRenderer;
 use crate::render::overlay_atlas::OverlayAtlas;
+use crate::render::selection_overlay::SelectionOverlay;
 use crate::render::sidebar_cameo_atlas::SidebarCameoAtlas;
 use crate::render::sidebar_chrome::SidebarChromeSet;
 use crate::render::sprite_atlas::SpriteAtlas;
@@ -30,6 +30,8 @@ use crate::sidebar::{SidebarChromeLayoutSpec, SidebarTab};
 
 pub(crate) struct MatchPresentationState {
     pub(crate) tile_atlas: Option<TileAtlas>,
+    /// BUILDNGZ.SHA z-shape bound at group 2 of the Z-writing building draw.
+    pub(crate) building_zshape: Option<crate::render::building_zshape::BuildingZShape>,
     pub(crate) unit_atlas: Option<UnitAtlas>,
     /// Palette + per-house RGB ramp GPU resources for the voxel sprite shader.
     pub(crate) palette_set: Option<crate::render::palette_textures::PaletteSet>,

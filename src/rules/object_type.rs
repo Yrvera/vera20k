@@ -727,8 +727,12 @@ pub struct ObjectType {
     /// Native `AircraftTypeClass` construction defaults this true; other
     /// categories inherit the false `TechnoTypeClass` default.
     pub considered_aircraft: bool,
-    /// Per-type render depth bias used when a unit is near or under a bridge.
-    /// Original engine default is 7 when the key is absent.
+    /// Foot draw coefficients: TechnoType constructor 0x710AF0 (+0xDC0..0xDCC)
+    /// and ReadINI 0x71541C onward. Absent keys retain 10/5/10/0; these are
+    /// combined by signed maximum, not added (Foot 0x4DAFF0).
+    pub zfudge_cliff: i32,
+    pub zfudge_column: i32,
+    pub zfudge_tunnel: i32,
     pub zfudge_bridge: i32,
     /// Prevents naval/large units from traversing under bridge structural cells.
     pub too_big_to_fit_under_bridge: bool,
@@ -1828,7 +1832,10 @@ impl ObjectType {
             considered_aircraft: section
                 .get_bool("ConsideredAircraft")
                 .unwrap_or(category == ObjectCategory::Aircraft),
-            zfudge_bridge: section.get_i32("ZFudgeBridge").unwrap_or(7),
+            zfudge_cliff: section.get_i32("ZFudgeCliff").unwrap_or(10),
+            zfudge_column: section.get_i32("ZFudgeColumn").unwrap_or(5),
+            zfudge_tunnel: section.get_i32("ZFudgeTunnel").unwrap_or(10),
+            zfudge_bridge: section.get_i32("ZFudgeBridge").unwrap_or(0),
             too_big_to_fit_under_bridge: section
                 .get_bool("TooBigToFitUnderBridge")
                 .unwrap_or(false),
@@ -2683,11 +2690,15 @@ mod tests {
 
     #[test]
     fn test_parse_bridge_render_flags() {
-        let ini: IniFile =
-            IniFile::from_str("[DEST]\nZFudgeBridge=11\nTooBigToFitUnderBridge=yes\n");
+        let ini: IniFile = IniFile::from_str(
+            "[DEST]\nZFudgeCliff=0\nZFudgeColumn=-7\nZFudgeTunnel=13\nZFudgeBridge=11\nTooBigToFitUnderBridge=yes\n",
+        );
         let section: &IniSection = ini.section("DEST").unwrap();
         let obj: ObjectType =
             ObjectType::from_ini_section("DEST", section, ObjectCategory::Vehicle);
+        assert_eq!(obj.zfudge_cliff, 0);
+        assert_eq!(obj.zfudge_column, -7);
+        assert_eq!(obj.zfudge_tunnel, 13);
         assert_eq!(obj.zfudge_bridge, 11);
         assert!(obj.too_big_to_fit_under_bridge);
     }
@@ -2698,7 +2709,10 @@ mod tests {
         let section: &IniSection = ini.section("BOAT").unwrap();
         let obj: ObjectType =
             ObjectType::from_ini_section("BOAT", section, ObjectCategory::Vehicle);
-        assert_eq!(obj.zfudge_bridge, 7);
+        assert_eq!(obj.zfudge_cliff, 10);
+        assert_eq!(obj.zfudge_column, 5);
+        assert_eq!(obj.zfudge_tunnel, 10);
+        assert_eq!(obj.zfudge_bridge, 0);
         assert!(!obj.too_big_to_fit_under_bridge);
     }
 

@@ -206,6 +206,8 @@ mod tests {
             deploy_frames: None,
             undeploy_frames: None,
             deployed_fire_frames: None,
+            z_shape_point_move: (0, 0),
+            normal_z_adjust: 0,
         }
     }
 

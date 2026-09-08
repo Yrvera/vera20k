@@ -9,8 +9,8 @@
 
 use super::helpers::{
     ANIM_DRAW_DEPTH_BIAS_PX, EntityDrawBand, apply_bridge_depth_bias, apply_shape_z_adjust,
-    compute_sprite_depth, effective_anim_z_adjust, entity_draw_band, ground_sort_row, in_view,
-    is_under_bridge_render_state, tactical_entity_render_admission,
+    compute_sprite_depth, effective_anim_z_adjust, entity_draw_band, ground_sort_row,
+    ground_z_adjust, in_view, is_under_bridge_render_state, tactical_entity_render_admission,
 };
 use crate::app::AppState;
 use crate::app::presentation::render::draw_plan_lowering::{
@@ -20,6 +20,10 @@ use crate::app::presentation::render::draw_plan_lowering::{
 use crate::map::entities::EntityCategory;
 use crate::render::batch::SpriteInstance;
 use crate::render::draw_state::{DrawState, ObserverDrawContext};
+use crate::render::native_z::{
+    self, BIB_Z_ADJUST_PX, SHP_DRAW_Z_ADJUST_PX, ZGradient, ZSHAPE_MAX_FOUNDATION_WIDTH,
+    pack_z_gradient,
+};
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::tactical_draw_plan::{
     BlitPolicy, BuildingPieceKind, SpriteEncoding, TacticalCoord,
@@ -68,12 +72,9 @@ fn shp_body_tint(
 /// type on a Jumpjet locomotor.
 /// `parachute_body_depths` collects the sort key of every body currently under
 /// a parachute, keyed by entity — see [`ParachuteBodyDepths`].
-/// `selected_building_depth_paged` receives a second copy of every selected
-/// building's body, for the depth-only stamp that lets the art clip its own
-/// selection brackets. It is taken here rather than rebuilt later because this
-/// is where the resolved atlas entry, buildup frame and sort depth already
-/// exist together; re-deriving them elsewhere would be a second source of truth
-/// that drifts the moment either side changes.
+/// Building bodies write their own per-pixel Z in the Ground pass, which is
+/// what the post-shroud selection-bracket redraw tests against; no separate
+/// depth stamp exists any more.
 pub(crate) fn build_shp_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
@@ -82,11 +83,17 @@ pub(crate) fn build_shp_instances(
     top_pages: &mut Vec<usize>,
     top_ids: &mut Vec<u64>,
     parachute_body_depths: &mut ParachuteBodyDepths,
-    selected_building_depth_paged: &mut [Vec<SpriteInstance>],
     ground_objects: &mut Vec<PlannedGroundObjectInstance>,
     ground_order: &NativeGroundOrder,
 ) {
-    let (sim, atlas) = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.sprite_atlas) {
+    let (sim, atlas) = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.sprite_atlas,
+    ) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
@@ -100,10 +107,10 @@ pub(crate) fn build_shp_instances(
     let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|o| sim.interner.get(o));
     let ignore_visibility = state.match_state.sandbox_full_visibility;
-    let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.rules().map(|rules| &rules.art_registry);
+    let art_reg: Option<&crate::rules::art_data::ArtRegistry> =
+        state.rules().map(|rules| &rules.art_registry);
 
-    let encounter_order =
-        super::helpers::tactical_entity_encounter_order(sim, state.rules());
+    let encounter_order = super::helpers::tactical_entity_encounter_order(sim, state.rules());
     for stable_id in encounter_order {
         let Some(entity) = sim.entities().get(stable_id) else {
             continue;
@@ -127,7 +134,8 @@ pub(crate) fn build_shp_instances(
         // wall overlay instances in the unified merge (draw_merged_object_pass),
         // not here. Skip them to avoid drawing frame 0 (isolated pillar).
         if entity.category == EntityCategory::Structure {
-            let is_wall = state.rules()
+            let is_wall = state
+                .rules()
                 .and_then(|r| r.object(type_str))
                 .map(|o| o.wall)
                 .unwrap_or(false);
@@ -137,7 +145,9 @@ pub(crate) fn build_shp_instances(
         }
         let pos = &entity.position;
         let hc: HouseColorIndex = state
-            .match_state.match_presentation.house_color_map
+            .match_state
+            .match_presentation
+            .house_color_map
             .get(remap_owner)
             .copied()
             .unwrap_or(crate::rules::house_colors::NO_REMAP);
@@ -222,7 +232,8 @@ pub(crate) fn build_shp_instances(
                             .map(|c| c.count())
                             .unwrap_or(0);
                         let tech_level = obj.map(|o| o.tech_level).unwrap_or(-1);
-                        let (cy, cr) = state.rules()
+                        let (cy, cr) = state
+                            .rules()
                             .map(|r| (r.general.condition_yellow, r.general.condition_red))
                             .unwrap_or((0.5, 0.25));
                         rendered_garrison_body_frame_index(
@@ -257,7 +268,8 @@ pub(crate) fn build_shp_instances(
             Some(e) => e,
             None if shp_frame != 0
                 && entity.category == EntityCategory::Structure
-                && state.rules()
+                && state
+                    .rules()
                     .and_then(|r| r.object(type_str))
                     .map(|o| o.can_be_occupied)
                     .unwrap_or(false) =>
@@ -291,7 +303,7 @@ pub(crate) fn build_shp_instances(
                 // The drawn row carries this body's height lift; the sort key
                 // must not. A hovering Rocketeer or a descending paradrop key
                 // off the cell it is over, exactly like a GI standing there.
-                let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1];
+                let depth_y: f32 = sy + entry.canvas_rect[1] + entry.canvas_rect[3];
                 compute_sprite_depth(state, ground_sort_row(entity, depth_y), interp_z)
             }
         };
@@ -306,9 +318,11 @@ pub(crate) fn build_shp_instances(
             state.match_state.match_presentation.lighting.grid(),
             (pos.rx, pos.ry),
             entity.category,
-            state.rules()
+            state
+                .rules()
                 .map_or(0, |rules| rules.general.extra_unit_light),
-            state.rules()
+            state
+                .rules()
                 .map_or(0, |rules| rules.general.extra_infantry_light),
         );
         let under_bridge = is_under_bridge_render_state(state, entity)
@@ -320,6 +334,50 @@ pub(crate) fn build_shp_instances(
             EntityDrawBand::Ground if under_bridge => Some(&mut *bridge_paged),
             EntityDrawBand::Ground => Some(&mut *paged),
         };
+        // Native per-pixel Z. Buildings (`BuildingClass_DrawBody`, flags
+        // 0x6E00) seed from `NormalZAdjust - AdjustForZ(Z)`
+        // minus DrawSHP's 2, write Z, and subtract the BUILDNGZ z-shape placed
+        // by `ZShapePointMove` and the foundation (dropped for foundations 8
+        // wide or more). Raw frames only clip to the shape. Extended BUILDNGZ
+        // uses a constant seed;
+        // ordinary sprites walk gradient 2. Infantry (`InfantryClass Draw_It`, flags 0x2E00) walks
+        // entry 2 from `Get_Z_Adjust - 2`, whose base term also cancels the
+        // lift, and never writes.
+        let (z_adjust, z_gradient, zshape_origin) = if entity.category == EntityCategory::Structure
+        {
+            let object_type = state.rules().and_then(|r| r.object(type_str));
+            let rules_image: String = object_type
+                .map(|o| o.image.clone())
+                .unwrap_or_else(|| type_str.to_string());
+            let art_entry = art_reg.and_then(|a| a.resolve_metadata_entry(type_str, &rules_image));
+            let normal_z_adjust: i32 = art_entry.map_or(0, |a| a.normal_z_adjust);
+            let point_move: (i32, i32) = art_entry.map_or((0, 0), |a| a.z_shape_point_move);
+            let foundation: (u16, u16) = object_type
+                .map(|o| crate::rules::foundation::foundation_dimensions(&o.foundation))
+                .unwrap_or((1, 1));
+            let zshape = state
+                .match_state
+                .match_presentation
+                .building_zshape
+                .is_some()
+                && foundation.0 <= ZSHAPE_MAX_FOUNDATION_WIDTH;
+            let origin = native_z::zshape_origin(
+                (sx.round() as i32, sy.round() as i32),
+                foundation,
+                point_move,
+            );
+            (
+                ground_z_adjust(interp_z, normal_z_adjust + SHP_DRAW_Z_ADJUST_PX),
+                native_z::pack_building_z_gradient(zshape, entry.extended),
+                [origin.0 as f32, origin.1 as f32],
+            )
+        } else {
+            (
+                super::foot_depth::shp_z_adjust(state, entity),
+                pack_z_gradient(ZGradient::Vertical, false),
+                [0.0, 0.0],
+            )
+        };
         let body = SpriteInstance {
             position: [final_x, final_y],
             size: entry.pixel_size,
@@ -329,30 +387,13 @@ pub(crate) fn build_shp_instances(
             tint,
             alpha: 1.0,
             draw_state,
-            ..Default::default()
+            z_adjust,
+            z_gradient,
+            zshape_origin,
         };
 
         let mut building_pieces = Vec::new();
         if entity.category == EntityCategory::Structure {
-            // Only the selected building's own art participates in clipping its
-            // brackets, so the stamp bucket stays empty in ordinary play and
-            // costs one extra quad per selected structure otherwise.
-            if entity.selected {
-                if let Some(bucket) = selected_building_depth_paged.get_mut(entry.page as usize) {
-                    // Deliberately NOT the body's sort depth. gamemd anchors a
-                    // shape's Z on the bottom edge of its blit rect, and the
-                    // per-pixel ramp it lays over the sprite cancels the
-                    // walker's own per-row step, so every pixel of a building
-                    // ends up carrying that one bottom-row value. The sort key
-                    // is a different quantity — the north-west footprint cell's
-                    // tile row — and using it here would put the stamp north of
-                    // every bracket corner, so nothing would ever clip.
-                    bucket.push(SpriteInstance {
-                        depth: compute_sprite_depth(state, final_y + entry.pixel_size[1], interp_z),
-                        ..body
-                    });
-                }
-            }
             building_pieces.push(PlannedBuildingPieceInstance {
                 kind: if is_building_up || is_building_down {
                     BuildingPieceKind::BuildupOrSpecial
@@ -360,6 +401,7 @@ pub(crate) fn build_shp_instances(
                     BuildingPieceKind::Body
                 },
                 z_bias: 0,
+                // Body and buildup go through the same Z-writing body draw.
                 policy: BlitPolicy::opaque(SpriteEncoding::Plain),
                 target: GroundTexture::ShpPage(entry.page as usize),
                 instance: body,
@@ -377,6 +419,7 @@ pub(crate) fn build_shp_instances(
                     parent,
                     vec![GroundPieceInstance {
                         target: GroundTexture::ShpPage(entry.page as usize),
+                        render_z: parent.policy.render_z,
                         instance: body,
                     }],
                 ));
@@ -418,7 +461,9 @@ pub(crate) fn build_shp_instances(
                 let is_garrisoned = entity.passenger_role.cargo().is_some_and(|c| !c.is_empty());
                 let is_player_owned = !crate::rules::house_colors::is_non_player_house(owner_str);
                 let world_height: f32 = state
-                    .match_state.match_presentation.terrain_grid
+                    .match_state
+                    .match_presentation
+                    .terrain_grid
                     .as_ref()
                     .map(|g| g.world_height)
                     .unwrap_or(1.0);
@@ -445,6 +490,7 @@ pub(crate) fn build_shp_instances(
                     entity.building_damage_state_active,
                     world_height,
                     draw_state,
+                    interp_z,
                 );
             }
             // Emit VXL turret on top of building (e.g., SAM site, Prism Tower).
@@ -472,7 +518,9 @@ pub(crate) fn build_shp_instances(
                             building_pieces.push(PlannedBuildingPieceInstance {
                                 kind: BuildingPieceKind::PoweredOrActiveOverlay,
                                 z_bias: 0,
-                                policy: BlitPolicy::opaque(SpriteEncoding::Voxel),
+                                // `FUN_0043DA80` -> `TechnoClass__Draw` 0x2800:
+                                // the turret tests Z and never writes.
+                                policy: BlitPolicy::z_read(SpriteEncoding::Voxel),
                                 target: GroundTexture::UnitAtlasPage(page),
                                 instance,
                             });
@@ -488,7 +536,8 @@ pub(crate) fn build_shp_instances(
                 y: i32::from(pos.ry) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_y),
                 z: i32::from(pos.z),
             };
-            let actual_type = state.rules()
+            let actual_type = state
+                .rules()
                 .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref())));
             if let Some(parent) = actual_type.and_then(|object_type| {
                 ground_order.building_object_draw(
@@ -529,7 +578,7 @@ fn emit_building_turret_vxl(
     _hc: HouseColorIndex,
     building_sx: f32,
     building_sy: f32,
-    _z: u8,
+    z: u8,
     building_depth: f32,
     tint: [f32; 3],
     draw_state: DrawState,
@@ -565,6 +614,9 @@ fn emit_building_turret_vxl(
             tint,
             alpha: 1.0,
             draw_state,
+            // VXL blit: gradient entry 2, lift cancelled, no DrawSHP -2.
+            z_adjust: ground_z_adjust(z, 0),
+            z_gradient: pack_z_gradient(ZGradient::Vertical, false),
             ..Default::default()
         },
     ))
@@ -584,7 +636,7 @@ fn emit_building_bib(
     house_color: HouseColorIndex,
     screen_x: f32,
     screen_y: f32,
-    _z: u8,
+    z: u8,
     building_depth: f32,
     tint: [f32; 3],
     draw_state: DrawState,
@@ -617,6 +669,10 @@ fn emit_building_bib(
     // building's YSort position. Use the building's depth so bib and body stay
     // together in the Y-sorted merge, preventing bibs from incorrectly
     // overlapping walls at closer iso rows.
+    //
+    // Native Z (`BuildingClass_DrawBody @ 0x0043D9C9`): the bib is a second
+    // 0x6E00 draw with gradient entry 0, a7 = `-1 - AdjustForZ(Z)`, no
+    // z-shape; it tests and writes Z like the body.
     pieces.push(PlannedBuildingPieceInstance {
         kind: BuildingPieceKind::Bib,
         z_bias: 0,
@@ -631,6 +687,8 @@ fn emit_building_bib(
             tint,
             alpha: 1.0,
             draw_state,
+            z_adjust: ground_z_adjust(z, BIB_Z_ADJUST_PX + SHP_DRAW_Z_ADJUST_PX),
+            z_gradient: pack_z_gradient(ZGradient::Flat, false),
             ..Default::default()
         },
     });
@@ -801,6 +859,7 @@ fn emit_building_anims(
     building_damage_state_active: bool,
     world_height: f32,
     draw_state: DrawState,
+    z: u8,
 ) {
     let rules_image: String = rules
         .and_then(|r| r.object(building_type))
@@ -959,10 +1018,13 @@ fn emit_building_anims(
             effective_anim_z_adjust(anim.z_adjust, type_z_adjust) + ANIM_DRAW_DEPTH_BIAS_PX;
         let anim_depth: f32 = apply_shape_z_adjust(building_depth, z_adjust_px, world_height);
 
+        // Native Z (`AnimClass__DrawIt @ 0x00422CA0`): an anim draw carries
+        // 0x2800 with gradient entry 2 and `YDrawOffset + ZAdjust -
+        // AdjustForZ - 2`; it tests Z per pixel and never writes.
         pieces.push(PlannedBuildingPieceInstance {
             kind: BuildingPieceKind::PoweredOrActiveOverlay,
             z_bias: z_adjust_px,
-            policy: BlitPolicy::opaque(SpriteEncoding::Plain),
+            policy: BlitPolicy::z_read(SpriteEncoding::Plain),
             target: GroundTexture::ShpPage(anim_entry.page as usize),
             instance: SpriteInstance {
                 position: [ax, ay],
@@ -973,6 +1035,16 @@ fn emit_building_anims(
                 tint,
                 alpha: 1.0,
                 draw_state,
+                // The anim's YDrawOffset is baked into the atlas offset, so it
+                // also rides the Z term (native `YDrawOffset + ZAdjust - 2`).
+                z_adjust: ground_z_adjust(
+                    z,
+                    z_adjust_px
+                        + art_reg
+                            .anim_runtime_config(&selected.anim_type)
+                            .map_or(0, |c| c.y_draw_offset),
+                ),
+                z_gradient: pack_z_gradient(ZGradient::Vertical, false),
                 ..Default::default()
             },
         });
@@ -1001,7 +1073,8 @@ fn resolve_infantry_shp_frame(
     // Pass raw facing (not canonical) to resolve_shp_frame so the
     // facing-to-index division works correctly for any facing count
     // (6, 8, 10, etc.). The absolute frame index encodes the direction.
-    let sequence_set = state.rules()
+    let sequence_set = state
+        .rules()
         .and_then(|rules| rules.animation_sequence(type_id));
     if entity.category == EntityCategory::Unit
         && !entity.is_voxel

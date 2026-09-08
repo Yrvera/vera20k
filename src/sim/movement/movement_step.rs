@@ -66,17 +66,14 @@ fn path_window_to_delta(target: &MovementTarget) -> Option<(i32, i32)> {
     ))
 }
 
-/// Z of a drive-track endpoint, in the native height model.
+/// VERA's coarse navigation endpoint: this DriveCoord Z is a signed level
+/// index, not native raw leptons. The coordinate writer separately reconstructs
+/// exact surface Z at the final world XY through `ground_pose`.
 ///
-/// `DriveLocomotionClass` commits a track endpoint Z that already folded
-/// `g_BridgeZOffset_Drive` `[0x008A07C4]` in at `0x004B2196`, and that global is
-/// initialised as `4 * LevelStep` by `DriveLocomotionClass::ComputeBridgeZOffset`
-/// `0x004AF4A0` — the same delta, from the same terrain base, as
-/// `FootClass::Set_Height_On_Bridge` `0x005F5FA0`. The offset is gated on the
-/// mover's own OnBridge state and on nothing else, so this must not consult the
-/// A* layer or a cell-side deck value: the terminal commit writes this number
-/// straight into `position.z`, and a layer-derived one re-dropped a tank that had
-/// just been placed correctly by the cell-transition resolver.
+/// The coarse bridge term follows the owner's OnBridge byte, matching the gate
+/// on native Drive's bridge offset (0x004B2196; initializer 0x004AF4A0). It must
+/// not derive that byte from A* layer or a cell-side deck height. Migrating all
+/// ordinary navigation endpoints to raw leptons is outside this producer.
 fn resolved_track_endpoint(
     path_grid: Option<&PathGrid>,
     cell: (u16, u16),
@@ -488,6 +485,9 @@ pub(super) enum AdvanceResult {
     /// coordinate, so the path cursor advances only once the mover's cell has
     /// actually reached the queued node.
     DriveTrackCellJump { cell_dx: i32, cell_dy: i32 },
+    /// Residual XY crossed a cell: only the object-list/OnBridge transaction
+    /// runs. Raw Z and the paid path cursor remain unchanged (0x4B253F).
+    DriveTrackResidualCellJump { cell_dx: i32, cell_dy: i32 },
     /// Drive track reached the chain_index — caller should attempt to chain
     /// into a follow-on track curve (check passability of the next-next cell,
     /// select new track if OK). If chaining fails, the current track continues
@@ -625,6 +625,7 @@ mod tests {
             DriveCellAdmission::default(),
             MovementLayer::Ground,
             None,
+            None,
         );
 
         // The finishing curve leaves the hull on its last point's facing (0xBC
@@ -670,6 +671,7 @@ mod tests {
             None,
             DriveCellAdmission::default(),
             MovementLayer::Ground,
+            None,
             None,
         );
 
@@ -730,6 +732,7 @@ mod tests {
             None,
             DriveCellAdmission::default(),
             MovementLayer::Ground,
+            None,
             None,
         );
 
@@ -798,6 +801,7 @@ mod tests {
             DriveCellAdmission::default(),
             MovementLayer::Ground,
             None,
+            None,
         );
 
         assert!(matches!(result, AdvanceResult::DriveTrackActive));
@@ -862,6 +866,7 @@ mod tests {
             DriveCellAdmission::default(),
             MovementLayer::Ground,
             None,
+            None,
         );
         let index_after_native_frame = drive_track_state.as_ref().unwrap().point_index;
 
@@ -882,6 +887,7 @@ mod tests {
             None,
             DriveCellAdmission::default(),
             MovementLayer::Ground,
+            None,
             None,
         );
         assert_eq!(
@@ -936,6 +942,7 @@ mod tests {
             None,
             DriveCellAdmission::default(),
             MovementLayer::Ground,
+            None,
             None,
         );
         assert!(matches!(result, AdvanceResult::ReadyForCrossings));
@@ -1367,6 +1374,71 @@ fn select_fresh_drive_track_at_current_cell(
     FreshTrackOutcome::Installed
 }
 
+fn commit_paid_track_height(
+    position: &mut Position,
+    advance: &drive_track::DriveTrackAdvance,
+    on_bridge: bool,
+    terrain: Option<&ResolvedTerrainGrid>,
+    path_grid: Option<&PathGrid>,
+) {
+    let xy = [
+        i32::from(position.rx) * 256 + advance.sub_x.to_num::<i32>(),
+        i32::from(position.ry) * 256 + advance.sub_y.to_num::<i32>(),
+    ];
+    if let Some(z) = super::ground_pose::ground_surface_z_at(xy, on_bridge, terrain, path_grid) {
+        position.exact_z_leptons = Some(z);
+    }
+}
+
+/// A prior residual crossing may already have moved the object into the path
+/// node. Consume VERA's coordinate-based cursor only when a paid point follows;
+/// the residual transaction itself never performs this paid bookkeeping.
+fn consume_previously_reached_track_node(target: &mut MovementTarget, position: &Position) {
+    if target.path.get(target.next_index).copied() != Some((position.rx, position.ry)) {
+        return;
+    }
+    target.next_index += 1;
+    if let Some(&(nx, ny)) = target.path.get(target.next_index) {
+        let (dx, dy, len) = crate::util::lepton::cell_delta_to_lepton_dir(
+            i32::from(nx) - i32::from(position.rx),
+            i32::from(ny) - i32::from(position.ry),
+        );
+        target.move_dir_x = dx;
+        target.move_dir_y = dy;
+        target.move_dir_len = len;
+    }
+}
+
+fn apply_track_residual(
+    position: &mut Position,
+    track: &mut DriveTrackState,
+    advance: &drive_track::DriveTrackAdvance,
+) -> AdvanceResult {
+    position.sub_x = advance.sub_x;
+    position.sub_y = advance.sub_y;
+    if let Some(interp) = drive_track::interp_sub_step(
+        advance.sub_x,
+        advance.sub_y,
+        advance.next_step_delta_x,
+        advance.next_step_delta_y,
+        track.residual,
+        advance.had_next_step,
+    ) {
+        let cell_dx = interp.sub_x.to_num::<i32>().div_euclid(256);
+        let cell_dy = interp.sub_y.to_num::<i32>().div_euclid(256);
+        position.sub_x = interp.sub_x - SimFixed::from_num(cell_dx * 256);
+        position.sub_y = interp.sub_y - SimFixed::from_num(cell_dy * 256);
+        if cell_dx != 0 || cell_dy != 0 {
+            // Keep the track's reference frame aligned with the object cell
+            // that the caller commits. Future paid points must not cross twice.
+            track.cell_offset_x -= cell_dx * 256;
+            track.cell_offset_y -= cell_dy * 256;
+            return AdvanceResult::DriveTrackResidualCellJump { cell_dx, cell_dy };
+        }
+    }
+    AdvanceResult::DriveTrackActive
+}
+
 fn advance_drive_track_retry_after_selection(
     target: &mut MovementTarget,
     position: &mut Position,
@@ -1377,6 +1449,8 @@ fn advance_drive_track_retry_after_selection(
     cell_occupation: &mut Option<&mut CellOccupationGrid>,
     entity_id: u64,
     current_occupation_layer: MovementLayer,
+    terrain: Option<&ResolvedTerrainGrid>,
+    path_grid: Option<&PathGrid>,
 ) -> AdvanceResult {
     let Some(track_state) = drive_track_state else {
         return AdvanceResult::ReadyForCrossings;
@@ -1416,13 +1490,28 @@ fn advance_drive_track_retry_after_selection(
     *facing = advance.facing;
     *facing_target = None;
 
-    if advance.cell_jump && target.next_index < target.path.len() {
+    if track_state.point_index != prior_point_index || advance.finished {
+        // Consume the old current cell before a paid point can leave it.
+        consume_previously_reached_track_node(target, position);
+    }
+
+    if advance.cell_jump {
         position.sub_x = advance.sub_x;
         position.sub_y = advance.sub_y;
         return AdvanceResult::DriveTrackCellJump {
             cell_dx: advance.cell_jump_dx,
             cell_dy: advance.cell_jump_dy,
         };
+    }
+
+    if track_state.point_index != prior_point_index || advance.finished {
+        commit_paid_track_height(
+            position,
+            &advance,
+            current_occupation_layer == MovementLayer::Bridge,
+            terrain,
+            path_grid,
+        );
     }
 
     if advance.chain_ready && target.next_index < target.path.len() {
@@ -1435,25 +1524,20 @@ fn advance_drive_track_retry_after_selection(
         *drive_track_state = None;
         position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
         position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
+        super::ground_pose::commit_ground_height(
+            position,
+            current_occupation_layer == MovementLayer::Bridge,
+            terrain,
+            path_grid,
+        );
         return AdvanceResult::ReadyForCrossings;
     }
 
-    position.sub_x = advance.sub_x;
-    position.sub_y = advance.sub_y;
-    if let Some(track_state) = drive_track_state.as_ref() {
-        if let Some(interp) = drive_track::interp_sub_step(
-            advance.sub_x,
-            advance.sub_y,
-            advance.next_step_delta_x,
-            advance.next_step_delta_y,
-            track_state.residual,
-            advance.had_next_step,
-        ) {
-            position.sub_x = interp.sub_x;
-            position.sub_y = interp.sub_y;
-        }
-    }
-    AdvanceResult::DriveTrackActive
+    apply_track_residual(
+        position,
+        drive_track_state.as_mut().expect("active track"),
+        &advance,
+    )
 }
 
 /// Advance sub_x/sub_y toward the next cell — either via drive track (smooth
@@ -1479,7 +1563,12 @@ pub(super) fn advance_lepton_position(
     admission: DriveCellAdmission<'_>,
     current_occupation_layer: MovementLayer,
     path_grid: Option<&PathGrid>,
+    terrain: Option<&ResolvedTerrainGrid>,
 ) -> AdvanceResult {
+    let walk_xy_before = locomotor
+        .as_ref()
+        .filter(|loco| loco.kind == LocomotorKind::Walk)
+        .map(|_| super::ground_pose::position_world_xy(position));
     if let Some(track_state) = drive_track_state {
         // Drive track advancement: step through pre-computed curve points.
         // The track handles position AND facing, producing smooth turns.
@@ -1518,7 +1607,12 @@ pub(super) fn advance_lepton_position(
         *facing = advance.facing;
         *facing_target = None; // track handles facing
 
-        if advance.cell_jump && target.next_index < target.path.len() {
+        if track_state.point_index != prior_point_index || advance.finished {
+            // Consume the old current cell before a paid point can leave it.
+            consume_previously_reached_track_node(target, position);
+        }
+
+        if advance.cell_jump {
             // Coordinate-based cell crossing detected — the transformed track
             // point position landed in a different cell. The cell_offset was
             // already adjusted inside advance_drive_track. Update visual position.
@@ -1531,6 +1625,16 @@ pub(super) fn advance_lepton_position(
                 cell_dx: advance.cell_jump_dx,
                 cell_dy: advance.cell_jump_dy,
             };
+        }
+
+        if track_state.point_index != prior_point_index || advance.finished {
+            commit_paid_track_height(
+                position,
+                &advance,
+                current_occupation_layer == MovementLayer::Bridge,
+                terrain,
+                path_grid,
+            );
         }
 
         if advance.chain_ready && target.next_index < target.path.len() {
@@ -1546,6 +1650,12 @@ pub(super) fn advance_lepton_position(
             *drive_track_state = None;
             position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
             position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
+            super::ground_pose::commit_ground_height(
+                position,
+                current_occupation_layer == MovementLayer::Bridge,
+                terrain,
+                path_grid,
+            );
             let shared_kind = shared_track_kind(locomotor);
             let uses_drive_tracks = shared_kind.is_some();
             let is_ship = shared_kind == Some(LocomotorKind::Ship);
@@ -1579,6 +1689,8 @@ pub(super) fn advance_lepton_position(
                             &mut cell_occupation,
                             entity_id,
                             current_occupation_layer,
+                            terrain,
+                            path_grid,
                         );
                     }
                     FreshTrackOutcome::TurnFirst(desired_facing) => {
@@ -1600,26 +1712,20 @@ pub(super) fn advance_lepton_position(
             // Track complete — snap to cell center so standard movement resumes.
             position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
             position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
+            super::ground_pose::commit_ground_height(
+                position,
+                current_occupation_layer == MovementLayer::Bridge,
+                terrain,
+                path_grid,
+            );
             // Fall through to ReadyForCrossings — normal movement takes over.
         } else {
             // Mid-track, no events — apply discrete-step pos, then layer
             // sub-step interp on top using the residual budget. The interp
-            // helper enforces the L4 cell-validity safety gate; cell occupancy
-            // never changes mid-step (rx/ry unchanged on this path).
-            position.sub_x = advance.sub_x;
-            position.sub_y = advance.sub_y;
-            if let Some(interp) = drive_track::interp_sub_step(
-                advance.sub_x,
-                advance.sub_y,
-                advance.next_step_delta_x,
-                advance.next_step_delta_y,
-                track_state.residual,
-                advance.had_next_step,
-            ) {
-                position.sub_x = interp.sub_x;
-                position.sub_y = interp.sub_y;
-            }
-            return AdvanceResult::DriveTrackActive;
+            // helper enforces the L4 cell-validity safety gate. Residual cell
+            // crossings return a separate list/OnBridge transaction without
+            // consuming a path node or calling SetHeight.
+            return apply_track_residual(position, track_state, &advance);
         }
     } else {
         let needs_drive_native_step = drive_locomotion
@@ -1671,6 +1777,8 @@ pub(super) fn advance_lepton_position(
                             &mut cell_occupation,
                             entity_id,
                             current_occupation_layer,
+                            terrain,
+                            path_grid,
                         );
                     }
                     FreshTrackOutcome::TurnFirst(desired_facing) => {
@@ -1779,6 +1887,23 @@ pub(super) fn advance_lepton_position(
         }
     }
 
+    // Walk same-cell SetCoords -> SetHeight(0) @ 0x75C20F/0x75C21C.
+    // Out-of-cell coordinates are provisional until admission succeeds;
+    // process_cell_crossings owns their height write before Mark(PUT).
+    if let Some(before) = walk_xy_before
+        && super::ground_pose::position_world_xy(position) != before
+        && position.sub_x >= SIM_ZERO
+        && position.sub_x < SimFixed::from_num(256)
+        && position.sub_y >= SIM_ZERO
+        && position.sub_y < SimFixed::from_num(256)
+    {
+        super::ground_pose::commit_ground_height(
+            position,
+            current_occupation_layer == MovementLayer::Bridge,
+            terrain,
+            path_grid,
+        );
+    }
     AdvanceResult::ReadyForCrossings
 }
 
@@ -1892,6 +2017,21 @@ pub(super) fn process_cell_crossings(
         if !runtime_entry.bridge_traversal_allowed {
             position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
             position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
+            // VERA centre recovery is not a native locomotor step; keep its
+            // committed old-cell pose coherent without sampling the rejected XY.
+            if locomotor.as_ref().is_some_and(|loco| {
+                matches!(
+                    loco.kind,
+                    LocomotorKind::Drive | LocomotorKind::Ship | LocomotorKind::Walk
+                )
+            }) {
+                super::ground_pose::commit_ground_height(
+                    position,
+                    projected_on_bridge_state,
+                    resolved_terrain,
+                    path_grid,
+                );
+            }
             *drive_track_state = None;
             target.movement_delay = 0;
             let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
@@ -2003,6 +2143,21 @@ pub(super) fn process_cell_crossings(
             // Undo lepton advancement — entity stays at cell center.
             position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
             position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
+            // VERA centre recovery is not a native locomotor step; keep its
+            // committed old-cell pose coherent without sampling the rejected XY.
+            if locomotor.as_ref().is_some_and(|loco| {
+                matches!(
+                    loco.kind,
+                    LocomotorKind::Drive | LocomotorKind::Ship | LocomotorKind::Walk
+                )
+            }) {
+                super::ground_pose::commit_ground_height(
+                    position,
+                    projected_on_bridge_state,
+                    resolved_terrain,
+                    path_grid,
+                );
+            }
             *drive_track_state = None;
             // Terrain-blocked (building/cliff) — the path is stale.
             // Force immediate repath by clearing movement_delay.
@@ -2070,6 +2225,21 @@ pub(super) fn process_cell_crossings(
                 if diff >= CLIFF_HEIGHT_THRESHOLD && !is_bridge_ramp {
                     position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
                     position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
+                    // VERA centre recovery is not a native locomotor step; keep its
+                    // committed old-cell pose coherent without sampling the rejected XY.
+                    if locomotor.as_ref().is_some_and(|loco| {
+                        matches!(
+                            loco.kind,
+                            LocomotorKind::Drive | LocomotorKind::Ship | LocomotorKind::Walk
+                        )
+                    }) {
+                        super::ground_pose::commit_ground_height(
+                            position,
+                            projected_on_bridge_state,
+                            resolved_terrain,
+                            path_grid,
+                        );
+                    }
                     *drive_track_state = None;
                     target.movement_delay = 0;
                     let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
@@ -2168,6 +2338,17 @@ pub(super) fn process_cell_crossings(
         );
         projected_on_bridge_state =
             super::movement_bridge::projected_on_bridge(projected_on_bridge_state, bridge_update);
+        if locomotor
+            .as_ref()
+            .is_some_and(|loco| loco.kind == LocomotorKind::Walk)
+        {
+            super::ground_pose::commit_ground_height(
+                position,
+                projected_on_bridge_state,
+                resolved_terrain,
+                path_grid,
+            );
+        }
         if !matches!(
             bridge_update,
             super::movement_bridge::BridgeStateUpdate::Unchanged

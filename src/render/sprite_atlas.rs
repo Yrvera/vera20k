@@ -143,6 +143,11 @@ pub struct ShpSpriteEntry {
     pub offset_x: f32,
     /// Y offset from the cell center to the sprite's top-left corner.
     pub offset_y: f32,
+    /// Logical canvas [x, y, width, height] retained for picking and sorting.
+    /// Drawing and native Z use the stored frame rectangle above instead.
+    pub canvas_rect: [f32; 4],
+    /// SHP format bit 1: only the extended walker consumes BUILDNGZ.
+    pub extended: bool,
     /// Atlas page index (0-based). Each page is a separate GPU texture.
     pub page: u8,
 }
@@ -281,13 +286,15 @@ impl SpriteAtlas {
 /// Intermediate rendered sprite before atlas packing.
 struct RenderedShpSprite {
     key: ShpSpriteKey,
-    /// RGBA pixel data blitted into full (width × height) bounds.
+    /// RGBA pixels of the stored frame rectangle, without canvas padding.
     rgba: Vec<u8>,
     width: u32,
     height: u32,
     /// Offset from cell center to top-left of sprite.
     offset_x: f32,
     offset_y: f32,
+    canvas_rect: [f32; 4],
+    extended: bool,
 }
 
 /// End an incremental rebuild without invalidating the atlas that was already
@@ -1197,18 +1204,18 @@ fn compute_building_bounds(
         let Some(main) = main_entry else { continue };
 
         // Initialize bbox from main sprite.
-        let mut min_x: f32 = main.offset_x;
-        let mut min_y: f32 = main.offset_y;
-        let mut max_x: f32 = main.offset_x + main.pixel_size[0];
-        let mut max_y: f32 = main.offset_y + main.pixel_size[1];
+        let mut min_x: f32 = main.canvas_rect[0];
+        let mut min_y: f32 = main.canvas_rect[1];
+        let mut max_x: f32 = main.canvas_rect[0] + main.canvas_rect[2];
+        let mut max_y: f32 = main.canvas_rect[1] + main.canvas_rect[3];
 
         // Union all other frames of the main sprite (animation frames).
         for (k, v) in atlas.entries_iter() {
             if k.type_id == *type_id {
-                min_x = min_x.min(v.offset_x);
-                min_y = min_y.min(v.offset_y);
-                max_x = max_x.max(v.offset_x + v.pixel_size[0]);
-                max_y = max_y.max(v.offset_y + v.pixel_size[1]);
+                min_x = min_x.min(v.canvas_rect[0]);
+                min_y = min_y.min(v.canvas_rect[1]);
+                max_x = max_x.max(v.canvas_rect[0] + v.canvas_rect[2]);
+                max_y = max_y.max(v.canvas_rect[1] + v.canvas_rect[3]);
             }
         }
 
@@ -1233,12 +1240,12 @@ fn compute_building_bounds(
                     {
                         for (k, v) in atlas.entries_iter() {
                             if k.type_id == anim_type {
-                                let ax: f32 = anim.x as f32 + v.offset_x;
-                                let ay: f32 = anim.y as f32 + v.offset_y;
+                                let ax: f32 = anim.x as f32 + v.canvas_rect[0];
+                                let ay: f32 = anim.y as f32 + v.canvas_rect[1];
                                 min_x = min_x.min(ax);
                                 min_y = min_y.min(ay);
-                                max_x = max_x.max(ax + v.pixel_size[0]);
-                                max_y = max_y.max(ay + v.pixel_size[1]);
+                                max_x = max_x.max(ax + v.canvas_rect[2]);
+                                max_y = max_y.max(ay + v.canvas_rect[3]);
                             }
                         }
                     }
@@ -1398,33 +1405,15 @@ fn render_shp_sprite(
         }
     };
 
-    // Blit the sub-frame into the full (shp.width × shp.height) bounds.
-    // This ensures consistent sprite dimensions and correct positioning.
+    // CC_Draw_Shape @ 0x004AED70 centers the SHP canvas, then adds the
+    // stored frame origin and passes its width/height to the blitter. Padding
+    // to the canvas preserved color placement but seeded Z from the wrong rect.
     let full_w: u32 = shp.width as u32;
     let full_h: u32 = shp.height as u32;
-    let mut full_rgba: Vec<u8> = vec![0u8; (full_w * full_h * 4) as usize];
-
     let fw: u32 = frame.frame_width as u32;
     let fh: u32 = frame.frame_height as u32;
     let fx: u32 = frame.frame_x as u32;
     let fy: u32 = frame.frame_y as u32;
-
-    for y in 0..fh {
-        let dst_y: u32 = fy + y;
-        if dst_y >= full_h {
-            break;
-        }
-        let src_start: usize = (y * fw * 4) as usize;
-        let src_end: usize = src_start + (fw * 4) as usize;
-        let dst_start: usize = ((dst_y * full_w + fx) * 4) as usize;
-        let copy_w: u32 = fw.min(full_w.saturating_sub(fx));
-        let dst_end: usize = dst_start + (copy_w * 4) as usize;
-        if src_end <= frame_rgba.len() && dst_end <= full_rgba.len() {
-            let actual_bytes: usize = (copy_w * 4) as usize;
-            full_rgba[dst_start..dst_start + actual_bytes]
-                .copy_from_slice(&frame_rgba[src_start..src_start + actual_bytes]);
-        }
-    }
 
     log::debug!(
         "SHP {} facing={}: {}x{} frame {}/{}, sub {}x{} at ({},{})",
@@ -1440,7 +1429,7 @@ fn render_shp_sprite(
         fy,
     );
 
-    // Center sprite on cell center. FrameOffset embedded via blit.
+    // Center the logical canvas, then place its stored frame.
     // DrawOffset from art.ini XDrawOffset/YDrawOffset for per-type fine-tuning.
     // Uses integer division: -ShapeWidth/2 (truncated), to avoid sub-pixel drift
     // on odd-dimension SHPs.
@@ -1450,11 +1439,13 @@ fn render_shp_sprite(
 
     Some(RenderedShpSprite {
         key: key.clone(),
-        rgba: full_rgba,
-        width: full_w,
-        height: full_h,
-        offset_x,
-        offset_y,
+        rgba: frame_rgba,
+        width: fw,
+        height: fh,
+        offset_x: offset_x + fx as f32,
+        offset_y: offset_y + fy as f32,
+        canvas_rect: [offset_x, offset_y, full_w as f32, full_h as f32],
+        extended: frame.format & 2 != 0,
     })
 }
 
@@ -1565,6 +1556,8 @@ fn render_harvest_overlay_frames(asset_manager: &AssetManager) -> Vec<RenderedSh
             height: fh,
             offset_x,
             offset_y,
+            canvas_rect: [offset_x, offset_y, fw as f32, fh as f32],
+            extended: frame.format & 2 != 0,
         });
     }
 
@@ -1694,6 +1687,8 @@ fn pack_sprites(
                     pixel_size: [w as f32, h as f32],
                     offset_x: rs.offset_x,
                     offset_y: rs.offset_y,
+                    canvas_rect: rs.canvas_rect,
+                    extended: rs.extended,
                     page: page_idx,
                 },
             );

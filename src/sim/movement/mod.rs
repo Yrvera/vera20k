@@ -54,6 +54,7 @@ use crate::util::fixed_math::SIM_ZERO;
 // --- Internal submodules ---
 mod cell_arrival;
 mod drive_locomotion;
+pub(crate) mod ground_pose;
 pub(crate) mod locomotor_ready;
 mod movement_blocked;
 pub(crate) mod movement_bridge;
@@ -566,5 +567,7 @@ fn walking_to_subcell_dest(
 mod movement_bridge_retail_tests;
 #[cfg(test)]
 mod movement_tests;
+#[cfg(test)]
+mod ground_pose_tests;
 #[cfg(test)]
 mod prone_speed_tests;

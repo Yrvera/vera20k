@@ -16,7 +16,6 @@
 //! - Part of sim/ — depends on sim/game_entity, sim/entity_store, sim/locomotor.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
@@ -49,6 +48,11 @@ pub fn begin_parachute_descent(
         return false;
     };
 
+    // Transfer coordinate ownership from a previous ground/tube pose to this
+    // altitude integrator. Consumers prefer exact Z when present; retaining it
+    // would freeze a previously moved passenger at its old surface throughout
+    // descent. The production drop attaches this state before Reveal.
+    entity.position.exact_z_leptons = None;
     entity.parachute_state = Some(ParachuteDescentState {
         rate: 0,
         altitude: drop_altitude,
@@ -136,10 +140,10 @@ mod tests {
     use crate::sim::animation::{Animation, SequenceKind};
     use crate::sim::entity_store::EntityStore;
     use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::sim::movement::locomotor::{
         AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
     };
-    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::util::fixed_math::{SIM_ONE, SIM_ZERO};
 
     /// Mirrors the helper used in droppod_movement.rs tests.
@@ -200,6 +204,7 @@ mod tests {
     fn test_begin_attaches_state_and_keeps_locomotor_identity() {
         let mut entities = EntityStore::new();
         let id = insert_test_infantry(&mut entities, 1);
+        entities.get_mut(id).unwrap().position.exact_z_leptons = Some(52);
 
         assert!(begin_parachute_descent(
             &mut entities,
@@ -208,6 +213,10 @@ mod tests {
         ));
 
         let entity = entities.get(id).expect("should exist");
+        assert_eq!(
+            entity.position.exact_z_leptons, None,
+            "descent must take over a previously exact ground coordinate"
+        );
         let state = entity
             .parachute_state
             .as_ref()

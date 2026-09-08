@@ -575,6 +575,7 @@ fn render_main_menu_shell_to_target_inner(
         0.0,
         0.0,
         1.0,
+        crate::render::batch::DepthAxis::NONE,
     );
     let background_buffer = state
         .renderer.batch_renderer

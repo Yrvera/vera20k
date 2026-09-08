@@ -72,6 +72,8 @@ fn tick_forced_drive_tracks(
     next_occupancy_enter_order: &mut EnterOrderCounter,
     dt: SimFixed,
     stats: &mut MovementTickStats,
+    terrain: Option<&ResolvedTerrainGrid>,
+    path_grid: Option<&PathGrid>,
 ) -> BTreeSet<u64> {
     let mut processed: BTreeSet<u64> = BTreeSet::new();
     for &entity_id in entity_order {
@@ -140,9 +142,16 @@ fn tick_forced_drive_tracks(
         }
         entity.facing = advance.facing;
         entity.facing_target = None;
-        let prior_subcell = (entity.position.sub_x, entity.position.sub_y);
         entity.position.sub_x = advance.sub_x;
         entity.position.sub_y = advance.sub_y;
+        if paid_point {
+            super::ground_pose::commit_ground_height(
+                &mut entity.position,
+                entity.on_bridge,
+                terrain,
+                path_grid,
+            );
+        }
         if !advance.finished
             && let Some(interp) = super::drive_track::interp_sub_step(
                 advance.sub_x,
@@ -155,9 +164,6 @@ fn tick_forced_drive_tracks(
         {
             entity.position.sub_x = interp.sub_x;
             entity.position.sub_y = interp.sub_y;
-        }
-        if (entity.position.sub_x, entity.position.sub_y) != prior_subcell {
-            entity.position.exact_z_leptons = None;
         }
         processed.insert(entity_id);
         stats.movers_total = stats.movers_total.saturating_add(1);
@@ -203,10 +209,16 @@ fn tick_forced_drive_tracks(
                     entity.position.ry = target_ry;
                     entity.position.sub_x = SimFixed::from_num(head.x.rem_euclid(256));
                     entity.position.sub_y = SimFixed::from_num(head.y.rem_euclid(256));
-                    entity.position.exact_z_leptons = None;
                     if let Ok(z) = u8::try_from(head.z) {
                         entity.position.z = z;
                     }
+                    // Native final snap calls SetHeight(0) before Mark(PUT).
+                    super::ground_pose::commit_ground_height(
+                        &mut entity.position,
+                        entity.on_bridge,
+                        terrain,
+                        path_grid,
+                    );
 
                     if cell_changed && entity.lifecycle.cell_marked {
                         entity.occupancy_enter_order = next_occupancy_enter_order.next();
@@ -1661,6 +1673,8 @@ fn tick_movement_with_grids_scoped(
         next_occupancy_enter_order,
         dt,
         &mut stats,
+        resolved_terrain,
+        path_grid,
     );
     let ordinary_entry_order: Vec<u64> = entity_order
         .iter()
@@ -2202,12 +2216,7 @@ fn tick_movement_with_grids_scoped(
             } else {
                 MovementLayer::Ground
             };
-            let prior_position = (
-                entity.position.rx,
-                entity.position.ry,
-                entity.position.sub_x,
-                entity.position.sub_y,
-            );
+            let prior_path_index = target.next_index;
             let advance_result = movement_step::advance_lepton_position(
                 target,
                 &mut entity.position,
@@ -2231,25 +2240,85 @@ fn tick_movement_with_grids_scoped(
                 },
                 current_occupation_layer,
                 path_grid,
+                resolved_terrain,
             );
-            if (
-                entity.position.rx,
-                entity.position.ry,
-                entity.position.sub_x,
-                entity.position.sub_y,
-            ) != prior_position
-            {
-                entity.position.exact_z_leptons = None;
+            if target.next_index > prior_path_index {
+                active_layer = target.layer_at(prior_path_index);
+                if let Some(loco) = entity.locomotor.as_mut() {
+                    loco.layer = active_layer;
+                }
             }
             match advance_result {
                 movement_step::AdvanceResult::DriveTrackActive => continue,
+                movement_step::AdvanceResult::DriveTrackResidualCellJump { cell_dx, cell_dy } => {
+                    // Drive 0x4B253F..0x4B25C3: residual movement has its own
+                    // remove/coords/OnBridge/put order. This branch models the
+                    // object list and derived occupation; ordinary movement
+                    // still lacks native raw Mark parity. It never calls
+                    // SetHeight, consumes a path node, or reserves its head.
+                    let old_cell = (entity.position.rx, entity.position.ry);
+                    let new_cell = (
+                        old_cell.0.saturating_add_signed(cell_dx as i16),
+                        old_cell.1.saturating_add_signed(cell_dy as i16),
+                    );
+                    let old_layer = if entity.on_bridge {
+                        MovementLayer::Bridge
+                    } else {
+                        MovementLayer::Ground
+                    };
+                    occupancy.remove_on_layer(old_cell.0, old_cell.1, entity_id, old_layer);
+                    cell_occupation
+                        .clear_vehicle_on_layer(old_cell.0, old_cell.1, entity_id, old_layer);
+                    entity.position.rx = new_cell.0;
+                    entity.position.ry = new_cell.1;
+                    let update = super::movement_bridge::resolve_cell_transition_bridge_state(
+                        &mut entity.position,
+                        path_grid,
+                        old_cell,
+                        new_cell,
+                        entity.on_bridge,
+                    );
+                    apply_pending_bridge_render_state(
+                        &mut entity.locomotor,
+                        &mut entity.bridge_occupancy,
+                        &mut entity.on_bridge,
+                        active_layer,
+                        update,
+                        entity_id,
+                    );
+                    let new_layer = if entity.on_bridge {
+                        MovementLayer::Bridge
+                    } else {
+                        MovementLayer::Ground
+                    };
+                    entity.occupancy_enter_order = next_occupancy_enter_order.next();
+                    occupancy.add(
+                        new_cell.0,
+                        new_cell.1,
+                        entity_id,
+                        new_layer,
+                        entity.sub_cell,
+                        CellListInsertion::from_category(entity.category),
+                    );
+                    if let Some(drive) = entity.drive_locomotion.as_mut() {
+                        crate::sim::occupancy::mark_current_drive_occupation_after_crossing(
+                            drive,
+                            cell_occupation,
+                            entity_id,
+                            new_cell,
+                            new_layer,
+                        );
+                    }
+                    stats.moved_steps = stats.moved_steps.saturating_add(1);
+                    continue;
+                }
                 movement_step::AdvanceResult::DriveTrackCellJump { cell_dx, cell_dy } => {
                     // Drive track coordinates crossed a cell boundary.
                     // Perform the cell transition: move rx/ry by the delta the
                     // coordinate actually applied, reserve destination, handle
                     // bridge state, and consume the queued path node only once
                     // the mover's cell has reached it.
-                    if target.next_index < target.path.len() {
+                    {
                         // gamemd keeps ONE absolute coordinate per object and
                         // derives its cell from that coordinate, so the cell and
                         // the sub-cell offset always move by the same delta and
@@ -2273,12 +2342,13 @@ fn tick_movement_with_grids_scoped(
                         // express a same-cell step at all, so this arm is
                         // VERA-internal with the gamemd equivalent UNCHECKED; it
                         // preserves the pre-existing consumption of such a node.
-                        let queued = target.path[target.next_index];
-                        let same_cell_path_step = queued == (old_rx, old_ry);
-                        let reaches_queued_node = queued == (nx, ny) || same_cell_path_step;
+                        let queued = target.path.get(target.next_index).copied();
+                        let same_cell_path_step = queued == Some((old_rx, old_ry));
+                        let reaches_queued_node = queued == Some((nx, ny)) || same_cell_path_step;
                         // DIAGNOSTIC: detect same-cell layer transition in drive track path
                         if same_cell_path_step {
-                            let next_layer = target.layer_at(target.next_index);
+                            let next_layer =
+                                queued.map_or(active_layer, |_| target.layer_at(target.next_index));
                             log::warn!(
                                 "BRIDGE_DIAG entity={}: DriveTrackCellJump same-cell step! \
                                  cell=({},{}) path_layer={:?} active_layer={:?} z={} \
@@ -2310,7 +2380,8 @@ fn tick_movement_with_grids_scoped(
                         // updated by apply_pending_bridge_render_state from bridge_update below
                         // — driven by the predicate, NOT the layer match.
                         if let Some(pg) = path_grid {
-                            let next_layer = target.layer_at(target.next_index);
+                            let next_layer =
+                                queued.map_or(active_layer, |_| target.layer_at(target.next_index));
                             let bridge_update =
                                 super::movement_bridge::resolve_cell_transition_bridge_state(
                                     &mut entity.position,
@@ -2383,6 +2454,14 @@ fn tick_movement_with_grids_scoped(
                         active_layer,
                         pending_bridge_update,
                         entity_id,
+                    );
+                    // The paid-point common tail samples after its cell work
+                    // and OnBridge update, before any later residual XY.
+                    super::ground_pose::commit_ground_height(
+                        &mut entity.position,
+                        entity.on_bridge,
+                        resolved_terrain,
+                        path_grid,
                     );
                     continue;
                 }
@@ -2706,6 +2785,9 @@ fn tick_movement_with_grids_scoped(
         // Runs outside the mutable entity borrow so classify_occupied_cell()
         // can do immutable EntityStore lookups for blocker properties.
         if let Some(check) = deferred_cell_check {
+            let rejected_xy = entities
+                .get(entity_id)
+                .map(|entity| super::ground_pose::position_world_xy(&entity.position));
             let occ_evts = handle_deferred_occupancy(
                 entities,
                 check,
@@ -2734,6 +2816,29 @@ fn tick_movement_with_grids_scoped(
                 marker_context,
             );
             debug_events.extend(occ_evts);
+            // VERA-internal recovery: deferred refusals may snap the mover to
+            // its old cell centre. This is not the rejected prospective step,
+            // but it is a committed coordinate and must not retain stale Z.
+            if let Some(entity) = entities.get_mut(entity_id)
+                && rejected_xy != Some(super::ground_pose::position_world_xy(&entity.position))
+                && entity.position.sub_x == crate::util::lepton::CELL_CENTER_LEPTON
+                && entity.position.sub_y == crate::util::lepton::CELL_CENTER_LEPTON
+                && entity.locomotor.as_ref().is_some_and(|loco| {
+                    matches!(
+                        loco.kind,
+                        crate::rules::locomotor_type::LocomotorKind::Drive
+                            | crate::rules::locomotor_type::LocomotorKind::Ship
+                            | crate::rules::locomotor_type::LocomotorKind::Walk
+                    )
+                })
+            {
+                super::ground_pose::commit_ground_height(
+                    &mut entity.position,
+                    entity.on_bridge,
+                    resolved_terrain,
+                    path_grid,
+                );
+            }
         }
 
         // Push deferred debug events onto the entity now that all borrows are released.
@@ -2810,6 +2915,7 @@ fn tick_movement_with_grids_scoped(
         sim_tick,
         resolved_terrain,
         cell_occupation,
+        path_grid,
     );
     let ordinary_tail_order: Vec<u64> = entity_order
         .iter()
@@ -2949,6 +3055,7 @@ fn finalize_finished_entities(
     sim_tick: u64,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     cell_occupation: &mut CellOccupationGrid,
+    path_grid: Option<&PathGrid>,
 ) {
     for &entity_id in finished {
         if contains_crush_victim(crush_kills, entity_id) {
@@ -2970,10 +3077,8 @@ fn finalize_finished_entities(
                     current_layer,
                 );
             }
-            super::navcom::finish_drive_navigation(entity, resolved_terrain);
-            entity.movement_target = None;
-            entity.drive_track = None; // clear any active drive track curve
-            entity.body_facing = None; // steering/turn interpolator ends with the move
+            // Native arrival SetCoords -> SetHeight precedes navigation cleanup.
+            // Capture the active Drive owner before cleanup can restore Teleport.
             // Snap sub-cell leptons to final position. Use the locomotor's
             // subcell_dest if available (set during cell entry), otherwise fall
             // back to computing from sub_cell index. Vehicles snap to center.
@@ -2982,12 +3087,27 @@ fn finalize_finished_entities(
                 .as_ref()
                 .and_then(|l| l.subcell_dest)
                 .unwrap_or_else(|| crate::util::lepton::subcell_lepton_offset(entity.sub_cell));
-            let prior_subcell = (entity.position.sub_x, entity.position.sub_y);
             entity.position.sub_x = snap_x;
             entity.position.sub_y = snap_y;
-            if (snap_x, snap_y) != prior_subcell {
-                entity.position.exact_z_leptons = None;
+            if entity.locomotor.as_ref().is_some_and(|loco| {
+                matches!(
+                    loco.kind,
+                    crate::rules::locomotor_type::LocomotorKind::Drive
+                        | crate::rules::locomotor_type::LocomotorKind::Ship
+                        | crate::rules::locomotor_type::LocomotorKind::Walk
+                )
+            }) {
+                super::ground_pose::commit_ground_height(
+                    &mut entity.position,
+                    entity.on_bridge,
+                    resolved_terrain,
+                    path_grid,
+                );
             }
+            super::navcom::finish_drive_navigation(entity, resolved_terrain);
+            entity.movement_target = None;
+            entity.drive_track = None; // clear any active drive track curve
+            entity.body_facing = None; // steering/turn interpolator ends with the move
             let old_phase = entity.locomotor.as_ref().map(|l| l.phase);
             if let Some(ref mut loco) = entity.locomotor {
                 loco.phase = GroundMovePhase::Idle;

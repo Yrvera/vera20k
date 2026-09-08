@@ -32,6 +32,9 @@ use crate::sim::scenario_bootstrap::{
     initialize_skirmish_launch_houses,
 };
 
+use crate::app::presentation::lighting::rebuild_lighting_grid_from_sim;
+#[cfg(test)]
+use crate::app::presentation::lighting::{build_lighting_grid_from_view, derive_lighting_view};
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::shp_file::ShpFile;
 use crate::map::actions::ActionMap;
@@ -39,9 +42,6 @@ use crate::map::basic::{BasicSection, BridgeDestroyabilityMode};
 use crate::map::cell_tags::CellTagMap;
 use crate::map::events::EventMap;
 use crate::map::houses::{self, HouseColorMap, HouseRoster};
-use crate::app::presentation::lighting::rebuild_lighting_grid_from_sim;
-#[cfg(test)]
-use crate::app::presentation::lighting::{derive_lighting_view, build_lighting_grid_from_view};
 use crate::map::lighting::{self, CellLightGrid, LightingConfig};
 use crate::map::map_file::MapFile;
 use crate::map::overlay::{OverlayEntry, TerrainObject};
@@ -1113,6 +1113,9 @@ pub struct ScenarioLoadInputs {
 /// nothing here feeds back into it.
 pub struct PresentationLoadAssets {
     pub tile_atlas: Option<TileAtlas>,
+    /// BUILDNGZ.SHA z-shape every building body writes its depth through.
+    /// `None` falls back to the neutral z-shape (flat building depth).
+    pub building_zshape: Option<crate::render::building_zshape::BuildingZShape>,
     pub unit_atlas: Option<UnitAtlas>,
     /// Palette + per-house RGB ramp GPU resources for the voxel sprite shader.
     /// None when no theater palette is available (rare).
@@ -2996,6 +2999,11 @@ pub(crate) fn load_map_from_initial(
             .map_err(|e| log::warn!("Failed to parse GAME.FNT: {e}"))
             .ok()
     });
+    let building_zshape =
+        crate::render::building_zshape::BuildingZShape::load(gpu, batch, &asset_manager);
+    if building_zshape.is_none() {
+        log::warn!("BUILDNGZ.SHA not loaded: building bodies write flat depth");
+    }
     let software_cursor = cursor_atlas::build_software_cursor(gpu, batch, &asset_manager);
     if software_cursor.is_some() {
         log::info!("Software cursor loaded from mouse.sha — OS cursor will be hidden");
@@ -3058,6 +3066,7 @@ pub(crate) fn load_map_from_initial(
         },
         presentation: PresentationLoadAssets {
             tile_atlas,
+            building_zshape,
             unit_atlas,
             palette_set,
             sprite_atlas,

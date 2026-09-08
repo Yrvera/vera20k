@@ -510,11 +510,16 @@ mod tests {
     }
 
     #[test]
-    fn gsi_13_09_zdepth_shader_uses_instance_scale_and_retains_terrain_default() {
+    fn gsi_13_09_zdepth_shader_reads_the_zdata_sign_from_fx_params_w() {
+        // fx_params.w carries the Z-data sign (+1 tiles, -1 bridges); the
+        // depth unit itself comes from the camera uniform, one world row per
+        // native Z unit, shared with the sprite pipelines.
         let shader = include_str!("zdepth_shader.wgsl");
         assert!(shader.contains("@location(9) fx_params: vec4f"));
-        assert!(shader.contains("output.depth_scale = instance.fx_params.w"));
-        assert!(shader.contains("select(0.0002, input.depth_scale, input.depth_scale > 0.0)"));
-        assert!(shader.contains("z_sample * depth_scale"));
+        assert!(shader.contains("@location(11) z_adjust: f32"));
+        assert!(shader.contains("select(1.0, -1.0, instance.fx_params.w < 0.0)"));
+        assert!(shader.contains("input.canvas_top - (input.z_adjust + input.z_sign * z_byte)"));
+        assert!(shader.contains("camera.world_height"));
+        assert!(!shader.contains("0.0002"));
     }
 }

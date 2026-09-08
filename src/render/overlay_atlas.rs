@@ -21,9 +21,9 @@ use crate::map::overlay_types::{
     OverlayTypeFlags, OverlayTypeRegistry, is_bridge_overlay_index, is_high_bridge_index,
     native_mark_overlay_data,
 };
-use crate::render::overlay_assets::resolve_overlay_name_for_render;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
+use crate::render::overlay_assets::resolve_overlay_name_for_render;
 use crate::rules::art_data::{self, ArtRegistry};
 use crate::rules::crate_rules::CrateRules;
 use crate::rules::ini_parser::IniFile;
@@ -792,50 +792,44 @@ fn render_overlay_sprite(
         Err(_) => return None,
     };
 
-    // Blit sub-frame into full SHP bounds for consistent dimensions.
-    let full_w: u32 = shp.width as u32;
-    let full_h: u32 = shp.height as u32;
-    let mut full_rgba: Vec<u8> = vec![0u8; (full_w * full_h * 4) as usize];
-
-    let fw: u32 = frame.frame_width as u32;
-    let fh: u32 = frame.frame_height as u32;
-    let fx: u32 = frame.frame_x as u32;
-    let fy: u32 = frame.frame_y as u32;
-
-    for y in 0..fh {
-        let dst_y: u32 = fy + y;
-        if dst_y >= full_h {
-            break;
-        }
-        let src_off: usize = (y * fw * 4) as usize;
-        let copy_w: u32 = fw.min(full_w.saturating_sub(fx));
-        let dst_off: usize = ((dst_y * full_w + fx) * 4) as usize;
-        let bytes: usize = (copy_w * 4) as usize;
-        if src_off + bytes <= frame_rgba.len() && dst_off + bytes <= full_rgba.len() {
-            full_rgba[dst_off..dst_off + bytes]
-                .copy_from_slice(&frame_rgba[src_off..src_off + bytes]);
-        }
-    }
-
-    // Center the overlay sprite on the cell center.
-    // The original engine applies a -CellHeight Y offset for Tiberium, Walls, Veins, Crates, and
-    // SpawnsTiberium terrain objects (e.g. TIBTRE01). RA2 CellHeight = 15px.
     let y_offset: f32 = if spawns_tiberium {
         -15.0
     } else {
         flags.y_draw_offset()
     };
-    let offset_x: f32 = -(full_w as f32) / 2.0;
-    let offset_y: f32 = -(full_h as f32) / 2.0 + y_offset;
+    let (offset_x, offset_y) = stored_frame_offset(
+        shp.width,
+        shp.height,
+        frame.frame_x,
+        frame.frame_y,
+        y_offset,
+    );
 
     Some(RenderedOverlay {
         key: key.clone(),
-        rgba: full_rgba,
-        width: full_w,
-        height: full_h,
+        rgba: frame_rgba,
+        width: u32::from(frame.frame_width),
+        height: u32::from(frame.frame_height),
         offset_x,
         offset_y,
     })
+}
+
+/// CC_Draw_Shape @ 0x004AED70 centers by the integer canvas half, then
+/// adds the stored frame X/Y before passing its width/height to the walker.
+/// Keep that cropped rectangle: padding a 43-row GAWALL frame to its 70-row
+/// canvas changes the upright Z seed even though its color pixels stay put.
+fn stored_frame_offset(
+    canvas_width: u16,
+    canvas_height: u16,
+    frame_x: u16,
+    frame_y: u16,
+    y_offset: f32,
+) -> (f32, f32) {
+    (
+        f32::from(frame_x) - f32::from(canvas_width / 2),
+        f32::from(frame_y) - f32::from(canvas_height / 2) + y_offset,
+    )
 }
 
 /// If a name ends in digits, return a variant with that numeric suffix decremented.
@@ -1111,13 +1105,14 @@ mod tests {
 
     use super::{
         MAX_OVERLAY_FRAME_COUNT, OverlaySpriteKey, OverlayTypeFlags, body_frame_count,
-        decrement_numeric_suffix, resolve_body_frame, runtime_flat_tiberium_sprite_keys,
-        runtime_crate_sprite_keys, runtime_low_bridge_sprite_keys, wall_body_frame_count,
+        decrement_numeric_suffix, resolve_body_frame, runtime_crate_sprite_keys,
+        runtime_flat_tiberium_sprite_keys, runtime_low_bridge_sprite_keys, stored_frame_offset,
+        wall_body_frame_count,
     };
     use crate::map::overlay::OverlayEntry;
     use crate::map::overlay_types::OverlayTypeRegistry;
-    use crate::rules::ini_parser::IniFile;
     use crate::rules::crate_rules::CrateRules;
+    use crate::rules::ini_parser::IniFile;
     use crate::rules::tiberium_type::TiberiumTypeRegistry;
 
     #[test]
@@ -1128,6 +1123,17 @@ mod tests {
         );
         assert_eq!(decrement_numeric_suffix("FENCE00"), None);
         assert_eq!(decrement_numeric_suffix("BRIDGE"), None);
+    }
+
+    #[test]
+    fn wall_stored_frame_origin_preserves_authored_pixels_without_canvas_padding() {
+        // Retail GAWALL.SHP, ra2.mix -> snow.mix: canvas 78x70;
+        // frame 0 rect (17,17,42,43), frame 5 rect (12,23,50,40).
+        // Its draw helper contributes -12 separately from canvas centering.
+        assert_eq!(stored_frame_offset(78, 70, 17, 17, -12.0), (-22.0, -30.0));
+        assert_eq!(stored_frame_offset(78, 70, 12, 23, -12.0), (-27.0, -24.0));
+        // CC_Draw_Shape uses integer halves, including odd authored canvases.
+        assert_eq!(stored_frame_offset(79, 71, 17, 17, -12.0), (-22.0, -30.0));
     }
 
     /// Frame table of a stock low-bridge SHP: 6 frames, art only in frame 1.

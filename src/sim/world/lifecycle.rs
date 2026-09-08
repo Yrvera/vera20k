@@ -425,6 +425,69 @@ impl Simulation {
         self.lifecycle_test_events.clear();
     }
 
+    /// Adapt the current level-based placement API to the native input Coord.Z.
+    /// UnitType 0x747EB0 / InfantryType 0x5247D0 clamp that input to the exact
+    /// ground surface before Object Unlimbo 0x5F4EC0 commits XYZ and Mark(PUT).
+    /// They do not add a bridge offset. Authored bridge placement supplies its
+    /// deck coordinate before that clamp; translate our coarse deck request here.
+    /// This coarse API cannot recover all raw authored inputs (notably Unit
+    /// input zero on negative terrain); the report records that caller residual.
+    /// See docs/research/RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md.
+    fn grounded_reveal_z(
+        &self,
+        stable_id: u64,
+        position: RevealPosition,
+        context: UninitContext<'_>,
+    ) -> Option<i32> {
+        use crate::rules::locomotor_type::LocomotorKind;
+        use crate::sim::movement::ground_pose::ground_surface_z_at;
+        use crate::sim::movement::locomotor::MovementLayer;
+
+        let entity = self.substrate.entities.get(stable_id)?;
+        if !matches!(
+            entity.category,
+            EntityCategory::Unit | EntityCategory::Infantry
+        ) || !entity.locomotor.as_ref().is_some_and(|loco| {
+            matches!(
+                loco.kind,
+                LocomotorKind::Drive | LocomotorKind::Walk | LocomotorKind::Ship
+            ) && loco.layer != MovementLayer::Air
+        }) || entity.parachute_state.is_some()
+            || entity.low_bridge_tube_state.is_some()
+            || entity.tunnel_state.is_some()
+            || entity.rocket_state.is_some()
+            || entity.drop_pod_state.is_some()
+        {
+            // These owners still carry their own altitude/coordinate state.
+            // In particular, attaching a parachute precedes ordinary Reveal.
+            return None;
+        }
+        let terrain = context.terrain().or(self.resolved_terrain.as_ref())?;
+        let xy = [
+            i32::from(position.rx)
+                .wrapping_mul(256)
+                .wrapping_add(position.sub_x.to_num::<i32>()),
+            i32::from(position.ry)
+                .wrapping_mul(256)
+                .wrapping_add(position.sub_y.to_num::<i32>()),
+        ];
+        let ground_z = ground_surface_z_at(xy, false, Some(terrain), None)?;
+        let level = terrain
+            .native_fixed_cell_index((xy[0] / 256) as i16, (xy[1] / 256) as i16)
+            .map_or_else(
+                || terrain.shared_cell_dummy().snapshot().level,
+                |index| terrain.cells()[index].level as i8,
+            );
+        let input_z = if entity.on_bridge && i32::from(position.z as i8) == i32::from(level) + 4 {
+            // VERA input adapter: retain the ramp remainder that the existing
+            // coarse bridge-level API cannot carry. Native clamp remains max.
+            ground_z.wrapping_add(BRIDGE_DECK_HEIGHT_LEPTONS)
+        } else {
+            i32::from(position.z as i8).wrapping_mul(LEPTONS_PER_LEVEL as i32)
+        };
+        Some(input_z.max(ground_z))
+    }
+
     fn current_reveal_position(&self, stable_id: u64) -> Option<RevealPosition> {
         self.substrate
             .entities
@@ -757,11 +820,12 @@ impl Simulation {
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::RevealLimboCleared);
 
+        let exact_z = self.grounded_reveal_z(stable_id, request.position, context);
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.position.rx = request.position.rx;
             entity.position.ry = request.position.ry;
             entity.position.z = request.position.z;
-            entity.position.exact_z_leptons = None;
+            entity.position.exact_z_leptons = exact_z;
             entity.position.sub_x = request.position.sub_x;
             entity.position.sub_y = request.position.sub_y;
         }

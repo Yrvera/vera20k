@@ -1,0 +1,1133 @@
+use super::*;
+use crate::map::bridge_facts::BridgeCellFacts;
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
+use crate::rules::ini_parser::IniFile;
+use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+use crate::sim::rng::SimRng;
+
+fn constructor_rules() -> RuleSet {
+    RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n1=SLAV\n\n\
+         [VehicleTypes]\n0=MTNK\n1=CARRIER\n2=SMIN\n\n\
+         [AircraftTypes]\n0=ORCA\n1=HORN\n\n\
+         [BuildingTypes]\n0=BASE\n1=UP1\n2=UP2\n3=YAREFN\n\n\
+         [E1]\nStrength=100\nSpeed=4\n\n\
+         [SLAV]\nStrength=125\nSpeed=4\nStorage=4\n\n\
+         [MTNK]\nStrength=300\nSpeed=6\n\n\
+         [CARRIER]\nStrength=800\nSpeed=4\nSpawns=HORN\nSpawnsNumber=3\nSpawnRegenRate=600\nSpawnReloadRate=25\n\n\
+         [SMIN]\nStrength=2000\nSpeed=3\nEnslaves=SLAV\nSlavesNumber=2\nSlaveRegenRate=500\nSlaveReloadRate=25\n\n\
+         [ORCA]\nStrength=200\nSpeed=8\n\n\
+         [HORN]\nStrength=75\nSpeed=14\nAmmo=1\n\n\
+         [BASE]\nStrength=500\nFoundation=2x2\n\n\
+         [UP1]\nStrength=100\nFoundation=1x1\n\n\
+         [UP2]\nStrength=100\nFoundation=1x1\n\n\
+         [YAREFN]\nStrength=2000\nFoundation=2x2\nEnslaves=SLAV\nSlavesNumber=2\nSlaveRegenRate=500\nSlaveReloadRate=25\n",
+    ))
+    .expect("constructor fixture rules parse")
+}
+
+fn map_entity(type_id: &str, category: EntityCategory, cell: (u16, u16)) -> MapEntity {
+    MapEntity {
+        owner: "Americans".to_string(),
+        type_id: type_id.to_string(),
+        health: 256,
+        cell_x: cell.0,
+        cell_y: cell.1,
+        facing: 0,
+        category,
+        sub_cell: 0,
+        veterancy: 0,
+        high: false,
+        mission: None,
+        recruitable_a: true,
+        recruitable_b: true,
+        structure_upgrades: [None, None, None],
+    }
+}
+
+fn install_american_house(sim: &mut Simulation) {
+    let owner = sim.interner.intern("Americans");
+    sim.houses.insert(
+        owner,
+        crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10),
+    );
+}
+
+fn install_constructor_test_playfield(sim: &mut Simulation) {
+    sim.session.map_width = 10;
+    sim.session.map_height = 10;
+    sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+        base: 10,
+        off_fc: 0,
+        off_100: 0,
+        off_104: 10,
+        off_108: 10,
+    });
+}
+
+fn install_constructor_flat_terrain(sim: &mut Simulation) {
+    let speed_costs = SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(100),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
+    let cells = (0..10)
+        .flat_map(|ry| {
+            (0..10).map(move |rx| ResolvedTerrainCell {
+                rx,
+                ry,
+                source_tile_index: 0,
+                source_sub_tile: 0,
+                final_tile_index: 0,
+                final_sub_tile: 0,
+                is_wood_bridge_repair_tile: false,
+                level: 0,
+                filled_clear: false,
+                tileset_index: Some(0),
+                land_type: 0,
+                yr_cell_land_type: 0,
+                slope_type: 0,
+                template_height: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: TerrainClass::Clear,
+                speed_costs,
+                is_water: false,
+                is_cliff_like: false,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: false,
+                allows_tiberium: false,
+                height_in_pixels: 0,
+                variant: 0,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: false,
+                terrain_object_blocks: false,
+                terrain_object_occupation: None,
+                overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
+                zone_type: zone_class::GROUND,
+                base_ground_walk_blocked: false,
+                base_build_blocked: false,
+                base_land_type: 0,
+                base_yr_cell_land_type: 0,
+                base_terrain_class: TerrainClass::Clear,
+                base_speed_costs: speed_costs,
+                build_blocked: false,
+                has_bridge_deck: false,
+                bridge_walkable: false,
+                bridge_transition: false,
+                bridge_deck_level: 0,
+                bridge_layer: None,
+                bridge_facts: BridgeCellFacts::default(),
+                tube_index: None,
+                radar_left: [0, 0, 0],
+                radar_right: [0, 0, 0],
+                has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
+            })
+        })
+        .collect();
+    sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(10, 10, cells));
+}
+
+fn assert_generated_projection_rejects_before_mutation(
+    seed: u64,
+    entities: &[MapEntity],
+    table: &GeneratedTechnoInitTable,
+    expected_error: GeneratedTechnoInitError,
+) {
+    let rules = constructor_rules();
+    let mut sim = Simulation::with_seed(seed);
+    install_american_house(&mut sim);
+    let scenario_before = sim.scenario_rng.logical_state();
+    let stable_id_before = sim.substrate.next_stable_object_id;
+    let enter_order_before = sim.substrate.next_occupancy_enter_order.current();
+    let occupancy_generation_before = sim.substrate.occupancy.generation();
+    let raw_occupation_entries_before = sim.substrate.raw_cell_occupation.entry_count();
+
+    assert_eq!(
+        sim.spawn_generated_from_map_with_resolved(
+            entities,
+            &rules,
+            &BTreeMap::new(),
+            None,
+            table,
+        ),
+        Err(expected_error)
+    );
+    assert_eq!(sim.scenario_rng.logical_state(), scenario_before);
+    assert_eq!(sim.substrate.next_stable_object_id, stable_id_before);
+    assert_eq!(
+        sim.substrate.next_occupancy_enter_order.current(),
+        enter_order_before
+    );
+    assert_eq!(
+        sim.substrate.occupancy.generation(),
+        occupancy_generation_before
+    );
+    assert_eq!(sim.substrate.occupancy.occupied_cell_count(), 0);
+    assert_eq!(sim.substrate.logic.len(), 0);
+    assert!(sim.substrate.entities.is_empty());
+    assert_eq!(
+        sim.substrate.raw_cell_occupation.entry_count(),
+        raw_occupation_entries_before
+    );
+    for entity in entities {
+        assert!(sim.substrate.occupancy.is_empty_on_layer(
+            entity.cell_x,
+            entity.cell_y,
+            MovementLayer::Ground,
+        ));
+        assert_eq!(
+            sim.substrate
+                .raw_cell_occupation
+                .ground_bits(entity.cell_x, entity.cell_y),
+            0
+        );
+        assert_eq!(
+            sim.substrate
+                .raw_cell_occupation
+                .deck_bits(entity.cell_x, entity.cell_y),
+            0
+        );
+    }
+}
+
+fn constructor_overlay_registry() -> crate::map::overlay_types::OverlayTypeRegistry {
+    crate::map::overlay_types::OverlayTypeRegistry::from_ini(
+        &IniFile::from_str(
+            "[OverlayTypes]\n0=TESTORE\n1=TESTWALL\n\
+             [TESTORE]\nTiberium=yes\nLand=Tiberium\n\
+             [TESTWALL]\nWall=yes\nCrushable=yes\nLand=Wall\n",
+        ),
+        None,
+    )
+}
+
+#[test]
+fn techno_constructor_live_overlay_context_admits_ore_and_structural_bridge() {
+    let seed = 0xC701_0017;
+    let rules = constructor_rules();
+    let registry = constructor_overlay_registry();
+    let mut sim = Simulation::with_seed(seed);
+    install_constructor_test_playfield(&mut sim);
+    sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+        base: 0,
+        off_fc: -100,
+        off_100: -100,
+        off_104: 200,
+        off_108: 200,
+    });
+    install_constructor_flat_terrain(&mut sim);
+
+    let ore_authored = (6, 5);
+    let ore_runtime = (7, 5);
+    let bridge_cell = (8, 5);
+    {
+        let bridge = sim
+            .resolved_terrain
+            .as_mut()
+            .unwrap()
+            .cell_mut(bridge_cell.0, bridge_cell.1)
+            .unwrap();
+        bridge.level = 3;
+        bridge.bridge_deck_level = 7;
+        bridge.has_bridge_deck = true;
+        bridge.bridge_walkable = true;
+        bridge.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+        bridge.bridge_facts.overlay_id = Some(0);
+    }
+    sim.bridge_state = Some(
+        crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(
+            sim.resolved_terrain.as_ref().unwrap(),
+            true,
+            300,
+        ),
+    );
+    let mut overlays = crate::sim::overlay_grid::OverlayGrid::new(10, 10);
+    for cell in [ore_authored, ore_runtime, bridge_cell] {
+        overlays.place_overlay(cell.0, cell.1, 0, 0);
+    }
+    sim.overlay_grid = Some(overlays);
+
+    assert_eq!(
+        sim.spawn_from_map_with_resolved_and_overlay_registry(
+            &[
+                map_entity("MTNK", EntityCategory::Unit, ore_authored),
+                map_entity("MTNK", EntityCategory::Unit, bridge_cell),
+            ],
+            Some(&rules),
+            &BTreeMap::new(),
+            None,
+            Some(&registry),
+        ),
+        2,
+    );
+    let authored = sim.substrate.entities.get(1).unwrap();
+    assert_eq!((authored.position.rx, authored.position.ry), ore_authored);
+    assert!(!authored.on_bridge);
+    let bridge = sim.substrate.entities.get(2).unwrap();
+    assert_eq!((bridge.position.rx, bridge.position.ry), bridge_cell);
+    assert_eq!(bridge.position.z, 7);
+    assert!(bridge.on_bridge);
+    assert_ne!(
+        sim.substrate
+            .raw_cell_occupation
+            .deck_bits(bridge_cell.0, bridge_cell.1)
+            & crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+        0,
+    );
+
+    let runtime = sim
+        .spawn_object_with_overlay_registry(
+            "MTNK",
+            "Americans",
+            ore_runtime.0,
+            ore_runtime.1,
+            0,
+            &rules,
+            &BTreeMap::new(),
+            &registry,
+        )
+        .expect("non-wall overlay must not veto runtime Unit Unlimbo");
+    assert_eq!(
+        (
+            sim.substrate.entities.get(runtime).unwrap().position.rx,
+            sim.substrate.entities.get(runtime).unwrap().position.ry
+        ),
+        ore_runtime
+    );
+
+    let mut expected = SimRng::new(seed);
+    for _ in 0..3 {
+        let _ = expected.next_u32();
+    }
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+}
+
+#[test]
+fn techno_constructor_wall_rejection_precedes_mutation_and_keeps_graph_draws_spent() {
+    let seed = 0xC701_0018;
+    let rules = constructor_rules();
+    let registry = constructor_overlay_registry();
+    let mut sim = Simulation::with_seed(seed);
+    install_constructor_test_playfield(&mut sim);
+    install_constructor_flat_terrain(&mut sim);
+    let wall_cell = (6, 5);
+    let mut overlays = crate::sim::overlay_grid::OverlayGrid::new(10, 10);
+    overlays.place_overlay(wall_cell.0, wall_cell.1, 1, 0);
+    sim.overlay_grid = Some(overlays);
+
+    let parent_id = sim
+        .construct_object_limbo_at_height("CARRIER", "Americans", 2, 2, 9, 0, &rules)
+        .expect("constructor-complete carrier graph");
+    let child_ids = sim
+        .substrate
+        .entities
+        .get(parent_id)
+        .unwrap()
+        .spawn_manager
+        .as_ref()
+        .unwrap()
+        .slots
+        .iter()
+        .filter_map(|slot| slot.spawn)
+        .collect::<Vec<_>>();
+    assert_eq!(child_ids.len(), 3);
+    assert!(
+        sim.reveal_constructed_object_at_height_with_unit_context(
+            parent_id,
+            wall_cell.0,
+            wall_cell.1,
+            0x80,
+            7,
+            PlacementEvidence::EvaluateMark,
+            &rules,
+            Some(&registry),
+            parent_id,
+        )
+        .is_none()
+    );
+    let rejected = sim.substrate.entities.get(parent_id).unwrap();
+    assert_eq!(
+        (
+            rejected.position.rx,
+            rejected.position.ry,
+            rejected.position.z
+        ),
+        (2, 2, 0)
+    );
+    assert_eq!(rejected.facing, 9);
+    assert!(rejected.lifecycle.in_limbo && !rejected.lifecycle.cell_marked);
+    assert!(
+        child_ids
+            .iter()
+            .all(|id| sim.substrate.entities.contains(*id))
+    );
+
+    let mut expected = SimRng::new(seed);
+    for _ in 0..4 {
+        let _ = expected.next_u32();
+    }
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    assert!(sim.discard_constructed_limbo(parent_id));
+    assert!(sim.substrate.entities.is_empty());
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+}
+
+#[test]
+fn techno_constructor_routes_preserve_components_and_authored_overrides() {
+    // Rust regression: preserve existing route differences, including map
+    // omissions. This fixture does not establish native constructor parity.
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=CREW\n[VehicleTypes]\n0=SHIP\n\
+         [AircraftTypes]\n0=PLANE\n[BuildingTypes]\n0=GATE\n\
+         [CREW]\nStrength=200\nSpeed=4\nDontScore=yes\nOccupier=yes\n\
+         ImmuneToRadiation=yes\nCrushable=yes\n\
+         [SHIP]\nStrength=200\nSpeed=0\nDontScore=yes\nTurret=yes\n\
+         Passengers=3\nSizeLimit=2\nLocomotor={2BEA74E1-7CCA-11D3-BE14-00104B62A16C}\n\
+         [PLANE]\nStrength=200\nSpeed=8\nDontScore=yes\nAmmo=5\n\
+         Locomotor={4A582746-9839-11D1-B709-00A024DDAFD1}\n\
+         [GATE]\nStrength=200\nDontScore=yes\nGate=yes\nBunker=yes\n\
+         CanBeOccupied=yes\nMaxNumberOccupants=4\nFoundation=1x1\n",
+    ))
+    .unwrap();
+    for (type_id, category) in [
+        ("CREW", EntityCategory::Infantry),
+        ("SHIP", EntityCategory::Unit),
+        ("PLANE", EntityCategory::Aircraft),
+        ("GATE", EntityCategory::Structure),
+    ] {
+        for route in 0..3 {
+            let mut sim = Simulation::with_seed(0xC701_0021);
+            sim.debug_event_logging = true;
+            install_american_house(&mut sim);
+            if type_id == "CREW" && route != 0 {
+                sim.spawn_object_at_height(type_id, "Americans", 4, 4, 64, 0, &rules)
+                    .expect("resident occupies the first subcell at the requested cell");
+            }
+            let id = match route {
+                0 => {
+                    let mut authored = map_entity(type_id, category, (4, 4));
+                    authored.health = 128;
+                    authored.veterancy = 2;
+                    authored.facing = 64;
+                    authored.sub_cell = 3;
+                    authored.recruitable_a = false;
+                    authored.recruitable_b = false;
+                    assert_eq!(
+                        sim.spawn_from_map(&[authored], Some(&rules), &BTreeMap::new()),
+                        1
+                    );
+                    sim.substrate.entities.values().next().unwrap().stable_id
+                }
+                1 => sim
+                    .spawn_object_at_height(type_id, "Americans", 4, 4, 64, 0, &rules)
+                    .unwrap(),
+                _ => sim
+                    .spawn_object_limbo_at_height(type_id, "Americans", 4, 4, 64, 0, &rules)
+                    .unwrap(),
+            };
+            let entity = sim.substrate.entities.get(id).unwrap();
+            assert!(entity.debug_log.is_some(), "{type_id} route {route}");
+            assert!(entity.dont_score);
+            assert_eq!(entity.health.max, 200);
+            assert_eq!(entity.health.current, if route == 0 { 100 } else { 200 });
+            assert_eq!(entity.veterancy, if route == 0 { 2 } else { 0 });
+            assert_eq!(entity.lifecycle.in_limbo, route == 2);
+            if route == 0 {
+                assert!(!entity.base_defense_response.recruitable_a);
+                assert!(!entity.base_defense_response.recruitable_b);
+            }
+            match type_id {
+                "CREW" => {
+                    assert!(entity.animation.is_some());
+                    assert!(entity.crushable && entity.occupier && entity.immune_to_radiation);
+                    let sub_cell = entity.sub_cell.unwrap();
+                    if route == 0 {
+                        assert_eq!(sub_cell, 3);
+                    } else {
+                        assert_eq!(
+                            sub_cell,
+                            crate::sim::movement::bump_crush::FUNCTIONAL_SUB_CELLS[1]
+                        );
+                    }
+                    let (x, y) = crate::util::lepton::subcell_lepton_offset(Some(sub_cell));
+                    assert_eq!((entity.position.sub_x, entity.position.sub_y), (x, y));
+                }
+                "SHIP" => {
+                    assert!(entity.barrel_facing.is_some());
+                    assert_eq!(
+                        entity.locomotor.as_ref().unwrap().kind,
+                        crate::rules::locomotor_type::LocomotorKind::Ship
+                    );
+                    assert_eq!(entity.ship_locomotion.is_some(), route != 0);
+                    let cargo = entity.passenger_role.cargo().unwrap();
+                    assert_eq!((cargo.capacity, cargo.size_limit), (3, 2));
+                }
+                "PLANE" => {
+                    assert_eq!(entity.aircraft_mission.is_some(), route != 0);
+                    if route != 0 {
+                        assert!(matches!(
+                            entity.aircraft_mission,
+                            Some(crate::sim::aircraft::AircraftMission::Idle)
+                        ));
+                    }
+                    assert_eq!(
+                        entity
+                            .aircraft_ammo
+                            .as_ref()
+                            .map(|ammo| (ammo.current, ammo.max)),
+                        (route != 0).then_some((5, 5))
+                    );
+                }
+                "GATE" => {
+                    assert!(entity.building_gate.is_some() && entity.bunker_runtime.is_some());
+                    assert_eq!(entity.foundation, "1x1");
+                    let cargo = entity.passenger_role.cargo().unwrap();
+                    assert_eq!((cargo.capacity, cargo.size_limit), (4, 1));
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+#[test]
+fn techno_constructor_raw_entity_constructor_is_world_spawn_only() {
+    fn collect_rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read source directory") {
+            let path = entry.expect("read source entry").path();
+            if path.is_dir() {
+                collect_rust_files(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rust_files(&root.join("src"), &mut files);
+    let needle = ["GameEntity::", "new_at_frame_from_constructor_word("].concat();
+    let mut owners = Vec::new();
+    for path in files {
+        let source = std::fs::read_to_string(&path).expect("read Rust source");
+        let count = source.matches(&needle).count();
+        if count != 0 {
+            let relative = path
+                .strip_prefix(root)
+                .expect("source under manifest root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            owners.push(relative);
+        }
+    }
+    owners.sort();
+    assert_eq!(
+        owners,
+        vec![
+            "src/sim/world/world_spawn.rs".to_string(),
+            "src/sim/world/world_spawn/construction.rs".to_string(),
+        ]
+    );
+
+    let production_zero_helper = ["new_at_frame_", "zero_for_diagnostics"].concat();
+    let game_entity_source = std::fs::read_to_string(root.join("src/sim/game_entity.rs"))
+        .expect("read GameEntity source");
+    assert!(
+        !game_entity_source.contains(&production_zero_helper),
+        "production diagnostics must not synthesize a Techno constructor word"
+    );
+}
+
+#[test]
+fn techno_constructor_diagnostic_path_is_simulation_owned_and_draws_once() {
+    let seed = 0xC701_0006;
+    let mut sim = Simulation::with_seed(seed);
+    let mut expected = SimRng::new(seed);
+    let expected_word = (expected.next_u32() & 0xFFFF) as u16;
+    let owner = sim.interner.intern("Americans");
+    let type_ref = sim.interner.intern("GACNST");
+
+    let stable_id = sim.insert_synthetic_techno_for_diagnostics(
+        10,
+        12,
+        0,
+        0,
+        owner,
+        Health {
+            current: 1000,
+            max: 1000,
+        },
+        type_ref,
+        EntityCategory::Structure,
+        0,
+        6,
+        false,
+    );
+
+    assert_eq!(stable_id, 1);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(stable_id)
+            .expect("diagnostic Techno stored")
+            .techno_ctor_random_word,
+        expected_word
+    );
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+}
+
+#[test]
+fn techno_constructor_runtime_fresh_paths_draw_once_after_type_resolution() {
+    let seed = 0xC701_0001;
+    let rules = constructor_rules();
+    let mut sim = Simulation::with_seed(seed);
+    install_constructor_test_playfield(&mut sim);
+    let mut expected = SimRng::new(seed);
+
+    let before_invalid = sim.scenario_rng.logical_state();
+    assert!(
+        sim.spawn_object("MISSING", "Americans", 1, 1, 0, &rules, &BTreeMap::new())
+            .is_none()
+    );
+    assert_eq!(sim.scenario_rng.logical_state(), before_invalid);
+
+    let placed_word = (expected.next_u32() & 0xFFFF) as u16;
+    let placed = sim
+        .spawn_object("MTNK", "Americans", 6, 5, 0, &rules, &BTreeMap::new())
+        .expect("placed runtime Techno");
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(placed)
+            .unwrap()
+            .techno_ctor_random_word,
+        placed_word
+    );
+
+    let _failed_word = (expected.next_u32() & 0xFFFF) as u16;
+    assert!(
+        sim.spawn_object("BASE", "Americans", 1, 1, 0, &rules, &BTreeMap::new())
+            .is_none()
+    );
+    assert!(sim.substrate.entities.get(2).is_none());
+
+    let limbo_word = (expected.next_u32() & 0xFFFF) as u16;
+    let limbo = sim
+        .spawn_object_limbo_at_height("E1", "Americans", 6, 6, 0, 0, &rules)
+        .expect("limbo runtime Techno");
+    let limbo_entity = sim.substrate.entities.get(limbo).unwrap();
+    assert_eq!(limbo_entity.techno_ctor_random_word, limbo_word);
+    assert!(limbo_entity.lifecycle.in_limbo);
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+}
+
+#[test]
+fn techno_constructor_spawn_manager_pool_draws_parent_then_children_and_cancels_as_one_graph() {
+    let seed = 0xC701_0010;
+    let rules = constructor_rules();
+    let mut sim = Simulation::with_seed(seed);
+    install_american_house(&mut sim);
+    let mut expected = SimRng::new(seed);
+    let words = (0..4)
+        .map(|_| (expected.next_u32() & 0xFFFF) as u16)
+        .collect::<Vec<_>>();
+
+    let parent_id = sim
+        .construct_object_limbo_at_height("CARRIER", "Americans", 0, 0, 0, 0, &rules)
+        .expect("factory-held carrier constructor");
+    let parent = sim
+        .substrate
+        .entities
+        .get(parent_id)
+        .expect("carrier parent");
+    assert_eq!(parent.techno_ctor_random_word, words[0]);
+    let child_ids = parent
+        .spawn_manager
+        .as_ref()
+        .expect("constructor spawn manager")
+        .slots
+        .iter()
+        .map(|slot| slot.spawn.expect("constructor-filled spawn slot"))
+        .collect::<Vec<_>>();
+    assert_eq!(child_ids, vec![2, 3, 4]);
+    for (index, child_id) in child_ids.iter().copied().enumerate() {
+        let child = sim.substrate.entities.get(child_id).expect("spawn child");
+        assert_eq!(child.techno_ctor_random_word, words[index + 1]);
+        assert_eq!(child.spawn_owner_id, Some(parent_id));
+        assert!(child.lifecycle.in_limbo && !child.lifecycle.cell_marked);
+    }
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+
+    let after_constructor = sim.scenario_rng.logical_state();
+    assert!(sim.discard_constructed_limbo(parent_id));
+    assert!(sim.substrate.entities.is_empty());
+    assert_eq!(sim.scenario_rng.logical_state(), after_constructor);
+}
+
+#[test]
+fn techno_constructor_slave_manager_pool_draws_parent_then_children_and_cancels_as_one_graph() {
+    let seed = 0xC701_0011;
+    let rules = constructor_rules();
+    let mut sim = Simulation::with_seed(seed);
+    install_american_house(&mut sim);
+    let mut expected = SimRng::new(seed);
+    let words = (0..3)
+        .map(|_| (expected.next_u32() & 0xFFFF) as u16)
+        .collect::<Vec<_>>();
+
+    let parent_id = sim
+        .construct_object_limbo_at_height("SMIN", "Americans", 0, 0, 0, 0, &rules)
+        .expect("factory-held slave miner constructor");
+    let slave_ids = sim
+        .production
+        .slave_bindings
+        .get(&parent_id)
+        .expect("constructor slave manager")
+        .clone();
+    assert_eq!(slave_ids, vec![2, 3]);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(parent_id)
+            .unwrap()
+            .techno_ctor_random_word,
+        words[0]
+    );
+    for (index, slave_id) in slave_ids.iter().copied().enumerate() {
+        let slave = sim.substrate.entities.get(slave_id).expect("slave child");
+        assert_eq!(slave.techno_ctor_random_word, words[index + 1]);
+        assert_eq!(
+            slave.slave_harvester.as_ref().map(|slave| slave.master_id),
+            Some(parent_id)
+        );
+        assert!(slave.lifecycle.in_limbo && !slave.lifecycle.cell_marked);
+    }
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+
+    let after_constructor = sim.scenario_rng.logical_state();
+    assert!(sim.discard_constructed_limbo(parent_id));
+    assert!(sim.substrate.entities.is_empty());
+    assert!(sim.production.slave_bindings.is_empty());
+    assert_eq!(sim.scenario_rng.logical_state(), after_constructor);
+}
+
+#[test]
+fn techno_constructor_manager_pools_survive_delivery_without_reconstruction() {
+    let rules = constructor_rules();
+    for (seed, parent_type, expected_child_count) in [
+        (0xC701_0012, "CARRIER", 3usize),
+        (0xC701_0013, "SMIN", 2usize),
+    ] {
+        let mut sim = Simulation::with_seed(seed);
+        install_constructor_test_playfield(&mut sim);
+        let parent_id = sim
+            .construct_object_limbo_at_height(parent_type, "Americans", 0, 0, 0, 0, &rules)
+            .expect("held manager parent");
+        let child_ids = if parent_type == "CARRIER" {
+            sim.substrate
+                .entities
+                .get(parent_id)
+                .unwrap()
+                .spawn_manager
+                .as_ref()
+                .unwrap()
+                .slots
+                .iter()
+                .filter_map(|slot| slot.spawn)
+                .collect::<Vec<_>>()
+        } else {
+            sim.production.slave_bindings[&parent_id].clone()
+        };
+        assert_eq!(child_ids.len(), expected_child_count);
+        let after_constructor = sim.scenario_rng.logical_state();
+
+        assert_eq!(
+            sim.unlimbo_held_production_object(
+                parent_id,
+                6,
+                5,
+                0,
+                0,
+                PlacementEvidence::EvaluateMark,
+                &rules,
+            ),
+            Some(parent_id)
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), after_constructor);
+        let retained_ids = if parent_type == "CARRIER" {
+            sim.substrate
+                .entities
+                .get(parent_id)
+                .unwrap()
+                .spawn_manager
+                .as_ref()
+                .unwrap()
+                .slots
+                .iter()
+                .filter_map(|slot| slot.spawn)
+                .collect::<Vec<_>>()
+        } else {
+            sim.production.slave_bindings[&parent_id].clone()
+        };
+        assert_eq!(retained_ids, child_ids);
+    }
+}
+
+#[test]
+fn techno_constructor_failed_parent_placement_discards_both_manager_pool_kinds_without_rewind() {
+    let rules = constructor_rules();
+    for (seed, parent_type, draw_count) in [
+        (0xC701_0014, "CARRIER", 4usize),
+        (0xC701_0015, "SMIN", 3usize),
+    ] {
+        let mut sim = Simulation::with_seed(seed);
+        install_constructor_test_playfield(&mut sim);
+        let mut expected = SimRng::new(seed);
+        for _ in 0..draw_count {
+            let _ = expected.next_u32();
+        }
+
+        assert!(
+            sim.spawn_object_at_height(parent_type, "Americans", 1, 1, 0, 0, &rules)
+                .is_none()
+        );
+        assert!(sim.substrate.entities.is_empty());
+        assert!(sim.production.slave_bindings.is_empty());
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    }
+}
+
+#[test]
+fn techno_constructor_unit_can_enter_rejection_discards_eager_pool_without_refunding_draws() {
+    let seed = 0xC701_0016;
+    let rules = constructor_rules();
+    let mut sim = Simulation::with_seed(seed);
+    install_constructor_test_playfield(&mut sim);
+    install_constructor_flat_terrain(&mut sim);
+    let mut expected = SimRng::new(seed);
+
+    let blocker_word = (expected.next_u32() & 0xFFFF) as u16;
+    // Parent construction and its three SpawnManager children all happen
+    // before ObjectClass::Unlimbo asks UnitClass::Can_Enter_Cell. The first
+    // authored Unit is already linked when the CARRIER row reaches that gate.
+    for _ in 0..4 {
+        let _ = expected.next_u32();
+    }
+    assert_eq!(
+        sim.spawn_from_map(
+            &[
+                map_entity("MTNK", EntityCategory::Unit, (6, 5)),
+                map_entity("CARRIER", EntityCategory::Unit, (6, 5)),
+            ],
+            Some(&rules),
+            &BTreeMap::new(),
+        ),
+        1
+    );
+    let blocker_id = 1;
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(blocker_id)
+            .unwrap()
+            .techno_ctor_random_word,
+        blocker_word
+    );
+
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    assert_eq!(sim.substrate.next_stable_object_id, 6);
+    assert_eq!(sim.substrate.entities.len(), 1);
+    let blocker = sim.substrate.entities.get(blocker_id).unwrap();
+    assert!(blocker.lifecycle.cell_marked && !blocker.lifecycle.in_limbo);
+    assert!(
+        sim.substrate
+            .entities
+            .values()
+            .all(|entity| { !matches!(sim.interner.resolve(entity.type_ref), "CARRIER" | "HORN") })
+    );
+}
+
+#[test]
+fn techno_constructor_fixed_map_uses_native_category_order_after_prior_mark_draw() {
+    let seed = 0xC701_0002;
+    let rules = constructor_rules();
+    let mut sim = Simulation::with_seed(seed);
+    install_constructor_test_playfield(&mut sim);
+    install_american_house(&mut sim);
+    let mut expected = SimRng::new(seed);
+    assert_eq!(sim.scenario_rng.next_u32(), expected.next_u32());
+    let mut invalid_owner = map_entity("MTNK", EntityCategory::Unit, (3, 3));
+    invalid_owner.owner = "UnresolvableHouse".to_string();
+    let entities = vec![
+        map_entity("MISSING", EntityCategory::Unit, (2, 2)),
+        invalid_owner,
+        map_entity("MTNK", EntityCategory::Unit, (6, 5)),
+        map_entity("ORCA", EntityCategory::Aircraft, (7, 5)),
+        map_entity("E1", EntityCategory::Infantry, (8, 5)),
+        map_entity("BASE", EntityCategory::Structure, (9, 5)),
+        map_entity("BASE", EntityCategory::Structure, (1, 1)),
+    ];
+    let expected_words: Vec<u16> = (0..5)
+        .map(|_| (expected.next_u32() & 0xFFFF) as u16)
+        .collect();
+
+    assert_eq!(
+        sim.spawn_from_map(&entities, Some(&rules), &BTreeMap::new()),
+        4
+    );
+    let actual_words: Vec<u16> = sim
+        .substrate
+        .entities
+        .values()
+        .map(|entity| entity.techno_ctor_random_word)
+        .collect();
+    assert_eq!(actual_words.as_slice(), &expected_words[..4]);
+    assert!(sim.substrate.entities.get(5).is_none());
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+}
+
+#[test]
+fn techno_constructor_generated_projection_installs_without_a_second_draw() {
+    let rules = constructor_rules();
+    let entity = map_entity("MTNK", EntityCategory::Unit, (7, 9));
+    let table = GeneratedTechnoInitTable::try_new([GeneratedTechnoInit {
+        entity_index: 0,
+        techno_type: "MTNK".to_string(),
+        cell: (7, 9),
+        techno_ctor_random_word: 0xA55A,
+    }])
+    .unwrap();
+    let mut sim = Simulation::with_seed(0xC701_0003);
+    install_american_house(&mut sim);
+    let before = sim.scenario_rng.logical_state();
+
+    assert_eq!(
+        sim.spawn_generated_from_map_with_resolved(
+            &[entity],
+            &rules,
+            &BTreeMap::new(),
+            None,
+            &table,
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(sim.scenario_rng.logical_state(), before);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .techno_ctor_random_word,
+        0xA55A
+    );
+
+    assert!(matches!(
+        GeneratedTechnoInitTable::try_new([
+            GeneratedTechnoInit {
+                entity_index: 0,
+                techno_type: "MTNK".to_string(),
+                cell: (7, 9),
+                techno_ctor_random_word: 1,
+            },
+            GeneratedTechnoInit {
+                entity_index: 0,
+                techno_type: "MTNK".to_string(),
+                cell: (7, 9),
+                techno_ctor_random_word: 2,
+            },
+        ]),
+        Err(GeneratedTechnoInitError::DuplicateEntityIndex(0))
+    ));
+}
+
+#[test]
+fn generated_projection_validates_the_whole_table_before_any_mutation() {
+    // Every missing/mismatched slot is deliberately after a valid index 0.
+    // An inline validator would therefore construct or mark the first map
+    // entity before discovering the fault; the shared postconditions below
+    // prove the complete table remains a preflight transaction.
+    let entities = [
+        map_entity("MTNK", EntityCategory::Unit, (7, 9)),
+        map_entity("MTNK", EntityCategory::Unit, (8, 9)),
+    ];
+    let valid_first = || GeneratedTechnoInit {
+        entity_index: 0,
+        techno_type: "MTNK".to_string(),
+        cell: (7, 9),
+        techno_ctor_random_word: 0x1111,
+    };
+
+    let missing = GeneratedTechnoInitTable::try_new([valid_first()]).unwrap();
+    assert_generated_projection_rejects_before_mutation(
+        0xC701_0004,
+        &entities,
+        &missing,
+        GeneratedTechnoInitError::MissingEntityIndex(1),
+    );
+
+    let unexpected = GeneratedTechnoInitTable::try_new([
+        valid_first(),
+        GeneratedTechnoInit {
+            entity_index: 2,
+            techno_type: "MTNK".to_string(),
+            cell: (9, 9),
+            techno_ctor_random_word: 0x2222,
+        },
+    ])
+    .unwrap();
+    assert_generated_projection_rejects_before_mutation(
+        0xC701_0005,
+        &entities,
+        &unexpected,
+        GeneratedTechnoInitError::UnexpectedEntityIndex(2),
+    );
+
+    let type_mismatch = GeneratedTechnoInitTable::try_new([
+        valid_first(),
+        GeneratedTechnoInit {
+            entity_index: 1,
+            techno_type: "ORCA".to_string(),
+            cell: (8, 9),
+            techno_ctor_random_word: 0x3333,
+        },
+    ])
+    .unwrap();
+    assert_generated_projection_rejects_before_mutation(
+        0xC701_0006,
+        &entities,
+        &type_mismatch,
+        GeneratedTechnoInitError::IdentityMismatch {
+            entity_index: 1,
+            expected_type: "ORCA".to_string(),
+            found_type: "MTNK".to_string(),
+            expected_cell: (8, 9),
+            found_cell: (8, 9),
+        },
+    );
+
+    let cell_mismatch = GeneratedTechnoInitTable::try_new([
+        valid_first(),
+        GeneratedTechnoInit {
+            entity_index: 1,
+            techno_type: "MTNK".to_string(),
+            cell: (9, 9),
+            techno_ctor_random_word: 0x4444,
+        },
+    ])
+    .unwrap();
+    assert_generated_projection_rejects_before_mutation(
+        0xC701_0007,
+        &entities,
+        &cell_mismatch,
+        GeneratedTechnoInitError::IdentityMismatch {
+            entity_index: 1,
+            expected_type: "MTNK".to_string(),
+            found_type: "MTNK".to_string(),
+            expected_cell: (9, 9),
+            found_cell: (8, 9),
+        },
+    );
+}
+
+#[test]
+fn techno_constructor_authored_upgrades_are_distinct_attached_live_entities_with_native_ids() {
+    let seed = 0xC701_0005;
+    let rules = constructor_rules();
+    let mut sim = Simulation::with_seed(seed);
+    sim.native_unique_ids = Some(
+        crate::sim::native_identity::build_noncampaign_fresh_id_prefix(0, 0, 0, 0, 0, 0, 1, 1)
+            .into_cursor(),
+    );
+    let native_before = sim
+        .native_unique_ids
+        .as_ref()
+        .expect("native cursor")
+        .current_raw();
+    let mut expected = SimRng::new(seed);
+    let mut base = map_entity("BASE", EntityCategory::Structure, (10, 12));
+    base.structure_upgrades = [Some("UP1".to_string()), Some("UP2".to_string()), None];
+    let words = [
+        (expected.next_u32() & 0xFFFF) as u16,
+        (expected.next_u32() & 0xFFFF) as u16,
+        (expected.next_u32() & 0xFFFF) as u16,
+    ];
+
+    assert_eq!(
+        sim.spawn_from_map(&[base], Some(&rules), &BTreeMap::new()),
+        3
+    );
+    let parent = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(parent.techno_ctor_random_word, words[0]);
+    assert!(parent.lifecycle.cell_marked);
+    for (stable_id, slot) in [(2, 0), (3, 1)] {
+        let upgrade = sim.substrate.entities.get(stable_id).unwrap();
+        assert_eq!(upgrade.techno_ctor_random_word, words[slot + 1]);
+        assert_eq!(
+            upgrade.structure_upgrade_link,
+            Some(StructureUpgradeLink {
+                parent_stable_id: 1,
+                slot: slot as u8,
+            })
+        );
+        assert!(!upgrade.lifecycle.in_limbo);
+        assert!(!upgrade.lifecycle.cell_marked);
+        assert!(upgrade.in_logic_vector);
+        assert_eq!((upgrade.position.rx, upgrade.position.ry), (10, 12));
+    }
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    assert_eq!(
+        sim.native_unique_ids.as_ref().unwrap().current_raw(),
+        native_before.wrapping_add(3),
+        "the parent and both accepted upgrade constructors consume one shared native ID each"
+    );
+}
+
+#[test]
+fn techno_constructor_failed_reveal_keeps_one_draw_and_reuses_identity() {
+    let seed = 0xC701_0006;
+    let rules = constructor_rules();
+    let mut sim = Simulation::with_seed(seed);
+    let mut expected = SimRng::new(seed);
+    let word = (expected.next_u32() & 0xFFFF) as u16;
+    let stable_id = sim
+        .construct_object_limbo_at_height("MTNK", "Americans", 3, 3, 0, 0, &rules)
+        .unwrap();
+
+    assert!(
+        sim.reveal_constructed_object_at_height(
+            stable_id,
+            3,
+            3,
+            0,
+            0,
+            PlacementEvidence::MarkFailed,
+            &rules,
+        )
+        .is_none()
+    );
+    let held = sim.substrate.entities.get(stable_id).unwrap();
+    assert!(held.lifecycle.in_limbo);
+    assert_eq!(held.techno_ctor_random_word, word);
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    assert!(sim.discard_constructed_limbo(stable_id));
+    assert!(sim.substrate.entities.get(stable_id).is_none());
+
+    let before_restore = sim.scenario_rng.logical_state();
+    assert_eq!(
+        sim.resolve_techno_constructor_word(TechnoConstructorInit::Restored(0x1357), None)
+            .unwrap(),
+        0x1357
+    );
+    assert_eq!(sim.scenario_rng.logical_state(), before_restore);
+}
