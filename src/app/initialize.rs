@@ -755,11 +755,15 @@ fn quickplay_launch_session(selected_map: String) -> crate::skirmish_launch::Ski
             must_ally: false,
         },
         selected_map_file: Some(selected_map),
-        player_name: "Player".to_string(),
+        // The local House takes the player name, so naming it after the
+        // country lets a fixture map's `Americans`-owned objects spawn.
+        player_name: "Americans".to_string(),
         local: SkirmishLocalSlot {
             country: LaunchCountry::America,
             country_random: false,
-            color_index: 0,
+            // Stock colour slot 2 (DarkBlue), the colour the fixture campaign
+            // maps give their Allied objects, so retail captures compare cleanly.
+            color_index: 2,
             color_random: false,
             start_position: LaunchStartPosition::Position(0),
             team: LaunchTeam::None,
