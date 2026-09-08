@@ -92,7 +92,6 @@ pub(crate) fn render_game(
     // Phase 2: Build debug overlay instances (pathgrid, cell grid, heightmap).
     let debug = build_instances::build_debug_instances(state, vsw, vsh);
 
-
     // Phase 3: Rebuild shroud ABuffer (CPU blit + GPU upload). The final
     // building-bracket front redraw samples this CPU buffer during UI build.
     let rw = state.render_width();
@@ -102,7 +101,8 @@ pub(crate) fn render_game(
     // the runtime directly for split borrows.
     if let Some(ref mut shroud_buf) = state.match_state.match_presentation.shroud_buffer {
         if !state.match_state.sandbox_full_visibility {
-            if let (Some(rt), Some(owner)) = (state.match_state.sim_runtime.as_ref(), &local_owner) {
+            if let (Some(rt), Some(owner)) = (state.match_state.sim_runtime.as_ref(), &local_owner)
+            {
                 let view = rt.view();
                 let owner_id = view.interner().get(owner).unwrap_or_default();
                 shroud_buf.rebuild_if_needed(
@@ -128,14 +128,24 @@ pub(crate) fn render_game(
 
     // Phase 6: Upload all instances to GPU buffer pool.
     upload_to_gpu(state, &world, &debug, &ui, &sidebar);
-    state.match_state.match_presentation.cached_overlay_instances = world.overlay;
+    state
+        .match_state
+        .match_presentation
+        .cached_overlay_instances = world.overlay;
 
-    let combat_lights = state.match_state.match_presentation.combat_lights.draw_records();
+    let combat_lights = state
+        .match_state
+        .match_presentation
+        .combat_lights
+        .draw_records();
     state.renderer.combat_light_renderer.prepare(
         &state.renderer.gpu,
         &combat_lights,
         [sw, sh],
-        [state.match_state.input.camera_x, state.match_state.input.camera_y],
+        [
+            state.match_state.input.camera_x,
+            state.match_state.input.camera_y,
+        ],
         state.match_state.input.zoom_level,
     );
     let composition_view = state.renderer.combat_light_renderer.composition_view();
@@ -148,10 +158,6 @@ pub(crate) fn render_game(
         &draw_passes::DrawPassData {
             overlay_render_z: &world.overlay_render_z,
             ground: &world.ground,
-            bridge_unit_instances: &world.bridge_unit,
-            bridge_unit_pages: &world.bridge_unit_pages,
-            bridge_unit_transition_paged: &world.bridge_unit_transition_paged,
-            bridge_shp_paged: &world.bridge_shp_paged,
             unit_instances: &world.unit,
             unit_pages: &world.unit_pages,
             unit_transition_paged: &world.unit_transition_paged,
@@ -202,58 +208,47 @@ fn upload_to_gpu(
     // Terrain + overlays
     pool.upload(&state.renderer.gpu, "terrain", &world.terrain.normal);
     pool.upload(&state.renderer.gpu, "overlay", &world.overlay);
-    pool.upload(&state.renderer.gpu, "ground_objects", &world.ground.instances);
-    pool.upload(&state.renderer.gpu, "overlay_bridge_body", &world.bridge_body);
+    pool.upload(
+        &state.renderer.gpu,
+        "ground_objects",
+        &world.ground.instances,
+    );
+    pool.upload(
+        &state.renderer.gpu,
+        "overlay_bridge_body",
+        &world.bridge_body,
+    );
     pool.upload(
         &state.renderer.gpu,
         "overlay_bridge_body_shadow",
         &world.bridge_body_shadow,
     );
-    pool.upload(&state.renderer.gpu, "overlay_bridge_railing", &world.bridge_railing);
+    pool.upload(
+        &state.renderer.gpu,
+        "overlay_bridge_railing",
+        &world.bridge_railing,
+    );
     // Smudges: drawn inside the terrain layer, before the bridge body and
     // before overlays, matching the native per-cell tile-then-smudge dispatch.
     pool.upload(&state.renderer.gpu, "smudge", &world.smudge);
 
     // Entities (VXL + SHP)
     pool.upload(&state.renderer.gpu, "unit", &world.unit);
-    pool.upload(&state.renderer.gpu, "unit_bridge", &world.bridge_unit);
     const UNIT_TRANSITION_KEYS: [&str; 4] = [
         "unit_transition_p0",
         "unit_transition_p1",
         "unit_transition_p2",
         "unit_transition_p3",
     ];
-    const BRIDGE_UNIT_TRANSITION_KEYS: [&str; 4] = [
-        "unit_bridge_transition_p0",
-        "unit_bridge_transition_p1",
-        "unit_bridge_transition_p2",
-        "unit_bridge_transition_p3",
-    ];
     for (i, page_inst) in world.unit_transition_paged.iter().enumerate() {
         if let Some(key) = UNIT_TRANSITION_KEYS.get(i) {
             pool.upload(&state.renderer.gpu, key, page_inst);
         }
     }
-    for (i, page_inst) in world.bridge_unit_transition_paged.iter().enumerate() {
-        if let Some(key) = BRIDGE_UNIT_TRANSITION_KEYS.get(i) {
-            pool.upload(&state.renderer.gpu, key, page_inst);
-        }
-    }
     const SHP_PAGE_KEYS: [&str; 4] = ["shp_p0", "shp_p1", "shp_p2", "shp_p3"];
-    const SHP_BRIDGE_KEYS: [&str; 4] = [
-        "shp_bridge_p0",
-        "shp_bridge_p1",
-        "shp_bridge_p2",
-        "shp_bridge_p3",
-    ];
     for (i, page_inst) in world.shp_paged.iter().enumerate() {
         if i < SHP_PAGE_KEYS.len() {
             pool.upload(&state.renderer.gpu, SHP_PAGE_KEYS[i], page_inst);
-        }
-    }
-    for (i, page_inst) in world.bridge_shp_paged.iter().enumerate() {
-        if i < SHP_BRIDGE_KEYS.len() {
-            pool.upload(&state.renderer.gpu, SHP_BRIDGE_KEYS[i], page_inst);
         }
     }
     // The band above Ground (gamemd layers 3 and 4) — drawn after every ground
@@ -267,7 +262,11 @@ fn upload_to_gpu(
     // Empty when the live `[Options] DetailLevel` projection is zero.
     pool.upload(&state.renderer.gpu, "cell_sparkles", &world.cell_sparkles);
     pool.upload(&state.renderer.gpu, "weapon_waves", &world.weapon_waves);
-    pool.upload(&state.renderer.gpu, "spotlight_type16", &world.spotlight_type16);
+    pool.upload(
+        &state.renderer.gpu,
+        "spotlight_type16",
+        &world.spotlight_type16,
+    );
     const PARTICLE_KEYS: [&str; 4] = ["particle_p0", "particle_p1", "particle_p2", "particle_p3"];
     for (i, page_inst) in world.particle_paged.iter().enumerate() {
         if i < PARTICLE_KEYS.len() {
@@ -277,27 +276,55 @@ fn upload_to_gpu(
 
     // UI overlays
     pool.upload(&state.renderer.gpu, "drag", &ui.drag);
-    pool.upload(&state.renderer.gpu, "selection_brackets_back", &ui.bracket_back);
+    pool.upload(
+        &state.renderer.gpu,
+        "selection_brackets_back",
+        &ui.bracket_back,
+    );
     pool.upload(
         &state.renderer.gpu,
         "selection_brackets_front_first",
         &ui.bracket_front_first,
     );
-    pool.upload(&state.renderer.gpu, "selection_brackets_front", &ui.bracket_front);
-    pool.upload(&state.renderer.gpu, "building_radius_rings", &ui.radius_ring);
+    pool.upload(
+        &state.renderer.gpu,
+        "selection_brackets_front",
+        &ui.bracket_front,
+    );
+    pool.upload(
+        &state.renderer.gpu,
+        "building_radius_rings",
+        &ui.radius_ring,
+    );
     pool.upload(&state.renderer.gpu, "status_building", &ui.building_status);
     pool.upload(&state.renderer.gpu, "occupant_pips", &ui.occupant_pip);
     pool.upload(&state.renderer.gpu, "status_unit_bg", &ui.unit_status_bg);
-    pool.upload(&state.renderer.gpu, "status_unit_fill", &ui.unit_status_fill);
+    pool.upload(
+        &state.renderer.gpu,
+        "status_unit_fill",
+        &ui.unit_status_fill,
+    );
     pool.upload(&state.renderer.gpu, "cargo_pips", &ui.cargo_pip);
     pool.upload(&state.renderer.gpu, "software_cursor", &ui.software_cursor);
     pool.upload(&state.renderer.gpu, "placement_valid", &ui.placement_valid);
-    pool.upload(&state.renderer.gpu, "placement_invalid", &ui.placement_invalid);
+    pool.upload(
+        &state.renderer.gpu,
+        "placement_invalid",
+        &ui.placement_invalid,
+    );
     pool.upload(&state.renderer.gpu, "placement_ghost", &ui.placement_ghost);
     pool.upload(&state.renderer.gpu, "placement_wall_ghost", &ui.wall_ghost);
-    pool.upload(&state.renderer.gpu, "factory_rally_first", &ui.factory_rally_first);
+    pool.upload(
+        &state.renderer.gpu,
+        "factory_rally_first",
+        &ui.factory_rally_first,
+    );
     pool.upload(&state.renderer.gpu, "target_lines", &ui.target_line);
-    pool.upload(&state.renderer.gpu, "factory_rally_second", &ui.factory_rally_second);
+    pool.upload(
+        &state.renderer.gpu,
+        "factory_rally_second",
+        &ui.factory_rally_second,
+    );
 
     // Sidebar + minimap
     pool.upload(&state.renderer.gpu, "minimap", &sidebar.minimap);
@@ -312,7 +339,11 @@ fn upload_to_gpu(
     pool.upload(&state.renderer.gpu, "radar_anim", &sidebar.radar_anim);
     pool.upload(&state.renderer.gpu, "sidebar_cameo", &sidebar.cameo);
     pool.upload(&state.renderer.gpu, "sidebar_gclock", &sidebar.gclock);
-    pool.upload(&state.renderer.gpu, "sidebar_cameo_overlay", &sidebar.cameo_overlay);
+    pool.upload(
+        &state.renderer.gpu,
+        "sidebar_cameo_overlay",
+        &sidebar.cameo_overlay,
+    );
     pool.upload(&state.renderer.gpu, "sidebar_text", &sidebar.text);
     pool.upload(&state.renderer.gpu, "message_text", &message_text);
     pool.upload(&state.renderer.gpu, "tooltip_fill", &tooltip_fill);

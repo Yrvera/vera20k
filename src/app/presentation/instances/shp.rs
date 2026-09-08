@@ -8,9 +8,9 @@
 //! - Part of the app layer — may depend on everything.
 
 use super::helpers::{
-    ANIM_DRAW_DEPTH_BIAS_PX, EntityDrawBand, apply_bridge_depth_bias, apply_shape_z_adjust,
-    compute_sprite_depth, effective_anim_z_adjust, entity_draw_band, ground_sort_row,
-    ground_z_adjust, in_view, is_under_bridge_render_state, tactical_entity_render_admission,
+    ANIM_DRAW_DEPTH_BIAS_PX, EntityDrawBand, apply_shape_z_adjust, compute_sprite_depth,
+    effective_anim_z_adjust, entity_draw_band, ground_sort_row, ground_z_adjust, in_view,
+    tactical_entity_render_admission,
 };
 use crate::app::AppState;
 use crate::app::presentation::render::draw_plan_lowering::{
@@ -78,7 +78,6 @@ fn shp_body_tint(
 pub(crate) fn build_shp_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
-    bridge_paged: &mut [Vec<SpriteInstance>],
     top_instances: &mut Vec<SpriteInstance>,
     top_pages: &mut Vec<usize>,
     top_ids: &mut Vec<u64>,
@@ -307,10 +306,7 @@ pub(crate) fn build_shp_instances(
                 compute_sprite_depth(state, ground_sort_row(entity, depth_y), interp_z)
             }
         };
-        let depth: f32 = match band {
-            EntityDrawBand::Top => base_depth,
-            EntityDrawBand::Ground => apply_bridge_depth_bias(state, entity, base_depth),
-        };
+        let depth: f32 = base_depth;
         if entity.parachute_state.is_some() {
             parachute_body_depths.insert(entity.stable_id(), depth);
         }
@@ -325,15 +321,9 @@ pub(crate) fn build_shp_instances(
                 .rules()
                 .map_or(0, |rules| rules.general.extra_infantry_light),
         );
-        let under_bridge = is_under_bridge_render_state(state, entity)
-            && entity.category != EntityCategory::Structure;
-        let collect_ground = band == EntityDrawBand::Ground && !under_bridge;
-        let target_pages = match band {
-            // Top stays flat; page identity is carried beside each instance.
-            EntityDrawBand::Top => None,
-            EntityDrawBand::Ground if under_bridge => Some(&mut *bridge_paged),
-            EntityDrawBand::Ground => Some(&mut *paged),
-        };
+        // Direct SHP and infantry keep native Ground parent order. Infantry
+        // does not use the Unit composite bridge split at 0x73B140.
+        let collect_ground = band == EntityDrawBand::Ground;
         // Native per-pixel Z. Buildings (`BuildingClass_DrawBody`, flags
         // 0x6E00) seed from `NormalZAdjust - AdjustForZ(Z)`
         // minus DrawSHP's 2, write Z, and subtract the BUILDNGZ z-shape placed
@@ -372,9 +362,21 @@ pub(crate) fn build_shp_instances(
                 [origin.0 as f32, origin.1 as f32],
             )
         } else {
+            // Unit no-turret SHP branch 0x73CE0D..0x73CE7F, active for SQD:
+            // one complete draw with a7=-16, a8=0. Infantry is excluded by
+            // the adapter. This is distinct from VXL's two-region composite.
+            let bridge_fudge = super::foot_depth::shp_unit_bridge_fudge(state, entity);
             (
-                super::foot_depth::shp_z_adjust(state, entity),
-                pack_z_gradient(ZGradient::Vertical, false),
+                super::foot_depth::shp_z_adjust(state, entity)
+                    - if bridge_fudge { 16.0 } else { 0.0 },
+                pack_z_gradient(
+                    if bridge_fudge {
+                        ZGradient::Flat
+                    } else {
+                        ZGradient::Vertical
+                    },
+                    false,
+                ),
                 [0.0, 0.0],
             )
         };
@@ -429,7 +431,7 @@ pub(crate) fn build_shp_instances(
             top_pages.push(entry.page as usize);
             top_ids.push(entity.stable_id());
         } else {
-            target_pages.expect("Ground SHP target was selected")[entry.page as usize].push(body);
+            paged[entry.page as usize].push(body);
         }
 
         // Emit building animation overlays and bib — but NOT during build-up/down.

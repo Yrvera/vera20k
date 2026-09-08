@@ -146,6 +146,10 @@ impl Gpu {
     }
 
     fn render_sized(&self, layers: &[Layer], size: [u32; 2]) -> Vec<[u8; 4]> {
+        self.render_sized_zoom(layers, size, 1.0)
+    }
+
+    fn render_sized_zoom(&self, layers: &[Layer], size: [u32; 2], zoom: f32) -> Vec<[u8; 4]> {
         let camera = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -153,7 +157,7 @@ impl Gpu {
                 contents: bytemuck::bytes_of(&CameraUniform {
                     screen_size: [size[0] as f32, size[1] as f32],
                     camera_pos: [0.0; 2],
-                    zoom: 1.0,
+                    zoom,
                     world_origin_y: -100.0,
                     world_height: 256.0,
                     _pad: 0.0,
@@ -574,6 +578,212 @@ fn cliff_voxel_hull_turret_and_barrel_use_the_shared_composite_seed() {
             "fixture missed local-seed regression at +{cliff_term}"
         );
     }
+}
+
+fn indexed_bridge_test_layer(position: [f32; 2], size: [u32; 2], index: u8) -> Layer {
+    let mut layer = Layer::solid(Shader::Voxel, BLUE, 0.0);
+    layer.instance.position = position;
+    layer.instance.size = [size[0] as f32, size[1] as f32];
+    layer.instance.draw_state.remap_row = 1;
+    layer.source_size = size;
+    layer.indices = vec![index; (size[0] * size[1]) as usize];
+    layer.rgba = BLUE.repeat((size[0] * size[1]) as usize);
+    layer.z_bytes = vec![0; (size[0] * size[1]) as usize];
+    layer
+}
+
+#[test]
+#[ignore = "requires a wgpu adapter; run explicitly"]
+fn bridge_split_shared_parts_match_two_clipped_indexed_composite_blits() {
+    use super::native_z::pack_voxel_z_gradient;
+
+    let gpu = Gpu::new();
+    let size = [20, 24];
+    let mut terrain = Layer::solid(Shader::Terrain, RED, -40.0);
+    terrain.source_size = size;
+    terrain.instance.size = [20.0, 24.0];
+    terrain.rgba = RED.repeat(20 * 24);
+    terrain.z_bytes = (0..20 * 24)
+        .map(|pixel| 40 - [5, 10, 11, 12, 18, 19, 20, 21, 22, 23][pixel % 10])
+        .collect();
+
+    // Native contract: one 20x32 rectangle at y=-4; original split y=12.
+    // Tactical clipping leaves upper y=0/h=12 and lower y=12/h=8. These
+    // explicitly authored reference rectangles do not call the new helper.
+    // Reference texels first compose opaque palette indices, then undergo
+    // the two actual production shader blits. This is a Rust GPU regression,
+    // not a gamemd image golden or a claim about translucent composition.
+    let mut parts = vec![
+        indexed_bridge_test_layer([0.0, -2.0], [20, 30], 33),
+        indexed_bridge_test_layer([2.0, -4.0], [12, 24], 16),
+        indexed_bridge_test_layer([8.0, 3.0], [3, 25], 33),
+    ];
+    parts[0].hole(0, 8); // uncovered hole at world (0,6)
+    parts[1].hole(1, 9); // turret hole reveals hull at world (3,5)
+    parts[2].hole(1, 13);
+
+    let mut assembled = indexed_bridge_test_layer([0.0, -4.0], [20, 32], 0);
+    for part in &parts {
+        for y in 0..part.source_size[1] {
+            for x in 0..part.source_size[0] {
+                let byte = part.indices[(y * part.source_size[0] + x) as usize];
+                if byte != 0 {
+                    let dest_x = part.instance.position[0] as i32 + x as i32;
+                    let dest_y = part.instance.position[1] as i32 + y as i32 + 4;
+                    assembled.indices[(dest_y * 20 + dest_x) as usize] = byte;
+                }
+            }
+        }
+    }
+    let mut upper = assembled.clone();
+    upper.instance.position = [0.0, 0.0];
+    upper.instance.size = [20.0, 12.0];
+    upper.instance.uv_origin = [0.0, 4.0 / 32.0];
+    upper.instance.uv_size = [1.0, 12.0 / 32.0];
+    upper.instance.zshape_origin = [0.0, 12.0];
+    upper.instance.z_adjust = -5.0;
+    upper.instance.z_gradient = ZGradient::Flat as u32;
+    let mut lower = assembled;
+    lower.instance.position = [0.0, 12.0];
+    lower.instance.size = [20.0, 8.0];
+    lower.instance.uv_origin = [0.0, 16.0 / 32.0];
+    lower.instance.uv_size = [1.0, 8.0 / 32.0];
+    lower.instance.zshape_origin = [12.0, 8.0];
+    lower.instance.z_gradient = ZGradient::Vertical as u32;
+    let expected = gpu.render_sized(&[terrain.clone(), upper, lower], size);
+
+    for part in &mut parts {
+        part.instance.z_gradient = pack_voxel_z_gradient(ZGradient::Vertical, true);
+        part.instance.zshape_origin = [-4.0, 32.0];
+        part.instance.draw_state.fx_params[3] = 20.0;
+    }
+    let mut draws = vec![terrain];
+    draws.extend(parts);
+    let actual = gpu.render_sized(&draws, size);
+    assert_eq!(
+        actual, expected,
+        "shared split differs from composite-first two blits"
+    );
+    // Upper row 6 has native ground row 11; lower row 12 has 22. Terrain
+    // lanes straddle these values, so equality must reject, not tie-paint.
+    assert_eq!(actual[6 * 20 + 1], BLUE);
+    assert_eq!(actual[6 * 20 + 2], RED);
+    assert_eq!(actual[6 * 20 + 3], RED);
+    assert_eq!(actual[12 * 20 + 7], GREEN);
+    assert_eq!(actual[12 * 20 + 8], RED);
+    assert_eq!(actual[12 * 20 + 9], RED);
+    assert_eq!(actual[12 * 20 + 17], BLUE, "bottom strip lost full width");
+    assert_eq!(actual[6 * 20], RED, "index zero did not expose terrain");
+    assert!(actual[20 * 20..].iter().all(|pixel| *pixel == RED));
+
+    let mut control = draws.clone();
+    for part in &mut control[1..] {
+        part.instance.z_gradient = ZGradient::Vertical as u32;
+    }
+    assert_ne!(
+        gpu.render_sized(&control, size),
+        actual,
+        "fixture missed absent split"
+    );
+    for part in &mut control[1..] {
+        part.instance.z_gradient = pack_voxel_z_gradient(ZGradient::Vertical, true);
+        part.instance.zshape_origin = [part.instance.position[1], part.instance.size[1]];
+    }
+    assert_ne!(
+        gpu.render_sized(&control, size),
+        actual,
+        "fixture missed per-part boundary"
+    );
+    for part in &mut control[1..] {
+        part.instance.zshape_origin = [-4.0, 32.0];
+        part.instance.draw_state.fx_params[3] = 0.0;
+    }
+    assert_ne!(
+        gpu.render_sized(&control, size),
+        actual,
+        "fixture missed clipped seed/height"
+    );
+}
+
+#[test]
+#[ignore = "requires a wgpu adapter; run explicitly"]
+fn bridge_split_height_threshold_and_zoom_keep_original_quad_sampling() {
+    use super::native_z::pack_voxel_z_gradient;
+
+    let gpu = Gpu::new();
+    let mut unit = indexed_bridge_test_layer([2.0, 2.0], [20, 16], 33);
+    unit.instance.zshape_origin = [2.0, 16.0];
+    unit.instance.z_gradient = pack_voxel_z_gradient(ZGradient::Moderate, false);
+    let mut terrain = Layer::solid(Shader::Terrain, RED, -10.0);
+    terrain.instance.size = [30.0, 40.0];
+    let ordinary = gpu.render_sized(&[terrain.clone(), unit.clone()], [30, 40]);
+    unit.instance.z_gradient = pack_voxel_z_gradient(ZGradient::Moderate, true);
+    assert_eq!(
+        gpu.render_sized(&[terrain.clone(), unit], [30, 40]),
+        ordinary,
+        "height16 must retain fallback gradient"
+    );
+    let mut seventeen = indexed_bridge_test_layer([2.0, 2.0], [20, 17], 33);
+    seventeen.instance.zshape_origin = [2.0, 17.0];
+    seventeen.instance.z_gradient = pack_voxel_z_gradient(ZGradient::Moderate, false);
+    let ordinary = gpu.render_sized(&[terrain.clone(), seventeen.clone()], [30, 40]);
+    seventeen.instance.z_gradient = pack_voxel_z_gradient(ZGradient::Moderate, true);
+    assert_ne!(
+        gpu.render_sized(&[terrain, seventeen], [30, 40]),
+        ordinary,
+        "height17 must select the two regions"
+    );
+
+    // With clear depth, every opaque texel passes both gradients. Toggling
+    // the split must leave full-quad UV sampling unchanged at non-native
+    // zoom: no new padded/cropped edge at the internal 16-row boundary.
+    let mut tall = indexed_bridge_test_layer([2.0, 2.0], [20, 28], 33);
+    tall.instance.zshape_origin = [2.0, 28.0];
+    for y in 0..28 {
+        for x in 0..20 {
+            tall.indices[(y * 20 + x) as usize] = if (x + y) % 5 == 0 {
+                0
+            } else if y % 2 == 0 {
+                16
+            } else {
+                33
+            };
+        }
+    }
+    for zoom in [0.75, 1.25, 2.0] {
+        tall.instance.z_gradient = pack_voxel_z_gradient(ZGradient::Vertical, false);
+        let ordinary = gpu.render_sized_zoom(&[tall.clone()], [48, 64], zoom);
+        tall.instance.z_gradient = pack_voxel_z_gradient(ZGradient::Vertical, true);
+        assert_eq!(
+            gpu.render_sized_zoom(&[tall.clone()], [48, 64], zoom),
+            ordinary,
+            "split changed palette sampling at zoom {zoom}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires a wgpu adapter; run explicitly"]
+fn bridge_direct_shp_unit_uses_whole_body_flat_fudge_even_below_split_height() {
+    // Stock SQD reaches direct SHP 0x73CE0D, not composite 0x73B140.
+    // The caller's a7=-16 adds to FootZ and DrawSHP's -2 wrapper term;
+    // the caller also selects gradient0 for the entire frame, with no h>16
+    // test. Isolate that production-shader transport on an eight-row frame.
+    let gpu = Gpu::new();
+    let mut ordinary = Layer::solid(Shader::SpriteRead, BLUE, -2.0);
+    ordinary.instance.z_gradient = ZGradient::Vertical as u32;
+    let baseline = gpu.render(&[cliff_depth_lanes(), ordinary.clone()]);
+    ordinary.instance.z_adjust -= 16.0;
+    ordinary.instance.z_gradient = ZGradient::Flat as u32;
+    let actual = gpu.render(&[cliff_depth_lanes(), ordinary]);
+    assert_eq!(
+        &actual[3 * SIDE as usize..4 * SIDE as usize],
+        &[RED, RED, BLUE, BLUE, BLUE, BLUE, BLUE, RED]
+    );
+    assert_ne!(
+        actual, baseline,
+        "fixture missed whole-body direct-SHP branch"
+    );
 }
 
 #[test]

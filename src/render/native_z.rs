@@ -130,6 +130,70 @@ pub const Z_GRADIENT_ZSHAPE_FLAG: u32 = 0x100;
 /// before its format-bit dispatch; only extended frames consume shape values.
 pub const Z_GRADIENT_ZSHAPE_CLIP_FLAG: u32 = 0x200;
 
+/// Unit final-composite split (`0x0073B140`, Unit vtable +0x55C).
+/// Only the voxel sprite shader consumes this bit. All body parts retain
+/// one native composite rectangle; its last 16 rows use gradient 2/FootZ,
+/// while preceding rows use gradient 0/FootZ-5. Shadows do not carry it.
+pub const Z_GRADIENT_VOXEL_BRIDGE_SPLIT_FLAG: u32 = 0x400;
+
+pub const fn pack_voxel_z_gradient(gradient: ZGradient, bridge_split: bool) -> u32 {
+    gradient as u32
+        | if bridge_split {
+            Z_GRADIENT_VOXEL_BRIDGE_SPLIT_FLAG
+        } else {
+            0
+        }
+}
+
+/// One independently clipped native unit-composite blit rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoxelDepthRegion {
+    pub top: i32,
+    pub height: i32,
+    pub gradient: ZGradient,
+    pub z_adjust: i32,
+}
+
+/// CPU description of the voxel shader's per-fragment region selection.
+/// `rect` is [world top, height], `clip` is [world top, exclusive bottom].
+/// Eligibility uses the original height; clipping happens afterwards in
+/// each Standard_SHP_blitter call (0x0073B2FE, 0x00437461). This does not
+/// choose the gameplay/type predicate or move the parent's painter position.
+pub fn voxel_depth_region(
+    rect: [i32; 2],
+    packed_gradient: u32,
+    z_adjust: i32,
+    world_row: i32,
+    clip: [i32; 2],
+) -> Option<VoxelDepthRegion> {
+    let [mut top, mut height] = rect;
+    let mut gradient = ZGradient::from_index(packed_gradient);
+    let mut z_adjust = z_adjust;
+    if packed_gradient & Z_GRADIENT_VOXEL_BRIDGE_SPLIT_FLAG != 0 {
+        if height > 16 {
+            let boundary = top + height - 16;
+            if world_row < boundary {
+                height -= 16;
+                gradient = ZGradient::Flat;
+                z_adjust -= 5;
+            } else {
+                top = boundary;
+                height = 16;
+                gradient = ZGradient::Vertical;
+            }
+        }
+        let bottom = (top + height).min(clip[1]);
+        top = top.max(clip[0]);
+        height = bottom - top;
+    }
+    (height > 0 && world_row >= top && world_row < top + height).then_some(VoxelDepthRegion {
+        top,
+        height,
+        gradient,
+        z_adjust,
+    })
+}
+
 pub const fn pack_building_z_gradient(zshape: bool, extended: bool) -> u32 {
     pack_z_gradient(ZGradient::Vertical, zshape && extended)
         | if zshape {
@@ -278,6 +342,58 @@ pub fn depth_for_native_z(z: i32, camera_y: i32, origin_y: f32, world_height: f3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voxel_split_selects_original_boundary_then_clips_each_seed_rectangle() {
+        let flag = pack_voxel_z_gradient(ZGradient::Moderate, true);
+        let upper = voxel_depth_region([-4, 32], flag, 7, 6, [0, 24]).unwrap();
+        assert_eq!(
+            upper,
+            VoxelDepthRegion {
+                top: 0,
+                height: 12,
+                gradient: ZGradient::Flat,
+                z_adjust: 2
+            }
+        );
+        let lower = voxel_depth_region([-4, 32], flag, 7, 12, [0, 24]).unwrap();
+        assert_eq!(
+            lower,
+            VoxelDepthRegion {
+                top: 12,
+                height: 12,
+                gradient: ZGradient::Vertical,
+                z_adjust: 7
+            }
+        );
+        assert!(voxel_depth_region([-4, 32], flag, 7, 24, [0, 24]).is_none());
+        // The branch threshold uses the original 16/17 heights, not the
+        // remaining visible height after clipping the first row away.
+        assert_eq!(
+            voxel_depth_region([-1, 16], flag, 7, 0, [0, 24])
+                .unwrap()
+                .gradient,
+            ZGradient::Moderate
+        );
+        assert_eq!(
+            voxel_depth_region([-1, 17], flag, 7, 0, [0, 24])
+                .unwrap()
+                .gradient,
+            ZGradient::Vertical
+        );
+        let ordinary = voxel_depth_region(
+            [-4, 32],
+            pack_voxel_z_gradient(ZGradient::Moderate, false),
+            7,
+            6,
+            [0, 24],
+        )
+        .unwrap();
+        assert_eq!(ordinary.top, -4);
+        assert_eq!(ordinary.height, 32);
+        assert_eq!(ordinary.gradient, ZGradient::Moderate);
+        assert_eq!(ordinary.z_adjust, 7);
+    }
 
     #[test]
     fn gradient_table_matches_the_bytes_at_0x00817710() {

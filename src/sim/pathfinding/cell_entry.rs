@@ -403,9 +403,13 @@ fn evaluate_ground_cell_entry(ctx: CanEnterCellContext<'_>) -> CanEnterCellResul
             }
     });
     let speed_type = ctx.speed_type.or_else(|| {
-        if ctx.terrain_costs.is_some() {
+        if ctx.terrain_costs.is_some() && !ctx.is_infantry {
             None
         } else {
+            // InfantryClass::Can_Enter_Cell @ 0x0051C750 reads the ground
+            // LandType/SpeedType row even beneath an intact bridge. The coarse
+            // cost grid also represents the deck and can contain 100 over a
+            // ground Foot row of zero, so it cannot replace this input.
             ctx.movement_zone.map(|zone| zone.speed_type())
         }
     });
@@ -463,6 +467,46 @@ fn evaluate_shared_cell_leaf(
         };
     };
     let movement_zone = ctx.movement_zone.unwrap_or(MovementZone::Normal);
+    if ctx.is_infantry
+        && ctx.terrain_layer == MovementLayer::Ground
+        && speed_type != SpeedType::Winged
+    {
+        // Infantry +0x1AC @ 0x0051BF90 does not call Cell::CheckCellPassability
+        // @ 0x004834A0. Its +0x1B0 traversal @ 0x004D9C60 already owns numeric
+        // height legality; ground near the candidate's level selects +0xE4 and
+        // +0x124 even when the cell carries a span. A* @ 0x00429F54 and Walk
+        // @ 0x0075B690 both reach this class contract. Keep the existing coarse
+        // wall result here (the native 4/5 wall accumulator is a separate
+        // recorded gap), without importing the unrelated Cell leaf's level
+        // rejection. See RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md, under-span admission.
+        let terrain_cell = ctx
+            .resolved_terrain
+            .and_then(|terrain| terrain.cell(ctx.target.0, ctx.target.1));
+        if terrain_cell.is_none()
+            && ctx
+                .path_grid
+                .and_then(|grid| grid.cell(ctx.target.0, ctx.target.1))
+                .is_none()
+        {
+            // Retain the prior live-adapter missing-target rejection, including
+            // bypass_grid callers. This does not model native dummy-cell access.
+            return CanEnterCellResult::HardBlocked;
+        }
+        let wall = terrain_cell.is_some_and(|cell| cell.zone_type == zone_class::WALL);
+        let wall_cleared = wall
+            && matches!(
+                movement_zone,
+                MovementZone::Destroyer
+                    | MovementZone::AmphibiousDestroyer
+                    | MovementZone::InfantryDestroyer
+                    | MovementZone::CrusherAll
+            );
+        return if !wall_cleared && (wall || !land_passable) {
+            CanEnterCellResult::HardBlocked
+        } else {
+            CanEnterCellResult::Clear
+        };
+    }
     let result = evaluate_live_cell_passability(LiveCellPassabilityQuery {
         target: ctx.target,
         speed_type,
@@ -1773,6 +1817,71 @@ mod tests {
         );
 
         assert_eq!(result, TerrainCheckResult::NeedsBlockerCheck);
+    }
+
+    #[test]
+    fn infantry_under_span_occupation_uses_ground_subcells_and_blockers() {
+        let mut grid = PathGrid::new(1, 1);
+        grid.set_cell_for_test(0, 0, 2, true, true);
+        let check = |occupation: &OccupancyGrid| {
+            check_terrain_with_layers(
+                (0, 0),
+                CanEnterLayerContext::single(MovementLayer::Ground),
+                EntityCategory::Infantry,
+                Some(&grid),
+                None,
+                occupation,
+            )
+        };
+        let mut occupation = OccupancyGrid::new();
+        occupation.add(
+            0,
+            0,
+            10,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        assert_eq!(
+            check(&occupation),
+            TerrainCheckResult::Clear,
+            "a deck vehicle must not block the ground"
+        );
+        occupation.add(
+            0,
+            0,
+            11,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        assert_eq!(
+            check(&occupation),
+            TerrainCheckResult::NeedsBlockerCheck,
+            "ground vehicles still require classification"
+        );
+        occupation.remove_on_layer(0, 0, 11, MovementLayer::Ground);
+        for (index, slot) in bump_crush::FUNCTIONAL_SUB_CELLS.into_iter().enumerate() {
+            occupation.add(
+                0,
+                0,
+                20 + index as u64,
+                MovementLayer::Ground,
+                Some(slot),
+                CellListInsertion::PrependNonBuilding,
+            );
+        }
+        assert_eq!(
+            check(&occupation),
+            TerrainCheckResult::NeedsBlockerCheck,
+            "three ground infantry fill the functional subcells"
+        );
+        occupation.remove_on_layer(0, 0, 20, MovementLayer::Ground);
+        assert_eq!(
+            check(&occupation),
+            TerrainCheckResult::Clear,
+            "the freed ground subcell must admit infantry"
+        );
     }
 
     #[test]

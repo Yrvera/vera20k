@@ -158,11 +158,47 @@ fn native_row_z(entry: u32, screen_top: i32, height: i32, z_adjust: i32, row: i3
 
 fn native_depth(in: VertexOutput) -> f32 {
     let camera_row: i32 = i32(round(camera.camera_pos.y));
-    let rect_top: f32 = in.rect_top_height.x;
-    let height: i32 = max(i32(round(in.rect_top_height.y)), 1);
+    var rect_top: f32 = in.rect_top_height.x;
+    var height: i32 = max(i32(round(in.rect_top_height.y)), 1);
+    var gradient: u32 = in.z_gradient & 0xFFu;
+    var z_adjust: i32 = i32(round(in.z_adjust));
+    // Unit final composite 0x73B140: full-width upper h-16 then bottom 16,
+    // seeded independently by Standard_SHP_blitter. A shared rectangle across
+    // hull/turret/barrel makes their depth decision identical at every pixel.
+    // Retain full quads/UVs so the split introduces no extra zoom-padding edge.
+    if ((in.z_gradient & 0x400u) != 0u) {
+        rect_top = round(rect_top);
+        if (height > 16) {
+            let boundary: f32 = rect_top + f32(height - 16);
+            if (in.world_pos.y < boundary) {
+                height = height - 16;
+                gradient = 0u;
+                z_adjust = z_adjust - 5;
+            } else {
+                rect_top = boundary;
+                height = 16;
+                gradient = 2u;
+            }
+        }
+        // fx_params.w is this voxel body's tactical clip height in world
+        // pixels, supplied from the actual scissor. Zero retains the whole
+        // viewport for offscreen callers. Do not bake the sidebar/footer size
+        // into this shader or infer it from atlas storage padding.
+        let clip_height: f32 = select(
+            camera.screen_size.y / camera.zoom,
+            in.fx_params.w,
+            in.fx_params.w > 0.0,
+        );
+        let bottom: f32 = min(rect_top + f32(height), f32(camera_row) + round(clip_height));
+        rect_top = max(rect_top, f32(camera_row));
+        height = i32(bottom - rect_top);
+        if (height <= 0 || in.world_pos.y < rect_top || in.world_pos.y >= bottom) {
+            discard;
+        }
+    }
     let screen_top: i32 = i32(round(rect_top)) - camera_row;
     let row: i32 = clamp(i32(floor(in.world_pos.y - rect_top)), 0, height - 1);
-    let z: i32 = native_row_z(in.z_gradient & 0xFFu, screen_top, height, i32(round(in.z_adjust)), row);
+    let z: i32 = native_row_z(gradient, screen_top, height, z_adjust, row);
     let ground_row: f32 = f32(32768 - z + camera_row);
     let world_height: f32 = max(camera.world_height, 1.0);
     return clamp(1.0 - (ground_row - camera.world_origin_y) / world_height, 0.001, 0.999);

@@ -81,6 +81,129 @@ fn world_xy(entity: &GameEntity) -> [i32; 2] {
     ]
 }
 
+/// Unit DrawExtras temporarily selects UnloadingClass (0x73D2C4). Art-only
+/// camouflage/NoSpawnAlt substitutions are not native UnitType substitutions.
+fn draw_type<'a>(
+    runtime: &'a crate::sim::runtime::SimRuntime,
+    entity: &GameEntity,
+    unloading_body: bool,
+) -> Option<&'a ObjectType> {
+    let view = runtime.view();
+    let actual = runtime
+        .resources
+        .rules
+        .object(view.interner().resolve(entity.type_ref()));
+    if unloading_body && actual.is_some_and(|o| o.harvester) {
+        entity
+            .display_type_override
+            .and_then(|id| runtime.resources.rules.object(view.interner().resolve(id)))
+            .or(actual)
+    } else {
+        actual
+    }
+}
+
+/// Raw Unit composite predicate (0x73B1A8..0x73B207), not a draw-layer route.
+/// SHP infantry and aircraft never pass through this Unit vtable slot +0x55C.
+pub(crate) fn unit_bridge_split(
+    state: &AppState,
+    entity: &GameEntity,
+    unloading_body: bool,
+) -> bool {
+    unit_bridge_split_in_runtime(
+        state.match_state.sim_runtime.as_ref(),
+        entity,
+        unloading_body,
+    )
+}
+
+fn unit_bridge_split_in_runtime(
+    runtime: Option<&crate::sim::runtime::SimRuntime>,
+    entity: &GameEntity,
+    unloading_body: bool,
+) -> bool {
+    unit_bridge_condition_in_runtime(runtime, entity, unloading_body, true)
+}
+
+/// Direct SHP Unit no-turret branch 0x73CE0D..0x73CE7F (stock SQD).
+/// It changes the whole body's a7 by -16 and a8 to gradient zero, with
+/// neither the composite's factory alternative nor its height > 16 test.
+pub(crate) fn shp_unit_bridge_fudge(state: &AppState, entity: &GameEntity) -> bool {
+    shp_unit_bridge_fudge_in_runtime(state.match_state.sim_runtime.as_ref(), entity)
+}
+
+fn shp_unit_bridge_fudge_in_runtime(
+    runtime: Option<&crate::sim::runtime::SimRuntime>,
+    entity: &GameEntity,
+) -> bool {
+    if runtime
+        .and_then(|rt| draw_type(rt, entity, true))
+        .is_some_and(|object| object.has_turret)
+    {
+        // SHP+Turret uses the offscreen composite instead; that missing SHP
+        // composition path is not replaced by the direct-body treatment.
+        return false;
+    }
+    unit_bridge_condition_in_runtime(runtime, entity, true, false)
+}
+
+fn unit_bridge_condition_in_runtime(
+    runtime: Option<&crate::sim::runtime::SimRuntime>,
+    entity: &GameEntity,
+    unloading_body: bool,
+    allow_factory: bool,
+) -> bool {
+    if entity.category != EntityCategory::Unit {
+        return false;
+    }
+    let Some(runtime) = runtime else {
+        return false;
+    };
+    let Some(object) = draw_type(runtime, entity, unloading_body) else {
+        return false;
+    };
+    if !object.too_big_to_fit_under_bridge {
+        return false;
+    }
+    let view = runtime.view();
+    let factory = allow_factory
+        && entity.navigation.nav_com.is_some()
+        && entity
+            .radio_contacts
+            .slot(0)
+            .and_then(|id| view.entities().get(id))
+            .filter(|contact| contact.category == EntityCategory::Structure)
+            .and_then(|contact| {
+                runtime
+                    .resources
+                    .rules
+                    .object(view.interner().resolve(contact.type_ref()))
+            })
+            .is_some_and(|object| object.weapons_factory);
+    let Some(terrain) = view.resolved_terrain() else {
+        return factory;
+    };
+    let xy = world_xy(entity);
+    crate::render::foot_depth::unit_composite_split(
+        FootDepthContext {
+            cell: [(xy[0] / 256) as i16, (xy[1] / 256) as i16],
+            on_bridge: entity.on_bridge,
+            bridge_set_base: terrain.concrete_bridge_set_base(),
+            ..Default::default()
+        },
+        object.too_big_to_fit_under_bridge,
+        factory,
+        |coord| {
+            depth_cell(
+                terrain,
+                view.overlay_grid(),
+                Some(&runtime.resources.overlay_registry),
+                coord,
+            )
+        },
+    )
+}
+
 /// SHP's 0x705E00 gate is GetHeight()==0, not a display-layer test. Aircraft
 /// always bypass Foot. Raw VXL and OREGATH callers use Foot directly instead.
 pub(crate) fn shp_z_adjust(state: &AppState, entity: &GameEntity) -> f32 {
@@ -171,18 +294,7 @@ fn unit_z_adjust_in_runtime(
         return adjust_for_z_standard(world_z).wrapping_neg();
     };
     let sim = &runtime.simulation;
-    let actual = runtime
-        .resources
-        .rules
-        .object(view.interner().resolve(entity.type_ref()));
-    let object = if unloading_body && actual.is_some_and(|o| o.harvester) {
-        entity
-            .display_type_override
-            .and_then(|id| runtime.resources.rules.object(view.interner().resolve(id)))
-            .or(actual)
-    } else {
-        actual
-    };
+    let object = draw_type(runtime, entity, unloading_body);
     let xy = world_xy(entity);
     // ObjectClass cell getter 0x41BEA0 truncates signed coordinates toward zero.
     let coord = [(xy[0] / 256) as i16, (xy[1] / 256) as i16];

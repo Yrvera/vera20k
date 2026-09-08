@@ -144,7 +144,7 @@ impl VxlSlopeTransitionCache {
             phase_num: key.phase_num,
             phase_den: key.phase_den,
         };
-        let (sprite, _) = render_unit_sprite_with_slope_blend(
+        let (sprite, _, native_draw_bounds) = render_unit_sprite_with_slope_blend(
             asset_manager,
             &render_key,
             rules,
@@ -158,7 +158,16 @@ impl VxlSlopeTransitionCache {
         let page_size = PAGE_SIZE.min(gpu.device.limits().max_texture_dimension_2d);
         for page_index in 0..self.pages.len() {
             if let Some((px, py)) = self.pages[page_index].try_place(&sprite) {
-                return Some(self.insert_into_page(gpu, batch, key, sprite, page_index, px, py));
+                return Some(self.insert_into_page(
+                    gpu,
+                    batch,
+                    key,
+                    sprite,
+                    native_draw_bounds,
+                    page_index,
+                    px,
+                    py,
+                ));
             }
         }
 
@@ -166,7 +175,16 @@ impl VxlSlopeTransitionCache {
         let (px, py) = page.try_place(&sprite)?;
         self.pages.push(page);
         let page_index = self.pages.len() - 1;
-        Some(self.insert_into_page(gpu, batch, key, sprite, page_index, px, py))
+        Some(self.insert_into_page(
+            gpu,
+            batch,
+            key,
+            sprite,
+            native_draw_bounds,
+            page_index,
+            px,
+            py,
+        ))
     }
 
     fn insert_into_page(
@@ -175,6 +193,7 @@ impl VxlSlopeTransitionCache {
         batch: &BatchRenderer,
         key: TransitionUnitSpriteKey,
         sprite: VxlSprite,
+        native_draw_bounds: Option<[i32; 4]>,
         page_index: usize,
         px: u32,
         py: u32,
@@ -196,6 +215,7 @@ impl VxlSlopeTransitionCache {
                 pixel_size: [sprite.width as f32, sprite.height as f32],
                 offset_x: sprite.offset_x,
                 offset_y: sprite.offset_y,
+                native_draw_bounds,
                 page: page_index,
             },
         };

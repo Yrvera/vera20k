@@ -93,6 +93,10 @@ pub struct UnitSpriteEntry {
     pub offset_x: f32,
     /// Y offset from the model's center to the sprite's top-left corner.
     pub offset_y: f32,
+    /// Native per-part destination x/y/width/height relative to its draw
+    /// anchor, independent of padded atlas storage. None means the asset
+    /// could not provide trustworthy native bounds; do not split from padding.
+    pub native_draw_bounds: Option<[i32; 4]>,
     /// Texture page containing this sprite.
     pub page: usize,
 }
@@ -169,6 +173,7 @@ impl UnitAtlas {
 struct RenderedSprite {
     key: UnitSpriteKey,
     sprite: VxlSprite,
+    native_draw_bounds: Option<[i32; 4]>,
 }
 
 /// Cached rendered unit sprite — palette indices only, depth buffer stripped.
@@ -182,6 +187,7 @@ struct CachedUnitSprite {
     height: u32,
     offset_x: f32,
     offset_y: f32,
+    native_draw_bounds: Option<[i32; 4]>,
 }
 
 impl CachedUnitSprite {
@@ -193,6 +199,7 @@ impl CachedUnitSprite {
             height: rs.sprite.height,
             offset_x: rs.sprite.offset_x,
             offset_y: rs.sprite.offset_y,
+            native_draw_bounds: rs.native_draw_bounds,
         }
     }
 }
@@ -486,7 +493,7 @@ pub fn build_unit_atlas(
                 compute.as_deref_mut(),
                 gpu,
             ) {
-                Some((sprite, used_gpu)) => {
+                Some((sprite, used_gpu, native_draw_bounds)) => {
                     if used_gpu {
                         gpu_rendered += 1;
                     } else {
@@ -495,6 +502,7 @@ pub fn build_unit_atlas(
                     cached.push(CachedUnitSprite::from_rendered(RenderedSprite {
                         key: key.clone(),
                         sprite,
+                        native_draw_bounds,
                     }));
                 }
                 None => {
@@ -566,7 +574,7 @@ pub(crate) fn render_unit_sprite(
     vpl: Option<&VplFile>,
     compute: Option<&mut VxlComputeRenderer>,
     gpu: &GpuContext,
-) -> Option<(VxlSprite, bool)> {
+) -> Option<(VxlSprite, bool, Option<[i32; 4]>)> {
     render_unit_sprite_with_slope_blend(asset_manager, key, rules, art, vpl, compute, gpu, None)
 }
 
@@ -579,7 +587,7 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
     mut compute: Option<&mut VxlComputeRenderer>,
     gpu: &GpuContext,
     slope_blend: Option<VxlSlopeBlend>,
-) -> Option<(VxlSprite, bool)> {
+) -> Option<(VxlSprite, bool, Option<[i32; 4]>)> {
     // Resolve image name: type_id → rules.ini Image= → art.ini Image= override.
     let rules_image: String = rules
         .and_then(|r| r.object(&key.type_id))
@@ -619,6 +627,14 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
         slope_blend,
         ..VxlRenderParams::default()
     };
+    let native_draw_bounds = native_unit_sprite_draw_bounds(
+        asset_manager,
+        &vxl,
+        hva.as_ref(),
+        &image,
+        &params,
+        key.layer,
+    );
 
     // House remap is no longer applied at bake time — the fragment shader
     // does it via per-instance DrawState::remap_row + house_ramp texture lookup.
@@ -791,7 +807,56 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
         return None;
     }
 
-    Some((sprite, use_gpu))
+    Some((sprite, use_gpu, native_draw_bounds))
+}
+
+/// Metadata follows the requested VXL, not the union-sized texture canvas
+/// used to store each separate layer. Composite keys retain their actual
+/// body/turret/barrel bake order; live independently facing parts are united
+/// later by presentation at their actual anchors and draw order.
+fn native_unit_sprite_draw_bounds(
+    assets: &AssetManager,
+    body: &VxlFile,
+    hva: Option<&HvaFile>,
+    image: &str,
+    params: &VxlRenderParams,
+    layer: VxlLayer,
+) -> Option<[i32; 4]> {
+    let optional = |base: &str| -> Result<Option<[i32; 4]>, ()> {
+        let Some(data) = assets.get_ref(&format!("{base}.VXL")) else {
+            return Ok(None);
+        };
+        let Ok(vxl) = VxlFile::from_bytes(data) else {
+            // render_optional_layer also omits an unparseable optional file.
+            return Ok(None);
+        };
+        let hva = assets
+            .get_ref(&format!("{base}.HVA"))
+            .and_then(|data| HvaFile::from_bytes(data).ok());
+        vxl_raster::native_vxl_draw_bounds(&vxl, hva.as_ref(), params)
+            .map(Some)
+            .ok_or(())
+    };
+    match layer {
+        VxlLayer::Shadow => None,
+        VxlLayer::Body => vxl_raster::native_vxl_draw_bounds(body, hva, params),
+        VxlLayer::Turret => optional(&format!("{image}TUR")).ok().flatten(),
+        VxlLayer::Barrel => optional(&format!("{image}BARL"))
+            .ok()?
+            .or_else(|| optional(&format!("{image}BARREL")).ok().flatten()),
+        VxlLayer::Composite => {
+            let mut bounds = Some(vxl_raster::native_vxl_draw_bounds(body, hva, params)?);
+            let turret = optional(&format!("{image}TUR")).ok()?;
+            let barrel = match optional(&format!("{image}BARL")).ok()? {
+                Some(bounds) => Some(bounds),
+                None => optional(&format!("{image}BARREL")).ok()?,
+            };
+            for part in [turret, barrel].into_iter().flatten() {
+                vxl_raster::union_native_voxel_draw_bounds(&mut bounds, part);
+            }
+            bounds
+        }
+    }
 }
 
 /// Body plus optional turret and barrel, depth-composited on the CPU.
@@ -1249,6 +1314,7 @@ fn pack_sprites(
                     pixel_size: [rs.width as f32, rs.height as f32],
                     offset_x: rs.offset_x,
                     offset_y: rs.offset_y,
+                    native_draw_bounds: rs.native_draw_bounds,
                     page: page_index,
                 },
             );

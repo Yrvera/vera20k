@@ -43,12 +43,8 @@ pub(super) struct WorldInstances {
     pub bridge_railing: Vec<SpriteInstance>,
     pub unit: Vec<SpriteInstance>,
     pub unit_pages: Vec<usize>,
-    pub bridge_unit: Vec<SpriteInstance>,
-    pub bridge_unit_pages: Vec<usize>,
     pub unit_transition_paged: Vec<Vec<SpriteInstance>>,
-    pub bridge_unit_transition_paged: Vec<Vec<SpriteInstance>>,
     pub shp_paged: Vec<Vec<SpriteInstance>>,
-    pub bridge_shp_paged: Vec<Vec<SpriteInstance>>,
     /// Bodies above the Ground band: voxel aircraft off their pads, missiles in
     /// flight. Drawn after every ground object — see `top_unit` in draw_passes.
     pub top_unit: Vec<SpriteInstance>,
@@ -172,7 +168,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         // explored gate (`CellOverlay_TileDraw @ 0x00480350`); the flat shroud
         // curtain blacks out unexplored ground in the multiply pass.
         let bridge_state = state
-            .match_state.sim_runtime
+            .match_state
+            .sim_runtime
             .as_ref()
             .and_then(|rt| rt.view().bridge_state());
         crate::render::terrain_instances::build_visible_instances(
@@ -194,12 +191,18 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     // in `overlay`, while high bridge bodies use instances::bridges.
     let ground_order = super::draw_plan_lowering::NativeGroundOrder::new(
         state
-            .match_state.sim_runtime
+            .match_state
+            .sim_runtime
             .as_ref()
             .map_or(&[], |rt| rt.view().tactical_registration_order()),
     );
     let mut ground_objects = Vec::new();
-    let mut overlay: Vec<SpriteInstance> = std::mem::take(&mut state.match_state.match_presentation.cached_overlay_instances);
+    let mut overlay: Vec<SpriteInstance> = std::mem::take(
+        &mut state
+            .match_state
+            .match_presentation
+            .cached_overlay_instances,
+    );
     overlay.clear();
     let mut overlay_render_z = Vec::new();
     instances::build_overlay_instances(
@@ -231,25 +234,26 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
 
     // SHP sprites: buildings, infantry, effects — paged across sprite atlas pages.
     let shp_page_count: usize = state
-        .match_state.match_presentation.sprite_atlas
+        .match_state
+        .match_presentation
+        .sprite_atlas
         .as_ref()
         .map_or(1, |a| a.page_count().max(1));
     let mut shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
-    let mut bridge_shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
     let mut top_shp: Vec<SpriteInstance> = Vec::new();
     let mut top_shp_pages: Vec<usize> = Vec::new();
     let mut top_shp_ids: Vec<u64> = Vec::new();
     let mut particle_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
 
-    // VXL units (ground + bridge) — sorted by depth descending.
+    // VXL body sources — sorted by depth descending.
     // shp_paged is passed in so harvest overlays (OREGATH SHP) route to the
     // correct sprite atlas page instead of the voxel unit instance list.
-    let mut unit: Vec<SpriteInstance> = std::mem::take(&mut state.match_state.match_presentation.cached_unit_instances);
+    let mut unit: Vec<SpriteInstance> =
+        std::mem::take(&mut state.match_state.match_presentation.cached_unit_instances);
     unit.clear();
-    let mut unit_pages: Vec<usize> = std::mem::take(&mut state.match_state.match_presentation.cached_unit_pages);
+    let mut unit_pages: Vec<usize> =
+        std::mem::take(&mut state.match_state.match_presentation.cached_unit_pages);
     unit_pages.clear();
-    let mut bridge_unit: Vec<SpriteInstance> = Vec::new();
-    let mut bridge_unit_pages: Vec<usize> = Vec::new();
     // The band above Ground (gamemd layers 3 and 4). Deliberately NOT depth
     // sorted: those layers append and render in submission order, so the
     // engine's own intra-band order is "whichever object entered the layer
@@ -258,13 +262,12 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     let mut top_unit: Vec<SpriteInstance> = Vec::new();
     let mut top_unit_pages: Vec<usize> = Vec::new();
     let transition_page_count = state
-        .renderer.vxl_slope_transition_cache
+        .renderer
+        .vxl_slope_transition_cache
         .borrow()
         .page_count()
         .max(1);
     let mut unit_transition_paged: Vec<Vec<SpriteInstance>> =
-        vec![Vec::new(); transition_page_count];
-    let mut bridge_unit_transition_paged: Vec<Vec<SpriteInstance>> =
         vec![Vec::new(); transition_page_count];
     instances::build_unit_instances(
         state,
@@ -272,19 +275,12 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut unit_pages,
         &mut top_unit,
         &mut top_unit_pages,
-        &mut bridge_unit,
-        &mut bridge_unit_pages,
         &mut unit_transition_paged,
-        &mut bridge_unit_transition_paged,
         &mut shp_paged,
         &mut ground_objects,
         &ground_order,
     );
-    sort_by_depth_desc_with_pages(&mut bridge_unit, &mut bridge_unit_pages);
     for page in &mut unit_transition_paged {
-        sort_by_depth_desc(page);
-    }
-    for page in &mut bridge_unit_transition_paged {
         sort_by_depth_desc(page);
     }
     // A building's voxel turret remains owned by the building display call.
@@ -297,7 +293,6 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     instances::build_shp_instances(
         state,
         &mut shp_paged,
-        &mut bridge_shp_paged,
         &mut top_shp,
         &mut top_shp_pages,
         &mut top_shp_ids,
@@ -323,7 +318,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut top_shp_pages,
         &mut top_shp_ids,
         state
-            .match_state.sim_runtime
+            .match_state
+            .sim_runtime
             .as_ref()
             .map_or(&[], |rt| rt.view().tactical_registration_order()),
     );
@@ -337,9 +333,6 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     // with the GI body, at the body's own key).
     instances::build_parachute_instances(state, &mut ground_objects, &parachute_body_depths);
     for page in &mut shp_paged {
-        sort_by_depth_desc(page);
-    }
-    for page in &mut bridge_shp_paged {
         sort_by_depth_desc(page);
     }
 
@@ -358,7 +351,12 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     // One-time first-frame statistics.
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        let total_grid: usize = state.match_state.match_presentation.terrain_grid.as_ref().map_or(0, |g| g.cells.len());
+        let total_grid: usize = state
+            .match_state
+            .match_presentation
+            .terrain_grid
+            .as_ref()
+            .map_or(0, |g| g.cells.len());
         log::info!(
             "First frame: {} terrain tiles (of {} cells) + {} fixed overlays + {} Ground sprites + {} residual SHP",
             terrain.normal.len(),
@@ -388,12 +386,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         bridge_railing,
         unit,
         unit_pages,
-        bridge_unit,
-        bridge_unit_pages,
         unit_transition_paged,
-        bridge_unit_transition_paged,
         shp_paged,
-        bridge_shp_paged,
         top_unit,
         top_unit_pages,
         top_shp,
@@ -442,7 +436,11 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
     // is the live projection of that retained profile value, so config.toml is
     // not a second interactive authority for the same retail option.
     let enable_extra_animations = pixel_fx_enabled_for_detail_level(
-        state.match_state.match_presentation.in_game_options.detail_level,
+        state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .detail_level,
     );
 
     let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
@@ -484,7 +482,14 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
 /// frame once even though native recenters an identical draw from every
 /// occupied footprint cell.
 fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
-    let (sim, rules) = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules()) {
+    let (sim, rules) = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        state.rules(),
+    ) {
         (Some(s), Some(r)) => (s, r),
         _ => return Vec::new(),
     };
@@ -582,9 +587,10 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
         );
         let runtime = state.match_state.sim_runtime.as_ref();
         let presentation = &mut state.match_state.match_presentation;
-        if let (Some(minimap), Some(grid)) =
-            (presentation.minimap.as_mut(), presentation.terrain_grid.as_ref())
-        {
+        if let (Some(minimap), Some(grid)) = (
+            presentation.minimap.as_mut(),
+            presentation.terrain_grid.as_ref(),
+        ) {
             minimap.reconcile_playfield(
                 &state.renderer.gpu,
                 grid,
@@ -610,30 +616,32 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
             // only then the simulation acknowledgement.
             let view = runtime.view();
             let (radar_dirty_cells, radar_dirty_generation) = view.radar_terrain_dirty();
-            Ok::<_, std::convert::Infallible>(minimap.update_unit_dots(
-                &state.renderer.gpu,
-                view.entities(),
-                view.tactical_registration_order(),
-                view.houses(),
-                &presentation.house_color_map,
-                view.session().tick,
-                local_owner
-                    .as_deref()
-                    .and_then(|owner| view.interner().get(owner)),
-                view.fog(),
-                full_visibility,
-                view.session().game_mode_nonzero,
-                Some(&runtime.resources.rules),
-                Some(view.radar_events()),
-                Some(view.interner()),
-                view.bridge_state(),
-                view.overlay_grid(),
-                Some(&runtime.resources.overlay_registry),
-                &presentation.overlay_radar_colors,
-                view.resolved_terrain(),
-                radar_dirty_cells,
-                radar_dirty_generation,
-            ))
+            Ok::<_, std::convert::Infallible>(
+                minimap.update_unit_dots(
+                    &state.renderer.gpu,
+                    view.entities(),
+                    view.tactical_registration_order(),
+                    view.houses(),
+                    &presentation.house_color_map,
+                    view.session().tick,
+                    local_owner
+                        .as_deref()
+                        .and_then(|owner| view.interner().get(owner)),
+                    view.fog(),
+                    full_visibility,
+                    view.session().game_mode_nonzero,
+                    Some(&runtime.resources.rules),
+                    Some(view.radar_events()),
+                    Some(view.interner()),
+                    view.bridge_state(),
+                    view.overlay_grid(),
+                    Some(&runtime.resources.overlay_registry),
+                    &presentation.overlay_radar_colors,
+                    view.resolved_terrain(),
+                    radar_dirty_cells,
+                    radar_dirty_generation,
+                ),
+            )
         });
         match transaction {
             Ok(_) => {}
@@ -645,7 +653,9 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
 /// Build in-game UI overlay instances: selection brackets, health bars,
 /// drag rectangle, building placement preview, and software cursor.
 pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstances {
-    let bracket = crate::app::presentation::selection_brackets::build_selection_bracket_instances(state, sw, sh);
+    let bracket = crate::app::presentation::selection_brackets::build_selection_bracket_instances(
+        state, sw, sh,
+    );
     let radius_ring: Vec<SpriteInstance> = build_building_radius_ring_instances(state, sw, sh);
     let building_status: Vec<SpriteInstance> = build_building_status_instances(state, sw, sh);
     let occupant_pip = build_occupant_pip_instances(state, sw, sh);
@@ -654,7 +664,11 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
     let cargo_pip = build_cargo_pip_instances(state, sw, sh);
     let software_cursor = build_software_cursor_instances(state);
     let drag = match &state.match_state.match_presentation.selection_overlay {
-        Some(o) => o.build_drag_rect(&state.match_state.input.selection_state, state.match_state.input.camera_x, state.match_state.input.camera_y),
+        Some(o) => o.build_drag_rect(
+            &state.match_state.input.selection_state,
+            state.match_state.input.camera_x,
+            state.match_state.input.camera_y,
+        ),
         None => Vec::new(),
     };
 
@@ -665,11 +679,19 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
     // Target/action lines from selected units to command destinations.
     let target_line = crate::app::presentation::target_lines::build_target_line_instances(
         &state.match_state.match_presentation.target_lines,
-        state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation),
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
         &state.height_map(),
     );
     let factory_rally = crate::app::presentation::target_lines::build_factory_rally_line_instances(
-        state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation),
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
         state.rules(),
         &state.height_map(),
         &state.match_state.match_presentation.house_color_map,
@@ -710,15 +732,20 @@ fn build_placement_preview(
     u8,
     Vec<SpriteInstance>,
 ) {
-    match (&state.match_state.match_presentation.selection_overlay, &state.match_state.input.building_placement_preview) {
+    match (
+        &state.match_state.match_presentation.selection_overlay,
+        &state.match_state.input.building_placement_preview,
+    ) {
         (Some(o), Some(preview)) => {
             let preview_type_str = state
-                .match_state.sim_runtime
+                .match_state
+                .sim_runtime
                 .as_ref()
                 .map(|rt| &rt.simulation)
                 .map(|s| s.interner.resolve(preview.type_id).to_string())
                 .unwrap_or_default();
-            let is_wall: bool = state.rules()
+            let is_wall: bool = state
+                .rules()
                 .and_then(|r| r.object(&preview_type_str))
                 .map(|obj| obj.wall)
                 .unwrap_or(false);
@@ -727,7 +754,8 @@ fn build_placement_preview(
                 // Walls show the cursor cell + auto-fill cells toward existing walls.
                 // Draws place.shp on every intermediate cell between cursor and
                 // nearest same-type wall.
-                let (mut valid, mut invalid) = o.build_building_preview(preview, &state.height_map());
+                let (mut valid, mut invalid) =
+                    o.build_building_preview(preview, &state.height_map());
                 if !preview.wall_autofill_cells.is_empty() {
                     let (av, ai) = o.build_wall_autofill_diamonds(
                         &preview.wall_autofill_cells,
@@ -741,7 +769,9 @@ fn build_placement_preview(
             } else {
                 let (valid, invalid) = o.build_building_preview(preview, &state.height_map());
                 let hc: crate::rules::house_colors::HouseColorIndex = state
-                    .match_state.match_presentation.house_color_map
+                    .match_state
+                    .match_presentation
+                    .house_color_map
                     .get(
                         &crate::app::input::commands::preferred_local_owner(state)
                             .unwrap_or_else(|| "Americans".to_string()),
@@ -757,7 +787,12 @@ fn build_placement_preview(
                         state.match_state.match_presentation.sprite_atlas.as_ref(),
                         hc,
                         &state.height_map(),
-                        state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|s| &s.interner),
+                        state
+                            .match_state
+                            .sim_runtime
+                            .as_ref()
+                            .map(|rt| &rt.simulation)
+                            .map(|s| &s.interner),
                     );
                 let (ghost, page) = match ghost_result {
                     Some((inst, p)) => (vec![inst], p),
@@ -778,8 +813,10 @@ fn build_placement_preview(
 pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances {
     let view = current_sidebar_view(state).cloned();
     let minimap_rect = active_minimap_screen_rect(state);
-    let (tactical_w, tactical_h) =
-        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    let (tactical_w, tactical_h) = crate::app::input::camera::tactical_viewport_size_px(
+        state.render_width(),
+        state.render_height(),
+    );
     let tactical_center_cell = crate::app::input::camera::tactical_centre_cell(state);
     let sidebar_color = crate::render::sidebar_text::native_radar_outline_color(
         crate::app::presentation::sidebar_render::current_sidebar_theme(state),
@@ -799,7 +836,9 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
 
     // Only show minimap when radar is online (or no radar_anim = legacy fallback).
     let minimap_visible: bool = state
-        .match_state.match_presentation.radar_anim
+        .match_state
+        .match_presentation
+        .radar_anim
         .as_ref()
         .map_or(true, |ra| ra.is_minimap_visible());
 
@@ -829,19 +868,18 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
                         sidebar_color,
                     )
                 });
-                let content_boundary =
-                    sidebar_surface.map_or_else(Vec::new, |sidebar_surface| {
-                        mm.build_content_boundary_in_rect(
-                            state.match_state.input.camera_x,
-                            state.match_state.input.camera_y,
-                            minimap_rect.x,
-                            minimap_rect.y,
-                            minimap_rect.w,
-                            minimap_rect.h,
-                            sidebar_surface,
-                            sidebar_color,
-                        )
-                    });
+                let content_boundary = sidebar_surface.map_or_else(Vec::new, |sidebar_surface| {
+                    mm.build_content_boundary_in_rect(
+                        state.match_state.input.camera_x,
+                        state.match_state.input.camera_y,
+                        minimap_rect.x,
+                        minimap_rect.y,
+                        minimap_rect.w,
+                        minimap_rect.h,
+                        sidebar_surface,
+                        sidebar_color,
+                    )
+                });
                 (minimap, viewport_rect, content_boundary)
             }
             None => (Vec::new(), Vec::new(), Vec::new()),
@@ -860,14 +898,16 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         .unwrap_or_default();
 
     let ready_text = state
-        .process_assets.csf
+        .process_assets
+        .csf
         .as_ref()
         .map(|csf| csf.text("TXT_READY"))
         .unwrap_or_else(|| std::borrow::Cow::Borrowed("Ready"));
     // gamemd's strip draw pairs TXT_READY with TXT_HOLD ("On Hold"), shown on
     // the same cameo slot when production is suspended.
     let hold_text = state
-        .process_assets.csf
+        .process_assets
+        .csf
         .as_ref()
         .map(|csf| csf.text("TXT_HOLD"))
         .unwrap_or_else(|| std::borrow::Cow::Borrowed("On Hold"));
@@ -896,13 +936,18 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
     // text colour as the cameo labels.
     if let Some(v) = view.as_ref() {
         let theme = crate::app::presentation::sidebar_render::current_sidebar_theme(state);
-        text.extend(crate::app::presentation::sidebar_text::build_sidebar_credits_instances(
-            &state.renderer.bit_font,
-            v,
-            state.match_state.match_presentation.ui_scale,
-            crate::app::presentation::sidebar_text::credits_tint(theme),
-            [state.match_state.input.camera_x, state.match_state.input.camera_y],
-        ));
+        text.extend(
+            crate::app::presentation::sidebar_text::build_sidebar_credits_instances(
+                &state.renderer.bit_font,
+                v,
+                state.match_state.match_presentation.ui_scale,
+                crate::app::presentation::sidebar_text::credits_tint(theme),
+                [
+                    state.match_state.input.camera_x,
+                    state.match_state.input.camera_y,
+                ],
+            ),
+        );
     }
 
     let radar_anim = build_radar_anim_instance(state);
