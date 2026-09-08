@@ -1012,7 +1012,15 @@ fn emit_building_anims(
                 tint,
                 alpha: 1.0,
                 draw_state,
-                z_adjust: ground_z_adjust(z, z_adjust_px),
+                // The anim's YDrawOffset is baked into the atlas offset, so it
+                // also rides the Z term (native `YDrawOffset + ZAdjust - 2`).
+                z_adjust: ground_z_adjust(
+                    z,
+                    z_adjust_px
+                        + art_reg
+                            .anim_runtime_config(&selected.anim_type)
+                            .map_or(0, |c| c.y_draw_offset),
+                ),
                 z_gradient: pack_z_gradient(ZGradient::Vertical, false),
                 ..Default::default()
             },

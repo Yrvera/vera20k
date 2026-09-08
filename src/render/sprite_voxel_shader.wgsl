@@ -48,6 +48,10 @@ struct Instance {
     @location(10) effect_tint: vec4f,
     @location(11) z_adjust: f32,
     @location(12) z_gradient: u32,
+    // (top, height) of the composite blit rect this layer belongs to; zero
+    // height means the layer's own quad. A turreted unit's hull, turret and
+    // barrel are one native cache blit (`0x0073B140`), so they share one seed.
+    @location(13) z_rect: vec2f,
 };
 
 struct VertexOutput {
@@ -105,7 +109,11 @@ fn vs_main(
     out.fx_params = instance.fx_params;
     out.effect_tint = instance.effect_tint;
     out.world_pos = instance.position + local * instance.size;
-    out.rect_top_height = vec2f(instance.position.y, instance.size.y);
+    out.rect_top_height = select(
+        vec2f(instance.position.y, instance.size.y),
+        instance.z_rect,
+        instance.z_rect.y > 0.0,
+    );
     out.z_adjust = instance.z_adjust;
     out.z_gradient = instance.z_gradient;
     return out;

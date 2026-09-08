@@ -432,7 +432,14 @@ pub(crate) fn build_anim_class_instances(
             ),
             tint,
             alpha,
-            z_adjust: super::helpers::ground_z_adjust(z, anim.z_adjust + ANIM_DRAW_DEPTH_BIAS_PX),
+            // YDrawOffset is baked into the atlas offset, so it must also
+            // ride the Z term to keep Z on the un-offset row, as natively.
+            z_adjust: super::helpers::ground_z_adjust(
+                z,
+                anim.z_adjust
+                    + config.map_or(0, |c| c.y_draw_offset)
+                    + ANIM_DRAW_DEPTH_BIAS_PX,
+            ),
             z_gradient: crate::render::native_z::pack_z_gradient(
                 if config.is_some_and(|c| c.flat) {
                     crate::render::native_z::ZGradient::Flat

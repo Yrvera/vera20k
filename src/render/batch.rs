@@ -124,7 +124,8 @@ mod tests {
     }
 }
 
-/// Number of vertex attributes in SpriteInstance: 7 base + 4 voxel-shader fields.
+/// Number of vertex attributes in SpriteInstance: 7 base + 4 DrawState fields
+/// + 3 native-Z fields (z_adjust, z_gradient, zshape_origin / voxel z_rect).
 const INSTANCE_ATTRIBUTE_COUNT: usize = 14;
 
 /// Size of one SpriteInstance in bytes (4 × vec2f = 32 bytes).

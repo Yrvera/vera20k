@@ -962,6 +962,31 @@ fn emit_turret_unit_sprites(
     );
 
     // Emit body first (always). Uses frame fallback for mismatched HVA counts.
+    // Natively hull, turret and barrel are composited off-screen and blitted
+    // as ONE rect (`UnitClass vtable+0x55C = 0x0073B140`), so all three share
+    // the entry-2 seed of the composite rect: its top and height ride
+    // `zshape_origin` (the voxel shader's `z_rect`).
+    let turret_layers: Vec<_> = native_turret_barrel_order(turret_facing, &turret_key, &barrel_key)
+        .into_iter()
+        .filter_map(|key| unit_entry_for_slope_state(state, atlas, key, slope_state))
+        .collect();
+    let composite_rect: [f32; 2] = {
+        let mut top = f32::INFINITY;
+        let mut bottom = f32::NEG_INFINITY;
+        if let Some((entry, _)) = body_entry_opt {
+            top = top.min(center_y + entry.offset_y);
+            bottom = bottom.max(center_y + entry.offset_y + entry.pixel_size[1]);
+        }
+        for (entry, _) in &turret_layers {
+            top = top.min(center_y + entry.offset_y + tur_oy);
+            bottom = bottom.max(center_y + entry.offset_y + tur_oy + entry.pixel_size[1]);
+        }
+        if bottom > top {
+            [top, bottom - top]
+        } else {
+            [0.0, 0.0]
+        }
+    };
     if let Some((entry, texture_source)) = body_entry_opt {
         let sprite = SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
@@ -974,7 +999,7 @@ fn emit_turret_unit_sprites(
             draw_state,
             z_adjust: voxel_z_adjust(z),
             z_gradient: VOXEL_Z_GRADIENT,
-            ..Default::default()
+            zshape_origin: composite_rect,
         };
         push_unit_sprite(
             instances,
@@ -989,38 +1014,34 @@ fn emit_turret_unit_sprites(
         );
     }
 
-    for key in native_turret_barrel_order(turret_facing, &turret_key, &barrel_key) {
-        if let Some((entry, texture_source)) =
-            unit_entry_for_slope_state(state, atlas, key, slope_state)
-        {
-            let sprite = SpriteInstance {
-                position: [
-                    center_x + entry.offset_x + tur_ox,
-                    center_y + entry.offset_y + tur_oy,
-                ],
-                size: entry.pixel_size,
-                uv_origin: entry.uv_origin,
-                uv_size: entry.uv_size,
-                depth: entity_depth,
-                tint,
-                alpha,
-                draw_state,
-                z_adjust: voxel_z_adjust(z),
-                z_gradient: VOXEL_Z_GRADIENT,
-                ..Default::default()
-            };
-            push_unit_sprite(
-                instances,
-                instance_pages,
-                transition_instances,
-                bridge_transition_instances,
-                is_bridge_unit,
-                texture_source,
-                sprite,
-                collect_ground,
-                ground_pieces,
-            );
-        }
+    for (entry, texture_source) in turret_layers {
+        let sprite = SpriteInstance {
+            position: [
+                center_x + entry.offset_x + tur_ox,
+                center_y + entry.offset_y + tur_oy,
+            ],
+            size: entry.pixel_size,
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            depth: entity_depth,
+            tint,
+            alpha,
+            draw_state,
+            z_adjust: voxel_z_adjust(z),
+            z_gradient: VOXEL_Z_GRADIENT,
+            zshape_origin: composite_rect,
+        };
+        push_unit_sprite(
+            instances,
+            instance_pages,
+            transition_instances,
+            bridge_transition_instances,
+            is_bridge_unit,
+            texture_source,
+            sprite,
+            collect_ground,
+            ground_pieces,
+        );
     }
 }
 
