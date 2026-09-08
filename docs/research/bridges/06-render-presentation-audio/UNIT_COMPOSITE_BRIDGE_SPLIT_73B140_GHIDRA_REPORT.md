@@ -208,3 +208,7 @@ These results do not replace paired game-image acceptance or certify the
 explicit transformed-bounds, pivot, inter-part, translucent or shadow limits
 above. No game asset, retail INI/MIX, snapshot version or replay golden was
 changed for this correction.
+
+The release build also completed successfully. Its as-built SHA256 is
+`15692f826c94a243d39d5c673e822f902f1e02c2e6cefcbba25d3eb58629458c`.
+The independent source/validation review found no scoped implementation blocker.

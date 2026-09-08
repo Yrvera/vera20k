@@ -31,6 +31,43 @@
     }
   ],
   "systems": {
+    "GSI-06.01": {
+      "native_anchors": [
+        {
+          "symbol": "InfantryClass CanEnterCell",
+          "address": "0x0051BF90",
+          "evidence": "docs/research/RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "Foot shared bridge traversal",
+          "address": "0x004D9C60",
+          "evidence": "docs/research/RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/pathfinding/cell_entry.rs",
+          "symbol": "evaluate_ground_cell_entry / evaluate_shared_cell_leaf",
+          "coverage": "representative",
+          "observed_at_commit": "d34b9a435cca4ecb88df247ec46d05f701213fce"
+        },
+        {
+          "path": "src/sim/pathfinding/core_tests.rs",
+          "symbol": "infantry_under_span admission and hierarchy regressions",
+          "coverage": "representative",
+          "observed_at_commit": "d34b9a435cca4ecb88df247ec46d05f701213fce"
+        },
+        {
+          "path": "src/sim/movement/movement_bridge_retail_tests.rs",
+          "symbol": "infantry_ordered_under_hills_high_bridge_crosses_all_four_ground_lanes",
+          "coverage": "representative",
+          "observed_at_commit": "d34b9a435cca4ecb88df247ec46d05f701213fce"
+        }
+      ],
+      "notes": [
+        "Ordinary Infantry ground admission no longer imports the unrelated Cell 0x4834A0 numeric-level rejection. Ground speed, walls, missing targets, occupancy/subcells and hierarchy remain checked. The actual Hills Move reaches the opposite side across all four lanes with 104 under-span and zero deck frames; three deck-crossing checks also pass. Vehicle admission, full native wall result accumulation and exhaustive path parity remain separate."
+      ]
+    },
     "GSI-16.02": {
       "native_anchors": [],
       "rust_surfaces": [
@@ -1022,6 +1059,16 @@
           "symbol": "GetHeight above ground/bridge surface",
           "address": "0x005F5F40",
           "evidence": "docs/research/RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "Unit final composite bridge split",
+          "address": "0x0073B140",
+          "evidence": "docs/research/bridges/06-render-presentation-audio/UNIT_COMPOSITE_BRIDGE_SPLIT_73B140_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "Unit direct SHP no-turret bridge adjustment",
+          "address": "0x0073CE0D",
+          "evidence": "docs/research/bridges/06-render-presentation-audio/UNIT_COMPOSITE_BRIDGE_SPLIT_73B140_GHIDRA_REPORT.md"
         }
       ],
       "rust_surfaces": [
@@ -1042,11 +1089,41 @@
           "symbol": "world_z_leptons / screen_position",
           "coverage": "representative",
           "observed_at_commit": "5cafdce5a2625f49627e6840db7221fffb16321b"
+        },
+        {
+          "path": "src/app/presentation/instances/foot_depth.rs",
+          "symbol": "unit_bridge_split / shp_unit_bridge_fudge",
+          "coverage": "representative",
+          "observed_at_commit": "d34b9a435cca4ecb88df247ec46d05f701213fce"
+        },
+        {
+          "path": "src/app/presentation/instances/units.rs",
+          "symbol": "composite_depth_rect / build_unit_instances",
+          "coverage": "representative",
+          "observed_at_commit": "d34b9a435cca4ecb88df247ec46d05f701213fce"
+        },
+        {
+          "path": "src/render/vxl_raster.rs",
+          "symbol": "native_vxl_draw_bounds / union_native_voxel_draw_bounds",
+          "coverage": "representative",
+          "observed_at_commit": "d34b9a435cca4ecb88df247ec46d05f701213fce"
+        },
+        {
+          "path": "src/render/sprite_voxel_shader.wgsl",
+          "symbol": "native_depth independently clipped bridge regions",
+          "coverage": "representative",
+          "observed_at_commit": "d34b9a435cca4ecb88df247ec46d05f701213fce"
+        },
+        {
+          "path": "src/render/depth_gpu_tests.rs",
+          "symbol": "bridge_split_shared_parts_match_two_clipped_indexed_composite_blits",
+          "coverage": "representative",
+          "observed_at_commit": "d34b9a435cca4ecb88df247ec46d05f701213fce"
         }
       ],
       "notes": [
         "Foot depth preserves constructor defaults and wrapping signed maximum across cliff/column/tunnel/bridge selectors, gathered from live terrain/type state without simulation-dummy mutation.",
-        "85 native Foot-depth fixtures and 158 native height/placement fixtures bound separate arithmetic contracts. Simulation now supplies sampled ramp Z to projection and the SHP GetHeight gate; GPU/adapter regressions are separate. User cliff acceptance is bounded; paired full-game pixels, bridge split-blit admission and complete painter ordering remain unclaimed."
+        "85 native Foot-depth fixtures and 158 native height/placement fixtures bound separate arithmetic contracts. The bridge correction implements raw type/proximity/column/factory admission, shared independently seeded VXL regions, direct SHP adjustment, and Ground-parent routing; 11 GPU regressions pass. Split-selected native rectangle leaves have bounded executable fixtures; ordinary unsplit bounds retain the prior path. Paired full-game pixels, nonzero pivots, native inter-part cache composition, translucency and shadow timing remain unclaimed."
       ]
     },
     "GSI-13.24": {
