@@ -1395,13 +1395,23 @@ impl BatchRenderer {
         // Round camera to integer pixels — sub-pixel camera offsets cause
         // visible seams between adjacent terrain tiles.
         let cam = [camera_x.round(), camera_y.round()];
+        // `RA2_DEBUG_DEPTH_VIEW=1`: the Z-tested shaders paint their fragment
+        // depth as grey (wrapping every 128 world rows) instead of colour.
+        static DEBUG_DEPTH_VIEW: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+        let debug_depth_view = *DEBUG_DEPTH_VIEW.get_or_init(|| {
+            if std::env::var_os("RA2_DEBUG_DEPTH_VIEW").is_some() {
+                1.0
+            } else {
+                0.0
+            }
+        });
         let uniform: CameraUniform = CameraUniform {
             screen_size: [screen_width, screen_height],
             camera_pos: cam,
             zoom,
             world_origin_y: depth_axis.origin_y,
             world_height: depth_axis.world_height.max(1.0),
-            _pad: 0.0,
+            _pad: debug_depth_view,
         };
         gpu.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[uniform]));

@@ -715,16 +715,70 @@ impl App {
             Self::ensure_active_cooperative_shell_selection(&mut state);
         }
 
-        if std::env::var("RA2_QUICKPLAY").is_ok() {
+        if let Ok(quickplay) = std::env::var("RA2_QUICKPLAY") {
             let skirmish_settings = state.frontend.skirmish_settings.clone();
-            let request = crate::app::loading::pump::LoadingRequest::generic_map_load(
-                "auto",
+            // The fresh-scenario admission only accepts a typed skirmish
+            // startup, so the dev shortcut carries a minimal America-vs-Russia
+            // Battle session for the named map through the unverified legacy
+            // path (the same one the shell uses for non-catalog maps).
+            let session = quickplay_launch_session(quickplay);
+            let mut clock = crate::match_bootstrap::OrdinaryMatchSeedClock;
+            let seed = crate::match_bootstrap::read_match_seed(&mut clock);
+            let request = crate::app::loading::pump::LoadingRequest::unverified_legacy_skirmish(
+                session,
+                seed,
                 skirmish_settings,
             );
             crate::app::loading::pump::begin_loading(&mut state, request);
         }
 
         Ok(state)
+    }
+}
+
+/// `RA2_QUICKPLAY=<map>`: a stock Battle session, America versus one Easy
+/// Russia, on the named map file or seed.
+fn quickplay_launch_session(selected_map: String) -> crate::skirmish_launch::SkirmishLaunchSession {
+    use crate::skirmish_launch::{
+        AiDifficulty, LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishAiSlot,
+        SkirmishLaunchMode, SkirmishLaunchOptions, SkirmishLaunchSession, SkirmishLocalSlot,
+    };
+    SkirmishLaunchSession {
+        mode: SkirmishLaunchMode {
+            id: 1,
+            ui_name_key: "GUI:Battle".to_string(),
+            tooltip_key: "STT:ModeBattle".to_string(),
+            override_file: "MPBattleMD.ini".to_string(),
+            map_filter: "standard".to_string(),
+            random_maps_allowed: true,
+            allies_allowed: true,
+            must_ally: false,
+        },
+        selected_map_file: Some(selected_map),
+        player_name: "Player".to_string(),
+        local: SkirmishLocalSlot {
+            country: LaunchCountry::America,
+            country_random: false,
+            color_index: 0,
+            color_random: false,
+            start_position: LaunchStartPosition::Position(0),
+            team: LaunchTeam::None,
+        },
+        opponents: vec![SkirmishAiSlot {
+            country: LaunchCountry::Russia,
+            country_random: false,
+            color_index: 1,
+            color_random: false,
+            start_position: LaunchStartPosition::Position(1),
+            team: LaunchTeam::None,
+            difficulty: AiDifficulty::Easy,
+        }],
+        pre_fill_house_roster: crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(1),
+        options: SkirmishLaunchOptions {
+            // Fixture maps carry their own objects; no free starting units.
+            unit_count: 0,
+            ..SkirmishLaunchOptions::default()
+        },
     }
 }
 

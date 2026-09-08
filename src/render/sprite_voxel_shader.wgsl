@@ -199,6 +199,15 @@ fn palette_light(rgb_linear: vec3f, tint: vec3f) -> vec3f {
     return srgb_decode(clamp(srgb_encode(rgb_linear) * tint, vec3f(0.0), vec3f(1.0)));
 }
 
+
+// RA2_DEBUG_DEPTH_VIEW (camera.pad1 > 0.5): depth as grey, wrapping every
+// 128 world rows, so depth ordering can be read off a screenshot.
+fn debug_depth_color(depth: f32) -> vec4f {
+    let rows: f32 = (1.0 - depth) * max(camera.world_height, 1.0);
+    let g: f32 = fract(rows / 128.0);
+    return vec4f(g, g, g, 1.0);
+}
+
 struct FragOutput {
     @location(0) color: vec4f,
     @builtin(frag_depth) depth: f32,
@@ -243,5 +252,8 @@ fn fs_main(in: VertexOutput) -> FragOutput {
     var color: vec4f = vec4f(palette_light(rgb, in.tint * in.effect_tint.rgb), in.alpha);
     color = apply_fx(color, in.fx_flags, in.fx_params, in.effect_tint);
     out.color = color;
+    if (camera.pad1 > 0.5) {
+        out.color = debug_depth_color(out.depth);
+    }
     return out;
 }

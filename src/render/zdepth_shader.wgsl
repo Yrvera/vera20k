@@ -87,6 +87,15 @@ fn vs_main(
     return output;
 }
 
+
+// RA2_DEBUG_DEPTH_VIEW (camera.pad1 > 0.5): depth as grey, wrapping every
+// 128 world rows, so depth ordering can be read off a screenshot.
+fn debug_depth_color(depth: f32) -> vec4f {
+    let rows: f32 = (1.0 - depth) * max(camera.world_height, 1.0);
+    let g: f32 = fract(rows / 128.0);
+    return vec4f(g, g, g, 1.0);
+}
+
 struct FragOutput {
     @location(0) color: vec4f,
     @builtin(frag_depth) depth: f32,
@@ -134,5 +143,8 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     var output: FragOutput;
     output.color = vec4f(palette_light(color.rgb, input.tint), color.a);
     output.depth = frag_depth;
+    if (camera.pad1 > 0.5) {
+        output.color = debug_depth_color(frag_depth);
+    }
     return output;
 }
