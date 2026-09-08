@@ -176,6 +176,47 @@ fn genetic_converter_command_does_not_damage_factory_held_or_unmarked_infantry()
     held_infantry_survives_launch("GM");
 }
 
+#[test]
+fn genetic_converter_per_cell_retires_animated_victim_through_production_frames() {
+    animated_mutation_victim_retires(false);
+}
+
+#[test]
+fn genetic_converter_explosion_retires_animated_victim_through_production_frames() {
+    animated_mutation_victim_retires(true);
+}
+
+fn animated_mutation_victim_retires(explosion: bool) {
+    let (mut sim, mut rules) = fixture_with_extra(
+        "[Warheads]\n3=MutationAoE\n[SpecialWeapons]\nMutateExplosionWarhead=MutationAoE\n\
+         [MutationAoE]\nCellSpread=1\nPercentAtMax=1\nInfDeath=9\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    );
+    rules.general.mutate_explosion = explosion;
+    let victim = sim
+        .spawn_object_at_height("E1", "Americans", 5, 5, 0, 0, &rules)
+        .unwrap();
+    let object = sim.substrate.entities.get(victim).unwrap();
+    assert_eq!(
+        object.animation.as_ref().unwrap().sequence,
+        crate::sim::animation::SequenceKind::Stand
+    );
+    assert!(object.lifecycle.cell_marked && object.in_logic_vector);
+    launch_command(&mut sim, &rules, "GM", 5, 5);
+    let replacements = marked_brutes(&sim);
+    assert_eq!(replacements.len(), 1);
+    for _ in 0..120 {
+        sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), None, None, 100);
+    }
+    assert!(
+        sim.substrate.entities.get(victim).is_none(),
+        "mutation must establish a terminal disposition before the normal dying scheduler takes over"
+    );
+    assert!(!sim.substrate.occupancy.contains_entity(5, 5, victim));
+    assert!(!sim.live_object_order_snapshot().contains(&victim));
+    assert_eq!(marked_brutes(&sim), replacements);
+}
+
 fn marked_brutes(sim: &Simulation) -> Vec<u64> {
     sim.substrate
         .entities
@@ -185,6 +226,309 @@ fn marked_brutes(sim: &Simulation) -> Vec<u64> {
         })
         .map(|entity| entity.stable_id())
         .collect()
+}
+
+#[test]
+fn infantry_terminal_raw_mutation_retires_on_next_visit_with_or_without_animation() {
+    for animated in [false, true] {
+        let (mut sim, rules) = fixture();
+        let victim = sim
+            .spawn_object_at_height("E1", "Americans", 5, 5, 0, 0, &rules)
+            .unwrap();
+        if !animated {
+            sim.substrate.entities.get_mut(victim).unwrap().animation = None;
+        }
+        launch_command(&mut sim, &rules, "GM", 5, 5);
+        let object = sim.substrate.entities.get(victim).unwrap();
+        assert!(object.lifecycle.cell_marked && object.in_logic_vector);
+        assert_eq!(
+            object.infantry_terminal,
+            Some(crate::sim::world::InfantryTerminal::RetireNextVisit)
+        );
+        let replacements = marked_brutes(&sim);
+        assert_eq!(
+            replacements.len(),
+            1,
+            "whole replacement batch precedes retirement"
+        );
+        sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), None, None, 100);
+        assert!(sim.substrate.entities.get(victim).is_none());
+        assert!(!sim.substrate.occupancy.contains_entity(5, 5, victim));
+        assert!(!sim.live_object_order_snapshot().contains(&victim));
+        assert_eq!(marked_brutes(&sim), replacements);
+    }
+}
+
+#[test]
+fn infantry_terminal_no_art_cleanup_preserves_parent_before_recursive_deaths() {
+    use crate::sim::world::LifecycleTestEvent;
+    let (mut sim, rules) = fixture_with_extra("[DeathWH]\nCellSpread=2\n");
+    let parent = sim
+        .spawn_object_at_height("BOOM", "Americans", 5, 5, 0, 0, &rules)
+        .unwrap();
+    let child = sim
+        .spawn_object_at_height("E1", "Americans", 7, 5, 0, 0, &rules)
+        .unwrap();
+    for id in [parent, child] {
+        sim.substrate.entities.get_mut(id).unwrap().animation = None;
+    }
+    launch_command(&mut sim, &rules, "IC", 5, 5);
+    let uninit_order: Vec<_> = sim
+        .lifecycle_test_events_for_test()
+        .iter()
+        .filter_map(|event| match event {
+            LifecycleTestEvent::UninitClassPre { stable_id }
+                if [parent, child].contains(stable_id) =>
+            {
+                Some(*stable_id)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(uninit_order, [parent, child]);
+    for id in [parent, child] {
+        let entity = sim.substrate.entities.get(id).unwrap();
+        assert!(entity.lifecycle.in_limbo && !entity.in_logic_vector);
+        assert!(entity.infantry_terminal.is_none());
+    }
+    sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), None, None, 100);
+    assert!(!sim.substrate.entities.contains(parent));
+    assert!(!sim.substrate.entities.contains(child));
+}
+
+#[test]
+fn infantry_terminal_custom_fly_missions_retire_without_death_announcement() {
+    use crate::sim::aircraft::{AircraftMission, tick_aircraft_missions};
+    use crate::sim::world::InfantryTerminal;
+    for silent_exit in [false, true] {
+        let (mut sim, rules) = fixture_with_extra(
+            "[E1]\nLocomotor={4A582746-9839-11D1-B709-00A024DDAFD1}\nAirportBound=yes\n",
+        );
+        let victim = sim
+            .spawn_object_at_height("E1", "Americans", 5, 5, 0, 0, &rules)
+            .unwrap();
+        let entity = sim.substrate.entities.get_mut(victim).unwrap();
+        assert!(entity.aircraft_mission.is_some(), "authored Fly admission");
+        assert!(
+            entity.aircraft_ammo.is_none(),
+            "Infantry has no Aircraft ammo"
+        );
+        entity.locomotor.as_mut().unwrap().altitude =
+            crate::util::fixed_math::SimFixed::from_num(100);
+        entity.aircraft_mission = Some(if silent_exit {
+            AircraftMission::ParaDropOverfly {
+                exit_rx: 5,
+                exit_ry: 5,
+                drop_cooldown: 0,
+                landing_state: 0,
+                payload_count: 0,
+            }
+        } else {
+            AircraftMission::Idle
+        });
+        tick_aircraft_missions(&mut sim, &rules, None);
+        let entity = sim.substrate.entities.get(victim).unwrap();
+        assert_eq!(
+            entity.infantry_terminal,
+            Some(InfantryTerminal::RetireNextVisit)
+        );
+        assert!(entity.dying && entity.aircraft_mission.is_none());
+        assert!(
+            !sim.sound_events
+                .iter()
+                .any(|event| matches!(event, crate::sim::world::SimSoundEvent::UnitLost { .. }))
+        );
+        sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), None, None, 100);
+        assert!(!sim.substrate.entities.contains(victim));
+        assert!(!sim.substrate.occupancy.contains_entity(5, 5, victim));
+        assert!(!sim.live_object_order_snapshot().contains(&victim));
+    }
+}
+
+#[test]
+fn infantry_terminal_same_frame_firer_death_keeps_electric_consequences() {
+    for inf_death in [2, 3] {
+        let (mut sim, mut rules) = fixture_with_extra(&format!(
+            "[VehicleTypes]\n1=TESLA\n[E1]\nPrimary=Rifle\nSight=8\n\
+         [TESLA]\nStrength=300\nSpeed=6\nSight=8\nPrimary=Coil\n\
+         [Rifle]\nDamage=1\nROF=50\nRange=10\nWarhead=KILL\n\
+         [Coil]\nDamage=1000\nROF=50\nRange=10\nWarhead=KILL\nIsElectricBolt=yes\n\
+         [Warheads]\n3=KILL\n[KILL]\nInfDeath={inf_death}\nCellSpread=0\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+         [CombatDamage]\nDefaultSparkSystem=SparkSys\n[ParticleSystems]\n0=SparkSys\n\
+         [SparkSys]\nBehavesLike=Spark\nHoldsWhat=Spark\nParticleCap=6\nSparkSpawnFrames=1\nLifetime=200\n\
+         [Particles]\n0=Spark\n[Spark]\nBehavesLike=Spark\nMaxEC=500\n",
+        ));
+        let mut set = rules.animation_sequence("E1").unwrap().clone();
+        let mut def = set
+            .get(&crate::sim::animation::SequenceKind::Die2)
+            .unwrap()
+            .clone();
+        def.frame_count = 3;
+        def.frame_delay = 1;
+        def.normalized = false;
+        def.loop_mode = crate::sim::animation::LoopMode::HoldLast;
+        set.insert(crate::sim::animation::SequenceKind::Die2, def);
+        rules.replace_animation_sequences_for_test(BTreeMap::from([("E1".into(), set)]));
+        let infantry = sim
+            .spawn_object_at_height(
+                "E1",
+                "Americans",
+                5,
+                5,
+                crate::sim::movement::facing_from_delta(1, 0),
+                0,
+                &rules,
+            )
+            .unwrap();
+        // Infantry construction selects a real subcell. Aim the Unit at that
+        // exact coordinate so its first own visit passes the facing gate.
+        let target_position = &sim.substrate.entities.get(infantry).unwrap().position;
+        let tesla_facing = (crate::sim::movement::turret::facing_toward_lepton(
+            6,
+            5,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            target_position.rx,
+            target_position.ry,
+            target_position.sub_x,
+            target_position.sub_y,
+        ) >> 8) as u8;
+        let tesla = sim
+            .spawn_object_at_height("TESLA", "Russians", 6, 5, tesla_facing, 0, &rules)
+            .unwrap();
+        for (source, target) in [(infantry, tesla), (tesla, infantry)] {
+            assert!(crate::sim::combat::issue_attack_command(
+                &mut sim.substrate.entities,
+                source,
+                target,
+                Some(&rules),
+                &sim.interner
+            ));
+        }
+        let frame = sim.advance_app_frame(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            None,
+            67,
+            crate::sim::world::TickLane::Ordinary,
+            None,
+        );
+        assert_eq!(
+            frame
+                .fire_events
+                .iter()
+                .map(|event| event.attacker_id)
+                .collect::<Vec<_>>(),
+            [infantry, tesla],
+            "Infantry fires before its fatal receiver in the same frame"
+        );
+        if inf_death == 2 {
+            let object = sim.substrate.entities.get(infantry).unwrap();
+            assert_eq!(
+                object.animation.as_ref().unwrap().sequence,
+                crate::sim::animation::SequenceKind::Die2,
+                "queued FireUp must not overwrite the terminal sequence"
+            );
+        } else {
+            assert!(!sim.substrate.entities.contains(infantry));
+        }
+        assert_eq!(
+            sim.particle_systems().len(),
+            1,
+            "fatal target resolves until spark delivery"
+        );
+        let spark_id = *sim.particle_systems().iter().next().unwrap().0;
+        assert!(sim.live_object_order_snapshot().contains(&spark_id));
+        for visit in 1..=3 {
+            sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), None, None, 100);
+            assert_eq!(
+                sim.substrate.entities.contains(infantry),
+                inf_death == 2 && visit < 3
+            );
+        }
+        assert_eq!(
+            sim.particle_systems().len(),
+            1,
+            "no repeated death discharge"
+        );
+    }
+}
+
+#[test]
+fn infantry_terminal_receiver_sequences_finish_through_production_frames() {
+    use crate::sim::animation::{LoopMode, SequenceKind};
+    for (inf_death, sequence) in [(1, SequenceKind::Die1), (2, SequenceKind::Die2)] {
+        let (mut sim, mut rules) = fixture_with_extra(&format!("[Super]\nInfDeath={inf_death}\n"));
+        let mut set = rules.animation_sequence("E1").unwrap().clone();
+        let mut def = set.get(&sequence).unwrap().clone();
+        def.frame_count = 3;
+        def.frame_delay = 1;
+        def.normalized = false;
+        def.loop_mode = LoopMode::HoldLast;
+        set.insert(sequence, def);
+        rules.replace_animation_sequences_for_test(BTreeMap::from([("E1".to_string(), set)]));
+        let victim = sim
+            .spawn_object_at_height("E1", "Americans", 5, 5, 0, 0, &rules)
+            .unwrap();
+        launch_command(&mut sim, &rules, "IC", 5, 5);
+        let object = sim.substrate.entities.get(victim).unwrap();
+        assert!(object.dying && object.infantry_terminal.is_some());
+        assert_eq!(object.animation.as_ref().unwrap().sequence, sequence);
+        for frame in 1..=3 {
+            sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), None, None, 100);
+            assert_eq!(
+                sim.substrate.entities.contains(victim),
+                frame < 3,
+                "InfDeath={inf_death}, frame={frame}"
+            );
+        }
+        assert!(!sim.substrate.occupancy.contains_entity(5, 5, victim));
+        assert!(!sim.live_object_order_snapshot().contains(&victim));
+    }
+}
+
+#[test]
+fn infantry_terminal_invalid_death_art_cannot_retain_a_live_logic_member() {
+    use crate::sim::animation::{LoopMode, SequenceKind, SequenceSet};
+    for invalid in 0..6 {
+        let (mut sim, mut rules) = fixture();
+        let mut set = rules.animation_sequence("E1").unwrap().clone();
+        let mut def = set.get(&SequenceKind::Die2).unwrap().clone();
+        match invalid {
+            0 => def.frame_count = 0,
+            1 => def.frame_delay = 0,
+            2 => def.loop_mode = LoopMode::Loop,
+            3 => def.loop_mode = LoopMode::TransitionTo(SequenceKind::Stand),
+            5 => {
+                def.frame_delay = 8192;
+                def.normalized = true;
+                sim.session.game_options.game_speed = 0;
+                assert_eq!(
+                    sim.session
+                        .game_options
+                        .normalized_anim_delay(def.frame_delay),
+                    0
+                );
+            }
+            _ => (),
+        }
+        set.insert(SequenceKind::Die2, def);
+        if invalid == 4 {
+            set = SequenceSet::new();
+        }
+        rules.replace_animation_sequences_for_test(BTreeMap::from([("E1".to_string(), set)]));
+        let victim = sim
+            .spawn_object_at_height("E1", "Americans", 5, 5, 0, 0, &rules)
+            .unwrap();
+        launch_command(&mut sim, &rules, "IC", 5, 5);
+        sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), None, None, 100);
+        assert!(
+            sim.substrate.entities.get(victim).is_none(),
+            "invalid definition case {invalid}"
+        );
+        assert!(!sim.live_object_order_snapshot().contains(&victim));
+    }
 }
 
 #[test]

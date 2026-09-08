@@ -11,6 +11,69 @@ use crate::sim::{
 };
 
 #[test]
+fn infantry_terminal_hut_collapse_retires_effect_only_ground_victim() {
+    use crate::sim::house_state::HouseState;
+    use crate::sim::world::{InfantryTerminal, LifecycleTestEvent, SimSoundEvent};
+    use std::collections::BTreeMap;
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+         [E1]\nStrength=100\nSpeed=4\n[CombatDamage]\nC4Warhead=KILL\n\
+         [Warheads]\n0=KILL\n[KILL]\nInfDeath=3\n",
+    ))
+    .unwrap();
+    let mut sim = Simulation::with_seed(31);
+    sim.intern_rule_type_ids(&rules);
+    sim.resolve_type_handles(&rules);
+    sim.resolved_terrain = Some(water_below_bridge_terrain(4));
+    let mut bridge = BridgeRuntimeState::default();
+    for y in [3, 4, 5] {
+        bridge.test_seed_cell(4, y, seed_bridge_cell(0xD4));
+    }
+    sim.bridge_state = Some(bridge);
+    let owner = sim.interner.intern("Americans");
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 1000, 10));
+    sim.session.house_order.push(owner);
+    let victim = sim
+        .spawn_object_at_height("E1", "Americans", 4, 4, 0, 0, &rules)
+        .unwrap();
+    assert!(!sim.substrate.entities.get(victim).unwrap().on_bridge);
+    sim.substrate.entities.get_mut(victim).unwrap().selected = true;
+    assert!(dispatch_bridge_collapse_from_hut_with_overlay_registry(
+        &mut sim,
+        &rules,
+        (4, 4),
+        None
+    ));
+    let object = sim.substrate.entities.get(victim).unwrap();
+    assert_eq!(
+        object.infantry_terminal,
+        Some(InfantryTerminal::RetireNextVisit)
+    );
+    assert!(object.dying && !object.selected);
+    assert_eq!(
+        sim.sound_events
+            .iter()
+            .filter(|event| matches!(event,
+        SimSoundEvent::UnitLost { owner: lost } if *lost == owner))
+            .count(),
+        1
+    );
+    sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), None, None, 100);
+    assert!(!sim.substrate.entities.contains(victim));
+    assert!(!sim.substrate.occupancy.contains_entity(4, 4, victim));
+    assert!(!sim.live_object_order_snapshot().contains(&victim));
+    assert_eq!(
+        sim.lifecycle_test_events_for_test()
+            .iter()
+            .filter(|event| matches!(event,
+        LifecycleTestEvent::FinalizedCommon { stable_id } if *stable_id == victim))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn hut_drop_in_owns_order_footprints_and_restore_without_teardown_side_effects() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
         "[InfantryTypes]\n[VehicleTypes]\n0=MTNK\n[AircraftTypes]\n[BuildingTypes]\n0=BIG\n\

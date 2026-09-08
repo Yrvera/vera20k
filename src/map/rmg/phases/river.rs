@@ -46,8 +46,8 @@ use super::water::WaterArgs;
 /// Edge count, and the heading each edge aims at: `7π/4 − edge·π/2`.
 const EDGES: i32 = 4;
 const EDGE_BASE_HEADING: f64 = 5.497_787_143_782_138; // 7π/4
-const QUARTER_TURN: f64 = 1.570_796_326_794_896_6; // π/2
-const EIGHTH_TURN: f64 = 0.785_398_163_397_448_3; // π/4
+const QUARTER_TURN: f64 = std::f64::consts::FRAC_PI_2;
+const EIGHTH_TURN: f64 = std::f64::consts::FRAC_PI_4;
 /// Spread of the initial heading around its edge's mean.
 const START_SIGMA: f64 = 0.523_598_775_598_298_8; // π/6
 

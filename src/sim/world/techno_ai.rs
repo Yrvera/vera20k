@@ -368,6 +368,9 @@ impl Simulation {
         let Some(entity) = self.substrate.entities.get(id) else {
             return false;
         };
+        if entity.infantry_terminal.is_some() {
+            return self.visit_infantry_terminal(id, rules);
+        }
         if entity.dying {
             let Some(rules) = rules else {
                 return true;

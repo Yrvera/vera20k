@@ -10,7 +10,6 @@
 use std::collections::HashMap;
 
 use crate::app::AppState;
-use crate::app::presentation::fire_effects::ProjectileVisual;
 use crate::map::lighting::DEFAULT_TINT;
 use crate::map::overlay_types::is_bridge_overlay_index;
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
@@ -1055,15 +1054,6 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
     }
 }
 
-fn projectile_visual_key(projectile: &ProjectileVisual) -> ShpSpriteKey {
-    ShpSpriteKey {
-        type_id: projectile.shp_name.clone(),
-        facing: 0,
-        frame: projectile.frame,
-        house_color: HouseColorIndex(0),
-    }
-}
-
 fn projectile_authoritative_screen_position(
     coordinate: ProjectileCoord,
 ) -> Option<(f32, f32, u16, u16, u8)> {
@@ -1080,7 +1070,7 @@ fn projectile_authoritative_screen_position(
 ///
 /// YR `BulletClass::AI` linkage: rendering reads the same committed CoordStruct
 /// that the next authoritative flight pass will advance.
-fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
+pub(crate) fn build_projectile_visual_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
     let (sim, rules, atlas) = match (
         state
             .match_state
@@ -1151,64 +1141,6 @@ fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<S
         // do not re-lit projectiles.)
         let tint = DEFAULT_TINT;
         let depth = compute_sprite_depth_params(origin_y, world_height, screen_y, projectile_z);
-        paged[entry.page as usize].push(SpriteInstance {
-            position: [screen_x + entry.offset_x, screen_y + entry.offset_y],
-            size: entry.pixel_size,
-            uv_origin: entry.uv_origin,
-            uv_size: entry.uv_size,
-            depth,
-            tint,
-            alpha: 1.0,
-            ..Default::default()
-        });
-    }
-}
-
-/// Build SpriteInstances for render-only in-flight projectile visuals.
-pub(crate) fn build_projectile_visual_instances(
-    state: &AppState,
-    paged: &mut [Vec<SpriteInstance>],
-) {
-    build_authoritative_projectile_instances(state, paged);
-    let atlas = match &state.match_state.match_presentation.sprite_atlas {
-        Some(a) => a,
-        None => return,
-    };
-    let z = state.match_state.input.zoom_level;
-    let (cam_x, cam_y, sw, sh) = (
-        state.match_state.input.camera_x,
-        state.match_state.input.camera_y,
-        state.render_width() as f32 / z,
-        state.render_height() as f32 / z,
-    );
-    let (origin_y, world_height) = state
-        .match_state
-        .match_presentation
-        .terrain_grid
-        .as_ref()
-        .map(|g| (g.origin_y, g.world_height))
-        .unwrap_or((0.0, 1.0));
-
-    for projectile in &state.match_state.match_presentation.projectile_visuals {
-        let t = projectile.progress();
-        let screen_x =
-            projectile.start_screen_x + (projectile.end_screen_x - projectile.start_screen_x) * t;
-        let screen_y =
-            projectile.start_screen_y + (projectile.end_screen_y - projectile.start_screen_y) * t;
-        if !in_view(screen_x, screen_y, 96.0, 96.0, cam_x, cam_y, sw, sh, 96.0) {
-            continue;
-        }
-        let key = projectile_visual_key(projectile);
-        let Some(entry) = atlas.get(&key) else {
-            continue;
-        };
-        // In-flight projectile shapes are not cell-lit at all. gamemd's bullet
-        // draw passes the literal full-brightness value in the same argument
-        // slot that the animation and techno draws fill from the cell, for both
-        // the shadow and the body pass, and the only cell it looks up is for a
-        // bridge-height flag bit. No interpolated cell is needed here.
-        let tint = DEFAULT_TINT;
-        let depth = compute_sprite_depth_params(origin_y, world_height, screen_y, projectile.z);
         paged[entry.page as usize].push(SpriteInstance {
             position: [screen_x + entry.offset_x, screen_y + entry.offset_y],
             size: entry.pixel_size,

@@ -379,18 +379,6 @@ fn classify_projectile_delivery(
     }
 }
 
-/// Whether a fire event's visible projectile is represented by the serialized
-/// world `ProjectileStore`, rather than the legacy app-local interpolation.
-pub(crate) fn projectile_uses_authoritative_flight(
-    weapon: &crate::rules::weapon_type::WeaponType,
-    rules: &RuleSet,
-) -> bool {
-    matches!(
-        classify_projectile_delivery(weapon, rules),
-        ProjectileDelivery::Persistent { .. }
-    )
-}
-
 #[cfg(test)]
 mod projectile_delivery_tests {
     use super::*;
@@ -1443,7 +1431,7 @@ fn append_building_smudge_requests(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_infantry_death_anim(
+pub(crate) fn emit_infantry_death_anim(
     general: &crate::rules::ruleset::GeneralRules,
     inf_death: u8,
     rx: u16,
@@ -2234,15 +2222,7 @@ fn append_selected_death_sounds(
 /// death-weapon transaction has returned. Keeping the plan data-only avoids
 /// consuming smudge RNG (or interning the InfDeath AnimType) too early.
 enum ConcreteDeathSmudgePlan {
-    Infantry {
-        inf_death: u8,
-        rx: u16,
-        ry: u16,
-        sub_x: SimFixed,
-        sub_y: SimFixed,
-        z: u8,
-        world_z_leptons: i32,
-    },
+    Infantry(crate::sim::world::InfantryDeathPostlude),
     Building {
         rx: u16,
         ry: u16,

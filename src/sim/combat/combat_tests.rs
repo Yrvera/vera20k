@@ -4577,44 +4577,6 @@ fn fatal_sound_empty_lists_skip_draws_but_single_choices_still_draw() {
 }
 
 #[test]
-#[ignore = "WIP: combat-death entity removal not yet landed"]
-fn test_tick_combat_kills_target() {
-    let rules: RuleSet = test_rules();
-    let mut store = EntityStore::new();
-    let mut attacker = make_entity(1, "MTNK", 5, 5, 300);
-    let mut target = make_entity(2, "MTNK", 8, 5, 10);
-    attacker.mark_live_contact_with(2);
-    target.mark_live_contact_with(1);
-    store.insert(attacker);
-    store.insert(target);
-    let mut interner = test_interner();
-    issue_attack_command(&mut store, 1, 2, None, &interner);
-    let mut main_rng = SimRng::new(1);
-
-    tick_combat(
-        &mut store,
-        &mut OccupancyGrid::new(),
-        &rules,
-        &mut interner,
-        &mut BTreeMap::new(),
-        0u64,
-        100,
-        0u32,
-        &mut main_rng,
-    );
-
-    assert!(store.get(2).is_none(), "Dead entity should be removed");
-    assert!(
-        store.get(1).unwrap().attack_target.is_none(),
-        "AttackTarget removed after target dies"
-    );
-    assert!(
-        !store.get(1).unwrap().has_live_contact_with(2),
-        "immediate combat removal should clear stale radio contact"
-    );
-}
-
-#[test]
 fn test_tick_combat_out_of_range() {
     let rules: RuleSet = test_rules();
     let mut store = EntityStore::new();

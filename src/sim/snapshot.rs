@@ -429,7 +429,9 @@ use crate::sim::world::Simulation;
 // sit ahead of the `#[serde(skip)]` debug log, so a v134 record is short by
 // their bytes and bincode would read the next entity's bytes as them; the hash
 // schema also folds all three (`include_credit_income_v135`).
-const SNAPSHOT_VERSION: u32 = 135;
+// v136 adds the retained Infantry terminal policy, independently of sprite
+// animation progress. The entity layout and current deterministic hash change.
+const SNAPSHOT_VERSION: u32 = 136;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -519,6 +521,8 @@ pub enum SnapshotError {
 /// Structural failures found before a deserialized simulation is admitted.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SnapshotRestoreError {
+    #[error("entity {object_id} has an invalid or incomplete Infantry terminal handoff")]
+    InvalidInfantryTerminalState { object_id: u64 },
     #[error("house {owner} has invalid serialized outcome state: {reason}")]
     InvalidHouseOutcomeState {
         owner: crate::sim::intern::InternedId,
@@ -1525,6 +1529,31 @@ impl Simulation {
     /// weak/derived identities, and reconstructs skipped indexes in dependency
     /// order.
     pub(crate) fn restore_after_snapshot_load(&mut self) -> Result<(), SnapshotRestoreError> {
+        // VERA-internal terminal admission invariant. UnInit clears the policy
+        // before marking the object dead; pending deletion needs no new visit.
+        // A borrowed consequence packet cannot survive a save boundary.
+        // Logic membership is rebuilt later. A retained limbo object may carry
+        // a terminal policy until its owner releases it back into Logic.
+        let terminal_logic_members: std::collections::BTreeSet<_> =
+            self.substrate.logic.snapshot().into_iter().collect();
+        for (object_id, entity) in self.substrate.entities.iter_sorted() {
+            let infantry = entity.category == crate::map::entities::EntityCategory::Infantry;
+            if (entity.infantry_terminal.is_some()
+                && (!infantry
+                    || !entity.dying
+                    || !entity.lifecycle.object_alive
+                    || (!entity.lifecycle.in_limbo
+                        && !terminal_logic_members.contains(&object_id))))
+                || entity.infantry_terminal
+                    == Some(crate::sim::world::InfantryTerminal::AwaitingConsequences)
+                || (infantry
+                    && entity.dying
+                    && entity.lifecycle.object_alive
+                    && entity.infantry_terminal.is_none())
+            {
+                return Err(SnapshotRestoreError::InvalidInfantryTerminalState { object_id });
+            }
+        }
         for (&owner, house) in &self.houses {
             let Some(outcome) = house.outcome_state else {
                 if house.is_defeated || house.has_won || house.has_lost {
@@ -3195,7 +3224,68 @@ mod tests {
     fn house_eva_advice_snapshot_version_is_133() {
         // 133 -> 134: repair-depot docking layout (see the constant's comment).
         // 134 -> 135: GameEntity ProduceCash timer + drain link pair (GSI-09.01).
-        assert_eq!(super::SNAPSHOT_VERSION, 135);
+        // 135 -> 136: explicit retained Infantry terminal lifetime policy.
+        assert_eq!(super::SNAPSHOT_VERSION, 136);
+    }
+
+    #[test]
+    fn infantry_terminal_restore_rejects_state_outside_its_admission() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::world::InfantryTerminal;
+        for (category, dying, object_alive, in_limbo, terminal) in [
+            (
+                EntityCategory::Unit,
+                true,
+                true,
+                true,
+                Some(InfantryTerminal::RetireNextVisit),
+            ),
+            (
+                EntityCategory::Infantry,
+                false,
+                true,
+                true,
+                Some(InfantryTerminal::RetireNextVisit),
+            ),
+            (
+                EntityCategory::Infantry,
+                true,
+                true,
+                true,
+                Some(InfantryTerminal::AwaitingConsequences),
+            ),
+            (EntityCategory::Infantry, true, true, true, None),
+            (
+                EntityCategory::Infantry,
+                true,
+                false,
+                true,
+                Some(InfantryTerminal::RetireNextVisit),
+            ),
+            (
+                EntityCategory::Infantry,
+                true,
+                true,
+                false,
+                Some(InfantryTerminal::RetireNextVisit),
+            ),
+        ] {
+            let mut sim = Simulation::new();
+            let mut entity = GameEntity::test_default(1, "E1", "Americans", 5, 5);
+            entity.category = category;
+            entity.dying = dying;
+            entity.lifecycle.object_alive = object_alive;
+            entity.lifecycle.in_limbo = in_limbo;
+            entity.infantry_terminal = terminal;
+            sim.substrate.entities.insert(entity);
+            let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+            let mut restored = GameSnapshot::load(&bytes).unwrap().sim;
+            assert_eq!(
+                restored.restore_after_snapshot_load(),
+                Err(SnapshotRestoreError::InvalidInfantryTerminalState { object_id: 1 })
+            );
+        }
     }
 
     #[test]

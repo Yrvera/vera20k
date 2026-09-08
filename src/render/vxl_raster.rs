@@ -400,6 +400,7 @@ pub struct SpriteBounds {
 ///
 /// Returns `Mat4::IDENTITY` for slope_type 0 (flat) and as a defensive
 /// fallback for any value ≥ 17 that bypasses the consumer-side clamp.
+#[allow(clippy::approx_constant)] // Preserve the existing f32 slope matrices; 0.7854 is not FRAC_PI_4.
 fn compute_slope_rotation(slope_type: u8) -> Mat4 {
     let (compass_rad, tilt_rad): (f32, f32) = match slope_type {
         0 => return Mat4::IDENTITY,
