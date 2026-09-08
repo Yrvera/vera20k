@@ -544,7 +544,11 @@ a16 clear-mask. VXL draws go through `TechnoClass__Draw` (`0x00706640`,
 
 VXL walkers: `VXL_CacheBlit 0x00707480` calls `Blitter_selector_extended(flags & ~0x10)`,
 gradient = `this->+0x2F0()` (locomotor `Z_Gradient`, default 2), z-adjust =
-`+0x2EC(gradient)`, and passes `0, 0, 0` in the Z-shape/offset positions.
+`+0x2EC()`, and passes `0, 0, 0` in the Z-shape/offset positions.
+The pending gradient push is an argument to the subsequent blitter, not to
+Foot GetZAdjust (no-argument return at `0x004DB09E`). The unit final-composite
+bridge split uses independently seeded full-width upper/bottom rectangles;
+see the [2026-09-08 assembly correction](bridges/06-render-presentation-audio/UNIT_COMPOSITE_BRIDGE_SPLIT_73B140_GHIDRA_REPORT.md).
 `TechnoClass__Render 0x00706ED0` calls `Blitter_selector(flags & ~0x10)` with the
 same pair and no Z-shape argument at all.
 
@@ -568,7 +572,7 @@ scalar, and VERA's `src/map/lighting.rs::infantry_tint_at` citation of this site
 stands. The first pass's "z-height" reading of a10 / `+0x464` is withdrawn.
 
 The Z term of a `DrawSHP` call is therefore **a7** (z-adjust in pixels): bib
-`-1 - AdjustForZ`, unit TooBig branch `-16`, VXL walkers `+0x2EC(gradient)`
+`-1 - AdjustForZ`, unit TooBig branch `-16`, VXL walkers `+0x2EC()`
 (locomotor Z_Adjust), infantry the global `[0x00825500]`. This matches the
 OpenTS `Techno_Draw_Object` argument order (`zadjust - 2, zgrad, brightness,
 zshapefile, ...`).

@@ -3912,6 +3912,41 @@ fn record_until(
             panic!("the mover left the path grid at {cell:?}");
         };
         let loco_layer = entity.movement_layer_or_ground();
+        if entity.category == crate::map::entities::EntityCategory::Infantry
+            && facts.bridge_structural
+            && !entity.on_bridge
+        {
+            use crate::sim::movement::locomotor::MovementLayer;
+            let occupation = sim
+                .occupancy()
+                .get(cell.0, cell.1)
+                .expect("infantry has a live cell list");
+            let slot = occupation
+                .infantry(MovementLayer::Ground)
+                .find_map(|(id, slot)| (id == entity_id).then_some(slot))
+                .expect("under-span infantry must occupy a ground subcell");
+            assert!(super::bump_crush::FUNCTIONAL_SUB_CELLS.contains(&slot));
+            assert!(
+                !occupation
+                    .infantry(MovementLayer::Bridge)
+                    .any(|(id, _)| id == entity_id)
+            );
+            assert_eq!(loco_layer, MovementLayer::Ground);
+            let world_xy = super::ground_pose::position_world_xy(&entity.position);
+            assert_eq!(
+                entity.position.exact_z_leptons,
+                Some(
+                    crate::util::lepton::ground_height_leptons(
+                        facts.ground_level,
+                        facts.slope_type,
+                        world_xy[0],
+                        world_xy[1]
+                    )
+                    .expect("retail ground slope")
+                ),
+                "Walk must keep the ground surface Z under the span"
+            );
+        }
         rows.push(TickRow {
             tick: sim.session.tick,
             cell,
@@ -4216,25 +4251,40 @@ fn tank_ordered_under_hills_high_bridge_is_currently_refused() {
 
 /// Matrix row T1-14 — Walk under an intact high span, `Hills.mmx`.
 ///
-/// Same characterization and the same measured cause as T1-13. Infantry is not
-/// a duplicate of Drive here: the band-lane admission probe is run separately
-/// for `MovementZone::Infantry` with the infantry sub-cell view of terrain
-/// occupation switched on (see `retail_under_high_span_geometry`), and the whole
-/// order path is re-run for an `E1`, whose planner entry, cell-entry predicate
-/// and sub-cell reservation arm are all distinct from a vehicle's.
+/// Ordinary Move uses the production hierarchy, terrain and occupation inputs.
+/// Native Infantry +0x1AC @ 0x0051BF90 admits ground beneath structural cells
+/// after +0x1B0 @ 0x004D9C60; it never applies the unrelated 0x004834A0 level
+/// rejection. The user also observed this crossing in original YR. This is a
+/// Rust movement regression, not a native pixel or full path-sequence golden.
 #[test]
 #[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
-fn infantry_ordered_under_hills_high_bridge_is_currently_refused() {
-    let Some(run) = order_under_high_span("Hills.mmx", "E1") else {
+fn infantry_ordered_under_hills_high_bridge_crosses_all_four_ground_lanes() {
+    if retail_dir().is_none() {
         return;
-    };
+    }
+    let run =
+        order_under_high_span("Hills.mmx", "E1").expect("E1 must spawn beside the Hills span");
     judge_under_span_run(&run, "E1", "Hills.mmx");
+    assert_eq!(run.start_cell, (87, 71));
+    assert_eq!(run.cut.under_b, Some((87, 78)));
+    assert_eq!(run.cut.band, vec![(87, 73), (87, 74), (87, 75), (87, 76)]);
     assert!(
-        !run.order_accepted,
-        "the ordinary Move under the span was accepted — T1-14 can now be settled from a real \
-         order"
+        run.order_accepted,
+        "ordinary Move beneath the span must be accepted"
     );
-    assert!(run.under_frames().is_empty());
+    assert_eq!(run.rows.last().map(|row| row.cell), run.cut.under_b);
+    assert!(
+        run.deck_frames().is_empty(),
+        "the route must stay beneath the deck"
+    );
+    let under_cells: std::collections::BTreeSet<_> =
+        run.under_frames().iter().map(|row| row.cell).collect();
+    for cell in &run.cut.band {
+        assert!(
+            under_cells.contains(cell),
+            "under-span route skipped lane {cell:?}"
+        );
+    }
 }
 
 /// Matrix row T1-15 — Hover under an intact high span, `BayOPigs.mmx`.

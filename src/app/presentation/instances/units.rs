@@ -7,8 +7,8 @@
 //! - Part of the app layer — may depend on everything.
 
 use super::helpers::{
-    EntityDrawBand, apply_bridge_depth_bias, compute_sprite_depth, entity_draw_band,
-    ground_sort_row, in_view, is_under_bridge_render_state, tactical_entity_render_admission,
+    EntityDrawBand, compute_sprite_depth, entity_draw_band, ground_sort_row, in_view,
+    tactical_entity_render_admission,
 };
 use crate::app::AppState;
 use crate::app::presentation::render::draw_plan_lowering::{
@@ -19,7 +19,9 @@ use crate::map::lighting;
 use crate::map::terrain::{TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
 use crate::render::draw_state::{DrawState, FX_SHADOW, ObserverDrawContext};
-use crate::render::native_z::{SHP_DRAW_Z_ADJUST_PX, ZGradient, pack_z_gradient};
+use crate::render::native_z::{
+    SHP_DRAW_Z_ADJUST_PX, ZGradient, pack_voxel_z_gradient, pack_z_gradient,
+};
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::tactical_draw_plan::RenderZPolicy;
 use crate::render::unit_atlas::{
@@ -220,22 +222,16 @@ const fn display_binary_frame_for_committed_session(committed_binary_frame: u32)
 
 /// Depth key for one voxel body, from the screen row it was drawn at.
 ///
-/// Two corrections sit between the drawn row and the key: the entity's own
-/// height comes back off (gamemd's key has no Z term — see
-/// [`ground_sort_row`]), and the under-bridge nudge applies only to the Ground
-/// band, because a body in a layer above the deck is never occluded by it.
+/// The entity's height comes off the sort key. Bridge depth treatment belongs
+/// to the unit's composite blit, never to a separate object painter queue.
 fn body_sort_depth(
     state: &AppState,
     entity: &crate::sim::game_entity::GameEntity,
-    band: EntityDrawBand,
+    _band: EntityDrawBand,
     drawn_row_y: f32,
     z: u8,
 ) -> f32 {
-    let depth = compute_sprite_depth(state, ground_sort_row(entity, drawn_row_y), z);
-    match band {
-        EntityDrawBand::Top => depth,
-        EntityDrawBand::Ground => apply_bridge_depth_bias(state, entity, depth),
-    }
+    compute_sprite_depth(state, ground_sort_row(entity, drawn_row_y), z)
 }
 
 /// Iterate visible voxel units from EntityStore and build SpriteInstances.
@@ -254,10 +250,7 @@ pub(crate) fn build_unit_instances(
     instance_pages: &mut Vec<usize>,
     top_instances: &mut Vec<SpriteInstance>,
     top_instance_pages: &mut Vec<usize>,
-    bridge_instances: &mut Vec<SpriteInstance>,
-    bridge_instance_pages: &mut Vec<usize>,
     transition_instances: &mut Vec<Vec<SpriteInstance>>,
-    bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
     shp_paged: &mut [Vec<SpriteInstance>],
     ground_objects: &mut Vec<PlannedGroundObjectInstance>,
     ground_order: &NativeGroundOrder,
@@ -404,18 +397,12 @@ pub(crate) fn build_unit_instances(
         // WarpOut animation overlay; the unit itself stays fully opaque.
         let alpha: f32 = 1.0;
         let band = entity_draw_band(entity);
-        // A body in the air is above the deck, not under it — the under-bridge
-        // stream exists to let a ground unit be occluded by the deck it drives
-        // beneath, which cannot apply to something in a layer above it.
-        let is_bridge_unit =
-            band == EntityDrawBand::Ground && is_under_bridge_render_state(state, entity);
-        let collect_ground = band == EntityDrawBand::Ground && !is_bridge_unit;
+        // 0x73B140's split is inside the same native parent draw call.
+        // Ground units, including those below bridges, keep LayerClass order.
+        let collect_ground = band == EntityDrawBand::Ground;
         let mut ground_pieces = Vec::new();
         let (target_instances, target_instance_pages) = match band {
             EntityDrawBand::Top => (&mut *top_instances, &mut *top_instance_pages),
-            EntityDrawBand::Ground if is_bridge_unit => {
-                (&mut *bridge_instances, &mut *bridge_instance_pages)
-            }
             EntityDrawBand::Ground => (&mut *instances, &mut *instance_pages),
         };
 
@@ -446,8 +433,6 @@ pub(crate) fn build_unit_instances(
                 dock_depth_y_offset,
                 slope_state,
                 transition_instances,
-                bridge_transition_instances,
-                is_bridge_unit,
                 band,
                 collect_ground,
                 &mut ground_pieces,
@@ -480,12 +465,15 @@ pub(crate) fn build_unit_instances(
                     draw_state,
                     slope_state,
                     transition_instances,
-                    bridge_transition_instances,
-                    is_bridge_unit,
                     band,
                     collect_ground,
                     &mut ground_pieces,
                 );
+                let (composite_rect, split) = composite_depth_rect(
+                    [(entry, [center_x, center_y])],
+                    super::foot_depth::unit_bridge_split(state, entity, true),
+                );
+                let body_draw_state = composite_draw_state(state, draw_state, split);
                 let sprite = SpriteInstance {
                     position: [center_x + entry.offset_x, center_y + entry.offset_y],
                     size: entry.pixel_size,
@@ -494,17 +482,16 @@ pub(crate) fn build_unit_instances(
                     depth,
                     tint,
                     alpha,
-                    draw_state,
+                    draw_state: body_draw_state,
                     z_adjust: voxel_adjust,
-                    z_gradient: VOXEL_Z_GRADIENT,
+                    z_gradient: pack_voxel_z_gradient(ZGradient::Vertical, split),
+                    zshape_origin: composite_rect,
                     ..Default::default()
                 };
                 push_unit_sprite(
                     target_instances,
                     target_instance_pages,
                     transition_instances,
-                    bridge_transition_instances,
-                    is_bridge_unit,
                     texture_source,
                     sprite,
                     collect_ground,
@@ -746,12 +733,12 @@ fn push_transition_sprite(
 
 /// The hull's ground shadow as one more piece of the unit's draw.
 ///
-/// Natively the shadow is the *last* call of `UnitClass::DrawVoxelBody`
-/// (0x0073C5C4, after every `Draw_Voxel` and the composite blit) and its
-/// blitter is Z-tested against the body's depth, so the hull is never darkened
-/// by its own shadow. This pipeline writes no depth for sprites, so the same
-/// result is had by emitting the shadow first and letting the body paint over
-/// it. `Techno_Draw_Voxel_Shadow` (0x00706BD0) returns for any cloak state,
+/// Natively the shadow is the last call of UnitClass::DrawVoxelBody
+/// (0x73C5C4), after the composite. VERA retains its existing first-piece
+/// placement; equivalence to that later native shadow call is UNCHECKED.
+/// The ordinary body leaf 0x494B60 does not write Z, so body-depth writes
+/// cannot justify this difference. Techno_Draw_Voxel_Shadow (0x706BD0)
+/// returns for any cloak state,
 /// so cloaking, cloaked and uncloaking units cast none. Ground-band vehicles
 /// and ships only: aircraft shadows follow FlyLocomotion's own matrix and drop
 /// point, which are not modelled yet, and structures' voxel turrets cast none.
@@ -759,10 +746,8 @@ fn push_transition_sprite(
 /// facing and slope as the body) and is drawn through the voxel pipeline with
 /// `FX_SHADOW`, untinted.
 ///
-/// Residual (VERA-internal, gamemd equivalent UNCHECKED): with no depth
-/// writes, a later unit's shadow darkens any earlier unit's body it overlaps;
-/// whether the native Z-tested shadow blit would also darken a farther body
-/// depends on the body blit's Z writes, which were not read.
+/// Residual: shadow timing/blending and overlap with another unit remain
+/// outside this body-split change. Shadows never inherit split gradients.
 #[allow(clippy::too_many_arguments)]
 fn emit_unit_shadow_sprite(
     voxel_adjust: f32,
@@ -777,8 +762,6 @@ fn emit_unit_shadow_sprite(
     draw_state: DrawState,
     slope_state: UnitRenderSlopeState,
     transition_instances: &mut Vec<Vec<SpriteInstance>>,
-    bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
-    is_bridge_unit: bool,
     band: EntityDrawBand,
     collect_ground: bool,
     ground_pieces: &mut Vec<GroundPieceInstance>,
@@ -820,8 +803,6 @@ fn emit_unit_shadow_sprite(
         stable_instances,
         stable_instance_pages,
         transition_instances,
-        bridge_transition_instances,
-        is_bridge_unit,
         UnitTextureSource::Stable(entry.page),
         sprite,
         collect_ground,
@@ -833,8 +814,6 @@ fn push_unit_sprite(
     stable_instances: &mut Vec<SpriteInstance>,
     stable_instance_pages: &mut Vec<usize>,
     transition_instances: &mut Vec<Vec<SpriteInstance>>,
-    bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
-    is_bridge_unit: bool,
     texture_source: UnitTextureSource,
     sprite: SpriteInstance,
     collect_ground: bool,
@@ -853,9 +832,6 @@ fn push_unit_sprite(
         return;
     }
     match texture_source {
-        UnitTextureSource::Transition(page) if is_bridge_unit => {
-            push_transition_sprite(bridge_transition_instances, page, sprite);
-        }
         UnitTextureSource::Transition(page) => {
             push_transition_sprite(transition_instances, page, sprite);
         }
@@ -864,6 +840,53 @@ fn push_unit_sprite(
             stable_instance_pages.push(page);
         }
     }
+}
+
+/// Select the rectangle consumed by Unit's 0x73B140 split. Atlas padding is
+/// storage, not the native draw rectangle. Use only the requested parts at
+/// their actual facings; 0x70755D unions them in body/turret/barrel draw order.
+/// Unsplit draws retain the existing rectangle until that wider path is audited.
+fn composite_depth_rect(
+    parts: impl IntoIterator<Item = (UnitSpriteEntry, [f32; 2])>,
+    wants_split: bool,
+) -> ([f32; 2], bool) {
+    let mut top = f32::INFINITY;
+    let mut bottom = f32::NEG_INFINITY;
+    let mut native = None;
+    let mut all_native = true;
+    for (entry, anchor) in parts {
+        top = top.min(anchor[1] + entry.offset_y);
+        bottom = bottom.max(anchor[1] + entry.offset_y + entry.pixel_size[1]);
+        if let Some(mut bounds) = entry.native_draw_bounds {
+            // Draw anchors are integer pixels in the native cached blit.
+            bounds[0] += anchor[0] as i32;
+            bounds[1] += anchor[1] as i32;
+            crate::render::vxl_raster::union_native_voxel_draw_bounds(&mut native, bounds);
+        } else {
+            all_native = false;
+        }
+    }
+    if wants_split && all_native {
+        if let Some([_, y, _, height]) = native {
+            return ([y as f32, height as f32], true);
+        }
+    }
+    if bottom > top {
+        ([top, bottom - top], false)
+    } else {
+        ([0.0, 0.0], false)
+    }
+}
+
+fn composite_draw_state(state: &AppState, mut draw_state: DrawState, split: bool) -> DrawState {
+    if split {
+        // Only voxel body draws use this otherwise unused parameter. Shadows
+        // keep their own unsplit state and depth. The shader needs the actual
+        // tactical scissor to seed each clipped native blit independently.
+        let (_, _, _, height) = crate::app::input::camera::tactical_viewport_px(state);
+        draw_state.fx_params[3] = height as f32 / state.match_state.input.zoom_level;
+    }
+    draw_state
 }
 
 /// Emit body + turret + barrel sprites for a turret-equipped voxel unit.
@@ -892,8 +915,6 @@ fn emit_turret_unit_sprites(
     dock_depth_y_offset: f32,
     slope_state: UnitRenderSlopeState,
     transition_instances: &mut Vec<Vec<SpriteInstance>>,
-    bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
-    is_bridge_unit: bool,
     band: EntityDrawBand,
     collect_ground: bool,
     ground_pieces: &mut Vec<GroundPieceInstance>,
@@ -957,8 +978,6 @@ fn emit_turret_unit_sprites(
         draw_state,
         slope_state,
         transition_instances,
-        bridge_transition_instances,
-        is_bridge_unit,
         band,
         collect_ground,
         ground_pieces,
@@ -973,23 +992,18 @@ fn emit_turret_unit_sprites(
         .into_iter()
         .filter_map(|key| unit_entry_for_slope_state(state, atlas, key, slope_state))
         .collect();
-    let composite_rect: [f32; 2] = {
-        let mut top = f32::INFINITY;
-        let mut bottom = f32::NEG_INFINITY;
-        if let Some((entry, _)) = body_entry_opt {
-            top = top.min(center_y + entry.offset_y);
-            bottom = bottom.max(center_y + entry.offset_y + entry.pixel_size[1]);
-        }
-        for (entry, _) in &turret_layers {
-            top = top.min(center_y + entry.offset_y + tur_oy);
-            bottom = bottom.max(center_y + entry.offset_y + tur_oy + entry.pixel_size[1]);
-        }
-        if bottom > top {
-            [top, bottom - top]
-        } else {
-            [0.0, 0.0]
-        }
-    };
+    let (composite_rect, split) = composite_depth_rect(
+        body_entry_opt
+            .into_iter()
+            .map(|(entry, _)| (entry, [center_x, center_y]))
+            .chain(
+                turret_layers
+                    .iter()
+                    .map(|(entry, _)| (*entry, [center_x + tur_ox, center_y + tur_oy])),
+            ),
+        super::foot_depth::unit_bridge_split(state, entity, true),
+    );
+    let body_draw_state = composite_draw_state(state, draw_state, split);
     if let Some((entry, texture_source)) = body_entry_opt {
         let sprite = SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
@@ -999,17 +1013,15 @@ fn emit_turret_unit_sprites(
             depth: entity_depth,
             tint,
             alpha,
-            draw_state,
+            draw_state: body_draw_state,
             z_adjust: voxel_adjust,
-            z_gradient: VOXEL_Z_GRADIENT,
+            z_gradient: pack_voxel_z_gradient(ZGradient::Vertical, split),
             zshape_origin: composite_rect,
         };
         push_unit_sprite(
             instances,
             instance_pages,
             transition_instances,
-            bridge_transition_instances,
-            is_bridge_unit,
             texture_source,
             sprite,
             collect_ground,
@@ -1029,17 +1041,15 @@ fn emit_turret_unit_sprites(
             depth: entity_depth,
             tint,
             alpha,
-            draw_state,
+            draw_state: body_draw_state,
             z_adjust: voxel_adjust,
-            z_gradient: VOXEL_Z_GRADIENT,
+            z_gradient: pack_voxel_z_gradient(ZGradient::Vertical, split),
             zshape_origin: composite_rect,
         };
         push_unit_sprite(
             instances,
             instance_pages,
             transition_instances,
-            bridge_transition_instances,
-            is_bridge_unit,
             texture_source,
             sprite,
             collect_ground,
@@ -1094,8 +1104,7 @@ fn emit_harvest_overlay(
     let draw_x: f32 = center_x + arm_sx;
     let draw_y: f32 = center_y + arm_sy;
     let depth_y: f32 = draw_y + entry.offset_y + entry.pixel_size[1];
-    let depth: f32 =
-        apply_bridge_depth_bias(state, entity, compute_sprite_depth(state, depth_y, z));
+    let depth: f32 = compute_sprite_depth(state, depth_y, z);
     Some((
         page,
         SpriteInstance {
@@ -1477,26 +1486,43 @@ mod tests {
     }
 
     #[test]
-    fn stable_and_transition_sources_route_to_distinct_texture_streams() {
-        let sprite = SpriteInstance {
-            draw_state: DrawState {
-                fx_flags: 7,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+    fn stable_and_transition_body_pieces_keep_one_ground_parent_order() {
+        let sprite = SpriteInstance::default();
         let mut stable = Vec::new();
         let mut stable_pages = Vec::new();
         let mut transition = Vec::new();
-        let mut bridge_transition = Vec::new();
         let mut ground_pieces = Vec::new();
-
+        for source in [
+            UnitTextureSource::Stable(5),
+            UnitTextureSource::Transition(1),
+        ] {
+            push_unit_sprite(
+                &mut stable,
+                &mut stable_pages,
+                &mut transition,
+                source,
+                sprite,
+                true,
+                &mut ground_pieces,
+            );
+        }
+        assert!(stable.is_empty());
+        assert!(transition.is_empty());
+        assert_eq!(ground_pieces.len(), 2);
+        assert_eq!(ground_pieces[0].target, GroundTexture::UnitAtlasPage(5));
+        assert_eq!(
+            ground_pieces[1].target,
+            GroundTexture::UnitTransitionPage(1)
+        );
+        assert!(
+            ground_pieces
+                .iter()
+                .all(|piece| piece.render_z == RenderZPolicy::ReadOnly)
+        );
         push_unit_sprite(
             &mut stable,
             &mut stable_pages,
             &mut transition,
-            &mut bridge_transition,
-            false,
             UnitTextureSource::Stable(3),
             sprite,
             false,
@@ -1506,48 +1532,41 @@ mod tests {
             &mut stable,
             &mut stable_pages,
             &mut transition,
-            &mut bridge_transition,
-            false,
             UnitTextureSource::Transition(2),
             sprite,
             false,
             &mut ground_pieces,
         );
-
-        assert_eq!(stable.len(), 1);
-        assert_eq!(stable_pages, vec![3]);
-        assert_eq!(transition.len(), 3);
+        assert_eq!(stable_pages, [3]);
         assert_eq!(transition[2].len(), 1);
-        assert!(bridge_transition.is_empty());
+    }
 
-        let mut bridge_stable = Vec::new();
-        let mut bridge_stable_pages = Vec::new();
-        push_unit_sprite(
-            &mut bridge_stable,
-            &mut bridge_stable_pages,
-            &mut transition,
-            &mut bridge_transition,
-            true,
-            UnitTextureSource::Stable(5),
-            sprite,
-            false,
-            &mut ground_pieces,
-        );
-        push_unit_sprite(
-            &mut bridge_stable,
-            &mut bridge_stable_pages,
-            &mut transition,
-            &mut bridge_transition,
-            true,
-            UnitTextureSource::Transition(1),
-            sprite,
-            false,
-            &mut ground_pieces,
-        );
-
-        assert_eq!(bridge_stable.len(), 1);
-        assert_eq!(bridge_stable_pages, vec![5]);
-        assert_eq!(bridge_transition.len(), 2);
-        assert_eq!(bridge_transition[1].len(), 1);
+    #[test]
+    fn split_bound_ignores_atlas_padding_and_unrequested_part_facings() {
+        let body = UnitSpriteEntry {
+            uv_origin: [0.0; 2],
+            uv_size: [1.0; 2],
+            pixel_size: [100.0, 100.0],
+            offset_x: -50.0,
+            offset_y: -50.0,
+            page: 0,
+            native_draw_bounds: Some([-10, -15, 20, 25]),
+        };
+        let turret = UnitSpriteEntry {
+            native_draw_bounds: Some([-5, -20, 10, 15]),
+            ..body
+        };
+        let (rect, split) =
+            composite_depth_rect([(body, [0.0, 100.0]), (turret, [0.0, 100.0])], true);
+        assert!(split);
+        assert_eq!(rect, [80.0, 30.0]);
+        let (rect, split) = composite_depth_rect([(body, [0.0, 100.0])], false);
+        assert!(!split);
+        assert_eq!(rect, [50.0, 100.0]);
+        let unknown = UnitSpriteEntry {
+            native_draw_bounds: None,
+            ..body
+        };
+        assert!(!composite_depth_rect([(body, [0.0, 0.0]), (unknown, [0.0, 0.0])], true).1);
     }
 }

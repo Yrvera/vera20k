@@ -1,7 +1,9 @@
 //! Runtime-adapter regressions. Native arithmetic vectors live in
 //! render::foot_depth; these tests exercise which live state reaches it.
 
-use super::{depth_cell, shp_z_adjust_in_runtime, unit_z_adjust_in_runtime};
+use super::{
+    depth_cell, shp_z_adjust_in_runtime, unit_bridge_split_in_runtime, unit_z_adjust_in_runtime,
+};
 use crate::map::bridge_facts::BridgeCellFacts;
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
@@ -27,15 +29,27 @@ const RULES: &str = "\
 0=INF
 [AircraftTypes]
 0=JET
+[BuildingTypes]
+0=FACTORY
+1=REPAIR
+[FACTORY]
+WeaponsFactory=yes
+[REPAIR]
+Factory=UnitType
 [TANK]
 Name=Default cliff coefficient
+TooBigToFitUnderBridge=yes
+ZFudgeColumn=0
+ZFudgeBridge=0
 [CUSTOM]
 ZFudgeCliff=7
 [HARV]
 Harvester=yes
 UnloadingClass=UNLOAD
+TooBigToFitUnderBridge=no
 [UNLOAD]
 ZFudgeCliff=3
+TooBigToFitUnderBridge=yes
 [INF]
 Name=Infantry default
 [JET]
@@ -316,6 +330,181 @@ fn fixed_slot_alias_and_missing_cells_leave_the_shared_simulation_dummy_unchange
         );
         assert_eq!(dummy.overlay_fields(), overlay_before);
     }
+}
+
+#[test]
+fn composite_split_uses_live_raw_bridge_terms_and_native_on_bridge() {
+    let mut runtime = runtime();
+    let mut tank = entity(&mut runtime, "TANK", EntityCategory::Unit);
+    let evaluate =
+        |rt: &SimRuntime, e: &GameEntity| unit_bridge_split_in_runtime(Some(rt), e, true);
+    assert!(!evaluate(&runtime, &tank));
+    runtime
+        .simulation
+        .resolved_terrain
+        .as_mut()
+        .unwrap()
+        .cell_mut(2, 2)
+        .unwrap()
+        .bridge_facts
+        .raw_flags = 0x100;
+    assert!(
+        evaluate(&runtime, &tank),
+        "zero ZFudgeBridge must not disable the split"
+    );
+    tank.bridge_occupancy = Some(BridgeOccupancy { deck_level: 4 });
+    assert!(
+        evaluate(&runtime, &tank),
+        "native on_bridge, not derived occupancy"
+    );
+    tank.on_bridge = true;
+    assert!(!evaluate(&runtime, &tank));
+    tank.on_bridge = false;
+    for cells in [&[(2, 3)][..], &[(3, 3)][..], &[(2, 3), (3, 3)][..]] {
+        for &(x, y) in cells {
+            // Synthetic grid base is -1: 5 - (-1) + 1 = native column tile 7.
+            runtime
+                .simulation
+                .resolved_terrain
+                .as_mut()
+                .unwrap()
+                .cell_mut(x, y)
+                .unwrap()
+                .final_tile_index = 5;
+        }
+        assert!(
+            !evaluate(&runtime, &tank),
+            "raw score 1/2 must reject with ZFudgeColumn=0"
+        );
+        for &(x, y) in cells {
+            runtime
+                .simulation
+                .resolved_terrain
+                .as_mut()
+                .unwrap()
+                .cell_mut(x, y)
+                .unwrap()
+                .final_tile_index = 0;
+        }
+    }
+    tank.category = EntityCategory::Infantry;
+    assert!(!evaluate(&runtime, &tank));
+}
+
+#[test]
+fn direct_shp_bridge_fudge_uses_unit_no_turret_branch_and_excludes_infantry() {
+    let mut runtime = runtime();
+    runtime
+        .simulation
+        .resolved_terrain
+        .as_mut()
+        .unwrap()
+        .cell_mut(2, 2)
+        .unwrap()
+        .bridge_facts
+        .raw_flags = 0x100;
+    let mut unit = entity(&mut runtime, "TANK", EntityCategory::Unit);
+    assert!(super::shp_unit_bridge_fudge_in_runtime(
+        Some(&runtime),
+        &unit
+    ));
+    unit.category = EntityCategory::Infantry;
+    assert!(!super::shp_unit_bridge_fudge_in_runtime(
+        Some(&runtime),
+        &unit
+    ));
+    unit.category = EntityCategory::Unit;
+    runtime.resources.rules = RuleSet::from_ini(&IniFile::from_str(
+        &RULES.replace("[TANK]", "[TANK]\nTurret=yes"),
+    ))
+    .unwrap();
+    assert!(!super::shp_unit_bridge_fudge_in_runtime(
+        Some(&runtime),
+        &unit
+    ));
+}
+
+#[test]
+fn composite_split_uses_active_unloading_type_and_not_art_override() {
+    let mut runtime = runtime();
+    runtime
+        .simulation
+        .resolved_terrain
+        .as_mut()
+        .unwrap()
+        .cell_mut(2, 2)
+        .unwrap()
+        .bridge_facts
+        .raw_flags = 0x100;
+    let mut harvester = entity(&mut runtime, "HARV", EntityCategory::Unit);
+    assert!(!unit_bridge_split_in_runtime(
+        Some(&runtime),
+        &harvester,
+        true
+    ));
+    harvester.display_type_override = Some(runtime.simulation.interner.intern("UNLOAD"));
+    assert!(unit_bridge_split_in_runtime(
+        Some(&runtime),
+        &harvester,
+        true
+    ));
+    assert!(!unit_bridge_split_in_runtime(
+        Some(&runtime),
+        &harvester,
+        false
+    ));
+    let mut ordinary = entity(&mut runtime, "CUSTOM", EntityCategory::Unit);
+    ordinary.display_type_override = harvester.display_type_override;
+    assert!(!unit_bridge_split_in_runtime(
+        Some(&runtime),
+        &ordinary,
+        true
+    ));
+}
+
+#[test]
+fn composite_factory_split_requires_navcom_and_slot_zero_weapons_factory() {
+    let mut runtime = runtime();
+    let mut tank = entity(&mut runtime, "TANK", EntityCategory::Unit);
+    let mut factory = entity(&mut runtime, "FACTORY", EntityCategory::Structure);
+    factory.stable_id = 17;
+    runtime.simulation.entities_mut().insert(factory);
+    let evaluate =
+        |rt: &SimRuntime, e: &GameEntity| unit_bridge_split_in_runtime(Some(rt), e, true);
+    tank.radio_contacts.insert(17);
+    assert!(!evaluate(&runtime, &tank));
+    tank.navigation.nav_com = Some(crate::sim::components::NavTargetRef::cell(3, 3));
+    assert!(
+        !super::shp_unit_bridge_fudge_in_runtime(Some(&runtime), &tank),
+        "direct SHP has no weapons-factory alternative"
+    );
+    assert!(
+        evaluate(&runtime, &tank),
+        "native only tests NavCom presence, not target identity"
+    );
+    tank.on_bridge = true;
+    assert!(
+        evaluate(&runtime, &tank),
+        "factory arm is independent of bridge proximity"
+    );
+    runtime
+        .simulation
+        .entities_mut()
+        .get_mut(17)
+        .unwrap()
+        .category = EntityCategory::Unit;
+    assert!(!evaluate(&runtime, &tank));
+    runtime
+        .simulation
+        .entities_mut()
+        .get_mut(17)
+        .unwrap()
+        .category = EntityCategory::Structure;
+    runtime.resources.rules = RuleSet::from_ini(&IniFile::from_str(
+        &RULES.replace("WeaponsFactory=yes", "WeaponsFactory=no"),
+    ))
+    .unwrap();
+    assert!(!evaluate(&runtime, &tank));
 }
 
 fn flat_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {

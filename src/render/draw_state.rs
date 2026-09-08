@@ -94,6 +94,9 @@ pub struct DrawDecision {
 /// those selector bits for diagnostics; `fx_params.z` is the 0..2 brightness scalar;
 /// `fx_params.w` optionally overrides the zdepth-atlas scale, with zero retaining
 /// the terrain default.
+/// For voxel unit bodies carrying the composite bridge-split flag instead,
+/// `fx_params.w` carries the tactical scissor height in world pixels (zero
+/// means full viewport). This shader-specific transport does not alter effects.
 /// `effect_tint` carries the scalar as RGB so SHP and voxel shaders apply the same
 /// native brightness channel after their normal palette/light work. The layout is
 /// part of `SpriteInstance`'s vertex ABI.

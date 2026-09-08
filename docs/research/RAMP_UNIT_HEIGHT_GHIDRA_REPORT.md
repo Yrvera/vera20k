@@ -225,24 +225,55 @@ must not be described as raw Mark parity, or as proof of every bridge route.
 The height change preserves the represented list ordering without expanding
 that separate occupation mechanism.
 
-The bridge comparison also established a distinct navigation discrepancy. The
-user moved E1 underneath the Hills span in original YR. The existing ignored
-`infantry_ordered_under_hills_high_bridge_is_currently_refused` characterization
-was rerun on this candidate: production Move `(87,71) -> (87,78)` returned false,
-with zero under-span frames. Retail deck-crossing tests for Drive, Walk and Hover
-all passed. These are route observations, not rendered-pixel comparisons.
+### Infantry under-span admission
 
-Rust's non-transition structural Ground request reaches `cell_entry.rs`'s shared
-leaf, where `cell_rect.rs` derives the bridge-aware argument solely from the
-requested layer and rejects with LevelMismatch. Native `4834A0` has the rejecting
-condition at `483512..1A`, but its seventh argument is also passed unchanged to
-GetZoneID `56D230`; it is independent of selecting ground versus deck occupation.
-Native A* `429F54` dispatches virtual `+1AC`, resolving to Infantry `51BF90` for
-E1. That body chooses ground near the cell's level at `51BFB3..BFCD`, invokes
-shared traversal at `51C0E6`, and selects deck occupation only for base+4 at
-`51C0FB..C136`. No direct `4834A0` call appears in that inspected body. Replacing
-the Rust caller/flag projection needs its own complete traversal investigation;
-removing the native leaf's condition or changing object height is not justified.
+The user moved E1 underneath the Hills span in original YR. Before the admission
+correction, the ordinary Rust Move `(87,71) -> (87,78)` was refused with zero
+under-span frames. The failing cell was the non-transition structural lane
+`(87,73)`: the Foot terrain adapter applied `4834A0` with its seventh argument
+derived solely from Ground/Bridge. That native leaf really rejects base-height
+structural cells when the argument is false (`483512..1A`); the argument also
+feeds GetZoneID `56D230` and is independent of occupation-plane selection.
+
+Live binary recheck on 2026-09-08 established the actual Infantry contract:
+
+- RTTI `7EB054 -> 8033B8 -> 825508` identifies InfantryClass. Slots `7EB204`
+  and `7EB208` resolve `+1AC -> 51BF90` and `+1B0 -> 4D9C60`.
+- A* `429F54` passes candidate, direction, carried height (`Pathfinder+30`),
+  current node Cell pointer and `Pathfinder+8`. Walk `75B690` passes candidate,
+  direction, `5F5F00(mover)`, null parent and one. `5F5F00` returns signed
+  current-cell level plus four iff `Object+8C` is set. The null parent resolves
+  the opposite-direction neighbor in `4D9C74..CBA`.
+- `51BFB3..BFCD` selects the ground list near the cell's signed level;
+  `51C0E6` calls shared traversal with height/list in-out pointers. Its equal
+  height arm `4D9E26..30` admits base-height ground beneath the span.
+  `51C0FB..C136` switches occupation to deck only at base+4. Ground list/owner/
+  occupation remain `+E4/+54/+124`; deck uses `+E8/+58/+128`.
+- Infantry reads the ground LandType/SpeedType zero-cost gate at `51C750`.
+  It does not invoke `4834A0`. Native hierarchy filtering remains active for
+  ground beneath a span (`429E54..EC1`); this is not a bridge exemption.
+
+The Rust correction keeps Infantry's class terrain admission separate from the
+unrelated Cell leaf's numeric-level rejection. It also reads the live ground
+speed row when a coarse cost grid is present: that grid includes deck overrides
+and may hold 100 above a ground Foot row of zero. Existing wall behavior, shared
+bridge traversal, hierarchy, object-list and subcell checks remain in place;
+direct `4834A0` consumers and Unit/hover admission are unchanged. The coarse wall
+result still differs from Infantry's native 4/5 accumulator, as documented in
+`cell_entry.rs`; this correction does not claim that separate behavior.
+
+Added Rust regressions cover both entry modes, all four Hills lanes under an
+ordinary Move, exact ground Z and ground subcell membership, a zero ground speed
+row beneath a passable deck, non-transition wall cells, blocked ground, absent
+targets, deck-versus-ground blockers, full ground subcells and an unstamped
+hierarchy corridor. The pre-existing transition-cell wall shortcut is unchanged.
+All five focused admission tests passed. The actual retail Hills Move test,
+`infantry_ordered_under_hills_high_bridge_crosses_all_four_ground_lanes`, also
+passed: E1 reached (87,78), visited all four span lanes, spent 104 frames
+underneath and zero on the deck. Drive, Walk and Hover deck-crossing tests
+still pass. These are production Rust regressions, not native path/pixel
+goldens. The integrated full suite passed 8,544 tests with zero failures and
+89 ignored; existing replay baselines required no changes.
 
 ## Reproduction and coverage
 

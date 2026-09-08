@@ -1,5 +1,16 @@
 # TooBigToFitUnderBridge — Ghidra Research Report
 
+> **Rendering claims superseded 2026-09-08:** use the live assembly and
+> caller reconstruction in [Unit composite bridge split](../06-render-presentation-audio/UNIT_COMPOSITE_BRIDGE_SPLIT_73B140_GHIDRA_REPORT.md).
+> The historical text below contains consequential errors: Unit vtable base
+> is `0x7F5C70`, final composite slot is `+0x55C`, the bottom strip is full
+> width by 16 (not 16 by 16), and Foot GetZAdjust takes no gradient/mode
+> argument. This path composites ordinary voxel bodies too; it is not a
+> shadow split. `+0x8C` is OnBridge, `0x703E70` returns 0..=2, and the
+> alternate building gate is WeaponsFactory. Do not use the historical
+> rendering pseudocode or its broad confidence statement as an implementation
+> contract. Movement claims were not re-audited in that bounded follow-up.
+
 **Address(es):**
 - `0x00845DC8` — the INI key string `"TooBigToFitUnderBridge"`
 - `0x00747749` / `0x0074777A` — read/write at `UnitTypeClass+0xE16` inside `UnitTypeClass::ReadINI` (0x0074774E xref)

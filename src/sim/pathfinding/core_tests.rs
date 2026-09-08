@@ -1478,8 +1478,16 @@ fn test_compute_neighbor_height_ramp_up() {
     // `AStar_create_node` @ 0x0042A460 accepts a drop of 2 or 3 as well —
     // `abs((neighbor.Level - parent_height) + 3) <= 1` — and reads no
     // bridgehead flag. Both cases used to carry the ground level instead.
-    assert_eq!(compute_neighbor_height(2, &parent, &neighbor), 4, "drop of 2");
-    assert_eq!(compute_neighbor_height(3, &parent, &neighbor), 4, "drop of 3");
+    assert_eq!(
+        compute_neighbor_height(2, &parent, &neighbor),
+        4,
+        "drop of 2"
+    );
+    assert_eq!(
+        compute_neighbor_height(3, &parent, &neighbor),
+        4,
+        "drop of 3"
+    );
 
     let unflagged = PathCell {
         transition: false,
@@ -1492,8 +1500,16 @@ fn test_compute_neighbor_height_ramp_up() {
     );
 
     // Drops outside 2..=4 stay on the ground plane.
-    assert_eq!(compute_neighbor_height(1, &parent, &neighbor), 0, "drop of 1");
-    assert_eq!(compute_neighbor_height(5, &parent, &neighbor), 0, "drop of 5");
+    assert_eq!(
+        compute_neighbor_height(1, &parent, &neighbor),
+        0,
+        "drop of 1"
+    );
+    assert_eq!(
+        compute_neighbor_height(5, &parent, &neighbor),
+        0,
+        "drop of 5"
+    );
 }
 
 #[test]
@@ -1660,6 +1676,208 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         radar_right: [0, 0, 0],
         has_damaged_data: false,
         bridgehead_anchor_class_at_load: None,
+    }
+}
+
+fn infantry_under_span_cell(rx: u16, foot_cost: u8, transition: bool) -> ResolvedTerrainCell {
+    ResolvedTerrainCell {
+        level: 2,
+        speed_costs: SpeedCostProfile {
+            foot: Some(foot_cost),
+            ..Default::default()
+        },
+        has_bridge_deck: true,
+        bridge_walkable: true,
+        bridge_transition: transition,
+        bridge_deck_level: 6,
+        bridge_facts: crate::map::bridge_facts::BridgeCellFacts {
+            raw_flags: 0x100 | if transition { 0x200 } else { 0 },
+            ..Default::default()
+        },
+        ..make_resolved_cell(rx, 0)
+    }
+}
+
+#[test]
+fn infantry_under_span_admission_reads_ground_speed_with_deck_cost_grid() {
+    use crate::sim::pathfinding::cell_entry::{
+        CanEnterCellContext, TerrainEntryMode, evaluate_can_enter_cell,
+    };
+
+    for transition in [false, true] {
+        for foot_cost in [0, 100] {
+            let terrain = ResolvedTerrainGrid::from_cells(
+                1,
+                1,
+                vec![infantry_under_span_cell(0, foot_cost, transition)],
+            );
+            let grid = PathGrid::from_cells(vec![bridge_test_cell(2, true, transition, 0)], 1, 1);
+            let costs = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Foot);
+            assert_eq!(costs.cost_at(0, 0), 100, "coarse grid describes the deck");
+            for mode in [
+                TerrainEntryMode::AStarNeighbor,
+                TerrainEntryMode::RuntimeTransition,
+            ] {
+                for speed_type in [None, Some(SpeedType::Foot)] {
+                    assert_eq!(
+                        evaluate_can_enter_cell(CanEnterCellContext {
+                            target: (0, 0),
+                            terrain_layer: MovementLayer::Ground,
+                            movement_zone: Some(MovementZone::Infantry),
+                            speed_type,
+                            path_grid: Some(&grid),
+                            resolved_terrain: Some(&terrain),
+                            terrain_costs: Some(&costs),
+                            bypass_grid: false,
+                            mode,
+                            is_infantry: true,
+                        })
+                        .is_clear(),
+                        foot_cost != 0,
+                        "transition={transition}, mode={mode:?}, speed={speed_type:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn infantry_under_span_admission_preserves_wall_and_grid_blocks() {
+    use crate::sim::pathfinding::cell_entry::{
+        CanEnterCellContext, TerrainEntryMode, evaluate_can_enter_cell,
+    };
+
+    for wall in [false, true] {
+        let mut cell = infantry_under_span_cell(0, 100, false);
+        if wall {
+            cell.zone_type = crate::map::resolved_terrain::zone_class::WALL;
+        }
+        let terrain = ResolvedTerrainGrid::from_cells(1, 1, vec![cell]);
+        let mut grid = PathGrid::from_cells(vec![bridge_test_cell(2, true, false, 0)], 1, 1);
+        if !wall {
+            grid.set_blocked(0, 0, true);
+        }
+        let costs = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Foot);
+        for mode in [
+            TerrainEntryMode::AStarNeighbor,
+            TerrainEntryMode::RuntimeTransition,
+        ] {
+            assert!(
+                !evaluate_can_enter_cell(CanEnterCellContext {
+                    target: (0, 0),
+                    terrain_layer: MovementLayer::Ground,
+                    movement_zone: Some(MovementZone::Infantry),
+                    speed_type: Some(SpeedType::Foot),
+                    path_grid: Some(&grid),
+                    resolved_terrain: Some(&terrain),
+                    terrain_costs: Some(&costs),
+                    bypass_grid: false,
+                    mode,
+                    is_infantry: true,
+                })
+                .is_clear(),
+                "wall={wall}, mode={mode:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn infantry_under_span_admission_preserves_missing_target_rejection() {
+    use crate::sim::pathfinding::cell_entry::{
+        CanEnterCellContext, TerrainEntryMode, evaluate_can_enter_cell,
+    };
+
+    let grid = PathGrid::new(1, 1);
+    for path_grid in [None, Some(&grid)] {
+        for mode in [
+            TerrainEntryMode::AStarNeighbor,
+            TerrainEntryMode::RuntimeTransition,
+        ] {
+            assert!(
+                !evaluate_can_enter_cell(CanEnterCellContext {
+                    target: (1, 0),
+                    terrain_layer: MovementLayer::Ground,
+                    movement_zone: Some(MovementZone::Infantry),
+                    speed_type: Some(SpeedType::Foot),
+                    path_grid,
+                    resolved_terrain: None,
+                    terrain_costs: None,
+                    bypass_grid: true,
+                    mode,
+                    is_infantry: true,
+                })
+                .is_clear(),
+                "bypassing grid blockers must not admit an absent target"
+            );
+        }
+    }
+}
+
+#[test]
+fn infantry_under_span_astar_keeps_ground_hierarchy_gate() {
+    let terrain = ResolvedTerrainGrid::from_cells(
+        8,
+        1,
+        (0..8)
+            .map(|x| {
+                if (2..=5).contains(&x) {
+                    infantry_under_span_cell(x, 100, x != 2)
+                } else {
+                    ResolvedTerrainCell {
+                        level: 2,
+                        ..make_resolved_cell(x, 0)
+                    }
+                }
+            })
+            .collect(),
+    );
+    let grid = PathGrid::from_cells(
+        (0..8)
+            .map(|x| bridge_test_cell(2, (2..=5).contains(&x), (3..=5).contains(&x), 0))
+            .collect(),
+        8,
+        1,
+    );
+    let costs = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Foot);
+    let zones = ZoneLevelGraph::new(2).with_cell_zone_ids(vec![1, 1, 2, 2, 2, 2, 1, 1], 8, 1);
+    let counts = BlockerNeighborCounts::new(8, 1);
+    for include_under_span in [false, true] {
+        let marked = if include_under_span {
+            std::collections::BTreeSet::from([1, 2])
+        } else {
+            std::collections::BTreeSet::from([1])
+        };
+        let path = astar_search(
+            &grid,
+            (0, 0),
+            MovementLayer::Ground,
+            (7, 0),
+            &AStarOptions {
+                terrain_costs: Some(&costs),
+                resolved_terrain: Some(&terrain),
+                movement_zone: Some(MovementZone::Infantry),
+                is_infantry: true,
+                hierarchy_gate: Some(HierarchyGate {
+                    level0_zones: &zones,
+                    marked_level0: &marked,
+                    blocker_neighbor_counts: &counts,
+                }),
+                ..Default::default()
+            },
+        );
+        if include_under_span {
+            let path = path.expect("marked ground corridor must cross all four span lanes");
+            assert_eq!(path.len(), 8);
+            assert!(path.iter().all(|step| step.layer == MovementLayer::Ground));
+            assert_eq!((path.last().unwrap().rx, path.last().unwrap().ry), (7, 0));
+        } else {
+            assert!(
+                path.is_none(),
+                "a span must not bypass the ground hierarchy filter"
+            );
+        }
     }
 }
 

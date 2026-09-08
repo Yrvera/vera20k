@@ -389,6 +389,120 @@ pub struct SpriteBounds {
     pub offset_y: f32,
 }
 
+/// Native VXL destination rectangle relative to the part's draw anchor.
+/// `VXL_Submit_BoundingBox 0x7540F0` transforms the full tailer min/max
+/// extents (grid 0..size), unions all limbs, and `0x754510` pads that one
+/// union. This is intentionally independent of atlas voxel-center storage
+/// bounds, SPRITE_MARGIN, splat footprint and zero/nonzero palette pixels.
+///
+/// The projection inherits this renderer's existing f32 matrices; only the
+/// extent-to-rectangle leaf is transcribed here. This is not a claim of
+/// native raster/matrix pixel parity.
+pub fn native_vxl_draw_bounds(
+    vxl: &VxlFile,
+    hva: Option<&HvaFile>,
+    params: &VxlRenderParams,
+) -> Option<[i32; 4]> {
+    let camera = voxel_camera_view();
+    let facing = Mat4::from_rotation_z(voxel_facing_angle(voxel_facing_step(params.facing)));
+    let slope = params
+        .slope_blend
+        .map(compute_slope_blend_rotation)
+        .unwrap_or_else(|| compute_slope_rotation(params.slope_type));
+    let mut minimum = [f32::INFINITY; 2];
+    let mut maximum = [f32::NEG_INFINITY; 2];
+    for (limb_index, limb) in vxl.limbs.iter().enumerate() {
+        if limb.size_x == 0 || limb.size_y == 0 || limb.size_z == 0 {
+            return None;
+        }
+        let sizes = Vec3::new(limb.size_x as f32, limb.size_y as f32, limb.size_z as f32);
+        let minimum_model = Vec3::new(limb.bounds[0], limb.bounds[1], limb.bounds[2]);
+        let maximum_model = Vec3::new(limb.bounds[3], limb.bounds[4], limb.bounds[5]);
+        let section_scale = Mat4::from_scale((maximum_model - minimum_model) / sizes);
+        let raw = hva
+            .and_then(|h| h.get_transform(params.frame, limb_index as u32))
+            .unwrap_or(&limb.transform);
+        let section =
+            Mat4::from_translation(minimum_model) * hva_to_mat4(raw, limb.scale) * section_scale;
+        let combined = camera * slope * facing * section;
+        for corner in 0..8 {
+            let point = Vec3::new(
+                if corner & 1 != 0 { sizes.x } else { 0.0 },
+                if corner & 2 != 0 { sizes.y } else { 0.0 },
+                if corner & 4 != 0 { sizes.z } else { 0.0 },
+            );
+            let projected = combined.transform_point3(point);
+            let xy = [projected.x * params.scale, -projected.y * params.scale];
+            for axis in 0..2 {
+                if !xy[axis].is_finite() {
+                    return None;
+                }
+                minimum[axis] = minimum[axis].min(xy[axis]);
+                maximum[axis] = maximum[axis].max(xy[axis]);
+            }
+        }
+    }
+    native_draw_bounds_from_extents(minimum, maximum)
+}
+
+/// `0x754513..0x75470F`: extrema are stored f32, center is computed in x87
+/// and stored f32 once, whereas span reaches truncating ftol without an
+/// intermediate f32 store. Use the shared x87 owner for the chopped f32
+/// center store; a Rust f64-to-f32 cast rounds to nearest instead.
+/// Returns destination x/y/width/height; native's additional source x/y
+/// output is for its 256x256 temporary surface, not this atlas allocation.
+pub fn native_draw_bounds_from_extents(minimum: [f32; 2], maximum: [f32; 2]) -> Option<[i32; 4]> {
+    use crate::util::native_x87::{NativeF32Bits, NativeF64Bits, X87Chop53};
+
+    let mut result = [0; 4];
+    for axis in 0..2 {
+        if maximum[axis] < minimum[axis] {
+            return None;
+        }
+        let min = X87Chop53::load_f32(NativeF32Bits::from_bits(minimum[axis].to_bits())).ok()?;
+        let max = X87Chop53::load_f32(NativeF32Bits::from_bits(maximum[axis].to_bits())).ok()?;
+        let half = X87Chop53::load_f64(NativeF64Bits::HALF).ok()?;
+        let center = X87Chop53::store_f32(X87Chop53::mul(X87Chop53::add(min, max), half)).ok()?;
+        let center =
+            i32::try_from(X87Chop53::ftol_i64(X87Chop53::load_f32(center).ok()?).ok()?).ok()?;
+        let span = i32::try_from(X87Chop53::ftol_i64(X87Chop53::sub(max, min)).ok()?).ok()?;
+        // Invalid or unrepresentable assets yield explicit missing metadata.
+        let extent = span.checked_add(8)?;
+        result[axis] = center.checked_sub(extent / 2)?;
+        result[axis + 2] = extent;
+    }
+    Some(result)
+}
+
+/// Ordered dirty-rectangle update from cached VXL blit 0x70755D..0x707678.
+/// Rectangles are x/y/width/height in one shared pixel coordinate frame.
+/// Expanding a maximum edge adds one; expanding only a minimum edge does
+/// not. An empty accumulator is replaced. This is not a normal AABB union.
+pub fn union_native_voxel_draw_bounds(accumulated: &mut Option<[i32; 4]>, next: [i32; 4]) {
+    let Some(mut current) = *accumulated else {
+        *accumulated = Some(next);
+        return;
+    };
+    if current[2] <= 0 || current[3] <= 0 {
+        *accumulated = Some(next);
+        return;
+    }
+    if next[2] <= 0 || next[3] <= 0 {
+        return;
+    }
+    for axis in 0..2 {
+        if next[axis] < current[axis] {
+            current[axis + 2] += current[axis] - next[axis];
+            current[axis] = next[axis];
+        }
+        let next_end = next[axis] + next[axis + 2];
+        if next_end > current[axis] + current[axis + 2] {
+            current[axis + 2] = next_end - current[axis] + 1;
+        }
+    }
+    *accumulated = Some(current);
+}
+
 /// Compute the slope rotation matrix for a given terrain slope type (0–16).
 ///
 /// Formula: `slope_matrix = Rz(compass) * Rx(tilt) * Rz(-compass)`
@@ -949,6 +1063,88 @@ mod tests {
     use super::*;
     use crate::assets::vxl_file::{VxlLimb, VxlVoxel};
     use crate::sim::movement::slope_transition::SLOPE_TRANSITION_FRAMES;
+
+    #[test]
+    fn native_draw_rectangle_matches_executed_754510_vectors() {
+        // Native execution, 2026-09-08: unmodified retail 0x754510, x87 CW
+        // 0x0e7f, write f32 min/max at B2D5E0/B2D948, empty submission lists
+        // B2D820/B2FB70, read its six-i32 result. SHA256/provenance in
+        // UNIT_COMPOSITE_BRIDGE_SPLIT_73B140_GHIDRA_REPORT.md. Expected rows
+        // retain destination x/y and width/height, excluding source x/y.
+        let vectors = [
+            ([-10.25, -6.75, 11.75, 8.5], [-15, -11, 30, 23]),
+            ([-0.5, -0.5, 0.5, 0.5], [-4, -4, 9, 9]),
+            ([-10.0, -20.0, 10.0, 20.0], [-14, -24, 28, 48]),
+            ([-3.9, -2.9, 8.1, 7.1], [-8, -7, 20, 18]),
+            ([0.0, 0.0, 30.0, 16.0], [-4, -4, 38, 24]),
+            ([-20.0, -11.0, -5.0, -2.0], [-23, -14, 23, 17]),
+            ([-1.1, -1.1, 1.0, 1.0], [-5, -5, 10, 10]),
+            ([1.1, 1.1, 4.0, 4.0], [-3, -3, 10, 10]),
+            ([-16.75, -9.5, 27.5, 21.25], [-21, -14, 52, 38]),
+            ([-0.1, -0.1, 0.2, 0.2], [-4, -4, 8, 8]),
+        ];
+        for ([min_x, min_y, max_x, max_y], expected) in vectors {
+            assert_eq!(
+                native_draw_bounds_from_extents([min_x, min_y], [max_x, max_y]),
+                Some(expected),
+                "extents {min_x},{min_y}..{max_x},{max_y}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_draw_union_matches_executed_cached_blit_block() {
+        // Execute original 70755D..707678 with old rectangle at B1CFC0 and
+        // signed cached x/y, unsigned w/h. These are native outputs, not a
+        // mathematical AABB-union oracle. The +1 maximum edge is deliberate.
+        let vectors = [
+            ([5, 6, 10, 12], [6, 7, 2, 3], [5, 6, 10, 12]),
+            ([5, 6, 10, 12], [5, 6, 10, 12], [5, 6, 10, 12]),
+            ([5, 6, 10, 12], [1, 2, 8, 8], [1, 2, 14, 16]),
+            ([5, 6, 10, 12], [12, 16, 10, 10], [5, 6, 18, 21]),
+            ([5, 6, 10, 12], [1, 2, 30, 40], [1, 2, 31, 41]),
+            ([5, 6, 10, 12], [15, 18, 0, 0], [5, 6, 10, 12]),
+            ([5, 6, 0, 12], [15, 18, 0, 0], [15, 18, 0, 0]),
+            ([-20, -10, 8, 6], [-12, -4, 4, 4], [-20, -10, 13, 11]),
+            ([0, 0, 0, 0], [124, 123, 20, 30], [124, 123, 20, 30]),
+            ([124, 123, 20, 30], [124, 123, 20, 30], [124, 123, 20, 30]),
+        ];
+        for (initial, next, expected) in vectors {
+            let mut accumulated = Some(initial);
+            union_native_voxel_draw_bounds(&mut accumulated, next);
+            assert_eq!(accumulated, Some(expected), "{initial:?} then {next:?}");
+        }
+    }
+
+    #[test]
+    fn native_draw_bounds_use_model_extents_even_when_grid_or_opaque_pixels_change() {
+        let mut model = make_test_vxl();
+        model.limbs[0].bounds = [-12.0, -8.0, -3.0, 12.0, 8.0, 7.0];
+        let params = VxlRenderParams {
+            facing: 40,
+            slope_type: 3,
+            ..Default::default()
+        };
+        let original = native_vxl_draw_bounds(&model, None, &params).unwrap();
+        // Same physical tailer box, different grid resolution and no opaque
+        // voxels. Native submits the header box, not occupied voxel centers.
+        model.limbs[0].size_x = 4;
+        model.limbs[0].size_y = 4;
+        model.limbs[0].size_z = 4;
+        model.limbs[0].voxels.clear();
+        assert_eq!(
+            native_vxl_draw_bounds(&model, None, &params),
+            Some(original)
+        );
+        let mut second = make_test_vxl().limbs.remove(0);
+        second.bounds = model.limbs[0].bounds;
+        second.bounds[1] += 40.0;
+        second.bounds[4] += 40.0;
+        model.limbs.push(second);
+        let expanded = native_vxl_draw_bounds(&model, None, &params).unwrap();
+        assert!(expanded[2] > original[2] || expanded[3] > original[3]);
+        assert!(native_draw_bounds_from_extents([f32::NAN, 0.0], [1.0, 1.0]).is_none());
+    }
 
     fn make_test_vxl() -> VxlFile {
         let identity: [f32; 12] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
