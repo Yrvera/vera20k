@@ -349,3 +349,12 @@ explicit original executable path. The System Map checker reports zero errors.
 
 The bridge split/composite and under-span walking limits above remain separate;
 integration does not close them or claim whole-scene visual parity.
+
+Integration commit: `75ed540b26d251604ab18582fe38c9c9c105b6f9`. A final independent
+critic inspected the committed source and actual result logs without finding an
+integration blocker. Clippy completes successfully (1154 warnings); current main
+already resolved the six earlier deny-level findings. Release build succeeds in
+3m51s, with SHA-256
+`0adc20903905bde0e72c8aaa98d942bc542b9efd1d91556ac2d6f65e9af8dce7`.
+The retail Hills Drive/Walk/Hover deck tests also pass (3 tests); the separate
+under-span characterization still confirms refusal (1 test expecting that failure).
