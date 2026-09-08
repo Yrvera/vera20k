@@ -431,7 +431,18 @@ use crate::sim::world::Simulation;
 // schema also folds all three (`include_credit_income_v135`).
 // v136 adds the retained Infantry terminal policy, independently of sprite
 // animation progress. The entity layout and current deterministic hash change.
-const SNAPSHOT_VERSION: u32 = 136;
+// v137 changes ordinary ground-coordinate resume invariants: Walk samples Z
+// at its coordinate commits; Drive/Ship retain the last native paid sample,
+// while their residual XY can already
+// have changed the current cell, OnBridge, and track-relative offset. A v135
+// mover may instead carry no exact Z and the previous cell/track frame. Its
+// historic paid height cannot be reconstructed from the residual XY on load.
+// Reject those saves instead of inventing an idle terrain sample. No fields or
+// hash folds were added; see RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md (4B1A96/4B253F).
+// v138 combines both branches. The locally runnable v137 candidate did not
+// contain infantry_terminal, so its serialized entity layout differs from this
+// merged build. Reject v136/v137 saves instead of treating either as compatible.
+const SNAPSHOT_VERSION: u32 = 138;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3225,7 +3236,9 @@ mod tests {
         // 133 -> 134: repair-depot docking layout (see the constant's comment).
         // 134 -> 135: GameEntity ProduceCash timer + drain link pair (GSI-09.01).
         // 135 -> 136: explicit retained Infantry terminal lifetime policy.
-        assert_eq!(super::SNAPSHOT_VERSION, 136);
+        // Separate v137: ordinary ground-coordinate resume invariants.
+        // v138 combines both layouts without accepting prior local v137 saves.
+        assert_eq!(super::SNAPSHOT_VERSION, 138);
     }
 
     #[test]

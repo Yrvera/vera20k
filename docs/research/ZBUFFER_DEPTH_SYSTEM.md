@@ -7,6 +7,16 @@ leaf blitters; see the correction note in the Overview.
 
 ---
 
+## 2026-09-08 implementation correction
+
+The [depth continuation](../plans/2026-09-08-depth-occlusion-continuation.md)
+supersedes this document's old Rust-status section and these native claims:
+ordinary walls/overlays use SHP47F6A0 (flags4E00), not TMP547CF0; BUILDNGZ
+uses a constant raw seed from the body/shape intersection, not the ordinary
+scanline gradient. Raw shape frames clip without consuming shape values.
+See the continuation for addresses, implementation and bounded validation.
+Remaining historical sections are research context, not current source status.
+
 ## Overview
 
 > **Correction (2026-09-07).** Earlier revisions claimed that SHP sprites drawn
@@ -987,7 +997,7 @@ Xrefs:
 
 ---
 
-## 10. Implementation Status in Rust Engine (updated 2026-03-22)
+## 10. Historical implementation status (superseded 2026-09-08)
 
 ### How Our Engine Renders Depth
 

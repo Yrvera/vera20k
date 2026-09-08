@@ -19,7 +19,9 @@ use crate::map::lighting;
 use crate::map::terrain::{TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
 use crate::render::draw_state::{DrawState, FX_SHADOW, ObserverDrawContext};
+use crate::render::native_z::{SHP_DRAW_Z_ADJUST_PX, ZGradient, pack_z_gradient};
 use crate::render::sprite_atlas::ShpSpriteKey;
+use crate::render::tactical_draw_plan::RenderZPolicy;
 use crate::render::unit_atlas::{
     UnitSpriteEntry, UnitSpriteKey, VxlLayer, canonical_turret_facing, canonical_unit_facing,
 };
@@ -464,7 +466,9 @@ pub(crate) fn build_unit_instances(
             {
                 let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1] + dock_depth_y_offset;
                 let depth: f32 = body_sort_depth(state, entity, band, depth_y, interp_z);
+                let voxel_adjust = super::foot_depth::unit_z_adjust(state, entity, true) as f32;
                 emit_unit_shadow_sprite(
+                    voxel_adjust,
                     target_instances,
                     target_instance_pages,
                     atlas,
@@ -491,6 +495,8 @@ pub(crate) fn build_unit_instances(
                     tint,
                     alpha,
                     draw_state,
+                    z_adjust: voxel_adjust,
+                    z_gradient: VOXEL_Z_GRADIENT,
                     ..Default::default()
                 };
                 push_unit_sprite(
@@ -526,6 +532,7 @@ pub(crate) fn build_unit_instances(
                     if collect_ground {
                         ground_pieces.push(GroundPieceInstance {
                             target: GroundTexture::ShpPage(page),
+                            render_z: RenderZPolicy::ReadOnly,
                             instance,
                         });
                     } else if let Some(bucket) = shp_paged.get_mut(page) {
@@ -758,6 +765,7 @@ fn push_transition_sprite(
 /// depends on the body blit's Z writes, which were not read.
 #[allow(clippy::too_many_arguments)]
 fn emit_unit_shadow_sprite(
+    voxel_adjust: f32,
     stable_instances: &mut Vec<SpriteInstance>,
     stable_instance_pages: &mut Vec<usize>,
     atlas: &crate::render::unit_atlas::UnitAtlas,
@@ -802,6 +810,10 @@ fn emit_unit_shadow_sprite(
         tint: lighting::DEFAULT_TINT,
         alpha: 1.0,
         draw_state: shadow_state,
+        // Cached 0x707480 and uncached 0x707280 shadow blits both consume
+        // Foot GetZAdjustment, just like the body.
+        z_adjust: voxel_adjust,
+        z_gradient: VOXEL_Z_GRADIENT,
         ..Default::default()
     };
     push_unit_sprite(
@@ -835,6 +847,7 @@ fn push_unit_sprite(
         };
         ground_pieces.push(GroundPieceInstance {
             target,
+            render_z: RenderZPolicy::ReadOnly,
             instance: sprite,
         });
         return;
@@ -886,6 +899,7 @@ fn emit_turret_unit_sprites(
     ground_pieces: &mut Vec<GroundPieceInstance>,
 ) {
     let slope_type = stable_slope_for_key(slope_state);
+    let voxel_adjust = super::foot_depth::unit_z_adjust(state, entity, true) as f32;
     let body_key = UnitSpriteKey {
         type_id: type_id.to_string(),
         facing: canonical_unit_facing(body_facing),
@@ -931,6 +945,7 @@ fn emit_turret_unit_sprites(
     // The hull's ground shadow goes down first, then body, turret, barrel (see
     // `emit_unit_shadow_sprite` for why first rather than the native last).
     emit_unit_shadow_sprite(
+        voxel_adjust,
         instances,
         instance_pages,
         atlas,
@@ -950,6 +965,31 @@ fn emit_turret_unit_sprites(
     );
 
     // Emit body first (always). Uses frame fallback for mismatched HVA counts.
+    // Natively hull, turret and barrel are composited off-screen and blitted
+    // as ONE rect (`UnitClass vtable+0x55C = 0x0073B140`), so all three share
+    // the entry-2 seed of the composite rect: its top and height ride
+    // `zshape_origin` (the voxel shader's `z_rect`).
+    let turret_layers: Vec<_> = native_turret_barrel_order(turret_facing, &turret_key, &barrel_key)
+        .into_iter()
+        .filter_map(|key| unit_entry_for_slope_state(state, atlas, key, slope_state))
+        .collect();
+    let composite_rect: [f32; 2] = {
+        let mut top = f32::INFINITY;
+        let mut bottom = f32::NEG_INFINITY;
+        if let Some((entry, _)) = body_entry_opt {
+            top = top.min(center_y + entry.offset_y);
+            bottom = bottom.max(center_y + entry.offset_y + entry.pixel_size[1]);
+        }
+        for (entry, _) in &turret_layers {
+            top = top.min(center_y + entry.offset_y + tur_oy);
+            bottom = bottom.max(center_y + entry.offset_y + tur_oy + entry.pixel_size[1]);
+        }
+        if bottom > top {
+            [top, bottom - top]
+        } else {
+            [0.0, 0.0]
+        }
+    };
     if let Some((entry, texture_source)) = body_entry_opt {
         let sprite = SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
@@ -960,7 +1000,9 @@ fn emit_turret_unit_sprites(
             tint,
             alpha,
             draw_state,
-            ..Default::default()
+            z_adjust: voxel_adjust,
+            z_gradient: VOXEL_Z_GRADIENT,
+            zshape_origin: composite_rect,
         };
         push_unit_sprite(
             instances,
@@ -975,36 +1017,34 @@ fn emit_turret_unit_sprites(
         );
     }
 
-    for key in native_turret_barrel_order(turret_facing, &turret_key, &barrel_key) {
-        if let Some((entry, texture_source)) =
-            unit_entry_for_slope_state(state, atlas, key, slope_state)
-        {
-            let sprite = SpriteInstance {
-                position: [
-                    center_x + entry.offset_x + tur_ox,
-                    center_y + entry.offset_y + tur_oy,
-                ],
-                size: entry.pixel_size,
-                uv_origin: entry.uv_origin,
-                uv_size: entry.uv_size,
-                depth: entity_depth,
-                tint,
-                alpha,
-                draw_state,
-                ..Default::default()
-            };
-            push_unit_sprite(
-                instances,
-                instance_pages,
-                transition_instances,
-                bridge_transition_instances,
-                is_bridge_unit,
-                texture_source,
-                sprite,
-                collect_ground,
-                ground_pieces,
-            );
-        }
+    for (entry, texture_source) in turret_layers {
+        let sprite = SpriteInstance {
+            position: [
+                center_x + entry.offset_x + tur_ox,
+                center_y + entry.offset_y + tur_oy,
+            ],
+            size: entry.pixel_size,
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            depth: entity_depth,
+            tint,
+            alpha,
+            draw_state,
+            z_adjust: voxel_adjust,
+            z_gradient: VOXEL_Z_GRADIENT,
+            zshape_origin: composite_rect,
+        };
+        push_unit_sprite(
+            instances,
+            instance_pages,
+            transition_instances,
+            bridge_transition_instances,
+            is_bridge_unit,
+            texture_source,
+            sprite,
+            collect_ground,
+            ground_pieces,
+        );
     }
 }
 
@@ -1067,10 +1107,18 @@ fn emit_harvest_overlay(
             tint,
             alpha: 1.0,
             draw_state,
+            // An SHP draw of the harvester (`TechnoClass_DrawSHP`, a7 - 2).
+            z_adjust: super::foot_depth::unit_z_adjust(state, entity, false)
+                .wrapping_add(SHP_DRAW_Z_ADJUST_PX) as f32,
+            z_gradient: pack_z_gradient(ZGradient::Vertical, false),
             ..Default::default()
         },
     ))
 }
+
+/// Native VXL blits walk entry 2 with the Foot adjustment supplied by the
+/// shared production adapter. Hull, turret and barrel retain one composite seed.
+const VOXEL_Z_GRADIENT: u32 = pack_z_gradient(ZGradient::Vertical, false);
 
 /// Convert the oregath arm offset (30 leptons) into isometric screen pixels.
 ///

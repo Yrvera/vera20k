@@ -44,6 +44,10 @@ pub const SPOTLIGHT_ZERO_BLEND: wgpu::BlendState = wgpu::BlendState {
 /// Samples a parallel R8 depth atlas to compute per-pixel terrain depth.
 const ZDEPTH_SHADER: &str = include_str!("zdepth_shader.wgsl");
 
+/// WGSL per-pixel Z-tested SHP shader: native row Z from the gradient table,
+/// optional BUILDNGZ z-shape subtraction, `frag_depth` on the shared axis.
+const ZSPRITE_SHADER: &str = include_str!("zsprite_shader.wgsl");
+
 /// WGSL voxel-sprite shader: byte → (palette | house_ramp) → fx pipeline.
 /// Atlas is R8Uint (palette indices); palette + per-house RGB ramp are
 /// sampled via PaletteSet (bind group 2).
@@ -78,6 +82,17 @@ pub struct SpriteInstance {
     /// Representation-neutral visual state resolved from the authoritative
     /// entity before either SHP or voxel instance construction.
     pub draw_state: DrawState,
+    /// Native Z term of this draw in screen rows (`native_z`): the
+    /// CC_Draw_Shape slot-7 value for sprites, the tile/bridge seed offset for
+    /// the zdepth pipeline. Integer-valued; consumed only by the Z-tested
+    /// pipelines.
+    pub z_adjust: f32,
+    /// Gradient entry (bits 0-7, `native_z::ZGradient`) plus
+    /// `native_z::Z_GRADIENT_ZSHAPE_FLAG` when the fragment shader must
+    /// subtract the BUILDNGZ z-shape at `zshape_origin`.
+    pub z_gradient: u32,
+    /// World-pixel origin of the z-shape canvas (`native_z::zshape_origin`).
+    pub zshape_origin: [f32; 2],
 }
 
 #[cfg(test)]
@@ -109,8 +124,9 @@ mod tests {
     }
 }
 
-/// Number of vertex attributes in SpriteInstance: 7 base + 4 voxel-shader fields.
-const INSTANCE_ATTRIBUTE_COUNT: usize = 11;
+/// Number of vertex attributes in SpriteInstance: 7 base + 4 DrawState fields
+/// + 3 native-Z fields (z_adjust, z_gradient, zshape_origin / voxel z_rect).
+const INSTANCE_ATTRIBUTE_COUNT: usize = 14;
 
 /// Size of one SpriteInstance in bytes (4 × vec2f = 32 bytes).
 const INSTANCE_STRIDE: u64 = std::mem::size_of::<SpriteInstance>() as u64;
@@ -128,8 +144,61 @@ pub struct CameraUniform {
     pub camera_pos: [f32; 2],
     /// Zoom level: 1.0 = native scale, >1.0 = zoomed in, <1.0 = zoomed out.
     pub zoom: f32,
+    /// Depth axis origin: the world row that maps to depth 1.0
+    /// (`depth = 1 - (row - world_origin_y) / world_height`).
+    pub world_origin_y: f32,
+    /// Depth axis extent in world rows; one native Z unit is one row.
+    pub world_height: f32,
     /// Padding for 16-byte alignment.
     pub _pad: f32,
+}
+
+/// The normalised depth axis every Z-tested pipeline maps native Z onto:
+/// `depth = 1 - (row - origin_y) / world_height`, one native Z unit per
+/// world pixel row. Taken from the loaded terrain grid; menus and other
+/// non-tactical frames use [`DepthAxis::NONE`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DepthAxis {
+    pub origin_y: f32,
+    pub world_height: f32,
+}
+
+impl DepthAxis {
+    pub const NONE: Self = Self {
+        origin_y: 0.0,
+        world_height: 1.0,
+    };
+}
+
+/// Create an `R8Unorm` texture view from single-channel bytes (z-shape and
+/// depth planes read with `textureLoad`).
+pub fn create_r8_texture_view(
+    gpu: &GpuContext,
+    label: &str,
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> wgpu::TextureView {
+    let texture: wgpu::Texture = gpu.device.create_texture_with_data(
+        &gpu.queue,
+        &wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        bytes,
+    );
+    texture.create_view(&Default::default())
 }
 
 /// A GPU texture prepared for batch rendering.
@@ -261,7 +330,21 @@ pub struct BatchRenderer {
     /// Render pipeline with depth write ON, LessEqual compare.
     /// Used for UI/debug passes that intentionally write depth.
     overlay_pipeline: wgpu::RenderPipeline,
-    /// Render pipeline with per-pixel Z-depth (frag_depth output, Less compare).
+    /// Per-pixel Z-tested SHP pipeline, depth compare Less, no write: the
+    /// native read-only leaves (`0x00494b60` / `0x00497fd0`) for units,
+    /// infantry, anims and building overlays.
+    zsprite_read_pipeline: wgpu::RenderPipeline,
+    /// Per-pixel Z-tested SHP pipeline, depth compare Less, write on: the
+    /// building-body leaves (`0x004958d0` / `0x004990e0`) with the BUILDNGZ
+    /// z-shape bound at group 2.
+    zsprite_write_pipeline: wgpu::RenderPipeline,
+    /// Bind group layout for the z-shape texture (group 2 of the zsprite
+    /// pipelines): one `R8Unorm` texture read with `textureLoad`.
+    zshape_bind_group_layout: wgpu::BindGroupLayout,
+    /// 1x1 neutral z-shape used when no BUILDNGZ.SHA is loaded.
+    default_zshape_bind_group: wgpu::BindGroup,
+    /// Render pipeline with per-pixel Z-depth (frag_depth output, LessEqual
+    /// compare like `TMP_TileBlitter`'s `base + zdata <= zbuf`).
     /// Used for terrain tiles with TMP Z-data.
     zdepth_pipeline: wgpu::RenderPipeline,
     /// Render pipeline for non-wall overlays (ore, trees): depth compare Always,
@@ -369,6 +452,8 @@ impl BatchRenderer {
             screen_size: [1024.0, 768.0],
             camera_pos: [0.0, 0.0],
             zoom: 1.0,
+            world_origin_y: 0.0,
+            world_height: 1.0,
             _pad: 0.0,
         };
         let camera_buffer: wgpu::Buffer =
@@ -414,7 +499,10 @@ impl BatchRenderer {
         //   DrawState::fx_flags(4) at offset 56 → loc 8 (Uint32)
         //   DrawState::fx_params(16) at offset 60 → loc 9 (Float32x4)
         //   DrawState::effect_tint(16) at offset 76 → loc 10 (Float32x4)
-        // Total stride: 92 bytes.
+        //   z_adjust(4) at offset 92 → loc 11 (Float32)
+        //   z_gradient(4) at offset 96 → loc 12 (Uint32)
+        //   zshape_origin(8) at offset 100 → loc 13 (Float32x2)
+        // Total stride: 108 bytes.
         let instance_attrs: [wgpu::VertexAttribute; INSTANCE_ATTRIBUTE_COUNT] = [
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x2,
@@ -470,6 +558,21 @@ impl BatchRenderer {
                 format: wgpu::VertexFormat::Float32x4,
                 offset: 76,
                 shader_location: 10,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32,
+                offset: 92,
+                shader_location: 11,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: 96,
+                shader_location: 12,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: 100,
+                shader_location: 13,
             },
         ];
 
@@ -885,7 +988,8 @@ impl BatchRenderer {
                     depth_stencil: Some(wgpu::DepthStencilState {
                         format: wgpu::TextureFormat::Depth32Float,
                         depth_write_enabled: true,
-                        depth_compare: wgpu::CompareFunction::Less,
+                        // `TMP_TileBlitter @ 0x00547CF0`: `base + zdata <= zbuf`.
+                        depth_compare: wgpu::CompareFunction::LessEqual,
                         stencil: wgpu::StencilState::default(),
                         bias: wgpu::DepthBiasState::default(),
                     }),
@@ -893,6 +997,104 @@ impl BatchRenderer {
                     multiview: None,
                     cache: None,
                 });
+
+        // Z-shape bind group layout (group 2 of the zsprite pipelines).
+        let zshape_bind_group_layout: wgpu::BindGroupLayout =
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("ZShape BGL"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    }],
+                });
+        let default_zshape_view: wgpu::TextureView = create_r8_texture_view(
+            gpu,
+            "Default ZShape (neutral)",
+            &[crate::render::native_z::ZSHAPE_TEXEL_BIAS as u8],
+            1,
+            1,
+        );
+        let default_zshape_bind_group: wgpu::BindGroup =
+            gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Default ZShape BG"),
+                layout: &zshape_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&default_zshape_view),
+                }],
+            });
+
+        // Per-pixel Z-tested SHP pipelines: native row Z + optional z-shape.
+        let zsprite_shader: wgpu::ShaderModule =
+            gpu.device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("ZSprite Shader"),
+                    source: wgpu::ShaderSource::Wgsl(ZSPRITE_SHADER.into()),
+                });
+        let zsprite_pipeline_layout: wgpu::PipelineLayout =
+            gpu.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("ZSprite Pipeline Layout"),
+                    bind_group_layouts: &[
+                        &camera_bind_group_layout,
+                        &texture_bind_group_layout,
+                        &zshape_bind_group_layout,
+                    ],
+                    push_constant_ranges: &[],
+                });
+        let make_zsprite_pipeline = |label: &str, depth_write_enabled: bool| {
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&zsprite_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &zsprite_shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: INSTANCE_STRIDE,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &instance_attrs,
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &zsprite_shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: gpu.surface_format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled,
+                        // Sprite leaves test `z < zbuf` (strict).
+                        depth_compare: wgpu::CompareFunction::Less,
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                })
+        };
+        let zsprite_read_pipeline: wgpu::RenderPipeline =
+            make_zsprite_pipeline("ZSprite Pipeline (read-only)", false);
+        let zsprite_write_pipeline: wgpu::RenderPipeline =
+            make_zsprite_pipeline("ZSprite Pipeline (read + write)", true);
 
         // Bind group layout for the unit-atlas R8Uint texture (voxel sprite path).
         // Single texture entry, no sampler — sampled via textureLoad with integer coords.
@@ -952,10 +1154,10 @@ impl BatchRenderer {
             });
 
         // Voxel sprite pipeline: 3 bind groups (camera, atlas R8Uint, PaletteSet).
-        // Same vertex layout as the existing batch pipelines (uses all 11 attributes).
-        // Depth: write OFF, compare LessEqual — units sort against the depth
-        // buffer that terrain wrote, but don't write depth themselves (one
-        // unit's pixels shouldn't occlude another unit's translucent pixels).
+        // Same vertex layout as the existing batch pipelines.
+        // Depth: write OFF, compare Less — the native VXL cache blit reaches
+        // the read-only leaf `0x00497fd0` (`z < zbuf`, no store), so voxel
+        // bodies test against terrain and building Z but never write.
         let voxel_shader: wgpu::ShaderModule =
             gpu.device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1005,7 +1207,7 @@ impl BatchRenderer {
                     depth_stencil: Some(wgpu::DepthStencilState {
                         format: wgpu::TextureFormat::Depth32Float,
                         depth_write_enabled: false,
-                        depth_compare: wgpu::CompareFunction::LessEqual,
+                        depth_compare: wgpu::CompareFunction::Less,
                         stencil: wgpu::StencilState::default(),
                         bias: wgpu::DepthBiasState::default(),
                     }),
@@ -1017,6 +1219,10 @@ impl BatchRenderer {
         Self {
             pipeline,
             overlay_pipeline,
+            zsprite_read_pipeline,
+            zsprite_write_pipeline,
+            zshape_bind_group_layout,
+            default_zshape_bind_group,
             zdepth_pipeline,
             overlay_passthrough_pipeline,
             spotlight_zero_blend_pipeline,
@@ -1185,15 +1391,28 @@ impl BatchRenderer {
         camera_x: f32,
         camera_y: f32,
         zoom: f32,
+        depth_axis: DepthAxis,
     ) {
         // Round camera to integer pixels — sub-pixel camera offsets cause
         // visible seams between adjacent terrain tiles.
         let cam = [camera_x.round(), camera_y.round()];
+        // `RA2_DEBUG_DEPTH_VIEW=1`: the Z-tested shaders paint their fragment
+        // depth as grey (wrapping every 128 world rows) instead of colour.
+        static DEBUG_DEPTH_VIEW: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+        let debug_depth_view = *DEBUG_DEPTH_VIEW.get_or_init(|| {
+            if std::env::var_os("RA2_DEBUG_DEPTH_VIEW").is_some() {
+                1.0
+            } else {
+                0.0
+            }
+        });
         let uniform: CameraUniform = CameraUniform {
             screen_size: [screen_width, screen_height],
             camera_pos: cam,
             zoom,
-            _pad: 0.0,
+            world_origin_y: depth_axis.origin_y,
+            world_height: depth_axis.world_height.max(1.0),
+            _pad: debug_depth_view,
         };
         gpu.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[uniform]));
@@ -1203,6 +1422,8 @@ impl BatchRenderer {
             screen_size: [screen_width, screen_height],
             camera_pos: cam,
             zoom: 1.0,
+            world_origin_y: depth_axis.origin_y,
+            world_height: depth_axis.world_height.max(1.0),
             _pad: 0.0,
         };
         gpu.queue.write_buffer(
@@ -1708,6 +1929,57 @@ impl BatchRenderer {
         render_pass.set_bind_group(1, &texture.bind_group, &[]);
         render_pass.set_vertex_buffer(0, buffer.slice(..));
         render_pass.draw(0..6, 0..count);
+    }
+
+    /// Bind group for a loaded z-shape texture view (BUILDNGZ.SHA, biased R8).
+    pub fn create_zshape_bind_group(
+        &self,
+        gpu: &GpuContext,
+        view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ZShape BG"),
+            layout: &self.zshape_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(view),
+            }],
+        })
+    }
+
+    /// Neutral 1x1 z-shape for draws that carry no BUILDNGZ.
+    pub fn default_zshape_bind_group(&self) -> &wgpu::BindGroup {
+        &self.default_zshape_bind_group
+    }
+
+    /// Draw a sub-range of SHP sprites with the native per-pixel Z test.
+    ///
+    /// `write` selects the building-body leaf behaviour (store the nearer Z)
+    /// over the read-only one; both compare `Less`. `zshape` is the z-shape
+    /// bind group the instances' `zshape_origin` refers to.
+    pub fn draw_zsprite_range<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        texture: &'a BatchTexture,
+        zshape: &'a wgpu::BindGroup,
+        buffer: &'a wgpu::Buffer,
+        start: u32,
+        count: u32,
+        write: bool,
+    ) {
+        if count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(if write {
+            &self.zsprite_write_pipeline
+        } else {
+            &self.zsprite_read_pipeline
+        });
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &texture.bind_group, &[]);
+        render_pass.set_bind_group(2, zshape, &[]);
+        render_pass.set_vertex_buffer(0, buffer.slice(..));
+        render_pass.draw(0..6, start..start + count);
     }
 
     /// Draw a sub-range of sprites with depth test bypassed (Always compare).

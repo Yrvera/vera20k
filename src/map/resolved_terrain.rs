@@ -1348,6 +1348,10 @@ pub fn tile_anim_pixel_offset_to_leptons(x_offset: i32, y_offset: i32) -> (i32, 
 pub struct ResolvedTerrainGrid {
     width: u16,
     height: u16,
+    /// Pristine TMP dimensions used by Techno draw depth (0x547150/0x704350).
+    /// Derived asset data, keyed by tile identity rather than mutable cell:
+    /// never serialized or included in simulation hashes.
+    native_tmp_draw_heights: HashMap<u16, Vec<i32>>,
     #[cfg(test)]
     pub(crate) cells: Vec<ResolvedTerrainCell>,
     #[cfg(not(test))]
@@ -1454,6 +1458,7 @@ impl ResolvedTerrainGrid {
             width,
             height,
             cells,
+            native_tmp_draw_heights: HashMap::new(),
             shared_cell_dummy: SharedCellDummy::fresh(),
             native_allocated: None,
             radar_color_valid,
@@ -1522,6 +1527,31 @@ impl ResolvedTerrainGrid {
 
     pub fn height(&self) -> u16 {
         self.height
+    }
+
+    /// Native GetSubtileDimensions height, not the union image canvas height.
+    /// 0x704350 uses the pristine TMP even when a damaged sibling is displayed.
+    pub(crate) fn native_tmp_draw_height(&self, tile: i32, sub_tile: u8) -> i32 {
+        let key = if matches!(tile, -1 | 0xFF | 0xFFFF) {
+            (self.clear_tile_id, 0)
+        } else if let Ok(tile) = u16::try_from(tile) {
+            (tile, sub_tile)
+        } else {
+            return 30;
+        };
+        if let Some(heights) = self.native_tmp_draw_heights.get(&key.0) {
+            // 0x547165..0x547174 divides by the complete template cell count.
+            return heights[usize::from(key.1) % heights.len()];
+        }
+        // VERA fallback for synthetic/no-assets grids or a missing/invalid
+        // registered header (diagnosed once at load). This is not a claim of
+        // native behavior for unavailable data; valid production types use
+        // their pristine header above, including future live replacements.
+        30
+    }
+
+    pub(crate) fn concrete_bridge_set_base(&self) -> i32 {
+        self.bridge_set_start.map_or(-1, i32::from)
     }
 
     pub(crate) fn shared_cell_dummy(&self) -> SharedCellDummy {
@@ -3172,6 +3202,7 @@ impl ResolvedTerrainGrid {
                 width: 0,
                 height: 0,
                 cells: Vec::new(),
+                native_tmp_draw_heights: HashMap::new(),
                 shared_cell_dummy,
                 native_allocated: materialized_size_diamond.then(Vec::new),
                 radar_color_valid: Vec::new(),
@@ -3953,6 +3984,7 @@ impl ResolvedTerrainGrid {
             width,
             height,
             cells,
+            native_tmp_draw_heights: load_native_tmp_draw_heights(theater_data, asset_manager),
             shared_cell_dummy,
             native_allocated,
             radar_color_valid,
@@ -4476,6 +4508,40 @@ fn auto_tube_direction_for_tile(
         }
     }
     None
+}
+
+/// A small asset-derived type catalogue, independent of visited cell identities.
+/// Include every registered pristine type so LAT, cliff collapse and restore can
+/// change a cell's tile without a render-thread asset lookup or stale scalar.
+/// Only headers are read here; the large color/depth planes are not decoded.
+fn load_native_tmp_draw_heights(
+    theater: Option<&TheaterData>,
+    assets: Option<&crate::assets::asset_manager::AssetManager>,
+) -> HashMap<u16, Vec<i32>> {
+    let (Some(theater), Some(assets)) = (theater, assets) else {
+        return HashMap::new();
+    };
+    let mut heights = HashMap::new();
+    for id in 0..theater.lookup.len() {
+        let Ok(id) = u16::try_from(id) else {
+            break;
+        };
+        let Some(name) = theater.lookup.filename(i32::from(id)) else {
+            log::warn!("TMP draw dimensions unavailable: tile {id} has no registered filename");
+            continue;
+        };
+        let Some(bytes) = assets.get(name) else {
+            log::warn!("TMP draw dimensions unavailable: tile {id} asset {name} is missing");
+            continue;
+        };
+        match TmpFile::draw_heights_from_bytes(&bytes) {
+            Ok(rows) => {
+                heights.insert(id, rows);
+            }
+            Err(error) => log::warn!("TMP draw dimensions unavailable for {name}: {error}"),
+        }
+    }
+    heights
 }
 
 fn cached_tile_metadata(
@@ -5697,6 +5763,104 @@ mod tests {
             cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
             rmg_tiles: crate::map::theater::RmgTileKeys::default(),
         }
+    }
+
+    #[test]
+    fn native_tmp_catalog_covers_unused_pristine_types_and_live_subtile_replacements() {
+        let mut theater = synthetic_theater_from_ini(
+            b"[TileSet0000]\nTilesInSet=1\nFileName=clear\nSetName=Clear\n\
+              [TileSet0001]\nTilesInSet=1\nFileName=unused\nSetName=Unused\n\
+              [TileSet0002]\nTilesInSet=1\nFileName=bad\nSetName=Bad\n\
+              [TileSet0003]\nTilesInSet=1\nFileName=missing\nSetName=Missing\n",
+        );
+        let clear = gsi_04_02_last_tiles_tmp_bytes(0, [1, 2, 3], [4, 5, 6]);
+        // Three pristine slots: heights 36, sparse/base 30, and 37. There are
+        // deliberately no image planes: this unused type only needs headers.
+        let mut unused = vec![0u8; 28 + 2 * 52];
+        for (offset, value) in [
+            (0, 3u32),
+            (4, 1),
+            (8, 60),
+            (12, 30),
+            (16, 28),
+            (24, 80),
+            (28 + 4, 100),
+            (28 + 24, 94),
+            (28 + 36, 1),
+            (80 + 4, 100),
+            (80 + 24, 93),
+            (80 + 36, 1),
+        ] {
+            unused[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let mut variant = gsi_04_04_sparse_tmp_bytes();
+        variant[12..16].copy_from_slice(&99u32.to_le_bytes());
+        let (_directory, assets) = gsi_04_02_asset_manager_with_loose_tmps(&[
+            ("clear01.tem", &clear),
+            ("unused01.tem", &unused),
+            ("unused01a.tem", &variant),
+            ("bad01.tem", b"truncated"),
+            ("unregistered01.tem", &variant),
+        ]);
+        crate::map::theater::resolve_contiguous_variant_chains_for_test(
+            &mut theater.lookup,
+            &assets,
+        );
+        assert_eq!(
+            theater.lookup.variant_count(1),
+            1,
+            "fixture has a real suffix variant"
+        );
+        let map = make_map(
+            vec![MapCell {
+                rx: 1,
+                ry: 1,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            }],
+            vec![],
+            vec![],
+        );
+        let mut grid =
+            ResolvedTerrainGrid::build(&map, Some(&theater), Some(&assets), None, None, false, 0);
+        assert!(grid.cells().iter().all(|cell| cell.final_tile_index != 1));
+        assert_eq!(
+            grid.native_tmp_draw_heights.len(),
+            2,
+            "only registered readable pristine headers are cached"
+        );
+        for (subtile, expected) in [(0, 36), (1, 30), (2, 37), (4, 30), (255, 36)] {
+            assert_eq!(grid.native_tmp_draw_height(1, subtile), expected);
+        }
+        assert_eq!(
+            grid.native_tmp_draw_height(2, 0),
+            30,
+            "corrupt type fallback"
+        );
+        assert_eq!(
+            grid.native_tmp_draw_height(3, 0),
+            30,
+            "missing type fallback"
+        );
+        for sentinel in [-1, 0xff, 0xffff] {
+            assert_eq!(
+                grid.native_tmp_draw_height(sentinel, 5),
+                4,
+                "clear sentinel always selects pristine subtile zero"
+            );
+        }
+
+        let cell = grid.cell_mut(1, 1).unwrap();
+        cell.final_tile_index = 1;
+        cell.final_sub_tile = 5;
+        cell.variant = 1;
+        let cell = grid.cell(1, 1).unwrap();
+        assert_eq!(
+            grid.native_tmp_draw_height(cell.final_tile_index, cell.final_sub_tile),
+            37,
+            "a live replacement resolves its unused pristine type and modulo, independently of selected variant 99"
+        );
     }
 
     #[test]

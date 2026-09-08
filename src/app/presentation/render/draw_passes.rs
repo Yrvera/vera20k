@@ -15,6 +15,7 @@ use crate::app::presentation::ui_overlays::current_software_cursor_texture;
 use crate::render::batch::{BatchRenderer, BatchTexture, InstanceBufferPool, SpriteInstance};
 use crate::render::bridge_atlas::BridgeAtlas;
 use crate::render::overlay_atlas::OverlayAtlas;
+use crate::render::tactical_draw_plan::RenderZPolicy;
 use crate::render::tile_atlas::TileAtlas;
 
 use super::merge_passes;
@@ -25,6 +26,7 @@ use super::merge_passes;
 /// because they're computed fresh each frame and (for the merge passes) need CPU-side
 /// depth values that match the uploaded GPU buffers.
 pub(super) struct DrawPassData<'a> {
+    pub overlay_render_z: &'a [RenderZPolicy],
     pub ground: &'a super::draw_plan_lowering::GroundObjectPass,
     pub bridge_unit_instances: &'a [SpriteInstance],
     pub bridge_unit_pages: &'a [usize],
@@ -47,7 +49,7 @@ pub(super) struct DrawPassData<'a> {
 /// are tactical; the screen-fixed block at the end releases the scissor first.
 ///
 /// Draw order follows the original engine's layered rendering:
-/// 1. Terrain (zdepth) → 2. Bridge body (zdepth) → 3. Overlays (passthrough) →
+/// 1. Terrain (zdepth) → 2. Bridge body (zdepth) → 3. Overlays (SHP Z) →
 /// 4. Bridge entities (merge) → 5. Ground objects, building turrets included
 /// (merge) → 7. Bridge railings → 7.5 Particles (layer 3) →
 /// 7.7 Bodies above the Ground band (layers 3–4) → 8. Debug → 9. Shroud/fog →
@@ -122,19 +124,20 @@ pub(super) fn dispatch_draw_passes(
     // so shadows belong after the overlay bodies at step 3.5, not between the
     // bridge body and the overlays.)
 
-    // --- Step 3: Overlays (no depth test — passthrough) ---
-    // Overlays don't read the Z-buffer — the tile blitter skips Z-testing
-    // for tiles without Z-data (flag 0x02 clear at cell header byte 36).
-    // Overlays paint unconditionally over terrain. Without
-    // passthrough, adjacent terrain tiles from closer iso rows would
-    // occlude overlays via LessEqual depth test ("sinking into ground").
-    // Overlays (including walls) stay in the fixed cell family.
-    draw_pooled_passthrough_overlay(
+    // --- Step 3: Overlay bodies (SHP depth read + write) ---
+    // Active walls/ordinary overlays are 0x4E00 CC_Draw_Shape draws at
+    // 0x0047F6A0, reached through 0x006D6D10. They are not the TMP tile
+    // path at 0x00480350. Their class gradient, stored frame rectangle and
+    // height adjustment keep them above the ground and let them occlude later
+    // buildings/units. Preserve fixed cell order, including unsupported
+    // slope-shape records that still use their previous passthrough policy.
+    draw_pooled_overlay_bodies(
         &mut pass,
         &state.renderer.batch_renderer,
         pool,
         state.match_state.match_presentation.overlay_atlas.as_ref(),
         "overlay",
+        data.overlay_render_z,
     );
 
     // --- Step 3.5: Overlay shadows — bridge decks ---
@@ -228,6 +231,12 @@ pub(super) fn dispatch_draw_passes(
         &transition_cache,
         state.match_state.match_presentation.sprite_atlas.as_ref(),
         state.match_state.match_presentation.palette_set.as_ref(),
+        state
+            .match_state
+            .match_presentation
+            .building_zshape
+            .as_ref()
+            .map_or(state.renderer.batch_renderer.default_zshape_bind_group(), |z| &z.bind_group),
     );
 
     // Scheduler-owned effects not yet carrying verified class-specific
@@ -450,36 +459,13 @@ pub(super) fn dispatch_draw_passes(
         bracket_tex,
         "building_radius_rings",
     );
-    // Stamp the selected buildings' own art into the depth buffer, colour
-    // masked off, so the bracket redraw below can be clipped by it. gamemd's
-    // building blit writes Z as it paints and its line rasteriser tests every
-    // pixel against that Z, which is why a selected Construction Yard there
-    // shows only the marks that clear its own silhouette. This runs here, after
-    // every colour pass that reads depth, so the stamp cannot disturb anything
-    // but the bracket test that immediately follows.
-    const SELECTED_DEPTH_KEYS: [&str; 4] = [
-        "shp_selected_depth_p0",
-        "shp_selected_depth_p1",
-        "shp_selected_depth_p2",
-        "shp_selected_depth_p3",
-    ];
-    for (i, key) in SELECTED_DEPTH_KEYS.iter().enumerate() {
-        if let Some(page) = state.match_state.match_presentation.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
-            if let Some((buf, count)) = pool.get(key) {
-                state.renderer.batch_renderer.draw_with_buffer_depth_stamp(
-                    &mut pass,
-                    &page.texture,
-                    buf,
-                    count,
-                );
-            }
-        }
-    }
     // Final selected-building front bracket redraw: gamemd line pixels test Z
     // but do not write it — the store back into Z sits behind a caller flag
     // this path leaves clear. Each pixel carries its ground-footprint corner's
-    // depth, so the marks that fall behind the building art lose the test. The
-    // CPU instance builder already samples the tactical ABuffer for this
+    // depth, so the marks that fall behind the building art lose the test
+    // against the Z the building body wrote in the Ground pass (BUILDNGZ
+    // shaped, `0x004990e0`); no separate depth stamp is needed. The CPU
+    // instance builder already samples the tactical ABuffer for this
     // post-shroud redraw.
     draw_pooled_depth_test_texture(
         &mut pass,
@@ -649,10 +635,14 @@ pub(super) fn dispatch_draw_passes(
         current_sidebar_gclock_texture(state),
         "sidebar_gclock",
     );
-    let cameo_overlay_tex = state
-        .renderer.bit_font
-        .darken_texture()
-        .or_else(|| state.match_state.match_presentation.selection_overlay.as_ref().map(|o| o.white_texture()));
+    let cameo_overlay_tex = state.renderer.bit_font.darken_texture().or_else(|| {
+        state
+            .match_state
+            .match_presentation
+            .selection_overlay
+            .as_ref()
+            .map(|o| o.white_texture())
+    });
     draw_pooled_ui(
         &mut pass,
         &state.renderer.batch_renderer,
@@ -818,9 +808,7 @@ fn draw_pooled_ui<'a>(
     }
 }
 
-/// Draw non-wall overlays with depth test bypassed (Always compare).
-/// Tiles without embedded Z-data skip Z-testing.
-/// Uses the overlay atlas's regular texture bind group (not zdepth_bind_group).
+/// Draw decals with depth bypassed, using the shared overlay atlas.
 fn draw_pooled_passthrough_overlay<'a>(
     pass: &mut wgpu::RenderPass<'a>,
     batch: &'a BatchRenderer,
@@ -830,6 +818,59 @@ fn draw_pooled_passthrough_overlay<'a>(
 ) {
     if let (Some(a), Some((buf, count))) = (atlas, pool.get(key)) {
         batch.draw_with_buffer_passthrough(pass, &a.texture, buf, count);
+    }
+}
+
+/// Adjacent policy runs preserve the native cell traversal exactly; grouping
+/// every wall together would change color/depth ties against nearby overlays.
+fn overlay_policy_runs(policies: &[RenderZPolicy]) -> Vec<(u32, u32, RenderZPolicy)> {
+    let mut runs = Vec::new();
+    let mut start = 0;
+    while start < policies.len() {
+        let policy = policies[start];
+        let mut end = start + 1;
+        while end < policies.len() && policies[end] == policy {
+            end += 1;
+        }
+        runs.push((start as u32, (end - start) as u32, policy));
+        start = end;
+    }
+    runs
+}
+
+fn draw_pooled_overlay_bodies<'a>(
+    pass: &mut wgpu::RenderPass<'a>,
+    batch: &'a BatchRenderer,
+    pool: &'a InstanceBufferPool,
+    atlas: Option<&'a OverlayAtlas>,
+    key: &'static str,
+    policies: &[RenderZPolicy],
+) {
+    let (Some(atlas), Some((buf, count))) = (atlas, pool.get(key)) else {
+        return;
+    };
+    assert_eq!(
+        count as usize,
+        policies.len(),
+        "overlay policies must describe the uploaded buffer"
+    );
+    for (start, count, policy) in overlay_policy_runs(policies) {
+        if policy == RenderZPolicy::None {
+            batch.draw_passthrough_range(pass, &atlas.texture, buf, start, count);
+        } else {
+            batch.draw_zsprite_range(
+                pass,
+                &atlas.texture,
+                batch.default_zshape_bind_group(),
+                buf,
+                start,
+                count,
+                matches!(
+                    policy,
+                    RenderZPolicy::ReadWrite | RenderZPolicy::AlphaReadWrite
+                ),
+            );
+        }
     }
 }
 
@@ -889,7 +930,18 @@ fn draw_pooled_bridge_railing<'a>(
 
 #[cfg(test)]
 mod tests {
+    use super::{RenderZPolicy, overlay_policy_runs};
     const SOURCE: &str = include_str!("draw_passes.rs");
+
+    #[test]
+    fn overlay_depth_runs_do_not_reorder_walls_around_special_overlays() {
+        use RenderZPolicy::{None, ReadWrite};
+        assert_eq!(
+            overlay_policy_runs(&[ReadWrite, ReadWrite, None, ReadWrite]),
+            [(0, 2, ReadWrite), (2, 1, None), (3, 1, ReadWrite)]
+        );
+        assert!(overlay_policy_runs(&[]).is_empty());
+    }
 
     fn source_offset(needle: &str) -> usize {
         SOURCE

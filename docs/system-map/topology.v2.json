@@ -237,6 +237,11 @@
           "symbol": "Process_Movement",
           "address": "0x004B2630",
           "evidence": "docs/research/DRIVE_PROCESS_MOVEMENT_TICK_ORDER_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "SetHeight ground/bridge coordinate writer",
+          "address": "0x005F5FA0",
+          "evidence": "docs/research/RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md"
         }
       ],
       "rust_surfaces": [
@@ -252,9 +257,21 @@
           "symbol": "tick_movement_with_grids",
           "coverage": "representative",
           "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/movement/ground_pose.rs",
+          "symbol": "commit_ground_height / ground_surface_z_at",
+          "coverage": "representative",
+          "observed_at_commit": "5cafdce5a2625f49627e6840db7221fffb16321b"
+        },
+        {
+          "path": "src/sim/movement/movement_step.rs",
+          "symbol": "commit_paid_track_height / apply_track_residual",
+          "coverage": "representative",
+          "observed_at_commit": "5cafdce5a2625f49627e6840db7221fffb16321b"
         }
       ],
-      "notes": ["Owner of the bootstrap ground-move loop; native executable preflight remains blocked.", "Accepted ordinary and track-jump arrivals share one private owner for entry order, layered cell lists, Drive occupation, claims, Infantry list repair and movement counts. Geometry, path consumption and differing path-layer phase positions remain with their callers; Rust regression evidence does not establish native parity."]
+      "notes": ["Drive paid/final coordinate commits sample raw Z; residual interpolation updates XY/cell/OnBridge while retaining the previous sample. 158 unmodified-gamemd fixtures cover height/placement leaves; whole locomotor execution, the remaining paid-crossing early return, and bridge route admission are separate limits.", "Accepted ordinary and track-jump arrivals share one private owner for entry order, layered cell lists, Drive occupation, claims, Infantry list repair and movement counts. Geometry, path consumption and differing path-layer phase positions remain with their callers; Rust regression evidence does not establish native parity."]
     },
     "GSI-07.13": {
       "native_anchors": [
@@ -988,6 +1005,49 @@
         }
       ],
       "notes": ["Map knowledge authority is consumed by tactical shroud and radar pixels."]
+    },
+    "GSI-13.03": {
+      "native_anchors": [
+        {
+          "symbol": "FootClass::GetZAdjustment",
+          "address": "0x004DAFC0",
+          "evidence": "docs/research/CLIFF_OBJECTS_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "TechnoClass cliff depth selector",
+          "address": "0x00704240",
+          "evidence": "docs/research/CLIFF_OBJECTS_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "GetHeight above ground/bridge surface",
+          "address": "0x005F5F40",
+          "evidence": "docs/research/RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/render/foot_depth.rs",
+          "symbol": "foot_z_adjust / foot_depth_terms",
+          "coverage": "representative",
+          "observed_at_commit": "3aa6c29168f69ac9929a33bc4abac736be772042"
+        },
+        {
+          "path": "src/app/presentation/instances/foot_depth.rs",
+          "symbol": "unit_z_adjust / shp_z_adjust",
+          "coverage": "representative",
+          "observed_at_commit": "5cafdce5a2625f49627e6840db7221fffb16321b"
+        },
+        {
+          "path": "src/render/locomotor_visual.rs",
+          "symbol": "world_z_leptons / screen_position",
+          "coverage": "representative",
+          "observed_at_commit": "5cafdce5a2625f49627e6840db7221fffb16321b"
+        }
+      ],
+      "notes": [
+        "Foot depth preserves constructor defaults and wrapping signed maximum across cliff/column/tunnel/bridge selectors, gathered from live terrain/type state without simulation-dummy mutation.",
+        "85 native Foot-depth fixtures and 158 native height/placement fixtures bound separate arithmetic contracts. Simulation now supplies sampled ramp Z to projection and the SHP GetHeight gate; GPU/adapter regressions are separate. User cliff acceptance is bounded; paired full-game pixels, bridge split-blit admission and complete painter ordering remain unclaimed."
+      ]
     },
     "GSI-13.24": {
       "native_anchors": [

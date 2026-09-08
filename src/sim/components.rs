@@ -35,10 +35,12 @@ pub struct Position {
     pub z: u8,
     /// Exact native ObjectClass coordinate Z, in signed leptons.
     ///
-    /// Most grounded objects are completely described by the coarse signed
-    /// CellClass level above. UnitClass TubeMovement is the exception: its
-    /// interpolated/final Z retains the signed division remainder after the
-    /// tube state clears, so it cannot be reconstructed from `z`.
+    /// Ground movement retains ramp height at the native height-write points;
+    /// Drive/Ship residual XY interpolation can retain an earlier sampled Z.
+    /// TubeMovement also retains its signed interpolation remainder after exit.
+    /// Neither coordinate can be reconstructed from the coarse `z` level or
+    /// indiscriminately replaced with the current surface on idle ticks.
+    /// None is the legacy coarse/independent-altitude representation.
     #[serde(default)]
     pub exact_z_leptons: Option<i32>,
     /// Sub-cell lepton offset X (0..256). 128 = cell center.

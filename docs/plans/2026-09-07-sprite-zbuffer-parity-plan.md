@@ -1,5 +1,12 @@
 # Per-pixel sprite Z-buffer parity — implementation plan
 
+> Continuation, 2026-09-08: the implementation and old capture claims below
+> predate three confirmed corrections: BUILDNGZ constant/intersected seed,
+> stored SHP frame extents, and ordinary wall SHP depth. See
+> [the continuation evidence and validation](2026-09-08-depth-occlusion-continuation.md).
+> The old fixture-1 captures do not establish the corrected candidate's parity.
+
+
 Date: 2026-09-07. Branch: `feature/zbuffer-sprite-ztest-docs`.
 Source revision: `c9d07488` (docs corrected, no code yet).
 
@@ -200,7 +207,7 @@ tiles and sprites are the case to decide on; note the choice in the shader.
 - **Walls.** Native walls write Z through the tile blitter; VERA draws walls
   through passthrough with no write (`draw_passes.rs:132`). A building beside
   a wall cannot lose pixels to it until walls write depth. Either include wall
-  depth writes here (they are TMP-family, so the zdepth path fits) or record
+  depth writes here (they are SHP-family (47F6A0), so the zsprite write path fits) or record
   the residual with the acceptance scenario below marked partial.
 
 ### 5. Obsolete after this lands
@@ -263,6 +270,31 @@ the whole frame.
    `gsi_*` order pins and `unit_page_runs_preserve_equal_depth_layer_order`
    must still pass. One full `cargo test -p vera20k --lib` for the final
    candidate; report the literal `test result:` line.
+
+## Capture results (2026-09-08, branch `feature/sprite-zbuffer-depth`)
+
+Fixture: a flat temperate map (`zdepth.map`, generated) with GACNST at the
+centre cell, GAWEAP four cells west, four MTNK placed directly behind each
+building, two in front, and E1 infantry beside them. Retail ran the fixture as
+a campaign mission in the isolated `gamemd.exe -win` copy and wrote its own
+`SCRN0001.PCX` (1024x768); VERA ran it through `RA2_QUICKPLAY` (release
+build, commit `dfb19433`) and wrote `SCRN0000.pcx`. Frames were aligned on a
+60x60 patch of building art (mean grey error 3.7 for the factory, 6.5 for the
+yard, i.e. the same art at the same place) and differenced.
+
+| Scenario | Result |
+|---|---|
+| 1. Unit behind a tall building (four tanks north of GACNST) | Match. Each tank is cut at the same roof line in both frames; the diff map is quiet along the whole silhouette. |
+| 2. Unit in front (two tanks south) | Match; both fully visible. Residual 4-8 px placement offset of map-placed vehicles (sub-cell position, not depth). |
+| ZShapePointMove building (GAWEAP, `30,15`) with tanks behind and in front | Match; the tank behind the flag mast is clipped identically. |
+| 6. Infantry beside the buildings | Match. |
+| 3. Building beside a cliff, 4. GAWALL ring | Second fixture (`zdepth2.map`: cliff piece with raised ground behind it, wall ring around GAPILL) staged; captures pending. |
+
+Remaining differences in the diffed regions are grass tile noise, the house
+colour before the quick-play colour was pinned to DarkBlue, a hover health
+bar, and the vehicle placement offset above. The debug switch
+`RA2_DEBUG_DEPTH_VIEW=1` paints every Z-tested fragment's depth as grey
+(wrapping each 128 rows) for reading the written depth off a screenshot.
 
 ## Residuals to record (not closed by this plan)
 

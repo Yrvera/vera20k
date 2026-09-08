@@ -87,6 +87,8 @@ impl CombatLightRenderer {
                     screen_size: [1.0, 1.0],
                     camera_pos: [0.0, 0.0],
                     zoom: 1.0,
+                    world_origin_y: 0.0,
+                    world_height: 1.0,
                     _pad: 0.0,
                 }),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -244,6 +246,8 @@ impl CombatLightRenderer {
                 screen_size,
                 camera_pos,
                 zoom,
+                world_origin_y: 0.0,
+                world_height: 1.0,
                 _pad: 0.0,
             }),
         );

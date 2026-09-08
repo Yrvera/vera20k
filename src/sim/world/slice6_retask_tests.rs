@@ -207,8 +207,12 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // Merge 2026-09-02: main's veterancy re-baseline and this branch's queue-store
 // re-baseline both move the same constants, so the values below are the composed
 // measurement taken on the merged tree, not either side's number.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x9B0D_7430_8305_1769;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9694_A52E_B273_078B;
+// 2026-09-08 ramp-height writer: final entity 3 gains exact Z Some(0).
+// Clearing ONLY that value recovers every parent (588f4079) probe, with identical
+// final entity state otherwise and equal full RNG states. No schema fold changed.
+// See RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md, replay provenance.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x0BE9_BCB6_553A_FFB4;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x011D_0DC1_170F_D42C;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -351,22 +355,25 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9694_A52E_B273_078B;
 // deposit radius. The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved.
-const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0x8C10_E3FB_A724_DC45;
-const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x85A5_BAF4_8901_5224;
-const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x1A28_C2A9_C8E5_15BC;
-const SLICE6_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x8A0C_1481_C5DC_F2F9;
+const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0x2338_F419_C4B7_2E54;
+const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x0218_0E5F_55E2_5D18;
+const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xBC7E_9E9E_B0E7_E5B7;
+const SLICE6_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x1B22_7781_2679_7BB6;
 // Re-baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): the
 // `BuildingClass+0x6D0` ProduceCash timer and the `TechnoClass+0x1CC/+0x1D0`
 // drain link pair join the per-entity fold. The dedicated pre-v135 probe
 // reproduces the prior current baseline exactly and every older probe holds;
 // this script has no derrick, DrainWeapon or capture, so only composition
 // moved (each object folds its dead constructor timer and two `None`s).
-const SLICE6_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xF26E_75C0_F0E0_4633;
-const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0xB9AD_9B95_BF3D_1130;
+const SLICE6_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xAB86_7AE4_CD6A_1874;
+const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x34D6_7612_D63B_1A87;
 // v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
-// reproduces the prior current baseline exactly; older probes and RNG pins
+// reproduces the ramp branch's current baseline exactly; older probes and RNG pins
 // are unchanged. This is Rust hash-composition provenance, not native parity.
-const SLICE6_BASELINE_HASH: u64 = 0x75EB_010D_E026_0566;
+// 2026-09-08 integration of main 33f36d79 with ramp branch 5f41f2ea:
+// the pre-v136 probe and all older probes pass, isolating this new current
+// value to main's retained InfantryTerminal fold; existing command checks hold.
+const SLICE6_BASELINE_HASH: u64 = 0xBD1A_450A_FE28_594E;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

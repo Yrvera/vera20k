@@ -149,6 +149,7 @@ pub(crate) fn render_and_present(
         0.0,
         0.0,
         1.0,
+        crate::render::batch::DepthAxis::NONE,
     );
 
     let output = gpu

@@ -15,6 +15,7 @@
 
 mod helpers;
 pub(crate) use helpers::*;
+mod foot_depth;
 
 mod units;
 pub(crate) use units::*;

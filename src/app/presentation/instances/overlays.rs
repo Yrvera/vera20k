@@ -15,6 +15,7 @@ use crate::map::overlay_types::is_bridge_overlay_index;
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
 use crate::render::bridge_atlas::is_high_bridge_body_identity;
+use crate::render::native_z::{self, ZGradient, pack_z_gradient};
 use crate::render::overlay_atlas::{CRATE_BODY_FRAME, OverlaySpriteKey};
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::tactical_draw_plan::{
@@ -22,6 +23,7 @@ use crate::render::tactical_draw_plan::{
 };
 use crate::rules::art_data::{AnimLayer, AnimTypeRuntimeConfig, anim_translucency_source_alpha};
 use crate::rules::house_colors::HouseColorIndex;
+use crate::rules::overlay_types::OverlayTypeFlags;
 use crate::sim::components::WeaponMuzzleFlash;
 use crate::sim::projectile::ProjectileCoord;
 use crate::util::fixed_math::SimFixed;
@@ -91,6 +93,57 @@ fn overlay_body_frame(is_crate: bool, overlay_data: u8) -> u8 {
 /// its art away from the stock BRIDGE1/2 family.
 fn ordinary_overlay_accepts_identity(overlay_id: u8, name: &str) -> bool {
     !is_high_bridge_body_identity(overlay_id, name)
+}
+
+/// Ordinary overlay bodies are SHP draws, not TMP tiles. The active path is
+/// `Cell_ContentRendering @ 0x006D6D10 -> DrawOverlay_Body @ 0x0047F6A0`.
+/// Every body requests 0x4E00; selector 0x00490B90's +0xBC family tests and
+/// writes Z (same opaque leaf as buildings). Wall (+0x2A8) forces gradient 2
+/// with `-15 * level - 2`; ordinary non-walls use DrawFlat (+0x2B3), adding
+/// -15 only for upright non-rock art. Tiberium's flat branch uses gradient 0.
+///
+/// Sloped resources use a separate native slope Z-shape. Rubble queries
+/// foundation art dynamically, and the TS vein family also has special shape
+/// offsets. Preserve their existing passthrough until those consumers have
+/// their own shape data; assigning a made-up flat Z would poison nearby walls.
+fn ordinary_overlay_z(
+    flags: Option<&OverlayTypeFlags>,
+    slope: u8,
+    level: u8,
+) -> (RenderZPolicy, f32, u32) {
+    let Some(flags) = flags else {
+        return (RenderZPolicy::None, 0.0, 0);
+    };
+    if (flags.tiberium && slope != 0)
+        || flags.is_rubble
+        || flags.is_veins
+        || flags.is_veinhole_monster
+    {
+        return (RenderZPolicy::None, 0.0, 0);
+    }
+    let (gradient, class_term) = if flags.tiberium {
+        (ZGradient::Flat, -2)
+    } else if flags.wall {
+        (ZGradient::Vertical, -2)
+    } else {
+        (
+            if flags.draw_flat {
+                ZGradient::Flat
+            } else {
+                ZGradient::Vertical
+            },
+            if flags.draw_flat || flags.is_a_rock {
+                -2
+            } else {
+                -17
+            },
+        )
+    };
+    (
+        RenderZPolicy::ReadWrite,
+        native_z::ground_anchored_z_adjust(i32::from(level), class_term) as f32,
+        pack_z_gradient(gradient, false),
+    )
 }
 
 /// Resolve the CellClass overlay identity/data used by the tactical overlay
@@ -198,7 +251,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         let Some(entry) = atlas.get(&key) else {
             continue;
         };
-        let depth_y: f32 = center_y + entry.offset_y + entry.pixel_size[1];
+        let depth_y: f32 = center_y + entry.canvas_rect[1] + entry.canvas_rect[3];
         let base_depth: f32 = compute_sprite_depth(state, depth_y, fx.z);
         let cfg: Option<&AnimTypeRuntimeConfig> = state
             .rules()
@@ -415,6 +468,10 @@ pub(crate) fn build_anim_class_instances(
             .unwrap_or((0.0, 1.0));
         let fire_depth = compute_sprite_depth_params(origin_y, world_height, center_y, z);
         debug_assert!(!anim.terrain_attached || anim.use_cell_drawer);
+        // Native Z (`AnimClass__DrawIt @ 0x00422CA0`): 0x2800, gradient entry
+        // 2 (0 when Flat), `YDrawOffset + ZAdjust - AdjustForZ - 2`; tests Z
+        // per pixel and never writes. YDrawOffset is already in the atlas
+        // offset, so only ZAdjust - 2 remains beside the lift cancel.
         let instance = SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
             size: entry.pixel_size,
@@ -427,6 +484,22 @@ pub(crate) fn build_anim_class_instances(
             ),
             tint,
             alpha,
+            // YDrawOffset is baked into the atlas offset, so it must also
+            // ride the Z term to keep Z on the un-offset row, as natively.
+            z_adjust: super::helpers::ground_z_adjust(
+                z,
+                anim.z_adjust
+                    + config.map_or(0, |c| c.y_draw_offset)
+                    + ANIM_DRAW_DEPTH_BIAS_PX,
+            ),
+            z_gradient: crate::render::native_z::pack_z_gradient(
+                if config.is_some_and(|c| c.flat) {
+                    crate::render::native_z::ZGradient::Flat
+                } else {
+                    crate::render::native_z::ZGradient::Vertical
+                },
+                false,
+            ),
             ..Default::default()
         };
         match anim_render_destination(
@@ -443,6 +516,7 @@ pub(crate) fn build_anim_class_instances(
                         target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(
                             entry.page as usize,
                         ),
+                        render_z: parent.policy.render_z,
                         instance,
                     }],
                 ),
@@ -560,6 +634,7 @@ pub(crate) fn build_overlay_instances(
     sw: f32,
     sh: f32,
     instances: &mut Vec<SpriteInstance>,
+    render_z: &mut Vec<RenderZPolicy>,
     ground_objects: &mut Vec<
         crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance,
     >,
@@ -724,6 +799,8 @@ pub(crate) fn build_overlay_instances(
         let Some(spr) = atlas.get(&key) else { continue };
         let depth_z: u8 = z;
         let depth: f32 = compute_sprite_depth_params(origin_y, world_height, screen_y, depth_z);
+        let (policy, z_adjust, z_gradient) =
+            ordinary_overlay_z(overlay_flags, slope_type.unwrap_or(0), depth_z);
         let tint: [f32; 3] = state
             .match_state
             .match_presentation
@@ -736,7 +813,7 @@ pub(crate) fn build_overlay_instances(
                     kind: crate::app::presentation::render::draw_plan_lowering::cell_draw_kind(
                         is_wall,
                     ),
-                    policy: BlitPolicy::translucent(SpriteEncoding::Terrain, RenderZPolicy::None),
+                    policy: BlitPolicy::translucent(SpriteEncoding::Terrain, policy),
                 },
                 instance: SpriteInstance {
                     position: [
@@ -749,6 +826,8 @@ pub(crate) fn build_overlay_instances(
                     depth,
                     tint,
                     alpha: 1.0,
+                    z_adjust,
+                    z_gradient,
                     ..Default::default()
                 },
             },
@@ -756,9 +835,12 @@ pub(crate) fn build_overlay_instances(
         next_draw_id += 1;
     }
 
-    instances.extend(
-        crate::app::presentation::render::draw_plan_lowering::lower_cell_instances(planned_cells),
-    );
+    let (ordered, policies) =
+        crate::app::presentation::render::draw_plan_lowering::lower_cell_instances_with_policy(
+            planned_cells,
+        );
+    instances.extend(ordered);
+    render_z.extend(policies);
 
     if std::env::var("RA2_DEBUG_BRIDGE_RENDER_BUCKETS").is_ok() {
         log::debug!("Cell overlay instances: {}", instances.len());
@@ -837,6 +919,7 @@ pub(crate) fn build_overlay_instances(
                 parent,
                 vec![crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
                     target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::OverlayAtlas,
+                    render_z: parent.policy.render_z,
                     instance: SpriteInstance {
                         position: [
                             screen_x + TILE_WIDTH / 2.0 + spr.offset_x,
@@ -1306,6 +1389,10 @@ pub(crate) fn build_parachute_instances(
                     crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(
                         entry.page as usize,
                     ),
+                // VERA-internal: the chute's native Z term (an anim ZAdjust of
+                // -10 above a descending body) is not carried by this piece,
+                // so it draws without a Z test rather than with a wrong one.
+                render_z: crate::render::tactical_draw_plan::RenderZPolicy::None,
                 instance: SpriteInstance {
                     position: [cx, cy],
                     size: entry.pixel_size,
@@ -1325,14 +1412,18 @@ pub(crate) fn build_parachute_instances(
 mod tests {
     use super::{
         ANIM_DRAW_DEPTH_BIAS_PX, AnimRenderDestination, CRATE_BODY_FRAME, anim_instance_alpha,
-        anim_render_destination, apply_shape_z_adjust, garrison_flash_depth, overlay_body_frame,
-        ordinary_overlay_accepts_identity, overlay_display_identity, overlay_render_identity,
-        terrain_object_is_render_visible, weapon_muzzle_flash_key, world_effect_screen_position,
+        anim_render_destination, apply_shape_z_adjust, garrison_flash_depth,
+        ordinary_overlay_accepts_identity, ordinary_overlay_z, overlay_body_frame,
+        overlay_display_identity, overlay_render_identity, terrain_object_is_render_visible,
+        weapon_muzzle_flash_key, world_effect_screen_position,
     };
     use crate::map::overlay::TerrainObject;
     use crate::map::overlay_types::OverlayTypeRegistry;
+    use crate::render::native_z::ZGradient;
+    use crate::render::tactical_draw_plan::RenderZPolicy;
     use crate::rules::art_data::ArtRegistry;
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::overlay_types::OverlayTypeFlags;
     use crate::rules::ruleset::RuleSet;
     use crate::rules::tiberium_type::TiberiumTypeRegistry;
     use crate::sim::components::{AnimRuntime, GarrisonMuzzleFlash, WeaponMuzzleFlash};
@@ -1466,6 +1557,7 @@ mod tests {
                 parent,
                 vec![crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
                     target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(0),
+                    render_z: crate::render::tactical_draw_plan::RenderZPolicy::ReadOnly,
                     instance: crate::render::batch::SpriteInstance::default(),
                 }],
             )
@@ -1561,6 +1653,59 @@ mod tests {
         assert_eq!(overlay_body_frame(false, 0x13), 0x13);
         // Undamaged, isolated.
         assert_eq!(overlay_body_frame(false, 0x00), 0x00);
+    }
+
+    #[test]
+    fn ordinary_overlay_depth_uses_native_wall_and_nonwall_call_arguments() {
+        // Parsed default matters: +0x2B3 starts true, but +0x2A8 Wall forces
+        // gradient 2 even if DrawFlat is omitted or explicitly true.
+        let registry = OverlayTypeRegistry::from_ini(
+            &IniFile::from_str(
+                "[OverlayTypes]\n0=WALL\n1=FLAT\n2=UPRIGHT\n3=ROCK\n4=ORE\n\
+                 [WALL]\nWall=yes\n[FLAT]\n[UPRIGHT]\nDrawFlat=no\n\
+                 [ROCK]\nDrawFlat=no\nIsARock=yes\n[ORE]\nTiberium=yes\nDrawFlat=no\n",
+            ),
+            None,
+        );
+        for (id, gradient, class_term) in [
+            (0, ZGradient::Vertical, -2),
+            (1, ZGradient::Flat, -2),
+            (2, ZGradient::Vertical, -17),
+            (3, ZGradient::Vertical, -2),
+            (4, ZGradient::Flat, -2),
+        ] {
+            for level in [0, 1, 4, 14] {
+                let (policy, z_adjust, packed) = ordinary_overlay_z(registry.flags(id), 0, level);
+                assert_eq!(policy, RenderZPolicy::ReadWrite);
+                assert_eq!(
+                    packed, gradient as u32,
+                    "ordinary overlays have no BUILDNGZ"
+                );
+                assert_eq!(z_adjust as i32, class_term - i32::from(level) * 15);
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_overlay_slope_shapes_do_not_acquire_fabricated_depth() {
+        let ore = OverlayTypeFlags {
+            tiberium: true,
+            ..Default::default()
+        };
+        assert_eq!(ordinary_overlay_z(Some(&ore), 1, 4).0, RenderZPolicy::None);
+        assert_eq!(
+            ordinary_overlay_z(Some(&ore), 0, 4).0,
+            RenderZPolicy::ReadWrite
+        );
+        let wall = OverlayTypeFlags {
+            wall: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            ordinary_overlay_z(Some(&wall), 1, 4).0,
+            RenderZPolicy::ReadWrite
+        );
+        assert_eq!(ordinary_overlay_z(None, 0, 0).0, RenderZPolicy::None);
     }
 
     #[test]
