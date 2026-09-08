@@ -145,3 +145,53 @@ pixel equality. Infantry/crane animation differences were excluded. Neither
 image has a unit crossing the cliff face or a bridge overlap; those are not
 claimed as demonstrated by these captures. Images and comparison metadata
 are preserved under `.local/depth-occlusion/user-comparison-20260908/`.
+
+## Cliff critic follow-up: confirmed remaining gap
+
+The user deferred the manual cliff comparison and requested a critic review.
+Two read-only reviewers traced the actual terrain-to-unit production path and
+the native unit draw callers. **Cliff parity is not complete.** The existing
+terrain depth path is connected, but a stock-active unit depth adjustment is
+missing. No cliff implementation, rebuild or game restart was made in this review.
+
+- **Already present before this continuation:** TMP decode, terrain atlas and
+  instance depth data, terrain depth shader, voxel instances and voxel depth
+  shader are unchanged from `51213e58` to `432f4766`. Terrain writes the shared
+  depth attachment first; Ground UnitAtlas/transition runs test it through the
+  voxel pipeline using strict-less without writing. There is no disconnected
+  terrain-to-tank depth path. Our continuation fixed SHP consumers and walls;
+  it did not directly fix ordinary voxel tanks against cliffs.
+- **Native omission confirmed:** TechnoType constructor `0x710AF0` stores
+  `ZFudgeCliff = 10` at `+0xDC0` (`0x711664`). UnitType constructor `0x7470D0`
+  calls it and does not reset that field. UnitType ReadINI `0x747620` calls
+  TechnoType ReadINI `0x712170`; `0x71541C..0x715437` retains the existing value
+  when the INI key is absent. Thus absence from retail rules does not mean zero.
+  The older `CLIFF_OBJECTS_GHIDRA_REPORT.md` claims of default zero and dormancy
+  are contradicted by this live binary evidence and must not justify skipping it.
+- **Active draw consumption:** Unit vtable `0x7F5C70`, slot `+0x2EC`, resolves
+  to Foot `0x4DAFC0`. Both normal composite `0x73B140` and cached `0x707480`
+  paths call it. The compositor `0x4DAFF0` includes
+  `max(cliff, column, tunnel, bridge)` plus its base and `0x704350` adjustment;
+  `0x4DB03F..0x4DB04C` loads and multiplies the cliff field.
+- **Cliff predicate:** `0x704240` returns zero on a bridge. Otherwise it probes
+  cell offsets `(1,1)` and `(2,2)` relative to the unit's current cell. A signed
+  height difference of at least four sets the first result to 2; the second
+  probe independently overrides it to 1. Offset global `0x89F694` is initialized
+  to packed `(1,1)` at `0x49F34A`; its zero bytes in the file image are not its
+  runtime value. With the stock default, the cliff term can be 10 or 20 native
+  Z units before the ordinary blitter quantisation and max with other terms.
+- **Current Rust:** `instances/units.rs::voxel_z_adjust` supplies only
+  `ground_z_adjust(z, 0)`; there is no `ZFudgeCliff` parser or consumer.
+  Ordinary SHP foot bodies likewise omit it. Existing bridge sort-depth bias
+  cannot supply it because the per-pixel shaders compute depth from `z_adjust`.
+  Omitting the positive native term can leave unit pixels visible through a
+  cliff where native YR rejects them. This is a pre-existing gap, not a regression
+  introduced by our wall/building fixes; the exact visible boundary still needs
+  a paired cliff case.
+
+The four new GPU regressions exercise terrain and SHP shaders in a minimal
+harness. They do not exercise the voxel shader or the complete production draw
+dispatch, and therefore cannot certify the tank/cliff case. The wall/building
+screenshot acceptance above remains valid within its stated coverage. Resume
+with the native cliff adjustment and a tank crossing the cliff boundary when
+the user returns to cliffs; do not rebuild the already-connected terrain path.
