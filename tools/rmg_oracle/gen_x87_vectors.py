@@ -1,5 +1,7 @@
 """Vectors for the Gaussian helper 0x005980C0 (Box-Muller) and its RNG callback.
 
+Run with ``python -m tools.rmg_oracle.gen_x87_vectors`` (read-only check by default).
+
 Layout of the helper's control block (the global at 0x00ABDFB8):
     +0x00  u8      cached-value flag
     +0x08  f64     cached second variate
@@ -9,8 +11,9 @@ The callback the generator installs is 0x00598000:
     Random__Next(g_MapGenRng) -> FILD -> FMUL [0x007ED898]
 i.e. exactly `next_u32() as f64 * K`.
 
-The helper returns its variate on the FPU stack, so the harness captures ST0
-via an injected store stub rather than a lossy register read.
+The helper returns its variate on the FPU stack. An injected FSTP store stub
+observes ST0 rounded to binary64 under FPCW 0x0E7F (53-bit precision, truncate);
+this is not a capture of the full extended-precision ST0 value.
 
 CAVEAT (recorded in the vector file): the `ln` is computed with x87 FYL2X,
 which unicorn implements in softfloat. If that differs from real x87 hardware,
@@ -19,8 +22,9 @@ match here as necessary-but-not-sufficient until a hardware capture confirms.
 """
 
 import struct
+from pathlib import Path
 
-from harness import call, write_vectors
+from tools.native_oracle import call, finish_vectors, provenance
 
 GAUSS_FN = 0x005980C0
 CALLBACK = 0x00598000  # unit-draw callback the generator installs
@@ -42,12 +46,13 @@ def control_block(cached_flag: int = 0, cached_value: float = 0.0) -> bytes:
 
 
 def seeded_rng(seed: int) -> bytes:
-    from gen_rng_vectors import seeded_struct
+    from tools.rmg_oracle.gen_rng_vectors import seeded_struct
 
     return seeded_struct(seed)
 
 
-if __name__ == "__main__":
+def generate() -> dict:
+    """Execute original Gaussian bodies while carrying RNG and cache bytes."""
     vectors = {
         "source": "unicorn/gamemd.exe",
         "fn": hex(GAUSS_FN),
@@ -83,14 +88,31 @@ if __name__ == "__main__":
                     "cached_flag": bytes.fromhex(result["dumps"]["ctrl"])[0],
                 }
             )
-            print(
-                f"seed {seed:>6} call {index}: {result['st0']:+.17e} "
-                f"bits={result['st0_bits']:016X} "
-                f"cached={bytes.fromhex(result['dumps']['ctrl'])[0]}"
-            )
             # Carry both the RNG state and the cache forward, exactly as the
             # generator does across consecutive draws.
             rng_state = bytes.fromhex(result["dumps"]["rng"])
             ctrl = bytes.fromhex(result["dumps"]["ctrl"])
 
-    write_vectors("x87.json", vectors)
+    return vectors
+
+
+def main() -> None:
+    finish_vectors(
+        generate,
+        Path(__file__).parent / "vectors" / "x87.json",
+        provenance=lambda: provenance(
+            scope="Eight successive Gaussian draws for two seeds; emulator output, not hardware x87 parity.",
+            assumptions=[
+                "Original RNG state and Gaussian cache bytes are carried between fresh emulator calls.",
+                "The control block callback is fixed to the generator's native uniform draw callback.",
+                "Each call sets x87 FPCW to 0x0E7F: 53-bit precision, round toward zero, all exceptions masked.",
+                "FYL2X is emulated by Unicorn softfloat and can differ from real x87 hardware.",
+            ],
+            substitutions=["An injected FSTP return stub observes ST0 rounded to binary64 under FPCW 0x0E7F; full extended precision is not captured."],
+            entry_points={"Gaussian": GAUSS_FN, "uniform_callback": CALLBACK},
+        ),
+    )
+
+
+if __name__ == "__main__":
+    main()
