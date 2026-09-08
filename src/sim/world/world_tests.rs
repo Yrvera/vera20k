@@ -4,6 +4,9 @@
 
 use std::collections::BTreeMap;
 
+#[path = "navigation_tests.rs"]
+mod navigation_tests;
+
 use super::*;
 use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::houses::HouseAllianceMap;
@@ -1484,27 +1487,20 @@ fn dynamic_navigation_publication_composes_structures_bibs_and_bridges() {
         &terrain, true, 10,
     ));
     sim.resolved_terrain = Some(terrain);
-    let owner = sim.interner.intern("Americans");
-    let type_ref = sim.interner.intern("GAREFN");
-    sim.substrate
-        .entities
-        .insert(GameEntity::new_at_frame_zero_for_test(
-            1,
-            8,
-            8,
-            0,
-            0,
-            owner,
-            crate::sim::components::Health {
-                current: 100,
-                max: 100,
-            },
-            type_ref,
-            EntityCategory::Structure,
-            0,
-            0,
-            false,
-        ));
+    let mut building = make_test_entity("GAREFN", EntityCategory::Structure);
+    building.cell_x = 8;
+    building.cell_y = 8;
+    assert_eq!(
+        sim.spawn_from_map(&[building], Some(&rules), &empty_heights()),
+        1
+    );
+    let placed = sim.substrate.entities.values().next().unwrap();
+    assert!(placed.lifecycle.cell_marked);
+    assert!(
+        sim.substrate
+            .occupancy
+            .contains_entity(8, 9, placed.stable_id())
+    );
 
     assert!(sim.rebuild_dynamic_navigation(&rules));
     let grid = sim.path_grid().expect("published navigation");
