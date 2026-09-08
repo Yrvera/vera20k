@@ -3,9 +3,11 @@
 //! These tests upload production `SpriteInstance`/`CameraUniform` data and
 //! execute the checked-in WGSL. They do not replace shader math with a CPU
 //! implementation. Synthetic texels isolate depth admission, transparent holes,
-//! BUILDNGZ seed handling, and tint preservation; they are not retail-scene or
-//! gamemd pixel-parity goldens. Pipeline setup is a minimal offscreen harness,
-//! so production draw-list routing still needs its own tests/comparison.
+//! BUILDNGZ seed handling, indexed VXL palettes, and tint preservation. A stock
+//! cliff case also exercises the production asset decoder and terrain instance
+//! builder. These are Rust regressions, not gamemd pixel-parity goldens.
+//! Pipeline setup is a minimal offscreen harness, so production draw-list
+//! routing still needs its own tests/comparison.
 //!
 //! Run explicitly on a machine with a wgpu adapter:
 //! `cargo test -p vera20k --lib render::depth_gpu_tests:: -- --ignored`
@@ -26,12 +28,13 @@ const RED: [u8; 4] = [255, 0, 0, 255];
 const GREEN: [u8; 4] = [0, 255, 0, 255];
 const BLUE: [u8; 4] = [0, 0, 255, 255];
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Shader {
     Batch,
     Terrain,
     SpriteRead,
     SpriteWrite,
+    Voxel,
 }
 
 impl Shader {
@@ -40,6 +43,7 @@ impl Shader {
             Self::Batch => include_str!("batch_shader.wgsl"),
             Self::Terrain => include_str!("zdepth_shader.wgsl"),
             Self::SpriteRead | Self::SpriteWrite => include_str!("zsprite_shader.wgsl"),
+            Self::Voxel => include_str!("sprite_voxel_shader.wgsl"),
         }
     }
 
@@ -48,11 +52,14 @@ impl Shader {
     }
 }
 
+#[derive(Clone)]
 struct Layer {
     shader: Shader,
     instance: SpriteInstance,
     rgba: Vec<u8>,
     z_bytes: Vec<u8>,
+    source_size: [u32; 2],
+    indices: Vec<u8>,
 }
 
 impl Layer {
@@ -72,11 +79,15 @@ impl Layer {
             },
             rgba: rgba.repeat((SIDE * SIDE) as usize),
             z_bytes: vec![0; (SIDE * SIDE) as usize],
+            source_size: [SIDE; 2],
+            indices: vec![33; (SIDE * SIDE) as usize],
         }
     }
 
     fn hole(&mut self, x: u32, y: u32) {
-        self.rgba[((y * SIDE + x) * 4 + 3) as usize] = 0;
+        let pixel = (y * self.source_size[0] + x) as usize;
+        self.rgba[pixel * 4 + 3] = 0;
+        self.indices[pixel] = 0;
     }
 }
 
@@ -105,13 +116,18 @@ impl Gpu {
         Self { device, queue }
     }
 
-    fn texture(&self, format: wgpu::TextureFormat, bytes: &[u8]) -> wgpu::TextureView {
+    fn texture(
+        &self,
+        format: wgpu::TextureFormat,
+        bytes: &[u8],
+        size: [u32; 2],
+    ) -> wgpu::TextureView {
         self.device
             .create_texture_with_data(
                 &self.queue,
                 &wgpu::TextureDescriptor {
                     label: Some("Depth test source"),
-                    size: extent(),
+                    size: extent(size),
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
@@ -126,12 +142,16 @@ impl Gpu {
     }
 
     fn render(&self, layers: &[Layer]) -> Vec<[u8; 4]> {
+        self.render_sized(layers, [SIDE; 2])
+    }
+
+    fn render_sized(&self, layers: &[Layer], size: [u32; 2]) -> Vec<[u8; 4]> {
         let camera = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Depth test camera"),
                 contents: bytemuck::bytes_of(&CameraUniform {
-                    screen_size: [SIDE as f32; 2],
+                    screen_size: [size[0] as f32, size[1] as f32],
                     camera_pos: [0.0; 2],
                     zoom: 1.0,
                     world_origin_y: -100.0,
@@ -145,7 +165,7 @@ impl Gpu {
             .create_sampler(&wgpu::SamplerDescriptor::default());
         let color = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth test output"),
-            size: extent(),
+            size: extent(size),
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -157,7 +177,7 @@ impl Gpu {
             label: Some("Depth test shared Z"),
             format: wgpu::TextureFormat::Depth32Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            ..color_descriptor()
+            ..color_descriptor(size)
         });
         let color_view = color.create_view(&Default::default());
         let depth_view = depth.create_view(&Default::default());
@@ -223,24 +243,71 @@ impl Gpu {
                     resource: camera.as_entire_binding(),
                 }],
             });
-            let color_source = self.texture(wgpu::TextureFormat::Rgba8UnormSrgb, &layer.rgba);
-            let z_source = self.texture(wgpu::TextureFormat::R8Unorm, &layer.z_bytes);
-            let mut texture_entries = vec![
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&color_source),
-                },
-                wgpu::BindGroupEntry {
+            let voxel = matches!(layer.shader, Shader::Voxel);
+            let color_source = if voxel {
+                self.texture(
+                    wgpu::TextureFormat::R8Uint,
+                    &layer.indices,
+                    layer.source_size,
+                )
+            } else {
+                self.texture(
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    &layer.rgba,
+                    layer.source_size,
+                )
+            };
+            let z_source = self.texture(
+                wgpu::TextureFormat::R8Unorm,
+                &layer.z_bytes,
+                layer.source_size,
+            );
+            let mut texture_entries = vec![wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&color_source),
+            }];
+            if !voxel {
+                texture_entries.push(wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ];
+                });
+            }
             if matches!(layer.shader, Shader::Terrain) {
                 texture_entries.push(wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(&z_source),
                 });
             }
+            // The actual indexed shader takes non-remap byte 33 from the
+            // palette and byte 16 from house row 1. Row 0 is deliberately red.
+            // Its declared sampler is unused by textureLoad, so the automatic
+            // pipeline layout contains only the two live texture bindings.
+            let mut palette_bytes = vec![0; 256 * 4];
+            palette_bytes[33 * 4..34 * 4].copy_from_slice(&layer.rgba[..4]);
+            let palette = self.texture(
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                &palette_bytes,
+                [256, 1],
+            );
+            let ramp_bytes = [RED.repeat(16), GREEN.repeat(16)].concat();
+            let house_ramp =
+                self.texture(wgpu::TextureFormat::Rgba8UnormSrgb, &ramp_bytes, [16, 2]);
+            let voxel_palette_group = voxel.then(|| {
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Depth test indexed VXL palette and house ramp"),
+                    layout: &pipeline.get_bind_group_layout(2),
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&palette),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&house_ramp),
+                        },
+                    ],
+                })
+            });
             let texture_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Depth test source group"),
                 layout: &pipeline.get_bind_group_layout(1),
@@ -300,13 +367,22 @@ impl Gpu {
             if let Some(group) = &zshape_group {
                 pass.set_bind_group(2, group, &[]);
             }
+            if let Some(group) = &voxel_palette_group {
+                pass.set_bind_group(2, group, &[]);
+            }
             pass.set_vertex_buffer(0, instances.slice(..));
             pass.draw(0..6, 0..1);
         }
 
-        let readback =
-            PendingBgra8Readback::encode(&self.device, &mut encoder, &color, FORMAT, SIDE, SIDE)
-                .expect("encode offscreen readback");
+        let readback = PendingBgra8Readback::encode(
+            &self.device,
+            &mut encoder,
+            &color,
+            FORMAT,
+            size[0],
+            size[1],
+        )
+        .expect("encode offscreen readback");
         let submission = self.queue.submit([encoder.finish()]);
         readback
             .finish(&self.device, submission, Duration::from_secs(10))
@@ -317,18 +393,18 @@ impl Gpu {
     }
 }
 
-fn extent() -> wgpu::Extent3d {
+fn extent(size: [u32; 2]) -> wgpu::Extent3d {
     wgpu::Extent3d {
-        width: SIDE,
-        height: SIDE,
+        width: size[0],
+        height: size[1],
         depth_or_array_layers: 1,
     }
 }
 
-fn color_descriptor() -> wgpu::TextureDescriptor<'static> {
+fn color_descriptor(size: [u32; 2]) -> wgpu::TextureDescriptor<'static> {
     wgpu::TextureDescriptor {
         label: None,
-        size: extent(),
+        size: extent(size),
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -366,6 +442,289 @@ const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 14] = [
     attribute!(12, Uint32, z_gradient),
     attribute!(13, Float32x2, zshape_origin),
 ];
+
+fn cliff_depth_lanes() -> Layer {
+    let mut terrain = Layer::solid(Shader::Terrain, RED, -31.0);
+    // Native TMP ground rows: 31, 30, 19, 18, 10, 9, 8, 31.
+    for row in terrain.z_bytes.chunks_exact_mut(SIDE as usize) {
+        row.copy_from_slice(&[0, 1, 12, 13, 21, 22, 23, 0]);
+    }
+    terrain
+}
+
+#[test]
+#[ignore = "requires a wgpu adapter; run explicitly"]
+fn cliff_contributions_change_shp_and_indexed_voxel_admission_at_exact_boundaries() {
+    let gpu = Gpu::new();
+    // FootClass::GetZAdjustment 0x004DAFC0 contributes +10/+20 on the
+    // reached cliff-neighbor branch. These are additions to a deliberately
+    // chosen base -20, not complete Foot Z adjustments or native goldens.
+    // The vertical gradient's quantization gives row-3 ground rows 30, 18,
+    // and 9. Paired TMP lanes straddle each boundary and include equality.
+    let cases = [
+        (0.0, [RED, RED, BLUE, BLUE, BLUE, BLUE, BLUE, BLUE]),
+        (10.0, [RED, RED, RED, RED, BLUE, BLUE, BLUE, BLUE]),
+        (20.0, [RED, RED, RED, RED, RED, RED, BLUE, BLUE]),
+    ];
+    for shader in [Shader::SpriteRead, Shader::Voxel] {
+        for (cliff_term, expected) in cases {
+            let mut terrain = cliff_depth_lanes();
+            terrain.hole(7, 3);
+            let mut unit = Layer::solid(shader, BLUE, -20.0 + cliff_term);
+            unit.instance.z_gradient = ZGradient::Vertical as u32;
+            let pixels = gpu.render(&[terrain, unit]);
+            for x in 0..SIDE {
+                assert_eq!(
+                    pixels[(3 * SIDE + x) as usize],
+                    expected[x as usize],
+                    "{shader:?}, cliff contribution +{cliff_term}, lane {x}: strict equality, front/behind, or TMP hole changed"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a wgpu adapter; run explicitly"]
+fn indexed_voxel_palette_remap_zero_holes_and_read_only_depth_reach_actual_shader() {
+    let gpu = Gpu::new();
+    let mut voxel = Layer::solid(Shader::Voxel, BLUE, -12.0);
+    voxel.instance.draw_state.remap_row = 1;
+    voxel.indices[(3 * SIDE + 4) as usize] = 16;
+    voxel.hole(3, 3);
+    let pixels = gpu.render(&[Layer::solid(Shader::Terrain, RED, -8.0), voxel]);
+    assert_eq!(
+        pixels[(3 * SIDE + 3) as usize],
+        RED,
+        "index zero must discard"
+    );
+    assert_eq!(
+        pixels[(3 * SIDE + 4) as usize],
+        GREEN,
+        "house ramp row was ignored"
+    );
+    assert_eq!(
+        pixels[(3 * SIDE + 5) as usize],
+        BLUE,
+        "ordinary palette byte was ignored"
+    );
+
+    // VXL_CacheBlit 0x00707480 reaches read-only leaf 0x00497FD0. A
+    // nearer indexed draw must not block the later intermediate SHP draw.
+    let pixels = gpu.render(&[
+        Layer::solid(Shader::Terrain, RED, -8.0),
+        Layer::solid(Shader::Voxel, GREEN, -24.0),
+        Layer::solid(Shader::SpriteRead, BLUE, -12.0),
+    ]);
+    assert!(
+        pixels.iter().all(|pixel| *pixel == BLUE),
+        "indexed VXL wrote shared Z"
+    );
+}
+
+#[test]
+#[ignore = "requires a wgpu adapter; run explicitly"]
+fn cliff_voxel_hull_turret_and_barrel_use_the_shared_composite_seed() {
+    let gpu = Gpu::new();
+    // Native composite cache blit 0x0073B140 seeds one bounding rectangle.
+    // Deliberately unequal layer bounds catch accidentally using a turret's
+    // or barrel's local height after adding the shared cliff contribution.
+    let bounds = [
+        ([0.0, 2.0], [8.0, 6.0]),
+        ([1.0, 0.0], [6.0, 5.0]),
+        ([3.0, 1.0], [2.0, 3.0]),
+    ];
+    for cliff_term in [10.0, 20.0] {
+        let mut full = Layer::solid(Shader::Voxel, BLUE, -20.0 + cliff_term);
+        full.instance.z_gradient = ZGradient::Vertical as u32;
+        let baseline = gpu.render(&[cliff_depth_lanes(), full.clone()]);
+        let mut layers = vec![cliff_depth_lanes()];
+        for (position, size) in bounds {
+            let mut part = full.clone();
+            part.instance.position = position;
+            part.instance.size = size;
+            part.instance.zshape_origin = [0.0, SIDE as f32];
+            layers.push(part);
+        }
+        let actual = gpu.render(&layers);
+        for y in 0..SIDE {
+            for x in 0..SIDE {
+                let covered = bounds.iter().any(|(position, size)| {
+                    x as f32 >= position[0]
+                        && (x as f32) < position[0] + size[0]
+                        && y as f32 >= position[1]
+                        && (y as f32) < position[1] + size[1]
+                });
+                let pixel = (y * SIDE + x) as usize;
+                let expected = if covered { baseline[pixel] } else { RED };
+                assert_eq!(
+                    actual[pixel], expected,
+                    "shared composite +{cliff_term} at ({x},{y})"
+                );
+            }
+        }
+        // Sensitivity control: these bounds must visibly distinguish the
+        // shared seed from the old per-layer fallback, not compare empty art.
+        for layer in &mut layers[1..] {
+            layer.instance.zshape_origin = [0.0; 2];
+        }
+        assert_ne!(
+            gpu.render(&layers),
+            actual,
+            "fixture missed local-seed regression at +{cliff_term}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires installed stock YR assets and a wgpu adapter; run explicitly"]
+fn stock_cliff_decoder_and_terrain_instances_occlude_shp_and_indexed_voxels() {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    use crate::assets::asset_manager::AssetManager;
+    use crate::map::terrain::{TerrainCell, TerrainGrid, TilePlacement};
+    use crate::map::theater::{TileKey, load_theater, load_tile_images};
+
+    let asset_root = std::env::var_os("RA2_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            crate::util::config::GameConfig::load()
+                .expect("stock test requires RA2_DIR or config.toml")
+                .paths
+                .ra2_dir
+        });
+    let mut assets = AssetManager::new(&asset_root).expect("load installed YR archive stack");
+    let theater = load_theater(&mut assets, "TEMPERATE").expect("activate stock temperate assets");
+    let tile_id = (0..theater.lookup.len())
+        .find(|index| {
+            theater
+                .lookup
+                .filename(*index as i32)
+                .is_some_and(|name| name.eq_ignore_ascii_case("cliff01.tem"))
+        })
+        .expect("stock theater must resolve cliff01.tem") as u16;
+    let key = TileKey {
+        tile_id,
+        sub_tile: 2,
+        variant: 0,
+    };
+    let mut images = load_tile_images(
+        &assets,
+        &theater.lookup,
+        &theater.iso_palette,
+        &HashSet::from([key]),
+    );
+    let tile = images
+        .remove(&key)
+        .expect("production decoder must load cliff01.tem sub-tile 2");
+    // Retail fixture inspected 2026-09-08: ra2.mix -> isotemp.mix,
+    // CLI entry 0x37FBE2D9, 14456-byte TMP. This case loads through the
+    // runtime theater search, not the tool's catalog-only fallback.
+    assert_eq!(
+        (tile.width, tile.height, tile.offset_x, tile.offset_y),
+        (60, 60, 0, -30)
+    );
+    let samples = [(30u32, 53u32, 6u8), (36, 47, 12), (58, 29, 15)];
+    for (x, y, depth) in samples {
+        let pixel = (y * tile.width + x) as usize;
+        assert_eq!(
+            tile.depth[pixel], depth,
+            "stock cliff depth fixture at ({x},{y}) changed"
+        );
+        assert_eq!(tile.rgba[pixel * 4 + 3], 255, "stock sample must be opaque");
+    }
+    assert_eq!(
+        tile.rgba[3], 0,
+        "stock tile corner must remain a transparent hole"
+    );
+    let placement = TilePlacement {
+        uv_origin: [0.0; 2],
+        uv_size: [1.0; 2],
+        pixel_size: [tile.width as f32, tile.height as f32],
+        draw_offset: [tile.offset_x as f32, tile.offset_y as f32],
+    };
+    let grid = TerrainGrid {
+        cells: vec![TerrainCell {
+            screen_x: 0.0,
+            screen_y: 30.0,
+            tile_id,
+            sub_tile: 2,
+            z: 0,
+            rx: 1,
+            ry: 1,
+            is_water: false,
+            variant: 0,
+            tint: [1.0; 3],
+            radar_left: [0; 3],
+            radar_right: [0; 3],
+            has_damaged_data: false,
+        }],
+        world_width: 60.0,
+        world_height: 256.0,
+        origin_x: 0.0,
+        origin_y: -100.0,
+        local_bounds: None,
+        anchor_variant_table: None,
+    };
+    let lookup = |id, sub, variant| {
+        assert_eq!((id, sub, variant), (tile_id, 2, 0));
+        Some(placement)
+    };
+    let mut instances = super::terrain_instances::build_visible_instances(
+        &grid,
+        None,
+        0.0,
+        0.0,
+        60.0,
+        60.0,
+        Some(&lookup),
+        None,
+    )
+    .normal;
+    assert_eq!(instances.len(), 1);
+    let mut cliff = Layer::solid(Shader::Terrain, RED, 0.0);
+    cliff.instance = instances.remove(0);
+    cliff.rgba = tile.rgba;
+    cliff.z_bytes = tile.depth;
+    cliff.source_size = [tile.width, tile.height];
+
+    let gpu = Gpu::new();
+    let background = gpu.render_sized(std::slice::from_ref(&cliff), [60; 2]);
+    // A 60-row vertical sprite with base -1, plus the isolated cliff term.
+    // At the three retail sample pixels, expected visibility is respectively
+    // [front, behind, behind], [front, front, behind], [front, front, front].
+    // Expected colors come from the actual terrain readback, preserving its
+    // stock palette rather than substituting a colored depth-only rectangle.
+    for shader in [Shader::SpriteRead, Shader::Voxel] {
+        for (cliff_term, admitted) in [
+            (0.0, [true, true, true]),
+            (10.0, [false, true, true]),
+            (20.0, [false, false, true]),
+        ] {
+            let mut unit = Layer::solid(shader, BLUE, -1.0 + cliff_term);
+            unit.instance.size = [60.0; 2];
+            unit.instance.z_gradient = ZGradient::Vertical as u32;
+            let pixels = gpu.render_sized(&[cliff.clone(), unit], [60; 2]);
+            for ((x, y, _), visible) in samples.into_iter().zip(admitted) {
+                let pixel = (y * 60 + x) as usize;
+                assert_ne!(
+                    background[pixel], BLUE,
+                    "stock color must distinguish unit admission"
+                );
+                let expected = if visible { BLUE } else { background[pixel] };
+                assert_eq!(
+                    pixels[pixel], expected,
+                    "stock cliff {shader:?} +{cliff_term} at ({x},{y})"
+                );
+            }
+            assert_eq!(
+                pixels[0], BLUE,
+                "stock cliff hole wrote depth for {shader:?} +{cliff_term}"
+            );
+        }
+    }
+}
 
 #[test]
 #[ignore = "requires a wgpu adapter; run explicitly"]

@@ -27,6 +27,7 @@ pub mod cursor_atlas;
 pub mod draw_state;
 pub mod egui_integration;
 pub mod frame_readback;
+pub(crate) mod foot_depth;
 pub mod gpu;
 pub mod loading_screen_chrome;
 pub mod locomotor_visual;

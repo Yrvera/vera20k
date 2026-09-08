@@ -1290,7 +1290,7 @@ impl GameEntity {
             drive_accelerates: true,
             omni_crush_resistant: false,
             immune_to_radiation: false,
-            zfudge_bridge: 7,
+            zfudge_bridge: 0,
             too_big_to_fit_under_bridge: false,
             dying: false,
             blocked_scatter_timer: 0,

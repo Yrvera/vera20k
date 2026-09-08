@@ -42,8 +42,10 @@ pub const SHP_DRAW_Z_ADJUST_PX: i32 = -2;
 /// bib's a7; the bib body then carries `-1 - 2` on top of the lift cancel.
 pub const BIB_Z_ADJUST_PX: i32 = -1;
 
-/// One height level lifts a sprite by `AdjustForZ(256) = 15` screen rows
-/// (`Tactical__AdjustForZ @ 0x006D20E0`, `trunc(z * M + 0.5)` with `M = 15/256`).
+/// Terrain height levels project 15 screen rows apart. Raw object Z instead
+/// uses `native_x87::adjust_for_z_standard` (the active 104-lepton ground
+/// scalar and native rounding/728 correction); 256 leptons is one XY cell,
+/// not one native height level.
 pub const HEIGHT_LEVEL_PX: i32 = crate::map::terrain::HEIGHT_STEP as i32;
 
 /// `IsometricTileTypeClass` tile height (`piVar10[3]` at `0x00547D8B`), the

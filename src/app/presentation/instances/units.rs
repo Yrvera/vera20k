@@ -8,8 +8,7 @@
 
 use super::helpers::{
     EntityDrawBand, apply_bridge_depth_bias, compute_sprite_depth, entity_draw_band,
-    ground_sort_row, ground_z_adjust, in_view, is_under_bridge_render_state,
-    tactical_entity_render_admission,
+    ground_sort_row, in_view, is_under_bridge_render_state, tactical_entity_render_admission,
 };
 use crate::app::AppState;
 use crate::app::presentation::render::draw_plan_lowering::{
@@ -467,7 +466,9 @@ pub(crate) fn build_unit_instances(
             {
                 let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1] + dock_depth_y_offset;
                 let depth: f32 = body_sort_depth(state, entity, band, depth_y, interp_z);
+                let voxel_adjust = super::foot_depth::unit_z_adjust(state, entity, true) as f32;
                 emit_unit_shadow_sprite(
+                    voxel_adjust,
                     target_instances,
                     target_instance_pages,
                     atlas,
@@ -494,7 +495,7 @@ pub(crate) fn build_unit_instances(
                     tint,
                     alpha,
                     draw_state,
-                    z_adjust: voxel_z_adjust(interp_z),
+                    z_adjust: voxel_adjust,
                     z_gradient: VOXEL_Z_GRADIENT,
                     ..Default::default()
                 };
@@ -764,6 +765,7 @@ fn push_transition_sprite(
 /// depends on the body blit's Z writes, which were not read.
 #[allow(clippy::too_many_arguments)]
 fn emit_unit_shadow_sprite(
+    voxel_adjust: f32,
     stable_instances: &mut Vec<SpriteInstance>,
     stable_instance_pages: &mut Vec<usize>,
     atlas: &crate::render::unit_atlas::UnitAtlas,
@@ -808,10 +810,9 @@ fn emit_unit_shadow_sprite(
         tint: lighting::DEFAULT_TINT,
         alpha: 1.0,
         draw_state: shadow_state,
-        // Same Z as the hull it belongs to (VERA-internal: the native shadow
-        // blit's own Z family is not traced; a shadow behind a nearer building
-        // is hidden with its hull).
-        z_adjust: voxel_z_adjust(entity.position.z),
+        // Cached 0x707480 and uncached 0x707280 shadow blits both consume
+        // Foot GetZAdjustment, just like the body.
+        z_adjust: voxel_adjust,
         z_gradient: VOXEL_Z_GRADIENT,
         ..Default::default()
     };
@@ -898,6 +899,7 @@ fn emit_turret_unit_sprites(
     ground_pieces: &mut Vec<GroundPieceInstance>,
 ) {
     let slope_type = stable_slope_for_key(slope_state);
+    let voxel_adjust = super::foot_depth::unit_z_adjust(state, entity, true) as f32;
     let body_key = UnitSpriteKey {
         type_id: type_id.to_string(),
         facing: canonical_unit_facing(body_facing),
@@ -943,6 +945,7 @@ fn emit_turret_unit_sprites(
     // The hull's ground shadow goes down first, then body, turret, barrel (see
     // `emit_unit_shadow_sprite` for why first rather than the native last).
     emit_unit_shadow_sprite(
+        voxel_adjust,
         instances,
         instance_pages,
         atlas,
@@ -997,7 +1000,7 @@ fn emit_turret_unit_sprites(
             tint,
             alpha,
             draw_state,
-            z_adjust: voxel_z_adjust(z),
+            z_adjust: voxel_adjust,
             z_gradient: VOXEL_Z_GRADIENT,
             zshape_origin: composite_rect,
         };
@@ -1027,7 +1030,7 @@ fn emit_turret_unit_sprites(
             tint,
             alpha,
             draw_state,
-            z_adjust: voxel_z_adjust(z),
+            z_adjust: voxel_adjust,
             z_gradient: VOXEL_Z_GRADIENT,
             zshape_origin: composite_rect,
         };
@@ -1105,23 +1108,17 @@ fn emit_harvest_overlay(
             alpha: 1.0,
             draw_state,
             // An SHP draw of the harvester (`TechnoClass_DrawSHP`, a7 - 2).
-            z_adjust: ground_z_adjust(z, SHP_DRAW_Z_ADJUST_PX),
+            z_adjust: super::foot_depth::unit_z_adjust(state, entity, false)
+                .wrapping_add(SHP_DRAW_Z_ADJUST_PX) as f32,
             z_gradient: pack_z_gradient(ZGradient::Vertical, false),
             ..Default::default()
         },
     ))
 }
 
-/// Native VXL blits walk gradient entry 2 (locomotor `Z_Gradient`, default
-/// for every stock ground locomotor) with `FootClass::GetZAdjustment`, whose
-/// base term `-AdjustForZ(Location.Z)` cancels the height lift. The
-/// situational fudges (ramp/rock/cliff/column/tunnel/bridge, a few pixels)
-/// are a recorded residual.
+/// Native VXL blits walk entry 2 with the Foot adjustment supplied by the
+/// shared production adapter. Hull, turret and barrel retain one composite seed.
 const VOXEL_Z_GRADIENT: u32 = pack_z_gradient(ZGradient::Vertical, false);
-
-fn voxel_z_adjust(z: u8) -> f32 {
-    ground_z_adjust(z, 0)
-}
 
 /// Convert the oregath arm offset (30 leptons) into isometric screen pixels.
 ///

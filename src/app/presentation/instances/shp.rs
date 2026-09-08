@@ -373,7 +373,7 @@ pub(crate) fn build_shp_instances(
             )
         } else {
             (
-                ground_z_adjust(interp_z, SHP_DRAW_Z_ADJUST_PX),
+                super::foot_depth::shp_z_adjust(state, entity),
                 pack_z_gradient(ZGradient::Vertical, false),
                 [0.0, 0.0],
             )

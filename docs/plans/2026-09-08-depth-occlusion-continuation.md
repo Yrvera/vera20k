@@ -195,3 +195,26 @@ dispatch, and therefore cannot certify the tank/cliff case. The wall/building
 screenshot acceptance above remains valid within its stated coverage. Resume
 with the native cliff adjustment and a tank crossing the cliff boundary when
 the user returns to cliffs; do not rebuild the already-connected terrain path.
+
+## 2026-09-08 — authorized cliff implementation
+
+The user authorized a plan followed by implementation. The confirmed Foot depth
+omission above is now implemented through the existing draw paths; terrain/TMP
+projection and voxel shading were preserved. The preceding review describes the
+pre-fix state. See [cliff plan and validation](2026-09-08-cliff-unit-depth-plan.md)
+for exact native evidence, the shared math/runtime adapter, all consumers, the
+pristine-TMP catalogue, independent review and bounded residuals.
+
+Final source validation: 8512 library tests pass (89 ignored), all 8 explicit GPU
+tests pass, 14 focused depth/runtime tests pass and 85 unmodified-gamemd function
+fixtures reproduce. Clippy remains failed on 6 existing errors in 3 untouched files;
+release build succeeds. GPU coverage now includes the actual indexed voxel
+shader and decoded retail cliff terrain, extending the earlier SHP-only harness.
+
+Visual cliff acceptance remains open. The old v2 map contains no nonzero cliff
+selector cells, despite showing a cliff. A separate --cliff-back fixture now uses
+retail Cliff28 back edges, with tank/GI placements selecting +10. Its scenario-only
+CliffBackImpassability=0 permits those controlled overlaps in both engines.
+Original wall/building fixtures and their accepted evidence remain unchanged.
+The current full-game/camera comparison has not been rerun, so no claim of complete
+renderer or stock-pathfinding parity follows from this implementation.

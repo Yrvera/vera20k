@@ -1,0 +1,5111 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "generator_normalized_lf_sha256": "79a6aeee104be8349e6ed2ab866683c5c7d7061b5b3989b5631a8ffe590af10c",
+  "unicorn_version": "2.1.4",
+  "scope": "Raw-function emulation of original Foot Z composition and its original helpers over supplied Unit/type/cell/TMP fixtures; not full-game or pixel parity.",
+  "restrictions": [
+    "Only the mapped ordinary 8x8 cell grid is exercised; no alias, dummy, invalid coordinate, or map-load equivalence claim.",
+    "Actual Unit vtable; null locomotor, no transporter, harvester alternative, overlays, low bridges or active tubes.",
+    "Ramp and cell-flag 0x10000 gates remain zero. SHP/voxel caller admission and active-game object lifecycle are outside the oracle.",
+    "Native direction initializer runs; fixture supplies runtime type coefficients and relocated TMP metadata without executing their constructors/loaders.",
+    "Code hooks only record instruction addresses. No executable instruction or function result is replaced.",
+    "No image, disassembly, retail art or decoded pixel bytes are stored in this JSON."
+  ],
+  "defaults": {
+    "current_coords": [
+      2,
+      2
+    ],
+    "world_xy_leptons": [
+      640,
+      640
+    ],
+    "mapped_grid_width": 8,
+    "mapped_grid_height": 8,
+    "native_cell_index_stride": 512,
+    "cell": {
+      "level": 0,
+      "ramp": 0,
+      "flags": 0,
+      "tile_index": 65535,
+      "tmp_height": 30
+    },
+    "locomotor_z_adjust": 0,
+    "bridge_tile_base": 0,
+    "adjust_for_z_multiplier_bits": "3fc25e5374344960",
+    "fpcw": "0e7f",
+    "directions": [
+      [
+        0,
+        -1
+      ],
+      [
+        1,
+        -1
+      ],
+      [
+        1,
+        0
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        0,
+        1
+      ],
+      [
+        -1,
+        1
+      ],
+      [
+        -1,
+        0
+      ],
+      [
+        -1,
+        -1
+      ]
+    ]
+  },
+  "entries": {
+    "cliff_multiplier": "00704240",
+    "column_multiplier": "00703e70",
+    "tunnel_multiplier": "00704000",
+    "near_bridge": "00703b10",
+    "base_z_adjust": "00704350",
+    "foot_z_adjust": "004dafc0"
+  },
+  "region_sha256": {
+    "direction_initializer": "ab85906af665f42b5c85a90d7dd969c6a9d743362a691883cd3aa73c337173ac",
+    "cliff_multiplier": "3dbcb6b0d2cd0f682d7ae352240c827fa22a37fb09b73130285e952cd25e2579",
+    "base_z_adjust": "7a41d36a76e68163c49649cc7af7fea89fbc8eee251ead67fbac0a3fc5c477f9",
+    "foot_z_adjust": "53fcc4875bb20bbfca4e45693d68a1d36ff2df6b768554fe1dc2d696e7fe356f",
+    "tmp_dimensions": "ac2a4d2a4077b96d51f752a38fa69f3146882548c30325da73e6e0d28fec0f65"
+  },
+  "cases": [
+    {
+      "name": "stock_neither",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 0,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "stock_first",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "stock_second",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 1,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 9
+      }
+    },
+    {
+      "name": "stock_both",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 1,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 9
+      }
+    },
+    {
+      "name": "stock_first_below_threshold",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 3,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 0,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "stock_second_below_threshold",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 3,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 0,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "stock_first_kept",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 3,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "stock_second_only",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 3,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 1,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 9
+      }
+    },
+    {
+      "name": "signed_levels_-4_0_-4",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": -4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": -4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "signed_levels_-4_-4_0",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": -4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": -4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 1,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 9
+      }
+    },
+    {
+      "name": "signed_levels_-128_-124_-128",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": -128,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": -124,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": -128,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "signed_levels_127_-128_127",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 127,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": -128,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 127,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 0,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "signed_levels_-128_127_-128",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": -128,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 127,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": -128,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "signed_levels_10_13_14",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 10,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 13,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 14,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 1,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 9
+      }
+    },
+    {
+      "name": "coefficient_0_first",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 0,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "coefficient_0_second",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 0,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 1,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "coefficient_7_first",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 7,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 13
+      }
+    },
+    {
+      "name": "coefficient_7_second",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 7,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 1,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 6
+      }
+    },
+    {
+      "name": "coefficient_-7_first",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": -7,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "coefficient_-7_second",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": -7,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 1,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "coefficient_1073741824_first",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 1073741824,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "coefficient_1073741824_second",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 1073741824,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 1,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 1073741823
+      }
+    },
+    {
+      "name": "coefficient_2147483647_first",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 2147483647,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "coefficient_2147483647_second",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 2147483647,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 1,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 2147483646
+      }
+    },
+    {
+      "name": "coefficient_-2147483648_first",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": -2147483648,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "coefficient_-2147483648_second",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": -2147483648,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 1,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "world_z_-832",
+      "context": {
+        "world_z_leptons": -832,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": 117,
+        "foot_z_adjust": 137
+      }
+    },
+    {
+      "name": "world_z_-104",
+      "context": {
+        "world_z_leptons": -104,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": 13,
+        "foot_z_adjust": 33
+      }
+    },
+    {
+      "name": "world_z_-1",
+      "context": {
+        "world_z_leptons": -1,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "world_z_1",
+      "context": {
+        "world_z_leptons": 1,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "world_z_104",
+      "context": {
+        "world_z_leptons": 104,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -16,
+        "foot_z_adjust": 4
+      }
+    },
+    {
+      "name": "world_z_727",
+      "context": {
+        "world_z_leptons": 727,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -105,
+        "foot_z_adjust": -85
+      }
+    },
+    {
+      "name": "world_z_728",
+      "context": {
+        "world_z_leptons": 728,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -106,
+        "foot_z_adjust": -86
+      }
+    },
+    {
+      "name": "world_z_832",
+      "context": {
+        "world_z_leptons": 832,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -121,
+        "foot_z_adjust": -101
+      }
+    },
+    {
+      "name": "on_bridge_first",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": true
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 0,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "on_bridge_second",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": true
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 0,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "on_bridge_both",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": true
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 0,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    },
+    {
+      "name": "facing_0_tmp_36",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 36,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_0_tmp_37",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -2,
+        "foot_z_adjust": 18
+      }
+    },
+    {
+      "name": "facing_1_tmp_36",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 8192,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 36,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_1_tmp_37",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 8192,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_2_tmp_36",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 16384,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 36,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_2_tmp_37",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 16384,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -2,
+        "foot_z_adjust": 18
+      }
+    },
+    {
+      "name": "facing_3_tmp_36",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 24576,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 36,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_3_tmp_37",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 24576,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_4_tmp_36",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 32768,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 36,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_4_tmp_37",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 32768,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -2,
+        "foot_z_adjust": 18
+      }
+    },
+    {
+      "name": "facing_5_tmp_36",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 40960,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 36,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_5_tmp_37",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 40960,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_6_tmp_36",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 49152,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 36,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_6_tmp_37",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 49152,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -2,
+        "foot_z_adjust": 18
+      }
+    },
+    {
+      "name": "facing_7_tmp_36",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 57344,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 36,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_7_tmp_37",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 57344,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_0_tall_at_1_3",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 26,
+          "tmp_height": 37,
+          "coords": [
+            1,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -2,
+        "foot_z_adjust": 18
+      }
+    },
+    {
+      "name": "facing_0_tall_at_3_1",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 12,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            1
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_1_tall_at_1_3",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 8192,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 26,
+          "tmp_height": 37,
+          "coords": [
+            1,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_1_tall_at_3_1",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 8192,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 12,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            1
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_2_tall_at_1_3",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 16384,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 26,
+          "tmp_height": 37,
+          "coords": [
+            1,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_2_tall_at_3_1",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 16384,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 12,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            1
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -2,
+        "foot_z_adjust": 18
+      }
+    },
+    {
+      "name": "facing_3_tall_at_1_3",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 24576,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 26,
+          "tmp_height": 37,
+          "coords": [
+            1,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_3_tall_at_3_1",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 24576,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 12,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            1
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_4_tall_at_1_3",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 32768,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 26,
+          "tmp_height": 37,
+          "coords": [
+            1,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -2,
+        "foot_z_adjust": 18
+      }
+    },
+    {
+      "name": "facing_4_tall_at_3_1",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 32768,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 12,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            1
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_5_tall_at_1_3",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 40960,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 26,
+          "tmp_height": 37,
+          "coords": [
+            1,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_5_tall_at_3_1",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 40960,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 12,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            1
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_6_tall_at_1_3",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 49152,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 26,
+          "tmp_height": 37,
+          "coords": [
+            1,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_6_tall_at_3_1",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 49152,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 12,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            1
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -2,
+        "foot_z_adjust": 18
+      }
+    },
+    {
+      "name": "facing_7_tall_at_1_3",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 57344,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 26,
+          "tmp_height": 37,
+          "coords": [
+            1,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_7_tall_at_3_1",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 57344,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 12,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            1
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_round_boundary_4095",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 4095,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -2,
+        "foot_z_adjust": 18
+      }
+    },
+    {
+      "name": "facing_round_boundary_4096",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 4096,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_round_boundary_12287",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 12287,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_round_boundary_12288",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 12288,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -2,
+        "foot_z_adjust": 18
+      }
+    },
+    {
+      "name": "facing_round_boundary_61439",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 61439,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "facing_round_boundary_61440",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 61440,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -2,
+        "foot_z_adjust": 18
+      }
+    },
+    {
+      "name": "facing_round_boundary_65535",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 65535,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 28,
+          "tmp_height": 37,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -2,
+        "foot_z_adjust": 18
+      }
+    },
+    {
+      "name": "bridge_max_7",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 7
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 256,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": true,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "bridge_max_20",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 20
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 256,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": true,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "bridge_max_37",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 37
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 256,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": true,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 36
+      }
+    },
+    {
+      "name": "bridge_max_-7",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": -7
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 256,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": true,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "column_max_7",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 7,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 256,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 6,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 1,
+        "tunnel_multiplier": 0,
+        "near_bridge": true,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "column_max_20",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 20,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 256,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 6,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 1,
+        "tunnel_multiplier": 0,
+        "near_bridge": true,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "column_max_37",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 37,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 256,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 6,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 1,
+        "tunnel_multiplier": 0,
+        "near_bridge": true,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 36
+      }
+    },
+    {
+      "name": "column_max_-7",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": false
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": -7,
+        "tunnel": 10,
+        "bridge": 0
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 256,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 6,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 2,
+        "column_multiplier": 1,
+        "tunnel_multiplier": 0,
+        "near_bridge": true,
+        "base_z_adjust": -1,
+        "foot_z_adjust": 19
+      }
+    },
+    {
+      "name": "bridge_on_bridge_gate",
+      "context": {
+        "world_z_leptons": 0,
+        "facing_u16": 0,
+        "on_bridge": true
+      },
+      "coefficients": {
+        "cliff": 10,
+        "column": 5,
+        "tunnel": 10,
+        "bridge": 37
+      },
+      "cells": [
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 256,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            2,
+            2
+          ]
+        },
+        {
+          "level": 4,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            3,
+            3
+          ]
+        },
+        {
+          "level": 0,
+          "ramp": 0,
+          "flags": 0,
+          "tile_index": 65535,
+          "tmp_height": 30,
+          "coords": [
+            4,
+            4
+          ]
+        }
+      ],
+      "native": {
+        "cliff_multiplier": 0,
+        "column_multiplier": 0,
+        "tunnel_multiplier": 0,
+        "near_bridge": false,
+        "base_z_adjust": -1,
+        "foot_z_adjust": -1
+      }
+    }
+  ]
+}

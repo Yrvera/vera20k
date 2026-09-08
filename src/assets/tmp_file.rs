@@ -57,6 +57,46 @@ pub struct TmpTile {
 }
 
 impl TmpFile {
+    /// Pristine GetSubtileDimensions heights without decoding image planes.
+    /// Native 0x547150 returns header height + stored Y - extra Y when bit 0
+    /// is set; sparse slots use header height. Consumers apply subtile modulo
+    /// to this type-owned table. No canvas union or extra bottom participates.
+    pub(crate) fn draw_heights_from_bytes(data: &[u8]) -> Result<Vec<i32>, AssetError> {
+        let invalid = || AssetError::InvalidTmpFile {
+            reason: "Invalid TMP header/offset table for native draw dimensions".to_owned(),
+        };
+        if data.len() < TMP_HEADER_SIZE {
+            return Err(invalid());
+        }
+        let width = read_u32_le(data, 0);
+        let height = read_u32_le(data, 4);
+        if width == 0 || height == 0 || width > 255 || height > 255 {
+            return Err(invalid());
+        }
+        let count = (width * height) as usize;
+        if data.len() < TMP_HEADER_SIZE + count * 4 {
+            return Err(invalid());
+        }
+        let base = read_u32_le(data, 12) as i32;
+        (0..count)
+            .map(|index| {
+                let offset = read_u32_le(data, TMP_HEADER_SIZE + index * 4) as usize;
+                if offset == 0 {
+                    return Ok(base);
+                }
+                if offset.checked_add(52).is_none_or(|end| end > data.len()) {
+                    return Err(invalid());
+                }
+                if read_u32_le(data, offset + 36) & 1 == 0 {
+                    return Ok(base);
+                }
+                Ok(base
+                    .wrapping_add(read_u32_le(data, offset + 4) as i32)
+                    .wrapping_sub(read_u32_le(data, offset + 24) as i32))
+            })
+            .collect()
+    }
+
     /// Parse a TMP file from raw bytes.
     pub fn from_bytes(data: &[u8]) -> Result<Self, AssetError> {
         if data.len() < TMP_HEADER_SIZE {
@@ -330,6 +370,93 @@ mod tests {
         }
         data.extend_from_slice(&vec![0u8; dpixels]); // depth
         data
+    }
+
+    /// Header-only file: present cells have no image planes at all.
+    fn draw_height_headers(slots: &[Option<(i32, i32)>]) -> Vec<u8> {
+        let mut data = vec![0; TMP_HEADER_SIZE + slots.len() * 4];
+        data[0..4].copy_from_slice(&(slots.len() as u32).to_le_bytes());
+        data[4..8].copy_from_slice(&1u32.to_le_bytes());
+        data[8..12].copy_from_slice(&60u32.to_le_bytes());
+        data[12..16].copy_from_slice(&30u32.to_le_bytes());
+        for (index, slot) in slots.iter().enumerate() {
+            let Some((stored_y, extra_y)) = slot else {
+                continue;
+            };
+            let offset = data.len();
+            let entry = TMP_HEADER_SIZE + index * 4;
+            data[entry..entry + 4].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.resize(offset + 52, 0);
+            data[offset + 4..offset + 8].copy_from_slice(&stored_y.to_le_bytes());
+            data[offset + 24..offset + 28].copy_from_slice(&extra_y.to_le_bytes());
+            data[offset + 36..offset + 40].copy_from_slice(&1u32.to_le_bytes());
+        }
+        data
+    }
+
+    #[test]
+    fn native_draw_heights_read_sparse_slots_and_36_37_without_image_planes() {
+        let mut data = draw_height_headers(&[Some((100, 94)), None, Some((100, 93))]);
+        assert_eq!(
+            TmpFile::draw_heights_from_bytes(&data).unwrap(),
+            [36, 30, 37]
+        );
+        assert!(TmpFile::from_bytes(&data).is_err(), "fixture has no pixels");
+
+        // HasExtraData is the gate, independently of stored origins and all
+        // the other flags. A no-extra cell uses the file's diamond height.
+        let offset = read_u32_le(&data, TMP_HEADER_SIZE) as usize;
+        data[offset + 36..offset + 40].copy_from_slice(&6u32.to_le_bytes());
+        assert_eq!(
+            TmpFile::draw_heights_from_bytes(&data).unwrap(),
+            [30, 30, 37]
+        );
+    }
+
+    #[test]
+    fn native_draw_height_uses_stored_origin_not_extra_bottom_or_decoded_union() {
+        for (stored_y, extra_y, native_height) in [(100, 94, 36), (100, 93, 37), (-20, -27, 37)] {
+            let mut data = draw_height_headers(&[Some((stored_y, extra_y))]);
+            let offset = read_u32_le(&data, TMP_HEADER_SIZE) as usize;
+            let diamond_bytes = diamond_pixel_count(30);
+            data[offset + 8..offset + 12]
+                .copy_from_slice(&((52 + diamond_bytes) as u32).to_le_bytes());
+            data[offset + 28..offset + 32].copy_from_slice(&1u32.to_le_bytes());
+            data[offset + 32..offset + 36].copy_from_slice(&80u32.to_le_bytes());
+            data.extend(std::iter::repeat_n(1, diamond_bytes));
+            data.extend(std::iter::repeat_n(2, 80));
+
+            let decoded = TmpFile::from_bytes(&data).expect("valid diamond and extra planes");
+            let tile = decoded.tiles[0].as_ref().unwrap();
+            assert_eq!(tile.pixel_height, 80, "the union includes the extra bottom");
+            assert_eq!(tile.offset_y, extra_y - stored_y);
+            assert_eq!(
+                TmpFile::draw_heights_from_bytes(&data).unwrap(),
+                [native_height]
+            );
+        }
+    }
+
+    #[test]
+    fn native_draw_height_reader_rejects_corrupt_headers_and_cell_offsets() {
+        let valid = draw_height_headers(&[Some((0, -7))]);
+        let mut corrupt = vec![
+            Vec::new(),
+            vec![0; 15],
+            valid[..19].to_vec(),
+            valid[..valid.len() - 1].to_vec(),
+        ];
+        for (offset, value) in [(0, 0u32), (4, 0), (0, 256), (4, 256), (16, u32::MAX)] {
+            let mut data = valid.clone();
+            data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            corrupt.push(data);
+        }
+        for (index, data) in corrupt.iter().enumerate() {
+            assert!(
+                TmpFile::draw_heights_from_bytes(data).is_err(),
+                "corrupt fixture {index}"
+            );
+        }
     }
 
     /// PIN — out-of-diamond corners are transparent by GEOMETRY, not palette alpha.
