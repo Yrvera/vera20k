@@ -264,6 +264,31 @@ the whole frame.
    must still pass. One full `cargo test -p vera20k --lib` for the final
    candidate; report the literal `test result:` line.
 
+## Capture results (2026-09-08, branch `feature/sprite-zbuffer-depth`)
+
+Fixture: a flat temperate map (`zdepth.map`, generated) with GACNST at the
+centre cell, GAWEAP four cells west, four MTNK placed directly behind each
+building, two in front, and E1 infantry beside them. Retail ran the fixture as
+a campaign mission in the isolated `gamemd.exe -win` copy and wrote its own
+`SCRN0001.PCX` (1024x768); VERA ran it through `RA2_QUICKPLAY` (release
+build, commit `dfb19433`) and wrote `SCRN0000.pcx`. Frames were aligned on a
+60x60 patch of building art (mean grey error 3.7 for the factory, 6.5 for the
+yard, i.e. the same art at the same place) and differenced.
+
+| Scenario | Result |
+|---|---|
+| 1. Unit behind a tall building (four tanks north of GACNST) | Match. Each tank is cut at the same roof line in both frames; the diff map is quiet along the whole silhouette. |
+| 2. Unit in front (two tanks south) | Match; both fully visible. Residual 4-8 px placement offset of map-placed vehicles (sub-cell position, not depth). |
+| ZShapePointMove building (GAWEAP, `30,15`) with tanks behind and in front | Match; the tank behind the flag mast is clipped identically. |
+| 6. Infantry beside the buildings | Match. |
+| 3. Building beside a cliff, 4. GAWALL ring | Second fixture (`zdepth2.map`: cliff piece with raised ground behind it, wall ring around GAPILL) staged; captures pending. |
+
+Remaining differences in the diffed regions are grass tile noise, the house
+colour before the quick-play colour was pinned to DarkBlue, a hover health
+bar, and the vehicle placement offset above. The debug switch
+`RA2_DEBUG_DEPTH_VIEW=1` paints every Z-tested fragment's depth as grey
+(wrapping each 128 rows) for reading the written depth off a screenshot.
+
 ## Residuals to record (not closed by this plan)
 
 - Translucent z-modes 1–4 (cloak, warp) and their slot families
