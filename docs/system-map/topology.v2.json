@@ -240,6 +240,7 @@
         }
       ],
       "rust_surfaces": [
+        {"path": "src/sim/movement/cell_arrival.rs", "symbol": "CellArrival::ordinary / track_jump", "coverage": "representative", "observed_at_commit": "32033c1882927fb4d6635b8bad1e857b55b7b2bb"},
         {
           "path": "src/sim/movement/drive_locomotion.rs",
           "symbol": "drive locomotion",
@@ -253,7 +254,7 @@
           "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
         }
       ],
-      "notes": ["Owner of the bootstrap ground-move loop; native executable preflight remains blocked."]
+      "notes": ["Owner of the bootstrap ground-move loop; native executable preflight remains blocked.", "Accepted ordinary and track-jump arrivals share one private owner for entry order, layered cell lists, Drive occupation, claims, Infantry list repair and movement counts. Geometry, path consumption and differing path-layer phase positions remain with their callers; Rust regression evidence does not establish native parity."]
     },
     "GSI-07.13": {
       "native_anchors": [
@@ -1548,7 +1549,7 @@
       "from": "GSI-06.13",
       "to": "GSI-06.07",
       "context": "Ground-movement loop",
-      "detail": "Each accepted step must commit occupancy and layer transitions in native order.",
+      "detail": "Accepted ordinary and Drive track-jump crossings commit entry order, cell-list relinking, current Drive occupation and arrival claim/list correction through CellArrival. Existing distinct path-layer phase positions are preserved; native equivalence remains unchecked.",
       "evidence": ["docs/research/DRIVE_PROCESS_MOVEMENT_TICK_ORDER_GHIDRA_REPORT.md"]
     },
     {
@@ -2012,6 +2013,7 @@
         "Process_Drive_Track 0x004B0F20"
       ],
       "rust_touchpoints": [
+        {"path": "src/sim/movement/cell_arrival.rs", "coverage": "representative", "observed_at_commit": "32033c1882927fb4d6635b8bad1e857b55b7b2bb"},
         {"path": "src/sim/world/world_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/pathfinding", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/movement/movement_tick.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},

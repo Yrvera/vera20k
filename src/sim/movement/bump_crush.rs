@@ -2857,27 +2857,15 @@ mod tests {
 
     // -- arrival-side claim: the zero-draw half of the sub-cell handshake --
 
-    /// GSI-06.14 G3. The retail arrival branch hands its sub-cell chooser a null
-    /// coordinate, which returns before the placement function runs — so arrival
-    /// consumes **no** random draw, whatever the mover's sub-position. A mover
-    /// standing at the cell centre is the case that would draw on the look-ahead
-    /// path, so it is the load-bearing fixture here.
-    #[test]
-    fn gsi_06_14_arrival_claim_consumes_no_rng() {
-        let rng = SimRng::new(42);
-        let before = rng.state();
-        // Centre sub-position: the look-ahead allocator draws here, the arrival
-        // claim must not. `claim_reserved_sub_cell` takes no RNG at all, so the
-        // guarantee is structural — this pins that it stays that way.
-        let claimed = claim_reserved_sub_cell(None, MovementLayer::Ground, 1, None);
-        assert_eq!(claimed, Some(2), "empty cell falls to the first free slot");
-        assert_eq!(rng.state(), before, "arrival must not advance the stream");
-    }
-
     /// The slot reserved by the look-ahead one cell earlier is the slot the man
     /// stands in on arrival — retail never re-selects.
     #[test]
     fn gsi_06_14_arrival_claims_the_pre_reserved_slot() {
+        assert_eq!(
+            claim_reserved_sub_cell(None, MovementLayer::Ground, 1, None),
+            Some(2),
+            "empty cell falls to the first free slot",
+        );
         let grid = make_occ(&[(5, 5, 2, MovementLayer::Ground, Some(2))]);
         let occ = grid.get(5, 5);
         assert_eq!(
