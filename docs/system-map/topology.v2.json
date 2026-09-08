@@ -461,6 +461,30 @@
     "GSI-04.06": {
       "rust_surfaces": [
         {
+          "path": "src/sim/overlay_grid.rs",
+          "symbol": "OverlayGrid::recalculate_runtime_cell; NavigationPublication; OverlayRecalcOutcome",
+          "coverage": "representative",
+          "observed_at_commit": "cb7d2f091afe36bd8b2451d7734cb135435ed021"
+        },
+        {
+          "path": "src/sim/crates.rs",
+          "symbol": "validate_and_stamp_candidate; crate_mark_publishes_navigation_before_next_reader_and_frame_delivery",
+          "coverage": "representative",
+          "observed_at_commit": "cb7d2f091afe36bd8b2451d7734cb135435ed021"
+        },
+        {
+          "path": "src/sim/tiberium/mod.rs",
+          "symbol": "reduce_tiberium_at_with_native_context; gsi_04_09_full_reduction_propagates_synchronous_path_refresh",
+          "coverage": "representative",
+          "observed_at_commit": "cb7d2f091afe36bd8b2451d7734cb135435ed021"
+        },
+        {
+          "path": "src/sim/production/production_placement_tests.rs",
+          "symbol": "retained_wall_plane_runtime_placement_and_damage_update_once; retained_wall_plane_placement_reaches_fixed_stride_alias",
+          "coverage": "representative",
+          "observed_at_commit": "cb7d2f091afe36bd8b2451d7734cb135435ed021"
+        },
+        {
           "path": "src/sim/world/navigation.rs",
           "symbol": "NavigationCaches::rebuild_dynamic / rebuild_zones / rebuild_zones_full",
           "coverage": "representative",
@@ -486,6 +510,8 @@
         }
       ],
       "notes": [
+        "OverlayGrid now owns synchronous overlay projection and its publication receipts in one operation across eight crate, tiberium, placement, damage and sale sites. The first changed projection survives later no-op recalculations; ordered next-reader coordinates and the frame-tail change flag remain independent obligations. Hosted wall callbacks retain their original order.",
+        "Receipt-free map admission, terrain spawning, snapshot reconstruction, frame-tail replay and bridge inline publication retain their separate lifecycle owners. The full library suite and real-asset Lostlake MTNK/E1/ROBO movement regressions preserve represented behavior; this is not native differential or universal terrain parity. Obsolete standalone Mark replication and five tests were removed; unique wall-count and fixed-stride alias checks now enter production wall placement.",
         "One world operation consumes synchronous overlay and receiver terrain receipts, starting from navigation published after callbacks. Earlier pinned snapshots remain immutable; subsequent phases receive current canonical navigation, including when there are no receipts. The empty-receipt path reuses its Arc rather than copying the map.",
         "Regressions cover immediate foundation preservation, stale pre-collapse snapshots with empty/nonempty receipts, actual engineer arrival and RNG, and snapshot/cache reconstruction. A postcombat movement route exercises the consumer but is only a smoke check, not native traversal parity. Existing shared structure-selection policy is unchanged."
       ]
