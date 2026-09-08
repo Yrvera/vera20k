@@ -1337,16 +1337,21 @@ fn kill_ground_occupants_at(
         .map(|(id, _)| id)
         .collect();
     for id in victims {
+        let infantry_terminal = sim.begin_raw_infantry_death(id, Some(c4_inf_death));
         if let Some(entity) = sim.substrate.entities.get_mut(id) {
-            entity.health.current = 0;
-            entity.dying = true;
+            if !infantry_terminal {
+                entity.health.current = 0;
+                entity.dying = true;
+            }
             entity.attack_target = None;
             entity.movement_target = None;
             entity.selected = false;
             // `death_seq` is `None` whenever the warhead's `InfDeath=` picks
             // an animation arm instead of a sequence — see the jump table at
             // 0x00518D58.
-            if let (Some(seq), Some(anim)) = (death_seq, entity.animation.as_mut()) {
+            if let (false, Some(seq), Some(anim)) =
+                (infantry_terminal, death_seq, entity.animation.as_mut())
+            {
                 anim.switch_to(seq);
             }
         }
@@ -3545,7 +3550,25 @@ mod tests {
         air.on_bridge = false;
         sim.substrate.entities.insert(air);
 
+        // Consumed Engineers can retain positive HP after UnInit until the
+        // deferred drain. The legacy coordinate scan must not restart their
+        // Infantry terminal lifetime when it visits this stored identity.
+        let retired = GameEntity::new_at_frame_zero_for_test(
+            3, 5, 5, 0, 0, sim.interner.intern("Americans"),
+            Health { current: 100, max: 100 }, sim.interner.intern("E1"),
+            crate::map::entities::EntityCategory::Infantry, 0, 5, false,
+        );
+        sim.substrate.entities.insert(retired);
+        sim.uninit(3);
+        assert!(sim.substrate.entities.get(3).unwrap().health.current > 0);
+
         kill_ground_occupants_at(&mut sim, &rules_with_voxel_max(0), 5, 5, 1);
+
+        let retired = sim.substrate.entities.get(3).unwrap();
+        assert_eq!(retired.health.current, 0, "raw HP write is preserved");
+        assert!(!retired.lifecycle.object_alive);
+        assert!(retired.infantry_terminal.is_none());
+        assert_eq!(sim.substrate.pending_delete, vec![3]);
 
         let g = sim.substrate.entities.get(1).expect("ground unit present");
         assert_eq!(g.health.current, 0, "ground occupant is force-killed");

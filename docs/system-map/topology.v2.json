@@ -560,10 +560,23 @@
           "symbol": "drop_in_bridge_member",
           "coverage": "representative",
           "observed_at_commit": "67127d0231341dc1613faab1a5ea804a9a96832d"
+        },
+        {
+          "path": "src/sim/world/infantry_terminal.rs",
+          "symbol": "Simulation::visit_infantry_terminal",
+          "coverage": "representative",
+          "observed_at_commit": "7b6ab348a3f42ae23e1c73b3571c7812f69107a9"
+        },
+        {
+          "path": "src/sim/world/lifecycle.rs",
+          "symbol": "Simulation::uninit_with_context",
+          "coverage": "representative",
+          "observed_at_commit": "7b6ab348a3f42ae23e1c73b3571c7812f69107a9"
         }
       ],
       "notes": [
-        "One world operation owns the represented deck member relayer, complete footprint removal/re-entry, one fresh serialized order and derived vehicle projection reconciliation. It preserves existing ground snap/movement reset, raw bytes, Drive reservations and clearing state; it does not run full Mark/Unmark teardown or placement effects. Full native DropIn, hidden-building entry and falling remain open."
+        "One world operation owns the represented deck member relayer, complete footprint removal/re-entry, one fresh serialized order and derived vehicle projection reconciliation. It preserves existing ground snap/movement reset, raw bytes, Drive reservations and clearing state; it does not run full Mark/Unmark teardown or placement effects. Full native DropIn, hidden-building entry and falling remain open.",
+        "Infantry terminal visits own finite Die1/Die2 waits or raw next-visit retirement. Common UnInit clears terminal policy before pointer-expiry callbacks and retains deferred physical deletion. Raw writers cannot rearm an already-UnInit object. Held limbo policies wait for their release owner rather than a global terminal sweep."
       ]
     },
     "GSI-08.10": {
@@ -609,11 +622,32 @@
           "symbol": "commit_direct_damage_receiver",
           "coverage": "representative",
           "observed_at_commit": "30237eb526137c935976acefac88c0036f821020"
+        },
+        {
+          "path": "src/sim/world/infantry_terminal.rs",
+          "symbol": "Simulation::begin_infantry_receiver_death / InfantryDeathPostlude::commit",
+          "coverage": "representative",
+          "observed_at_commit": "7b6ab348a3f42ae23e1c73b3571c7812f69107a9"
         }
       ],
       "notes": [
         "Combat, Bullet, Wave and direct area-damage ingress execute against resident Simulation authority. ReceiverRun owns recursion guards and ordered navigation receipts; the local health borrow ends before synchronous world lifecycle stages. This ownership refactor does not establish whole-loop native parity or close scheduler differences.",
-        "Ordinary combat and immediate Bullet/Wave/direct ingress now share one consuming world consequence owner. Weapon emission and recursive fatalities accumulate DeathEffects once. Ordinary radiation and death sounds retain their earlier receiver barriers; other settlement preserves constructor, navigation and notification ordering. Fatal garrison ejection remains synchronous, and wall mutation/expiry traces are test-only, never replayed. This is Rust ownership and regression evidence, not native postlude parity."
+        "Ordinary combat and immediate Bullet/Wave/direct ingress now share one consuming world consequence owner. Weapon emission and recursive fatalities accumulate DeathEffects once. Ordinary radiation and death sounds retain their earlier receiver barriers; other settlement preserves constructor, navigation and notification ordering. Fatal garrison ejection remains synchronous, and wall mutation/expiry traces are test-only, never replayed. This is Rust ownership and regression evidence, not native postlude parity.",
+        "A consuming Infantry postlude binds the represented effect recipe to explicit terminal lifetime. Selection stays before recursive DeathWeapon damage; effect and smudge delivery stay after recursion. Effect-only cleanup uses DamageConsequences; no-art parent cleanup retains its earlier ordering. This corrects looping corpse retention without claiming native selector or particle parity."
+      ]
+    },
+    "GSI-08.11": {
+      "native_anchors": [],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/world/infantry_terminal.rs",
+          "symbol": "InfantryTerminal / Simulation::visit_infantry_terminal",
+          "coverage": "representative",
+          "observed_at_commit": "7b6ab348a3f42ae23e1c73b3571c7812f69107a9"
+        }
+      ],
+      "notes": [
+        "Represented Infantry terminal authority distinguishes finite sequence progress, raw retirement on the next own visit and receiver-owned consequence cleanup. Sprite animation presence still gates the legacy effect recipe; it no longer creates an indefinite lifetime wait. Full native DeathAnims, NotHuman, Cyborg, InfDeath9 placement and particle semantics remain unimplemented or unchecked."
       ]
     },
     "GSI-09.01": {
@@ -779,12 +813,18 @@
           "symbol": "Genetic LaunchSuperWeapon command regressions",
           "coverage": "representative",
           "observed_at_commit": "bb479d3b6231084bff81687b4f340ca96664e2fd"
+        },
+        {
+          "path": "src/sim/world/infantry_terminal.rs",
+          "symbol": "Simulation::mark_raw_mutation_victim",
+          "coverage": "representative",
+          "observed_at_commit": "7b6ab348a3f42ae23e1c73b3571c7812f69107a9"
         }
       ],
       "notes": [
         "One private mutation operation owns selection, completion of the original receiver batch, killed-position observation and all replacement attempts. Launch receives only the completed count. Per-cell recipients come from canonical marked cell membership and selected bridge/ground lists; held/unmarked coordinates no longer confer eligibility.",
         "Retains current stable-ID per-cell snapshot order, AoE receiver order, collateral-only exclusion from replacements and immediate BRUTE owner/facing/Z/failure policy. Production commands cover held factory state, bridge membership, original victims, aliases, dummy lookup, missing replacement type and recursive damage before admission. The unused saturating iterator and its four tests were removed.",
-        "Infantry terminal disposition remains open: represented raw mutation and animated shared InfDeath9 can retain looping Stand. Native receiver policy, deferred AnimToInfantry and full airborne Crash parity are not established by this bounded membership/admission change."
+        "Represented raw mutation now retires on the victim's next Logic visit; effect-only shared fatalities retire through consuming consequences. AoE replacement uses the receiver's fatal receipt after victim cleanup. The original looping-Stand regressions are covered through production commands. Native receiver selectors, deferred AnimToInfantry and full airborne Crash parity remain open."
       ]
     },
     "GSI-11.04": {
@@ -818,11 +858,17 @@
           "symbol": "actual LaunchSuperWeapon command regressions",
           "coverage": "representative",
           "observed_at_commit": "30237eb526137c935976acefac88c0036f821020"
+        },
+        {
+          "path": "src/sim/superweapon/cell_receiver_tests.rs",
+          "symbol": "infantry_terminal receiver and recursive-death command regressions",
+          "coverage": "representative",
+          "observed_at_commit": "7b6ab348a3f42ae23e1c73b3571c7812f69107a9"
         }
       ],
       "notes": [
         "Iron Curtain selects canonical cell membership and the native bridge/ground list, then reads the live successor after each callback. Infantry dispatches forced authored-Strength C4 damage through the resident world receiver. This removes the independent coordinate/HP/death-announcement path.",
-        "Production command regressions cover factory-held and unmarked immunity, authored Strength, forced damage and source House, retained Die2, layer/foundation selection, aliases/dummy stamping, nested DeathWeapon order and existing bridge DropIn integration. Manual UnInit proves the attributed receipt, not automatic sequence completion. Shared Infantry terminal cleanup, Genetic conversion and external chrono-warp interaction remain open; no whole-loop or rendered parity claim."
+        "Production command regressions cover factory-held and unmarked immunity, authored Strength, forced damage and source House, retained Die2, layer/foundation selection, aliases/dummy stamping, nested DeathWeapon order and existing bridge DropIn integration. Frame-driven terminal tests cover finite Die1/Die2 retirement and effect-only cleanup. External chrono-warp interaction and native selector semantics remain open; no whole-loop or rendered parity claim."
       ]
     },
     "GSI-11.02": {
@@ -971,9 +1017,24 @@
           "symbol": "rebuild_caches_after_load",
           "coverage": "representative",
           "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/snapshot.rs",
+          "symbol": "Simulation::restore_after_snapshot_load",
+          "coverage": "representative",
+          "observed_at_commit": "7b6ab348a3f42ae23e1c73b3571c7812f69107a9"
+        },
+        {
+          "path": "src/app/persistence/tests/infantry_terminal_restore_tests.rs",
+          "symbol": "Infantry terminal PreparedLoad and continued-frame regressions",
+          "coverage": "representative",
+          "observed_at_commit": "7b6ab348a3f42ae23e1c73b3571c7812f69107a9"
         }
       ],
-      "notes": ["Rust bincode snapshots are regression infrastructure, not native SAV parity."]
+      "notes": [
+        "Rust bincode snapshots are regression infrastructure, not native SAV parity.",
+        "Version 136 persists Infantry terminal policy and sequence progress. Admission rejects transient AwaitingConsequences, native-dead policies and live dying Infantry without a policy; retained policies require serialized Logic membership or limbo. PreparedLoad tests cover finite progress, held factory release, and delivered fatal consequences surviving an aborted deletion frame before resumed cleanup. Older snapshot versions are rejected by the version gate."
+      ]
     }
   },
   "services": {
@@ -1998,6 +2059,7 @@
         "ObjectClass::ReceiveDamage 0x005F5390"
       ],
       "rust_touchpoints": [
+        {"path": "src/sim/world/infantry_terminal.rs", "coverage": "representative", "observed_at_commit": "7b6ab348a3f42ae23e1c73b3571c7812f69107a9"},
         {"path": "src/sim/world/world_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/combat/world_receiver.rs", "coverage": "representative", "observed_at_commit": "e3d53e1c9f92a3c74fc4b84d4a43f4aa2b4ef2ac"},
         {"path": "src/sim/combat/damage", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},

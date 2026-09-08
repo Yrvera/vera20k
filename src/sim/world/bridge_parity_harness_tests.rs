@@ -143,7 +143,11 @@ const BRIDGE_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x1422_9DF5_DB39_C07B;
 // and every older probe plus the three RNG streams are unchanged, so this is
 // composition-only (no derrick, DrainWeapon or capture in this fixture).
 const BRIDGE_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x7D6C_E7BF_2564_FD19;
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x88D0_BF2F_F9AC_A02B;
+const BRIDGE_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x88D0_BF2F_F9AC_A02B;
+// v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
+// reproduces the prior current baseline exactly; older probes and RNG pins
+// are unchanged. This is Rust hash-composition provenance, not native parity.
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x81A1_308C_05B6_ECBD;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
@@ -541,6 +545,11 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
     let pre_wall_runtime_hash = rep.state_hash_without_wall_runtime_v115();
     let pre_disguise_detect_hash = rep.state_hash_without_disguise_detect_v117();
     let pre_credit_income_hash = rep.state_hash_without_credit_income_v135();
+    assert_eq!(
+        rep.state_hash_without_infantry_terminal_v136(),
+        BRIDGE_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH,
+        "pre-v136 composition must reproduce the prior bridge baseline"
+    );
     assert_eq!(
         pre_credit_income_hash, BRIDGE_HARNESS_PRE_CREDIT_INCOME_V135_HASH,
         "the dedicated pre-v135 probe must reproduce the prior bridge current baseline"

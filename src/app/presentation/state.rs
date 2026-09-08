@@ -102,8 +102,6 @@ pub(crate) struct MatchPresentationState {
     /// Active non-garrison weapon muzzle flash animations spawned from weapon `Anim=`.
     /// App-owned presentation state; combat only emits the fire facts.
     pub(crate) weapon_muzzle_flashes: Vec<crate::sim::components::WeaponMuzzleFlash>,
-    /// Active render-only projectile sprites spawned from non-instant weapon fire.
-    pub(crate) projectile_visuals: Vec<crate::app::presentation::fire_effects::ProjectileVisual>,
     /// Active parachute animations, one per descending paradropped infantry.
     /// Polling-based lifecycle: spawned when an entity gains parachute_state
     /// in the sim, removed on landing or death. Render-only; not snapshotted.

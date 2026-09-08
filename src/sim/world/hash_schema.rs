@@ -40,6 +40,7 @@ pub(super) enum HashFeature {
     HouseHarvesterNoOre = 132,
     HouseEva = 133,
     CreditIncome = 135,
+    InfantryTerminal = 136,
 }
 
 impl HashSchema {

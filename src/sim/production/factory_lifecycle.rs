@@ -647,9 +647,9 @@ pub(crate) fn validate_restored_factory_state(
         if entity.spawn_owner_id.is_some() || entity.slave_harvester.is_some() {
             return Err(fail(owner, "factory root is itself a manager child"));
         }
-        // Do not infer health or death flags from factory membership. Current
-        // coordinate-based superweapon ingress can damage an unmarked held
-        // Infantry; rejecting its save here would hide that separate live bug.
+        // Factory admission validates retained identity and membership, without
+        // inferring health or death flags. Terminal-state admission separately
+        // validates the object's lifecycle handoff.
         if !entity.lifecycle.in_limbo || entity.lifecycle.cell_marked || entity.in_logic_vector {
             return Err(fail(
                 owner,

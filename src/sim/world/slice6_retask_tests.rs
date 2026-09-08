@@ -362,7 +362,11 @@ const SLICE6_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x8A0C_1481_C5DC_F2F9;
 // this script has no derrick, DrainWeapon or capture, so only composition
 // moved (each object folds its dead constructor timer and two `None`s).
 const SLICE6_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xF26E_75C0_F0E0_4633;
-const SLICE6_BASELINE_HASH: u64 = 0xB9AD_9B95_BF3D_1130;
+const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0xB9AD_9B95_BF3D_1130;
+// v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
+// reproduces the prior current baseline exactly; older probes and RNG pins
+// are unchanged. This is Rust hash-composition provenance, not native parity.
+const SLICE6_BASELINE_HASH: u64 = 0x75EB_010D_E026_0566;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -444,6 +448,11 @@ fn replay_hash_stable_through_slice6() {
     let pre_wall_runtime_hash = sim.state_hash_without_wall_runtime_v115();
     let pre_disguise_detect_hash = sim.state_hash_without_disguise_detect_v117();
     let pre_credit_income_hash = sim.state_hash_without_credit_income_v135();
+    assert_eq!(
+        sim.state_hash_without_infantry_terminal_v136(),
+        SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH,
+        "pre-v136 composition must reproduce the prior Slice 6 baseline"
+    );
     let hash = sim.state_hash();
     println!(
         "[slice6] hashes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},pre-v115:{pre_wall_runtime_hash:016X},pre-v117:{pre_disguise_detect_hash:016X},pre-v135:{pre_credit_income_hash:016X},current:{hash:016X}"

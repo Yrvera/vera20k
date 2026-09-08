@@ -19,6 +19,10 @@ pub(crate) mod bridge_orchestrator;
 pub(crate) mod building_anim;
 pub mod edge_cell;
 mod hash_schema;
+mod infantry_terminal;
+pub(crate) use infantry_terminal::{InfantryDeathPostlude, InfantryTerminal};
+#[cfg(test)]
+pub(crate) use infantry_terminal::InfantryDeathSequence;
 mod lifecycle;
 mod load_object_lifecycle;
 mod logic_vector;
@@ -2228,12 +2232,15 @@ impl Simulation {
         rules: &RuleSet,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         receivers: &[crate::sim::combat::combat_aoe::AreaDamageReceiver],
-    ) {
+    ) -> Vec<u64> {
         let mut run = crate::sim::combat::world_receiver::ReceiverRun::default();
         let (effects, under_attack_events) = crate::sim::combat::world_receiver::commit_area(
             self, &mut run, receivers, rules, overlay_registry,
         );
         let terrain_navigation_changed_cells = run.finish(self);
+        // Fatal transitions are facts of this receiver transaction. Retain
+        // them before consequence delivery can retire their objects.
+        let fatal_ids = effects.despawned_ids.clone();
 
         self.absorb_noncombat_damage_effects(
             rules,
@@ -2242,6 +2249,7 @@ impl Simulation {
             under_attack_events,
             terrain_navigation_changed_cells,
         );
+        fatal_ids
     }
 
     /// `BuildingClass::ReceiveDamage @ 0x00442230`, result-4 (destroyed) arm

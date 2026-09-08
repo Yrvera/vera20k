@@ -129,17 +129,14 @@ fn apply_mutate_explosion(
                 })
         })
         .collect();
-    sim.commit_noncombat_aoe_receivers(rules, overlay_registry, &receivers);
+    let fatal_ids: BTreeSet<_> = sim
+        .commit_noncombat_aoe_receivers(rules, overlay_registry, &receivers)
+        .into_iter()
+        .collect();
 
     let killed: Vec<(u16, u16)> = candidates
         .into_iter()
-        .filter_map(|(id, rx, ry)| {
-            sim.substrate
-                .entities
-                .get(id)
-                .is_some_and(|entity| entity.health.current == 0 && entity.dying)
-                .then_some((rx, ry))
-        })
+        .filter_map(|(id, rx, ry)| fatal_ids.contains(&id).then_some((rx, ry)))
         .collect();
     killed
 }
@@ -180,9 +177,7 @@ fn apply_mutate_per_cell(sim: &mut Simulation, target_rx: u16, target_ry: u16) -
 
     let mut killed: Vec<(u16, u16)> = Vec::new();
     for (id, rx, ry) in &victims {
-        if let Some(e) = sim.substrate.entities.get_mut(*id) {
-            e.health.current = 0;
-            e.dying = true;
+        if sim.mark_raw_mutation_victim(*id) {
             killed.push((*rx, *ry));
         }
     }

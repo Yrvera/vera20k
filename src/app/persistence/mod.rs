@@ -654,6 +654,7 @@ mod tests {
     }
 
     mod factory_restore_tests;
+    mod infantry_terminal_restore_tests;
 
     fn load_fixture_rules() -> RuleSet {
         let ini = IniFile::from_str(

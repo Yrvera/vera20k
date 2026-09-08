@@ -14,9 +14,9 @@ use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::aircraft::AircraftMission;
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::superweapon::paradrop::{launch, ParaDropKind};
-use crate::sim::world::edge_cell::{find_paradrop_edge_cell, Edge};
+use crate::sim::superweapon::paradrop::{ParaDropKind, launch};
 use crate::sim::world::Simulation;
+use crate::sim::world::edge_cell::{Edge, find_paradrop_edge_cell};
 
 /// Minimal ruleset with PDPLANE + ParaDropWeapon + E1 + AMRADR cargo plane setup.
 /// AmerParaDropNum trimmed to 4 for faster test cycles vs the vanilla 8.
@@ -228,6 +228,50 @@ fn count_alive_infantry(sim: &Simulation, type_str: &str) -> usize {
                 && e.health.current > 0
         })
         .count()
+}
+
+#[test]
+fn infantry_terminal_empty_custom_carrier_retires_after_failed_launch() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=PDPLANE\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+         [PDPLANE]\nStrength=400\nSpeed=15\nLocomotor={4A582746-9839-11D1-B709-00A024DDAFD1}\n\
+         [General]\nAmerParaDropInf=PDPLANE\nAmerParaDropNum=0\nFlightLevel=1500\n",
+    ))
+    .unwrap();
+    let (mut sim, path_grid) = build_sim(&rules);
+    sim.intern_rule_type_ids(&rules);
+    sim.resolve_type_handles(&rules);
+    let owner = sim.interner.intern("Americans");
+    let sw = sim.interner.intern("SWTEST");
+    assert!(!launch(
+        &mut sim,
+        &rules,
+        owner,
+        50,
+        20,
+        ParaDropKind::American,
+        sw,
+        Some(&path_grid)
+    ));
+    let carrier = sim
+        .substrate
+        .entities
+        .values()
+        .find(|entity| sim.interner.resolve(entity.type_ref()) == "PDPLANE")
+        .unwrap();
+    let id = carrier.stable_id();
+    assert_eq!(
+        carrier.category,
+        crate::map::entities::EntityCategory::Infantry
+    );
+    assert!(carrier.dying && carrier.animation.is_some() && carrier.in_logic_vector);
+    assert_eq!(
+        carrier.infantry_terminal,
+        Some(crate::sim::world::InfantryTerminal::RetireNextVisit)
+    );
+    tick_n(&mut sim, &rules, &path_grid, 1);
+    assert!(!sim.substrate.entities.contains(id));
+    assert!(!sim.live_object_order_snapshot().contains(&id));
 }
 
 #[test]
