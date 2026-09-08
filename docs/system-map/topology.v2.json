@@ -488,7 +488,13 @@
           "path": "src/sim/world/navigation.rs",
           "symbol": "NavigationCaches::rebuild_dynamic / rebuild_zones / rebuild_zones_full",
           "coverage": "representative",
-          "observed_at_commit": "d13e84d449c5cbcc58b75af7326db68325d5d044"
+          "observed_at_commit": "258ddea596b3b11550a9c58718bd1b45d4de20c5"
+        },
+        {
+          "path": "src/sim/world/navigation_tests.rs",
+          "symbol": "held_factory_and_attached_upgrade_stay_off_navigation_through_frame_and_restore",
+          "coverage": "representative",
+          "observed_at_commit": "258ddea596b3b11550a9c58718bd1b45d4de20c5"
         },
         {
           "path": "src/sim/world/mod.rs",
@@ -513,7 +519,8 @@
         "OverlayGrid now owns synchronous overlay projection and its publication receipts in one operation across eight crate, tiberium, placement, damage and sale sites. The first changed projection survives later no-op recalculations; ordered next-reader coordinates and the frame-tail change flag remain independent obligations. Hosted wall callbacks retain their original order.",
         "Receipt-free map admission, terrain spawning, snapshot reconstruction, frame-tail replay and bridge inline publication retain their separate lifecycle owners. The full library suite and real-asset Lostlake MTNK/E1/ROBO movement regressions preserve represented behavior; this is not native differential or universal terrain parity. Obsolete standalone Mark replication and five tests were removed; unique wall-count and fixed-stride alias checks now enter production wall placement.",
         "One world operation consumes synchronous overlay and receiver terrain receipts, starting from navigation published after callbacks. Earlier pinned snapshots remain immutable; subsequent phases receive current canonical navigation, including when there are no receipts. The empty-receipt path reuses its Arc rather than copying the map.",
-        "Regressions cover immediate foundation preservation, stale pre-collapse snapshots with empty/nonempty receipts, actual engineer arrival and RNG, and snapshot/cache reconstruction. A postcombat movement route exercises the consumer but is only a smoke check, not native traversal parity. Existing shared structure-selection policy is unchanged."
+        "Regressions cover immediate foundation preservation, stale pre-collapse snapshots with empty/nonempty receipts, actual engineer arrival and RNG, and snapshot/cache reconstruction. A postcombat movement route exercises the consumer but is only a smoke check, not native traversal parity.",
+        "Canonical structure projection now reads the existing cell_marked authority. Factory-held buildings and retained attached upgrades contribute no independent footprint; dying structures retain their footprint until actual UnInit unmarks them. The regression uses real factory enqueue, map admission, a dirty-overlay frame and snapshot reconstruction. The older bridge/bib composition fixture now admits its building through map spawning. The full library suite and three real-asset Lostlake movement checks passed. This is a bounded Rust projection correction, not native upgrade-lifetime or universal navigation parity; foundation, HasBib, sorting and bridge-layer policies remain unchanged."
       ]
     },
     "GSI-04.05": {
