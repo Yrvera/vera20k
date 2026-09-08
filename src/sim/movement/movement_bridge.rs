@@ -276,7 +276,8 @@ pub(super) fn resolve_cell_transition_bridge_state(
             0
         }) as u8;
     position.z = z;
-    position.exact_z_leptons = None;
+    // Raw Object Z has a separate setter cadence. Paid Drive/Ship points and
+    // Walk commits refresh it; a residual crossing retains it (0x4B253F).
 
     // Carry the same number into BridgeOccupancy so the deck height has one
     // source rather than two independently-derived ones.
@@ -576,15 +577,16 @@ mod tests {
     }
 
     // ------------------------------------------------------------------------
-    // Full-span drive: the mover's height must follow the native model at every
-    // step, not only at the two boundary crossings.
+    // Full-span coarse bridge projection at each explicit cell transition.
     //
     // `FootClass::Set_Height_On_Bridge` 0x005F5FA0 recomputes
     //   Location.Z = GroundHeight(own cell) + (OnBridge ? 4 levels : 0)
     // with no stored per-cell deck height and no second gate. These tests walk a
-    // real multi-cell span because a two-cell fixture is satisfied by the Enter
+    // multi-cell span because a two-cell fixture is satisfied by the Enter
     // arm alone and proves nothing about the deck-to-deck steps in between,
-    // which are where a tank actually spends the crossing.
+    // which are where a tank actually spends the crossing. These assertions
+    // concern legacy Position.z only. Authoritative raw Z follows SetHeight
+    // cadence and can lag XY during Drive/Ship residual movement.
     // ------------------------------------------------------------------------
 
     const SPAN_Y: u16 = 5;
@@ -617,9 +619,8 @@ mod tests {
         g
     }
 
-    /// The native invariant, from the inverse function `ObjectClass::GetHeight`
-    /// 0x005F5F30: a mover's Z is always its own cell's terrain level plus the
-    /// deck delta exactly when its OnBridge byte is set.
+    /// Legacy coarse cell/deck projection, independent of the authoritative
+    /// raw-Z producer. This helper does not establish native GetHeight parity.
     fn assert_native_height(grid: &PathGrid, pos: &Position, on_bridge: bool, step: &str) {
         let cell = grid.cell(pos.rx, pos.ry).expect("cell in bounds");
         let expected = (cell.signed_level()

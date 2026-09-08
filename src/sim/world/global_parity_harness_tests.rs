@@ -390,8 +390,12 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // return/dock/deposit state at tick 599 differs. Behavior-bearing: Scenario
 // moved, Main/MapGen and record/replay equality unchanged; all seven
 // constants move together.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xC467_8EF0_3664_24FA;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xA29B_3C73_7B6F_2CA3;
+// 2026-09-08 ramp-height writers: all existing probes already fold exact Z.
+// Only entities 3/4 gain Some(0) in the final state. Clearing ONLY those exact-Z
+// values reproduces all eight parent (588f4079) probes; full RNG states are equal.
+// No hash formula changed. See RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md, replay provenance.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xBBCE_5931_7D88_FED0;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x70AC_1694_ECE3_412B;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -571,15 +575,15 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xA29B_3C73_7B6F_2CA3;
 // composed measurement, unchanged by this branch.
 // Re-baselined 2026-09-05 for GSI-09.03 harvest bite size (behavior-bearing,
 // see `FINAL_STREAM_STATES`); the historical probes move with the final hash.
-const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0xEFB6_42C2_FED9_0621;
-const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x9742_EF1A_3F12_09CE;
-const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xCFDB_4BEB_46CB_4F5D;
+const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x736D_0DE6_3FA9_0228;
+const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xC7A2_F0D8_CA11_B5D9;
+const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xA333_2779_6344_1458;
 // Re-baselined 2026-09-02 for v117's disguise-detect folds (FogState's
 // `CellClass+0xAC[house]` counter plane and the cached `DetectDisguiseRange=`
 // deposit radius). The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved. The three RNG stream pins are unchanged.
-const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xC161_8558_C9E6_DD47;
+const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x2429_1350_9A70_23B7;
 // Baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): the
 // `BuildingClass+0x6D0` ProduceCash timer and the `TechnoClass+0x1CC/+0x1D0`
 // drain link on every entity. The dedicated pre-v135 probe reproduces the
@@ -587,13 +591,13 @@ const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xC161_8558_C9E6_DD47;
 // DrainWeapon and no capture, so only current-schema composition moved (every
 // object folds its dead constructor timer and two `None`s). RNG stream pins
 // unchanged.
-const GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xCDD5_6F8D_8B28_E750;
+const GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x8CA1_75A9_1A1A_7699;
 // Re-baselined 2026-09-05 for GSI-09.03 harvest bite size (one density level
 // per Harvest_Ore_Tick gate, 0x0073D450); see `FINAL_STREAM_STATES`.
 // Re-baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01),
 // composition-only: `GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH` holds the
 // prior value and every historical probe and stream pin is unchanged.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x9C72_8D95_EBB4_D7D7;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x53C3_17DD_E1B0_51F6;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -1100,7 +1104,17 @@ fn dense_converging_setup() -> (
 /// What is still NOT separated: the individual contribution of the object-list
 /// arm, the mask arm and the handoff mark, which landed together and were
 /// neutralised together. UNVERIFIED.
-const POSITION_FINGERPRINT: u64 = 0x46A8_A475_2A7C_15EF;
+/// Re-baselined 2026-09-08 for residual cell normalization. A parent (588f4079)
+/// comparison of all 6000 tick/entity rows found five isolated world-XY pulses
+/// (80 rows, maximum 23 leptons), all equal again on the next tick. The old delayed
+/// paid-crossing return skipped that frame's remaining budget/interpolation;
+/// the already-normalized cell now takes the native same-cell loop/tail
+/// (4B1F56 / 4B22D9). Paths, missions, speeds and membership stayed equal;
+/// final entity states differ only in exact Z. This is an intentional movement
+/// correction, not a hash-fold change or full locomotor parity claim. The
+/// existing early return on an actual paid crossing remains a separate limit.
+/// See RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md, Rust replay provenance.
+const POSITION_FINGERPRINT: u64 = 0xD1F9_0004_4F62_D8C3;
 
 #[test]
 fn s2_dense_scenario_position_fingerprint_stable() {

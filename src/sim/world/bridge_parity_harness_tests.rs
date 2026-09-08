@@ -128,22 +128,26 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 // Merge 2026-09-02: main's veterancy re-baseline and its queue-store re-baseline
 // both moved these constants, so the three historical probes below are main's
 // composed measurement, unchanged by this branch.
-const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x1880_D391_E620_9834;
-const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x7D9B_C414_D199_21CC;
-const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xE1C6_54FA_7B7B_9CB3;
+// 2026-09-08 ramp-height writer: final entity 1 gains exact Z Some(416).
+// Clearing ONLY that field reproduces every parent (588f4079) hash probe; final
+// entity/RNG comparison has no other differences. Route/deck and per-tick
+// replay checks remain active. RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md records scope.
+const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x6CF2_5A22_88C0_2E9C;
+const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xE41A_CE94_5F4E_C69C;
+const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x6EBA_E111_2527_67FE;
 // Re-baselined 2026-09-02 for v117's disguise-detect folds (FogState's
 // `CellClass+0xAC[house]` counter plane and the cached `DetectDisguiseRange=`
 // deposit radius). The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved.
-const BRIDGE_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x1422_9DF5_DB39_C07B;
+const BRIDGE_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x2EDD_6F87_89A5_E263;
 // Baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): every
 // entity folds its dead ProduceCash timer and two `None` drain-link halves.
 // The dedicated pre-v135 probe reproduces the prior committed final exactly
 // and every older probe plus the three RNG streams are unchanged, so this is
 // composition-only (no derrick, DrainWeapon or capture in this fixture).
-const BRIDGE_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x7D6C_E7BF_2564_FD19;
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x88D0_BF2F_F9AC_A02B;
+const BRIDGE_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xB418_2979_A153_22DB;
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x964B_448B_A90B_D06A;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so

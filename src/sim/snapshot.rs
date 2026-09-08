@@ -429,7 +429,16 @@ use crate::sim::world::Simulation;
 // sit ahead of the `#[serde(skip)]` debug log, so a v134 record is short by
 // their bytes and bincode would read the next entity's bytes as them; the hash
 // schema also folds all three (`include_credit_income_v135`).
-const SNAPSHOT_VERSION: u32 = 135;
+// v137 changes ordinary ground-coordinate resume invariants: Walk samples Z
+// at its coordinate commits; Drive/Ship retain the last native paid sample,
+// while their residual XY can already
+// have changed the current cell, OnBridge, and track-relative offset. A v135
+// mover may instead carry no exact Z and the previous cell/track frame. Its
+// historic paid height cannot be reconstructed from the residual XY on load.
+// Reject those saves instead of inventing an idle terrain sample. No fields or
+// hash folds were added; see RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md (4B1A96/4B253F).
+// 136 is already used by the concurrent Infantry terminal-policy schema.
+const SNAPSHOT_VERSION: u32 = 137;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3195,7 +3204,8 @@ mod tests {
     fn house_eva_advice_snapshot_version_is_133() {
         // 133 -> 134: repair-depot docking layout (see the constant's comment).
         // 134 -> 135: GameEntity ProduceCash timer + drain link pair (GSI-09.01).
-        assert_eq!(super::SNAPSHOT_VERSION, 135);
+        // 135 -> 137: ordinary ground-coordinate resume invariants; 136 taken.
+        assert_eq!(super::SNAPSHOT_VERSION, 137);
     }
 
     #[test]

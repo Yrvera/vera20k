@@ -127,12 +127,12 @@ weighted maximum, signed wrapping, exact Z, facing and TMP dimensions). It does 
 execute game construction, SHP admission, active tunnels/overlays, dummy aliases or
 whole-game rendering. Those have separate Rust regressions/source evidence.
 
-Preexisting representation limit: normal movement retains coarse cell-level Z and
+At the cliff implementation's original delivery, normal movement retained coarse cell-level Z and
 semantic altitude, without subcell ramp height. For these poses, SHP admission uses
 semantic altitude; exact coordinates use native slope surface subtraction. This
 avoids introducing airborne classification for grounded ramp infantry. Missing
-subcell ramp pose remains DRIFT: ordinary ramp sprite position/depth cannot yet be
-claimed identical to YR. Flat cliff-adjacent cells do not depend on that gap.
+subcell ramp pose was recorded as DRIFT and is the subject of the subsequent
+authorized continuation below. Flat cliff-adjacent cells do not depend on that gap.
 
 Missing or invalid pristine TMP headers are diagnosed once at load and use an
 explicit degraded 30-row fallback. Valid registered types use exact header heights;
@@ -207,3 +207,80 @@ re-established in this increment and remains part of the pending game comparison
 Implementation committed locally as `3aa6c29168f69ac9929a33bc4abac736be772042`.
 No push, PR or merge was performed. The System Map annotation adds only the
 verified GSI-13.03 Foot owner/consumers; its checker reports zero errors.
+
+## User acceptance and ramp continuation
+
+The user subsequently reported that the cliff case looks good. This records
+their visual acceptance of the current fix; no new paired capture accompanied
+that message, so it does not establish whole-scene native pixel parity.
+
+The next authorized change is precise ordinary-unit ramp height, followed by a
+bridge overlap/entrance check. The existing `Position.exact_z_leptons` is the
+authoritative coordinate used by gameplay, persistence and presentation. Height
+must be written by simulation at the native movement/placement boundaries,
+not reconstructed independently by the renderer. Fresh binary inspection
+distinguishes Drive/Ship paid-point height writes from residual XY interpolation
+that preserves the previous raw Z; a blanket per-tick surface snap is incorrect.
+
+Implementation samples Drive/Ship paid and terminal coordinates, preserves raw Z
+during their residual interpolation, and samples Walk coordinates at its ordinary
+commit points. Placement clamps before its occupation update. Regressions cover
+bridge flag/object-list ordering, stationary and tube-exit coordinates, independent
+airborne owners, and save/load through a residual crossing. A fresh critic reviewed
+the implementation and replay attribution. Bridge split-blit admission and complete painter ordering
+remain unverified separately; fixing ramp coordinates alone cannot close them.
+
+Legacy runtime inputs with `exact_z_leptons=None` retain that representation
+until a real height-write boundary occurs. An idle pass cannot recover the native
+historical paid-point sample and must not invent one. Snapshot version 137 rejects
+older saves whose cell/track frame and missing paid-height sample cannot satisfy
+the new resume invariants; version 136 is already used by another branch. The
+existing exact-Z field is retained, without a serialization shape change. The coarse
+placement API also retains the explicitly documented negative-terrain authored
+Unit input and Infantry subcell-selection limits in the new native height report.
+
+The instrumented candidate passed all 15 new regressions; its only four full-suite
+failures were prior replay expectations. Exact-Z-only diagnostics recovered every
+old whole-state hash probe. S2's five isolated movement pulses were traced to the
+old delayed crossing return, with native loop evidence and independent review.
+The report records both the justification and the remaining preexisting early
+return on an actual paid crossing. Final uninstrumented validation follows the
+reviewed expectation updates; the diagnostic run alone is not that final pass.
+
+The controlled bridge map uses the retail Hills wood span, with a tank and GI at
+the entrance, a stationary deck tank and ground GI at the same bridge cell, and
+another GI for an attempted under-span crossing. It is staged in the isolated YR
+test copy as `depthbridge20260908.map` (Soviet campaign entry), with the prior
+campaign configuration backed up. Its SHA-256 is
+`d95c7f468931c59cad996677ccc39555e00a9cbd88cf75ece42dece944456ced`.
+Original retail files remain unchanged. Runtime bridge acceptance is pending.
+The user confirmed that the nearby infantry can walk underneath this bridge in
+original YR. This establishes that reference route, without yet certifying its
+VERA counterpart or a paired pixel comparison.
+The existing Rust retail characterization at
+`movement_bridge_retail_tests.rs::infantry_ordered_under_hills_high_bridge_is_currently_refused` records
+refusal of the same `(87,71) -> (87,78)` E1 route. Ground/deck cell admission is
+therefore a separate movement discrepancy to investigate, not evidence that
+the new height writer failed. The stationary ground GI still admits a bridge
+drawing check; no successful VERA under-span traversal is claimed here.
+
+## Ramp candidate validation
+
+After removing temporary instrumentation and applying the independently reviewed
+replay expectations, the final library run reported:
+
+`test result: ok. 8527 passed; 0 failed; 89 ignored; 0 measured; 0 filtered out; finished in 21.73s`.
+
+The actual candidate test executable also ran the ignored GPU and retail cases
+(production code unchanged since that build; later changes were test constants
+and provenance comments):
+
+- GPU depth: `test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 8608 filtered out; finished in 3.29s`.
+- Hills deck crossing, Drive/Walk/Hover: `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 8613 filtered out; finished in 8.60s`.
+- Hills under-span **refusal characterization**: `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8615 filtered out; finished in 0.92s`. This confirms the existing failure to issue a path, not successful traversal.
+
+The headless retail fixture reports missing TWNK1 SHP frame metadata for ambient
+ore twinkles; its movement assertions pass. Native height reproduction separately
+reports `PASS: 158 native ramp-height fixtures reproduce`. The fresh critic cleared
+the implementation, save/load regression and replay attribution, with the report's
+explicit cadence, placement and bridge-routing limits retained.

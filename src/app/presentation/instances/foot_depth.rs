@@ -121,11 +121,10 @@ fn shp_z_adjust_in_runtime(
     } else {
         0
     });
-    // Ordinary movement currently retains a coarse cell-level Z, not the
-    // subcell ramp surface. Use its semantic altitude for the grounded gate;
-    // exact native coordinates can use the complete GetHeight subtraction.
-    // This preserves the existing pose representation without misclassifying
-    // every walking infantry on a ramp as airborne.
+    // Ordinary ground movement supplies exact sampled ramp Z. Legacy or
+    // independent-altitude inputs can still lack that coordinate; retain their
+    // semantic altitude for the grounded gate. Exact coordinates use the full
+    // native GetHeight subtraction without a second render-side terrain snap.
     let height_above_ground = if entity.position.exact_z_leptons.is_some() {
         world_z.wrapping_sub(surface)
     } else {
