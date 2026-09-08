@@ -580,6 +580,38 @@
         "The deck pass selects Bridge membership after the existing ground pass and captures next before each world relayer. Actual high-bridge hut and nested Iron Curtain command tests cover order, non-anchor footprint, unmarked exclusion and snapshot restoration. Full ground damage aliasing, raw/hidden callbacks and falling remain DRIFT; no whole bridge or rendered parity claim."
       ]
     },
+    "GSI-05.01": {
+      "rust_surfaces": [
+        {
+          "path": "src/sim/world/world_spawn/construction.rs",
+          "symbol": "construct_runtime_techno; install_techno_components; ComponentOrigin",
+          "coverage": "representative",
+          "observed_at_commit": "b6de3f18e26086473f0d85728ac45b96d87a146f"
+        },
+        {
+          "path": "src/sim/world/world_spawn.rs",
+          "symbol": "spawn_from_map_with_constructor_inits; unlimbo_after_constructor_managers; spawn_object_limbo_at_height_with_init",
+          "coverage": "representative",
+          "observed_at_commit": "b6de3f18e26086473f0d85728ac45b96d87a146f"
+        },
+        {
+          "path": "src/sim/world/world_spawn/tests.rs",
+          "symbol": "techno_constructor_routes_preserve_components_and_authored_overrides; techno_constructor_tests",
+          "coverage": "representative",
+          "observed_at_commit": "b6de3f18e26086473f0d85728ac45b96d87a146f"
+        },
+        {
+          "path": "src/app/loading/init_helpers_retail_placement_oracle_tests.rs",
+          "symbol": "retail_dustbowl_gapowr_blocked_then_valid_placement_oracle",
+          "coverage": "representative",
+          "observed_at_commit": "b6de3f18e26086473f0d85728ac45b96d87a146f"
+        }
+      ],
+      "notes": [
+        "One private component installer serves authored map, live and held construction; live and held paths also share runtime type resolution, ID allocation, interning and constructor RNG setup. Authored health, veterancy, recruitment, native identity order, generated-map prevalidation and HIGH placement remain in the map owner. Parent store, Spawn/Slave child creation, Reveal and failed-placement disposal keep their existing lifecycle order.",
+        "All fifteen existing constructor tests remain in a private test module, with a new twelve-case component-route matrix. The raw-constructor owner-path guard remains while its brittle exact-call-count assertion is removed. Retail factory validation now publishes completion through the production owner and checks the same held identity through rejection and successful placement. The full library suite, factory restoration and replay checks, sealed Dustbowl placement and real Hills loading/movement regression passed. Authored Ship state, aircraft ammo and Fly Idle omissions are deliberately preserved current Rust behavior; this is not native constructor, rendering or universal map parity."
+      ]
+    },
     "GSI-05.03": {
       "native_anchors": [
         {
