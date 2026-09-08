@@ -3619,3 +3619,128 @@ fn sell_player_built_garrisoned_building_demolishes_and_ejects_alive() {
         "occupant role should be None"
     );
 }
+
+#[test]
+fn retained_wall_plane_runtime_placement_and_damage_update_once() {
+    use crate::sim::overlay_grid::damage_wall_overlay_with_terrain;
+
+    let ini = IniFile::from_str(
+        "[OverlayTypes]\n0=WALL\n\
+         [WALL]\nWall=yes\nStrength=100\n",
+    );
+    let art = IniFile::from_str("[WALL]\nDamageLevels=3\n");
+    let registry = OverlayTypeRegistry::from_ini(&ini, Some(&art));
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(resolved_clear_grid_with_override(5, 5, |_| {}));
+    sim.overlay_grid = Some(OverlayGrid::new_with_retained_wall_plane(5, 5));
+    let owner = sim.interner.intern("WallOwner");
+    assert!(super::wall_placement::stamp_wall(
+        &mut sim, &registry, 2, 2, 0, owner
+    ));
+    let mut grid = sim.overlay_grid.take().unwrap();
+    let mut terrain = sim.resolved_terrain.take().unwrap();
+    let placed = grid
+        .retained_wall_neighbor_counts()
+        .expect("retained authority");
+    for index in [6usize, 7, 8, 11, 13, 16, 17, 18] {
+        assert_eq!(placed[index], 1);
+    }
+    assert_eq!(placed[12], 0);
+
+    let mut rng = crate::sim::rng::SimRng::new(1);
+    let before_partial = grid
+        .retained_wall_neighbor_counts()
+        .expect("retained authority")
+        .to_vec();
+    let _ = grid.take_synchronous_navigation_cells();
+    let partial = damage_wall_overlay_with_terrain(
+        &mut grid,
+        &registry,
+        Some(&mut terrain),
+        2,
+        2,
+        100,
+        &mut rng,
+    );
+    assert!(partial.destroyed_cells.is_empty());
+    assert_eq!(partial.changed_cells, vec![(2, 2)]);
+    assert_eq!(grid.cell(2, 2).overlay_data, 0x10);
+    assert!(
+        grid.take_synchronous_navigation_cells().is_empty(),
+        "partial damage returns before native's direct-removal Recalc"
+    );
+    assert_eq!(
+        grid.retained_wall_neighbor_counts(),
+        Some(before_partial.as_slice()),
+        "nonterminal damage must not change retained counts"
+    );
+
+    let result = damage_wall_overlay_with_terrain(
+        &mut grid,
+        &registry,
+        Some(&mut terrain),
+        2,
+        2,
+        -1,
+        &mut rng,
+    );
+    assert_eq!(result.destroyed_cells, vec![(2, 2)]);
+    assert_eq!(
+        grid.take_synchronous_navigation_cells(),
+        vec![(2, 2)],
+        "direct removal publishes its Recalc before cleanup completes"
+    );
+    assert!(
+        grid.retained_wall_neighbor_counts()
+            .expect("retained authority")
+            .iter()
+            .all(|&count| count == 0)
+    );
+}
+
+#[test]
+fn retained_wall_plane_placement_reaches_fixed_stride_alias() {
+    let registry = OverlayTypeRegistry::from_ini(
+        &IniFile::from_str("[OverlayTypes]\n0=GASAND\n[GASAND]\nWall=yes\nStrength=100\n"),
+        None,
+    );
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(resolved_clear_grid_with_override(512, 2, |_| {}));
+    sim.overlay_grid = Some(OverlayGrid::new_with_retained_wall_plane(512, 2));
+    sim.overlay_grid
+        .as_mut()
+        .unwrap()
+        .place_overlay(511, 0, 0, 0);
+    let owner = sim.interner.intern("WallOwner");
+    assert!(super::wall_placement::stamp_wall(
+        &mut sim, &registry, 0, 1, 0, owner
+    ));
+    let alias_grid = sim.overlay_grid.as_ref().unwrap();
+    assert_eq!(
+        alias_grid.cell(0, 1).overlay_data & 0x0F,
+        0x08,
+        "anchor connects west through fixed-stride alias"
+    );
+    assert_eq!(
+        alias_grid.cell(511, 0).overlay_data & 0x0F,
+        0x02,
+        "aliased real wall connects east back to anchor"
+    );
+    assert_eq!(
+        alias_grid
+            .retained_wall_neighbor_counts()
+            .expect("retained authority")[511],
+        1,
+        "west fixed-stride alias resolves to real slot 511"
+    );
+    assert_eq!(
+        alias_grid
+            .retained_wall_neighbor_counts()
+            .expect("retained authority")
+            .iter()
+            .map(|&count| u32::from(count))
+            .sum::<u32>(),
+        5,
+        "three true-dummy neighbors produce no retained output"
+    );
+}

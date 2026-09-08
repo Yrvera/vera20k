@@ -515,10 +515,12 @@ pub fn reduce_tiberium(
         {
             // Retail recalculates cell attributes synchronously inside the full
             // removal boundary, before any later sim system can observe it.
-            let passability_changed = crate::sim::overlay_grid::recalc_overlay_passability(
-                grid, terrain, registry, cell.0, cell.1,
+            grid.recalculate_runtime_cell(
+                terrain,
+                registry,
+                cell,
+                crate::sim::overlay_grid::NavigationPublication::FrameBoundary,
             );
-            grid.record_synchronous_passability_change(passability_changed);
         }
     }
 
@@ -1409,11 +1411,30 @@ SpreadPercentage=.06
 
     #[test]
     fn gsi_04_09_full_reduction_propagates_synchronous_path_refresh() {
+        use crate::rules::locomotor_type::SpeedType;
+        use crate::sim::overlay_grid::NavigationPublication;
+        use crate::sim::world::TickLane;
+        use std::sync::Arc;
+
         let (overlay_registry, tiberium_types) = native_tiberium_fixture();
-        let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
-        let mut overlay = OverlayGrid::new(1, 1);
-        overlay.place_overlay(0, 0, tib01, 3);
+        let mut rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n",
+        ))
+        .expect("empty roster rules");
+        rules.tiberium_types = tiberium_types;
+        let mut sim = Simulation::new();
+        sim.production.ore_growth_config.grows = false;
+        sim.production.ore_growth_config.spreads = false;
+        sim.production.ore_growth_state = OreGrowthState::new(1, 1);
+        sim.production
+            .ore_growth_state
+            .reset_native_tiberium_classes(rules.tiberium_types.len(), 0);
         let mut terrain = flat_clear_terrain();
+        let cell = terrain.cell_mut(0, 0).unwrap();
+        cell.speed_costs.foot = Some(37);
+        cell.base_speed_costs.foot = Some(37);
+        let mut overlay = OverlayGrid::new(1, 1);
+        overlay.place_overlay(0, 0, overlay_registry.id_for_name("TIB01").unwrap(), 3);
         assert!(crate::sim::overlay_grid::recalc_overlay_passability(
             &mut overlay,
             &mut terrain,
@@ -1421,63 +1442,102 @@ SpreadPercentage=.06
             0,
             0,
         ));
-        assert_eq!(
-            terrain.cell(0, 0).unwrap().land_type,
-            LandType::Tiberium.as_index()
-        );
         overlay.take_dirty_cells();
+        sim.overlay_grid = Some(overlay);
+        sim.resolved_terrain = Some(terrain);
+        assert!(sim.rebuild_dynamic_navigation(&rules));
+        let old_cost = sim.terrain_costs[&SpeedType::Foot].cost_at(0, 0);
+        assert_ne!(old_cost, 37, "fixture must expose a canonical cost change");
+        let before = sim.path_grid_snapshot().unwrap();
 
-        let mut nodes = BTreeMap::new();
-        let mut growth = OreGrowthState::new(1, 1);
-        growth.reset_native_tiberium_classes(tiberium_types.len(), 0);
-        let outcome = {
-            let mut ctx = ReduceTiberiumContext {
-                resource_nodes: &mut nodes,
-                overlay_grid: Some(&mut overlay),
-                ore_growth_state: &mut growth,
-                overlay_registry: Some(&overlay_registry),
-                tiberium_types: Some(&tiberium_types),
-                resolved_terrain: Some(&mut terrain),
-                source_object_cells: None,
-                live_objects: None,
-                rng: None,
-                binary_frame: 0,
-                spread_enabled: false,
-                radar_dirty_cells: None,
-                radar_dirty_generation: None,
-                tactical_dirty_cells: None,
-            };
-            reduce_tiberium(&mut ctx, (0, 0), 4)
-        };
+        let outcome = sim.reduce_tiberium_at_with_native_context(
+            (0, 0),
+            4,
+            Some(&rules),
+            Some(&overlay_registry),
+        );
         assert!(outcome.fully_removed);
         assert_eq!(
-            terrain.cell(0, 0).unwrap().land_type,
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(0, 0)
+                .unwrap()
+                .land_type,
             LandType::Clear.as_index(),
-            "full reduction updates terrain synchronously"
+            "full reduction projects terrain synchronously"
+        );
+        assert_eq!(sim.terrain_costs[&SpeedType::Foot].cost_at(0, 0), old_cost);
+        let repeated = sim.overlay_grid.as_mut().unwrap().recalculate_runtime_cell(
+            sim.resolved_terrain.as_mut().unwrap(),
+            &overlay_registry,
+            (0, 0),
+            NavigationPublication::FrameBoundary,
+        );
+        assert!(!repeated.navigation_changed);
+
+        let deferred = sim.advance_app_frame(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            None,
+            67,
+            TickLane::Ordinary,
+            None,
+        );
+        assert!(deferred.overlay_updates.is_empty());
+        assert!(Arc::ptr_eq(&before, &sim.path_grid_snapshot().unwrap()));
+        assert_eq!(
+            sim.overlay_grid
+                .as_ref()
+                .unwrap()
+                .clone()
+                .take_dirty_cells_with_passability_signal(),
+            (vec![(0, 0)], true),
+            "missing registry retains the first true result despite the false repeat"
         );
 
-        let (dirty, mut refresh_after_tick) = overlay.take_dirty_cells_with_passability_signal();
-        assert_eq!(dirty, vec![(0, 0)]);
-        for (rx, ry) in dirty {
-            let repeated = crate::sim::overlay_grid::recalc_overlay_passability(
-                &mut overlay,
-                &mut terrain,
-                &overlay_registry,
-                rx,
-                ry,
-            );
-            assert!(!repeated, "app-side repeat recalc sees current terrain");
-            refresh_after_tick |= repeated;
-        }
+        let first = sim.advance_app_frame(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            Some(&overlay_registry),
+            67,
+            TickLane::Ordinary,
+            None,
+        );
+        assert_eq!(sim.terrain_costs[&SpeedType::Foot].cost_at(0, 0), 37);
+        assert!(sim.zone_grid.is_some());
         assert!(
-            refresh_after_tick,
-            "first synchronous result reaches the downstream path/zone refresh seam"
+            first.overlay_updates.is_empty(),
+            "erased tiberium has no overlay upsert"
         );
+        assert_eq!(first.tick.state_hash, sim.state_hash());
+        let published = sim.path_grid_snapshot().unwrap();
+        assert!(!Arc::ptr_eq(&before, &published));
         assert_eq!(
-            overlay.take_dirty_cells_with_passability_signal(),
-            (Vec::new(), false),
-            "runtime-only signal drains exactly once"
+            sim.overlay_grid
+                .as_ref()
+                .unwrap()
+                .clone()
+                .take_dirty_cells_with_passability_signal(),
+            (Vec::new(), false)
         );
+        let second = sim.advance_app_frame(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            Some(&overlay_registry),
+            67,
+            TickLane::Ordinary,
+            None,
+        );
+        assert!(second.overlay_updates.is_empty());
+        assert!(
+            Arc::ptr_eq(&published, &sim.path_grid_snapshot().unwrap()),
+            "no duplicate navigation publication"
+        );
+        assert_eq!(second.tick.state_hash, sim.state_hash());
     }
 
     #[test]
