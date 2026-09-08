@@ -127,4 +127,21 @@ Task-local file: `target/depth-comparison/depth-walls-cliff-v2.map`.
 The isolated native campaign's existing `depthwalls20260908.map` now has these
 same bytes; restart the Soviet test mission to load them. The previous map is
 preserved in the task's comparison folder. No renderer changes or rebuild were
-needed for this fixture correction. New wall-boundary screenshots remain due.
+needed for this fixture correction. The subsequent paired result is below.
+
+## Paired wall and building comparison: bounded pass
+
+The user identified `codex-clipboard-cf14eedd-6717-4066-b315-e30da8d0fb49.png`
+as original YR and `codex-clipboard-9bfb8b77-8aa4-49f1-a8d9-3cc8c8b43b49.png`
+as VERA, and accepted the VERA appearance. Both use the corrected V2 fixture.
+Fixed-art patches align with a native-to-VERA translation of (-43,-12) pixels.
+The independent critic found matching continuous wall segments/corners,
+pillbox placement, clipping of the tank behind the upper-right wall, and
+visibility of the foreground tank. Visible construction-yard and war-factory
+unit overlap also agrees. No definite depth mismatch is visible in this pair.
+
+This is a visual pass for these wall/building overlap cases, not scene-wide
+pixel equality. Infantry/crane animation differences were excluded. Neither
+image has a unit crossing the cliff face or a bridge overlap; those are not
+claimed as demonstrated by these captures. Images and comparison metadata
+are preserved under `.local/depth-occlusion/user-comparison-20260908/`.
