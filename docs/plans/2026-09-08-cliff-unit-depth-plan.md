@@ -284,3 +284,26 @@ ore twinkles; its movement assertions pass. Native height reproduction separatel
 reports `PASS: 158 native ramp-height fixtures reproduce`. The fresh critic cleared
 the implementation, save/load regression and replay attribution, with the report's
 explicit cadence, placement and bridge-routing limits retained.
+
+The tested implementation is committed locally as
+`5cafdce5a2625f49627e6840db7221fffb16321b`. No publication was performed.
+The System Map now records only the reviewed height producer and projection/SHP
+consumers; `python -m tools.system_map check` reports zero errors.
+
+Final `cargo clippy -p vera20k --lib` exits 101 on the same six preexisting
+`approx_constant` errors in `vxl_raster.rs`, `meander.rs` and `river.rs` described
+above (1159 warnings). The three files remain byte-identical to `51213e58`.
+Clippy is not a pass; no new deny-level error was introduced in this increment.
+
+The final release build succeeded in 3m47s. Executable SHA-256:
+`94011eab51e41b3cba2f60e5633cb86f066f3ee3a9076100418f531f66e6484a`.
+It was launched on 2026-09-08 at 19:29 Europe/Berlin with the prepared bridge map
+as `RA2_QUICKPLAY`, the primary checkout as working directory, and all other
+inherited `RA2_*` overrides removed except `RA2_DIR`. The new executable's window
+was responsive after loading (PID 40932), and its title changed to
+`RA2 - Depth Comparison - Hills Wood Bridge`, confirming the selected scenario.
+The isolated native YR reference remained open. The inherited log level is `warn`,
+so the log does not independently identify the map. No pixels were inspected by the agent;
+the bridge drawing/entrance comparison remains a user acceptance check.
+The Cargo slot was explicitly returned after this task's release build finished;
+a separate owner's active build was left untouched.
