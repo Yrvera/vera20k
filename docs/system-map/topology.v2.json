@@ -877,6 +877,38 @@
       ],
       "notes": ["Map knowledge authority is consumed by tactical shroud and radar pixels."]
     },
+    "GSI-13.03": {
+      "native_anchors": [
+        {
+          "symbol": "FootClass::GetZAdjustment",
+          "address": "0x004DAFC0",
+          "evidence": "docs/research/CLIFF_OBJECTS_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "TechnoClass cliff depth selector",
+          "address": "0x00704240",
+          "evidence": "docs/research/CLIFF_OBJECTS_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/render/foot_depth.rs",
+          "symbol": "foot_z_adjust / foot_depth_terms",
+          "coverage": "representative",
+          "observed_at_commit": "3aa6c29168f69ac9929a33bc4abac736be772042"
+        },
+        {
+          "path": "src/app/presentation/instances/foot_depth.rs",
+          "symbol": "unit_z_adjust / shp_z_adjust",
+          "coverage": "representative",
+          "observed_at_commit": "3aa6c29168f69ac9929a33bc4abac736be772042"
+        }
+      ],
+      "notes": [
+        "Foot depth preserves constructor defaults and wrapping signed maximum across cliff/column/tunnel/bridge selectors, gathered from live terrain/type state without simulation-dummy mutation.",
+        "85 unmodified-gamemd function fixtures bound arithmetic coverage; actual GPU readback and runtime adapter tests are separate Rust regressions. Full-game cliff comparison, subcell ramp pose and broader bridge/draw parity remain unclaimed."
+      ]
+    },
     "GSI-13.24": {
       "native_anchors": [
         {

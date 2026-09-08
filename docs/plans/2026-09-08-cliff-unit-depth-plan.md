@@ -195,3 +195,15 @@ Release build succeeded in 4m48s. Executable `target/release/vera20k.exe` SHA-25
 No game was restarted during implementation; the candidate and shared v3 map are
 ready for the user's next cliff comparison. The Cargo slot was returned to the
 coordinating ownership task after an empty process check.
+
+Fresh critic approved the tested local implementation after the fixture admission
+correction. Native zero guard was rechecked: Rules+0x664 zero bypasses all three
+cliff-back reclassification blocks in CellClass `0x47D2B0`; INI read
+`0x66F1CB..0x66F1E6` stores the explicit General/CliffBackImpassability value.
+Foot depth remains enabled. Rust's scenario override ordering is traced through
+`process_owner` and `init`; native scenario-map override ordering was not separately
+re-established in this increment and remains part of the pending game comparison.
+
+Implementation committed locally as `3aa6c29168f69ac9929a33bc4abac736be772042`.
+No push, PR or merge was performed. The System Map annotation adds only the
+verified GSI-13.03 Foot owner/consumers; its checker reports zero errors.
