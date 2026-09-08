@@ -213,7 +213,17 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
                 draw_group_range(pass, batch, g, palette_set, start, end - start);
             }
             (DrawKind::Shp, DrawTexture::Single(texture)) => {
-                batch.draw_depth_range(pass, texture, g.buffer, start, end - start);
+                // Ordinary infantry retains its 0x2E00 read-only leaf under
+                // bridges too; a flat write here incorrectly occludes neighbors.
+                batch.draw_zsprite_range(
+                    pass,
+                    texture,
+                    batch.default_zshape_bind_group(),
+                    g.buffer,
+                    start,
+                    end - start,
+                    false,
+                );
             }
             (DrawKind::Shp, DrawTexture::UnitPages { .. }) => {
                 unreachable!("SHP draw groups cannot use UnitAtlas pages")
@@ -568,7 +578,17 @@ pub(super) fn draw_shp_atlas_page_runs<'a>(
                 atlas.page_count()
             )
         });
-        batch.draw_passthrough_range(pass, &texture.texture, buffer, run.start, run.count);
+        // Top SHP producers are ordinary bodies and AnimClass draws: their
+        // native 0x2000 test remains active independently of display layer.
+        batch.draw_zsprite_range(
+            pass,
+            &texture.texture,
+            batch.default_zshape_bind_group(),
+            buffer,
+            run.start,
+            run.count,
+            false,
+        );
     }
 }
 

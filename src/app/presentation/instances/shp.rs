@@ -86,7 +86,14 @@ pub(crate) fn build_shp_instances(
     ground_objects: &mut Vec<PlannedGroundObjectInstance>,
     ground_order: &NativeGroundOrder,
 ) {
-    let (sim, atlas) = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.sprite_atlas) {
+    let (sim, atlas) = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.sprite_atlas,
+    ) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
@@ -100,10 +107,10 @@ pub(crate) fn build_shp_instances(
     let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|o| sim.interner.get(o));
     let ignore_visibility = state.match_state.sandbox_full_visibility;
-    let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.rules().map(|rules| &rules.art_registry);
+    let art_reg: Option<&crate::rules::art_data::ArtRegistry> =
+        state.rules().map(|rules| &rules.art_registry);
 
-    let encounter_order =
-        super::helpers::tactical_entity_encounter_order(sim, state.rules());
+    let encounter_order = super::helpers::tactical_entity_encounter_order(sim, state.rules());
     for stable_id in encounter_order {
         let Some(entity) = sim.entities().get(stable_id) else {
             continue;
@@ -127,7 +134,8 @@ pub(crate) fn build_shp_instances(
         // wall overlay instances in the unified merge (draw_merged_object_pass),
         // not here. Skip them to avoid drawing frame 0 (isolated pillar).
         if entity.category == EntityCategory::Structure {
-            let is_wall = state.rules()
+            let is_wall = state
+                .rules()
                 .and_then(|r| r.object(type_str))
                 .map(|o| o.wall)
                 .unwrap_or(false);
@@ -137,7 +145,9 @@ pub(crate) fn build_shp_instances(
         }
         let pos = &entity.position;
         let hc: HouseColorIndex = state
-            .match_state.match_presentation.house_color_map
+            .match_state
+            .match_presentation
+            .house_color_map
             .get(remap_owner)
             .copied()
             .unwrap_or(crate::rules::house_colors::NO_REMAP);
@@ -222,7 +232,8 @@ pub(crate) fn build_shp_instances(
                             .map(|c| c.count())
                             .unwrap_or(0);
                         let tech_level = obj.map(|o| o.tech_level).unwrap_or(-1);
-                        let (cy, cr) = state.rules()
+                        let (cy, cr) = state
+                            .rules()
                             .map(|r| (r.general.condition_yellow, r.general.condition_red))
                             .unwrap_or((0.5, 0.25));
                         rendered_garrison_body_frame_index(
@@ -257,7 +268,8 @@ pub(crate) fn build_shp_instances(
             Some(e) => e,
             None if shp_frame != 0
                 && entity.category == EntityCategory::Structure
-                && state.rules()
+                && state
+                    .rules()
                     .and_then(|r| r.object(type_str))
                     .map(|o| o.can_be_occupied)
                     .unwrap_or(false) =>
@@ -291,7 +303,7 @@ pub(crate) fn build_shp_instances(
                 // The drawn row carries this body's height lift; the sort key
                 // must not. A hovering Rocketeer or a descending paradrop key
                 // off the cell it is over, exactly like a GI standing there.
-                let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1];
+                let depth_y: f32 = sy + entry.canvas_rect[1] + entry.canvas_rect[3];
                 compute_sprite_depth(state, ground_sort_row(entity, depth_y), interp_z)
             }
         };
@@ -306,9 +318,11 @@ pub(crate) fn build_shp_instances(
             state.match_state.match_presentation.lighting.grid(),
             (pos.rx, pos.ry),
             entity.category,
-            state.rules()
+            state
+                .rules()
                 .map_or(0, |rules| rules.general.extra_unit_light),
-            state.rules()
+            state
+                .rules()
                 .map_or(0, |rules| rules.general.extra_infantry_light),
         );
         let under_bridge = is_under_bridge_render_state(state, entity)
@@ -321,43 +335,49 @@ pub(crate) fn build_shp_instances(
             EntityDrawBand::Ground => Some(&mut *paged),
         };
         // Native per-pixel Z. Buildings (`BuildingClass_DrawBody`, flags
-        // 0x6E00) walk gradient entry 2 from `NormalZAdjust - AdjustForZ(Z)`
+        // 0x6E00) seed from `NormalZAdjust - AdjustForZ(Z)`
         // minus DrawSHP's 2, write Z, and subtract the BUILDNGZ z-shape placed
         // by `ZShapePointMove` and the foundation (dropped for foundations 8
-        // wide or more). Infantry (`InfantryClass Draw_It`, flags 0x2E00) walks
+        // wide or more). Raw frames only clip to the shape. Extended BUILDNGZ
+        // uses a constant seed;
+        // ordinary sprites walk gradient 2. Infantry (`InfantryClass Draw_It`, flags 0x2E00) walks
         // entry 2 from `Get_Z_Adjust - 2`, whose base term also cancels the
         // lift, and never writes.
-        let (z_adjust, z_gradient, zshape_origin) =
-            if entity.category == EntityCategory::Structure {
-                let object_type = state.rules().and_then(|r| r.object(type_str));
-                let rules_image: String = object_type
-                    .map(|o| o.image.clone())
-                    .unwrap_or_else(|| type_str.to_string());
-                let art_entry = art_reg.and_then(|a| a.resolve_metadata_entry(type_str, &rules_image));
-                let normal_z_adjust: i32 = art_entry.map_or(0, |a| a.normal_z_adjust);
-                let point_move: (i32, i32) = art_entry.map_or((0, 0), |a| a.z_shape_point_move);
-                let foundation: (u16, u16) = object_type
-                    .map(|o| crate::rules::foundation::foundation_dimensions(&o.foundation))
-                    .unwrap_or((1, 1));
-                let zshape = state.match_state.match_presentation.building_zshape.is_some()
-                    && foundation.0 <= ZSHAPE_MAX_FOUNDATION_WIDTH;
-                let origin = native_z::zshape_origin(
-                    (sx.round() as i32, sy.round() as i32),
-                    foundation,
-                    point_move,
-                );
-                (
-                    ground_z_adjust(interp_z, normal_z_adjust + SHP_DRAW_Z_ADJUST_PX),
-                    pack_z_gradient(ZGradient::Vertical, zshape),
-                    [origin.0 as f32, origin.1 as f32],
-                )
-            } else {
-                (
-                    ground_z_adjust(interp_z, SHP_DRAW_Z_ADJUST_PX),
-                    pack_z_gradient(ZGradient::Vertical, false),
-                    [0.0, 0.0],
-                )
-            };
+        let (z_adjust, z_gradient, zshape_origin) = if entity.category == EntityCategory::Structure
+        {
+            let object_type = state.rules().and_then(|r| r.object(type_str));
+            let rules_image: String = object_type
+                .map(|o| o.image.clone())
+                .unwrap_or_else(|| type_str.to_string());
+            let art_entry = art_reg.and_then(|a| a.resolve_metadata_entry(type_str, &rules_image));
+            let normal_z_adjust: i32 = art_entry.map_or(0, |a| a.normal_z_adjust);
+            let point_move: (i32, i32) = art_entry.map_or((0, 0), |a| a.z_shape_point_move);
+            let foundation: (u16, u16) = object_type
+                .map(|o| crate::rules::foundation::foundation_dimensions(&o.foundation))
+                .unwrap_or((1, 1));
+            let zshape = state
+                .match_state
+                .match_presentation
+                .building_zshape
+                .is_some()
+                && foundation.0 <= ZSHAPE_MAX_FOUNDATION_WIDTH;
+            let origin = native_z::zshape_origin(
+                (sx.round() as i32, sy.round() as i32),
+                foundation,
+                point_move,
+            );
+            (
+                ground_z_adjust(interp_z, normal_z_adjust + SHP_DRAW_Z_ADJUST_PX),
+                native_z::pack_building_z_gradient(zshape, entry.extended),
+                [origin.0 as f32, origin.1 as f32],
+            )
+        } else {
+            (
+                ground_z_adjust(interp_z, SHP_DRAW_Z_ADJUST_PX),
+                pack_z_gradient(ZGradient::Vertical, false),
+                [0.0, 0.0],
+            )
+        };
         let body = SpriteInstance {
             position: [final_x, final_y],
             size: entry.pixel_size,
@@ -441,7 +461,9 @@ pub(crate) fn build_shp_instances(
                 let is_garrisoned = entity.passenger_role.cargo().is_some_and(|c| !c.is_empty());
                 let is_player_owned = !crate::rules::house_colors::is_non_player_house(owner_str);
                 let world_height: f32 = state
-                    .match_state.match_presentation.terrain_grid
+                    .match_state
+                    .match_presentation
+                    .terrain_grid
                     .as_ref()
                     .map(|g| g.world_height)
                     .unwrap_or(1.0);
@@ -514,7 +536,8 @@ pub(crate) fn build_shp_instances(
                 y: i32::from(pos.ry) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_y),
                 z: i32::from(pos.z),
             };
-            let actual_type = state.rules()
+            let actual_type = state
+                .rules()
                 .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref())));
             if let Some(parent) = actual_type.and_then(|object_type| {
                 ground_order.building_object_draw(
@@ -1050,7 +1073,8 @@ fn resolve_infantry_shp_frame(
     // Pass raw facing (not canonical) to resolve_shp_frame so the
     // facing-to-index division works correctly for any facing count
     // (6, 8, 10, etc.). The absolute frame index encodes the direction.
-    let sequence_set = state.rules()
+    let sequence_set = state
+        .rules()
         .and_then(|rules| rules.animation_sequence(type_id));
     if entity.category == EntityCategory::Unit
         && !entity.is_voxel

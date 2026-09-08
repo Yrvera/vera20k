@@ -79,3 +79,5 @@ pub mod vxl_compute;
 pub mod vxl_normals;
 pub mod vxl_raster;
 pub mod wave_geometry;
+#[cfg(test)]
+mod depth_gpu_tests;

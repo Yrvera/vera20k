@@ -17,8 +17,9 @@
 //! - `Standard_SHP_blitter @ 0x004373B0` (`0x004374BB..0x004375A7`): the two
 //!   seeding paths below, then the per-row step applied after each row
 //!   (`0x00437921..0x0043793f`).
-//! - `Extended_SHP_blitter @ 0x00437A10`: same seeding, same walker, plus the
-//!   per-pixel z-shape byte subtracted in the leaf (`0x004990E0`).
+//! - `Extended_SHP_blitter @ 0x00437A10`: ordinary gradients without a
+//!   second shape; with one, constant raw bottom seed (no gradient), minus
+//!   the per-pixel signed z-shape byte in the leaf (`0x004990E0`).
 //! - `TMP_TileBlitter @ 0x00547CF0`: `DAT_00AA1104 = (u16)(DefaultZ + YOrigin
 //!   - y - tileH) - tileH * heightLevel / 2`, per pixel `base + zdata <= zbuf`.
 //! - `TechnoClass_DrawSHP @ 0x00705E00`: CC stack slot 7 = a7 - 2
@@ -123,6 +124,19 @@ impl ZGradient {
 /// lookup at `zshape_origin`.
 pub const Z_GRADIENT_ZSHAPE_FLAG: u32 = 0x100;
 
+/// Clip against the second shape even for raw frames. CC_Draw_Shape clips
+/// before its format-bit dispatch; only extended frames consume shape values.
+pub const Z_GRADIENT_ZSHAPE_CLIP_FLAG: u32 = 0x200;
+
+pub const fn pack_building_z_gradient(zshape: bool, extended: bool) -> u32 {
+    pack_z_gradient(ZGradient::Vertical, zshape && extended)
+        | if zshape {
+            Z_GRADIENT_ZSHAPE_CLIP_FLAG
+        } else {
+            0
+        }
+}
+
 /// Pack a gradient entry and the z-shape enable into `SpriteInstance::z_gradient`.
 pub const fn pack_z_gradient(gradient: ZGradient, zshape: bool) -> u32 {
     (gradient as u32) | if zshape { Z_GRADIENT_ZSHAPE_FLAG } else { 0 }
@@ -172,6 +186,15 @@ pub fn sprite_row_z(
     let (seed, accum) = sprite_seed_z(gradient, screen_top, height, z_adjust);
     let steps = (accum + row.max(0) * entry.increment) / entry.threshold;
     seed + entry.step_dir * steps
+}
+
+/// Constant seed of an extended SHP blit with a second shape (BUILDNGZ).
+/// `Extended_SHP_blitter @ 0x00437C39..0x00437C72` bypasses gradient
+/// quantisation; `0x00437E67..0x00437EA7` advances shape rows without stepping Z.
+/// The per-pixel leaf then subtracts the signed shape byte. Raw SHP frames
+/// use the standard walker and do not consume the second shape.
+pub fn zshape_seed_z(screen_top: i32, height: i32, z_adjust: i32) -> i32 {
+    ((DEFAULT_Z - height - screen_top + 1) & 0xFFFF) + z_adjust
 }
 
 /// Tile base Z (`DAT_00AA1104`). `screen_top` is the diamond top row on
@@ -330,6 +353,21 @@ mod tests {
         assert_eq!(sprite_row_z(ZGradient::Vertical, 100, 31, 0, 1), seed + 1);
         assert_eq!(sprite_row_z(ZGradient::Vertical, 100, 31, 0, 3), seed + 1);
         assert_eq!(sprite_row_z(ZGradient::Vertical, 100, 31, 0, 4), seed + 2);
+    }
+
+    #[test]
+    fn building_shape_uses_unquantised_bottom_seed_and_raw_frames_only_clip() {
+        // Regression derived from the 437C39..437C72 arithmetic, not a
+        // captured parity golden. A neutral shape must have one Z at all rows.
+        assert_eq!(zshape_seed_z(100, 30, -2), DEFAULT_Z - 131);
+        assert_ne!(
+            zshape_seed_z(100, 30, -2),
+            sprite_row_z(ZGradient::Vertical, 100, 30, -2, 0),
+        );
+        assert_eq!(zshape_seed_z(85, 30, -17), zshape_seed_z(100, 30, -2));
+        assert_eq!(pack_building_z_gradient(true, true), 0x302);
+        assert_eq!(pack_building_z_gradient(true, false), 0x202);
+        assert_eq!(pack_building_z_gradient(false, true), 2);
     }
 
     #[test]

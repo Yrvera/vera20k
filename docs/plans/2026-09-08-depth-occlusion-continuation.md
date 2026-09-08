@@ -1,0 +1,103 @@
+# Depth and occlusion continuation
+
+Continues `feature/sprite-zbuffer-depth` from `51213e58`; retains its integer
+Z axis, BUILDNGZ loader, TMP atlas, voxel seed grouping and ordered Ground pass.
+Scope: ordinary buildings, cliffs, walls and unit overlap. This is an
+implementation continuation, not a new renderer or a lighting redesign.
+
+## Native evidence and resulting changes
+
+Read-only live Ghidra against retail gamemd.exe, SHA-256
+`1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c`.
+An independent critic rechecked the important branches and stored asset headers.
+
+- **BUILDNGZ:** `Extended_SHP_blitter` at 0x437A10, seed at 0x437C39..0x437C72 and
+  row loop at 0x437E67..0x437EA7. A supplied second shape bypasses gradient quantisation
+  and row stepping. Its seed is `(u16)(32768-screen_top-height+1)+z_adjust`;
+  the leaf at 0x4990E0 subtracts a signed shape byte and tests strict-less with write.
+  The prior shader applied ordinary gradient 2 as well, changing occlusion.
+- **Shape intersection:** CC_Draw_Shape at 0x4AF08C..0x4AF0FB intersects the body
+  with the second shape before dispatch. Seed top/height come from this
+  intersection. SHP format bit 1 at 0x69E900 chooses extended versus standard;
+  raw frames clip but use the ordinary gradient and ignore shape values.
+- **SHP rectangle:** CC_Draw_Shape at 0x4AED70 centers by integer canvas halves,
+  adds the stored frame X/Y, then passes stored width/height to the blitter.
+  Sprite/overlay atlases previously padded frames to the canvas, preserving
+  color placement but changing the depth seed. They now retain stored frames;
+  a separate logical canvas rectangle preserves existing picking/sort metrics.
+  Retail examples: GI canvas 78x66 / frame 0 (32,7,13,29), GGCNST
+  canvas 284x226 / frame 0 (37,74,212,148), GAWALL canvas 78x70 / frame 0 (17,17,42,43).
+- **Walls/ordinary overlays:** Cell_ContentRendering at 0x6D6D10 calls 0x47F6A0,
+  which draws SHP with flags 0x4E00. Selector 0x490B90 reaches the same opaque
+  read/write family as buildings. Walls force gradient 2 and use -15*level-2;
+  other ordinary overlays select DrawFlat (default true), with the native
+  upright/non-rock adjustment. Policy now survives fixed-cell lowering and
+  contiguous draw dispatch. Existing special resource/rubble paths remain
+  explicitly separate.
+- **Units:** Infantry at 0x518F90 and normal AnimClass at 0x422CA0 keep the Z test
+  regardless of display layer. Bridge infantry no longer writes flat depth;
+  Top SHP also uses the existing per-pixel read-only pipeline. Their registration
+  order and the voxel rendering path remain intact.
+- **Cliffs:** TMP at 0x547CF0 seeds `(u16)(32768-y-tileH)-tileH*level/2`, then adds
+  authored Z bytes and tests <= with write. Current terrain position/adjustment
+  algebra already matches; no new cliff projection or sign change was made.
+- **Color regression:** the newer zsprite shader dropped the existing
+  encoded-palette tint helper. It now applies the same map/effect tint as the
+  predecessor batch shader, avoiding an incidental appearance change from
+  switching draw pipelines. Existing RGB565/light-table approximation remains.
+
+## Validation and comparison
+
+GPU checks passed on AMD Radeon integrated graphics through Vulkan:
+`test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 8575 filtered out; finished in 1.84s`.
+Full library:
+`test result: ok. 8494 passed; 0 failed; 85 ignored; 0 measured; 0 filtered out; finished in 26.78s`.
+The earlier focused run had 596 passed / 0 failed / 6 ignored. `cargo clippy -p vera20k
+--lib` ran and exited 101 on six existing `approx_constant` errors in
+`render/vxl_raster.rs` (3), `map/rmg/phases/meander.rs` (1), and
+`map/rmg/phases/river.rs` (2). All three files are byte-for-byte unchanged
+from 51213e58 (`git diff --exit-code`); no lint failure is in this change.
+The command also reports existing repository warnings. Release build succeeded (4m 22s). Candidate executable SHA-256:
+`09d1c0d1c9283bbeefd0d953e7f478d9bd43269f35909a9dd2deac658541ce6a`.
+
+GPU tests execute production WGSL with production
+instance/uniform layouts and isolate depth admission, transparent pixels,
+read-only versus writing sprites, signed shape values, clipping, and tint.
+They are regression tests, not native scene parity goldens. Loader tests exercise
+the real loose-file SHP loading path with synthetic retail-shaped frame headers.
+
+The previous second fixture encoded OverlayPack with LZO, while native YR
+requires LCW/Format80. The portable stdlib-only generator is `tools/render_depth_fixture.py`:
+
+```powershell
+python tools/render_depth_fixture.py target/depth-comparison/depth-walls-cliff.map
+python tools/render_depth_fixture.py target/depth-comparison/depth-walls.map --walls-only
+```
+
+The corrected outputs match the checked fixture bytes and independently decode
+to 4,560 map cells, 32 chunks per 262,144-byte overlay plane, and 12 connected
+wall cells. The cliff map has the four present Cliff01 subtiles and a low-side
+power plant. Its SHA-256 is
+`a110a6131bbc7a768cdb493f0bb088af7f3247e8d11cecee0932a862c970afd3`.
+VERA accepts the absolute path through its existing RA2_QUICKPLAY hook. The
+isolated native test copy's Soviet campaign points at the same bytes under
+`depthwalls20260908.map`, with its previous battlemd.ini backed up in the
+local checkpoint folder. Original retail files were not edited.
+The release process loaded this map and reached a responsive tactical window
+(`RA2 - Depth Continuation - Walls and Cliff`); its log confirms the 396x477
+BUILDNGZ load. Original YR was restarted with the staged campaign. User
+confirmation of native loading and comparison of occlusion boundaries remain
+pending; this is not visual parity sign-off.
+
+## Bounded residuals
+
+Special sloped tiberium, rubble and TS vein shapes keep their prior passthrough;
+this change does not fabricate slope Z data. Cloak/warp leaf families, native
+16-bit wrap/dirty-rectangle behavior and scene-wide pixel parity are not closed.
+Stock TMP census: 5,326 files/18,983 cells/4,399 extra+Z cells across 14
+installed iso archives; no opaque diamond/extra overlap, missing-Z cells or
+parse errors. Archive hashes and counts are in local
+`target/depth-critic-census/tmp-census.json`. Conditional decoder concerns
+therefore have no demonstrated stock trigger. Stock cliff geometry must
+still be compared in the corrected fixture. The old
+fixture-1 screenshot report is historical, not validation of this candidate.

@@ -100,8 +100,8 @@ fn vs_main(
     return output;
 }
 
-fn apply_fx(color: vec4f, _flags: u32, params: vec4f, effect_tint: vec4f) -> vec4f {
-    return vec4f(color.rgb * effect_tint.rgb, color.a * params.x);
+fn apply_fx(color: vec4f, _flags: u32, params: vec4f, _effect_tint: vec4f) -> vec4f {
+    return vec4f(color.rgb, color.a * params.x);
 }
 
 // Native Z of the row `row` (0 = top) of a blit whose top is at screen row
@@ -155,6 +155,31 @@ struct FragOutput {
     @builtin(frag_depth) depth: f32,
 };
 
+// --- Map-light tint in the original's colour space -------------------------
+// gamemd lights a palette entry by scaling its 8-bit RGB bytes: LightConvert's
+// palette pass (FUN_00556090 -> FUN_007DE200 for RGB565) computes
+// (byte * scale16) >> 16 with scale16 = light_milli * 65536 / 1000 (three LEA x5
+// and a SHL 3 then the double 0.065536 at 0x007ED0B0) and clamps the product to
+// 255 before packing. That multiply happens on the palette bytes, i.e. in
+// sRGB-encoded space. These textures are sRGB-typed, so the sampled value is
+// already linear; multiplying it by the tint here would apply the light in
+// linear space, which reads as tint^(1/2.2) on screen (a 1.2 unit light became
+// ~1.09). Re-encode, scale, clamp, decode. The RGB565 quantisation that
+// follows natively is not modelled (DRIFT, sub-pixel colour).
+fn srgb_encode(c: vec3f) -> vec3f {
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(max(c, vec3f(0.0)), vec3f(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c <= vec3f(0.0031308));
+}
+fn srgb_decode(c: vec3f) -> vec3f {
+    let lo = c / 12.92;
+    let hi = pow((c + 0.055) / 1.055, vec3f(2.4));
+    return select(hi, lo, c <= vec3f(0.04045));
+}
+fn palette_light(rgb_linear: vec3f, tint: vec3f) -> vec3f {
+    return srgb_decode(clamp(srgb_encode(rgb_linear) * tint, vec3f(0.0), vec3f(1.0)));
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> FragOutput {
     let color: vec4f = textureSample(t_sprite, s_sprite, input.uv);
@@ -163,20 +188,36 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     }
 
     let camera_row: i32 = i32(round(camera.camera_pos.y));
-    let rect_top: f32 = input.rect_top_height.x;
-    let height: i32 = max(i32(round(input.rect_top_height.y)), 1);
-    let screen_top: i32 = i32(round(rect_top)) - camera_row;
-    let row: i32 = clamp(i32(floor(input.world_pos.y - rect_top)), 0, height - 1);
+    var rect_top: i32 = i32(round(input.rect_top_height.x));
+    var rect_bottom: i32 = rect_top + max(i32(round(input.rect_top_height.y)), 1);
+    let extended_shape: bool = (input.z_gradient & 0x100u) != 0u;
+    var shape_delta: i32 = 0;
+    if ((input.z_gradient & 0x300u) != 0u) {
+        let origin: vec2i = vec2i(input.zshape_origin);
+        let canvas: vec2i = vec2i(floor(input.world_pos)) - origin;
+        let dims: vec2i = vec2i(textureDimensions(t_zshape));
+        // CC_Draw_Shape @ 0x4AF08C..0x4AF0FB intersects the body and second
+        // shape before dispatching either walker. The clipped rect supplies
+        // the seed too; merely discarding outside pixels keeps a wrong seed
+        // when the shape cuts off the bottom of the body.
+        if (canvas.x < 0 || canvas.y < 0 || canvas.x >= dims.x || canvas.y >= dims.y) {
+            discard;
+        }
+        rect_top = max(rect_top, origin.y);
+        rect_bottom = min(rect_bottom, origin.y + dims.y);
+        if (extended_shape) {
+            shape_delta = i32(textureLoad(t_zshape, canvas, 0).r * 255.0 + 0.5) - 128;
+        }
+    }
+    let height: i32 = max(rect_bottom - rect_top, 1);
+    let screen_top: i32 = rect_top - camera_row;
+    let row: i32 = clamp(i32(floor(input.world_pos.y)) - rect_top, 0, height - 1);
     let entry: u32 = input.z_gradient & 0xFFu;
     var z: i32 = native_row_z(entry, screen_top, height, i32(round(input.z_adjust)), row);
-
-    if ((input.z_gradient & 0x100u) != 0u) {
-        let canvas: vec2i = vec2i(floor(input.world_pos)) - vec2i(input.zshape_origin);
-        let dims: vec2i = vec2i(textureDimensions(t_zshape));
-        if (canvas.x >= 0 && canvas.y >= 0 && canvas.x < dims.x && canvas.y < dims.y) {
-            let texel: f32 = textureLoad(t_zshape, canvas, 0).r;
-            z = z - (i32(texel * 255.0 + 0.5) - 128);
-        }
+    if (extended_shape) {
+        // Extended_SHP_blitter @ 0x437C39..0x437C72 uses the raw bottom
+        // seed. 0x437E67 advances the shape without the ordinary row gradient.
+        z = ((32768 - height - screen_top + 1) & 0xFFFF) + i32(round(input.z_adjust)) - shape_delta;
     }
 
     // row = DefaultZ - Z + camera_y; depth = 1 - (row - origin) / world_height.
@@ -186,7 +227,7 @@ fn fs_main(input: VertexOutput) -> FragOutput {
 
     var output: FragOutput;
     output.color = apply_fx(
-        vec4f(color.rgb * input.tint, color.a * input.alpha),
+        vec4f(palette_light(color.rgb, input.tint * input.effect_tint.rgb), color.a * input.alpha),
         input.fx_flags,
         input.fx_params,
         input.effect_tint,

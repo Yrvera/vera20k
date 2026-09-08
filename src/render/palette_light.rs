@@ -73,6 +73,7 @@ mod tests {
             include_str!("batch_shader.wgsl"),
             include_str!("sprite_voxel_shader.wgsl"),
             include_str!("zdepth_shader.wgsl"),
+            include_str!("zsprite_shader.wgsl"),
         ] {
             assert!(src.contains("fn palette_light(rgb_linear: vec3f, tint: vec3f)"));
             assert!(

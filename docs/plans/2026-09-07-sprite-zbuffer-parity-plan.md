@@ -1,5 +1,12 @@
 # Per-pixel sprite Z-buffer parity — implementation plan
 
+> Continuation, 2026-09-08: the implementation and old capture claims below
+> predate three confirmed corrections: BUILDNGZ constant/intersected seed,
+> stored SHP frame extents, and ordinary wall SHP depth. See
+> [the continuation evidence and validation](2026-09-08-depth-occlusion-continuation.md).
+> The old fixture-1 captures do not establish the corrected candidate's parity.
+
+
 Date: 2026-09-07. Branch: `feature/zbuffer-sprite-ztest-docs`.
 Source revision: `c9d07488` (docs corrected, no code yet).
 
@@ -200,7 +207,7 @@ tiles and sprites are the case to decide on; note the choice in the shader.
 - **Walls.** Native walls write Z through the tile blitter; VERA draws walls
   through passthrough with no write (`draw_passes.rs:132`). A building beside
   a wall cannot lose pixels to it until walls write depth. Either include wall
-  depth writes here (they are TMP-family, so the zdepth path fits) or record
+  depth writes here (they are SHP-family (47F6A0), so the zsprite write path fits) or record
   the residual with the acceptance scenario below marked partial.
 
 ### 5. Obsolete after this lands

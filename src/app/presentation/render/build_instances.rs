@@ -8,8 +8,8 @@
 //! - Internal to `presentation::render` — only called from mod.rs.
 
 use crate::app::AppState;
-use crate::app::input::commands::preferred_local_owner;
 use crate::app::diagnostics::debug_overlays;
+use crate::app::input::commands::preferred_local_owner;
 use crate::app::presentation::instances;
 use crate::app::presentation::sidebar_render::{
     active_minimap_screen_rect, build_sidebar_cameo_instances, build_sidebar_chrome_instances,
@@ -33,6 +33,7 @@ use crate::sidebar::SidebarView;
 pub(super) struct WorldInstances {
     pub terrain: crate::render::terrain_instances::TerrainInstances,
     pub overlay: Vec<SpriteInstance>,
+    pub overlay_render_z: Vec<crate::render::tactical_draw_plan::RenderZPolicy>,
     /// TerrainClass and Techno parents in exact signed Layer-2 order.
     pub ground: super::draw_plan_lowering::GroundObjectPass,
     /// Static smudge decals (craters, scorches) — drawn between terrain and entities.
@@ -200,11 +201,13 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     let mut ground_objects = Vec::new();
     let mut overlay: Vec<SpriteInstance> = std::mem::take(&mut state.match_state.match_presentation.cached_overlay_instances);
     overlay.clear();
+    let mut overlay_render_z = Vec::new();
     instances::build_overlay_instances(
         state,
         sw,
         sh,
         &mut overlay,
+        &mut overlay_render_z,
         &mut ground_objects,
         &ground_order,
     );
@@ -377,6 +380,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     WorldInstances {
         terrain,
         overlay,
+        overlay_render_z,
         ground,
         smudge,
         bridge_body,

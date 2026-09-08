@@ -109,6 +109,10 @@ pub struct OverlayTypeFlags {
     pub chain_reaction: bool,
     /// Wall=yes — rendered with unit palette, gets -12px Y offset.
     pub wall: bool,
+    /// `DrawFlat=` -> OverlayTypeClass+0x2B3. The ordinary non-wall
+    /// `CellClass::DrawOverlay_Body @ 0x0047F6A0` selects gradient 0 when
+    /// true and gradient 2 when false. Native walls force gradient 2.
+    pub draw_flat: bool,
     /// Overlay `Armor=wood`, used by the Wood warhead wall-damage route.
     pub armor_is_wood: bool,
     /// IsVeins=yes — rendered with unit palette, gets -12px Y offset.
@@ -188,6 +192,7 @@ impl Default for OverlayTypeFlags {
             tiberium: false,
             chain_reaction: false,
             wall: false,
+            draw_flat: true,
             armor_is_wood: false,
             is_veins: false,
             is_veinhole_monster: false,
@@ -365,6 +370,7 @@ impl OverlayTypeRegistry {
                     tiberium,
                     chain_reaction: type_section.get_bool("ChainReaction").unwrap_or(false),
                     wall: type_section.get_bool("Wall").unwrap_or(false),
+                    draw_flat: type_section.get_bool("DrawFlat").unwrap_or(true),
                     armor_is_wood: type_section
                         .get("Armor")
                         .is_some_and(|armor| armor.eq_ignore_ascii_case("wood")),

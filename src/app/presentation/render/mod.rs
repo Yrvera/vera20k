@@ -146,6 +146,7 @@ pub(crate) fn render_game(
         encoder,
         &composition_view,
         &draw_passes::DrawPassData {
+            overlay_render_z: &world.overlay_render_z,
             ground: &world.ground,
             bridge_unit_instances: &world.bridge_unit,
             bridge_unit_pages: &world.bridge_unit_pages,

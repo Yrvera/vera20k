@@ -7,13 +7,13 @@
 //! `TechnoClass_DrawSHP` as a12 with the canvas offset `(0xC6, 0x1BE) +
 //! ZShapePointMove - CellToPixel(foundation far corner)` in a14/a15. The
 //! extended blitter's leaf `0x004990E0` then tests and stores
-//! `row_z - zshape[x]` per pixel. Retail YR ships one 396x477 frame in
+//! `constant_seed_z - zshape[x]` per pixel. Retail YR ships one 396x477 frame in
 //! `ra2md.mix -> conqmd.mix`.
 //!
 //! The remapped signed bytes are stored biased by [`ZSHAPE_TEXEL_BIAS`] in an
 //! `R8Unorm` texture that `zsprite_shader.wgsl` reads with `textureLoad` at
-//! `world_pos - zshape_origin`. Outside the canvas the shader subtracts
-//! nothing, matching the blitter's zero table for rows that do not overlap.
+//! `world_pos - zshape_origin`. CC_Draw_Shape clips the body to this canvas
+//! before format dispatch; the shader also seeds from that intersection.
 
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::shp_file::ShpFile;
