@@ -9,7 +9,7 @@
 //! ground movement is irreducibly complex — the borrow checker constrains how
 //! the per-entity loop can be decomposed, and the function already delegates to
 //! 6 private submodules (movement_path, movement_blocked, movement_bridge,
-//! movement_step, movement_reservation, movement_occupancy).
+//! movement_step, cell_arrival, movement_occupancy).
 //!
 //! ## Dependency rules
 //! - Internal to sim/movement — called via re-export in mod.rs.
@@ -2334,51 +2334,26 @@ fn tick_movement_with_grids_scoped(
                                 loco.layer = next_layer;
                             }
                         }
-                        // Update occupancy grid: move entity from old cell to new
-                        // cell, removing on the OLD layer and inserting on the NEW
-                        // layer (verified two-layer order).
-                        let order = next_occupancy_enter_order.next();
-                        entity.occupancy_enter_order = order;
-                        occupancy.move_entity_layered(
-                            old_rx,
-                            old_ry,
-                            nx,
-                            ny,
+                        super::cell_arrival::CellArrival {
                             entity_id,
-                            old_occupancy_layer,
-                            new_occupancy_layer,
-                            entity.sub_cell,
-                            CellListInsertion::from_category(entity.category),
-                        );
-                        if entity.category == EntityCategory::Unit
-                            && let Some(drive) = entity.drive_locomotion.as_mut()
-                        {
-                            crate::sim::occupancy::mark_current_drive_occupation_after_crossing(
-                                drive,
-                                cell_occupation,
-                                entity_id,
-                                (nx, ny),
-                                new_occupancy_layer,
-                            );
-                        }
-                        // Reserve destination cell.
-                        super::movement_reservation::reserve_destination_after_transition(
-                            entity.category,
-                            entity_id,
-                            &mut entity.locomotor,
-                            &mut entity.position,
-                            &mut entity.sub_cell,
-                            active_layer,
-                            nx,
-                            ny,
+                            category: entity.category,
+                            from: (old_rx, old_ry),
+                            to: (nx, ny),
+                            old_list_layer: old_occupancy_layer,
+                            new_list_layer: new_occupancy_layer,
+                            position: &entity.position,
+                            locomotor: &mut entity.locomotor,
+                            drive_locomotion: &mut entity.drive_locomotion,
+                            sub_cell: &mut entity.sub_cell,
+                            occupancy_enter_order: &mut entity.occupancy_enter_order,
+                            next_occupancy_enter_order,
                             occupancy,
-                            snap.sub_cell_priority_mission && snap.nav_com_cell == Some((nx, ny)),
-                        );
-                        // After reservation, infantry sub_cell may have changed.
-                        if entity.category == EntityCategory::Infantry {
-                            occupancy.update_sub_cell(nx, ny, entity_id, entity.sub_cell);
+                            cell_occupation,
+                            stats: &mut stats,
+                            priority: snap.sub_cell_priority_mission
+                                && snap.nav_com_cell == Some((nx, ny)),
                         }
-                        stats.moved_steps = stats.moved_steps.saturating_add(1);
+                        .track_jump(active_layer);
                         // Consume the queued path node only when the mover's own
                         // cell has actually reached it. A curve that crosses one
                         // axis at a time passes through an intermediate cell that

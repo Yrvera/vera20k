@@ -1,28 +1,117 @@
-//! Destination commitment — commits the infantry sub-cell or the vehicle
-//! cell-center dest after a successful cell transition. Previously also wrote to
-//! local reservation sets; now the live OccupancyGrid is the single source of
-//! truth.
+//! Complete accepted cell arrivals for ordinary crossings and Drive track jumps.
 //!
-//! **This is the arrival side and it consumes no RNG.** The original engine's
-//! arrival branch hands its sub-cell chooser a null coordinate, which returns
-//! before any placement runs, so no preference table is consulted and no random
-//! draw is taken. The slot was chosen one cell earlier by the look-ahead
-//! placement; here it is only claimed. Adding a draw here would double the
-//! scenario-stream consumption of the highest-rate consumer in movement.
+//! VERA-internal ownership boundary, gamemd equivalent UNCHECKED. Preserve the
+//! represented crossing order: fresh serialized list stamp, list relink,
+//! Drive current occupation, arrival claim and matching Infantry list repair.
+//! Geometry, path advancement, bridge rendering and look-ahead placement remain
+//! in their existing caller phases. Arrival consumes no RNG: WalkLocomotion
+//! ProcessMovement @ 0x0075BE0A reaches the NullCoord FindSubCellDest branch
+//! @ 0x0075C240; see the detailed arrival evidence beside the private claim.
 
 use crate::map::entities::EntityCategory;
-use crate::sim::components::Position;
+use crate::sim::components::{DriveLocomotionRuntime, Position};
 use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellListInsertion, CellOccupationGrid, OccupancyGrid};
+use crate::sim::world::EnterOrderCounter;
+
+use super::MovementTickStats;
+
+/// Borrow only the projections an accepted arrival must update together.
+/// Position and old/new list layers have already been resolved by the caller;
+/// the path layer is separate because bridge predicates need not agree with it.
+pub(super) struct CellArrival<'a> {
+    pub entity_id: u64,
+    pub category: EntityCategory,
+    pub from: (u16, u16),
+    pub to: (u16, u16),
+    pub old_list_layer: MovementLayer,
+    pub new_list_layer: MovementLayer,
+    pub position: &'a Position,
+    pub locomotor: &'a mut Option<LocomotorState>,
+    pub drive_locomotion: &'a mut Option<DriveLocomotionRuntime>,
+    pub sub_cell: &'a mut Option<u8>,
+    pub occupancy_enter_order: &'a mut u64,
+    pub next_occupancy_enter_order: &'a mut EnterOrderCounter,
+    pub occupancy: &'a mut OccupancyGrid,
+    pub cell_occupation: &'a mut CellOccupationGrid,
+    pub stats: &'a mut MovementTickStats,
+    pub priority: bool,
+}
+
+impl CellArrival<'_> {
+    /// Ordinary crossings commit their path layer after current occupation.
+    pub(super) fn ordinary(mut self, next_layer: MovementLayer) {
+        self.relink();
+        if let Some(loco) = self.locomotor.as_mut() {
+            loco.layer = next_layer;
+        }
+        self.finish(next_layer);
+    }
+
+    /// Track jumps have already committed the path layer during bridge
+    /// resolution, before publishing the cell-list transition.
+    pub(super) fn track_jump(mut self, active_layer: MovementLayer) {
+        self.relink();
+        self.finish(active_layer);
+    }
+
+    fn relink(&mut self) {
+        *self.occupancy_enter_order = self.next_occupancy_enter_order.next();
+        self.occupancy.move_entity_layered(
+            self.from.0,
+            self.from.1,
+            self.to.0,
+            self.to.1,
+            self.entity_id,
+            self.old_list_layer,
+            self.new_list_layer,
+            *self.sub_cell,
+            CellListInsertion::from_category(self.category),
+        );
+        if self.category == EntityCategory::Unit
+            && let Some(drive) = self.drive_locomotion.as_mut()
+        {
+            crate::sim::occupancy::mark_current_drive_occupation_after_crossing(
+                drive,
+                self.cell_occupation,
+                self.entity_id,
+                self.to,
+                self.new_list_layer,
+            );
+        }
+    }
+
+    fn finish(self, path_layer: MovementLayer) {
+        reserve_destination_after_transition(
+            self.category,
+            self.entity_id,
+            self.locomotor,
+            self.position,
+            self.sub_cell,
+            path_layer,
+            self.to.0,
+            self.to.1,
+            self.occupancy,
+            self.priority,
+        );
+        // Claim and list correction are one operation: callers cannot publish
+        // a new Infantry sub_cell while leaving its cell-list entry stale.
+        if self.category == EntityCategory::Infantry {
+            self.occupancy
+                .update_sub_cell(self.to.0, self.to.1, self.entity_id, *self.sub_cell);
+        }
+        self.stats.moved_steps = self.stats.moved_steps.saturating_add(1);
+    }
+}
 
 /// Commit the arrival slot. Infallible, like the native arrival branch — the
 /// old `bool` return existed only for the failure path removed below.
-pub(super) fn reserve_destination_after_transition(
+fn reserve_destination_after_transition(
     category: EntityCategory,
     entity_id: u64,
     locomotor: &mut Option<LocomotorState>,
-    position: &mut Position,
+    position: &Position,
     sub_cell: &mut Option<u8>,
     next_layer: MovementLayer,
     nx: u16,

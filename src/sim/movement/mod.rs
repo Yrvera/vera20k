@@ -52,6 +52,7 @@ use crate::util::fixed_math::{SIM_ONE, SimFixed, facing_from_delta_int};
 use crate::util::fixed_math::SIM_ZERO;
 
 // --- Internal submodules ---
+mod cell_arrival;
 mod drive_locomotion;
 pub(crate) mod locomotor_ready;
 mod movement_blocked;
@@ -59,7 +60,6 @@ pub(crate) mod movement_bridge;
 mod movement_commands;
 mod movement_occupancy;
 mod movement_path;
-mod movement_reservation;
 mod movement_step;
 mod movement_tick;
 mod navcom;

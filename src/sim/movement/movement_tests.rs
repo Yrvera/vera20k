@@ -462,14 +462,8 @@ fn drive_slope_boundary_is_detected_on_process_after_forced_track_crossing() {
         .active_slope_transition_mut()
         .unwrap()
         .snap(4, 0);
-    let forced = drive_track::begin_forced_turn_track(
-        0x47,
-        0,
-        256,
-        SimFixed::from_num(128),
-        false,
-    )
-    .expect("retail southbound force track");
+    let forced = drive_track::begin_forced_turn_track(0x47, 0, 256, SimFixed::from_num(128), false)
+        .expect("retail southbound force track");
     {
         let (entities, cell_occupation) = (
             &mut sim.substrate.entities,
@@ -547,11 +541,8 @@ fn drive_ship_slope_process_uses_foot_class_boundary_not_object_speed_or_art() {
 
 #[test]
 fn entry_active_tube_excludes_drive_slope_process_for_the_whole_turn() {
-    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
-        1,
-        1,
-        vec![slope_cell(0, 9)],
-    );
+    let terrain =
+        crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(1, 1, vec![slope_cell(0, 9)]);
     let mut sim = Simulation::new();
     let mut entity = GameEntity::test_default(1, "DRIVE", "Americans", 0, 0);
     entity.owner = sim.intern("Americans");
@@ -649,6 +640,8 @@ fn gsi_04_05_production_drive_observes_premark_clear_cross_and_finish() {
         "accepted Drive track must premark its head before moving the list"
     );
 
+    let arrival_order = sim.substrate.next_occupancy_enter_order.current();
+    let initial_order = sim.substrate.entities.get(1).unwrap().occupancy_enter_order;
     let initial_point_index = sim
         .substrate
         .entities
@@ -695,6 +688,14 @@ fn gsi_04_05_production_drive_observes_premark_clear_cross_and_finish() {
         crate::sim::occupancy::VEHICLE_OCCUPATION_BIT
     );
 
+    assert_eq!(
+        sim.substrate.next_occupancy_enter_order.current(),
+        arrival_order
+    );
+    assert_eq!(
+        sim.substrate.entities.get(1).unwrap().occupancy_enter_order,
+        initial_order
+    );
     let mut crossed = false;
     for frame in first_unpaid_frame..96 {
         gsi_04_05_tick_production_movement(&mut sim, Some(&grid), frame);
@@ -718,6 +719,14 @@ fn gsi_04_05_production_drive_observes_premark_clear_cross_and_finish() {
         "AddContent crossing must re-mark the new current cell"
     );
 
+    assert_eq!(
+        sim.substrate.entities.get(1).unwrap().occupancy_enter_order,
+        arrival_order
+    );
+    assert_eq!(
+        sim.substrate.next_occupancy_enter_order.current(),
+        arrival_order + 1
+    );
     let mut finished = sim
         .substrate
         .entities
@@ -761,6 +770,191 @@ fn gsi_04_05_production_drive_observes_premark_clear_cross_and_finish() {
         crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
         "completion promotes the head mark instead of clearing the endpoint"
     );
+}
+
+#[test]
+fn cell_arrival_infantry_keeps_detour_order_and_snapshot_continuation() {
+    use crate::map::resolved_terrain::ResolvedTerrainGrid;
+    use crate::rules::terrain_rules::SpeedCostProfile;
+    use crate::rules::{ini_parser::IniFile, ruleset::RuleSet};
+    use crate::sim::snapshot::GameSnapshot;
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+         [E1]\nStrength=100\nSpeed=4\n\
+         Locomotor={4A582744-9839-11d1-B709-00A024DDAFD1}\nSpeedType=Foot\n",
+    ))
+    .unwrap();
+    let terrain = ResolvedTerrainGrid::from_cells(
+        6,
+        3,
+        (0..3)
+            .flat_map(|ry| {
+                (0..6).map(move |rx| {
+                    let costs = SpeedCostProfile {
+                        foot: Some(100),
+                        ..Default::default()
+                    };
+                    let mut cell = drive_speed_test_cell(rx, ry, costs);
+                    cell.base_speed_costs = costs;
+                    cell
+                })
+            })
+            .collect(),
+    );
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    let mut sim = Simulation::with_seed(0xc311_a771);
+    sim.install_resolved_terrain_for_new_map(terrain.clone());
+    sim.intern_rule_type_ids(&rules);
+    sim.resolve_type_handles(&rules);
+    let walker = sim
+        .spawn_object_at_height("E1", "Americans", 1, 1, 0, 0, &rules)
+        .unwrap();
+    assert_eq!(
+        walker, 1,
+        "the production movement fixture visits this object"
+    );
+    let resident = sim
+        .spawn_object_at_height("E1", "Americans", 2, 1, 0, 0, &rules)
+        .unwrap();
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(walker)
+            .unwrap()
+            .locomotor
+            .as_ref()
+            .unwrap()
+            .kind,
+        LocomotorKind::Walk,
+    );
+    assert!(issue_move_command(
+        &mut sim.substrate.entities,
+        &grid,
+        walker,
+        (4, 1),
+        SimFixed::from_num(1024),
+        false,
+        None,
+        None,
+        None,
+        false
+    ));
+    let initial_cell = (1, 1);
+    let mut previous_cell = initial_cell;
+    // The represented Walk admission defers occupied cells and routes around
+    // this stationary resident. Exercise its actual accepted arrivals; the
+    // occupied-slot claim cases remain covered in bump_crush's leaf tests.
+    let mut crossed_detour_cell = false;
+    let mut restored: Option<Simulation> = None;
+    let mut trace = Vec::new();
+    for frame in 0..160 {
+        let next_order = sim.substrate.next_occupancy_enter_order.current();
+        gsi_04_05_tick_production_movement(&mut sim, Some(&grid), frame);
+        if let Some(loaded) = restored.as_mut() {
+            gsi_04_05_tick_production_movement(loaded, Some(&grid), frame);
+            assert_eq!(
+                loaded.state_hash(),
+                sim.state_hash(),
+                "restored frame {frame}"
+            );
+            assert_eq!(
+                loaded.scenario_rng.logical_state(),
+                sim.scenario_rng.logical_state()
+            );
+        }
+        let entity = sim.substrate.entities.get(walker).unwrap();
+        let cell = (entity.position.rx, entity.position.ry);
+        assert_ne!(cell, (2, 1), "the stationary resident remains a blocker");
+        assert!(sim.substrate.occupancy.contains_entity(2, 1, resident));
+        if cell != previous_cell {
+            assert!(!sim.substrate.occupancy.contains_entity(
+                previous_cell.0,
+                previous_cell.1,
+                walker
+            ));
+            let occupants = sim.substrate.occupancy.get(cell.0, cell.1).unwrap();
+            let own_entry = occupants
+                .iter_layer(MovementLayer::Ground)
+                .find(|entry| entry.entity_id == walker)
+                .unwrap();
+            assert_eq!(own_entry.sub_cell, entity.sub_cell);
+            assert_eq!(
+                occupants.first_on_layer(MovementLayer::Ground),
+                Some(walker)
+            );
+            assert_eq!(entity.occupancy_enter_order, next_order);
+            assert_eq!(
+                sim.substrate.next_occupancy_enter_order.current(),
+                next_order + 1
+            );
+            if cell == (2, 0) {
+                crossed_detour_cell = true;
+                let bytes = GameSnapshot::save(&sim, 0, 0, "arrival", 0);
+                let mut loaded = GameSnapshot::load(&bytes).unwrap().sim;
+                loaded.restore_after_snapshot_load().unwrap();
+                loaded.resolve_type_handles(&rules);
+                loaded.resolved_terrain = Some(terrain.clone());
+                let loaded_entries: Vec<_> = loaded
+                    .substrate
+                    .occupancy
+                    .get(cell.0, cell.1)
+                    .unwrap()
+                    .iter_layer(MovementLayer::Ground)
+                    .map(|entry| (entry.entity_id, entry.sub_cell))
+                    .collect();
+                let entries: Vec<_> = occupants
+                    .iter_layer(MovementLayer::Ground)
+                    .map(|entry| (entry.entity_id, entry.sub_cell))
+                    .collect();
+                assert_eq!(
+                    loaded_entries, entries,
+                    "serialized entry order rebuilds the live list"
+                );
+                // Full Scenario deserialization intentionally applies Seed(0)
+                // (see GameSnapshot::load_unchecked). Compare reconstructed
+                // movement with the retained state under that same reload
+                // rule, rather than asserting uninterrupted RNG continuity.
+                assert_eq!(
+                    loaded.scenario_rng.logical_state(),
+                    SimRng::new(0).logical_state()
+                );
+                sim.scenario_rng = SimRng::new(0);
+                assert_eq!(loaded.state_hash(), sim.state_hash());
+                assert!(loaded.substrate.occupancy.contains_entity(2, 1, resident));
+                restored = Some(loaded);
+            }
+            previous_cell = cell;
+        } else {
+            assert_eq!(
+                sim.substrate.next_occupancy_enter_order.current(),
+                next_order
+            );
+        }
+        trace.push((
+            frame,
+            cell,
+            entity.sub_cell,
+            entity.occupancy_enter_order,
+            sim.scenario_rng.state(),
+        ));
+        if entity.movement_target.is_none() {
+            break;
+        }
+    }
+    assert!(
+        crossed_detour_cell,
+        "production Walk path must take the same detour; trace={trace:?}"
+    );
+    assert_eq!(previous_cell, (4, 1));
+    assert!(
+        sim.substrate
+            .entities
+            .get(walker)
+            .unwrap()
+            .movement_target
+            .is_none()
+    );
+    println!("cell-arrival Infantry frames: {trace:?}");
 }
 
 #[test]
@@ -5580,9 +5774,23 @@ fn drive_track_ne_diagonal_costs_the_same_ticks_per_cell_as_se() {
         let mut occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(0);
         let mut lifecycle_requests = Vec::new();
+        occupancy.add(
+            start.0,
+            start.1,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
         let mut visited: Vec<(u16, u16)> = vec![start];
+        let mut intermediate_crossings = 0;
         let mut ticks = 0u64;
         for tick in 0..400u64 {
+            let before = entities.get(1).unwrap();
+            let prior_cell = (before.position.rx, before.position.ry);
+            let prior_target = before.movement_target.as_ref().unwrap();
+            let prior_index = prior_target.next_index;
+            let queued_cell = prior_target.path.get(prior_index).copied();
             tick_movement_with_grid(
                 &mut entities,
                 Some(&grid),
@@ -5597,12 +5805,35 @@ fn drive_track_ne_diagonal_costs_the_same_ticks_per_cell_as_se() {
             let Some(entity) = entities.get(1) else { break };
             let cell = (entity.position.rx, entity.position.ry);
             if visited.last() != Some(&cell) {
+                assert!(!occupancy.contains_entity(prior_cell.0, prior_cell.1, 1));
+                assert!(occupancy.contains_entity(cell.0, cell.1, 1));
+                if let Some(target) = entity.movement_target.as_ref() {
+                    if Some(cell) == queued_cell {
+                        assert_eq!(
+                            target.next_index,
+                            prior_index + 1,
+                            "reaching the queued cell consumes it once"
+                        );
+                    } else {
+                        intermediate_crossings += 1;
+                        assert_eq!(
+                            target.next_index, prior_index,
+                            "an intermediate track cell must not consume the queued destination"
+                        );
+                    }
+                }
                 visited.push(cell);
             }
             ticks = tick + 1;
             if cell == goal {
                 break;
             }
+        }
+        if dir == 1 {
+            assert!(
+                intermediate_crossings > 0,
+                "NE fixture must exercise an intermediate corner crossing"
+            );
         }
         (ticks, visited)
     }
