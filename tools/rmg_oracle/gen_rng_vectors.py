@@ -1,6 +1,7 @@
 """Machine-derived RNG vectors: seeded state + first N draws, for several seeds.
 
-Runs the real gamemd.exe routines under unicorn (see harness.py):
+Run with ``python -m tools.rmg_oracle.gen_rng_vectors`` (read-only check by default).
+Runs the real gamemd.exe routines under Unicorn (see tools.native_oracle):
   Random__Seed 0x0065C6D0  __thiscall(this=ECX, seed=stack) -> fills this+0xC..
   Random__Next 0x0065C780  __thiscall(this=ECX) -> EAX, mutates state in place
 
@@ -9,8 +10,9 @@ vectors capture the real state evolution rather than a reimplementation of it.
 """
 
 import struct
+from pathlib import Path
 
-from harness import SCRATCH, call, write_vectors
+from tools.native_oracle import SCRATCH, call, finish_vectors, provenance
 
 SEED_FN = 0x0065C6D0
 NEXT_FN = 0x0065C780
@@ -47,7 +49,8 @@ def draws(state: bytes, count: int) -> tuple[list[int], bytes]:
     return values, current
 
 
-if __name__ == "__main__":
+def generate() -> dict:
+    """Execute original seed/draw bodies; return the existing vector schema."""
     vectors = {
         "source": "unicorn/gamemd.exe",
         "seed_fn": hex(SEED_FN),
@@ -70,10 +73,24 @@ if __name__ == "__main__":
                 "draws": [f"{v:08x}" for v in values],
             }
         )
-        print(
-            f"seed {seed:>6}: locked={locked} idx={idx_a}/{idx_b} "
-            f"state[0]={blob[0xC:0x10][::-1].hex().upper()} "
-            f"draw[0]={values[0]:08X}"
-        )
+    return vectors
 
-    write_vectors("rng.json", vectors)
+
+def main() -> None:
+    finish_vectors(
+        generate,
+        Path(__file__).parent / "vectors" / "rng.json",
+        provenance=lambda: provenance(
+            scope="Random seed and first 16 draws for five selected seeds; not full generator parity.",
+            assumptions=[
+                "A zero-initialized 0x3f4-byte generator is supplied to Random__Seed.",
+                "Each call uses a fresh emulator; only generator bytes are carried between draws.",
+            ],
+            substitutions=[],
+            entry_points={"Random__Seed": SEED_FN, "Random__Next": NEXT_FN},
+        ),
+    )
+
+
+if __name__ == "__main__":
+    main()

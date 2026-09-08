@@ -1,13 +1,14 @@
-//! `[Colors]` color-scheme parsing and the gamemd HSV→RGB conversion, used by
-//! the loading screen to color the progress-bar backing.
+//! `[Colors]` color-scheme parsing and the gamemd HSV→RGB conversion, shared by
+//! the loading screen and house-color ramp construction.
 //!
 //! Each `[Colors]` entry is `Name=H,S,V` (three 0..=255 bytes). gamemd keeps that
 //! H,S,V triple on the color-scheme object and converts it to RGB through a fixed
 //! 6-sextant integer routine when filling the loading bar's empty backing. This
-//! module reproduces that data path exactly.
+//! module implements that conversion; sampled native comparisons accompany it.
 //!
-//! Scope: this is consumed ONLY by the loading screen. Unit/building/radar colors
-//! continue to use the synthesized ramps in [`crate::rules::house_colors`].
+//! The loading screen consumes the parsed schemes directly. Unit/building/radar
+//! colors use the ramps built by [`crate::rules::house_colors`], which shares the
+//! HSV→RGB helper.
 //!
 //! ## Dependency rules
 //! - Part of rules/ — depends only on rules/ini_parser. No sim/render/ui deps.
@@ -117,6 +118,9 @@ pub fn scheme_for_priority(
 
 /// gamemd's 6-sextant integer HSV→RGB. H, S, V and each output channel are
 /// 0..=255. All divisions truncate, matching the binary's integer arithmetic.
+/// Native: `HSV_To_RGB` 0x00517440, called by loading fill at 0x006434B5
+/// and house-ramp construction at 0x0068C475. Body/callers rechecked 2026-09-08;
+/// `tools/color_oracle/hsv_to_rgb.py` compares sampled original executable output.
 pub fn hsv_to_rgb(hsv: [u8; 3]) -> [u8; 3] {
     let h = hsv[0] as u32;
     let s = hsv[1] as u32;
@@ -151,6 +155,50 @@ pub fn backing_rgb_for_priority(schemes: &[ColorSchemeEntry], priority: i32) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hsv_to_rgb_matches_native_oracle_all_hues_at_sv_boundaries() {
+        #[derive(serde::Deserialize)]
+        struct Vectors {
+            cases: Vec<Case>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Case {
+            saturation: u8,
+            value: u8,
+            rgb_by_hue: String,
+        }
+        let vectors: Vectors =
+            serde_json::from_str(include_str!("../../tools/color_oracle/hsv_to_rgb.json"))
+                .expect("native HSV vectors");
+        // Require the intended sample, not merely whichever rows remain in the file.
+        let pairs = [
+            (0, 255),
+            (1, 255),
+            (127, 128),
+            (128, 127),
+            (254, 255),
+            (255, 0),
+            (255, 1),
+            (255, 254),
+            (255, 255),
+        ];
+        assert_eq!(vectors.cases.len(), pairs.len());
+        for (case, pair) in vectors.cases.iter().zip(pairs) {
+            assert_eq!((case.saturation, case.value), pair);
+            assert_eq!(case.rgb_by_hue.len(), 256 * 3 * 2);
+            for hue in 0..=255u8 {
+                let offset = usize::from(hue) * 6;
+                let expected: [u8; 3] = std::array::from_fn(|channel| {
+                    let begin = offset + channel * 2;
+                    u8::from_str_radix(&case.rgb_by_hue[begin..begin + 2], 16)
+                        .expect("native RGB byte")
+                });
+                let hsv = [hue, case.saturation, case.value];
+                assert_eq!(hsv_to_rgb(hsv), expected, "native HSV mismatch at {hsv:?}");
+            }
+        }
+    }
 
     fn schemes() -> Vec<ColorSchemeEntry> {
         // The retail rulesmd `[Colors]` list, in order. Only the entries the
