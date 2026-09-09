@@ -26,6 +26,10 @@ mode observations, and hashes of the compact fixture subset used by Rust.
 The one-row ColorScheme fixture covers AltPalette separately from a player's
 53-row scheme.
 
+The byte-pinned `ground-level.json` preserves the original CRLF encoding through
+Git attributes. The generator emits those same bytes on every platform; neither
+checkout conversion nor local text-mode defaults may change its provenance hash.
+
 Cell records supply post-gather RGB/additive/top/bottom values. Original
 `004845A2 -> 005558E0` normalizes common brightness, while source additive and
 top stay independent. The fixture also runs the original caller pointer setup,
