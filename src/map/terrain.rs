@@ -15,6 +15,10 @@ use std::collections::BTreeMap;
 use crate::map::map_file::{MapFile, MapHeader};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 
+#[cfg(test)]
+#[path = "terrain_bridge_click_tests.rs"]
+mod bridge_click_tests;
+
 /// Isometric tile diamond width in pixels (RA2 standard).
 pub const TILE_WIDTH: f32 = 60.0;
 
@@ -31,7 +35,7 @@ pub const HEIGHT_STEP: f32 = 15.0;
 pub const TACTICAL_INVERSE_MAX_SCAN_ATTEMPTS: usize = 180;
 
 /// Tactical bridge open-edge threshold. The binary uses strict `> 15`.
-pub const TACTICAL_BRIDGE_EDGE_THRESHOLD_PX: f32 = 15.0;
+pub const TACTICAL_BRIDGE_EDGE_THRESHOLD_PX: i32 = 15;
 
 /// Extra high-bridge height adjustment: four height levels at 15 px each.
 pub const TACTICAL_BRIDGE_EXTRA_HEIGHT_PX: f32 = 60.0;
@@ -47,7 +51,6 @@ const DIR_WEST: u8 = 6;
 /// height because gamemd's cursor inverse branches on `CellClass+0x140` flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TacticalBridgeCell {
-    pub deck_z: u8,
     pub structural: bool,
     pub direction_zero: bool,
 }
@@ -357,8 +360,14 @@ pub fn screen_to_cell_tactical_inverse(
     screen_y: f32,
     context: TacticalInverseContext<'_>,
 ) -> TacticalInverseResult {
-    let input_x = screen_x - context.viewport_offset_x;
-    let input_y = screen_y - context.viewport_offset_y;
+    // gamemd 0x006D6590 receives integer tactical pixels. VERA's camera/zoom
+    // can produce fractional world pixels: choose the containing pixel once,
+    // before every scan, direct-neighbor, and edge decision. This fractional
+    // extension is VERA-internal (native equivalent UNCHECKED), while integer
+    // inputs retain their exact native pixel. Floor also preserves translation
+    // across negative world X, unlike truncating individual edge deltas.
+    let input_x = (screen_x - context.viewport_offset_x).floor();
+    let input_y = (screen_y - context.viewport_offset_y).floor();
     let (fallback_rx, fallback_ry) = screen_to_iso(input_x, input_y);
     let mut scan_y = input_y + TACTICAL_INVERSE_MAX_SCAN_ATTEMPTS as f32;
 
@@ -455,7 +464,14 @@ fn apply_tactical_bridge_inverse(
         !dir2_is_bridge
     };
 
-    let (bridge_ref_x, bridge_ref_y) = iso_to_screen(cell_rx, cell_ry, bridge.deck_z);
+    // gamemd 0x006D6895..0x006D68FF projects the raw cell corner with Z=0,
+    // then subtracts BASE level * 15. The artwork origin is half a tile left
+    // of that corner; deck height belongs only to the later 60-pixel scan
+    // adjustment. Using the deck's artwork origin displaced clicks by
+    // (-30, -60) on a normal high bridge. Keep VERA's shared world-row bias.
+    // Evidence: TACTICAL_BRIDGE_MOVE_CLICK_DIAGNOSIS_20260909.md.
+    let (tile_left, bridge_ref_y) = iso_to_screen(cell_rx, cell_ry, terrain_z);
+    let bridge_ref_x = tile_left + TILE_WIDTH / 2.0;
     if bridge_ref_y <= input_y {
         if direct_y {
             return Some(TacticalInverseResult::Cell {
@@ -471,12 +487,15 @@ fn apply_tactical_bridge_inverse(
         }
     }
 
-    let input_x_delta = input_x - bridge_ref_x;
-    let input_y_delta = input_y - bridge_ref_y;
+    // Input and reference are whole pixels. Native 0x006D697D..0x006D69C0
+    // divides signed dx by two toward zero, then compares strictly against 15.
+    // Float division changes the result for odd dx at the railing boundary.
+    let input_x_delta = (input_x - bridge_ref_x) as i32;
+    let input_y_delta = (input_y - bridge_ref_y) as i32;
     let apply_extra_bridge_lift = if dir0_open_edge {
-        input_y_delta - input_x_delta / 2.0 > TACTICAL_BRIDGE_EDGE_THRESHOLD_PX
+        input_y_delta - input_x_delta / 2 > TACTICAL_BRIDGE_EDGE_THRESHOLD_PX
     } else if dir6_open_edge {
-        input_y_delta + input_x_delta / 2.0 > TACTICAL_BRIDGE_EDGE_THRESHOLD_PX
+        input_y_delta + input_x_delta / 2 > TACTICAL_BRIDGE_EDGE_THRESHOLD_PX
     } else {
         true
     };
@@ -834,7 +853,6 @@ mod tests {
         bridge_cells.insert(
             (0, 0),
             TacticalBridgeCell {
-                deck_z: 0,
                 structural: true,
                 direction_zero: true,
             },
@@ -842,7 +860,6 @@ mod tests {
         bridge_cells.insert(
             (1, 0),
             TacticalBridgeCell {
-                deck_z: 0,
                 structural: true,
                 direction_zero: true,
             },
@@ -850,7 +867,6 @@ mod tests {
         bridge_cells.insert(
             (0, 1),
             TacticalBridgeCell {
-                deck_z: 0,
                 structural: true,
                 direction_zero: true,
             },
@@ -859,7 +875,7 @@ mod tests {
         let mut adjusted = 90.0;
         assert_eq!(
             apply_tactical_bridge_inverse(
-                -30.0,
+                0.0,
                 30.0,
                 90.0,
                 0,
@@ -880,7 +896,7 @@ mod tests {
         let mut adjusted = 90.0;
         assert_eq!(
             apply_tactical_bridge_inverse(
-                -30.0,
+                0.0,
                 31.0,
                 90.0,
                 0,
@@ -1163,7 +1179,9 @@ mod tests {
 
         // Camera at origin, 1024x768 viewport — only first cell should be visible.
         let result: crate::render::terrain_instances::TerrainInstances =
-            crate::render::terrain_instances::build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, None, None);
+            crate::render::terrain_instances::build_visible_instances(
+                &grid, None, 0.0, 0.0, 1024.0, 768.0, None, None,
+            );
         assert_eq!(result.normal.len(), 1);
     }
 
@@ -1310,8 +1328,16 @@ mod tests {
         };
         let uv_fn: UvLookupFn = Some(&lookup);
 
-        let _ =
-            crate::render::terrain_instances::build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, uv_fn, Some(&bs));
+        let _ = crate::render::terrain_instances::build_visible_instances(
+            &grid,
+            None,
+            0.0,
+            0.0,
+            1024.0,
+            768.0,
+            uv_fn,
+            Some(&bs),
+        );
         let (tid, sub, var) = captured.borrow().expect("uv_fn was called");
         // Override fired: tile_id = NS AboutToFall slot = 203.
         assert_eq!(tid, 203);
@@ -1345,8 +1371,16 @@ mod tests {
         };
         let uv_fn: UvLookupFn = Some(&lookup);
 
-        let _ =
-            crate::render::terrain_instances::build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, uv_fn, Some(&bs));
+        let _ = crate::render::terrain_instances::build_visible_instances(
+            &grid,
+            None,
+            0.0,
+            0.0,
+            1024.0,
+            768.0,
+            uv_fn,
+            Some(&bs),
+        );
         let (tid, _sub, _var) = captured.borrow().expect("uv_fn was called");
         // Override bypassed: native tile_id retained.
         assert_eq!(tid, 100);
@@ -1371,8 +1405,16 @@ mod tests {
         };
         let uv_fn: UvLookupFn = Some(&lookup);
 
-        let _ =
-            crate::render::terrain_instances::build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, uv_fn, Some(&bs));
+        let _ = crate::render::terrain_instances::build_visible_instances(
+            &grid,
+            None,
+            0.0,
+            0.0,
+            1024.0,
+            768.0,
+            uv_fn,
+            Some(&bs),
+        );
         let (tid, _sub, _var) = captured.borrow().expect("uv_fn was called");
         // Override bypassed (no table): native tile_id retained.
         assert_eq!(tid, 100);
