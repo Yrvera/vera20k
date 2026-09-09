@@ -8,9 +8,13 @@
 //! Normal coordinates are in VXL model space.
 //!
 //! ## Dependency rules
-//! - Part of render/ — depends only on glam.
+//! - Part of render/ — depends on glam and shared native numeric helpers.
 
 use glam::{Mat3, Vec3};
+
+use crate::util::native_x87::{
+    NativeF32Bits, X87Chop53 as Fpu, X87Ordering, X87Value, sqrt_approx_f32,
+};
 
 /// Number of normals in RA2 mode (normals_mode = 4).
 const RA2_NORMAL_COUNT: usize = 245;
@@ -218,107 +222,102 @@ pub fn diffuse_shade(normal: Vec3, light_dir: Vec3, ambient: f32, diffuse: f32) 
     (ambient + diffuse * n_dot_l).clamp(0.0, 1.0)
 }
 
-/// The original engine's world-space light direction.
+/// Startup `VXL_LightDirection_Setup @ 0x00754C00`, called at 0x0052BDF5
+/// with the original float angle at 0x007E1E68. These are its executed output
+/// bits, including native trig-table and x87 rounding; no capture fitting.
+/// Source and reproducible vectors: `tools/voxel_oracle/lighting.py`.
+const YR_WORLD_LIGHT: Vec3 = Vec3::new(
+    f32::from_bits(0xbeff_ffed),
+    f32::from_bits(0xbf35_04e6),
+    f32::from_bits(0x3eff_ffed),
+);
+
+fn fp(value: f32) -> X87Value {
+    Fpu::load_f32(NativeF32Bits::from_bits(value.to_bits()))
+        .expect("voxel lighting uses finite normal floats")
+}
+
+fn fp_store(value: X87Value) -> X87Value {
+    Fpu::load_f32(Fpu::store_f32(value).expect("voxel lighting fits a float"))
+        .expect("stored lighting float is finite")
+}
+
+fn positive(value: X87Value) -> X87Value {
+    if Fpu::compare(value, Fpu::load_i32(0)) == X87Ordering::Less {
+        Fpu::load_i32(0)
+    } else {
+        value
+    }
+}
+
+/// Normal-index -> VPL page table for one ordinary voxel draw.
 ///
-/// `Init_Game` (call at 0x0052BDF5) runs `VXL_LightDirection_Setup` (0x00754C00)
-/// with the angle constant at 0x007E1E68 = 0x3F490E56 = pi/4. That routine builds
-/// an identity, post-multiplies `Matrix_rotate_y_axis` (0x005AF080) -- which mixes
-/// matrix columns 0 and 2, i.e. a rotation about **Y**, not Z -- and transforms
-/// the literal (0xBF3504E6, 0xBF3504E6, 0) = (-0.707107, -0.707107, 0) through
-/// it: x' = x*cos45 + z*sin45 = -0.5, y' = -0.707107, z' = -x*sin45 + z*cos45 =
-/// +0.5. The result is stored at `g_VXL_LightDirection` (0x00887470) and never
-/// rewritten.
+/// `draw_rotation` includes the camera: UnitClass at 0x0073B70E..0x0073B742
+/// composes `B44318 * locomotor`, then 0x004DAF10 -> 0x00706640 ->
+/// `TechnoClass::Render @ 0x00706ED0` forwards that matrix to
+/// `VXL_Init_BlinnPhong @ 0x00753D00`. HVA is composed only afterward.
+/// The initializer takes the rigid inverse and transforms the world light;
+/// its viewer is +Z because the separate matrix at 0x00887430 is identity.
 ///
-/// **Sign of Z in this frame.** The binary's vector is (-0.5, -0.707107, +0.5)
-/// in gamemd's matrix frame. Carried into *this* renderer's model frame it is
-/// (-0.5, -0.707107, **-0.5**): a retail capture of the Iron Gull fixture
-/// (pipeline `.local/game`, `gamemd.exe -win`, 2026-09-07) has container tops
-/// at unittem.pal index 103-108 rendering around VPL page 3-4 (137,78,56 after
-/// the map's unit tint); the CPU rasteriser reproduces that only with Z = -0.5
-/// (118,70,51 untinted, a uniform ~1.2x below retail on both containers and
-/// hull grey, which is the ExtraUnitLight tint the tool does not apply), while
-/// Z = +0.5 puts the same faces on page 12-18 (172-200 red, deck near white).
-/// The earlier (-0.707, -0.707, 0) sat between the two. The mirror is a frame
-/// difference between this renderer's model space and gamemd's (the camera
-/// pitch/screen-Y conventions cancel for geometry but not for a model-space
-/// light); VERA-internal, gamemd equivalent UNCHECKED until that frame map is
-/// derived from the view-matrix bodies rather than fitted from a capture.
-/// Fitted, not derived: per-pixel comparison of the retail Iron Gull fixture
-/// capture against CPU renders at every facing (2026-09-07) ranks this
-/// vector first at every tint assumption (mean abs error 47 vs 57 for
-/// (-0.5,-0.707,-0.5) and 66 for the binary-derived (-0.5,-0.707,+0.5)).
-/// It puts camera-facing hull sides on VPL pages 17-19 and flat tops on
-/// page 7, which is where the retail hull greys (index 55/56) and container
-/// tops (index 106, identity page 8) sit. Azimuth 285 deg, elevation 0.
-const YR_WORLD_LIGHT: Vec3 = Vec3::new(0.258_819, -0.965_926, 0.0);
-
-/// Viewer direction the original feeds Blinn-Phong: `VXL_Init_BlinnPhong`
-/// (0x00753D00) transforms (0, 0, 1) through the inverse of the matrix at
-/// 0x00887430, which `Init_Game` sets to identity (`Matrix3x4_SetIdentity`
-/// 0x005AE860 at 0x0052BDDD) and nothing rewrites, so the viewer stays +Z.
-const YR_VIEWER: Vec3 = Vec3::Z;
-
-/// Normal-index -> VPL page table for one draw, the way `VXL_Init_BlinnPhong`
-/// (0x00753D00) + `VXL_BlinnPhongLighting` (0x007586F0) build `g_VXL_NormalLUT`.
-///
-/// `model_rotation` is the rotation part of the locomotor draw matrix the
-/// original hands `TechnoClass::Render` (0x00706ED0) -- `slope_matrix x
-/// facing_rotation` on the simple path -- **without** the camera. The native
-/// init inverts that matrix (`FUN_005AFC20`, a rigid inverse) and transforms
-/// `g_VXL_LightDirection` through its 3x3 (`FUN_005AF4D0`), so the light lands
-/// in model space and is dotted with the model-space normal table. The viewer
-/// stays world +Z (see `YR_VIEWER`); the original does not bring it into model
-/// space, and neither does this.
-///
-/// Residual (VERA-internal, gamemd equivalent UNCHECKED): the original
-/// normalises the halfway vector with `Sqrt_Approx` (0x004CAC40) on an x87
-/// double and skips the divide when the length is exactly 0; this uses glam's
-/// exact `normalize`. A page can differ by one only where 16 x brightness
-/// lands within the approximation error of an integer boundary.
-pub fn blinn_phong_pages(normals_mode: u8, model_rotation: Mat3) -> [u8; 256] {
-    // Native leaves shared-LUT slots 245–252 stale. Rust deliberately starts
-    // them at a deterministic safe default; retail VXLs never reference them.
-    let mut result: [u8; 256] = [0u8; 256];
-
-    // Rigid inverse of the draw rotation applied to the world light.
-    let light: Vec3 = model_rotation.transpose() * YR_WORLD_LIGHT;
-    let viewer: Vec3 = YR_VIEWER;
-
-    // Blinn-Phong halfway vector between light and viewer.
-    let halfway: Vec3 = (light + viewer).normalize();
-
-    // Specular constant: `TechnoClass::Render` pushes 0x40400000 = 3.0 at
-    // 0x00706F23 and it reaches `VXL_BlinnPhongLighting` as the Schlick
-    // denominator term.
-    const SPECULAR_STRENGTH: f32 = 3.0;
-
+/// The operation order and float stores below follow original 0x005AF4D0
+/// and 0x007586F0, including `Sqrt_Approx @ 0x004CAC40`. Native vectors
+/// exercise every flat facing in both normal modes, not every rocking pose
+/// or the final rasterized image. See `tools/voxel_oracle/lighting.py`.
+pub fn blinn_phong_pages(normals_mode: u8, draw_rotation: Mat3) -> [u8; 256] {
+    // Native leaves the gap between the mode's table and slot 253 stale.
+    // Retail model indices only use the valid table and fixed ambient tail.
+    let mut result = [0u8; 256];
+    let world = YR_WORLD_LIGHT.to_array().map(fp);
+    let light: [X87Value; 3] = std::array::from_fn(|axis| {
+        // Rigid inverse transposes the basis. MatrixVectorMultiply evaluates
+        // row 0 as (y + z) + x, and rows 1/2 as (y + x) + z.
+        let column = draw_rotation.col(axis).to_array().map(fp);
+        let products: [X87Value; 3] = std::array::from_fn(|i| Fpu::mul(column[i], world[i]));
+        fp_store(if axis == 0 {
+            Fpu::add(Fpu::add(products[1], products[2]), products[0])
+        } else {
+            Fpu::add(Fpu::add(products[1], products[0]), products[2])
+        })
+    });
+    let half_z = Fpu::add(light[2], Fpu::load_i32(1));
+    let half = [light[0], light[1], fp_store(half_z)];
+    // Z's sum remains on the x87 stack after FST float; X and Y are reloaded.
+    let squared = Fpu::add(
+        Fpu::add(Fpu::mul(half_z, half[2]), Fpu::mul(half[0], half[0])),
+        Fpu::mul(half[1], half[1]),
+    );
+    let length = Fpu::load_f32(sqrt_approx_f32(squared).expect("finite halfway length"))
+        .expect("finite native square root");
+    let halfway = if Fpu::compare(length, Fpu::load_i32(0)) == X87Ordering::Equal {
+        half
+    } else {
+        half.map(|value| fp_store(Fpu::div(value, length).expect("nonzero halfway length")))
+    };
+    let strength = Fpu::load_i32(3); // TechnoClass::Render pushes 0x40400000 at 0x00706F23.
     let table: &[[f32; 3]] = match normals_mode {
-        4 => &RA2_NORMALS,
         2 => &TS_NORMALS,
         _ => &RA2_NORMALS,
     };
-
-    let normal_count: usize = table.len().min(256);
-    for i in 0..normal_count {
-        let normal: Vec3 = Vec3::new(table[i][0], table[i][1], table[i][2]);
-
-        // Lambertian diffuse: N dot L.
-        let diffuse: f32 = normal.dot(light).max(0.0);
-
-        // Blinn-Phong specular: N dot H, with empirical adjustment.
-        let halfway_dot: f32 = normal.dot(halfway);
-        let specular: f32 = if halfway_dot > 0.0 {
-            // Schlick approximation: halfwayDot / (strength - halfwayDot * strength + halfwayDot)
-            halfway_dot / (SPECULAR_STRENGTH - halfway_dot * SPECULAR_STRENGTH + halfway_dot)
-        } else {
-            0.0
-        };
-
-        let brightness: f32 = diffuse + specular;
-        // `FMUL [0x007F6960]` = 16.0, then `Math__ftol` (0x007C5F00, chop):
-        // page = trunc(16 x (diffuse + specular)).
-        let page: u8 = (brightness * 16.0).clamp(0.0, 255.0) as u8;
-        result[i] = page;
+    for (index, normal) in table.iter().enumerate() {
+        let normal = normal.map(fp);
+        let diffuse = positive(Fpu::add(
+            Fpu::add(Fpu::mul(normal[2], light[2]), Fpu::mul(normal[1], light[1])),
+            Fpu::mul(normal[0], light[0]),
+        ));
+        let h = Fpu::add(
+            Fpu::add(
+                Fpu::mul(halfway[0], normal[0]),
+                Fpu::mul(halfway[1], normal[1]),
+            ),
+            Fpu::mul(halfway[2], normal[2]),
+        );
+        // Native clamps after the quotient's float store, not before it.
+        let denominator = Fpu::add(Fpu::sub(strength, Fpu::mul(h, strength)), h);
+        let specular = positive(fp_store(
+            Fpu::div(h, denominator).expect("finite Schlick term"),
+        ));
+        let page = Fpu::mul(Fpu::add(diffuse, specular), Fpu::load_i32(16));
+        result[index] = Fpu::ftol_i64(page).expect("voxel page fits an integer") as u8;
     }
 
     // Ambient tail: the original engine's lighting precompute unconditionally
@@ -389,58 +388,46 @@ mod tests {
         }
     }
 
-    /// Page for one normal under the native formula, so tests can state the
-    /// expected value from the established chain rather than from prior Rust.
-    fn native_page(normal: Vec3, light: Vec3) -> u8 {
-        let halfway: Vec3 = (light + Vec3::Z).normalize();
-        let diffuse: f32 = normal.dot(light).max(0.0);
-        let h: f32 = normal.dot(halfway);
-        let specular: f32 = (h / (3.0 - h * 3.0 + h)).max(0.0);
-        ((diffuse + specular) * 16.0) as u8
-    }
-
     #[test]
-    fn top_and_side_pages_match_the_retail_capture() {
-        // Retail renders the Iron Gull's flat container tops around VPL page
-        // 3-4 (voxels.vpl page 8 is identity). In this frame that needs the
-        // light's Z to be negative: a +Z normal then gets no diffuse term and
-        // only the specular ~0.25, i.e. page 4. A positive Z would put it on
-        // page 18 (near-white decks), which the capture rules out.
-        let page: u8 = native_page(Vec3::Z, YR_WORLD_LIGHT);
-        assert!(
-            (6..=8).contains(&page),
-            "top-face page must sit next to the identity page 8 like retail container tops: {page}"
-        );
-        // Camera-facing hull side (horizontal, toward the viewer) lands on the
-        // bright pages the retail hull greys occupy.
-        let side: u8 = native_page(Vec3::new(0.707_107, -0.707_107, 0.0), YR_WORLD_LIGHT);
-        assert!(
-            (17..=20).contains(&side),
-            "side page must match retail hull: {side}"
-        );
-        let table_top: u8 = blinn_phong_pages(4, Mat3::IDENTITY)[240];
-        assert_eq!(
-            table_top,
-            native_page(Vec3::from_array(RA2_NORMALS[240]), YR_WORLD_LIGHT)
-        );
-    }
-
-    #[test]
-    fn model_rotation_moves_the_light_by_its_inverse() {
-        // The light is carried into model space by the transpose (rigid
-        // inverse) of the draw rotation, as FUN_005AFC20 + FUN_005AF4D0 do.
-        let rot: Mat3 = Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2);
-        let pages: [u8; 256] = blinn_phong_pages(4, rot);
-        let expected_light: Vec3 = rot.transpose() * YR_WORLD_LIGHT;
-        for (i, n) in RA2_NORMALS.iter().enumerate().take(245) {
-            assert_eq!(
-                pages[i],
-                native_page(Vec3::from_array(*n), expected_light),
-                "normal {i}"
+    fn native_lighting_initializer_matches_all_flat_facings_and_both_modes() {
+        let vectors: serde_json::Value =
+            serde_json::from_str(include_str!("../../tools/voxel_oracle/lighting.json")).unwrap();
+        let light: Vec<u32> = vectors["light_bits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_u64().unwrap() as u32)
+            .collect();
+        assert_eq!(light, YR_WORLD_LIGHT.to_array().map(f32::to_bits));
+        let cases = vectors["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 64);
+        for (index, case) in cases.iter().enumerate() {
+            assert_eq!(case["step"].as_u64().unwrap(), (index / 2) as u64);
+            let mode = case["mode"].as_u64().unwrap() as u8;
+            assert_eq!(mode, if index % 2 == 0 { 2 } else { 4 });
+            let raw: Vec<f32> = case["draw_matrix_bits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| f32::from_bits(value.as_u64().unwrap() as u32))
+                .collect();
+            let matrix = Mat3::from_cols(
+                Vec3::new(raw[0], raw[4], raw[8]),
+                Vec3::new(raw[1], raw[5], raw[9]),
+                Vec3::new(raw[2], raw[6], raw[10]),
             );
+            let expected = case["pages"].as_str().unwrap();
+            let actual = blinn_phong_pages(mode, matrix);
+            for normal in 0..256 {
+                let page = u8::from_str_radix(&expected[normal * 2..normal * 2 + 2], 16).unwrap();
+                assert_eq!(
+                    actual[normal],
+                    page,
+                    "step {} mode {mode} normal {normal}",
+                    index / 2
+                );
+            }
         }
-        let identity_pages: [u8; 256] = blinn_phong_pages(4, Mat3::IDENTITY);
-        assert!(pages[..245] != identity_pages[..245]);
     }
 
     #[test]
