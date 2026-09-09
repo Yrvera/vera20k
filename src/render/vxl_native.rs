@@ -6,20 +6,20 @@
 use super::{HvaFile, Mat4, Vec3, VxlFile};
 use crate::util::native_x87::{NativeF32Bits, X87Chop53 as Fpu, X87Value};
 
-fn load(value: f32) -> Option<X87Value> {
+pub(super) fn load(value: f32) -> Option<X87Value> {
     Fpu::load_f32(NativeF32Bits::from_bits(value.to_bits())).ok()
 }
 
-fn store(value: X87Value) -> Option<f32> {
+pub(super) fn store(value: X87Value) -> Option<f32> {
     Some(f32::from_bits(Fpu::store_f32(value).ok()?.bits()))
 }
 
-fn ftol(value: X87Value) -> Option<i32> {
+pub(super) fn ftol(value: X87Value) -> Option<i32> {
     i32::try_from(Fpu::ftol_i64(value).ok()?).ok()
 }
 
 /// Full affine 5AF980, including its translation-column float stores.
-fn matrix_product(left: Mat4, right: Mat4) -> Option<Mat4> {
+pub(super) fn matrix_product(left: Mat4, right: Mat4) -> Option<Mat4> {
     let mut result = Mat4::IDENTITY;
     for col in 0..4 {
         for row in 0..3 {
@@ -37,7 +37,7 @@ fn matrix_product(left: Mat4, right: Mat4) -> Option<Mat4> {
 }
 
 /// 5AFB80 differs from matrix multiplication in the second/third dot order.
-fn transform_point(matrix: Mat4, point: Vec3) -> Option<Vec3> {
+pub(super) fn transform_point(matrix: Mat4, point: Vec3) -> Option<Vec3> {
     let mut result = Vec3::ZERO;
     for row in 0..3 {
         let x = Fpu::mul(load(matrix.col(0)[row])?, load(point.x)?);

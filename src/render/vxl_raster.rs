@@ -20,6 +20,9 @@ use crate::render::vxl_normals;
 #[path = "vxl_native.rs"]
 mod native;
 
+#[path = "vxl_shadow.rs"]
+pub(crate) mod shadow;
+
 pub(crate) use native::PreparedDraw;
 
 /// Shared ordinary VXL preparation for CPU and GPU visibility writes. Preview
@@ -798,37 +801,24 @@ pub const SHADOW_STENCIL_INDEX: u8 = 1;
 /// renderer's model-space lighting vector (see `vxl_normals`).
 const SHADOW_LIGHT_OFFSET_PX: f32 = 3.0;
 
-/// Ground shadow of a voxel model, the way gamemd draws it.
-///
-/// Native chain: `UnitClass::DrawVoxelBody` (0x0073B470) ends with the shadow
-/// call at 0x0073C5C4 -> `Techno_Draw_Voxel_Shadow` (0x00706BD0; returns for
-/// any cloak state at +0x220 or `NoShadow` at Type+0xD98) ->
-/// `Techno_Render_Voxel_Shadow` (0x00707280), which submits only the hull
-/// voxel (`Type+0xB0`, layer `Type+0x7FC`) with matrix
-/// `IsoView x Shadow_Matrix x HVA(layer, frame 0)`. `Shadow_Matrix`
-/// (Drive 0x004B0410 / Ship, both through `Build_Shadow_Matrix` 0x0055A7D0)
-/// is `VXL_GetFacingMatrix(cell slope byte) x RotateZ(facing quantised to
-/// 32)`: the ordinary draw matrix, no interpolation. `VXL_Submit_Billboard`
-/// (0x00753F90) pushes the section's four z-min bounding-box corners
-/// (tailer +0x40..+0x64) through that matrix, zeroes Z (a no-op for the
-/// screen x/y once the iso view is inside the matrix), transforms by
-/// 0x00887430 (identity), adds the shadow light vector and negates Y;
-/// `VXL_Quad_Rasterizer` (0x00756860) then walks the section's (x, y)
-/// columns (tailer +0xA0/+0xA1, never Z), writing a stencil for every column
-/// whose span table is not -1, mapped by the parallelogram of those corners.
-/// No lighting. The blit halves the encoded 16-bit destination word
-/// (`Blitter_selector(0x2001)` -> 0x00492D20 / cached 0x00496820,
-/// `dst = (dst >> 1) & mask`, Z-tested).
-///
-/// So the native shadow is the hull's bottom face projected through the full
-/// draw matrix: on flat ground a flat footprint, on a ramp a parallelogram
-/// lying on the ramp. This renderer does the same: `camera x model_to_world`
-/// applied to each occupied column's `(x, y, 0)` grid point (grid z = 0 is the
-/// z-min face), shifted by `SHADOW_LIGHT_OFFSET_PX`, plotted with the body's
-/// fill rectangle. Turret and barrel are not part of it; neither is any
-/// `ConsideredAircraft` half-scale (0x00707319, unmodelled) or `NoShadow`
-/// (no stock ground-band user).
+/// Ground shadow stencil. The ordinary flat single-section route follows
+/// original 753F90/754510/756860 corner, 8.8 column and crop ownership.
+/// Its first composed-body mask is applied by UnitAtlas before presentation.
+/// Other geometry retains the approximate occupied-column fallback below.
+/// Final destination darkening is separate: the current voxel fragment uses
+/// a linear-alpha approximation to native packed RGB565 half, not exact half.
 pub fn render_vxl_shadow(
+    vxl: &VxlFile,
+    hva: Option<&HvaFile>,
+    params: &VxlRenderParams,
+) -> VxlSprite {
+    if let Some(sprite) = shadow::render(vxl, hva, params) {
+        return sprite;
+    }
+    render_legacy_vxl_shadow(vxl, hva, params)
+}
+
+pub(crate) fn render_legacy_vxl_shadow(
     vxl: &VxlFile,
     hva: Option<&HvaFile>,
     params: &VxlRenderParams,

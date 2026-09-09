@@ -142,6 +142,11 @@
           "symbol": "Native indexed painter",
           "address": "0x007DFAE0",
           "evidence": "tools/voxel_oracle/raster.py"
+        },
+        {
+          "symbol": "Ordinary shadow bottom quad and optional body-mask stencil",
+          "address": "0x00756860",
+          "evidence": "tools/voxel_oracle/shadow_raster.py"
         }
       ],
       "rust_surfaces": [
@@ -165,7 +170,8 @@
         }
       ],
       "notes": [
-        "Bounded original single-VXL preparation/core painter proof and production buffer readback. Relative parts, caller slopes/mirrors, and final scene composition remain open."
+        "Bounded original single-VXL preparation/core painter proof and production buffer readback. Relative parts, caller slopes/mirrors, and final scene composition remain open.",
+        "Ordinary flat Drive shadow template/crop and first eligible composed-body mask are owned by vxl_shadow.rs and unit_shadow_cache.rs, with after-body Ground presentation and retained atlas payloads. Generated and stock original core cases establish the bounded geometry. Destination darkening still uses the existing alpha approximation; full native cache admission/purge/history and broader caller families are not implied. See docs/research/VEHICLE_SHADOW_VISIBLE_MATCH.md."
       ]
     },
     "GSI-14.03": {

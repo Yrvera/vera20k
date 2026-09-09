@@ -13,6 +13,161 @@ use crate::render::terrain_draw_gpu_tests::{Gpu, camera, clear, encoded, extent,
 use wgpu::util::DeviceExt;
 
 #[test]
+#[ignore = "requires GPU; actual Ground lowering, atlas upload and voxel body/shadow replay"]
+fn vehicle_shadow_after_body_preserves_body_and_clipped_read_only_depth() {
+    let gpu = Gpu::new();
+    let size = [12, 8];
+    let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let batch = BatchRenderer::new_with_device(&gpu.device, &gpu.queue, format);
+    batch.write_camera(&gpu.queue, camera(size));
+    let color = gpu.target(size, format);
+    let cv = color.create_view(&Default::default());
+    let depth = gpu.target(size, wgpu::TextureFormat::Depth32Float);
+    let dv = depth.create_view(&Default::default());
+    let mut terrain = TerrainDrawRenderer::new(&gpu.device, format, &batch);
+    terrain.prepare(&gpu.device, &color, &dv, batch.camera_uniform());
+    let mut mask = vec![1; 24];
+    for y in 0..2 {
+        for x in 1..5 {
+            mask[y * 6 + x] = 0;
+        }
+    }
+    let units = UnitAtlas::from_test_pages(vec![
+        crate::render::unit_atlas::UnitAtlasPage {
+            texture: batch.create_unit_atlas_texture_on_device(
+                &gpu.device,
+                &gpu.queue,
+                1,
+                1,
+                &[33],
+            ),
+        },
+        crate::render::unit_atlas::UnitAtlasPage {
+            texture: batch.create_unit_atlas_texture_on_device(
+                &gpu.device,
+                &gpu.queue,
+                6,
+                4,
+                &mask,
+            ),
+        },
+    ]);
+    let palette = crate::assets::pal_file::Palette {
+        colors: [crate::assets::pal_file::Color::rgb(0, 252, 0); 256],
+    };
+    let ramps = crate::rules::house_colors::HouseColorRamps::from_schemes(&[]);
+    let palettes = PaletteSet::new_on_device(&gpu.device, &gpu.queue, &palette, &ramps, &[]);
+    let parents = (0..2)
+        .map(|i| {
+            let mut body = sprite([1. + i as f32 * 4., 1.], [4., 4.], -1.);
+            body.z_gradient = crate::render::native_z::pack_voxel_z_gradient(
+                crate::render::native_z::ZGradient::Vertical,
+                false,
+            );
+            body.zshape_origin = [1., 4.];
+            let mut shadow = sprite([i as f32 * 4., 3.], [6., 4.], -1.);
+            shadow.z_gradient = body.z_gradient;
+            shadow.zshape_origin = [3., 4.];
+            shadow.draw_state.fx_flags = crate::render::draw_state::FX_SHADOW;
+            PlannedGroundObjectInstance::object(
+                ObjectDraw {
+                    id: i,
+                    layer: TacticalLayer(2),
+                    coord: TacticalCoord { x: 0, y: 0, z: 0 },
+                    y_sort_adjust: 0,
+                    registration_order: i,
+                    policy: BlitPolicy::z_read(SpriteEncoding::Plain),
+                },
+                vec![
+                    GroundPieceInstance {
+                        target: GroundTexture::UnitAtlasPage(0),
+                        render_z: RenderZPolicy::ReadOnly,
+                        instance: body,
+                    },
+                    GroundPieceInstance {
+                        target: GroundTexture::UnitAtlasPage(1),
+                        render_z: RenderZPolicy::ReadOnly,
+                        instance: shadow,
+                    },
+                ],
+            )
+        })
+        .collect();
+    let ground = lower_ground_object_instances(parents);
+    assert_eq!(ground.owners, vec![0, 0, 1, 1]);
+    assert_eq!(
+        ground
+            .instances
+            .iter()
+            .map(|s| s.draw_state.fx_flags & crate::render::draw_state::FX_SHADOW != 0)
+            .collect::<Vec<_>>(),
+        vec![false, true, false, true]
+    );
+    let mut pool = InstanceBufferPool::new();
+    pool.upload_on_device(&gpu.device, &gpu.queue, "ground_objects", &ground.instances);
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    clear(
+        &mut encoder,
+        &cv,
+        &dv,
+        65535,
+        wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+    );
+    let stats = draw_native_ground_object_pass(
+        &mut encoder,
+        &cv,
+        &dv,
+        &mut terrain,
+        [2, 0, 8, 6],
+        &batch,
+        &pool,
+        &ground,
+        None,
+        Some(&units),
+        &VxlSlopeTransitionCache::default(),
+        None,
+        Some(&palettes),
+        batch.default_zshape_bind_group(),
+    );
+    assert_eq!(
+        stats.pieces, 0,
+        "ordinary vehicle shadows add no destination-edit passes"
+    );
+    let reads = [
+        gpu.read(&mut encoder, &color),
+        gpu.read(&mut encoder, &depth),
+    ];
+    let output = gpu.finish(encoder, &reads, size);
+    let pixel = |x: usize, y: usize| &output[0][(y * 12 + x) * 4..(y * 12 + x + 1) * 4];
+    assert_eq!(
+        pixel(5, 3),
+        encoded(0x07e0, format),
+        "later body covers earlier shadow"
+    );
+    assert_eq!(
+        pixel(3, 2),
+        encoded(0x07e0, format),
+        "own body remains opaque"
+    );
+    assert_eq!(pixel(1, 5), [255; 4], "left tactical clip");
+    assert_eq!(pixel(6, 6), [255; 4], "bottom tactical clip");
+    assert!(
+        pixel(2, 5)[1] < 200 && pixel(2, 5)[1] > 100,
+        "one alpha shadow visibly darkens"
+    );
+    assert!(
+        pixel(4, 5)[1] < pixel(2, 5)[1],
+        "overlapping read-only shadows compound in order"
+    );
+    for p in output[1].chunks_exact(4) {
+        assert_eq!(
+            crate::render::native_z::stored_z(f32::from_le_bytes(p.try_into().unwrap())),
+            65535
+        );
+    }
+}
+
+#[test]
 #[ignore = "requires GPU; actual Ground lowering, pool upload and replay"]
 fn tree_transactions_preserve_tmp_shp_voxel_overlap_and_coalesced_order() {
     let gpu = Gpu::new();
