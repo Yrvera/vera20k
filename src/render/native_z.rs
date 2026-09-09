@@ -4,13 +4,12 @@
 //! lower = nearer, `DefaultZ = 0x8000`). Every draw seeds a per-row Z from its
 //! screen position and a class-supplied adjustment, walks rows with one of
 //! three gradient entries, and tests (buildings and tiles also write) each
-//! pixel. VERA keeps the same integer arithmetic here so the CPU side, the
-//! shaders (`zsprite_shader.wgsl`, `sprite_voxel_shader.wgsl`,
-//! `zdepth_shader.wgsl`) and the tests share one definition, then maps the
-//! integer Z onto the normalised depth axis `1 - (row - origin_y) /
-//! world_height`, where `row = DefaultZ + YOrigin - Z + camera_y` is the
-//! "ground row" the Z stands for. One native Z unit is therefore exactly one
-//! world pixel row of depth for every consumer.
+//! pixel. CPU helpers retain native row arithmetic; tactical shaders encode
+//! native u16 stores losslessly as word/65535, independently of map bounds.
+//! `depth_for_row` and `depth_for_native_z` still produce the legacy world/sort
+//! scalar consumed by compatibility Batch paths. Their existing clamps and
+//! fractional ordering are not an exact native u16 source. TREE reads a mixed
+//! compatibility destination by rounding its value on the native axis.
 //!
 //! Evidence (read-only Ghidra, 2026-09-07, `docs/research/ZBUFFER_DEPTH_SYSTEM.md`
 //! sections 1, 2, 4):
@@ -31,8 +30,27 @@
 //!   (`BuildingClass_DrawBody 0x0043D836..0x0043D84D`).
 //! - Gradient table `g_ZGradientTable @ 0x00817710`.
 
-/// `g_ZBuffer + 0x24`: the Z every pixel is cleared to and the seed constant.
+/// `g_ZBuffer + 0x24`: row seed constant; distinct from empty stored Z.
 pub const DEFAULT_Z: i32 = 0x8000;
+
+/// Lossless GPU storage of the native u16 Z-buffer word. The original leaves
+/// compare their signed candidate first, then write its low16 bits. Hardware
+/// comparisons alone only establish that behavior for in-range candidates.
+/// See TERRAIN_STATIC_BODY_SHADOW_NATIVE_2026_09_09.md and native_z.wgsl.
+pub const STORED_DEPTH_CLEAR: f32 = 1.0;
+
+/// Original ctor 007BCA08 and active dirty clear 007BCFB0 store 0xffff;
+/// 007BCA2C separately initializes the 0x8000 row seed. Empty pixels admit
+/// candidates 32768..65534 too, while equality at 65535 still rejects.
+pub const EMPTY_Z: u16 = u16::MAX;
+
+pub fn stored_depth(z: u16) -> f32 {
+    f32::from(z) / f32::from(u16::MAX)
+}
+
+pub fn stored_z(depth: f32) -> u16 {
+    (depth * f32::from(u16::MAX)).round() as u16
+}
 
 /// `TechnoClass_DrawSHP` pushes `a7 - 2` as the CC_Draw_Shape Z term
 /// (`0x00706430`, `0x00706505`, `0x007065D4`). Every SHP object draw carries it.
@@ -341,6 +359,45 @@ pub fn depth_for_native_z(z: i32, camera_y: i32, origin_y: f32, world_height: f3
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_stored_depth_preserves_every_word_and_distinguishes_empty_from_seed() {
+        assert_eq!(stored_z(STORED_DEPTH_CLEAR), EMPTY_Z);
+        assert_ne!(i32::from(EMPTY_Z), DEFAULT_Z);
+        for z in 0..=u16::MAX {
+            assert_eq!(stored_z(stored_depth(z)), z);
+        }
+    }
+
+    #[test]
+    fn original_extended_row_walk_matches_all_clipped_fixture_rows() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/terrain_draw_oracle/fixtures/rows.json"
+        ))
+        .unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 406);
+        let mut checked = 0;
+        for c in cases {
+            let value = |index: usize| c[index].as_i64().unwrap() as i32;
+            let gradient = ZGradient::from_index(value(0) as u32);
+            for (offset, expected) in c[6].as_array().unwrap().iter().enumerate() {
+                assert_eq!(
+                    sprite_row_z(
+                        gradient,
+                        value(1),
+                        value(2),
+                        value(3),
+                        value(4) + offset as i32
+                    ) as u32,
+                    expected.as_u64().unwrap() as u32,
+                    "case={c}, offset={offset}"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 13854);
+    }
+
     use super::*;
 
     #[test]

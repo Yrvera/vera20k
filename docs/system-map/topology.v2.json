@@ -31,6 +31,84 @@
     }
   ],
   "systems": {
+    "GSI-13.09": {
+      "native_anchors": [
+        {
+          "symbol": "ZBuffer empty storage and separate row seed",
+          "address": "0x007BC970",
+          "evidence": "docs/research/TERRAIN_STATIC_BODY_SHADOW_NATIVE_2026_09_09.md"
+        },
+        {
+          "symbol": "Object dirty-clip point rebasing",
+          "address": "0x005F4B88",
+          "evidence": "tools/terrain_draw_oracle/origin.py"
+        },
+        {
+          "symbol": "Extended SHP row initialization and walk",
+          "address": "0x00437A10",
+          "evidence": "tools/terrain_draw_oracle/rows.py"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/render/native_z.rs",
+          "symbol": "EMPTY_Z / DEFAULT_Z / stored_depth",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/render/native_z.wgsl",
+          "symbol": "stored_native_depth / native_row_z",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/render/batch.rs",
+          "symbol": "write_camera / update_native_z_origin",
+          "coverage": "representative"
+        }
+      ],
+      "notes": [
+        "Native u16 storage and empty FFFF are distinct from row seed8000. TREE compares signed before low16 store. Legacy Batch scalar clamps and non-TREE out-of-range admission remain separate coverage limits. Current transaction based on e4cca5ac; final scene validation is not implied by this annotation."
+      ]
+    },
+    "GSI-13.11": {
+      "native_anchors": [
+        {
+          "symbol": "Ordinary Terrain same-point body and shadow dispatch",
+          "address": "0x0071C1B0",
+          "evidence": "docs/research/TERRAIN_STATIC_BODY_SHADOW_NATIVE_2026_09_09.md"
+        },
+        {
+          "symbol": "Terrain packed-half shadow with strict signed test and Z store",
+          "address": "0x00497390",
+          "evidence": "tools/terrain_draw_oracle/leaf.py"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/render/overlay_atlas.rs",
+          "symbol": "native_static_terrain_pair / pack_overlay_pixels",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/app/presentation/instances/overlays.rs",
+          "symbol": "native_static_terrain_instances",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/render/terrain_draw.rs",
+          "symbol": "TerrainDrawRenderer::prepare / draw_piece",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/app/presentation/render/merge_passes.rs",
+          "symbol": "draw_native_ground_object_pass",
+          "coverage": "representative"
+        }
+      ],
+      "notes": [
+        "Bounded ordinary extended static Terrain body/shadow transaction, including per-piece destination snapshots. Vehicle cached shadows use a separate read-only Z leaf; animated/death terrain and broader shadow families remain open."
+      ]
+    },
     "GSI-13.07": {
       "native_anchors": [
         {

@@ -593,7 +593,7 @@ pub(crate) fn begin_main_pass<'a>(
             view: depth_view,
             stencil_ops: None,
             depth_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Clear(1.0),
+                load: wgpu::LoadOp::Clear(crate::render::native_z::STORED_DEPTH_CLEAR),
                 store: wgpu::StoreOp::Store,
             }),
         }),

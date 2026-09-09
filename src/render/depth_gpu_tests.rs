@@ -39,7 +39,7 @@ enum Shader {
 
 impl Shader {
     fn source(self) -> String {
-        super::palette_light::shader_source(match self {
+        super::tactical_shader::source(match self {
             Self::Batch => include_str!("batch_shader.wgsl"),
             Self::Terrain => include_str!("zdepth_shader.wgsl"),
             Self::SpriteRead | Self::SpriteWrite => include_str!("zsprite_shader.wgsl"),
@@ -163,6 +163,9 @@ impl Gpu {
                     world_origin_y: -100.0,
                     world_height: 256.0,
                     _pad: 0.0,
+
+                    native_z_origin_y: 0.0,
+                    _native_z_pad: 0.0,
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -203,7 +206,11 @@ impl Gpu {
                     layout: None,
                     vertex: wgpu::VertexState {
                         module: &module,
-                        entry_point: Some("vs_main"),
+                        entry_point: Some(if matches!(layer.shader, Shader::Batch) {
+                            "vs_depth"
+                        } else {
+                            "vs_main"
+                        }),
                         buffers: &[wgpu::VertexBufferLayout {
                             array_stride: size_of::<SpriteInstance>() as u64,
                             step_mode: wgpu::VertexStepMode::Instance,
@@ -321,18 +328,24 @@ impl Gpu {
                     ],
                 })
             });
-            let index_source = self.texture(
-                wgpu::TextureFormat::R8Uint,
-                &layer.indices,
-                layer.source_size,
-            );
-            if matches!(
+            // TMP uses its packed depth plane; VXL already uploaded the indexed
+            // source at binding 0. Do not manufacture an unused SHP plane from
+            // Layer::solid's default dimensions for resized TMP fixtures.
+            let index_source = matches!(
                 layer.shader,
                 Shader::Batch | Shader::SpriteRead | Shader::SpriteWrite
-            ) {
+            )
+            .then(|| {
+                self.texture(
+                    wgpu::TextureFormat::R8Uint,
+                    &layer.indices,
+                    layer.source_size,
+                )
+            });
+            if let Some(index_source) = &index_source {
                 texture_entries.push(wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&index_source),
+                    resource: wgpu::BindingResource::TextureView(index_source),
                 });
             }
             let texture_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -377,7 +390,7 @@ impl Gpu {
                     view: &depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: if index == 0 {
-                            wgpu::LoadOp::Clear(1.0)
+                            wgpu::LoadOp::Clear(super::native_z::STORED_DEPTH_CLEAR)
                         } else {
                             wgpu::LoadOp::Load
                         },

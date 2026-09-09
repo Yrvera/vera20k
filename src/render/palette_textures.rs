@@ -67,9 +67,16 @@ impl PaletteSet {
         ramps: &HouseColorRamps,
         houses: &[HouseColorIndex],
     ) -> Self {
-        let device: &wgpu::Device = &gpu.device;
-        let queue: &wgpu::Queue = &gpu.queue;
+        Self::new_on_device(&gpu.device, &gpu.queue, palette, ramps, houses)
+    }
 
+    pub(crate) fn new_on_device(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        palette: &Palette,
+        ramps: &HouseColorRamps,
+        houses: &[HouseColorIndex],
+    ) -> Self {
         let palette_bytes: Vec<u8> = build_palette_bytes(palette);
         let palette_tex: wgpu::Texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("voxel_palette_tex"),

@@ -24,6 +24,8 @@ struct Camera {
     world_origin_y: f32,
     world_height: f32,
     pad1: f32,
+    native_z_origin_y: f32,
+    native_z_pad: f32,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -125,42 +127,10 @@ fn vs_main(
 // Native Z of row `row` (0 = top) of a blit; mirrors `native_z::sprite_row_z`
 // and the copy in zsprite_shader.wgsl. The VXL cache blit walks the same
 // gradient table (`VXL_CacheBlit @ 0x00707480` -> extended blitter).
-fn native_row_z(entry: u32, screen_top: i32, height: i32, z_adjust: i32, row: i32) -> i32 {
-    let default_z: i32 = 32768;
-    var seed: i32;
-    var accum: i32 = 0;
-    var increment: i32;
-    var threshold: i32;
-    var step_dir: i32;
-    if (entry == 2u) {
-        increment = 1;
-        threshold = 3;
-        step_dir = 1;
-        let raw: i32 = ((default_z - height - screen_top + 1) & 0xFFFF) + z_adjust;
-        seed = (raw / 3) * 3 - height / 3;
-        accum = 3 - (height % 3);
-        if (accum == 3) {
-            accum = 0;
-            seed = seed + 1;
-        }
-    } else if (entry == 1u) {
-        increment = 2;
-        threshold = 3;
-        step_dir = -1;
-        let raw: i32 = ((default_z - screen_top) & 0xFFFF) + z_adjust;
-        seed = (raw / 3) * 3;
-    } else {
-        increment = 1;
-        threshold = 1;
-        step_dir = -1;
-        seed = ((default_z - screen_top) & 0xFFFF) + z_adjust;
-    }
-    let steps: i32 = (accum + max(row, 0) * increment) / threshold;
-    return seed + step_dir * steps;
-}
+
 
 fn native_depth(in: VertexOutput) -> f32 {
-    let camera_row: i32 = i32(round(camera.camera_pos.y));
+    let camera_row: i32 = i32(round(camera.camera_pos.y + camera.native_z_origin_y));
     var rect_top: f32 = in.rect_top_height.x;
     var height: i32 = max(i32(round(in.rect_top_height.y)), 1);
     var gradient: u32 = in.z_gradient & 0xFFu;
@@ -202,9 +172,7 @@ fn native_depth(in: VertexOutput) -> f32 {
     let screen_top: i32 = i32(round(rect_top)) - camera_row;
     let row: i32 = clamp(i32(floor(in.world_pos.y - rect_top)), 0, height - 1);
     let z: i32 = native_row_z(gradient, screen_top, height, z_adjust, row);
-    let ground_row: f32 = f32(32768 - z + camera_row);
-    let world_height: f32 = max(camera.world_height, 1.0);
-    return clamp(1.0 - (ground_row - camera.world_origin_y) / world_height, 0.001, 0.999);
+    return stored_native_depth(z);
 }
 
 fn apply_fx(color: vec4f, _flags: u32, params: vec4f, effect_tint: vec4f) -> vec4f {
@@ -221,13 +189,13 @@ fn apply_fx(color: vec4f, _flags: u32, params: vec4f, effect_tint: vec4f) -> vec
 }
 
 
-// Color resolution is supplied by palette_light::shader_source.
+// Palette and stored-depth mechanisms are supplied by tactical_shader::source.
 
 
 // RA2_DEBUG_DEPTH_VIEW (camera.pad1 > 0.5): depth as grey, wrapping every
 // 128 world rows, so depth ordering can be read off a screenshot.
 fn debug_depth_color(depth: f32) -> vec4f {
-    let rows: f32 = (1.0 - depth) * max(camera.world_height, 1.0);
+    let rows: f32 = world_row_from_native_depth(depth, camera.camera_pos.y + camera.native_z_origin_y);
     let g: f32 = fract(rows / 128.0);
     return vec4f(g, g, g, 1.0);
 }

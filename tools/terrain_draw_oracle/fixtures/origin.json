@@ -1,0 +1,122 @@
+{
+  "executable_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "region": "005F4B88..005F4CFD",
+  "virtual_target": "0071C1B0",
+  "cases": [
+    {
+      "viewport_y": 0,
+      "dirty_y": 0,
+      "projected_viewport_point": [
+        376,
+        404
+      ],
+      "draw_point": [
+        376,
+        404
+      ],
+      "clip": [
+        0,
+        0,
+        632,
+        568
+      ],
+      "framebuffer_y": 404
+    },
+    {
+      "viewport_y": 0,
+      "dirty_y": 100,
+      "projected_viewport_point": [
+        376,
+        404
+      ],
+      "draw_point": [
+        376,
+        304
+      ],
+      "clip": [
+        0,
+        100,
+        632,
+        468
+      ],
+      "framebuffer_y": 404
+    },
+    {
+      "viewport_y": 0,
+      "dirty_y": 350,
+      "projected_viewport_point": [
+        376,
+        404
+      ],
+      "draw_point": [
+        376,
+        54
+      ],
+      "clip": [
+        0,
+        350,
+        632,
+        218
+      ],
+      "framebuffer_y": 404
+    },
+    {
+      "viewport_y": 37,
+      "dirty_y": 37,
+      "projected_viewport_point": [
+        376,
+        367
+      ],
+      "draw_point": [
+        376,
+        367
+      ],
+      "clip": [
+        0,
+        37,
+        632,
+        563
+      ],
+      "framebuffer_y": 404
+    },
+    {
+      "viewport_y": 37,
+      "dirty_y": 100,
+      "projected_viewport_point": [
+        376,
+        367
+      ],
+      "draw_point": [
+        376,
+        304
+      ],
+      "clip": [
+        0,
+        100,
+        632,
+        500
+      ],
+      "framebuffer_y": 404
+    },
+    {
+      "viewport_y": 37,
+      "dirty_y": 350,
+      "projected_viewport_point": [
+        376,
+        367
+      ],
+      "draw_point": [
+        376,
+        54
+      ],
+      "clip": [
+        0,
+        350,
+        632,
+        250
+      ],
+      "framebuffer_y": 404
+    }
+  ],
+  "limit": "Projected point supplied; original dirty rebasing runs before the Terrain virtual call. Effective native row is framebuffer top minus viewport Y, not minus dirty-clip Y."
+}

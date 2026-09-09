@@ -223,8 +223,13 @@ pub(super) fn dispatch_draw_passes(
     // Terrain, units, infantry, and building-owned pieces share the exact
     // signed X+Y + stable-registration order. Atlas bindings dispatch only
     // after the parent slot has been selected.
+    drop(pass);
     merge_passes::draw_native_ground_object_pass(
-        &mut pass,
+        encoder,
+        view,
+        &state.renderer.depth_view,
+        &state.renderer.terrain_draw_renderer,
+        [tac_x, tac_y, tac_w, tac_h],
         &state.renderer.batch_renderer,
         pool,
         data.ground,
@@ -243,6 +248,9 @@ pub(super) fn dispatch_draw_passes(
                 |z| &z.bind_group,
             ),
     );
+
+    let mut pass = begin_main_load_pass(encoder, view, &state.renderer.depth_view);
+    pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);
 
     // Scheduler-owned effects not yet carrying verified class-specific
     // YSortAdjust remain in the pre-existing residual SHP stream.

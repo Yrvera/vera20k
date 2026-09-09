@@ -1250,3 +1250,17 @@ fn plan_cached_sprite_pages(
 #[cfg(test)]
 #[path = "unit_atlas_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+impl UnitAtlas {
+    pub(crate) fn from_test_pages(pages: Vec<UnitAtlasPage>) -> Self {
+        Self {
+            pages,
+            entries: HashMap::new(),
+            frame_counts: BTreeMap::new(),
+            rendered_cache: Vec::new(),
+            gpu_rendered: 0,
+            cpu_rendered: 0,
+        }
+    }
+}

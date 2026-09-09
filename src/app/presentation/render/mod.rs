@@ -149,6 +149,17 @@ pub(crate) fn render_game(
         state.match_state.input.zoom_level,
     );
     let composition_view = state.renderer.combat_light_renderer.composition_view();
+    let (_, tactical_y, _, _) = crate::app::input::camera::tactical_viewport_px(state);
+    // Shader row coordinates are unscaled world pixels; scissor uses target
+    // pixels. Native zoom1 is exact, and scaled views preserve that unit frame.
+    let native_z_origin_y = tactical_y as f32 / state.match_state.input.zoom_level;
+    state.renderer.batch_renderer.update_native_z_origin(&state.renderer.gpu.queue, native_z_origin_y);
+    state.renderer.terrain_draw_renderer.prepare(
+        &state.renderer.gpu.device,
+        state.renderer.combat_light_renderer.composition_texture(),
+        &state.renderer.depth_view,
+        state.renderer.batch_renderer.camera_uniform(),
+    );
 
     // Phase 7: Dispatch draw calls in render order.
     draw_passes::dispatch_draw_passes(

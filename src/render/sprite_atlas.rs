@@ -1867,3 +1867,17 @@ fn simulate_shelf_height(
 #[cfg(test)]
 #[path = "sprite_atlas_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+impl SpriteAtlas {
+    pub(crate) fn from_test_pages(pages: Vec<SpriteAtlasPage>) -> Self {
+        Self {
+            pages,
+            entries: HashMap::new(),
+            make_frame_counts: HashMap::new(),
+            active_anim_frame_counts: HashMap::new(),
+            building_bounds: HashMap::new(),
+            rendered_cache: Vec::new(),
+        }
+    }
+}

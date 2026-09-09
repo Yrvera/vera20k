@@ -90,6 +90,9 @@ impl CombatLightRenderer {
                     world_origin_y: 0.0,
                     world_height: 1.0,
                     _pad: 0.0,
+
+                    native_z_origin_y: 0.0,
+                    _native_z_pad: 0.0,
                 }),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -249,6 +252,9 @@ impl CombatLightRenderer {
                 world_origin_y: 0.0,
                 world_height: 1.0,
                 _pad: 0.0,
+
+                native_z_origin_y: 0.0,
+                _native_z_pad: 0.0,
             }),
         );
         self.record_count = records.len();
@@ -406,7 +412,8 @@ fn create_composition_targets(
         format: surface_format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::COPY_DST,
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[encoded_format],
     });
     let render_view = texture.create_view(&wgpu::TextureViewDescriptor {

@@ -4,7 +4,11 @@ struct Camera {
     camera_pos: vec2f,
     // Zoom level: 1.0 = native, >1.0 = zoomed in, <1.0 = zoomed out.
     zoom: f32,
+    world_origin_y: f32,
+    world_height: f32,
     pad0: f32,
+    native_z_origin_y: f32,
+    native_z_pad: f32,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 
@@ -40,9 +44,8 @@ struct VertexOutput {
     @location(11) @interpolate(flat) palette_light: vec4u,
 };
 
-@vertex
-fn vs_main(
-    @builtin(vertex_index) idx: u32,
+fn vertex_impl(
+    idx: u32,
     instance: Instance,
 ) -> VertexOutput {
     // Quad vertex positions: (0,0) top-left to (1,1) bottom-right.
@@ -83,6 +86,20 @@ fn vs_main(
     output.fx_params = instance.fx_params;
     output.effect_tint = instance.effect_tint;
     output.palette_light = instance.palette_light;
+    return output;
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) idx: u32, instance: Instance) -> VertexOutput {
+    return vertex_impl(idx, instance);
+}
+
+// Shared native storage conversion is used only by pipelines that test Z.
+@vertex
+fn vs_depth(@builtin(vertex_index) idx: u32, instance: Instance) -> VertexOutput {
+    var output = vertex_impl(idx, instance);
+    output.position.z = compatibility_depth_on_native_axis(
+        instance.depth, camera.camera_pos.y + camera.native_z_origin_y, camera.world_origin_y, camera.world_height);
     return output;
 }
 
