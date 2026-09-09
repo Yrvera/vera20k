@@ -355,24 +355,26 @@ fn production_tree_signed_depth_and_repeated_overlap_match_original_leaves() {
                     wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                 );
             }
-            for (i, c) in selected.iter().enumerate() {
-                terrain.draw_piece(
-                    &mut encoder,
-                    &cv,
-                    &dv,
-                    &batch,
-                    &atlas,
-                    &buffer,
-                    i as u32,
-                    &instances[i],
-                    if c[0].as_i64() == Some(1) {
-                        TerrainPiece::Shadow
-                    } else {
-                        TerrainPiece::Body
-                    },
-                    [0, 0, size[0], size[1]],
-                );
-            }
+            terrain.draw_span(
+                &mut encoder,
+                &cv,
+                &dv,
+                &batch,
+                &atlas,
+                &buffer,
+                &instances,
+                selected.iter().enumerate().map(|(i, c)| {
+                    (
+                        i as u32,
+                        if c[0].as_i64() == Some(1) {
+                            TerrainPiece::Shadow
+                        } else {
+                            TerrainPiece::Body
+                        },
+                    )
+                }),
+                [0, 0, size[0], size[1]],
+            );
             let reads = [
                 gpu.read(&mut encoder, &color),
                 gpu.read(&mut encoder, &depth),
@@ -845,6 +847,196 @@ fn production_batch_stamp_bracket_and_ui_keep_near_equal_and_map_edge_policies()
 }
 
 #[test]
+#[ignore = "requires GPU; multi-piece wave equivalence, clips, camera and target reuse"]
+fn production_tree_dependency_waves_match_sequential_pixels_and_depth() {
+    let gpu = Gpu::new();
+    let mut cases = 0;
+    for format in [
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    ] {
+        let batch = BatchRenderer::new_with_device(&gpu.device, &gpu.queue, format);
+        let mut terrain = TerrainDrawRenderer::new(&gpu.device, format, &batch);
+        // Actual source-zero stencil and alternating nonzero palette entries.
+        // Native leaf goldens cover each operation; these generated mixtures
+        // compare the optimized schedule to that sequential production owner.
+        let indices = [1, 0, 1, 2, 2, 1, 0, 1, 0, 2, 1, 1, 1, 1, 2, 0];
+        let rgba: Vec<u8> = indices
+            .iter()
+            .flat_map(|&index| {
+                if index == 2 {
+                    [240, 96, 16, 255]
+                } else {
+                    [80, 180, 80, 255]
+                }
+            })
+            .collect();
+        let atlas =
+            batch.create_texture_on_device(&gpu.device, &gpu.queue, &rgba, 4, 4, Some(&indices));
+        let specs = [
+            ([2., 2.], [24., 28.], TerrainPiece::Body, -33000.),
+            ([66., 2.], [24., 28.], TerrainPiece::Body, -33000.),
+            ([2., 2.], [24., 28.], TerrainPiece::Shadow, -33000.),
+            ([66., 2.], [24., 28.], TerrainPiece::Shadow, -33000.),
+            ([2., 2.], [24., 28.], TerrainPiece::Shadow, -33000.),
+            ([22., 12.], [60., 18.], TerrainPiece::Shadow, -33001.),
+            ([10., 66.], [32., 28.], TerrainPiece::Body, -32800.),
+            ([10., 66.], [32., 28.], TerrainPiece::Shadow, -32800.),
+            ([31.5, 32.], [32., 1.], TerrainPiece::Body, -1.),
+            ([64., 32.], [32., 1.], TerrainPiece::Shadow, -2.),
+            ([-40., -40.], [5., 5.], TerrainPiece::Shadow, -33000.),
+            ([140., 88.], [30., 30.], TerrainPiece::Body, -32768.),
+            ([0., 0.], [0., 0.], TerrainPiece::Shadow, -33000.),
+        ];
+        let instances = specs
+            .iter()
+            .map(|&(position, size, _, z)| sprite(position, size, z))
+            .collect::<Vec<_>>();
+        let buffer = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Multi-wave exact production inputs"),
+                contents: bytemuck::cast_slice(&instances),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        // Reuse the same scheduler through growth, shrink and source-handle
+        // changes. Every case contains disjoint members and overlapping chains.
+        for size in [[160, 96], [224, 144], [160, 96]] {
+            for (camera_pos, zoom) in [
+                ([0., 0.], 1.),
+                ([0.25, 0.75], 1.),
+                ([2.25, -1.25], 0.75),
+                ([-3.5, 2.5], 1.25),
+                ([0., 0.], 2.),
+            ] {
+                let mut camera = camera(size);
+                camera.camera_pos = camera_pos;
+                camera.zoom = zoom;
+                camera.native_z_origin_y = 37.;
+                batch.write_camera(&gpu.queue, camera);
+                let mut outputs = Vec::new();
+                for batched in [false, true] {
+                    let color = gpu.target(size, format);
+                    let cv = color.create_view(&Default::default());
+                    let depth = gpu.target(size, wgpu::TextureFormat::Depth32Float);
+                    let dv = depth.create_view(&Default::default());
+                    terrain.prepare(&gpu.device, &color, &dv, batch.camera_uniform());
+                    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+                    clear(
+                        &mut encoder,
+                        &cv,
+                        &dv,
+                        65535,
+                        wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    );
+                    let tactical = [1, 2, size[0] - 3, size[1] - 4];
+                    if batched {
+                        let stats = terrain.draw_span(
+                            &mut encoder,
+                            &cv,
+                            &dv,
+                            &batch,
+                            &atlas,
+                            &buffer,
+                            &instances,
+                            specs.iter().enumerate().map(|(i, spec)| (i as u32, spec.2)),
+                            tactical,
+                        );
+                        assert!(
+                            stats.waves > 1 && stats.waves < stats.pieces,
+                            "actual multi-member waves: {stats:?}"
+                        );
+                    } else {
+                        for (i, instance) in instances.iter().enumerate() {
+                            terrain.draw_piece(
+                                &mut encoder,
+                                &cv,
+                                &dv,
+                                &batch,
+                                &atlas,
+                                &buffer,
+                                i as u32,
+                                instance,
+                                specs[i].2,
+                                tactical,
+                            );
+                        }
+                    }
+                    let reads = [
+                        gpu.read(&mut encoder, &color),
+                        gpu.read(&mut encoder, &depth),
+                    ];
+                    outputs.push(gpu.finish(encoder, &reads, size));
+                }
+                for attachment in 0..2 {
+                    assert_eq!(outputs[0][attachment].len(), outputs[1][attachment].len());
+                    let mismatches = outputs[0][attachment]
+                        .chunks_exact(4)
+                        .zip(outputs[1][attachment].chunks_exact(4))
+                        .enumerate()
+                        .filter(|(_, (a, b))| a != b)
+                        .take(8)
+                        .collect::<Vec<_>>();
+                    assert!(
+                        mismatches.is_empty(),
+                        "{format:?}, {size:?}, {camera_pos:?}, zoom{zoom}, attachment{attachment}: {mismatches:?}"
+                    );
+                }
+                cases += 1;
+            }
+        }
+        let size = [64, 64];
+        batch.write_camera(&gpu.queue, camera(size));
+        let color = gpu.target(size, format);
+        let cv = color.create_view(&Default::default());
+        let depth = gpu.target(size, wgpu::TextureFormat::Depth32Float);
+        let dv = depth.create_view(&Default::default());
+        terrain.prepare(&gpu.device, &color, &dv, batch.camera_uniform());
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        clear(
+            &mut encoder,
+            &cv,
+            &dv,
+            65535,
+            wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+        );
+        let stats = terrain.draw_span(
+            &mut encoder,
+            &cv,
+            &dv,
+            &batch,
+            &atlas,
+            &buffer,
+            &instances,
+            [(0, TerrainPiece::Body), (1, TerrainPiece::Shadow)],
+            [10, 10, 0, 0],
+        );
+        assert_eq!(stats, Default::default(), "empty clip submits no passes");
+        let reads = [
+            gpu.read(&mut encoder, &color),
+            gpu.read(&mut encoder, &depth),
+        ];
+        let output = gpu.finish(encoder, &reads, size);
+        assert!(
+            output[0]
+                .chunks_exact(4)
+                .all(|p| p == encoded(0xffff, format))
+        );
+        assert!(
+            output[1]
+                .chunks_exact(4)
+                .all(
+                    |p| super::native_z::stored_z(f32::from_le_bytes(p.try_into().unwrap()))
+                        == 65535
+                )
+        );
+    }
+    eprintln!(
+        "TREE batching: {cases} multi-wave source/target/camera cases matched sequential color+depth in both target formats; empty clips preserved"
+    );
+}
+
+#[test]
 #[ignore = "bounded GPU/CPU timing; close other renderers before uncontended measurements"]
 fn production_tree_piece_workload_timing() {
     use std::time::Instant;
@@ -887,20 +1079,28 @@ fn production_tree_piece_workload_timing() {
         mapped_at_creation: false,
     });
     let mut results = Vec::new();
-    // Dense opaque quads use TREE01's stored rectangle sizes and offsets.
-    // This intentionally bounds pass/rectangle cost; it is not real-tree
-    // stencil coverage or a whole-game 20k workload. Every rectangle is visible.
+    // Original frozen800x600 workloads remain literal. The added32-pair
+    // disjoint grids fit this target;512 full-size disjoint pairs cannot.
+    // Pixel-disjoint rectangles can still share conservative dependency tiles.
     for count in [1usize, 32, 128, 512] {
-        for overlap in [false, true] {
+        for layout in ["dispersed", "repeated", "pixel_disjoint", "tile_disjoint"] {
+            if layout.ends_with("disjoint") && count != 32 {
+                continue;
+            }
             let instances = (0..count)
                 .flat_map(|i| {
-                    let [x, y] = if overlap {
-                        [350.0, 250.0]
-                    } else {
-                        [
+                    let [x, y] = match layout {
+                        "repeated" => [350.0, 250.0],
+                        "pixel_disjoint" => {
+                            [10.0 + (i % 8) as f32 * 96.0, 10.0 + (i / 8) as f32 * 80.0]
+                        }
+                        "tile_disjoint" => {
+                            [4.0 + (i % 6) as f32 * 128.0, 4.0 + (i / 6) as f32 * 96.0]
+                        }
+                        _ => [
                             10.0 + (i % 10) as f32 * 70.0,
                             10.0 + ((i / 10) % 6) as f32 * 80.0,
-                        ]
+                        ],
                     };
                     [
                         SpriteInstance {
@@ -918,16 +1118,14 @@ fn production_tree_piece_workload_timing() {
                     contents: bytemuck::cast_slice(&instances),
                     usage: wgpu::BufferUsages::VERTEX,
                 });
-            eprintln!("TREE timing begins: pairs={count}, overlap={overlap}");
-            for sample in 0..4 {
-                // Match one application frame per submission; batching several
-                // thousands of passes across frames can create a separate
-                // command-buffer memory limit that the game does not reach.
-                let frames = 1;
-                let begin = Instant::now();
-                let mut encoder = gpu.device.create_command_encoder(&Default::default());
-                encoder.write_timestamp(&queries, 0);
-                for _ in 0..frames {
+            for batched in [false, true] {
+                eprintln!("TREE timing begins: pairs={count}, layout={layout}, batched={batched}");
+                for sample in 0..4 {
+                    // Exactly one application frame per submission preserves
+                    // the established command-buffer-memory measurement bound.
+                    let begin = Instant::now();
+                    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+                    encoder.write_timestamp(&queries, 0);
                     clear(
                         &mut encoder,
                         &cv,
@@ -935,63 +1133,107 @@ fn production_tree_piece_workload_timing() {
                         65535,
                         wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                     );
-                    for (i, instance) in instances.iter().enumerate() {
-                        terrain.draw_piece(
+                    let kind = |i| {
+                        if i % 2 == 0 {
+                            TerrainPiece::Body
+                        } else {
+                            TerrainPiece::Shadow
+                        }
+                    };
+                    let stats = if batched {
+                        terrain.draw_span(
                             &mut encoder,
                             &cv,
                             &dv,
                             &batch,
                             &atlas,
                             &buffer,
-                            i as u32,
-                            instance,
-                            if i % 2 == 0 {
-                                TerrainPiece::Body
-                            } else {
-                                TerrainPiece::Shadow
-                            },
+                            &instances,
+                            (0..instances.len()).map(|i| (i as u32, kind(i))),
                             [0, 0, 800, 600],
+                        )
+                    } else {
+                        for (i, instance) in instances.iter().enumerate() {
+                            terrain.draw_piece(
+                                &mut encoder,
+                                &cv,
+                                &dv,
+                                &batch,
+                                &atlas,
+                                &buffer,
+                                i as u32,
+                                instance,
+                                kind(i),
+                                [0, 0, 800, 600],
+                            );
+                        }
+                        super::terrain_draw::TerrainBatchStats {
+                            pieces: instances.len(),
+                            waves: instances.len(),
+                            tile_dependencies: 0,
+                        }
+                    };
+                    encoder.write_timestamp(&queries, 1);
+                    let encode_ms = begin.elapsed().as_secs_f64() * 1000.0;
+                    if batched {
+                        let expected_waves = match layout {
+                            "repeated" => 2 * count,
+                            "pixel_disjoint" => 22,
+                            "tile_disjoint" => 2,
+                            _ => match count {
+                                1 => 2,
+                                32 => 24,
+                                128 => 34,
+                                512 => 58,
+                                _ => unreachable!(),
+                            },
+                        };
+                        assert_eq!(
+                            stats.waves, expected_waves,
+                            "independent scheduling prototype"
                         );
                     }
-                }
-                encoder.write_timestamp(&queries, 1);
-                let encode_ms = begin.elapsed().as_secs_f64() * 1000.0 / frames as f64;
-                encoder.resolve_query_set(&queries, 0..2, &resolved, 0);
-                encoder.copy_buffer_to_buffer(&resolved, 0, &mapped, 0, 16);
-                let submission = gpu.queue.submit([encoder.finish()]);
-                let (tx, rx) = std::sync::mpsc::channel();
-                mapped
-                    .slice(..)
-                    .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
-                gpu.device
-                    .poll(wgpu::PollType::Wait {
-                        submission_index: Some(submission),
-                        timeout: Some(Duration::from_secs(60)),
-                    })
-                    .unwrap();
-                rx.recv().unwrap().unwrap();
-                let data = mapped.slice(..).get_mapped_range();
-                let start = u64::from_le_bytes(data[0..8].try_into().unwrap());
-                let end = u64::from_le_bytes(data[8..16].try_into().unwrap());
-                assert!(end > start);
-                let gpu_ms = (end - start) as f64 * gpu.queue.get_timestamp_period() as f64
-                    / 1_000_000.0
-                    / frames as f64;
-                drop(data);
-                mapped.unmap();
-                if sample > 0 {
-                    eprintln!(
-                        "TREE timing sample: pairs={count}, overlap={overlap}, sample={sample}, gpu_ms={gpu_ms}, cpu_encode_ms={encode_ms}"
-                    );
-                    results.push(serde_json::json!({"tree_pairs":count,"overlap":overlap,"sample":sample,
-                        "frames":frames,"gpu_ms_per_frame":gpu_ms,"cpu_encode_ms_per_frame":encode_ms}));
+                    assert_eq!(stats.pieces, count * 2);
+                    encoder.resolve_query_set(&queries, 0..2, &resolved, 0);
+                    encoder.copy_buffer_to_buffer(&resolved, 0, &mapped, 0, 16);
+                    let submission = gpu.queue.submit([encoder.finish()]);
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    mapped
+                        .slice(..)
+                        .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+                    gpu.device
+                        .poll(wgpu::PollType::Wait {
+                            submission_index: Some(submission),
+                            timeout: Some(Duration::from_secs(60)),
+                        })
+                        .unwrap();
+                    rx.recv().unwrap().unwrap();
+                    let data = mapped.slice(..).get_mapped_range();
+                    let first = u64::from_le_bytes(data[0..8].try_into().unwrap());
+                    let last = u64::from_le_bytes(data[8..16].try_into().unwrap());
+                    assert!(last > first);
+                    let gpu_ms = (last - first) as f64 * gpu.queue.get_timestamp_period() as f64
+                        / 1_000_000.0;
+                    drop(data);
+                    mapped.unmap();
+                    if sample > 0 {
+                        eprintln!(
+                            "TREE timing sample: pairs={count}, layout={layout}, batched={batched}, sample={sample}, waves={}, passes={}, tile_dependencies={}, gpu_ms={gpu_ms}, cpu_prepare_encode_ms={encode_ms}",
+                            stats.waves,
+                            stats.waves * 2,
+                            stats.tile_dependencies
+                        );
+                        results.push(serde_json::json!({"tree_pairs":count,"layout":layout,"overlap":layout=="repeated","batched":batched,"sample":sample,
+                            "frames":1,"pieces":stats.pieces,"waves":stats.waves,"passes":stats.waves*2,"tile_dependencies":stats.tile_dependencies,
+                            "gpu_ms_per_frame":gpu_ms,"cpu_prepare_encode_ms_per_frame":encode_ms}));
+                    }
                 }
             }
         }
     }
     let report = serde_json::json!({"target":[800,600],"color_format":"Bgra8UnormSrgb",
-        "source":"opaque rectangles at TREE01 stored dimensions; actual snapshot/edit owner",
-        "interval":"GPU includes per-frame clears and every snapshot/edit; CPU includes encoder construction and commands, excludes finish/submit/wait; pipeline/texture setup excluded",
+        "source":"frozen original opaque TREE01-sized workload positions plus32 pixel-disjoint and tile-disjoint pairs; actual sequential and batched snapshot/edit owner",
+        "interval":"GPU includes frame clears and every snapshot/edit. CPU includes scheduler reset/preparation, encoder construction and commands, excludes finish/submit/wait. Setup excluded. tile_dependencies counts covered tiles per command, each queried then updated.",
         "samples":results});
     eprintln!("{}", serde_json::to_string_pretty(&report).unwrap());
     if let Some(path) = std::env::var_os("VERA20K_TERRAIN_PERF_OUTPUT") {

@@ -218,3 +218,122 @@ already made different by legacy vehicle/bridge alpha shadows or other
 unresolved compositing. Animated/death/SpawnsTiberium terrain, unsupported
 source formats, non-TREE signed out-of-range depth and the previously stated
 compatibility-depth losses remain open. No whole-terrain closure is claimed.
+
+
+## Dependency-wave submission (separate increment)
+
+The subsequent `feature/retail-terrain-batching` increment started at approved
+sidebar commit `ffc32972d7a011f31c2be5bb97781b0c03daf9ef` and was integrated onto
+approved FreeRadar commit `0745400aeda68eb9e4663d604608374b29fed039` before its
+final checks. It preserves the earlier capture candidate and all original
+arithmetic, asset and shader ownership. The earlier literal tests and timings
+above remain attributed to the sequential implementation. The results below
+cover this separate submission increment.
+
+The replay owner gathers maximal consecutive `GroundTexture::TerrainStatic`
+spans from the already ordered `GroundObjectPass`. Every other Ground run is a
+hard fence, including read-only or missing-resource runs. Original pooled indices
+and parent registration order remain untouched. The renderer's `draw_span`
+computes each `piece_scissor` once, then uses that identical rectangle in both
+snapshot and edit passes. Empty clips retain their existing no-op behavior;
+rectangles outside the prepared attachment flush the schedule and use the old
+sequential draw/validation behavior rather than unchecked tile addresses.
+
+The current native-equivalent shaders read old color and depth only at their
+own destination pixel. Disjoint conservative rectangles therefore commute.
+A 32-pixel tile grid assigns each piece a wave greater than every prior piece
+sharing any covered tile. A tile's value only increases. False-positive tile
+overlaps serialize work without changing output. Every intersecting pair retains
+strict source order; every wave's rectangles are disjoint. One MRT pass snapshots
+all of a wave's rectangles before one live color/depth pass edits them. Each next
+wave snapshots the completed live destination, preserving repeated negative
+candidate acceptance and successive packed-word shadows. No shader arithmetic,
+source-zero rule, palette selection, depth policy or projection changes.
+
+Reusable flat command storage and linked wave lists avoid per-wave allocations.
+Only touched grid cells clear between spans; attachment resizing clears the old
+touched set before changing dimensions. Storage is O(N+screen tiles), planning
+O(N+covered tile dependencies), including fully overlapping inputs. The
+`tile_dependencies` metric counts covered tiles per command; each is queried
+and then updated, so it is not a literal count of all memory accesses. Ordinary
+unit instances never enter this scheduler: replay visits their existing run and
+submits its existing GPU range.
+
+The measured opaque-rectangle probe submits 116 passes for 512 dispersed pairs
+versus 2,048 sequential passes at 800 x 600. This layout repeats 60 positions;
+it does not contain 512 independent trees. Fully repeated overlap still requires
+2,048 passes. Two added 32-pair disjoint grids also fit 800 x 600. The
+pixel-disjoint grid still shares conservative tiles and needs 22 waves; the
+tile-disjoint grid needs two. These cases expose the scheduler's conservative
+serialization cost.
+
+Validation routes the 550 original signed/repeated cases through
+`draw_span`, extends actual Ground prefix replay to three disjoint tile lanes
+with ordinary fences, and compares generated multi-wave inputs to the proven
+sequential GPU owner across both sRGB formats, fractional cameras, zoom, nonzero
+native viewport origin, clip holes and grow/shrink/rebind targets. A real pooled
+1-versus-20,000 offscreen UnitAtlas range checks that only two TREE pieces/tile
+dependencies are planned; it is not a 20k FPS benchmark. The timing probe keeps
+one frame per submission and compares sequential/batched paths on identical
+frozen inputs, including both 32-pair disjoint cases. CPU timing includes planning
+and encoding; GPU timestamps include clear and all snapshot/edit passes.
+
+The local `tree-batching/candidate-v3.json` freeze records the eight changed
+paths and unchanged native fixture/shader hashes. No Rust or fixture changes
+followed this freeze. Literal results in its versioned logs are:
+
+```text
+focused scheduler: test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 8684 filtered out; finished in 0.01s
+terrain owner GPU: test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 8679 filtered out; finished in 5.06s
+Ground replay GPU: test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 8684 filtered out; finished in 1.02s
+depth regression GPU: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 8673 filtered out; finished in 16.53s
+paired timing: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8685 filtered out; finished in 3.84s
+full library: test result: ok. 8573 passed; 0 failed; 113 ignored; 0 measured; 0 filtered out; finished in 23.63s
+clippy: exit 0; 1142 warnings; Finished dev profile in 2m 00s
+```
+
+The owner GPU tests include 30 multi-wave source/target/camera cases with exact
+sequential-versus-batched color and depth in both target formats, plus the
+existing native arithmetic and lifecycle checks. Ground tests exercise actual
+pooled production replay, ordinary writer/read fences and the offscreen unit
+range gate. The 113 ignored tests were not all run: the explicitly filtered
+22 GPU correctness tests and one timing test above are claimed. The existing
+native fixture payloads and shader sources are unchanged; unaffected native
+oracles were not regenerated for this scheduling-only increment.
+
+The paired timing ran on AMD Radeon (TM) Graphics, Vulkan, driver 23.19.24.07.
+User-owned VERA PID 13812 remained active in both process snapshots at
+2026-09-09 16:24:21 and 16:24:41 UTC, so the measurements were contended. Each
+mode has three measured one-frame samples after one warmup; sequential mode
+runs before batched mode for each layout. Medians from the 60 raw samples are:
+
+| Pairs and layout | Passes sequential / batched | GPU ms sequential / batched | CPU ms sequential / batched |
+| --- | ---: | ---: | ---: |
+| 1 dispersed | 4 / 4 | 0.13084 / 0.13548 | 0.02440 / 0.02680 |
+| 1 repeated | 4 / 4 | 0.13080 / 0.12976 | 0.01890 / 0.03290 |
+| 32 dispersed | 128 / 48 | 2.96260 / 1.14740 | 0.26280 / 0.12180 |
+| 32 pixel-disjoint | 128 / 44 | 2.93279 / 1.08164 | 0.24100 / 0.15830 |
+| 32 repeated | 128 / 128 | 2.76653 / 2.93584 | 0.32600 / 0.24090 |
+| 32 tile-disjoint | 128 / 4 | 3.14992 / 0.39652 | 0.22210 / 0.04860 |
+| 128 dispersed | 512 / 68 | 14.08754 / 2.59763 | 0.79590 / 0.23820 |
+| 128 repeated | 512 / 512 | 12.25991 / 11.47567 | 0.77780 / 1.00480 |
+| 512 dispersed | 2048 / 116 | 57.71576 / 6.27769 | 3.36830 / 0.61540 |
+| 512 repeated | 2048 / 2048 | 52.10401 / 49.11604 | 3.04380 / 3.60490 |
+
+The synthetic source is a fully opaque rectangle at the stored TREE01 body
+and shadow dimensions and offsets; it is not the sparse stock stencil or a
+whole-game scene. CPU timing includes planner reset, encoder construction and
+recording, but excludes finish, submit and wait. GPU timestamps include clears
+and all passes. Pipeline and texture setup are excluded. The material pass
+reduction and same-run dispersed timings support the bounded optimization.
+The small sample count, fixed mode order and contention do not support claims
+about small timing differences or any fully overlapping speedup. In particular,
+the 512-pair repeated case still costs 2,048 passes and approximately 49 ms GPU
+time: this remains a severe open performance limit. The earlier exploratory
+timing was a different run and is not a controlled comparison with this one.
+
+Independent review verified the source/fixture freeze, GPU logs and all timing
+medians; final integration review includes the full/clippy results and this
+report-only update. Actual user scene comparison and the broader rendering
+residuals above remain required. No full rendering or dense-overlap closure is
+claimed.

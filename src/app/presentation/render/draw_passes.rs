@@ -218,7 +218,7 @@ pub(super) fn dispatch_draw_passes(
         encoder,
         view,
         &state.renderer.depth_view,
-        &state.renderer.terrain_draw_renderer,
+        &mut state.renderer.terrain_draw_renderer,
         [tac_x, tac_y, tac_w, tac_h],
         &state.renderer.batch_renderer,
         pool,

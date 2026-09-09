@@ -122,7 +122,7 @@ pub(super) fn draw_native_ground_object_pass<'a>(
     encoder: &mut wgpu::CommandEncoder,
     color: &wgpu::TextureView,
     depth: &wgpu::TextureView,
-    terrain: &crate::render::terrain_draw::TerrainDrawRenderer,
+    terrain: &mut crate::render::terrain_draw::TerrainDrawRenderer,
     tactical: [u32; 4],
     batch: &'a BatchRenderer,
     pool: &'a InstanceBufferPool,
@@ -133,34 +133,44 @@ pub(super) fn draw_native_ground_object_pass<'a>(
     sprite_atlas: Option<&'a SpriteAtlas>,
     palette_set: Option<&'a PaletteSet>,
     zshape: &'a wgpu::BindGroup,
-) {
+) -> crate::render::terrain_draw::TerrainBatchStats {
     let Some((buffer, count)) = pool.get("ground_objects") else {
-        return;
+        return Default::default();
     };
+    let mut terrain_stats = crate::render::terrain_draw::TerrainBatchStats::default();
     assert_eq!(count as usize, ground.instances.len());
     let mut cursor = 0;
     while cursor < ground.runs.len() {
         let run = &ground.runs[cursor];
-        if let GroundTexture::TerrainStatic(piece) = run.target {
-            if let Some(atlas) = overlay_atlas {
-                // Every piece snapshots the destination AFTER its predecessor;
-                // a coalesced run must not share a stale overlapping snapshot.
-                for index in run.start..run.start + run.count {
-                    terrain.draw_piece(
-                        encoder,
-                        color,
-                        depth,
-                        batch,
-                        &atlas.texture,
-                        buffer,
-                        index,
-                        &ground.instances[index as usize],
-                        piece,
-                        tactical,
-                    );
-                }
+        if matches!(run.target, GroundTexture::TerrainStatic(_)) {
+            let start = cursor;
+            while cursor < ground.runs.len()
+                && matches!(ground.runs[cursor].target, GroundTexture::TerrainStatic(_))
+            {
+                cursor += 1;
             }
-            cursor += 1;
+            if let Some(atlas) = overlay_atlas {
+                // Every ordinary run is a hard fence. Within this TREE-only
+                // span the renderer can share snapshots across disjoint clips,
+                // preserving every overlapping predecessor and original index.
+                let commands = ground.runs[start..cursor].iter().flat_map(|run| {
+                    let GroundTexture::TerrainStatic(piece) = run.target else {
+                        unreachable!("TREE span ended at an ordinary fence")
+                    };
+                    (run.start..run.start + run.count).map(move |index| (index, piece))
+                });
+                terrain_stats.accumulate(terrain.draw_span(
+                    encoder,
+                    color,
+                    depth,
+                    batch,
+                    &atlas.texture,
+                    buffer,
+                    &ground.instances,
+                    commands,
+                    tactical,
+                ));
+            }
             continue;
         }
         let mut pass =
@@ -253,6 +263,7 @@ pub(super) fn draw_native_ground_object_pass<'a>(
             cursor += 1;
         }
     }
+    terrain_stats
 }
 
 /// Unified Y-sorted object pass: multi-way merge of VXL units and SHP entities.

@@ -108,7 +108,7 @@
         },
         {
           "path": "src/render/terrain_draw.rs",
-          "symbol": "TerrainDrawRenderer::prepare / draw_piece",
+          "symbol": "TerrainDrawRenderer::prepare / draw_span",
           "coverage": "representative"
         },
         {
@@ -118,7 +118,7 @@
         }
       ],
       "notes": [
-        "Bounded ordinary extended static Terrain body/shadow transaction, including per-piece destination snapshots. Vehicle cached shadows use a separate read-only Z leaf; animated/death terrain and broader shadow families remain open."
+        "Bounded ordinary extended static Terrain body/shadow transaction. Renderer-owned dependency waves share snapshots only for disjoint cached clipped rectangles inside consecutive TREE-only Ground spans; every overlapping pair keeps original order and every ordinary run is a hard fence. Signed comparison, palette, packed shadow and live depth ownership are unchanged. Vehicle cached shadows use a separate read-only Z leaf; full-overlap performance, animated/death terrain and broader shadow families remain open."
       ]
     },
     "GSI-13.07": {

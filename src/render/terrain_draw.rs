@@ -4,12 +4,19 @@
 //! comparison precedes the u16 store, and shadow pixels halve the packed
 //! destination. See TERRAIN_STATIC_BODY_SHADOW_NATIVE_2026_09_09.md.
 //! Live tactical Depth32Float remains the only Z authority. wgpu 27 requires
-//! full-size depth copies, so a scissored MRT pass snapshots the piece's rect
+//! full-size depth copies, so scissored MRT passes snapshot conservative rects
 //! into integer color and float depth scratch while live Z is not attached.
+//! Within a TREE-only span, disjoint dependency waves share those passes; all
+//! overlapping edits retain their original order and fresh destination inputs.
 
 use super::batch::{
     BatchRenderer, BatchTexture, CameraUniform, SPRITE_INSTANCE_ATTRIBUTES, SpriteInstance,
 };
+
+#[path = "terrain_batch.rs"]
+mod batching;
+pub(crate) use batching::TerrainBatchStats;
+use batching::{TerrainBatches, TerrainCommand};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerrainPiece {
@@ -35,6 +42,7 @@ pub(crate) struct TerrainDrawRenderer {
     snapshot_layout: wgpu::BindGroupLayout,
     targets: Option<Targets>,
     camera: CameraUniform,
+    batches: TerrainBatches,
 }
 
 impl TerrainDrawRenderer {
@@ -179,6 +187,7 @@ impl TerrainDrawRenderer {
             source_layout,
             snapshot_layout,
             targets: None,
+            batches: TerrainBatches::default(),
             camera: CameraUniform {
                 screen_size: [1.0, 1.0],
                 camera_pos: [0.0, 0.0],
@@ -266,9 +275,75 @@ impl TerrainDrawRenderer {
         });
     }
 
-    /// Replay exactly one piece against the immediately preceding destination.
-    /// Scratch uses absolute framebuffer coordinates; scissor does not reset
-    /// SHP row/gradient origins when the top or left of the sprite is clipped.
+    /// Replay one TREE-only span. The caller fences every ordinary Ground draw.
+    /// Only disjoint conservative clips may share a destination snapshot; the
+    /// scheduler keeps every overlapping predecessor in an earlier wave.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_span(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        batch: &BatchRenderer,
+        atlas: &BatchTexture,
+        buffer: &wgpu::Buffer,
+        instances: &[SpriteInstance],
+        commands: impl IntoIterator<Item = (u32, TerrainPiece)>,
+        tactical: [u32; 4],
+    ) -> TerrainBatchStats {
+        let size = self.targets.as_ref().map_or([0, 0], |t| {
+            [t.source_color.width(), t.source_color.height()]
+        });
+        self.batches.begin_span(size);
+        let mut stats = TerrainBatchStats::default();
+        for (index, piece) in commands {
+            let instance = &instances[index as usize];
+            let Some(rect) = piece_scissor(instance, self.camera, tactical) else {
+                continue;
+            };
+            let command = TerrainCommand::new(index, piece, rect);
+            if !self.batches.push(command) {
+                // Preserve the prior draw/validation behavior if the original
+                // scissor exceeds the prepared attachment; do not index a grid
+                // or let a malformed input weaken any overlap dependency.
+                stats.accumulate(self.draw_scheduled(encoder, color, depth, batch, atlas, buffer));
+                self.draw_wave(
+                    encoder,
+                    color,
+                    depth,
+                    batch,
+                    atlas,
+                    buffer,
+                    std::iter::once(&command),
+                );
+                stats.pieces += 1;
+                stats.waves += 1;
+                self.batches.begin_span(size);
+            }
+        }
+        stats.accumulate(self.draw_scheduled(encoder, color, depth, batch, atlas, buffer));
+        stats
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_scheduled(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        batch: &BatchRenderer,
+        atlas: &BatchTexture,
+        buffer: &wgpu::Buffer,
+    ) -> TerrainBatchStats {
+        for wave in self.batches.waves() {
+            self.draw_wave(encoder, color, depth, batch, atlas, buffer, wave);
+        }
+        self.batches.stats()
+    }
+
+    /// Sequential validation reference shares the exact clip and pipelines
+    /// with batching; native leaf goldens exercise these shaders.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_piece(
         &self,
@@ -286,6 +361,32 @@ impl TerrainDrawRenderer {
         let Some(rect) = piece_scissor(instance, self.camera, tactical) else {
             return;
         };
+        let command = TerrainCommand::new(index, piece, rect);
+        self.draw_wave(
+            encoder,
+            color,
+            depth,
+            batch,
+            atlas,
+            buffer,
+            std::iter::once(&command),
+        );
+    }
+
+    /// Every rectangle is freshly snapped before any member edits the live
+    /// attachments. Snapshot/edit use the identical cached absolute scissor;
+    /// clipping never resets the SHP row/gradient origin.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_wave<'a>(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        batch: &BatchRenderer,
+        atlas: &BatchTexture,
+        buffer: &wgpu::Buffer,
+        commands: impl Iterator<Item = &'a TerrainCommand> + Clone,
+    ) {
         let targets = self
             .targets
             .as_ref()
@@ -303,19 +404,22 @@ impl TerrainDrawRenderer {
         };
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Terrain snapshot one piece"),
+                label: Some("Terrain snapshot disjoint wave"),
                 color_attachments: &[attachment(&targets.words), attachment(&targets.depth)],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            pass.set_scissor_rect(rect[0], rect[1], rect[2], rect[3]);
             pass.set_pipeline(&self.snapshot_pipeline);
             pass.set_bind_group(0, &targets.source, &[]);
-            pass.draw(0..3, 0..1);
+            for command in commands.clone() {
+                let [x, y, width, height] = command.rect;
+                pass.set_scissor_rect(x, y, width, height);
+                pass.draw(0..3, 0..1);
+            }
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Terrain native piece edit"),
+            label: Some("Terrain native disjoint edits"),
             color_attachments: &[attachment(color)],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth,
@@ -328,16 +432,19 @@ impl TerrainDrawRenderer {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        pass.set_scissor_rect(rect[0], rect[1], rect[2], rect[3]);
-        pass.set_pipeline(match piece {
-            TerrainPiece::Body => &self.body_pipeline,
-            TerrainPiece::Shadow => &self.shadow_pipeline,
-        });
         pass.set_bind_group(0, batch.camera_bind_group(), &[]);
         pass.set_bind_group(1, &atlas.bind_group, &[]);
         pass.set_bind_group(2, &targets.snapshot, &[]);
         pass.set_vertex_buffer(0, buffer.slice(..));
-        pass.draw(0..6, index..index + 1);
+        for command in commands {
+            let [x, y, width, height] = command.rect;
+            pass.set_scissor_rect(x, y, width, height);
+            pass.set_pipeline(match command.piece {
+                TerrainPiece::Body => &self.body_pipeline,
+                TerrainPiece::Shadow => &self.shadow_pipeline,
+            });
+            pass.draw(0..6, command.index..command.index + 1);
+        }
     }
 }
 
