@@ -339,6 +339,72 @@ fn assert_pixels(actual: &[u8], expected: &[u8], label: &str) {
 }
 
 #[test]
+#[ignore = "requires original retail archives and a real wgpu adapter"]
+fn retail_command_bar_atlas_and_production_append_match_native_capture() {
+    use crate::sidebar::{command_bar::CommandBarLayout, gadget_flash::SidebarGadgetState};
+    let root = std::env::var_os("RA2_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            crate::util::config::GameConfig::load()
+                .unwrap()
+                .paths
+                .ra2_dir
+        });
+    let mut assets = crate::assets::asset_manager::AssetManager::new(&root).unwrap();
+    assets.load_nested("localmd.mix").unwrap();
+    let (art, rgba, size) = super::sidebar_chrome::packed_command_bar_fixture(
+        &assets,
+        super::sidebar_chrome::SidebarTheme::Allied,
+    );
+    assert_eq!(art.slots[0], [0, 1, 3, 4, 6, 9].map(Some));
+    let canvas =
+        |entry: super::sidebar_chrome::SidebarChromeEntry| entry.pixel_size.map(|n| n as u32);
+    let layout = CommandBarLayout::new(
+        [800, 600],
+        168,
+        canvas(art.left_cap[0].unwrap()),
+        canvas(art.background.unwrap()),
+        canvas(art.right_cap.unwrap()),
+        true,
+    )
+    .unwrap();
+    let mut instances = Vec::new();
+    let camera = [-316.25, 1086.75];
+    crate::app::presentation::sidebar_build::command_bar::append_prepared(
+        &mut instances,
+        &art,
+        layout,
+        &art.slots[0],
+        &SidebarGadgetState::default(),
+        camera,
+    );
+    let layers: Vec<_> = instances
+        .into_iter()
+        .map(|quad| Layer {
+            quad,
+            rgba: rgba.clone(),
+            size,
+        })
+        .collect();
+    let actual = Gpu::new().render(&layers, [800, 600], camera);
+    let expected = include_bytes!("../../tools/sidebar_oracle/command_bar/neutral-bar-rgb565.bin");
+    let mut differences = 0;
+    for (i, word) in expected.chunks_exact(2).enumerate() {
+        let word = u16::from_le_bytes(word.try_into().unwrap());
+        let p = ((568 + i / 632) * 800 + i % 632) * 4;
+        // The native PCX stores zero-filled RGB565 components (7B05C0),
+        // whereas live GPU output uses the independently enrolled presentation
+        // codebooks. Compare the same stored word, not unlike expansion stages.
+        let actual_word = (u16::from(actual[p] >> 3) << 11)
+            | (u16::from(actual[p + 1] >> 2) << 5)
+            | u16::from(actual[p + 2] >> 3);
+        differences += usize::from(actual_word != word);
+    }
+    eprintln!("Native command bar: 20224 GPU pixels through PCX RGB565 extraction, {differences} differences");
+    assert_eq!(differences, 0);
+}
+
+#[test]
 #[ignore = "requires a wgpu adapter; checks production retained owner across availability changes"]
 fn production_radar_loss_and_reversal_preserve_final_gpu_pixels() {
     use super::radar_anim::{RadarAnimPhase, RadarPresentation};

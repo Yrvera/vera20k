@@ -143,8 +143,7 @@ pub struct SidebarGadgetState {
     /// flash in retail.
     pub tab_flashes: [GadgetFlash; 4],
 
-    /// Per-tab disabled bit (mirrors gadget +0x1e). v1: always false.
-    /// Kept to keep the gadget tick path identical to gamemd's primitive.
+    /// Strip availability projected at sidebar refresh (native gadget+1E).
     pub tab_disabled: [bool; 4],
 
     /// Mirrors SidebarClass +0x46c. Toggled by clicking the Repair button.
@@ -172,6 +171,10 @@ pub struct SidebarGadgetState {
     pub scroll_down_pressed: bool,
     pub scroll_up_pressed: bool,
     pub top_pressed: [bool; 2],
+    /// Native constructor6CFE20 starts the bottom bar open.
+    pub command_bar_closed: bool,
+    pub command_pressed: [bool; 11],
+    pub command_thumb_pressed: bool,
 }
 
 impl SidebarGadgetState {
@@ -183,15 +186,21 @@ impl SidebarGadgetState {
     /// currently-active tab (the externally driven latch-ON mirror,
     /// study §2.5 / G22 Kind 2).
     pub fn tab_frame(&self, tab_index: usize, is_active_tab: bool) -> u8 {
+        if self.tab_disabled[tab_index] {
+            return 2;
+        }
+        self.tab_frame_enabled(tab_index, is_active_tab)
+    }
+
+    pub(crate) fn tab_frame_enabled(&self, tab_index: usize, is_active_tab: bool) -> u8 {
         let flash = &self.tab_flashes[tab_index];
-        let disabled = self.tab_disabled[tab_index];
         // Pressed-look = flash pulse OR live press-hold (study G22).
         let state = if self.tab_pressed[tab_index] {
             1
         } else {
             flash.state
         };
-        frame_select(disabled, is_active_tab, state)
+        frame_select(false, is_active_tab, state)
     }
 
     /// Frame index for the Repair button. Repair has no flash AI — the state

@@ -775,7 +775,10 @@ fn quickplay_launch_session(selected_map: String) -> crate::skirmish_launch::Ski
         }],
         pre_fill_house_roster: crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(1),
         options: SkirmishLaunchOptions {
-            // Fixture maps carry their own objects; no free starting units.
+            // VERA developer shortcut: fixture maps carry their own objects.
+            // Both native starting-force gates must be off: UnitCount=0 alone
+            // still adds an MCV at each start and reveals an extra radar area.
+            bases: false,
             unit_count: 0,
             ..SkirmishLaunchOptions::default()
         },
@@ -785,6 +788,86 @@ fn quickplay_launch_session(selected_map: String) -> crate::skirmish_launch::Ski
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quickplay_authored_fixture_does_not_add_starting_forces() {
+        let session = quickplay_launch_session("rendering-fixture.map".into());
+        assert_eq!(
+            session.selected_map_file.as_deref(),
+            Some("rendering-fixture.map")
+        );
+        assert!(
+            !session.options.bases,
+            "an MCV would reveal an extra start area"
+        );
+        assert_eq!(session.options.unit_count, 0);
+    }
+
+    #[test]
+    #[ignore = "requires retail archives and VERA_SIDEBAR_FIXTURE_MAP"]
+    fn quickplay_bootstrap_preserves_all_19_authored_capture_entities() {
+        use crate::sim::scenario_bootstrap::{
+            MatchLaunchDescriptor, apply_explicit_skirmish_launch_session_with_overlay_registry,
+            initialize_skirmish_launch_houses,
+        };
+        let path = std::env::var("VERA_SIDEBAR_FIXTURE_MAP").expect("exact neutral capture map");
+        let root = crate::util::config::GameConfig::load()
+            .unwrap()
+            .paths
+            .ra2_dir;
+        let loaded = crate::headless_scenario::load(&root, &path, 12345).unwrap();
+        assert_eq!(loaded.map.entities.len(), 19);
+        let resources = &loaded.runtime.resources;
+        let rules = &resources.rules;
+        let terrain = loaded.sim().resolved_terrain.as_ref().unwrap();
+        let roster = crate::map::houses::parse_house_roster(
+            &loaded.map.ini,
+            &rules.color_schemes,
+            Some(rules),
+        );
+        let mut session = quickplay_launch_session(path);
+        for bases in [false, true] {
+            session.options.bases = bases;
+            let descriptor = MatchLaunchDescriptor::from_resolved(session.clone()).unwrap();
+            let mut sim = crate::sim::world::Simulation::with_seed(12345);
+            sim.session.map_width = loaded.sim().session.map_width;
+            sim.session.map_height = loaded.sim().session.map_height;
+            sim.install_resolved_terrain_for_new_map(terrain.clone());
+            sim.install_playfield_from_map_header(&loaded.map.header);
+            initialize_skirmish_launch_houses(&mut sim, &roster, rules, &descriptor);
+            assert_eq!(
+                sim.spawn_from_map_with_resolved_and_overlay_registry(
+                    &loaded.map.entities,
+                    Some(rules),
+                    &resources.height_map,
+                    Some(terrain),
+                    Some(&resources.overlay_registry)
+                ),
+                19
+            );
+            let authored: Vec<_> = sim.entities().values().map(|e| e.stable_id()).collect();
+            let output = apply_explicit_skirmish_launch_session_with_overlay_registry(
+                &mut sim,
+                &loaded.map,
+                &roster,
+                rules,
+                &resources.height_map,
+                terrain,
+                &descriptor,
+                &resources.overlay_registry,
+            );
+            assert_eq!(output.spawned_mcvs, if bases { 2 } else { 0 });
+            assert_eq!(sim.entities().len(), if bases { 21 } else { 19 });
+            assert!(
+                authored
+                    .iter()
+                    .all(|id| sim.entities().get(*id).is_some())
+            );
+        }
+        eprintln!(
+            "Authored neutral fixture: 19 retained; Bases=false adds 0 MCVs; prior Bases=true adds 2"
+        );
+    }
 
     #[derive(Debug, PartialEq)]
     enum StartupAudioCall {

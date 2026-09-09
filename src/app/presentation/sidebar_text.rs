@@ -246,6 +246,7 @@ mod tests {
             None,
             None,
             [None; 2],
+            [0; 4],
         );
         let font = digit_font();
         let inst = build_sidebar_credits_instances(&font, &view, 1.0, [1.0, 1.0, 0.0], [0.0, 0.0]);

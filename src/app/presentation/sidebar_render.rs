@@ -271,8 +271,25 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         scroll_down_btn_size,
         scroll_up_btn_size,
         top_btn_sizes,
+        state
+            .match_state
+            .match_presentation
+            .sidebar_scroll_rows_parked,
     );
+    if let Some(selected) = view.tabs.iter().find(|tab| tab.active) {
+        crate::app::input::dispatch::apply_sidebar_action(
+            state,
+            sidebar::SidebarAction::SelectTab(selected.tab),
+        );
+    }
     state.match_state.match_presentation.sidebar_scroll_rows = view.scroll_rows;
+    // Publish the same strip-derived state to input and Flash_AI. Native
+    //6A6472 enables after Add;6A6820 disables after the last entry is removed.
+    for tab in &view.tabs {
+        let gadgets = &mut state.match_state.match_presentation.sidebar_gadget_state;
+        gadgets.tab_disabled[tab.tab.tab_index()] = tab.disabled;
+        gadgets.tab_flashes[tab.tab.tab_index()].disabled = tab.disabled;
+    }
     if let Some(atlas) = state
         .match_state
         .match_presentation

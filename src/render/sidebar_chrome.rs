@@ -15,6 +15,27 @@ use crate::assets::shp_file::ShpFile;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 
+#[path = "sidebar_chrome_command_bar.rs"]
+mod command_bar;
+pub use command_bar::CommandBarArt;
+
+#[cfg(test)]
+pub(crate) fn packed_command_bar_fixture(assets: &AssetManager, theme: SidebarTheme) -> (CommandBarArt<SidebarChromeEntry>, Vec<u8>, [u32; 2]) {
+    let route = SidebarSideRoute::for_theme(assets, theme);
+    let palette = decode_sidebar_palette(route.resolve("SIDEBAR.PAL").unwrap().bytes).unwrap();
+    let rendered = command_bar::load(route, &palette);
+    let width = rendered.entries().map(|entry| entry.width).max().unwrap();
+    let height = rendered.entries().map(|entry| entry.height + CHROME_PADDING).sum();
+    let mut rgba = vec![0; (width * height * 4) as usize];
+    let mut y = 0;
+    let packed = rendered.map(|entry| {
+        let packed = blit_entry(&mut rgba, width, height, y, entry);
+        y += entry.height + CHROME_PADDING;
+        packed
+    });
+    (packed, rgba, [width, height])
+}
+
 const CHROME_PADDING: u32 = 2;
 /// R-UP.SHP / R-DN.SHP frame count. The strip-scroll art uses a 3-frame
 /// convention (0 = idle, 1 = pressed, 2 = disabled) — NOT the 5-frame tab /
@@ -178,6 +199,7 @@ pub struct SidebarChromeExtraEntry {
 pub struct SidebarChromeAtlas {
     source_identity: SidebarChromeAtlasIdentity,
     pub texture: BatchTexture,
+    pub command_bar: CommandBarArt<SidebarChromeEntry>,
     pub top_strip_left: Option<SidebarChromeEntry>,
     pub top_strip_sidebar: Option<SidebarChromeEntry>,
     pub top_strip_thin: Option<SidebarChromeEntry>,
@@ -510,6 +532,7 @@ fn build_theme_atlas(
     let generic_palette_name = "SIDEBAR.PAL";
     let generic_palette_source = side_route.resolve(generic_palette_name)?;
     let generic_palette = decode_sidebar_palette(generic_palette_source.bytes).ok()?;
+    let command_bar_art = command_bar::load(side_route, &generic_palette);
     log::debug!(
         "{theme:?} generic sidebar palette resolved from {}",
         generic_palette_source.archive_name
@@ -673,6 +696,7 @@ fn build_theme_atlas(
 
     // Collect all pieces to pack into the atlas.
     let mut all_entries: Vec<&RenderedChromeEntry> = vec![&radar, &side1, &side2, &side3];
+    all_entries.extend(command_bar_art.entries());
     if let Some(ref top) = top_strip_left {
         all_entries.push(top);
     }
@@ -743,6 +767,11 @@ fn build_theme_atlas(
         .sum::<u32>();
     let mut rgba = vec![0u8; (atlas_width * atlas_height * 4) as usize];
     let mut y = 0u32;
+    let command_bar = command_bar_art.map(|entry| {
+        let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
+        y += entry.height + CHROME_PADDING;
+        uv
+    });
 
     let top_strip_left_uv = top_strip_left.as_ref().map(|entry| {
         let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
@@ -910,6 +939,7 @@ fn build_theme_atlas(
     Some(SidebarChromeAtlas {
         source_identity,
         texture,
+        command_bar,
         top_strip_left: top_strip_left_uv,
         top_strip_sidebar: top_strip_sidebar_uv,
         top_strip_thin: top_strip_thin_uv,

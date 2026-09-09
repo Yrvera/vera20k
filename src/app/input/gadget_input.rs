@@ -12,6 +12,9 @@
 
 use winit::event::MouseButton;
 
+#[path = "command_bar_input.rs"]
+mod command_bar;
+
 use crate::app::AppState;
 use crate::app::presentation::sidebar_render::current_sidebar_view;
 use crate::sidebar::{self, SidebarAction, SidebarTab, SidebarView};
@@ -103,6 +106,7 @@ pub(crate) struct InGameGadgets {
     /// the view each frame (rect + presence); the optional pause/producer slots
     /// disable when absent. Slot order matches `apply_gadget_result`'s mapping.
     pub controls: Option<[GadgetHandle; CONTROL_SLOTS]>,
+    pub command_bar: Option<[GadgetHandle; 12]>,
 }
 
 impl InGameGadgets {
@@ -118,6 +122,7 @@ impl InGameGadgets {
             tactical: None,
             minimap: None,
             controls: None,
+            command_bar: None,
         }
     }
 
@@ -242,6 +247,7 @@ fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
     sync_regions(state, view);
     sync_cameos(state, view);
     sync_controls(state, view);
+    command_bar::sync(state);
 }
 
 /// Control/dev button gadgets (A6): build the fixed 6-slot set once, then sync
@@ -553,6 +559,9 @@ fn play_gui_main_button_sound(state: &mut AppState) {
 /// mask the right-release marker off (study §2.2: `key & ~0x4000`), so a
 /// right-click scrolls identically.
 fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
+    if command_bar::apply(state, result) {
+        return;
+    }
     let id = result & !(RESULT_BUTTON | RESULT_RIGHT);
     match id {
         _ if (ID_TAB_BASE..ID_TAB_BASE + 4).contains(&id) => {
@@ -628,6 +637,7 @@ fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
 
 /// Publish the transient pressed bits for the 5-frame visuals (frames 3/4).
 fn publish_pressed_visuals(state: &mut AppState) {
+    command_bar::publish(state);
     let Some(handles) = state.match_state.match_presentation.in_game_gadgets.handles else {
         return;
     };

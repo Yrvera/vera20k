@@ -1352,6 +1352,16 @@
           "coverage": "representative"
         },
         {
+          "path": "src/app/presentation/sidebar_command_bar.rs",
+          "symbol": "append_prepared / layout_and_slots",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/app/input/command_bar_input.rs",
+          "symbol": "sync_prepared / apply",
+          "coverage": "representative"
+        },
+        {
           "path": "src/app/frontend/skirmish.rs",
           "symbol": "explicit_launch_local_owner_drives_production_sidebar_theme",
           "coverage": "representative",

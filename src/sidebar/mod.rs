@@ -7,6 +7,7 @@
 //! from the loaded assets and fixed 60×48 cameo hit zones (`6A8220`).
 
 pub mod gadget_flash;
+pub mod command_bar;
 mod layout_spec;
 pub mod power_bar_anim;
 mod sidebar_view;

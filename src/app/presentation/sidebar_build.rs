@@ -15,6 +15,9 @@ use crate::render::sidebar_chrome::{SidebarChromeAtlas, SidebarChromeEntry};
 use crate::sidebar::power_bar_anim::PowerBarAnimState;
 use crate::sidebar::{Rect, SidebarChromeLayoutSpec, SidebarLayout, SidebarTabButton, SidebarView};
 
+#[path = "sidebar_command_bar.rs"]
+pub(crate) mod command_bar;
+
 // ---------------------------------------------------------------------------
 // Main sidebar panel instances (backgrounds, progress, badges, buttons, meters)
 // ---------------------------------------------------------------------------
@@ -37,7 +40,7 @@ pub(crate) fn build_sidebar_chrome_instances(
     let Some(atlas) = current_sidebar_chrome(state) else {
         return Vec::new();
     };
-    build_sidebar_chrome_instances_for_layout(
+    let mut instances = build_sidebar_chrome_instances_for_layout(
         atlas,
         state.match_state.match_presentation.sidebar_layout_spec,
         &view.layout,
@@ -51,7 +54,9 @@ pub(crate) fn build_sidebar_chrome_instances(
         ],
         state.match_state.match_presentation.ui_scale,
         state.match_state.match_presentation.radar_anim.is_none(),
-    )
+    );
+    command_bar::append(state, atlas, &mut instances);
+    instances
 }
 
 pub fn build_sidebar_chrome_instances_for_layout(

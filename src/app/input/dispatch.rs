@@ -1604,6 +1604,40 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
     }
 }
 
+/// Native command-bar IDs use the same command endpoints as keyboard input.
+/// Team right-click clears its group (6D0660); the other source actions reuse
+/// the existing input owners rather than introducing a second gameplay path.
+pub(crate) fn dispatch_command_bar(state: &mut AppState, command: usize, right: bool) {
+    let action = match command {
+        0..=2 => {
+            let group = command + 1;
+            if right {
+                if let Some(members) = state.match_state.input.control_groups.get_mut(group) {
+                    members.clear();
+                }
+                return;
+            }
+            HotkeyCommand::TeamSelect(group)
+        }
+        3 => {
+            execute_type_select_tap(state);
+            return;
+        }
+        4 => HotkeyCommand::DeployObject,
+        5 => {
+            state.match_state.input.queued_order_mode = OrderMode::AttackMove;
+            return;
+        }
+        6 => HotkeyCommand::GuardObject,
+        7 => HotkeyCommand::PlaceBeacon,
+        8 => HotkeyCommand::StopObject,
+        9 => HotkeyCommand::PlanningMode,
+        10 => HotkeyCommand::AllToCheer,
+        _ => return,
+    };
+    dispatch_retail_hotkey(state, action);
+}
+
 // Native 653952 -> GameState1 -> 48C9BA/4F10E0 opens the pause menu.
 // The button calls this directly; Escape's cancel/resume priority is separate.
 fn open_pause_menu(state: &mut AppState) {

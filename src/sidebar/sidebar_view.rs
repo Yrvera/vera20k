@@ -87,6 +87,7 @@ pub(crate) fn build_sidebar_view(
         None,
         None,
         [None; 2],
+        [0; 4],
     )
 }
 
@@ -113,18 +114,39 @@ pub(crate) fn build_sidebar_view_with_spec(
     scroll_down_button_size: Option<[f32; 2]>,
     scroll_up_button_size: Option<[f32; 2]>,
     top_button_sizes: [Option<[f32; 2]>; 2],
+    parked_scroll_rows: [usize; 4],
 ) -> SidebarView {
-    // Collect items first to know how many rows we need.
+    // Native6A6300/6A6820 and6AA600 enable tabs from retained strip entries,
+    // including ready buildings and superweapons. Use the very same entries
+    // for availability and the selected strip, independent of enabled/cost.
+    let mut strips = SidebarTab::all().map(|tab| {
+        collect_build_entries(
+            tab.category(),
+            queue_items,
+            build_options,
+            ready_buildings,
+            armed,
+            interner,
+            sw_views,
+        )
+    });
+    let available = strips.each_ref().map(|entries| !entries.is_empty());
+    let requested_tab = active_tab;
+    let active_tab = if available[active_tab.tab_index()] {
+        active_tab
+    } else {
+        SidebarTab::all()
+            .into_iter()
+            .find(|tab| available[tab.tab_index()])
+            .unwrap_or(active_tab)
+    };
+    let scroll_rows = if active_tab == requested_tab {
+        scroll_rows
+    } else {
+        parked_scroll_rows[active_tab.tab_index()]
+    };
     let selected_category = active_tab.category();
-    let mut all_entries = collect_build_entries(
-        selected_category,
-        queue_items,
-        build_options,
-        ready_buildings,
-        armed,
-        interner,
-        sw_views,
-    );
+    let mut all_entries = std::mem::take(&mut strips[active_tab.tab_index()]);
     let total_items = all_entries.len();
     let total_rows = (total_items + CAMEO_COLUMNS - 1) / CAMEO_COLUMNS;
 
@@ -159,8 +181,12 @@ pub(crate) fn build_sidebar_view_with_spec(
                 h: tab_h,
             },
             active: tab == active_tab,
-            disabled: gadget_state.tab_disabled[idx],
-            frame_index: gadget_state.tab_frame(idx, tab == active_tab),
+            disabled: !available[idx],
+            frame_index: if available[idx] {
+                gadget_state.tab_frame_enabled(idx, tab == active_tab)
+            } else {
+                2
+            },
         })
         .collect();
 
@@ -777,6 +803,61 @@ mod tests {
             enabled,
             reason,
         }
+    }
+
+    #[test]
+    fn retained_entries_drive_tabs_and_fallback_restores_parked_scroll() {
+        use super::{build_sidebar_view_with_spec, SidebarChromeLayoutSpec};
+        let mut interner = StringInterner::new();
+        let options: Vec<_> = (0..30)
+            .map(|i| {
+                option(
+                    &mut interner,
+                    &format!("BUILDING{i}"),
+                    false,
+                    Some(BuildDisabledReason::InsufficientCredits),
+                )
+            })
+            .collect();
+        let build = |options: &[BuildOption]| {
+            build_sidebar_view_with_spec(
+                SidebarChromeLayoutSpec::stock(),
+                800.,
+                600.,
+                SidebarTab::Vehicle,
+                0,
+                0,
+                0,
+                Some([28., 25.]),
+                &[],
+                options,
+                &[],
+                None,
+                &[],
+                0,
+                Some(&interner),
+                &[],
+                &SidebarGadgetState::default(),
+                None,
+                None,
+                None,
+                None,
+                [None; 2],
+                [3, 0, 0, 0],
+            )
+        };
+        let empty = build(&[]);
+        assert!(
+            empty
+                .tabs
+                .iter()
+                .all(|tab| tab.disabled && tab.frame_index == 2)
+        );
+        let view = build(&options);
+        assert!(view.tabs[0].active && !view.tabs[0].disabled);
+        assert!(view.tabs[1..].iter().all(|tab| tab.disabled));
+        assert_eq!(view.scroll_rows, 3);
+        assert!(view.items.iter().all(|item| !item.enabled));
     }
 
     #[test]
