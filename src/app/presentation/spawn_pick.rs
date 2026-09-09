@@ -160,6 +160,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     state.match_state.scenario_elapsed_clock.start(now_ms);
 
     state.frontend.screen = GameScreen::InGame;
+    crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
     log::info!("SpawnPick complete — transitioned to InGame");
     true
 }

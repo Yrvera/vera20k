@@ -12,8 +12,8 @@ use super::{
     BitFont, DEV_SKIRMISH_SHELL_ENV, EguiIntegration, GameConfig, GameScreen, GpuContext, HashMap,
     HashSet, HouseRoster, Instant, ModifiersState, MusicPlayer, PhysicalSize, PlatformState,
     RandomMapGenerationRetention, Result, SelectionState, SfxPlayer, SidebarChromeLayoutSpec,
-    SidebarTab, StartupAudioDisposition, Window, WindowAttributes, auto_detect_ui_scale,
-    frontend::startup_splash, should_load_audio_indices,
+    SidebarTab, StartupAudioDisposition, Window, WindowAttributes, frontend::startup_splash,
+    should_load_audio_indices,
 };
 
 fn startup_window_projection(
@@ -143,6 +143,11 @@ impl App {
         let gpu: GpuContext = GpuContext::new(window.clone())?;
         let egui: EguiIntegration = EguiIntegration::new(&gpu, &window);
         let batch_renderer: BatchRenderer = BatchRenderer::new(&gpu);
+        let terrain_draw_renderer = crate::render::terrain_draw::TerrainDrawRenderer::new(
+            &gpu.device,
+            gpu.surface_format,
+            &batch_renderer,
+        );
         let combat_light_renderer = crate::render::combat_light::CombatLightRenderer::new(&gpu);
         let mut bit_font = BitFont::fallback_5x7(&gpu, &batch_renderer);
         let depth_view: wgpu::TextureView = gpu.create_depth_texture();
@@ -165,18 +170,10 @@ impl App {
                 );
                 crate::render::upscale_pass::UpscalePass::new(&gpu, rw, rh)
             });
-        let base_sidebar_layout_spec = SidebarChromeLayoutSpec::load_optional_default()
-            .map(|spec| spec.unwrap_or_else(SidebarChromeLayoutSpec::stock))
-            .unwrap_or_else(|err| {
-                log::warn!("Could not load sidebar layout override: {:#}", err);
-                SidebarChromeLayoutSpec::stock()
-            });
-        // Auto-detect integer UI scale from window size.
-        let screen_w = window.inner_size().width;
-        let screen_h = window.inner_size().height;
-        let ui_scale: f32 = auto_detect_ui_scale(screen_w, screen_h);
-        log::info!("UI scale: {}x ({}x{})", ui_scale, screen_w, screen_h);
-        let sidebar_layout_spec = base_sidebar_layout_spec.with_scale(ui_scale);
+        // Ordinary gamemd chrome is one physical render pixel per asset pixel.
+        // 6A5090/6A5130 change row capacity on resize, never artwork scale.
+        let ui_scale = 1.0;
+        let sidebar_layout_spec = SidebarChromeLayoutSpec::stock();
         let vxl_compute = crate::render::vxl_compute::VxlComputeRenderer::new(&gpu.device);
         let dev_skirmish_shell_enabled = Self::dev_skirmish_shell_enabled();
         if dev_skirmish_shell_enabled {
@@ -527,7 +524,6 @@ impl App {
                     sidebar_projection: Default::default(),
                     active_sidebar_tab: SidebarTab::default_active_tab(),
                     sidebar_layout_spec,
-                    sidebar_layout_spec_base: base_sidebar_layout_spec,
                     ui_scale,
                     sidebar_scroll_rows: 0,
                     sidebar_scroll_rows_parked: [0; 4],
@@ -663,6 +659,7 @@ impl App {
                 gpu,
                 batch_renderer,
                 combat_light_renderer,
+                terrain_draw_renderer,
                 instance_pool: crate::render::batch::InstanceBufferPool::new(),
                 depth_view,
                 shell_surface_presenter,
@@ -716,10 +713,9 @@ impl App {
 
         if let Ok(quickplay) = std::env::var("RA2_QUICKPLAY") {
             let skirmish_settings = state.frontend.skirmish_settings.clone();
-            // The fresh-scenario admission only accepts a typed skirmish
-            // startup, so the dev shortcut carries a minimal America-vs-Russia
-            // Battle session for the named map through the unverified legacy
-            // path (the same one the shell uses for non-catalog maps).
+            // The developer shortcut carries an authored-map sandbox through
+            // the unverified legacy Battle loader. It has no artificial AI
+            // opponent or starting forces; this is not campaign admission.
             let session = quickplay_launch_session(quickplay);
             let mut clock = crate::match_bootstrap::OrdinaryMatchSeedClock;
             let seed = crate::match_bootstrap::read_match_seed(&mut clock);
@@ -735,12 +731,12 @@ impl App {
     }
 }
 
-/// `RA2_QUICKPLAY=<map>`: a stock Battle session, America versus one Easy
-/// Russia, on the named map file or seed.
+/// `RA2_QUICKPLAY=<map>`: VERA-internal authored-map sandbox using the legacy
+/// Battle loader, with one local house and no generated opponents or forces.
 fn quickplay_launch_session(selected_map: String) -> crate::skirmish_launch::SkirmishLaunchSession {
     use crate::skirmish_launch::{
-        AiDifficulty, LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishAiSlot,
-        SkirmishLaunchMode, SkirmishLaunchOptions, SkirmishLaunchSession, SkirmishLocalSlot,
+        LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishLaunchMode, SkirmishLaunchOptions,
+        SkirmishLaunchSession, SkirmishLocalSlot,
     };
     SkirmishLaunchSession {
         mode: SkirmishLaunchMode {
@@ -767,18 +763,15 @@ fn quickplay_launch_session(selected_map: String) -> crate::skirmish_launch::Ski
             start_position: LaunchStartPosition::Position(0),
             team: LaunchTeam::None,
         },
-        opponents: vec![SkirmishAiSlot {
-            country: LaunchCountry::Russia,
-            country_random: false,
-            color_index: 1,
-            color_random: false,
-            start_position: LaunchStartPosition::Position(1),
-            team: LaunchTeam::None,
-            difficulty: AiDifficulty::Easy,
-        }],
-        pre_fill_house_roster: crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(1),
+        // An empty AI house is still a contender: its automatic defeat would
+        // award victory to the fixture owner and end the comparison session.
+        opponents: Vec::new(),
+        pre_fill_house_roster: crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(0),
         options: SkirmishLaunchOptions {
-            // Fixture maps carry their own objects; no free starting units.
+            // VERA developer shortcut: fixture maps carry their own objects.
+            // Both native starting-force gates must be off: UnitCount=0 alone
+            // still adds an MCV at each start and reveals an extra radar area.
+            bases: false,
             unit_count: 0,
             ..SkirmishLaunchOptions::default()
         },
@@ -788,6 +781,169 @@ fn quickplay_launch_session(selected_map: String) -> crate::skirmish_launch::Ski
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quickplay_authored_fixture_does_not_add_starting_forces() {
+        let session = quickplay_launch_session("rendering-fixture.map".into());
+        assert_eq!(
+            session.selected_map_file.as_deref(),
+            Some("rendering-fixture.map")
+        );
+        assert!(
+            !session.options.bases,
+            "an MCV would reveal an extra start area"
+        );
+        assert_eq!(session.options.unit_count, 0);
+        assert!(session.opponents.is_empty());
+        assert_eq!(session.pre_fill_house_roster.required_start_count(), 1);
+        assert!(
+            session
+                .pre_fill_house_roster
+                .ai_slots()
+                .iter()
+                .all(|slot| !slot.valid)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires retail archives and VERA_SIDEBAR_FIXTURE_MAP"]
+    fn quickplay_authored_capture_runs_300_production_frames_without_false_victory() {
+        use crate::sim::house_state::HouseOutcomeKind;
+        use crate::sim::scenario_bootstrap::MatchLaunchDescriptor;
+        use crate::sim::world::{SimSoundEvent, TickLane};
+        use crate::skirmish_launch::{
+            AiDifficulty, LaunchCountry, LaunchStartPosition, LaunchTeam, PreFillHouseRoster,
+            SkirmishAiSlot,
+        };
+
+        let path = std::env::var("VERA_SIDEBAR_FIXTURE_MAP").expect("exact neutral capture map");
+        let root = crate::util::config::GameConfig::load()
+            .unwrap()
+            .paths
+            .ra2_dir;
+        for previous_empty_opponent in [false, true] {
+            let mut session = quickplay_launch_session(path.clone());
+            if previous_empty_opponent {
+                // Reproduce the v3 launch defect without adding any MCVs.
+                // Its empty second contender must still exercise ordinary
+                // automatic defeat/victory, rather than globally disabling it.
+                session.opponents.push(SkirmishAiSlot {
+                    country: LaunchCountry::Russia,
+                    country_random: false,
+                    color_index: 1,
+                    color_random: false,
+                    start_position: LaunchStartPosition::Position(1),
+                    team: LaunchTeam::None,
+                    difficulty: AiDifficulty::Easy,
+                });
+                session.pre_fill_house_roster = PreFillHouseRoster::from_compact_skirmish(1);
+            }
+            let descriptor = MatchLaunchDescriptor::from_resolved(session).unwrap();
+            let mut loaded =
+                crate::headless_scenario::load_with_launch(&root, &path, 12345, descriptor)
+                    .unwrap();
+            assert_eq!(loaded.map.entities.len(), 19);
+            assert_eq!(loaded.sim().entities().len(), 19, "no generated forces");
+            let owner = loaded.sim().interner.get("Americans").unwrap();
+            let authored: Vec<_> = loaded
+                .sim()
+                .entities()
+                .values()
+                .map(|e| e.stable_id())
+                .collect();
+            assert!(loaded.sim().entities().values().all(|e| e.owner() == owner));
+            assert_eq!(
+                loaded.sim().contending_house_count(),
+                if previous_empty_opponent { 2 } else { 1 }
+            );
+            assert!(
+                loaded.sim().path_grid().is_some(),
+                "full construction publishes navigation"
+            );
+            assert!(loaded.sim().ready_outcome_for_owner(owner).is_none());
+
+            let mut victory_edges = 0;
+            let mut terminal_frame = None;
+            for frame in 1..=300 {
+                // Use the app's cadence and bound production transaction, not
+                // the tooling tick helper's different millisecond cadence.
+                let output = loaded.runtime.advance_frame(
+                    &[],
+                    crate::app::types::SIM_TICK_MS,
+                    TickLane::Ordinary,
+                );
+                victory_edges += output.sound_events.iter().filter(|event| matches!(event,
+                    SimSoundEvent::MatchOutcome { owner: event_owner, kind: HouseOutcomeKind::Victory }
+                        if *event_owner == owner
+                )).count();
+                if previous_empty_opponent {
+                    if loaded.sim().ready_outcome_for_owner(owner).is_some() {
+                        assert!(!output.tick.frame_committed);
+                        assert!(output.tick.terminal_score_finalized);
+                        terminal_frame = Some(frame);
+                        break;
+                    }
+                } else {
+                    assert!(
+                        output.tick.frame_committed,
+                        "sandbox stopped on frame {frame}"
+                    );
+                    assert!(!output.tick.terminal_score_finalized);
+                    assert!(loaded.sim().ready_outcome_for_owner(owner).is_none());
+                    let house = &loaded.sim().houses[&owner];
+                    assert!(!house.has_won && !house.has_lost && !house.is_defeated);
+                    assert!(
+                        house.outcome_state.is_none(),
+                        "no hidden false outcome on frame {frame}"
+                    );
+                }
+            }
+            assert_eq!(loaded.sim().entities().len(), 19);
+            assert!(
+                authored
+                    .iter()
+                    .all(|id| loaded.sim().entities().get(*id).is_some())
+            );
+            if previous_empty_opponent {
+                let frame =
+                    terminal_frame.expect("two-contender control must reach the ending loop");
+                assert!(
+                    frame <= 100,
+                    "control must reproduce the observed early result"
+                );
+                assert_eq!(
+                    victory_edges, 1,
+                    "ordinary victory EVA remains a single edge"
+                );
+                eprintln!(
+                    "Previous empty-opponent control: victory on production frame {frame}; 19 authored entities retained"
+                );
+            } else {
+                assert_eq!(loaded.sim().session.tick, 300);
+                assert_eq!(victory_edges, 0, "no phantom victory EVA");
+                let exit = crate::sim::command::CommandEnvelope::new(
+                    owner,
+                    1,
+                    crate::sim::command::Command::ExitMatch,
+                );
+                let output = loaded.runtime.advance_frame(
+                    &[exit],
+                    crate::app::types::SIM_TICK_MS,
+                    TickLane::Ordinary,
+                );
+                assert_eq!(output.tick.executed_commands, 1);
+                assert!(!output.tick.frame_committed);
+                assert!(
+                    loaded.sim().quit_requested,
+                    "the sandbox still accepts explicit exit"
+                );
+                assert!(loaded.sim().ready_outcome_for_owner(owner).is_none());
+                eprintln!(
+                    "Authored quickplay: 300 production frames; 19 entities retained; no generated MCVs, victory state, EVA or ready exit; explicit ExitMatch still exits"
+                );
+            }
+        }
+    }
 
     #[derive(Debug, PartialEq)]
     enum StartupAudioCall {

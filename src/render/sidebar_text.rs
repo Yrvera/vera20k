@@ -8,7 +8,6 @@
 
 use crate::render::batch::{BatchTexture, SpriteInstance};
 use crate::render::bit_font::BitFont;
-use crate::render::shell_text_reveal::encoded_srgb_to_linear;
 use crate::render::sidebar_chrome::SidebarTheme;
 use crate::sidebar::Rect;
 
@@ -41,11 +40,12 @@ pub fn native_radar_outline_color(theme: SidebarTheme) -> [f32; 3] {
         to_byte(source[2]),
     );
     let expanded = super::native_radar_terrain::unpack_rgb565(packed);
-    // The active wgpu target selected in gpu.rs is sRGB. The native retained
-    // surface stores these expanded RGB565 values as encoded presentation
-    // bytes, whereas a shader tint is linear and is encoded by the target on
-    // output. Decode once here so the presented bytes stay identical.
-    encoded_srgb_to_linear([expanded[0], expanded[1], expanded[2]])
+    // Batch's Legacy palette path multiplies encoded RGB, then decodes for
+    // the sRGB target. Feed the same enrolled packed-word presentation used
+    // by chrome art; decoding this tint a second time darkens Allied outlines.
+    let presented =
+        super::native_surface_format::ACTIVE_RETAIL_RGB565_PRESENTATION.quantize_rgba8(expanded);
+    [presented[0], presented[1], presented[2]].map(|byte| f32::from(byte) / 255.0)
 }
 
 // --- Plain pass-throughs preserved for existing single-color callers ---
@@ -180,62 +180,21 @@ mod tests {
     }
 
     #[test]
-    fn native_radar_outline_color_survives_rgb565_and_srgb_presentation() {
-        // Independent inverse of the production encoded-sRGB-to-linear helper:
-        // this is the hardware target encode applied after batch_shader emits
-        // its linear tint. Hardcoded expected bytes are the active RGB565
-        // expansion, not values produced by either conversion helper.
-        let present_byte = |linear: f32| {
-            let encoded = if linear <= 0.003_130_8 {
-                linear * 12.92
-            } else {
-                1.055 * linear.powf(1.0 / 2.4) - 0.055
-            };
-            (encoded.clamp(0.0, 1.0) * 255.0).round() as u8
-        };
-        assert_eq!(present_byte(0.0), 0);
-        assert_eq!(present_byte(1.0), 255);
-
-        let fixtures = [
-            (
-                SidebarTheme::Allied,
-                [160, 208, 248],
-                [0.351_532_6, 0.630_757_15, 0.938_685_7],
-            ),
-            (
-                SidebarTheme::Soviet,
-                [248, 252, 0],
-                [0.938_685_7, 0.973_445_3, 0.0],
-            ),
-            (
-                SidebarTheme::Yuri,
-                [248, 252, 0],
-                [0.938_685_7, 0.973_445_3, 0.0],
-            ),
-        ];
-        for (theme, expected_bytes, expected_linear) in fixtures {
+    fn native_radar_outline_color_uses_encoded_batch_tint_contract() {
+        // 72F440 side colors -> 652E90 packed Radar+1208 -> enrolled surface
+        // display. The production shader readback is in sidebar_gpu_tests.
+        for (theme, packed_bytes, display_bytes) in [
+            (SidebarTheme::Allied, [160, 208, 248], [164, 210, 255]),
+            (SidebarTheme::Soviet, [248, 252, 0], [255, 255, 0]),
+            (SidebarTheme::Yuri, [248, 252, 0], [255, 255, 0]),
+        ] {
             let tint = native_radar_outline_color(theme);
-            for channel in 0..3 {
-                assert!(
-                    (tint[channel] - expected_linear[channel]).abs() < 2.0e-6,
-                    "theme={theme:?} channel={channel} tint={}",
-                    tint[channel],
-                );
-            }
-            assert_eq!(tint.map(present_byte), expected_bytes, "theme={theme:?}");
-
-            let old_direct_divide = expected_bytes.map(|byte| f32::from(byte) / 255.0);
-            let old_presented = old_direct_divide.map(present_byte);
-            for channel in 0..3 {
-                if expected_bytes[channel] == 0 {
-                    assert_eq!(old_presented[channel], 0);
-                } else {
-                    assert!(
-                        old_presented[channel] > expected_bytes[channel],
-                        "old direct divide must present too bright: theme={theme:?} channel={channel}",
-                    );
-                }
-            }
+            let bytes = tint.map(|c| (c * 255.0).round() as u8);
+            assert_eq!(bytes, display_bytes, "theme={theme:?}");
+            assert_eq!(
+                [bytes[0] & 0xf8, bytes[1] & 0xfc, bytes[2] & 0xf8],
+                packed_bytes
+            );
         }
     }
 
@@ -333,7 +292,6 @@ mod tests {
     }
 }
 
-
 /// Anchor row of the credits string on the sidebar surface, in native
 /// (unscaled) pixels. gamemd passes the literal `2`.
 pub const CREDITS_SURFACE_Y: f32 = 2.0;
@@ -398,4 +356,3 @@ pub fn build_credits_instances(
     let y = panel_rect.y.round() + (CREDITS_SURFACE_Y * ui_scale).round();
     font.build_text(&text, x, y, ui_scale, CREDITS_DEPTH, tint, camera_offset)
 }
-

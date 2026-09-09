@@ -24,6 +24,8 @@ struct Camera {
     world_origin_y: f32,
     world_height: f32,
     pad1: f32,
+    native_z_origin_y: f32,
+    native_z_pad: f32,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -52,6 +54,7 @@ struct Instance {
     // height means the layer's own quad. A turreted unit's hull, turret and
     // barrel are one native cache blit (`0x0073B140`), so they share one seed.
     @location(13) z_rect: vec2f,
+    @location(14) palette_light: vec4u,
 };
 
 struct VertexOutput {
@@ -69,6 +72,7 @@ struct VertexOutput {
     @location(8) @interpolate(flat) rect_top_height: vec2f,
     @location(9) @interpolate(flat) z_adjust: f32,
     @location(10) @interpolate(flat) z_gradient: u32,
+    @location(11) @interpolate(flat) palette_light: vec4u,
 };
 
 @vertex
@@ -116,48 +120,17 @@ fn vs_main(
     );
     out.z_adjust = instance.z_adjust;
     out.z_gradient = instance.z_gradient;
+    out.palette_light = instance.palette_light;
     return out;
 }
 
 // Native Z of row `row` (0 = top) of a blit; mirrors `native_z::sprite_row_z`
 // and the copy in zsprite_shader.wgsl. The VXL cache blit walks the same
 // gradient table (`VXL_CacheBlit @ 0x00707480` -> extended blitter).
-fn native_row_z(entry: u32, screen_top: i32, height: i32, z_adjust: i32, row: i32) -> i32 {
-    let default_z: i32 = 32768;
-    var seed: i32;
-    var accum: i32 = 0;
-    var increment: i32;
-    var threshold: i32;
-    var step_dir: i32;
-    if (entry == 2u) {
-        increment = 1;
-        threshold = 3;
-        step_dir = 1;
-        let raw: i32 = ((default_z - height - screen_top + 1) & 0xFFFF) + z_adjust;
-        seed = (raw / 3) * 3 - height / 3;
-        accum = 3 - (height % 3);
-        if (accum == 3) {
-            accum = 0;
-            seed = seed + 1;
-        }
-    } else if (entry == 1u) {
-        increment = 2;
-        threshold = 3;
-        step_dir = -1;
-        let raw: i32 = ((default_z - screen_top) & 0xFFFF) + z_adjust;
-        seed = (raw / 3) * 3;
-    } else {
-        increment = 1;
-        threshold = 1;
-        step_dir = -1;
-        seed = ((default_z - screen_top) & 0xFFFF) + z_adjust;
-    }
-    let steps: i32 = (accum + max(row, 0) * increment) / threshold;
-    return seed + step_dir * steps;
-}
+
 
 fn native_depth(in: VertexOutput) -> f32 {
-    let camera_row: i32 = i32(round(camera.camera_pos.y));
+    let camera_row: i32 = i32(round(camera.camera_pos.y + camera.native_z_origin_y));
     var rect_top: f32 = in.rect_top_height.x;
     var height: i32 = max(i32(round(in.rect_top_height.y)), 1);
     var gradient: u32 = in.z_gradient & 0xFFu;
@@ -199,9 +172,7 @@ fn native_depth(in: VertexOutput) -> f32 {
     let screen_top: i32 = i32(round(rect_top)) - camera_row;
     let row: i32 = clamp(i32(floor(in.world_pos.y - rect_top)), 0, height - 1);
     let z: i32 = native_row_z(gradient, screen_top, height, z_adjust, row);
-    let ground_row: f32 = f32(32768 - z + camera_row);
-    let world_height: f32 = max(camera.world_height, 1.0);
-    return clamp(1.0 - (ground_row - camera.world_origin_y) / world_height, 0.001, 0.999);
+    return stored_native_depth(z);
 }
 
 fn apply_fx(color: vec4f, _flags: u32, params: vec4f, effect_tint: vec4f) -> vec4f {
@@ -218,36 +189,13 @@ fn apply_fx(color: vec4f, _flags: u32, params: vec4f, effect_tint: vec4f) -> vec
 }
 
 
-// --- Map-light tint in the original's colour space -------------------------
-// gamemd lights a palette entry by scaling its 8-bit RGB bytes: LightConvert's
-// palette pass (FUN_00556090 -> FUN_007DE200 for RGB565) computes
-// (byte * scale16) >> 16 with scale16 = light_milli * 65536 / 1000 (three LEA x5
-// and a SHL 3 then the double 0.065536 at 0x007ED0B0) and clamps the product to
-// 255 before packing. That multiply happens on the palette bytes, i.e. in
-// sRGB-encoded space. These textures are sRGB-typed, so the sampled value is
-// already linear; multiplying it by the tint here would apply the light in
-// linear space, which reads as tint^(1/2.2) on screen (a 1.2 unit light became
-// ~1.09). Re-encode, scale, clamp, decode. The RGB565 quantisation that
-// follows natively is not modelled (DRIFT, sub-pixel colour).
-fn srgb_encode(c: vec3f) -> vec3f {
-    let lo = c * 12.92;
-    let hi = 1.055 * pow(max(c, vec3f(0.0)), vec3f(1.0 / 2.4)) - 0.055;
-    return select(hi, lo, c <= vec3f(0.0031308));
-}
-fn srgb_decode(c: vec3f) -> vec3f {
-    let lo = c / 12.92;
-    let hi = pow((c + 0.055) / 1.055, vec3f(2.4));
-    return select(hi, lo, c <= vec3f(0.04045));
-}
-fn palette_light(rgb_linear: vec3f, tint: vec3f) -> vec3f {
-    return srgb_decode(clamp(srgb_encode(rgb_linear) * tint, vec3f(0.0), vec3f(1.0)));
-}
+// Palette and stored-depth mechanisms are supplied by tactical_shader::source.
 
 
 // RA2_DEBUG_DEPTH_VIEW (camera.pad1 > 0.5): depth as grey, wrapping every
 // 128 world rows, so depth ordering can be read off a screenshot.
 fn debug_depth_color(depth: f32) -> vec4f {
-    let rows: f32 = (1.0 - depth) * max(camera.world_height, 1.0);
+    let rows: f32 = world_row_from_native_depth(depth, camera.camera_pos.y + camera.native_z_origin_y);
     let g: f32 = fract(rows / 128.0);
     return vec4f(g, g, g, 1.0);
 }
@@ -293,7 +241,7 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         rgb = textureLoad(palette, palette_coord, 0).rgb;
     }
 
-    var color: vec4f = vec4f(palette_light(rgb, in.tint * in.effect_tint.rgb), in.alpha);
+    var color: vec4f = vec4f(resolve_palette(rgb, in.tint, in.effect_tint.rgb, opaque_palette(in.palette_light, in.alpha, in.fx_flags), byte), in.alpha);
     color = apply_fx(color, in.fx_flags, in.fx_params, in.effect_tint);
     out.color = color;
     if (camera.pad1 > 0.5) {

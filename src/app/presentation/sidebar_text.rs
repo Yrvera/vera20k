@@ -21,11 +21,9 @@ use crate::render::bit_font::BitFont;
 use crate::sidebar::SidebarView;
 // Generic credit glyph generation is render-owned (F06); this module keeps
 // only the sidebar-view adapter below. Re-exported for existing callers.
-pub use crate::render::sidebar_text::{
-    build_credits_instances, credits_tint,
-};
 #[cfg(test)]
 use crate::render::sidebar_text::{CREDITS_DEPTH, CREDITS_SURFACE_Y, format_credits};
+pub use crate::render::sidebar_text::{build_credits_instances, credits_tint};
 /// Per-frame wrapper over [`build_credits_instances`] taking the sidebar view.
 pub fn build_sidebar_credits_instances(
     font: &BitFont,
@@ -47,9 +45,9 @@ pub fn build_sidebar_credits_instances(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sidebar::Rect;
     use crate::render::bit_font::CHAR_SPACING;
     use crate::render::bit_font::tests::make_test_font;
+    use crate::sidebar::Rect;
 
     /// Digit widths standing in for the GAME.FNT table: deliberately unequal so
     /// a proportional/system-font layout cannot reproduce the advances.
@@ -247,6 +245,8 @@ mod tests {
             None,
             None,
             None,
+            [None; 2],
+            [0; 4],
         );
         let font = digit_font();
         let inst = build_sidebar_credits_instances(&font, &view, 1.0, [1.0, 1.0, 0.0], [0.0, 0.0]);

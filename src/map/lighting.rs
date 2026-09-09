@@ -38,8 +38,10 @@ pub const LIGHT_SCALE16_IDENTITY: i32 = 0x10000;
 /// Binary light unit scale for Ambient/Red/Green/Blue INI values parsed as Rust ratios.
 pub const AMBIENT_RGB_UNIT_SCALE: i32 = LIGHT_UNIT;
 
-/// Binary light unit scale for Ground/Level INI values.
-pub const GROUND_LEVEL_UNIT_SCALE: i32 = 250;
+/// Scenario Ground/Level: original 0068A92E/0068A968 multiply by double
+/// [007E4658] = 1000.0, then add 0.01 and truncate. See the Ground/Level
+/// correction in LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md.
+pub const GROUND_LEVEL_UNIT_SCALE: i32 = LIGHT_UNIT;
 
 /// Binary light unit scale for point-light intensity/tint values.
 pub const POINT_LIGHT_UNIT_SCALE: i32 = LIGHT_UNIT;
@@ -67,9 +69,9 @@ pub struct LightingConfig {
     pub green: f32,
     /// Blue channel multiplier (default 1.0).
     pub blue: f32,
-    /// Ground-level darkening subtracted from ambient. Default 0.20.
+    /// Ground-level darkening subtracted from ambient. Default 0.05 (native reset 50).
     pub ground: f32,
-    /// Height-based ambient boost per elevation level. Default 0.032.
+    /// Height-based ambient boost per elevation level. Default 0.008 (native reset 8).
     pub level: f32,
     /// Lightning Storm ambient target (default 0.87).
     pub ion_ambient: f32,
@@ -92,8 +94,8 @@ impl Default for LightingConfig {
             red: 1.0,
             green: 1.0,
             blue: 1.0,
-            ground: 0.20,
-            level: 0.032,
+            ground: 0.05,
+            level: 0.008,
             ion_ambient: 0.87,
             ion_red: 0.30,
             ion_green: 0.40,
@@ -105,7 +107,7 @@ impl Default for LightingConfig {
 }
 
 /// Scenario-owned integer lighting profile as stored after map INI parsing.
-/// Ambient/RGB use the native 100 scale; Ground/Level use the native 250 scale.
+/// Ambient/RGB use the native 100 scale; Ground/Level use the native 1000 scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LightingProfileUnits {
     pub ambient_percent: i32,
@@ -209,7 +211,8 @@ pub struct CellLight {
     pub scale16: i32,
     /// Raw additive source intensity before RGB normalization.
     pub raw_additive_intensity: i32,
-    /// Additive source intensity after RGB normalization.
+    /// Source intensity published to Cell+0x108, independent of the scalar
+    /// normalized into Cell+0x10C (004845CB -> 005558E0).
     pub additive_intensity: i32,
     /// Raw top/common scalar before final clamp.
     pub raw_top_scalar: i32,
@@ -519,8 +522,8 @@ pub fn parse_lighting(ini: &IniFile) -> LightingConfig {
         red: section.get_f32("Red").unwrap_or(1.0),
         green: section.get_f32("Green").unwrap_or(1.0),
         blue: section.get_f32("Blue").unwrap_or(1.0),
-        ground: section.get_f32("Ground").unwrap_or(0.20),
-        level: section.get_f32("Level").unwrap_or(0.032),
+        ground: section.get_f32("Ground").unwrap_or(0.05),
+        level: section.get_f32("Level").unwrap_or(0.008),
         ion_ambient: section.get_f32("IonAmbient").unwrap_or(0.87),
         ion_red: section.get_f32("IonRed").unwrap_or(0.30),
         ion_green: section.get_f32("IonGreen").unwrap_or(0.40),
@@ -540,16 +543,19 @@ pub fn parse_lighting_profiles(ini: &IniFile) -> ParsedLightingProfiles {
     };
     let percent =
         |key: &str, default: f64| quantize_scenario_light(section.read_double(key, default), 100);
-    let ground_level =
-        |key: &str, default: f64| quantize_scenario_light(section.read_double(key, default), 250);
+    // 006838F7/00683901 reset internal Ground/Level to 50/8. Missing keys
+    // retain those values; map-authored .20/.032 instead parse to 200/32.
+    let ground_level = |key: &str, default: f64| {
+        quantize_scenario_light(section.read_double(key, default), GROUND_LEVEL_UNIT_SCALE)
+    };
     ParsedLightingProfiles {
         normal: LightingProfileUnits {
             ambient_percent: percent("Ambient", 1.0),
             red_percent: percent("Red", 1.0),
             green_percent: percent("Green", 1.0),
             blue_percent: percent("Blue", 1.0),
-            ground_units: ground_level("Ground", 0.20),
-            level_units: ground_level("Level", 0.032),
+            ground_units: ground_level("Ground", 0.05),
+            level_units: ground_level("Level", 0.008),
         },
         ion: LightingProfileUnits {
             ambient_percent: percent("IonAmbient", 0.87),
@@ -1112,7 +1118,7 @@ struct ScenarioLightUnits {
 #[derive(Debug, Clone, Copy)]
 struct NormalizedLight {
     scale16: i32,
-    additive_intensity: i32,
+    common_scalar: i32,
     rgb_key: LightRgbKey,
 }
 
@@ -1126,8 +1132,8 @@ fn scenario_profile_units(config: &LightingConfig) -> LightingProfileUnits {
         red_percent: (f64::from(config.red) * 100.0 + 0.01) as i32,
         green_percent: (f64::from(config.green) * 100.0 + 0.01) as i32,
         blue_percent: (f64::from(config.blue) * 100.0 + 0.01) as i32,
-        ground_units: (f64::from(config.ground) * 250.0 + 0.01) as i32,
-        level_units: (f64::from(config.level) * 250.0 + 0.01) as i32,
+        ground_units: quantize_scenario_light(f64::from(config.ground), GROUND_LEVEL_UNIT_SCALE),
+        level_units: quantize_scenario_light(f64::from(config.level), GROUND_LEVEL_UNIT_SCALE),
     }
 }
 
@@ -1156,9 +1162,14 @@ fn build_cell_light_from_raw(
     raw_bottom_scalar: i32,
     detail_level: u32,
 ) -> CellLight {
-    let normalized = normalize_light_at_detail(raw_rgb, raw_additive_intensity, detail_level);
     let top_high = raw_top_scalar.min(LIGHT_CLAMP_MAX);
-    let common_high = top_high;
+    // CellClass 004845C0/C2 seeds both fields from capped top, then passes
+    // the common pointer in EDX to 005558E0. The helper scales common (and
+    // zeros it for near-black RGB); it does not normalize source additive.
+    // Original 00483F7A..00483FD8 publishes those distinct outputs. See
+    // LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md and palette_oracle fixtures.
+    let normalized = normalize_light_at_detail(raw_rgb, top_high, detail_level);
+    let common_high = normalized.common_scalar;
     let scaled_bottom = ((i64::from(raw_bottom_scalar) * i64::from(normalized.scale16)) >> 16)
         .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
     let bottom_high = scaled_bottom.min(LIGHT_CLAMP_MAX);
@@ -1172,7 +1183,7 @@ fn build_cell_light_from_raw(
         raw_rgb,
         normalized.scale16,
         raw_additive_intensity,
-        normalized.additive_intensity,
+        raw_additive_intensity,
         raw_top_scalar,
         raw_bottom_scalar,
         top_scalar,
@@ -1200,13 +1211,13 @@ fn neutral_cell_light(profiles: &mut LightProfileCache) -> CellLight {
 }
 
 #[cfg(test)]
-fn normalize_light(raw_rgb: LightRgbKey, additive_intensity: i32) -> NormalizedLight {
-    normalize_light_at_detail(raw_rgb, additive_intensity, 2)
+fn normalize_light(raw_rgb: LightRgbKey, common_scalar: i32) -> NormalizedLight {
+    normalize_light_at_detail(raw_rgb, common_scalar, 2)
 }
 
 fn normalize_light_at_detail(
     raw_rgb: LightRgbKey,
-    additive_intensity: i32,
+    common_scalar: i32,
     detail_level: u32,
 ) -> NormalizedLight {
     let mut rgb = [
@@ -1214,7 +1225,7 @@ fn normalize_light_at_detail(
         raw_rgb[1].clamp(0, LIGHT_CLAMP_MAX),
         raw_rgb[2].clamp(0, LIGHT_CLAMP_MAX),
     ];
-    let mut additive = additive_intensity;
+    let mut common = common_scalar;
     let mut scale16 = LIGHT_SCALE16_IDENTITY;
 
     if rgb != [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT] {
@@ -1224,7 +1235,7 @@ fn normalize_light_at_detail(
         if scale16 < 66 {
             scale16 = LIGHT_SCALE16_IDENTITY;
             rgb = [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT];
-            additive = 0;
+            common = 0;
         } else {
             if rgb[0] >= rgb[1] && rgb[0] >= rgb[2] {
                 let max = rgb[0].max(1);
@@ -1242,17 +1253,17 @@ fn normalize_light_at_detail(
                 rgb[1] = normalize_channel_by_scale(rgb[1], scale);
                 rgb[2] = LIGHT_UNIT;
             }
-            additive = ((i64::from(scale16) * i64::from(additive)) >> 16)
+            common = ((i64::from(scale16) * i64::from(common)) >> 16)
                 .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
         }
     }
-    if additive > LIGHT_CLAMP_MAX {
-        additive = LIGHT_CLAMP_MAX;
+    if common > LIGHT_CLAMP_MAX {
+        common = LIGHT_CLAMP_MAX;
     }
 
     NormalizedLight {
         scale16,
-        additive_intensity: additive,
+        common_scalar: common,
         rgb_key: quantize_rgb_key(rgb, detail_level),
     }
 }
@@ -1295,9 +1306,128 @@ mod tests {
     use crate::rules::art_data::ArtRegistry;
 
     #[test]
+    fn native_cell_light_finalization_matches_original_caller_fields() {
+        // Original 483EB0 pointer setup, 4845A2 -> complete5558E0, literal
+        // 483F7A Cell stores, and 555AC0 key quantization. The fixture spans
+        // every clamped maximum in each dominant-channel branch, detail0..2,
+        // top/common caps, negative values and the near-black reset.
+        let bytes =
+            include_bytes!("../../tools/palette_oracle/fixtures/cell-light-finalization.bin");
+        assert_eq!(bytes.len() % 60, 0);
+        for record in bytes.chunks_exact(60) {
+            let row: Vec<i32> = record
+                .chunks_exact(4)
+                .map(|v| i32::from_le_bytes(v.try_into().unwrap()))
+                .collect();
+            let mut profiles = LightProfileCache::new();
+            let light = build_cell_light_from_raw(
+                &mut profiles,
+                row[..3].try_into().unwrap(),
+                row[3],
+                row[4],
+                row[5],
+                row[6] as u32,
+            );
+            assert_eq!(
+                [
+                    light.scale16,
+                    light.additive_intensity,
+                    light.top_scalar,
+                    light.common_scalar,
+                    light.bottom_scalar,
+                    light.rgb_key[0],
+                    light.rgb_key[1],
+                    light.rgb_key[2],
+                ],
+                row[7..],
+                "native post-gather inputs {:?}",
+                &row[..7]
+            );
+        }
+    }
+
+    #[test]
+    fn native_ground_level_ini_quantization_matches_all_four_original_sites() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/palette_oracle/fixtures/ground-level.json"
+        ))
+        .expect("original instruction fixture");
+        for record in fixture["authored"].as_array().unwrap() {
+            let token = record["token"].as_str().unwrap();
+            let expected = record["units"].as_i64().unwrap() as i32;
+            let ini = IniFile::from_str(&format!(
+                "[Lighting]\nGround={token}\nLevel={token}\nIonGround={token}\nIonLevel={token}\n"
+            ));
+            let parsed = parse_lighting_profiles(&ini);
+            assert_eq!(
+                [
+                    parsed.normal.ground_units,
+                    parsed.normal.level_units,
+                    parsed.ion.ground_units,
+                    parsed.ion.level_units
+                ],
+                [expected; 4],
+                "original 68A92E/68A968/68AA8A/68AAC4 token {token}"
+            );
+            let config_units = normal_profile_units(&parse_lighting(&ini));
+            assert_eq!(config_units, parsed.normal, "config path token {token}");
+        }
+    }
+
+    #[test]
+    fn native_ground_level_defaults_and_authored_values_reach_cell_grid() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/palette_oracle/fixtures/ground-level.json"
+        ))
+        .expect("original instruction fixture");
+        // Distinguish absent section, empty section, either key absent, explicit
+        // editor values, Ground fixture, and the actual flat8 Level=.032 scene.
+        for (text, height, record) in [
+            ("", 0, 0),
+            ("[Lighting]\n", 0, 0),
+            ("[Lighting]\nGround=.05\n", 4, 1),
+            ("[Lighting]\nLevel=.008\n", 4, 1),
+            ("[Lighting]\nGround=.20\nLevel=.032\n", 0, 2),
+            ("[Lighting]\nGround=.20\nLevel=.032\n", 4, 3),
+            ("[Lighting]\nGround=.40\nLevel=0\n", 0, 4),
+            ("[Lighting]\nGround=0\nLevel=.032\n", 0, 5),
+        ] {
+            let ini = IniFile::from_str(text);
+            let units = parse_lighting_profiles(&ini).normal;
+            let config = parse_lighting(&ini);
+            let expected: Vec<i32> = fixture["cell_finalizations"][record]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_i64().unwrap() as i32)
+                .collect();
+            for grid in [
+                build_cell_light_grid_from_heights_and_units([((48, 48), height)], units),
+                build_cell_light_grid_from_heights([((48, 48), height)], &config),
+            ] {
+                let light = grid.cell_light_at((48, 48)).unwrap();
+                assert_eq!(
+                    [
+                        light.scale16,
+                        light.additive_intensity,
+                        light.top_scalar,
+                        light.common_scalar,
+                        light.bottom_scalar,
+                        light.rgb_key[0],
+                        light.rgb_key[1],
+                        light.rgb_key[2]
+                    ],
+                    expected[7..],
+                    "INI {text:?} height {height}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_default_lighting_uses_yr_ground_subtraction() {
         let config: LightingConfig = LightingConfig::default();
-        assert!((config.ground - 0.20).abs() < 0.001);
+        assert!((config.ground - 0.05).abs() < 0.001);
         let tint: [f32; 3] = cell_tint(&config, 0);
         assert!((tint[0] - 0.95).abs() < 0.001);
         assert!((tint[1] - 0.95).abs() < 0.001);
@@ -1312,8 +1442,8 @@ mod tests {
         assert!((config.red - 1.0).abs() < 0.001);
         assert!((config.green - 1.0).abs() < 0.001);
         assert!((config.blue - 1.0).abs() < 0.001);
-        assert!((config.ground - 0.20).abs() < 0.001);
-        assert!((config.level - 0.032).abs() < 0.001);
+        assert!((config.ground - 0.05).abs() < 0.001);
+        assert!((config.level - 0.008).abs() < 0.001);
         assert!((config.ion_ambient - 0.87).abs() < 0.001);
         assert!((config.ion_red - 0.30).abs() < 0.001);
         assert!((config.ion_green - 0.40).abs() < 0.001);
@@ -1341,8 +1471,8 @@ mod tests {
                 red_percent: 31,
                 green_percent: 41,
                 blue_percent: 75,
-                ground_units: 0,
-                level_units: 7,
+                ground_units: 3,
+                level_units: 31,
             }
         );
         assert_eq!(
@@ -1352,14 +1482,16 @@ mod tests {
                 red_percent: 29,
                 green_percent: 39,
                 blue_percent: 74,
-                ground_units: 1,
-                level_units: 2,
+                ground_units: 7,
+                level_units: 11,
             }
         );
 
         let grid = build_cell_light_grid_from_heights_and_units([((3, 4), 2)], parsed.ion);
         let light = grid.cell_light_at((3, 4)).expect("light");
-        assert_eq!(light.common_scalar, 863);
+        // Original INI conversion plus 4845A2 -> 5558E0 fixture: 875/647.
+        assert_eq!(light.top_scalar, 875);
+        assert_eq!(light.common_scalar, 647);
         assert_eq!(light.raw_rgb, [290, 390, 740]);
     }
 
@@ -1491,8 +1623,8 @@ mod tests {
         };
         let grid = build_cell_light_grid_from_heights([((1, 1), 0)], &config);
         let light = grid.cell_light_at((1, 1)).expect("light");
-        // Ground/Level use the verified 250-unit scale: 0.5 -> 125.
-        assert_eq!(light.common_scalar, 875);
+        // Original 0068A92E converts authored Ground=.5 to 500.
+        assert_eq!(light.common_scalar, 500);
     }
 
     #[test]
@@ -1808,7 +1940,9 @@ mod tests {
     #[test]
     fn test_point_light_linear_falloff() {
         let mut grid = test_grid(20, [0.5, 0.5, 0.5]);
-        let light = test_point_light(10, 10, 5 * LEPTONS_PER_CELL, 1.0, [1.0, 1.0, 1.0]);
+        // Zero RGB contribution isolates intensity falloff from the separately
+        // tested native common-scalar color normalization.
+        let light = test_point_light(10, 10, 5 * LEPTONS_PER_CELL, 1.0, [0.0; 3]);
         accumulate_point_lights(&mut grid, &[light]);
 
         // Center cell gets full intensity: 0.5 + 1.0 = 1.5
@@ -1834,7 +1968,7 @@ mod tests {
     #[test]
     fn test_point_light_boundary_is_inclusive_with_zero_edge_contribution() {
         let mut grid = test_grid(8, [0.5, 0.5, 0.5]);
-        let light = test_point_light(2, 2, 2 * LEPTONS_PER_CELL, 1.0, [1.0, 1.0, 1.0]);
+        let light = test_point_light(2, 2, 2 * LEPTONS_PER_CELL, 1.0, [0.0; 3]);
         accumulate_point_lights(&mut grid, &[light]);
 
         let edge = grid.tint_or_default((4, 2));
@@ -1846,7 +1980,7 @@ mod tests {
     #[test]
     fn test_negative_point_light_darkens_cell() {
         let mut grid = test_grid(5, [0.8, 0.8, 0.8]);
-        let light = test_point_light(2, 2, 2 * LEPTONS_PER_CELL, -0.2, [1.0, 1.0, 1.0]);
+        let light = test_point_light(2, 2, 2 * LEPTONS_PER_CELL, -0.2, [0.0; 3]);
         accumulate_point_lights(&mut grid, &[light]);
 
         let center = grid.tint_or_default((2, 2));
@@ -1858,8 +1992,8 @@ mod tests {
     #[test]
     fn test_point_lights_sum_before_clamp() {
         let mut grid = test_grid(5, [1.9, 1.9, 1.9]);
-        let brighten = test_point_light(2, 2, 2 * LEPTONS_PER_CELL, 0.3, [1.0, 1.0, 1.0]);
-        let darken = test_point_light(2, 2, 2 * LEPTONS_PER_CELL, -0.3002, [1.0, 1.0, 1.0]);
+        let brighten = test_point_light(2, 2, 2 * LEPTONS_PER_CELL, 0.3, [0.0; 3]);
+        let darken = test_point_light(2, 2, 2 * LEPTONS_PER_CELL, -0.3002, [0.0; 3]);
         accumulate_point_lights(&mut grid, &[brighten, darken]);
 
         let center = grid.tint_or_default((2, 2));
@@ -1869,7 +2003,7 @@ mod tests {
     #[test]
     fn test_point_light_division_truncates_toward_zero() {
         let mut grid = test_grid(1, [0.0, 0.0, 0.0]);
-        let mut light = test_point_light(0, 0, 3, 1.0, [1.0, 1.0, 1.0]);
+        let mut light = test_point_light(0, 0, 3, 1.0, [0.0; 3]);
         light.center_x -= 1;
         accumulate_point_lights(&mut grid, &[light]);
 
@@ -1883,20 +2017,19 @@ mod tests {
         let light = test_point_light(5, 5, 3 * LEPTONS_PER_CELL, 0.6, [1.0, 0.0, 0.5]);
         accumulate_point_lights(&mut grid, &[light]);
 
-        let center = grid.tint_or_default((5, 5));
-        assert!((center[0] - 0.893).abs() < 0.01, "r={:.3}", center[0]);
-        assert!((center[1] - 0.432).abs() < 0.01, "g={:.3}", center[1]);
-        assert!((center[2] - 0.662).abs() < 0.01, "b={:.3}", center[2]);
         let light = grid.cell_light_at((5, 5)).expect("light");
         assert_eq!(light.raw_additive_intensity, 600);
         assert_eq!(light.raw_rgb, [2000, 1000, 1500]);
-        assert_eq!(light.common_scalar, 900);
+        // Native finalization fixture: color scale131072 affects common only.
+        assert_eq!(light.top_scalar, 900);
+        assert_eq!(light.common_scalar, 1800);
+        assert_eq!(light.rgb_key, [992, 480, 736]);
     }
 
     #[test]
     fn test_accumulation_clamps_at_cap() {
         let mut grid = test_grid(5, [1.8, 1.8, 1.8]);
-        let light = test_point_light(2, 2, 3 * LEPTONS_PER_CELL, 1.0, [1.0, 1.0, 1.0]);
+        let light = test_point_light(2, 2, 3 * LEPTONS_PER_CELL, 1.0, [0.0; 3]);
         accumulate_point_lights(&mut grid, &[light]);
 
         let center = grid.tint_or_default((2, 2));
@@ -1921,9 +2054,9 @@ mod tests {
         assert_eq!(light.raw_rgb, [1050, 1050, 1010]);
         assert_eq!(light.raw_additive_intensity, 200);
         assert_eq!(light.scale16, 68812);
-        assert_eq!(light.additive_intensity, 209);
+        assert_eq!(light.additive_intensity, 200);
         assert_eq!(light.rgb_key, [992, 992, 960]);
-        assert_eq!(light.common_scalar, 1150);
+        assert_eq!(light.common_scalar, 1207);
         assert_eq!(light.bottom_scalar, 1241);
     }
 
@@ -1932,7 +2065,7 @@ mod tests {
         let normalized = normalize_light([1, 1, 1], 123);
 
         assert_eq!(normalized.scale16, LIGHT_SCALE16_IDENTITY);
-        assert_eq!(normalized.additive_intensity, 0);
+        assert_eq!(normalized.common_scalar, 0);
         assert_eq!(normalized.rgb_key, [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT]);
     }
 
@@ -1941,16 +2074,16 @@ mod tests {
         let normalized = normalize_light([2, 1, 1], 100);
 
         assert_eq!(normalized.scale16, 131);
-        assert_eq!(normalized.additive_intensity, 0);
+        assert_eq!(normalized.common_scalar, 0);
         assert_eq!(normalized.rgb_key, [992, 480, 480]);
     }
 
     #[test]
-    fn light_normalize_negative_additive_uses_arithmetic_shift() {
+    fn light_normalize_negative_common_uses_arithmetic_shift() {
         let normalized = normalize_light([2, 1, 1], -1);
 
         assert_eq!(normalized.scale16, 131);
-        assert_eq!(normalized.additive_intensity, -1);
+        assert_eq!(normalized.common_scalar, -1);
     }
 
     #[test]
@@ -1980,7 +2113,7 @@ mod tests {
         let center = grid.cell_light_at((10, 10)).expect("light");
         assert_eq!(center.raw_additive_intensity, 200);
         assert_eq!(center.raw_rgb, [1050, 1050, 1010]);
-        assert_eq!(center.common_scalar, 1150);
+        assert_eq!(center.common_scalar, 1207);
         assert_ne!(center.raw_rgb, [10, 10, 2]);
     }
 
@@ -2036,7 +2169,7 @@ mod tests {
     fn test_extra_light_is_not_rgb_cell_light() {
         let grid = test_grid(5, [0.4, 0.4, 0.4]);
         let key = (2u16, 2u16);
-        // art.ini ExtraLight affects building body depth, not map RGB tint.
+        // art.ini ExtraLight affects building draw brightness, not cell state.
         let result = grid.tint_or_default(key);
         assert_eq!(result, [0.4, 0.4, 0.4]);
     }

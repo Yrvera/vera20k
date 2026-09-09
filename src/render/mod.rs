@@ -47,6 +47,10 @@ mod radar_tracker;
 mod radar_visibility;
 pub mod native_surface_format;
 pub mod native_z;
+pub(crate) mod tactical_shader;
+pub(crate) mod terrain_draw;
+#[cfg(test)]
+pub(crate) mod terrain_draw_gpu_tests;
 pub mod overlay_assets;
 pub mod terrain_instances;
 pub mod overlay_atlas;
@@ -54,6 +58,8 @@ pub mod palette_light;
 pub mod palette_textures;
 pub mod pixel_fx_sparkles;
 pub mod radar_anim;
+mod radar_animation;
+mod radar_surface;
 pub mod screenshot;
 pub mod selection_overlay;
 pub mod shell_paint;
@@ -82,3 +88,6 @@ pub mod vxl_raster;
 pub mod wave_geometry;
 #[cfg(test)]
 mod depth_gpu_tests;
+
+#[cfg(test)]
+mod sidebar_gpu_tests;

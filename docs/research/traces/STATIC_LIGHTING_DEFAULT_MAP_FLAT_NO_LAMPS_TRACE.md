@@ -1,5 +1,7 @@
 # Static Lighting Default Map Flat No Lamps Trace
 
+> Correction, 2026-09-09: the historical Ground/Level scale and external-default claims below are superseded by the [original-byte parser correction](../LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md#groundlevel-parser-correction). Original double 007E4658 is 1000.0 and float 007F0E78 is approximately .001, not 250/.004. Reset internal Ground50/Level8 remains valid; absent keys preserve it, while authored .20/.032 produces200/32. The public missing-key ratios are .05/.008. Historical Rust paths and verdicts below describe their original snapshot and are not current validation.
+
 Scenario: load a standard YR map area with no point-light emitters and default or missing `[Lighting]` keys. Compare gamemd.exe terrain/object tint behavior at ground level and at one raised cell against current Rust `src/map/lighting.rs` default `LightingConfig`, `cell_tint`, `cell_light_scalar`, and `CellLightGrid` construction.
 
 Status: COMPLETE for the scoped static/default no-lamp scenario. No Rust, INI, or existing docs were modified.

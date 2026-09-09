@@ -373,6 +373,14 @@ pub(crate) fn build_unit_instances(
                 .rules()
                 .map_or(0, |rules| rules.general.extra_aircraft_light),
         );
+        let palette_light = crate::app::presentation::lighting::body_palette_light(
+            state.match_state.match_presentation.lighting.grid(),
+            &sim.session.lighting,
+            (pos.rx, pos.ry),
+            entity.category,
+            state.rules().map_or(0, |r| r.general.extra_unit_light),
+            state.rules().map_or(0, |r| r.general.extra_infantry_light),
+        );
         let center_x: f32 = sx;
         let center_y: f32 = sy;
 
@@ -427,6 +435,7 @@ pub(crate) fn build_unit_instances(
                 state,
                 interp_z,
                 tint,
+                palette_light,
                 alpha,
                 draw_state,
                 anim_frame,
@@ -452,23 +461,37 @@ pub(crate) fn build_unit_instances(
                 let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1] + dock_depth_y_offset;
                 let depth: f32 = body_sort_depth(state, entity, band, depth_y, interp_z);
                 let voxel_adjust = super::foot_depth::unit_z_adjust(state, entity, true) as f32;
-                emit_unit_shadow_sprite(
-                    voxel_adjust,
-                    target_instances,
-                    target_instance_pages,
-                    atlas,
-                    entity,
-                    type_str,
-                    center_x,
-                    center_y,
-                    depth,
-                    draw_state,
-                    slope_state,
-                    transition_instances,
-                    band,
-                    collect_ground,
-                    &mut ground_pieces,
-                );
+                let native_shadow = matches!(texture_source, UnitTextureSource::Stable(_))
+                    && prepare_unit_shadow(
+                        state,
+                        atlas,
+                        entity,
+                        type_str,
+                        draw_state,
+                        slope_state,
+                        band,
+                        [(entry, [0.0, 0.0])],
+                    );
+                if !native_shadow {
+                    emit_unit_shadow_sprite(
+                        native_shadow,
+                        voxel_adjust,
+                        target_instances,
+                        target_instance_pages,
+                        atlas,
+                        entity,
+                        type_str,
+                        center_x,
+                        center_y,
+                        depth,
+                        draw_state,
+                        slope_state,
+                        transition_instances,
+                        band,
+                        collect_ground,
+                        &mut ground_pieces,
+                    );
+                }
                 let (composite_rect, split) = composite_depth_rect(
                     [(entry, [center_x, center_y])],
                     super::foot_depth::unit_bridge_split(state, entity, true),
@@ -481,6 +504,7 @@ pub(crate) fn build_unit_instances(
                     uv_size: entry.uv_size,
                     depth,
                     tint,
+                    palette_light,
                     alpha,
                     draw_state: body_draw_state,
                     z_adjust: voxel_adjust,
@@ -497,6 +521,26 @@ pub(crate) fn build_unit_instances(
                     collect_ground,
                     &mut ground_pieces,
                 );
+                if native_shadow {
+                    emit_unit_shadow_sprite(
+                        native_shadow,
+                        voxel_adjust,
+                        target_instances,
+                        target_instance_pages,
+                        atlas,
+                        entity,
+                        type_str,
+                        center_x,
+                        center_y,
+                        depth,
+                        draw_state,
+                        slope_state,
+                        transition_instances,
+                        band,
+                        collect_ground,
+                        &mut ground_pieces,
+                    );
+                }
             }
         }
 
@@ -514,6 +558,7 @@ pub(crate) fn build_unit_instances(
                     center_y,
                     pos.z,
                     tint,
+                    palette_light.brightness(),
                     draw_state,
                 ) {
                     if collect_ground {
@@ -731,25 +776,71 @@ fn push_transition_sprite(
     transition_instances[page].push(sprite);
 }
 
+/// First-fill mask owner for the supported ordinary flat ground path. The
+/// input entries are precisely the parts selected for this parent's draw;
+/// cache hits skip their pixel work and retain the first completed mask.
+#[allow(clippy::too_many_arguments)]
+fn prepare_unit_shadow(
+    state: &AppState,
+    atlas: &crate::render::unit_atlas::UnitAtlas,
+    entity: &crate::sim::game_entity::GameEntity,
+    type_id: &str,
+    draw_state: DrawState,
+    slope: UnitRenderSlopeState,
+    band: EntityDrawBand,
+    parts: impl IntoIterator<Item = (crate::render::unit_atlas::UnitSpriteEntry, [f32; 2])>,
+) -> bool {
+    if !native_shadow_caller_eligible(entity, draw_state, slope, band) {
+        return false;
+    }
+    let key = UnitSpriteKey {
+        type_id: type_id.to_owned(),
+        facing: canonical_unit_facing(entity.facing),
+        layer: VxlLayer::Shadow,
+        frame: 0,
+        slope_type: 0,
+    };
+    atlas.prepare_native_shadow(&state.renderer.gpu.queue, &key, parts)
+}
+
+fn native_shadow_caller_eligible(
+    entity: &crate::sim::game_entity::GameEntity,
+    draw_state: DrawState,
+    slope: UnitRenderSlopeState,
+    band: EntityDrawBand,
+) -> bool {
+    if entity.category != EntityCategory::Unit
+        || band != EntityDrawBand::Ground
+        || !entity
+            .locomotor
+            .as_ref()
+            .is_some_and(|l| l.active_kind() == crate::rules::locomotor_type::LocomotorKind::Drive)
+        || !matches!(slope, UnitRenderSlopeState::Stable(0))
+        || draw_state.fx_flags & crate::render::draw_state::FX_CLOAK != 0
+    {
+        return false;
+    }
+    true
+}
+
+fn shadow_lookup_key(mut key: UnitSpriteKey, native_shadow: bool) -> UnitSpriteKey {
+    if !native_shadow {
+        key.frame = crate::render::unit_atlas::LEGACY_SHADOW_FRAME;
+    }
+    key
+}
+
 /// The hull's ground shadow as one more piece of the unit's draw.
 ///
-/// Natively the shadow is the last call of UnitClass::DrawVoxelBody
-/// (0x73C5C4), after the composite. VERA retains its existing first-piece
-/// placement; equivalence to that later native shadow call is UNCHECKED.
-/// The ordinary body leaf 0x494B60 does not write Z, so body-depth writes
-/// cannot justify this difference. Techno_Draw_Voxel_Shadow (0x706BD0)
-/// returns for any cloak state,
-/// so cloaking, cloaked and uncloaking units cast none. Ground-band vehicles
-/// and ships only: aircraft shadows follow FlyLocomotion's own matrix and drop
-/// point, which are not modelled yet, and structures' voxel turrets cast none.
-/// The stencil lives in the unit atlas under `VxlLayer::Shadow` (frame 0, same
-/// facing and slope as the body) and is drawn through the voxel pipeline with
-/// `FX_SHADOW`, untinted.
-///
-/// Residual: shadow timing/blending and overlap with another unit remain
-/// outside this body-split change. Shadows never inherit split gradients.
+/// Original UnitClass::DrawVoxelBody ends with shadow call 73C5C4 after the
+/// composed body. Supported flat native stencils follow that order and use
+/// its first-fill body mask. Unsupported geometry retains the legacy order.
+/// Cloak states suppress this shadow; aircraft and building VXL paths remain
+/// separate. The voxel pipeline reads depth and uses FX_SHADOW alpha darkening;
+/// packed RGB565 half and full native cache lifecycle remain outside this fix.
 #[allow(clippy::too_many_arguments)]
 fn emit_unit_shadow_sprite(
+    native_shadow: bool,
     voxel_adjust: f32,
     stable_instances: &mut Vec<SpriteInstance>,
     stable_instance_pages: &mut Vec<usize>,
@@ -779,7 +870,8 @@ fn emit_unit_shadow_sprite(
         frame: 0,
         slope_type: stable_slope_for_key(slope_state),
     };
-    let Some(entry) = atlas.get(&key).copied() else {
+    let lookup_key = shadow_lookup_key(key.clone(), native_shadow);
+    let Some(entry) = atlas.get(&lookup_key).or_else(|| atlas.get(&key)).copied() else {
         return;
     };
     let mut shadow_state: DrawState = draw_state;
@@ -909,6 +1001,7 @@ fn emit_turret_unit_sprites(
     state: &AppState,
     z: u8,
     tint: [f32; 3],
+    palette_light: crate::render::palette_light::PaletteLight,
     alpha: f32,
     draw_state: DrawState,
     anim_frame: u32,
@@ -963,26 +1056,6 @@ fn emit_turret_unit_sprites(
     };
     let entity_depth: f32 = body_sort_depth(state, entity, band, entity_depth_y, z);
 
-    // The hull's ground shadow goes down first, then body, turret, barrel (see
-    // `emit_unit_shadow_sprite` for why first rather than the native last).
-    emit_unit_shadow_sprite(
-        voxel_adjust,
-        instances,
-        instance_pages,
-        atlas,
-        entity,
-        type_id,
-        center_x,
-        center_y,
-        entity_depth,
-        draw_state,
-        slope_state,
-        transition_instances,
-        band,
-        collect_ground,
-        ground_pieces,
-    );
-
     // Emit body first (always). Uses frame fallback for mismatched HVA counts.
     // Natively hull, turret and barrel are composited off-screen and blitted
     // as ONE rect (`UnitClass vtable+0x55C = 0x0073B140`), so all three share
@@ -992,6 +1065,48 @@ fn emit_turret_unit_sprites(
         .into_iter()
         .filter_map(|key| unit_entry_for_slope_state(state, atlas, key, slope_state))
         .collect();
+    let native_shadow = body_entry_opt
+        .is_some_and(|(_, source)| matches!(source, UnitTextureSource::Stable(_)))
+        && turret_layers
+            .iter()
+            .all(|(_, source)| matches!(source, UnitTextureSource::Stable(_)))
+        && prepare_unit_shadow(
+            state,
+            atlas,
+            entity,
+            type_id,
+            draw_state,
+            slope_state,
+            band,
+            body_entry_opt
+                .into_iter()
+                .map(|(entry, _)| (entry, [0.0, 0.0]))
+                .chain(
+                    turret_layers
+                        .iter()
+                        .map(|(entry, _)| (*entry, [tur_ox, tur_oy])),
+                ),
+        );
+    if !native_shadow {
+        emit_unit_shadow_sprite(
+            native_shadow,
+            voxel_adjust,
+            instances,
+            instance_pages,
+            atlas,
+            entity,
+            type_id,
+            center_x,
+            center_y,
+            entity_depth,
+            draw_state,
+            slope_state,
+            transition_instances,
+            band,
+            collect_ground,
+            ground_pieces,
+        );
+    }
     let (composite_rect, split) = composite_depth_rect(
         body_entry_opt
             .into_iter()
@@ -1012,6 +1127,7 @@ fn emit_turret_unit_sprites(
             uv_size: entry.uv_size,
             depth: entity_depth,
             tint,
+            palette_light,
             alpha,
             draw_state: body_draw_state,
             z_adjust: voxel_adjust,
@@ -1040,6 +1156,7 @@ fn emit_turret_unit_sprites(
             uv_size: entry.uv_size,
             depth: entity_depth,
             tint,
+            palette_light,
             alpha,
             draw_state: body_draw_state,
             z_adjust: voxel_adjust,
@@ -1052,6 +1169,26 @@ fn emit_turret_unit_sprites(
             transition_instances,
             texture_source,
             sprite,
+            collect_ground,
+            ground_pieces,
+        );
+    }
+    if native_shadow {
+        emit_unit_shadow_sprite(
+            native_shadow,
+            voxel_adjust,
+            instances,
+            instance_pages,
+            atlas,
+            entity,
+            type_id,
+            center_x,
+            center_y,
+            entity_depth,
+            draw_state,
+            slope_state,
+            transition_instances,
+            band,
             collect_ground,
             ground_pieces,
         );
@@ -1080,6 +1217,7 @@ fn emit_harvest_overlay(
     center_y: f32,
     z: u8,
     tint: [f32; 3],
+    brightness: i32,
     draw_state: DrawState,
 ) -> Option<(usize, SpriteInstance)> {
     let sprite_atlas = match &state.match_state.match_presentation.sprite_atlas {
@@ -1091,6 +1229,7 @@ fn emit_harvest_overlay(
     let facing_index: u16 = (8 - (body_facing.wrapping_add(32) / 32) as u16) % 8;
     let shp_frame: u16 = facing_index * 15 + overlay.frame;
     let key = ShpSpriteKey {
+        palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
         type_id: "OREGATH".to_string(),
         facing: 0,
         frame: shp_frame,
@@ -1114,6 +1253,10 @@ fn emit_harvest_overlay(
             uv_size: entry.uv_size,
             depth,
             tint,
+            // Unit DrawExtras 0073D276 selects global ANIM Convert, not the
+            // unit ColorScheme. Ordinary scalar is top + ExtraUnitLight.
+            // Its bridge/special-cell brightness branches remain unresolved.
+            palette_light: crate::render::palette_light::PaletteLight::plain(53, brightness),
             alpha: 1.0,
             draw_state,
             // An SHP draw of the harvester (`TechnoClass_DrawSHP`, a7 - 2).
@@ -1174,6 +1317,58 @@ mod tests {
         SpawnManagerMode, SpawnManagerState, SpawnSlot, SpawnSlotState, SpawnTimer,
     };
     use crate::sim::world::Simulation;
+
+    #[test]
+    fn vehicle_shadow_active_locomotor_selects_native_or_legacy_companion() {
+        let mut entity = GameEntity::test_default(1, "GENERATED", "Americans", 0, 0);
+        entity.category = EntityCategory::Unit;
+        let key = UnitSpriteKey {
+            type_id: "GENERATED".into(),
+            facing: 0,
+            layer: VxlLayer::Shadow,
+            frame: 0,
+            slope_type: 0,
+        };
+        for (kind, slope, expected_frame) in [
+            (LocomotorKind::Drive, 0, 0),
+            (
+                LocomotorKind::Teleport,
+                0,
+                crate::render::unit_atlas::LEGACY_SHADOW_FRAME,
+            ),
+            (
+                LocomotorKind::Hover,
+                0,
+                crate::render::unit_atlas::LEGACY_SHADOW_FRAME,
+            ),
+            (
+                LocomotorKind::Drive,
+                1,
+                crate::render::unit_atlas::LEGACY_SHADOW_FRAME,
+            ),
+        ] {
+            entity.locomotor = Some(LocomotorState::for_test_kind(kind));
+            let eligible = native_shadow_caller_eligible(
+                &entity,
+                DrawState::default(),
+                UnitRenderSlopeState::Stable(slope),
+                EntityDrawBand::Ground,
+            );
+            assert_eq!(
+                shadow_lookup_key(key.clone(), eligible).frame,
+                expected_frame
+            );
+        }
+        entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        let mut cloak = DrawState::default();
+        cloak.fx_flags |= crate::render::draw_state::FX_CLOAK;
+        assert!(!native_shadow_caller_eligible(
+            &entity,
+            cloak,
+            UnitRenderSlopeState::Stable(0),
+            EntityDrawBand::Ground
+        ));
+    }
 
     #[test]
     fn unit_vxl_piece_order_keeps_native_boundary_values() {

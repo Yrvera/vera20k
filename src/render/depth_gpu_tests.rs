@@ -38,13 +38,13 @@ enum Shader {
 }
 
 impl Shader {
-    fn source(self) -> &'static str {
-        match self {
+    fn source(self) -> String {
+        super::tactical_shader::source(match self {
             Self::Batch => include_str!("batch_shader.wgsl"),
             Self::Terrain => include_str!("zdepth_shader.wgsl"),
             Self::SpriteRead | Self::SpriteWrite => include_str!("zsprite_shader.wgsl"),
             Self::Voxel => include_str!("sprite_voxel_shader.wgsl"),
-        }
+        })
     }
 
     fn writes_depth(self) -> bool {
@@ -60,6 +60,7 @@ struct Layer {
     z_bytes: Vec<u8>,
     source_size: [u32; 2],
     indices: Vec<u8>,
+    palette_override: Option<Vec<u8>>,
 }
 
 impl Layer {
@@ -81,6 +82,7 @@ impl Layer {
             z_bytes: vec![0; (SIDE * SIDE) as usize],
             source_size: [SIDE; 2],
             indices: vec![33; (SIDE * SIDE) as usize],
+            palette_override: None,
         }
     }
 
@@ -161,6 +163,9 @@ impl Gpu {
                     world_origin_y: -100.0,
                     world_height: 256.0,
                     _pad: 0.0,
+
+                    native_z_origin_y: 0.0,
+                    _native_z_pad: 0.0,
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -201,7 +206,11 @@ impl Gpu {
                     layout: None,
                     vertex: wgpu::VertexState {
                         module: &module,
-                        entry_point: Some("vs_main"),
+                        entry_point: Some(if matches!(layer.shader, Shader::Batch) {
+                            "vs_depth"
+                        } else {
+                            "vs_main"
+                        }),
                         buffers: &[wgpu::VertexBufferLayout {
                             array_stride: size_of::<SpriteInstance>() as u64,
                             step_mode: wgpu::VertexStepMode::Instance,
@@ -288,12 +297,19 @@ impl Gpu {
             // pipeline layout contains only the two live texture bindings.
             let mut palette_bytes = vec![0; 256 * 4];
             palette_bytes[33 * 4..34 * 4].copy_from_slice(&layer.rgba[..4]);
+            if let Some(bytes) = &layer.palette_override {
+                palette_bytes.clone_from(bytes);
+            }
             let palette = self.texture(
                 wgpu::TextureFormat::Rgba8UnormSrgb,
                 &palette_bytes,
                 [256, 1],
             );
-            let ramp_bytes = [RED.repeat(16), GREEN.repeat(16)].concat();
+            let ramp_bytes = if layer.palette_override.is_some() {
+                palette_bytes[16 * 4..32 * 4].repeat(2)
+            } else {
+                [RED.repeat(16), GREEN.repeat(16)].concat()
+            };
             let house_ramp =
                 self.texture(wgpu::TextureFormat::Rgba8UnormSrgb, &ramp_bytes, [16, 2]);
             let voxel_palette_group = voxel.then(|| {
@@ -312,6 +328,26 @@ impl Gpu {
                     ],
                 })
             });
+            // TMP uses its packed depth plane; VXL already uploaded the indexed
+            // source at binding 0. Do not manufacture an unused SHP plane from
+            // Layer::solid's default dimensions for resized TMP fixtures.
+            let index_source = matches!(
+                layer.shader,
+                Shader::Batch | Shader::SpriteRead | Shader::SpriteWrite
+            )
+            .then(|| {
+                self.texture(
+                    wgpu::TextureFormat::R8Uint,
+                    &layer.indices,
+                    layer.source_size,
+                )
+            });
+            if let Some(index_source) = &index_source {
+                texture_entries.push(wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(index_source),
+                });
+            }
             let texture_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Depth test source group"),
                 layout: &pipeline.get_bind_group_layout(1),
@@ -354,7 +390,7 @@ impl Gpu {
                     view: &depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: if index == 0 {
-                            wgpu::LoadOp::Clear(1.0)
+                            wgpu::LoadOp::Clear(super::native_z::STORED_DEPTH_CLEAR)
                         } else {
                             wgpu::LoadOp::Load
                         },
@@ -430,7 +466,7 @@ macro_rules! attribute {
     };
 }
 
-const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 14] = [
+const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 15] = [
     attribute!(0, Float32x2, position),
     attribute!(1, Float32x2, size),
     attribute!(2, Float32x2, uv_origin),
@@ -445,6 +481,7 @@ const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 14] = [
     attribute!(11, Float32, z_adjust),
     attribute!(12, Uint32, z_gradient),
     attribute!(13, Float32x2, zshape_origin),
+    attribute!(14, Uint32x4, palette_light),
 ];
 
 fn cliff_depth_lanes() -> Layer {
@@ -1164,4 +1201,121 @@ fn depth_sprite_preserves_batch_tint_and_opacity() {
             .iter()
             .all(|pixel| pixel[0] > 10 && pixel[1] > 10 && pixel[2] > 10)
     );
+}
+
+/// Native goldens contain no retail art: original gamemd palette/scanline
+/// instructions were executed over a synthetic palette covering every channel
+/// byte. Every N27/N53 row and 240..254 mask lane reaches the production WGSL
+/// entrypoint with production vertex ABI, sRGB textures and framebuffer writes.
+#[test]
+#[ignore = "requires a wgpu adapter; run explicitly"]
+fn native_palette_tables_match_all_ordinary_shader_pixels() {
+    use super::native_surface_format::ACTIVE_RETAIL_RGB565_PRESENTATION;
+    use super::palette_light::{PaletteLight, native_fixtures, native_row};
+    let gpu = Gpu::new();
+    let rgba: Vec<u8> = (0..=255u8)
+        .flat_map(|i| [i, i.wrapping_mul(73), 255 - i, if i == 0 { 0 } else { 255 }])
+        .collect();
+    for fixture in native_fixtures() {
+        for shader in [
+            Shader::Batch,
+            Shader::Terrain,
+            Shader::SpriteRead,
+            Shader::SpriteWrite,
+            Shader::Voxel,
+        ] {
+            // TMP owns the ordinary mask; house exemption belongs to SHP/VXL.
+            if fixture.house && matches!(shader, Shader::Terrain) {
+                continue;
+            }
+            let layers: Vec<_> = (0..fixture.rows)
+                .map(|row| {
+                    let brightness = (0..=2000)
+                        .find(|b| native_row(*b, 127, fixture.rows) == row)
+                        .unwrap();
+                    let mut layer = Layer::solid(shader, RED, 0.0);
+                    layer.source_size = [256, 1];
+                    layer.rgba.clone_from(&rgba);
+                    layer.z_bytes = vec![0; 256];
+                    layer.indices = (0..=255u8).collect();
+                    layer.palette_override = Some(rgba.clone());
+                    layer.instance.position = [0.0, row as f32];
+                    layer.instance.size = [256.0, 1.0];
+                    layer.instance.palette_light = if fixture.plain {
+                        PaletteLight::plain(fixture.rows, brightness)
+                    } else {
+                        PaletteLight::new(fixture.rgb, fixture.rows, brightness, fixture.house)
+                    };
+                    layer
+                })
+                .collect();
+            let actual = gpu.render_sized(&layers, [256, fixture.rows]);
+            for (pixel, (got, bytes)) in
+                actual.iter().zip(fixture.bytes.chunks_exact(2)).enumerate()
+            {
+                let word = if pixel % 256 == 0 {
+                    0
+                } else {
+                    u16::from_le_bytes(bytes.try_into().unwrap())
+                };
+                let stored = [
+                    ((word >> 11) as u8) << 3,
+                    (((word >> 5) & 63) as u8) << 2,
+                    ((word & 31) as u8) << 3,
+                    255,
+                ];
+                let wanted = ACTIVE_RETAIL_RGB565_PRESENTATION.quantize_rgba8(stored);
+                assert_eq!(
+                    *got,
+                    wanted,
+                    "{shader:?}, rgb={:?}, N={}, mask={}, row={}, index={}",
+                    fixture.rgb,
+                    fixture.rows,
+                    fixture.house,
+                    pixel / 256,
+                    pixel % 256
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn native_shp_loader_atlas_palette_indices_reach_production_pixels() {
+    let gpu = Gpu::new();
+    let (rgba, indices, size) = super::sprite_atlas::native_palette_probe_page();
+    let fixture = super::palette_light::native_fixtures()
+        .into_iter()
+        .find(|f| f.house && f.rows == 53 && f.rgb == [992, 768, 512])
+        .unwrap();
+    let profile = super::native_surface_format::ACTIVE_RETAIL_RGB565_PRESENTATION;
+    for shader in [Shader::Batch, Shader::SpriteRead, Shader::SpriteWrite] {
+        let mut layer = Layer::solid(shader, RED, 0.0);
+        layer.rgba = rgba.clone();
+        layer.indices = indices.clone();
+        layer.source_size = size;
+        layer.z_bytes = vec![0; (size[0] * size[1]) as usize];
+        layer.instance.size = [256.0, 1.0];
+        layer.instance.uv_origin = [3.0 / 262.0, 1.0 / 3.0];
+        layer.instance.uv_size = [256.0 / 262.0, 1.0 / 3.0];
+        layer.instance.palette_light =
+            super::palette_light::PaletteLight::new(fixture.rgb, 53, 1000, true);
+        let actual = gpu.render_sized(&[layer], [256, 1]);
+        for (i, got) in actual.iter().enumerate() {
+            let offset = (26 * 256 + i) * 2;
+            let word = if i == 0 {
+                0
+            } else {
+                u16::from_le_bytes(fixture.bytes[offset..offset + 2].try_into().unwrap())
+            };
+            let expected = [
+                profile.five_bit[((word >> 11) & 31) as usize],
+                profile.six_bit[((word >> 5) & 63) as usize],
+                profile.five_bit[(word & 31) as usize],
+                255,
+            ];
+            assert_eq!(*got, expected, "{shader:?}, source index {i}");
+        }
+    }
 }

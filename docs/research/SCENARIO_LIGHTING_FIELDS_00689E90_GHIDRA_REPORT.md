@@ -1,5 +1,7 @@
 # Scenario Lighting Fields 00689E90 - Ghidra Research Report
 
+> Correction, 2026-09-09: the historical Ground/Level scale and external-default claims below are superseded by the [original-byte parser correction](LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md#groundlevel-parser-correction). Original double 007E4658 is 1000.0 and float 007F0E78 is approximately .001, not 250/.004. Reset internal Ground50/Level8 remains valid; absent keys preserve it, while authored .20/.032 produces200/32. The public missing-key ratios are .05/.008. Historical Rust paths and verdicts below describe their original snapshot and are not current validation.
+
 **Address(es):** `0x00689E90` primary, `0x00484180`, `0x00483E30`, `0x00484680`, `0x005558E0` consumers/helpers  
 **Investigation Mode:** exhaustive-slice  
 **Claimed Scope:** `ScenarioClass::Read_INI_Basic` map `[Lighting]` fields, their binary scaling/defaults, and the ordinary map-lighting consumer formula used for per-cell LightConvert/Z-adjust setup.  

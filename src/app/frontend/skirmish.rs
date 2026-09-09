@@ -1738,6 +1738,46 @@ mod tests {
                 actual, expected_theme,
                 "{country:?} launch owner must reach its live side theme"
             );
+            // The map-install refresh and chrome selection use this same source
+            // projection after the new roster, simulation and owner are installed.
+            let assets = [
+                "allied-frame-palette-insets",
+                "soviet-frame-palette-insets",
+                "yuri-frame-palette-insets",
+            ];
+            let selected = crate::app::presentation::sidebar_render::project_sidebar_source(
+                Some(&sim),
+                &roster,
+                Some(owner),
+                Some(&assets[0]),
+                Some(&assets[1]),
+                Some(&assets[2]),
+            )
+            .expect("all three source packages installed");
+            assert_eq!((selected.0, selected.1), (expected_theme, expected_theme));
+            let index = match expected_theme {
+                SidebarTheme::Allied => 0,
+                SidebarTheme::Soviet => 1,
+                SidebarTheme::Yuri => 2,
+            };
+            assert_eq!(*selected.2, assets[index]);
+            let fallback = crate::app::presentation::sidebar_render::project_sidebar_source(
+                Some(&sim),
+                &roster,
+                Some(owner),
+                Some(&assets[0]),
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                (fallback.0, fallback.1),
+                (expected_theme, SidebarTheme::Allied)
+            );
+            assert_eq!(
+                *fallback.2, assets[0],
+                "radar and chrome share the actual fallback package"
+            );
         }
     }
 

@@ -187,6 +187,23 @@ pub const SIM_TICK_MS: u32 = 1000 / crate::util::fixed_math::RA2_LOGIC_FRAMES_PE
 ///
 /// `map_file_name` is resolved relative to the retail root (e.g. `"Dustbowl.mmx"`).
 pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<HeadlessScenario, String> {
+    load_with_launch(
+        retail_dir,
+        map_file_name,
+        seed,
+        one_player_battle_launch(map_file_name)?,
+    )
+}
+
+/// Run the same construction and bound-resource handoff with an explicit
+/// resolved launch. The quickplay regression uses its real app descriptor here
+/// so house creation and starting forces cannot drift from the tested session.
+pub(crate) fn load_with_launch(
+    retail_dir: &Path,
+    map_file_name: &str,
+    seed: u32,
+    launch: crate::sim::scenario_bootstrap::MatchLaunchDescriptor,
+) -> Result<HeadlessScenario, String> {
     crate::map::retail_trig::install_from_dir(retail_dir);
     if !crate::map::retail_trig::wave_tables_available() {
         return Err(format!(
@@ -211,7 +228,6 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         crate::app::loading::init_helpers::load_startup_rules(&assets)
             .ok_or_else(|| "load native startup rules".to_string())?
             .into_parts();
-    let launch = one_player_battle_launch(map_file_name)?;
     let scenario_prefix_plan =
         crate::sim::scenario_bootstrap::prepare_stock_offline_scenario_prefix_plan(
             &launch,
@@ -265,6 +281,7 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         theater: map.header.theater.clone(),
         game_mode_nonzero: true,
         no_damage: false,
+        free_radar: map.basic.free_radar.unwrap_or(false),
         // Skirmish start forces `TiberiumGrows|TiberiumSpreads` (`OR 0xC0`
         // at `0x005E74CD`), copied into the scenario at `0x00687C23`.
         tiberium_grows_flag: true,
@@ -489,6 +506,75 @@ mod retail_construction_tests {
     /// One valid LZO chunk whose decompressed bytes are the `(0, 0)`
     /// IsoMapPack terminator, so the parsed map has no explicit cell records.
     const EMPTY_ISO_MAP_PACK: &str = "CAAEABUAAAAAEQAA";
+
+    #[test]
+    fn free_radar_map_reload_and_recording_callback_rebuild_scenario_authority() {
+        use crate::sim::replay::{NativeReplayHeader, NativeReplayStream};
+        let rules =
+            crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+                "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n",
+            ))
+            .unwrap();
+        // A native recording supplies identity/seed to a normal-load callback.
+        // This exercises that API with the actual GPU-free construction funnel;
+        // the app's native recording UI/loader is not yet connected to it.
+        for (key, expected) in [
+            ("FreeRadar=yes\n", true),
+            ("", false),
+            ("FreeRadar=no\n", false),
+            ("FreeRadar=invalid\n", false),
+        ] {
+            let map_bytes = format!(
+                "[Basic]\n{key}[Map]\nTheater=TEMPERATE\nSize=0,0,2,2\nLocalSize=0,0,2,2\nFill=Water\n[IsoMapPack5]\n1={EMPTY_ISO_MAP_PACK}\n"
+            );
+            let map = MapFile::from_bytes(map_bytes.as_bytes()).unwrap();
+            let header = NativeReplayHeader::new(0x12345678, "radar.map");
+            let recording = header.encode();
+            let playback = NativeReplayStream::initialize(
+                &recording,
+                NativeReplayHeader::default(),
+                |loaded| {
+                    let bootstrap = build_headless_terrain_bootstrap(
+                        &map,
+                        None,
+                        None,
+                        None,
+                        None,
+                        2,
+                        loaded.seed,
+                    );
+                    let heights = bootstrap.resolved.build_height_map();
+                    let descriptor = ScenarioDescriptor {
+                        free_radar: map.basic.free_radar.unwrap_or(false),
+                        map_width: bootstrap.resolved.width(),
+                        map_height: bootstrap.resolved.height(),
+                        ..ScenarioDescriptor::from_native_replay_header(loaded)
+                    };
+                    Ok::<_, ()>(bootstrap.construct_scenario(
+                        &map,
+                        "TEMPERATE",
+                        Some(&rules),
+                        None,
+                        &heights,
+                        None,
+                        None,
+                        crate::map::basic::BridgeDestroyabilityMode::CampaignOrEditor,
+                        &descriptor,
+                        |sim| {
+                            sim.interner.intern("Americans");
+                        },
+                    ))
+                },
+            )
+            .unwrap();
+            assert_eq!(playback.state.session.free_radar, expected);
+            assert_eq!(
+                crate::sim::radar::has_radar_for_owner(&playback.state, &rules, "Americans"),
+                expected
+            );
+            assert_eq!(playback.state.session.map_name, "radar.map");
+        }
+    }
 
     #[test]
     fn headless_battle_launch_is_the_exact_single_local_stock_session() {

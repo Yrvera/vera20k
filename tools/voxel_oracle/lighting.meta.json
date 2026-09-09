@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "All 32 flat ordinary-unit facing steps, normals modes 2 and 4; entire 256-byte LUT",
+  "assumptions": [
+    "x87 0x0E7F: WinMain 6BBFB7..6BBFC9 selects chop and startup precision; original instructions and tables",
+    "startup setters and camera/facing native blocks execute without substitutions",
+    "minimal VXL header/tailer selects one valid normals mode; zero initial stale LUT slots",
+    "Init_Game 52BDDD..52BDE9 initializes viewer matrix 887430 to identity; 52BDF5 initializes light with retail angle",
+    "ordinary stationary facing input; slope, rocking, dispatch, rasterization, VPL and GPU excluded"
+  ],
+  "substitutions": [],
+  "entry_points": {
+    "light_setup": "0x00754C00",
+    "camera_block": "0x007558CE",
+    "facing_block": "0x0055A760",
+    "matrix_product": "0x005AF980",
+    "lighting_initializer": "0x00753D00",
+    "lighting_loop": "0x007586F0"
+  },
+  "payload_sha256": "3dda9b3fcb5b502db13e944b0a8e1dcedd9ceb1ede5f5e0101d02fa51f80aa52"
+}

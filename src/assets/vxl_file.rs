@@ -47,7 +47,8 @@ pub struct VxlVoxel {
     pub y: u8,
     /// Z position (height) in the limb's grid (0..size_z).
     pub z: u8,
-    /// Palette color index. Index 0 = transparent (skip during rendering).
+    /// Source palette index. Native rasterization writes the VPL result even
+    /// when it is zero; the later surface blitter treats result zero as empty.
     pub color_index: u8,
     /// Normal table index for per-voxel lighting direction.
     pub normal_index: u8,
@@ -58,11 +59,14 @@ pub struct VxlVoxel {
 pub struct VxlLimb {
     /// Limb name from the section header (null-terminated, up to 16 chars).
     pub name: String,
-    /// Scale factor applied to HVA transform translations.
+    /// Literal scale factor. Native 5F823E applies limb zero's value across
+    /// the whole HVA animation, including other sections' translations.
     pub scale: f32,
     /// Axis-aligned bounding box: [min_x, min_y, min_z, max_x, max_y, max_z].
     pub bounds: [f32; 6],
-    /// Default transform matrix from the tailer (3×4, row-major, 12 floats).
+    /// Tailer matrix (3×4, row-major, 12 floats), retained as source data.
+    /// Ordinary native 706ED0 bypasses it when no HVA is present; legacy
+    /// preview/shadow preparation has its separately documented behavior.
     pub transform: [f32; 12],
     /// Grid width in voxels.
     pub size_x: u8,
@@ -74,6 +78,21 @@ pub struct VxlLimb {
     pub normals_mode: u8,
     /// All non-empty voxels in this limb.
     pub voxels: Vec<VxlVoxel>,
+    /// Literal native span encoding. Reverse traversal consumes the end table
+    /// and duplicate-count bytes; packed XY skip arithmetic also depends on
+    /// the original run boundaries. A dense voxel list cannot preserve these.
+    /// Manually constructed diagnostic models may omit the native encoding.
+    pub(crate) native_spans: Option<VxlNativeSpans>,
+}
+
+/// The body allocation is shared by every limb. Offsets retain the native
+/// file relationship without exposing relocated process pointers.
+#[derive(Debug, Clone)]
+pub(crate) struct VxlNativeSpans {
+    pub body: std::sync::Arc<[u8]>,
+    pub start_offset: usize,
+    pub end_offset: usize,
+    pub data_offset: usize,
 }
 
 /// A parsed VXL voxel model containing one or more limbs.
@@ -171,6 +190,8 @@ impl VxlFile {
 
         // Body data starts right after section headers.
         let body_start: usize = headers_end;
+        let native_body: std::sync::Arc<[u8]> =
+            std::sync::Arc::from(&data[body_start..tailers_start]);
 
         // Parse each limb: header + tailer + voxel data.
         let mut limbs: Vec<VxlLimb> = Vec::with_capacity(limb_count as usize);
@@ -182,6 +203,7 @@ impl VxlFile {
                 sections_start,
                 body_start,
                 tailers_start,
+                &native_body,
             )?;
             limbs.push(limb);
         }
@@ -203,6 +225,7 @@ fn parse_limb(
     sections_start: usize,
     body_start: usize,
     tailers_start: usize,
+    native_body: &std::sync::Arc<[u8]>,
 ) -> Result<VxlLimb, AssetError> {
     // Section header: name (16 bytes) + limb_number(4) + unk1(4) + unk2(4).
     let hdr_off: usize = sections_start + index * SECTION_HEADER_SIZE;
@@ -261,6 +284,12 @@ fn parse_limb(
         size_z,
         normals_mode,
         voxels,
+        native_spans: Some(VxlNativeSpans {
+            body: std::sync::Arc::clone(native_body),
+            start_offset: span_start_off as usize,
+            end_offset: span_end_off as usize,
+            data_offset: data_span_off as usize,
+        }),
     })
 }
 

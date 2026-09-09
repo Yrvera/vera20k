@@ -629,6 +629,7 @@ impl SelectionOverlay {
     ) -> Option<(SpriteInstance, u8)> {
         let atlas = atlas?;
         let key = ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
             type_id: interner.map_or(String::new(), |i| i.resolve(preview.type_id).to_string()),
             facing: 0,
             frame: 0,

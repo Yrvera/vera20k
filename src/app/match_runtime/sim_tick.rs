@@ -111,9 +111,9 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
             .as_ref()
             .map(|rt| &rt.simulation)
             .and_then(|sim| {
-                crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
-                    .and_then(|house| house.outcome_state)
-                    .filter(|outcome| outcome.exit_ready)
+                sim.interner
+                    .get(owner)
+                    .and_then(|owner| sim.ready_outcome_for_owner(owner))
             });
         let Some(outcome) = outcome else {
             return;
@@ -727,7 +727,7 @@ fn advance_in_game_runtime_mode(
     // Cell refresh itself remains all-gathered-before-commit.
     refresh_cell_lighting(state);
 
-    crate::app::presentation::building_anim::update_radar_state(state, SIM_TICK_MS as f32);
+    crate::app::presentation::building_anim::update_radar_state(state);
     crate::app::presentation::building_anim::update_power_bar_anim(state);
     crate::app::presentation::sidebar_gadgets::update_sidebar_gadget_state(state);
     // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
@@ -1172,17 +1172,26 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         bound_rules,
         Some(&sim.interner),
     );
-    let mut sprite_base_keys = sprite_atlas::collect_needed_base_keys(
+    let sprite_base_keys = sprite_atlas::collect_needed_base_keys(
         sim.entities(),
         &state.match_state.match_presentation.house_color_map,
         &extra_buildings,
         Some(&sim.interner),
     );
     let anim_remap_keys = sprite_atlas::collect_anim_remap_base_keys(sim);
-    sprite_base_keys.extend(anim_remap_keys.iter().cloned());
     let sprite_rebuild: bool = match &state.match_state.match_presentation.sprite_atlas {
-        Some(atlas) => !sprite_atlas::atlas_covers_base_keys(atlas, &sprite_base_keys),
-        None => !sprite_base_keys.is_empty(),
+        Some(atlas) => {
+            !sprite_atlas::atlas_covers_base_keys(
+                atlas,
+                &sprite_base_keys,
+                sprite_atlas::ShpPaletteContext::Legacy,
+            ) || !sprite_atlas::atlas_covers_base_keys(
+                atlas,
+                &anim_remap_keys,
+                sprite_atlas::ShpPaletteContext::SelectedScheme,
+            )
+        }
+        None => !sprite_base_keys.is_empty() || !anim_remap_keys.is_empty(),
     };
 
     // Early out: no new sprite types → skip the expensive atlas rebuild.

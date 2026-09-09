@@ -39,7 +39,15 @@ const PARTICLE_Y_LIFT: f32 = 15.0;
 /// `state.match_presentation.sprite_atlas.page_count()`). This function appends; sorting is the
 /// caller's responsibility (see `build_world_instances`).
 pub(crate) fn build_particle_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
-    let (sim, atlas, rules) = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.sprite_atlas, state.rules().map(|r| r)) {
+    let (sim, atlas, rules) = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.sprite_atlas,
+        state.rules().map(|r| r),
+    ) {
         (Some(s), Some(a), Some(r)) => (s, a, r),
         _ => return,
     };
@@ -78,6 +86,7 @@ pub(crate) fn build_particle_instances(state: &AppState, paged: &mut [Vec<Sprite
             };
 
             let key = ShpSpriteKey {
+                palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
                 type_id: image_name.to_string(),
                 facing: 0,
                 frame,

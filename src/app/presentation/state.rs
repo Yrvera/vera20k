@@ -146,13 +146,9 @@ pub(crate) struct MatchPresentationState {
     pub(crate) sidebar_projection: crate::app::sidebar_projection::SidebarProjectionState,
     /// Active tab for the custom in-game sidebar.
     pub(crate) active_sidebar_tab: SidebarTab,
-    /// Optional local override for chrome positioning loaded from sidebar_layout.ron.
-    /// This is the SCALED version — multiply base by ui_scale at init/resize.
+    /// Native side-specific geometry in physical render pixels.
     pub(crate) sidebar_layout_spec: SidebarChromeLayoutSpec,
-    /// Unscaled base layout spec (from file or stock). Kept for re-scaling on resize.
-    pub(crate) sidebar_layout_spec_base: SidebarChromeLayoutSpec,
-    /// Integer UI scale factor (1, 2, or 3). Auto-detected from screen height.
-    /// Sidebar, minimap, and other UI elements are scaled by this factor.
+    /// Ordinary retail artwork uses one render pixel per source pixel.
     pub(crate) ui_scale: f32,
     /// Scroll offset for the current sidebar tab's item list.
     ///

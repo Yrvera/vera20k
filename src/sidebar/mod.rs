@@ -3,18 +3,18 @@
 //! This module stays render-agnostic: it describes sidebar geometry, tab/item
 //! state, and hit-testing, while the app/render layers decide how to draw it.
 //!
-//! Layout matches the original RA2 sidebar:
-//!   radar (168x110) -> side1 (168x69) -> tabs (168x16) -> side2 tiled (168x50)
-//!   -> side3 (168x26). Cameos in 2-column grid within the side2 region.
+//! Native screen geometry comes from `6A5090`/`6A5130`, with shape sizes
+//! from the loaded assets and fixed 60×48 cameo hit zones (`6A8220`).
 
 pub mod gadget_flash;
+pub mod command_bar;
 mod layout_spec;
 pub mod power_bar_anim;
 mod sidebar_view;
 
 use crate::sim::production::ProductionCategory;
 
-pub use layout_spec::{SIDEBAR_LAYOUT_FILE_NAME, SidebarChromeLayoutSpec};
+pub use layout_spec::{SidebarChromeLayoutSpec, SidebarTheme};
 pub use power_bar_anim::PowerBarAnimState;
 #[cfg(test)]
 pub(crate) use sidebar_view::build_sidebar_view;
@@ -23,34 +23,8 @@ pub(crate) use sidebar_view::ArmedSidebarEntry;
 
 /// Original RA2 sidebar chrome width (all SHPs are 168px wide).
 pub const SIDEBAR_WIDTH: f32 = 168.0;
-pub const SIDEBAR_TOP_INSET: f32 = 50.0;
-
-/// Heights of each chrome piece (from sidec01.mix SHP inspection).
-pub const RADAR_HEIGHT: f32 = 110.0;
-pub(crate) const SIDE1_HEIGHT: f32 = 69.0;
-pub(crate) const TABS_HEIGHT: f32 = 16.0;
-pub(crate) const SIDE2_HEIGHT: f32 = 50.0;
-pub(crate) const SIDE3_HEIGHT: f32 = 26.0;
-pub(crate) const CONTROL_BUTTON_HEIGHT: f32 = 20.0;
-pub(crate) const CONTROL_BUTTON_GAP: f32 = 2.0;
-pub(crate) const CONTROL_BLOCK_TOP_PAD: f32 = 2.0;
-pub(crate) const CONTROL_BLOCK_BOTTOM_PAD: f32 = 4.0;
-const MIN_VISIBLE_ROWS: usize = 4;
-pub(crate) const RADAR_CONTENT_WIDTH: f32 = 150.0;
-pub(crate) const RADAR_CONTENT_HEIGHT: f32 = 96.0;
-
-/// Cameo grid: 2 columns. Standard RA2 cameo icons are 60x48 pixels.
-/// They sit within the side2.shp dark slots, overlapping chrome edges slightly
-/// (same as the original game). Positions derived from side2.shp analysis.
+/// Cameo hit zones are fixed 60×48 (`6A8220`), independent of artwork size.
 pub(crate) const CAMEO_COLUMNS: usize = 2;
-pub(crate) const CAMEO_W: f32 = 60.0;
-pub(crate) const CAMEO_H: f32 = 48.0;
-/// Gap between left slot end and right slot start.
-pub(crate) const CAMEO_GAP_X: f32 = 8.0;
-/// Horizontal offset from sidebar left edge to left cameo.
-pub(crate) const CAMEO_INSET_X: f32 = 21.0;
-/// Vertical offset from each side2 tile top to the cameo.
-pub(crate) const CAMEO_INSET_Y: f32 = 1.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
@@ -62,7 +36,7 @@ pub struct Rect {
 
 impl Rect {
     pub fn contains(&self, px: f32, py: f32) -> bool {
-        px >= self.x && px <= self.x + self.w && py >= self.y && py <= self.y + self.h
+        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
     }
 }
 
@@ -71,14 +45,8 @@ pub fn radar_minimap_rect(screen_w: f32) -> Rect {
 }
 
 pub fn radar_minimap_rect_with_spec(screen_w: f32, spec: SidebarChromeLayoutSpec) -> Rect {
-    let sw = spec.sidebar_width;
-    let radar_x = screen_w - sw + spec.x_offset;
-    Rect {
-        x: radar_x + (sw - spec.radar_content_width) * 0.5,
-        y: spec.top_inset + (spec.radar_height - spec.radar_content_height) * 0.5,
-        w: spec.radar_content_width,
-        h: spec.radar_content_height,
-    }
+    // Radar One_Time 652CF0 and Init_For_House 652E90: fixed aperture.
+    Rect { x: screen_w - spec.sidebar_width + 16.0, y: 49.0, w: 140.0, h: 108.0 }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +98,8 @@ impl SidebarTab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarAction {
     None,
+    OpenPauseMenu,
+    OpenDiplomacy,
     SelectTab(SidebarTab),
     BuildType(String),
     ArmPlacement(String),
@@ -224,8 +194,7 @@ pub struct SidebarToggleButton {
 #[derive(Debug, Clone)]
 pub struct SidebarScrollButton {
     pub rect: Rect,
-    /// Retained gadget disabled bit. The current gadget lifecycle leaves this
-    /// false, but consumers must not reconstruct that presentation fact.
+    /// Retained gadget disabled bit. Scroll capacity comes from `6A6610`.
     pub disabled: bool,
     /// SHP frame index (0..=2) for the button's per-theme atlas.
     pub frame_index: u8,
@@ -274,6 +243,8 @@ pub struct SidebarView {
     /// `sell_frames[frame_index]`. Hit-test routes to
     /// `SidebarAction::ToggleSellMode`.
     pub sell_button: SidebarToggleButton,
+    /// DIPLOBTN (left), OPTBTN (right), native IDs F2/F3.
+    pub top_buttons: [SidebarScrollButton; 2],
     pub scroll_down_button: SidebarScrollButton,
     pub scroll_up_button: SidebarScrollButton,
     pub cancel_button: SidebarControlButton,
@@ -314,110 +285,44 @@ pub(crate) fn compute_layout_with_spec(
     spec: SidebarChromeLayoutSpec,
     screen_w: f32,
     screen_h: f32,
-    item_rows: usize,
+    _item_rows: usize,
 ) -> SidebarLayout {
-    let sidebar_x = screen_w - spec.sidebar_width + spec.x_offset;
-    let radar_y = spec.top_inset;
-    let side1_y = radar_y + spec.radar_height;
-    let tabs_y = side1_y + spec.side1_height;
-    let cameo_grid_top = tabs_y + spec.tabs_height;
-    let control_block_h = spec.control_block_top_pad
-        + spec.control_button_height * 3.0
-        + spec.control_button_gap * 2.0
-        + spec.control_block_bottom_pad;
-
-    // Maximum rows that fit between tabs and screen bottom.
-    // In the default layout we reserve room for the bottom control block.
-    // Fill-to-bottom mode lets the chrome stack consume that space instead.
-    let reserved_bottom_h = if spec.fill_to_bottom {
-        spec.fill_bottom_margin.max(0.0)
-    } else {
-        control_block_h
-    };
-    let max_region_h = screen_h - cameo_grid_top - spec.side3_height - reserved_bottom_h;
-    let max_rows = (max_region_h / spec.cameo_row_height).floor().max(1.0) as usize;
-
-    // Default behavior clamps to actual item count so the chrome doesn't show
-    // empty rows. Fill-to-bottom mode keeps extending the sidebar chrome stack
-    // to the bottom even when there are fewer build items.
-    let visible_rows = if spec.fill_to_bottom {
-        max_rows.max(MIN_VISIBLE_ROWS)
-    } else {
-        item_rows.clamp(MIN_VISIBLE_ROWS, max_rows.max(MIN_VISIBLE_ROWS))
-    };
-    let cameo_region_h = visible_rows as f32 * spec.cameo_row_height;
-    let cameo_grid_bottom = cameo_grid_top + cameo_region_h;
-    let side3_y = cameo_grid_bottom;
-
+    // Original 6A5090/6A5130: capacity depends on screen height and side,
+    // never on build-item count. Integer division truncates toward zero.
+    let rows = ((screen_h as i32 - 227 - spec.footer_allowance - 7) / 50).max(0) as usize;
     SidebarLayout {
-        sidebar_x,
-        radar_y,
-        side1_y,
-        tabs_y,
-        cameo_grid_top,
-        cameo_grid_bottom,
-        side3_y,
-        side2_tile_count: visible_rows,
+        sidebar_x: screen_w - spec.sidebar_width,
+        radar_y: spec.top_inset,
+        side1_y: 158.0,
+        tabs_y: 197.0,
+        cameo_grid_top: 227.0,
+        cameo_grid_bottom: 227.0 + rows as f32 * 50.0,
+        // Native 6A6C30 advances by the loaded SIDE2 canvas height.
+        side3_y: 227.0 + rows as f32 * spec.side2_height,
+        side2_tile_count: rows,
     }
 }
 
-/// Screen rect of the vertical power meter (the `powerp.shp` strip stack).
-///
-/// gamemd registers a tooltip region over this bar and answers it before the
-/// sidebar gadgets, so the rect has to be derivable outside the render lane.
-/// The bar runs from `power_bar_top_y` below the tab strip down to
-/// `power_bar_bottom_y` above the side3 bottom edge — the same span
-/// `set_max_segments` measures, and the same origin `render_power_bar`
-/// currently draws from.
-///
-/// MERGE HAZARD: a parallel session is replacing that origin in
-/// `app::presentation::sidebar_build` with a theme-dependent `power_bar_origin(theme,
-/// layout, ui_scale)`. This helper re-derives `sidebar_x + power_bar_x`, so
-/// once that lands the hover rect and the drawn bar will disagree by the
-/// per-theme x delta with nothing failing. Whoever merges must re-point this
-/// at the renderer's helper (the rect needs a theme argument too) rather than
-/// leave two copies of the geometry.
+/// Native PowerClass tooltip (`6403A0`). The 8-pixel hit width is distinct
+/// from POWERP's actual canvas width and the 3-pixel paint stride.
 pub fn power_bar_rect(layout: &SidebarLayout, spec: SidebarChromeLayoutSpec) -> Rect {
-    let top = layout.tabs_y + spec.power_bar_top_y;
-    let bottom = layout.side3_y + spec.side3_height - spec.power_bar_bottom_y;
-    Rect {
-        x: layout.sidebar_x + spec.power_bar_x,
-        y: top,
-        w: spec.power_bar_width,
-        h: (bottom - top).max(0.0),
-    }
+    Rect { x: layout.sidebar_x + spec.power_bar_x, y: 227.0, w: 8.0,
+        h: layout.cameo_grid_bottom - layout.cameo_grid_top }
 }
 
-/// Strip-scroll button rects (the R-DN/R-UP pair). gamemd anchors the pair at
-/// ScrollX / ScrollX+ScrollWidth in retail strip geometry; our adaptive RON
-/// layout (R11 geometry policy — OUT of this plan's scope) has no such
-/// anchor, so the interim placement centers the pair inside the side3 strip:
-/// scroll-down (+page) on the left, scroll-up (−page) on the right.
-/// `None` sizes (atlas missing) collapse to 0×0 — unhittable and undrawn.
+/// Native R-DN/R-UP anchors (`6ABD30`), with actual SHP canvas hit sizes.
 pub fn scroll_button_rects(
     layout: &SidebarLayout,
-    sidebar_width: f32,
+    spec: SidebarChromeLayoutSpec,
     down_size: Option<[f32; 2]>,
     up_size: Option<[f32; 2]>,
 ) -> (Rect, Rect) {
     let [dw, dh] = down_size.unwrap_or([0.0, 0.0]);
     let [uw, uh] = up_size.unwrap_or([0.0, 0.0]);
-    let x0 = layout.sidebar_x + (sidebar_width - (dw + uw)) * 0.5;
-    let y = layout.side3_y + 1.0;
-    (
-        Rect {
-            x: x0,
-            y,
-            w: dw,
-            h: dh,
-        },
-        Rect {
-            x: x0 + dw,
-            y,
-            w: uw,
-            h: uh,
-        },
-    )
+    let x = layout.sidebar_x + spec.scroll_x;
+    let y = layout.cameo_grid_bottom + 7.0;
+    (Rect { x, y, w: dw, h: dh },
+     Rect { x: x + spec.scroll_pitch, y, w: uw, h: uh })
 }
 
 pub(crate) fn hit_test_item(item: &SidebarItem, right_click: bool) -> SidebarAction {
@@ -472,20 +377,6 @@ pub(crate) fn hit_test_item(item: &SidebarItem, right_click: bool) -> SidebarAct
 
 #[cfg(test)]
 mod tests {
-    use super::{SIDEBAR_WIDTH, SidebarChromeLayoutSpec, compute_layout_with_spec};
-
-    #[test]
-    fn stock_spec_matches_legacy_layout_geometry() {
-        let layout = compute_layout_with_spec(SidebarChromeLayoutSpec::stock(), 1024.0, 768.0, 0);
-        assert_eq!(layout.sidebar_x, 1024.0 - SIDEBAR_WIDTH);
-        assert_eq!(layout.radar_y, 50.0);
-        assert_eq!(layout.side1_y, 160.0);
-        assert_eq!(layout.tabs_y, 229.0);
-        assert_eq!(layout.cameo_grid_top, 245.0);
-        assert_eq!(layout.side2_tile_count, 4);
-        assert_eq!(layout.side3_y, 445.0);
-    }
-
     use super::{Rect, SidebarAction, SidebarItem};
     use crate::sim::production::ProductionCategory;
 
@@ -555,3 +446,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod native_geometry_tests;

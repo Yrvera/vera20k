@@ -47,6 +47,7 @@ fn register_effect_anim_frames(
     let count = available_effect_anim_frame_count(raw_count, scheduler_owned, shadow);
     for frame in 0..count {
         needed.insert(ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
             type_id: anim_type.to_string(),
             facing: 0,
             frame,
@@ -105,14 +106,42 @@ fn insert_building_anim_frame_keys(
     anim_type: &str,
     count: u16,
     house_color: HouseColorIndex,
+    palette_context: ShpPaletteContext,
 ) {
     for frame in 0..count.max(1) {
         needed.insert(ShpSpriteKey {
+            palette_context,
             type_id: anim_type.to_string(),
             facing: 0,
             frame,
-            house_color,
+            house_color: if palette_context == ShpPaletteContext::GlobalAnim {
+                HouseColorIndex(0)
+            } else {
+                house_color
+            },
         });
+    }
+}
+
+/// Palette ownership comes from the draw producer, not an animation's name.
+/// Global ANIM and explicit selected ColorScheme may coexist for identical
+/// type/frame/house keys (AnimClass DrawIt 00423280..00423354).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ShpPaletteContext {
+    #[default]
+    Legacy,
+    GlobalAnim,
+    SelectedScheme,
+    Cell,
+}
+
+pub(crate) fn attached_anim_palette_context(
+    config: Option<&art_data::AnimTypeRuntimeConfig>,
+) -> ShpPaletteContext {
+    if config.is_none_or(|c| c.should_use_cell_drawer) {
+        ShpPaletteContext::SelectedScheme
+    } else {
+        ShpPaletteContext::GlobalAnim
     }
 }
 
@@ -120,6 +149,7 @@ fn insert_building_anim_frame_keys(
 /// For structures, facing is always 0 (buildings don't rotate).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ShpSpriteKey {
+    pub palette_context: ShpPaletteContext,
     /// Object type ID from rules.ini (e.g., "E1", "GAPOWR").
     pub type_id: String,
     /// Facing direction (0–255). Collapsed to 0 for structures.
@@ -288,6 +318,7 @@ struct RenderedShpSprite {
     key: ShpSpriteKey,
     /// RGBA pixels of the stored frame rectangle, without canvas padding.
     rgba: Vec<u8>,
+    indices: Vec<u8>,
     width: u32,
     height: u32,
     /// Offset from cell center to top-left of sprite.
@@ -388,6 +419,7 @@ fn insert_anim_remap_frame_keys(
     {
         for frame in 0..frame_count {
             needed.insert(ShpSpriteKey {
+                palette_context: crate::render::sprite_atlas::ShpPaletteContext::SelectedScheme,
                 type_id: type_id.to_string(),
                 facing: 0,
                 frame,
@@ -397,35 +429,24 @@ fn insert_anim_remap_frame_keys(
     }
 }
 
-/// Check if an existing sprite atlas already covers all the given base keys.
-///
-/// A base key (type_id, color) is "covered" if the atlas contains at least one
-/// entry with that type_id and house_color (e.g., the frame=0 entry).
+/// Coverage is specific to the producer's palette context. A legacy entity
+/// entry cannot satisfy an explicit animation ColorScheme preload.
 pub fn atlas_covers_base_keys(
     atlas: &SpriteAtlas,
     base_keys: &HashSet<(String, HouseColorIndex)>,
+    palette_context: ShpPaletteContext,
 ) -> bool {
-    for (type_id, color) in base_keys {
-        let probe = ShpSpriteKey {
-            type_id: type_id.clone(),
-            facing: 0,
-            frame: 0,
-            house_color: *color,
-        };
-        if atlas.get(&probe).is_none() {
-            // Also check non-zero facings for infantry (facing=0 might be a structure probe).
-            let infantry_probe = ShpSpriteKey {
+    base_keys.iter().all(|(type_id, color)| {
+        atlas
+            .get(&ShpSpriteKey {
+                palette_context,
                 type_id: type_id.clone(),
                 facing: 0,
                 frame: 0,
                 house_color: *color,
-            };
-            if atlas.get(&infantry_probe).is_none() {
-                return false;
-            }
-        }
-    }
-    true
+            })
+            .is_some()
+    })
 }
 
 /// Which palette a sprite's frames are baked against.
@@ -473,6 +494,31 @@ pub(crate) fn sprite_palette_choice(
         SpritePaletteChoice::Anim
     } else {
         SpritePaletteChoice::Unit
+    }
+}
+
+fn sprite_palette_for_key(
+    key: &ShpSpriteKey,
+    art: Option<&ArtRegistry>,
+    effect_type_ids: &HashSet<String>,
+    cell_palette_type_ids: &HashSet<String>,
+) -> SpritePaletteChoice {
+    match key.palette_context {
+        ShpPaletteContext::SelectedScheme => SpritePaletteChoice::Unit,
+        ShpPaletteContext::Cell => SpritePaletteChoice::CellIso,
+        ShpPaletteContext::GlobalAnim => {
+            if art
+                .and_then(|a| a.anim_runtime_config(&key.type_id))
+                .is_some_and(|c| c.alt_palette)
+            {
+                SpritePaletteChoice::Unit
+            } else {
+                SpritePaletteChoice::Anim
+            }
+        }
+        ShpPaletteContext::Legacy => {
+            sprite_palette_choice(&key.type_id, art, effect_type_ids, cell_palette_type_ids)
+        }
     }
 }
 
@@ -528,6 +574,7 @@ pub fn build_sprite_atlas(
         match entity.category {
             EntityCategory::Structure => {
                 needed.insert(ShpSpriteKey {
+                    palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
                     type_id: type_str.to_string(),
                     facing: 0,
                     frame: 0,
@@ -544,6 +591,7 @@ pub fn build_sprite_atlas(
                 if can_be_occupied {
                     for frame in 1u16..=3 {
                         needed.insert(ShpSpriteKey {
+                            palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
                             type_id: type_str.to_string(),
                             facing: 0,
                             frame,
@@ -609,6 +657,8 @@ pub fn build_sprite_atlas(
                                     // This avoids cache key mismatches for non-8-facing
                                     // sequences (most RA2 infantry use 6 facings).
                                     needed.insert(ShpSpriteKey {
+                                        palette_context:
+                                            crate::render::sprite_atlas::ShpPaletteContext::Legacy,
                                         type_id: type_str.to_string(),
                                         facing: 0,
                                         frame,
@@ -623,6 +673,7 @@ pub fn build_sprite_atlas(
                     // Use facing=0 for all keys — frame index encodes direction.
                     for bucket in 0..INFANTRY_FACING_BUCKETS {
                         needed.insert(ShpSpriteKey {
+                            palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
                             type_id: type_str.to_string(),
                             facing: 0,
                             frame: bucket as u16,
@@ -630,6 +681,8 @@ pub fn build_sprite_atlas(
                         });
                         for walk_frame in 0..6u16 {
                             needed.insert(ShpSpriteKey {
+                                palette_context:
+                                    crate::render::sprite_atlas::ShpPaletteContext::Legacy,
                                 type_id: type_str.to_string(),
                                 facing: 0,
                                 frame: 8 + bucket as u16 * 6 + walk_frame,
@@ -649,6 +702,7 @@ pub fn build_sprite_atlas(
         for &type_id in extra_building_types {
             for &color in &all_colors {
                 needed.insert(ShpSpriteKey {
+                    palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
                     type_id: type_id.to_string(),
                     facing: 0,
                     frame: 0,
@@ -712,6 +766,7 @@ pub fn build_sprite_atlas(
                         &anim.anim_type,
                         count,
                         key.house_color,
+                        attached_anim_palette_context(art_reg.anim_runtime_config(&anim.anim_type)),
                     );
 
                     for variant in [&anim.damaged_variant, &anim.garrisoned_variant] {
@@ -748,6 +803,9 @@ pub fn build_sprite_atlas(
                             variant_type,
                             count,
                             key.house_color,
+                            attached_anim_palette_context(
+                                art_reg.anim_runtime_config(variant_type),
+                            ),
                         );
                     }
                 }
@@ -755,6 +813,11 @@ pub fn build_sprite_atlas(
                 // Use bib name directly as atlas key so render can look it up.
                 if let Some(ref bib) = entry.bib_shape {
                     needed.insert(ShpSpriteKey {
+                        palette_context: if entry.terrain_palette {
+                            ShpPaletteContext::Cell
+                        } else {
+                            ShpPaletteContext::SelectedScheme
+                        },
                         type_id: bib.to_uppercase(),
                         facing: 0,
                         frame: 0,
@@ -788,6 +851,7 @@ pub fn build_sprite_atlas(
                 let count: u16 = make_frame_counts[&make_key];
                 for f in 0..count {
                     needed.insert(ShpSpriteKey {
+                        palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
                         type_id: make_key.clone(),
                         facing: 0,
                         frame: f,
@@ -825,6 +889,7 @@ pub fn build_sprite_atlas(
                     make_frame_counts.insert(make_key.clone(), frame_count);
                     for f in 0..frame_count {
                         needed.insert(ShpSpriteKey {
+                            palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
                             type_id: make_key.clone(),
                             facing: 0,
                             frame: f,
@@ -991,6 +1056,7 @@ pub fn build_sprite_atlas(
                     let frame_count: u16 = shp.frames.len() as u16;
                     for f in 0..frame_count {
                         needed.insert(ShpSpriteKey {
+                            palette_context: ShpPaletteContext::GlobalAnim,
                             type_id: pc.shp_name.clone(),
                             facing: 0,
                             frame: f,
@@ -1017,6 +1083,23 @@ pub fn build_sprite_atlas(
             }
         }
     }
+
+    let mut contextual = Vec::new();
+    for key in &needed {
+        if key.palette_context == ShpPaletteContext::Legacy
+            && effect_type_ids.contains(&key.type_id)
+        {
+            let mut global = key.clone();
+            global.palette_context = ShpPaletteContext::GlobalAnim;
+            global.house_color = HouseColorIndex(0);
+            contextual.push(global.clone());
+            if cell_drawer_type_ids.contains(&key.type_id.to_ascii_uppercase()) {
+                global.palette_context = ShpPaletteContext::Cell;
+                contextual.push(global);
+            }
+        }
+    }
+    needed.extend(contextual);
 
     if needed.is_empty() {
         log::info!("No SHP sprite entities found — keeping the current sprite atlas");
@@ -1050,7 +1133,27 @@ pub fn build_sprite_atlas(
         log::warn!("anim.pal not found — world effect SHPs will use unit.pal (wrong colors)");
     }
 
-    if !cell_drawer_type_ids.is_empty() && cell_palette.is_none() {
+    // BuildingType TerrainPalette (004612B4, DrawSHP 00705EC7) has the same
+    // palette owner as cell-drawer animations. Resolve the rules Image alias.
+    let mut cell_palette_type_ids = cell_drawer_type_ids.clone();
+    for key in &needed {
+        let base = key.type_id.strip_suffix("_MAKE").unwrap_or(&key.type_id);
+        let image = rules
+            .and_then(|r| r.object(base))
+            .map_or(base, |o| o.image.as_str());
+        if art
+            .and_then(|a| a.resolve_metadata_entry(base, image))
+            .is_some_and(|a| a.terrain_palette)
+        {
+            cell_palette_type_ids.insert(key.type_id.to_ascii_uppercase());
+        }
+    }
+    if (!cell_palette_type_ids.is_empty()
+        || needed
+            .iter()
+            .any(|k| k.palette_context == ShpPaletteContext::Cell))
+        && cell_palette.is_none()
+    {
         return abort_sprite_atlas_refresh(
             previous_atlas,
             Some(cached),
@@ -1064,12 +1167,9 @@ pub fn build_sprite_atlas(
         if cached_keys.contains(key) {
             continue;
         }
-        let pal: &Palette = match sprite_palette_choice(
-            &key.type_id,
-            art,
-            &effect_type_ids,
-            cell_drawer_type_ids,
-        ) {
+        let palette_choice =
+            sprite_palette_for_key(key, art, &effect_type_ids, &cell_palette_type_ids);
+        let pal: &Palette = match palette_choice {
             SpritePaletteChoice::Anim => effect_palette.as_ref().unwrap_or(palette),
             SpritePaletteChoice::Unit => palette,
             SpritePaletteChoice::CellIso => {
@@ -1079,6 +1179,10 @@ pub fn build_sprite_atlas(
         match render_shp_sprite(
             asset_manager,
             pal,
+            match key.palette_context {
+                ShpPaletteContext::Legacy => palette_choice != SpritePaletteChoice::CellIso,
+                _ => palette_choice == SpritePaletteChoice::Unit,
+            },
             key,
             theater_ext,
             theater_name,
@@ -1110,6 +1214,7 @@ pub fn build_sprite_atlas(
     // Uses anim.pal (effect palette) — no house color remap. Skip if already cached.
     let has_harvesters: bool = entities.values().any(|e| e.miner.is_some());
     let oregath_cached: bool = cached_keys.contains(&ShpSpriteKey {
+        palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
         type_id: "OREGATH".to_string(),
         facing: 0,
         frame: 0,
@@ -1275,6 +1380,7 @@ fn compute_building_bounds(
 fn render_shp_sprite(
     asset_manager: &AssetManager,
     palette: &Palette,
+    house_remap: bool,
     key: &ShpSpriteKey,
     theater_ext: &str,
     theater_name: &str,
@@ -1381,16 +1487,17 @@ fn render_shp_sprite(
     // the raw theater palette — matching the GPU voxel path (which samples row 0,
     // the unremapped [16,32) range) and the documented NO_REMAP intent.
     let remapped_pal: Palette;
-    let render_pal: &Palette = if key.house_color == crate::rules::house_colors::NO_REMAP {
-        palette
-    } else {
-        let default_ramps = HouseColorRamps::default();
-        let ramps = rules
-            .map(|r| &r.house_color_ramps)
-            .unwrap_or(&default_ramps);
-        remapped_pal = palette.with_house_colors(ramps.ramp(key.house_color));
-        &remapped_pal
-    };
+    let render_pal: &Palette =
+        if !house_remap || key.house_color == crate::rules::house_colors::NO_REMAP {
+            palette
+        } else {
+            let default_ramps = HouseColorRamps::default();
+            let ramps = rules
+                .map(|r| &r.house_color_ramps)
+                .unwrap_or(&default_ramps);
+            remapped_pal = palette.with_house_colors(ramps.ramp(key.house_color));
+            &remapped_pal
+        };
 
     let frame_rgba: Vec<u8> = match shp.frame_to_rgba(frame_idx, render_pal) {
         Ok(rgba) => rgba,
@@ -1440,6 +1547,7 @@ fn render_shp_sprite(
     Some(RenderedShpSprite {
         key: key.clone(),
         rgba: frame_rgba,
+        indices: frame.pixels.clone(),
         width: fw,
         height: fh,
         offset_x: offset_x + fx as f32,
@@ -1460,7 +1568,7 @@ pub fn canonical_infantry_facing(facing: u8) -> u8 {
 /// with no house color remap.
 ///
 /// Returns all 120 SHP frames (15 animation frames x 8 facings) as rendered sprites.
-/// Each frame is keyed as ShpSpriteKey { type_id: "OREGATH", facing: 0, frame: <shp_idx> }.
+/// Each frame is keyed by OREGATH, facing zero and its SHP frame index.
 /// At render time, the correct frame is: `facing_index * 15 + anim_frame`.
 fn render_harvest_overlay_frames(asset_manager: &AssetManager) -> Vec<RenderedShpSprite> {
     // Load effect palette (anim.pal).
@@ -1546,12 +1654,14 @@ fn render_harvest_overlay_frames(asset_manager: &AssetManager) -> Vec<RenderedSh
 
         sprites.push(RenderedShpSprite {
             key: ShpSpriteKey {
+                palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
                 type_id: "OREGATH".to_string(),
                 facing: 0,
                 frame: frame_idx as u16,
                 house_color: hc,
             },
             rgba: frame_rgba,
+            indices: frame.pixels.clone(),
             width: fw,
             height: fh,
             offset_x,
@@ -1569,6 +1679,25 @@ fn render_harvest_overlay_frames(asset_manager: &AssetManager) -> Vec<RenderedSh
 /// Sprites are packed into pages of at most `max_texture_dim × max_texture_dim`
 /// pixels each. Most maps fit in a single page; pages are added only when the
 /// total sprite area exceeds what one GPU texture can hold.
+fn blit_sprite_pixels(
+    sprite: &RenderedShpSprite,
+    position: [u32; 2],
+    page_width: u32,
+    rgba: &mut [u8],
+    indices: &mut [u8],
+) {
+    for y in 0..sprite.height {
+        let src = (y * sprite.width) as usize;
+        let dst = ((position[1] + y) * page_width + position[0]) as usize;
+        let width = sprite.width as usize;
+        rgba[dst * 4..(dst + width) * 4].copy_from_slice(&sprite.rgba[src * 4..(src + width) * 4]);
+        indices[dst..dst + width].copy_from_slice(&sprite.indices[src..src + width]);
+    }
+}
+
+#[cfg(test)]
+pub(crate) use tests::native_palette_probe_page;
+
 fn pack_sprites(
     gpu: &GpuContext,
     batch: &BatchRenderer,
@@ -1660,6 +1789,7 @@ fn pack_sprites(
             .unwrap_or(1);
 
         let mut rgba: Vec<u8> = vec![0u8; (atlas_width * page_height * 4) as usize];
+        let mut source_indices = vec![0u8; (atlas_width * page_height) as usize];
         let aw: f32 = atlas_width as f32;
         let ah: f32 = page_height as f32;
 
@@ -1668,16 +1798,13 @@ fn pack_sprites(
             let w: u32 = rs.width;
             let h: u32 = rs.height;
 
-            // Blit sprite RGBA into page buffer.
-            for y in 0..h {
-                let src_start: usize = (y * w * 4) as usize;
-                let src_end: usize = src_start + (w * 4) as usize;
-                let dst_start: usize = (((p.py + y) * atlas_width + p.px) * 4) as usize;
-                let dst_end: usize = dst_start + (w * 4) as usize;
-                if src_end <= rs.rgba.len() && dst_end <= rgba.len() {
-                    rgba[dst_start..dst_end].copy_from_slice(&rs.rgba[src_start..src_end]);
-                }
-            }
+            blit_sprite_pixels(
+                rs,
+                [p.px, p.py],
+                atlas_width,
+                &mut rgba,
+                &mut source_indices,
+            );
 
             entries.insert(
                 rs.key.clone(),
@@ -1694,7 +1821,13 @@ fn pack_sprites(
             );
         }
 
-        let texture: BatchTexture = batch.create_texture(gpu, &rgba, atlas_width, page_height);
+        let texture: BatchTexture = batch.create_texture_with_indices(
+            gpu,
+            &rgba,
+            atlas_width,
+            page_height,
+            Some(&source_indices),
+        );
         pages.push(SpriteAtlasPage { texture });
     }
 
@@ -1734,3 +1867,17 @@ fn simulate_shelf_height(
 #[cfg(test)]
 #[path = "sprite_atlas_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+impl SpriteAtlas {
+    pub(crate) fn from_test_pages(pages: Vec<SpriteAtlasPage>) -> Self {
+        Self {
+            pages,
+            entries: HashMap::new(),
+            make_frame_counts: HashMap::new(),
+            active_anim_frame_counts: HashMap::new(),
+            building_bounds: HashMap::new(),
+            rendered_cache: Vec::new(),
+        }
+    }
+}

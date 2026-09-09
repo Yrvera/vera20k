@@ -38,6 +38,8 @@ pub(crate) struct PlannedBuildingPieceInstance {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GroundTexture {
     OverlayAtlas,
+    /// Per-piece native destination edit; never a texture-only coalesced draw.
+    TerrainStatic(crate::render::terrain_draw::TerrainPiece),
     UnitAtlasPage(usize),
     UnitTransitionPage(usize),
     ShpPage(usize),

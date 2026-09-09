@@ -128,6 +128,14 @@ fn resolve_body_frame(
 /// so the prefix can never drift between sides.
 pub const SMUDGE_KEY_PREFIX: &str = "__smudge::";
 
+/// Separate source identity for Terrain DrawIt's paired second-half stencil.
+pub fn terrain_shadow_key(name: &str) -> OverlaySpriteKey {
+    OverlaySpriteKey {
+        name: format!("__terrain_shadow::{}", name.to_uppercase()),
+        frame: 0,
+    }
+}
+
 /// Build the canonical OverlayAtlas key for a smudge SHP.
 ///
 /// Frame is always 0 — the per-cell draw of every multi-cell smudge footprint
@@ -371,12 +379,28 @@ pub struct OverlayAtlas {
     /// Terrain objects with animation: name → total frame count.
     /// Only populated for terrain objects whose SHP has more than 1 frame.
     terrain_anim_frames: HashMap<String, u8>,
+    native_static_terrain: HashSet<String>,
 }
 
 impl OverlayAtlas {
     /// Look up the atlas entry for a given (name, frame) pair.
     pub fn get(&self, key: &OverlaySpriteKey) -> Option<&OverlaySpriteEntry> {
         self.entries.get(key)
+    }
+
+    /// Static two-frame extended SHP pair decoded from the same source file.
+    pub fn native_static_terrain_pair(
+        &self,
+        name: &str,
+    ) -> Option<(&OverlaySpriteEntry, &OverlaySpriteEntry)> {
+        self.native_static_terrain.contains(name).then_some(())?;
+        Some((
+            self.get(&OverlaySpriteKey {
+                name: name.to_owned(),
+                frame: 0,
+            })?,
+            self.get(&terrain_shadow_key(name))?,
+        ))
     }
 
     /// Number of unique sprites in the atlas.
@@ -395,6 +419,7 @@ impl OverlayAtlas {
 struct RenderedOverlay {
     key: OverlaySpriteKey,
     rgba: Vec<u8>,
+    source_indices: Vec<u8>,
     width: u32,
     height: u32,
     offset_x: f32,
@@ -516,6 +541,8 @@ pub fn build_overlay_atlas(
     // For terrain objects, probe SHP frame counts. Animated objects (flags, etc.)
     // need all frames loaded; static objects just need frame 0.
     let mut terrain_anim_frames: HashMap<String, u8> = HashMap::new();
+    let mut native_static_candidates = HashSet::new();
+    let mut native_static_terrain = HashSet::new();
     for obj in terrain_objects {
         if terrain_anim_frames.contains_key(&obj.name)
             || needed.contains(&OverlaySpriteKey {
@@ -534,6 +561,13 @@ pub fn build_overlay_atlas(
             rules_ini,
             art_registry,
         );
+        let ordinary_static = rules_ini.section(&obj.name).is_none_or(|s| {
+            !s.get_bool("IsAnimated").unwrap_or(false)
+                && !s.get_bool("SpawnsTiberium").unwrap_or(false)
+        }) && overlay_registry.flags_by_name(&obj.name).is_none();
+        if frame_count == 1 && ordinary_static {
+            native_static_candidates.insert(obj.name.clone());
+        }
         if frame_count > 1 {
             terrain_anim_frames.insert(obj.name.clone(), frame_count);
             for frame in 0..frame_count {
@@ -599,9 +633,14 @@ pub fn build_overlay_atlas(
             art_registry,
             &flags,
             spawns_tiberium,
+            native_static_candidates.contains(&key.name),
         ) {
-            Some(sprite) => {
+            Some((sprite, shadow)) => {
                 rendered.push(sprite);
+                if let Some(shadow) = shadow {
+                    native_static_terrain.insert(key.name.clone());
+                    rendered.push(shadow);
+                }
             }
             None => {
                 load_fail_count += 1;
@@ -689,6 +728,7 @@ pub fn build_overlay_atlas(
         batch,
         &rendered,
         terrain_anim_frames,
+        native_static_terrain,
     ))
 }
 
@@ -706,7 +746,8 @@ fn render_overlay_sprite(
     art_registry: &ArtRegistry,
     flags: &OverlayTypeFlags,
     spawns_tiberium: bool,
-) -> Option<RenderedOverlay> {
+    native_static: bool,
+) -> Option<(RenderedOverlay, Option<RenderedOverlay>)> {
     let image_id: String = art_registry.resolve_overlay_image_id(&key.name, rules_ini);
     let mut candidates: Vec<String> = art_data::overlay_shp_candidates(
         Some(art_registry),
@@ -785,18 +826,42 @@ fn render_overlay_sprite(
         .collect();
     let frame_idx: usize = resolve_body_frame(key.frame, max_normal_frame, &frame_sizes)?;
 
-    let frame = &shp.frames[frame_idx];
-
-    let frame_rgba: Vec<u8> = match shp.frame_to_rgba(frame_idx, palette) {
-        Ok(rgba) => rgba,
-        Err(_) => return None,
-    };
-
     let y_offset: f32 = if spawns_tiberium {
         -15.0
     } else {
         flags.y_draw_offset()
     };
+    let body = render_decoded_overlay_frame(&shp, palette, key.clone(), frame_idx, y_offset)?;
+    // Ordinary static 71C1B0 body/shadow pair. Extended format dispatch and
+    // both cropped rectangles are proven for TREE01; animated/death and raw
+    // frame leaf families remain outside this increment.
+    let shadow = native_static_shadow_frame(&shp, frame_idx, native_static).and_then(|frame| {
+        render_decoded_overlay_frame(&shp, palette, terrain_shadow_key(&key.name), frame, 0.0)
+    });
+    Some((body, shadow))
+}
+
+fn native_static_shadow_frame(shp: &ShpFile, frame: usize, ordinary_static: bool) -> Option<usize> {
+    (ordinary_static
+        && frame == 0
+        && shp.frames.len() == 2
+        && shp
+            .frames
+            .iter()
+            .all(|f| f.format & 2 != 0 && f.frame_width > 0 && f.frame_height > 0))
+    .then_some(1)
+}
+
+/// Retain the literal palette index/stencil next to decoded RGB. No palette
+/// color, including black, substitutes for source-zero transparency.
+fn render_decoded_overlay_frame(
+    shp: &ShpFile,
+    palette: &Palette,
+    key: OverlaySpriteKey,
+    frame_idx: usize,
+    y_offset: f32,
+) -> Option<RenderedOverlay> {
+    let frame = shp.frames.get(frame_idx)?;
     let (offset_x, offset_y) = stored_frame_offset(
         shp.width,
         shp.height,
@@ -804,10 +869,10 @@ fn render_overlay_sprite(
         frame.frame_y,
         y_offset,
     );
-
     Some(RenderedOverlay {
-        key: key.clone(),
-        rgba: frame_rgba,
+        key,
+        rgba: shp.frame_to_rgba(frame_idx, palette).ok()?,
+        source_indices: frame.pixels.clone(),
         width: u32::from(frame.frame_width),
         height: u32::from(frame.frame_height),
         offset_x,
@@ -922,16 +987,18 @@ pub fn compute_overlay_radar_colors(
         let flags = overlay_registry.flags(overlay_id);
         let is_tiberium = flags.is_some_and(|flags| flags.tiberium);
         let shp = if is_tiberium {
-            flags.and_then(|flags| flags.cell_anim.as_deref()).and_then(|anim| {
-                let image_id = art_registry.resolve_effective_image_id(anim, anim);
-                load(art_data::anim_shp_candidates(
-                    Some(art_registry),
-                    anim,
-                    &image_id,
-                    theater_ext,
-                    theater_name,
-                ))
-            })
+            flags
+                .and_then(|flags| flags.cell_anim.as_deref())
+                .and_then(|anim| {
+                    let image_id = art_registry.resolve_effective_image_id(anim, anim);
+                    load(art_data::anim_shp_candidates(
+                        Some(art_registry),
+                        anim,
+                        &image_id,
+                        theater_ext,
+                        theater_name,
+                    ))
+                })
         } else {
             let image_id = art_registry.resolve_overlay_image_id(name, rules_ini);
             load(art_data::overlay_shp_candidates(
@@ -949,12 +1016,7 @@ pub fn compute_overlay_radar_colors(
 
     let mut result: HashMap<(u8, u8), [u8; 3]> = HashMap::new();
     for (&overlay_id, shp) in &shp_cache {
-        for (frame, header) in shp
-            .frames
-            .iter()
-            .take(usize::from(u8::MAX) + 1)
-            .enumerate()
-        {
+        for (frame, header) in shp.frames.iter().take(usize::from(u8::MAX) + 1).enumerate() {
             if let Ok(frame) = u8::try_from(frame) {
                 // Black is data, not an absence sentinel (e.g. retail bridge.tem).
                 result.insert((overlay_id, frame), header.radar_color);
@@ -1061,6 +1123,7 @@ fn render_smudge_sprite(
     let full_w: u32 = shp.width as u32;
     let full_h: u32 = shp.height as u32;
     let mut full_rgba: Vec<u8> = vec![0u8; (full_w * full_h * 4) as usize];
+    let mut full_indices = vec![0u8; (full_w * full_h) as usize];
 
     let fw: u32 = frame.frame_width as u32;
     let fh: u32 = frame.frame_height as u32;
@@ -1079,6 +1142,10 @@ fn render_smudge_sprite(
         if src_off + bytes <= frame_rgba.len() && dst_off + bytes <= full_rgba.len() {
             full_rgba[dst_off..dst_off + bytes]
                 .copy_from_slice(&frame_rgba[src_off..src_off + bytes]);
+            let source = (y * fw) as usize;
+            let destination = (dst_y * full_w + fx) as usize;
+            full_indices[destination..destination + copy_w as usize]
+                .copy_from_slice(&frame.pixels[source..source + copy_w as usize]);
         }
     }
 
@@ -1088,6 +1155,7 @@ fn render_smudge_sprite(
     Some(RenderedOverlay {
         key: smudge_key(key_name),
         rgba: full_rgba,
+        source_indices: full_indices,
         width: full_w,
         height: full_h,
         offset_x,
@@ -1101,6 +1169,73 @@ mod radar_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn static_extended_pair_preserves_source_indices_through_decode_and_atlas_copy() {
+        use super::*;
+        // Original TREE01 stored canvas/frame offsets; synthetic one-row RLE
+        // payloads isolate index ownership, including nonzero black colors.
+        let mut bytes = vec![0u8; 56];
+        for (offset, value) in [(2, 155u16), (4, 155), (6, 2)] {
+            bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        for (frame, x, y, payload) in [
+            (0usize, 61u16, 1u16, vec![1u8, 0, 1, 240, 255]),
+            (1, 79, 43, vec![0, 1, 1, 0, 1, 254]),
+        ] {
+            let h = 8 + frame * 24;
+            for (off, value) in [(0, x), (2, y), (4, 4), (6, 1)] {
+                bytes[h + off..h + off + 2].copy_from_slice(&value.to_le_bytes());
+            }
+            bytes[h + 8] = 3;
+            let offset = bytes.len() as u32;
+            bytes[h + 20..h + 24].copy_from_slice(&offset.to_le_bytes());
+            bytes.extend_from_slice(&((payload.len() + 2) as u16).to_le_bytes());
+            bytes.extend_from_slice(&payload);
+        }
+        let mut shp = ShpFile::from_bytes(&bytes).unwrap();
+        assert_eq!(native_static_shadow_frame(&shp, 0, true), Some(1));
+        assert_eq!(native_static_shadow_frame(&shp, 0, false), None);
+        assert_eq!(native_static_shadow_frame(&shp, 1, true), None);
+        let palette = Palette::from_bytes(&[0u8; 768]).unwrap();
+        let key = OverlaySpriteKey {
+            name: "TREE01".into(),
+            frame: 0,
+        };
+        let body = render_decoded_overlay_frame(&shp, &palette, key.clone(), 0, 0.0).unwrap();
+        let shadow_key = terrain_shadow_key("TREE01");
+        let shadow =
+            render_decoded_overlay_frame(&shp, &palette, shadow_key.clone(), 1, 0.0).unwrap();
+        assert_eq!((body.offset_x, body.offset_y), (-16.0, -76.0));
+        assert_eq!((shadow.offset_x, shadow.offset_y), (2.0, -34.0));
+        assert_eq!(body.source_indices, [1, 0, 240, 255]);
+        assert_eq!(shadow.source_indices, [0, 1, 0, 254]);
+        assert_eq!(body.rgba[..8], [0, 0, 0, 255, 0, 0, 0, 0]);
+        let packed = pack_overlay_pixels(&[body, shadow], 64);
+        for (key, expected) in [(key, [1u8, 0, 240, 255]), (shadow_key, [0, 1, 0, 254])] {
+            let entry = &packed.entries[&key];
+            let x = (entry.uv_origin[0] * packed.width as f32).round() as usize;
+            let y = (entry.uv_origin[1] * packed.height as f32).round() as usize;
+            let start = y * packed.width as usize + x;
+            assert_eq!(packed.source_indices[start..start + 4], expected);
+            for (j, index) in expected.into_iter().enumerate() {
+                assert_eq!(
+                    packed.rgba[(start + j) * 4 + 3],
+                    if index == 0 { 0 } else { 255 }
+                );
+            }
+            assert_eq!(
+                packed.source_indices[start + 4],
+                0,
+                "atlas padding must not become a stencil pixel"
+            );
+        }
+        shp.frames[1].format = 0;
+        assert_eq!(native_static_shadow_frame(&shp, 0, true), None);
+        shp.frames[1].format = 3;
+        shp.frames[1].frame_width = 0;
+        assert_eq!(native_static_shadow_frame(&shp, 0, true), None);
+    }
+
     use std::fmt::Write as _;
 
     use super::{
@@ -1417,7 +1552,48 @@ fn pack_overlay_sprites(
     batch: &BatchRenderer,
     sprites: &[RenderedOverlay],
     terrain_anim_frames: HashMap<String, u8>,
+    native_static_terrain: HashSet<String>,
 ) -> OverlayAtlas {
+    let PackedOverlaySprites {
+        rgba,
+        source_indices,
+        entries,
+        width: atlas_width,
+        height: atlas_height,
+    } = pack_overlay_pixels(sprites, gpu.device.limits().max_texture_dimension_2d);
+    log::info!(
+        "Overlay atlas: {}x{} px ({:.1} MB), {} sprites",
+        atlas_width,
+        atlas_height,
+        (atlas_width as u64 * atlas_height as u64 * 5) as f64 / (1024.0 * 1024.0),
+        entries.len()
+    );
+
+    let texture: BatchTexture = batch.create_texture_with_indices(
+        gpu,
+        &rgba,
+        atlas_width,
+        atlas_height,
+        Some(&source_indices),
+    );
+    OverlayAtlas {
+        texture,
+        entries,
+        terrain_anim_frames,
+        native_static_terrain,
+    }
+}
+
+struct PackedOverlaySprites {
+    rgba: Vec<u8>,
+    source_indices: Vec<u8>,
+    entries: HashMap<OverlaySpriteKey, OverlaySpriteEntry>,
+    width: u32,
+    height: u32,
+}
+
+/// One placement/copy owner for both atlas planes, used by the real GPU upload.
+fn pack_overlay_pixels(sprites: &[RenderedOverlay], max_texture_dim: u32) -> PackedOverlaySprites {
     // Sort by height descending for shelf packing efficiency.
     let mut indices: Vec<usize> = (0..sprites.len()).collect();
     indices.sort_by(|&a, &b| sprites[b].height.cmp(&sprites[a].height));
@@ -1429,7 +1605,6 @@ fn pack_overlay_sprites(
         })
         .sum();
     let estimated_side: u32 = (total_area as f64).sqrt().ceil() as u32;
-    let max_texture_dim: u32 = gpu.device.limits().max_texture_dimension_2d;
     let mut atlas_width: u32 = estimated_side.clamp(64, max_texture_dim);
 
     // Shelf-pack with retry: widen atlas if height exceeds GPU texture limit.
@@ -1476,6 +1651,7 @@ fn pack_overlay_sprites(
     }
 
     let mut rgba: Vec<u8> = vec![0u8; (atlas_width * atlas_height * 4) as usize];
+    let mut source_indices = vec![0u8; (atlas_width * atlas_height) as usize];
     let mut entries: HashMap<OverlaySpriteKey, OverlaySpriteEntry> =
         HashMap::with_capacity(placements.len());
     let aw: f32 = atlas_width as f32;
@@ -1493,6 +1669,8 @@ fn pack_overlay_sprites(
             let dst_end: usize = dst_start + (w * 4) as usize;
             if src_end <= spr.rgba.len() && dst_end <= rgba.len() {
                 rgba[dst_start..dst_end].copy_from_slice(&spr.rgba[src_start..src_end]);
+                source_indices[dst_start / 4..dst_end / 4]
+                    .copy_from_slice(&spr.source_indices[src_start / 4..src_end / 4]);
             }
         }
 
@@ -1508,18 +1686,23 @@ fn pack_overlay_sprites(
         );
     }
 
-    log::info!(
-        "Overlay atlas: {}x{} px ({:.1} MB), {} sprites",
-        atlas_width,
-        atlas_height,
-        (atlas_width as u64 * atlas_height as u64 * 4) as f64 / (1024.0 * 1024.0),
-        entries.len()
-    );
-
-    let texture: BatchTexture = batch.create_texture(gpu, &rgba, atlas_width, atlas_height);
-    OverlayAtlas {
-        texture,
+    PackedOverlaySprites {
+        rgba,
+        source_indices,
         entries,
-        terrain_anim_frames,
+        width: atlas_width,
+        height: atlas_height,
+    }
+}
+
+#[cfg(test)]
+impl OverlayAtlas {
+    pub(crate) fn from_test_texture(texture: BatchTexture) -> Self {
+        Self {
+            texture,
+            entries: HashMap::new(),
+            terrain_anim_frames: HashMap::new(),
+            native_static_terrain: HashSet::new(),
+        }
     }
 }

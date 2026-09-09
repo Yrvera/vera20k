@@ -16,6 +16,9 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+#[path = "unit_shadow_cache.rs"]
+mod shadow_cache;
+
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::hva_file::HvaFile;
 use crate::assets::vpl_file::VplFile;
@@ -43,6 +46,9 @@ const UNIT_FACING_STEP: u8 = 8;
 /// `u16` for arithmetic headroom against the step; `bucket * step` stays below 256, so
 /// the facing derived from a bucket is still a byte.
 const UNIT_FACING_BUCKETS: u16 = crate::render::vxl_raster::VOXEL_FACING_STEPS as u16;
+// Private atlas companion, never a native HVA frame. It preserves the existing
+// geometry when a prepared native shadow's runtime caller is unsupported.
+pub(crate) const LEGACY_SHADOW_FRAME: u32 = u32::MAX;
 /// Turret/barrel facing quantization step: 8 = 32 buckets (11.25° per bucket).
 ///
 /// Turret and barrel matrices go through the same 5-bit facing quantization as the
@@ -126,6 +132,9 @@ pub struct UnitAtlas {
     pub gpu_rendered: u32,
     /// How many sprites were rendered via CPU rasterizer in the last build.
     pub cpu_rendered: u32,
+    /// First eligible composed-body mask for each supported shadow key.
+    /// Atlas repacking retains these pixels; it does not regenerate the mask.
+    shadow_masks: std::cell::RefCell<HashMap<UnitSpriteKey, Vec<u8>>>,
 }
 
 impl UnitAtlas {
@@ -474,15 +483,6 @@ pub fn build_unit_atlas(
                     }
                 });
 
-        // Upload VPL to GPU compute renderer if available.
-        // Palette upload no longer needed: atlas tiles store post-VPL palette
-        // indices and the fragment shader does the RGB lookup at draw time.
-        if let Some(ref mut comp) = compute {
-            if let Some(ref vpl_file) = vpl {
-                comp.upload_vpl(&gpu.device, &gpu.queue, vpl_file);
-            }
-        }
-
         for key in &new_keys {
             match render_unit_sprite(
                 asset_manager,
@@ -494,6 +494,26 @@ pub fn build_unit_atlas(
                 gpu,
             ) {
                 Some((sprite, used_gpu, native_draw_bounds)) => {
+                    if key.layer == VxlLayer::Shadow && native_draw_bounds.is_some() {
+                        let mut fallback_key = key.clone();
+                        fallback_key.frame = LEGACY_SHADOW_FRAME;
+                        if let Some((fallback, _, _)) = render_unit_sprite(
+                            asset_manager,
+                            &fallback_key,
+                            rules,
+                            art,
+                            vpl.as_ref(),
+                            None,
+                            gpu,
+                        ) {
+                            cached.push(CachedUnitSprite::from_rendered(RenderedSprite {
+                                key: fallback_key,
+                                sprite: fallback,
+                                native_draw_bounds: None,
+                            }));
+                            cpu_rendered += 1;
+                        }
+                    }
                     if used_gpu {
                         gpu_rendered += 1;
                     } else {
@@ -547,6 +567,9 @@ pub fn build_unit_atlas(
     atlas.rendered_cache = cached;
     atlas.gpu_rendered = gpu_rendered;
     atlas.cpu_rendered = cpu_rendered;
+    if let Some(previous) = previous_atlas.as_ref() {
+        atlas.restore_shadow_masks(&gpu.queue, previous.shadow_masks.borrow().clone());
+    }
     let page_dimensions = atlas
         .pages
         .iter()
@@ -621,12 +644,35 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
             });
 
     let params: VxlRenderParams = VxlRenderParams {
-        frame: key.frame,
+        frame: if key.layer == VxlLayer::Shadow && key.frame == LEGACY_SHADOW_FRAME {
+            0
+        } else {
+            key.frame
+        },
         facing: key.facing, // already quantized by atlas key generation
         slope_type: key.slope_type,
         slope_blend,
         ..VxlRenderParams::default()
     };
+    // Ordinary ground, single-section ShadowIndex/frame-zero geometry. Keep
+    // aircraft scaling and unsupported callers on the existing path.
+    if key.layer == VxlLayer::Shadow
+        && key.frame == 0
+        && rules.and_then(|r| r.object(&key.type_id)).is_some_and(|o| {
+            o.locomotor == crate::rules::locomotor_type::LocomotorKind::Drive
+                && !o.considered_aircraft
+        })
+    {
+        if let Some(sprite) = vxl_raster::shadow::render(&vxl, hva.as_ref(), &params) {
+            let bounds = [
+                sprite.offset_x as i32,
+                sprite.offset_y as i32,
+                sprite.width as i32,
+                sprite.height as i32,
+            ];
+            return Some((sprite, false, Some(bounds)));
+        }
+    }
     let native_draw_bounds = native_unit_sprite_draw_bounds(
         asset_manager,
         &vxl,
@@ -640,125 +686,33 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
     // does it via per-instance DrawState::remap_row + house_ramp texture lookup.
     // The rasterizer outputs post-VPL palette indices directly.
 
-    // Branch based on layer: Composite renders all parts together,
-    // Body/Turret/Barrel render only the requested part.
-    //
-    // GPU compute path: available when `compute` is Some and VPL is loaded.
-    // For Composite: all limbs from body+turret+barrel are splatted into one
-    // atomic framebuffer — atomicMin handles depth compositing automatically.
-    // For separated layers: falls back to CPU (needs per-layer depth buffer).
-    let use_gpu: bool = compute.is_some() && vpl.is_some() && key.layer == VxlLayer::Composite;
-
-    let sprite: VxlSprite = if use_gpu {
-        // GPU compute path for Composite layer.
-        let comp = compute.as_deref_mut().unwrap();
-
-        // Prepare limb data for all VXLs (body + turret + barrel).
-        let mut all_limb_data = Vec::new();
-
-        let (body_limbs, _body_fp) = vxl_raster::prepare_limb_data(&vxl, hva.as_ref(), &params);
-        all_limb_data.extend(body_limbs);
-
-        // Turret VXL.
-        let tur_vxl_name = format!("{}TUR.VXL", image);
-        if let Some(tur_data) = asset_manager.get_ref(&tur_vxl_name) {
-            if let Ok(tur_vxl) = VxlFile::from_bytes(tur_data) {
-                let tur_hva_name = format!("{}TUR.HVA", image);
-                let tur_hva = asset_manager
-                    .get_ref(&tur_hva_name)
-                    .and_then(|d| HvaFile::from_bytes(d).ok());
-                let (tur_limbs, _) =
-                    vxl_raster::prepare_limb_data(&tur_vxl, tur_hva.as_ref(), &params);
-                all_limb_data.extend(tur_limbs);
-            }
-        }
-
-        // Barrel VXL (try BARL then BARREL).
-        let barl_vxl_name = format!("{}BARL.VXL", image);
-        let barrel_vxl_name = format!("{}BARREL.VXL", image);
-        let barl_data = asset_manager
-            .get_ref(&barl_vxl_name)
-            .or_else(|| asset_manager.get_ref(&barrel_vxl_name));
-        if let Some(bd) = barl_data {
-            if let Ok(barl_vxl) = VxlFile::from_bytes(bd) {
-                let barl_hva_name = format!("{}BARL.HVA", image);
-                let barrel_hva_name = format!("{}BARREL.HVA", image);
-                let barl_hva = asset_manager
-                    .get_ref(&barl_hva_name)
-                    .or_else(|| asset_manager.get_ref(&barrel_hva_name))
-                    .and_then(|d| HvaFile::from_bytes(d).ok());
-                let (barl_limbs, _) =
-                    vxl_raster::prepare_limb_data(&barl_vxl, barl_hva.as_ref(), &params);
-                all_limb_data.extend(barl_limbs);
-            }
-        }
-
-        if all_limb_data.is_empty() {
-            return None;
-        }
-
-        // Compute max footprint across all limbs.
-        let max_fp: f32 = all_limb_data
-            .iter()
-            .map(|ld| vxl_raster::compute_voxel_footprint(&ld.combined, params.scale))
-            .fold(1.0f32, f32::max);
-
-        let bounds = vxl_raster::compute_sprite_bounds(&all_limb_data, params.scale, max_fp);
-
-        // Build GpuLimb list from LimbRenderData + VXL sparse voxels.
-        // We need to map each LimbRenderData back to its VXL's sparse voxel list.
-        // Since prepare_limb_data skips empty limbs, we rebuild from the grids.
-        use crate::render::vxl_compute::GpuLimb;
-        let gpu_limbs: Vec<GpuLimb> = all_limb_data
-            .iter()
-            .map(|ld| {
-                // Extract non-empty voxels from the dense grid.
-                let sy = ld.size_y as usize;
-                let sz = ld.size_z as usize;
-                let mut positions = Vec::new();
-                let mut data = Vec::new();
-                for x in 0..ld.size_x as usize {
-                    for y in 0..sy {
-                        for z in 0..sz {
-                            let idx = x * sy * sz + y * sz + z;
-                            let packed = ld.grid[idx];
-                            if packed == 0 {
-                                continue;
-                            }
-                            let color = (packed >> 8) as u8;
-                            let normal = (packed & 0xFF) as u8;
-                            positions.push(x as u32 | ((y as u32) << 8) | ((z as u32) << 16));
-                            data.push(color as u32 | ((normal as u32) << 8));
-                        }
-                    }
-                }
-                GpuLimb {
-                    positions,
-                    data,
-                    vpl_pages: ld.vpl_pages,
-                    combined: ld.combined,
-                }
-            })
-            .collect();
-
-        let palette_indices =
-            comp.render_sprite(&gpu.device, &gpu.queue, &gpu_limbs, &bounds, params.scale);
-
-        VxlSprite {
-            palette_indices,
-            depth: vec![],
-            width: bounds.width,
-            height: bounds.height,
-            offset_x: bounds.offset_x,
-            offset_y: bounds.offset_y,
-        }
+    // One native VXL draw has one center and section order. Parts keep their
+    // independent native crops and existing CPU composition; merging their
+    // sections into one GPU center has no established native equivalent.
+    let has_parts = ["TUR", "BARL", "BARREL"].iter().any(|suffix| {
+        asset_manager
+            .get_ref(&format!("{image}{suffix}.VXL"))
+            .is_some()
+    });
+    let mut used_gpu = false;
+    let gpu_sprite = if key.layer == VxlLayer::Composite && !has_parts {
+        compute.as_deref_mut().and_then(|renderer| {
+            let draw = vxl_raster::prepare_native_draw(&vxl, hva.as_ref(), &params, vpl)?;
+            renderer.render_native(&gpu.device, &gpu.queue, &draw)
+        })
+    } else {
+        None
+    };
+    let sprite: VxlSprite = if let Some(sprite) = gpu_sprite {
+        used_gpu = true;
+        sprite
     } else {
         // CPU fallback path.
         match key.layer {
             VxlLayer::Composite => {
                 composite_unit_vxl_cpu(asset_manager, &vxl, hva.as_ref(), &image, &params, vpl)
             }
-            VxlLayer::Shadow => vxl_raster::render_vxl_shadow(&vxl, hva.as_ref(), &params),
+            VxlLayer::Shadow => vxl_raster::render_legacy_vxl_shadow(&vxl, hva.as_ref(), &params),
             VxlLayer::Body | VxlLayer::Turret | VxlLayer::Barrel => {
                 let body_sprite: VxlSprite =
                     vxl_raster::render_vxl(&vxl, hva.as_ref(), &params, vpl);
@@ -807,7 +761,7 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
         return None;
     }
 
-    Some((sprite, use_gpu, native_draw_bounds))
+    Some((sprite, used_gpu, native_draw_bounds))
 }
 
 /// Metadata follows the requested VXL, not the union-sized texture canvas
@@ -910,6 +864,9 @@ fn render_optional_layer(
 }
 
 /// Composite body/turret/barrel layers using depth-correct Z-buffer merging.
+/// VERA-internal retained part composition; gamemd equivalence is UNCHECKED.
+/// Native one-VXL visibility/crop proof does not establish relative part
+/// matrices or final body/turret/barrel surface-blit ordering.
 /// Each layer's per-pixel depth is compared against the shared depth buffer,
 /// so turret voxels behind the body are correctly occluded (and vice versa).
 /// Pixels are palette indices (1 byte each); byte 0 = transparent.
@@ -1263,7 +1220,17 @@ fn pack_sprites(
     sprites: &[CachedUnitSprite],
     frame_counts: BTreeMap<(String, VxlLayer), u32>,
 ) -> Result<UnitAtlas, UnitAtlasPackError> {
-    let max_texture_dim: u32 = gpu.device.limits().max_texture_dimension_2d;
+    pack_sprites_on_device(&gpu.device, &gpu.queue, batch, sprites, frame_counts)
+}
+
+fn pack_sprites_on_device(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    batch: &BatchRenderer,
+    sprites: &[CachedUnitSprite],
+    frame_counts: BTreeMap<(String, VxlLayer), u32>,
+) -> Result<UnitAtlas, UnitAtlasPackError> {
+    let max_texture_dim: u32 = device.limits().max_texture_dimension_2d;
     let plan = plan_cached_sprite_pages(sprites, max_texture_dim)?;
     if plan.page_heights.len() > 1 {
         log::info!(
@@ -1319,7 +1286,13 @@ fn pack_sprites(
                 },
             );
         }
-        let texture = batch.create_unit_atlas_texture(gpu, plan.page_width, page_height, &pixels);
+        let texture = batch.create_unit_atlas_texture_on_device(
+            device,
+            queue,
+            plan.page_width,
+            page_height,
+            &pixels,
+        );
         pages.push(UnitAtlasPage { texture });
     }
 
@@ -1330,6 +1303,7 @@ fn pack_sprites(
         rendered_cache: Vec::new(), // caller sets this after packing
         gpu_rendered: 0,            // caller sets after rendering
         cpu_rendered: 0,
+        shadow_masks: Default::default(),
     })
 }
 
@@ -1348,3 +1322,18 @@ fn plan_cached_sprite_pages(
 #[cfg(test)]
 #[path = "unit_atlas_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+impl UnitAtlas {
+    pub(crate) fn from_test_pages(pages: Vec<UnitAtlasPage>) -> Self {
+        Self {
+            pages,
+            entries: HashMap::new(),
+            frame_counts: BTreeMap::new(),
+            rendered_cache: Vec::new(),
+            gpu_rendered: 0,
+            cpu_rendered: 0,
+            shadow_masks: Default::default(),
+        }
+    }
+}

@@ -32,6 +32,9 @@ pub struct BasicSection {
     pub new_ini_format: Option<i32>,
     /// Whether tiberium/ore growth is enabled for this map (TiberiumGrowthEnabled=).
     pub tiberium_growth_enabled: Option<bool>,
+    /// Native Scenario+34A4 (`0068A5E3..0068A61A`). Missing/invalid keys
+    /// preserve the caller's prior value; a fresh scenario resets it to false.
+    pub free_radar: Option<bool>,
 }
 
 /// Parsed flags from a map's `[SpecialFlags]` section.
@@ -79,6 +82,7 @@ pub fn parse_basic_section(ini: &IniFile) -> BasicSection {
         theme: section.get("Theme").map(str::to_string),
         new_ini_format: section.get_i32("NewINIFormat"),
         tiberium_growth_enabled: section.get_bool("TiberiumGrowthEnabled"),
+        free_radar: section.get_bool("FreeRadar"),
     }
 }
 
@@ -124,6 +128,39 @@ mod tests {
         let ini = IniFile::from_str("[Map]\nTheater=TEMPERATE\n");
         let basic = parse_basic_section(&ini);
         assert_eq!(basic, BasicSection::default());
+    }
+
+    #[test]
+    fn free_radar_preserves_original_bool_tokens_and_supplied_default() {
+        let original: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/free_radar_oracle/fixtures/native-free-radar.json"
+        ))
+        .unwrap();
+        let cases = original["parser_cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 28);
+        for case in cases {
+            let key = case["token"]
+                .as_str()
+                .map(|token| format!("FreeRadar={token}\n"))
+                .unwrap_or_default();
+            let parsed =
+                parse_basic_section(&IniFile::from_str(&format!("[Basic]\n{key}"))).free_radar;
+            let prior = case["prior"].as_u64().unwrap() != 0;
+            assert_eq!(
+                parsed.unwrap_or(prior),
+                case["stored"].as_u64().unwrap() != 0,
+                "original CCINI token/default {case}"
+            );
+            if case["token"].is_null()
+                || matches!(case["token"].as_str(), Some("" | "invalid" | "2"))
+            {
+                assert_eq!(parsed, None, "missing/invalid retains optional ownership");
+            }
+        }
+        assert_eq!(
+            parse_basic_section(&IniFile::from_str("[Map]\n")).free_radar,
+            None
+        );
     }
 
     #[test]

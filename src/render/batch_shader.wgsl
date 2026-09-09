@@ -4,13 +4,18 @@ struct Camera {
     camera_pos: vec2f,
     // Zoom level: 1.0 = native, >1.0 = zoomed in, <1.0 = zoomed out.
     zoom: f32,
+    world_origin_y: f32,
+    world_height: f32,
     pad0: f32,
+    native_z_origin_y: f32,
+    native_z_pad: f32,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 
 // Texture and sampler (nearest-neighbor for pixel art).
 @group(1) @binding(0) var t_sprite: texture_2d<f32>;
 @group(1) @binding(1) var s_sprite: sampler;
+@group(1) @binding(3) var source_indices: texture_2d<u32>;
 
 // Per-instance data from the instance buffer.
 struct Instance {
@@ -25,6 +30,7 @@ struct Instance {
     @location(8) fx_flags: u32,
     @location(9) fx_params: vec4f,
     @location(10) effect_tint: vec4f,
+    @location(14) palette_light: vec4u,
 };
 
 struct VertexOutput {
@@ -35,11 +41,11 @@ struct VertexOutput {
     @location(3) @interpolate(flat) fx_flags: u32,
     @location(4) fx_params: vec4f,
     @location(5) effect_tint: vec4f,
+    @location(11) @interpolate(flat) palette_light: vec4u,
 };
 
-@vertex
-fn vs_main(
-    @builtin(vertex_index) idx: u32,
+fn vertex_impl(
+    idx: u32,
     instance: Instance,
 ) -> VertexOutput {
     // Quad vertex positions: (0,0) top-left to (1,1) bottom-right.
@@ -79,6 +85,21 @@ fn vs_main(
     output.fx_flags = instance.fx_flags;
     output.fx_params = instance.fx_params;
     output.effect_tint = instance.effect_tint;
+    output.palette_light = instance.palette_light;
+    return output;
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) idx: u32, instance: Instance) -> VertexOutput {
+    return vertex_impl(idx, instance);
+}
+
+// Shared native storage conversion is used only by pipelines that test Z.
+@vertex
+fn vs_depth(@builtin(vertex_index) idx: u32, instance: Instance) -> VertexOutput {
+    var output = vertex_impl(idx, instance);
+    output.position.z = compatibility_depth_on_native_axis(
+        instance.depth, camera.camera_pos.y + camera.native_z_origin_y, camera.world_origin_y, camera.world_height);
     return output;
 }
 
@@ -96,30 +117,7 @@ fn apply_fx(color: vec4f, _flags: u32, params: vec4f, effect_tint: vec4f) -> vec
 }
 
 
-// --- Map-light tint in the original's colour space -------------------------
-// gamemd lights a palette entry by scaling its 8-bit RGB bytes: LightConvert's
-// palette pass (FUN_00556090 -> FUN_007DE200 for RGB565) computes
-// (byte * scale16) >> 16 with scale16 = light_milli * 65536 / 1000 (three LEA x5
-// and a SHL 3 then the double 0.065536 at 0x007ED0B0) and clamps the product to
-// 255 before packing. That multiply happens on the palette bytes, i.e. in
-// sRGB-encoded space. These textures are sRGB-typed, so the sampled value is
-// already linear; multiplying it by the tint here would apply the light in
-// linear space, which reads as tint^(1/2.2) on screen (a 1.2 unit light became
-// ~1.09). Re-encode, scale, clamp, decode. The RGB565 quantisation that
-// follows natively is not modelled (DRIFT, sub-pixel colour).
-fn srgb_encode(c: vec3f) -> vec3f {
-    let lo = c * 12.92;
-    let hi = 1.055 * pow(max(c, vec3f(0.0)), vec3f(1.0 / 2.4)) - 0.055;
-    return select(hi, lo, c <= vec3f(0.0031308));
-}
-fn srgb_decode(c: vec3f) -> vec3f {
-    let lo = c / 12.92;
-    let hi = pow((c + 0.055) / 1.055, vec3f(2.4));
-    return select(hi, lo, c <= vec3f(0.04045));
-}
-fn palette_light(rgb_linear: vec3f, tint: vec3f) -> vec3f {
-    return srgb_decode(clamp(srgb_encode(rgb_linear) * tint, vec3f(0.0), vec3f(1.0)));
-}
+// Color resolution is supplied by palette_light::shader_source.
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
@@ -132,7 +130,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     // Map lighting happens before the shared DrawState effect branch, matching
     // the voxel fragment path. Alpha 1.0 = opaque; no draw state changes order.
     return apply_fx(
-        vec4f(palette_light(color.rgb, input.tint * input.effect_tint.rgb), color.a * input.alpha),
+        vec4f(resolve_palette(color.rgb, input.tint, input.effect_tint.rgb, opaque_palette(input.palette_light, color.a * input.alpha, input.fx_flags), textureLoad(source_indices, vec2i(clamp(input.uv * vec2f(textureDimensions(source_indices)), vec2f(0.0), vec2f(textureDimensions(source_indices)) - 1.0)), 0).r), color.a * input.alpha),
         input.fx_flags,
         input.fx_params,
         input.effect_tint,

@@ -31,6 +31,149 @@
     }
   ],
   "systems": {
+    "GSI-12.10": {
+      "native_anchors": [
+        {"symbol": "Scenario Basic FreeRadar parser", "address": "0x0068A5E3", "evidence": "docs/research/FREE_RADAR_SCENARIO_AUTHORITY_2026_09_09.md"},
+        {"symbol": "House local radar availability", "address": "0x00508DF0", "evidence": "tools/free_radar_oracle/oracle.py"}
+      ],
+      "rust_surfaces": [
+        {"path": "src/map/basic.rs", "symbol": "parse_basic_section", "coverage": "representative", "observed_at_commit": "cdad58dde35bfbd48420af4e6d100e0d58e9fc88"},
+        {"path": "src/sim/scenario_session.rs", "symbol": "ScenarioSession::from_descriptor / fold_identity", "coverage": "representative", "observed_at_commit": "cdad58dde35bfbd48420af4e6d100e0d58e9fc88"},
+        {"path": "src/sim/radar.rs", "symbol": "has_radar_for_owner", "coverage": "representative", "observed_at_commit": "cdad58dde35bfbd48420af4e6d100e0d58e9fc88"}
+      ],
+      "notes": ["Map FreeRadar bypasses ordinary provider/power aggregation through persistent scenario authority. Native spy-radar blackout is distinct from power blackout and remains unimplemented; complete provider/UI/pixel parity remains open."]
+    },
+    "GSI-13.09": {
+      "native_anchors": [
+        {
+          "symbol": "ZBuffer empty storage and separate row seed",
+          "address": "0x007BC970",
+          "evidence": "docs/research/TERRAIN_STATIC_BODY_SHADOW_NATIVE_2026_09_09.md"
+        },
+        {
+          "symbol": "Object dirty-clip point rebasing",
+          "address": "0x005F4B88",
+          "evidence": "tools/terrain_draw_oracle/origin.py"
+        },
+        {
+          "symbol": "Extended SHP row initialization and walk",
+          "address": "0x00437A10",
+          "evidence": "tools/terrain_draw_oracle/rows.py"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/render/native_z.rs",
+          "symbol": "EMPTY_Z / DEFAULT_Z / stored_depth",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/render/native_z.wgsl",
+          "symbol": "stored_native_depth / native_row_z",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/render/batch.rs",
+          "symbol": "write_camera / update_native_z_origin",
+          "coverage": "representative"
+        }
+      ],
+      "notes": [
+        "Native u16 storage and empty FFFF are distinct from row seed8000. TREE compares signed before low16 store. Legacy Batch scalar clamps and non-TREE out-of-range admission remain separate coverage limits. Current transaction based on e4cca5ac; final scene validation is not implied by this annotation."
+      ]
+    },
+    "GSI-13.11": {
+      "native_anchors": [
+        {
+          "symbol": "Ordinary Terrain same-point body and shadow dispatch",
+          "address": "0x0071C1B0",
+          "evidence": "docs/research/TERRAIN_STATIC_BODY_SHADOW_NATIVE_2026_09_09.md"
+        },
+        {
+          "symbol": "Terrain packed-half shadow with strict signed test and Z store",
+          "address": "0x00497390",
+          "evidence": "tools/terrain_draw_oracle/leaf.py"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/render/overlay_atlas.rs",
+          "symbol": "native_static_terrain_pair / pack_overlay_pixels",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/app/presentation/instances/overlays.rs",
+          "symbol": "native_static_terrain_instances",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/render/terrain_draw.rs",
+          "symbol": "TerrainDrawRenderer::prepare / draw_span",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/app/presentation/render/merge_passes.rs",
+          "symbol": "draw_native_ground_object_pass",
+          "coverage": "representative"
+        }
+      ],
+      "notes": [
+        "Bounded ordinary extended static Terrain body/shadow transaction. Renderer-owned dependency waves share snapshots only for disjoint cached clipped rectangles inside consecutive TREE-only Ground spans; every overlapping pair keeps original order and every ordinary run is a hard fence. Signed comparison, palette, packed shadow and live depth ownership are unchanged. Vehicle cached shadows use a separate read-only Z leaf; full-overlap performance, animated/death terrain and broader shadow families remain open."
+      ]
+    },
+    "GSI-13.07": {
+      "native_anchors": [
+        {
+          "symbol": "Single VXL geometry preparation",
+          "address": "0x007540F0",
+          "evidence": "tools/voxel_oracle/raster.py"
+        },
+        {
+          "symbol": "Single VXL draw preparation",
+          "address": "0x00754510",
+          "evidence": "tools/voxel_oracle/raster.py"
+        },
+        {
+          "symbol": "Native voxel traversal",
+          "address": "0x007DF9C0",
+          "evidence": "tools/voxel_oracle/raster.py"
+        },
+        {
+          "symbol": "Native indexed painter",
+          "address": "0x007DFAE0",
+          "evidence": "tools/voxel_oracle/raster.py"
+        },
+        {
+          "symbol": "Ordinary shadow bottom quad and optional body-mask stencil",
+          "address": "0x00756860",
+          "evidence": "tools/voxel_oracle/shadow_raster.py"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/render/vxl_native.rs",
+          "symbol": "prepare_geometry / prepare_draw",
+          "coverage": "representative",
+          "observed_at_commit": "2b18839831c234917cde6597d8d8ea016f8ad9aa"
+        },
+        {
+          "path": "src/render/vxl_compute.rs",
+          "symbol": "render_native",
+          "coverage": "representative",
+          "observed_at_commit": "2b18839831c234917cde6597d8d8ea016f8ad9aa"
+        },
+        {
+          "path": "src/render/unit_atlas.rs",
+          "symbol": "native crop propagation",
+          "coverage": "representative",
+          "observed_at_commit": "2b18839831c234917cde6597d8d8ea016f8ad9aa"
+        }
+      ],
+      "notes": [
+        "Bounded original single-VXL preparation/core painter proof and production buffer readback. Relative parts, caller slopes/mirrors, and final scene composition remain open.",
+        "Ordinary flat Drive shadow template/crop and first eligible composed-body mask are owned by vxl_shadow.rs and unit_shadow_cache.rs, with after-body Ground presentation and retained atlas payloads. Generated and stock original core cases establish the bounded geometry. Destination darkening still uses the existing alpha approximation; full native cache admission/purge/history and broader caller families are not implied. See docs/research/VEHICLE_SHADOW_VISIBLE_MATCH.md."
+      ]
+    },
     "GSI-14.03": {
       "native_anchors": [
         {
@@ -1211,9 +1354,18 @@
         },
         {
           "path": "src/app/presentation/sidebar_render.rs",
-          "symbol": "current_sidebar_theme / sidebar_theme_for_owner_sources",
-          "coverage": "representative",
-          "observed_at_commit": "82b022134ab98c7203c8a680bd7479d71f60bed6"
+          "symbol": "project_sidebar_source / refresh_sidebar_projection",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/app/presentation/sidebar_command_bar.rs",
+          "symbol": "append_prepared / layout_and_slots",
+          "coverage": "representative"
+        },
+        {
+          "path": "src/app/input/command_bar_input.rs",
+          "symbol": "sync_prepared / apply",
+          "coverage": "representative"
         },
         {
           "path": "src/app/frontend/skirmish.rs",
@@ -1224,7 +1376,8 @@
       ],
       "notes": [
         "Production progress presentation consumes side-correct generic art and resolves ordinary launch-created local owners through their live side identity when no matching map-roster row exists.",
-        "Matching map-roster rows intentionally retain priority, including a deliberate launch-name collision; map-load radar animation initialization is separate GSI-13.23 drift and remains hardwired to Allied.",
+        "Matching map-roster rows retain priority. The final map-install and SpawnPick refresh resolve one installed-owner source package for both chrome and radar, including fallback identity; source replacement preserves the animation frame and draw timer.",
+        "Ordinary sidebar geometry and hit rectangles consume native screen/theme and SHP size authorities at one pixel per source pixel. Radar timing and retained housing stores have original executable fixtures; production CPU/GPU final-pixel comparisons cover the fixed 168x110 housing. Native minimap producers and transition history outside that housing remain open.",
         "Retail Yuri/side-2 provenance, SHP decode, GCLOCK CPU atlas geometry/frame count, and production instance construction have named executable coverage; GPU pixels, exact conversion/blending, and progress cadence remain unverified."
       ]
     },
@@ -1288,6 +1441,38 @@
       "notes": [
         "Rust bincode snapshots are regression infrastructure, not native SAV parity.",
         "Version 136 persists Infantry terminal policy and sequence progress. Admission rejects transient AwaitingConsequences, native-dead policies and live dying Infantry without a policy; retained policies require serialized Logic membership or limbo. PreparedLoad tests cover finite progress, held factory release, and delivered fatal consequences surviving an aborted deletion frame before resumed cleanup. Older snapshot versions are rejected by the version gate."
+      ]
+    },
+    "GSI-13.08": {
+      "native_anchors": [
+        {
+          "symbol": "LightConvert RGB565/MMX row construction",
+          "address": "0x00556090",
+          "evidence": "docs/research/LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md"
+        },
+        {
+          "symbol": "ordinary Convert RGB565 row construction",
+          "address": "0x004BBB00",
+          "evidence": "docs/research/LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md"
+        },
+        {
+          "symbol": "brightness/A-buffer to palette-row lookup",
+          "address": "0x00420140",
+          "evidence": "docs/research/LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md"
+        },
+        {
+          "symbol": "AnimClass explicit/cell/global palette selection",
+          "address": "0x00423280",
+          "evidence": "docs/research/LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md"
+        },
+        {
+          "symbol": "Cell common brightness normalization and field publication",
+          "address": "0x004845A2",
+          "evidence": "docs/research/LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md"
+        }
+      ],
+      "notes": [
+        "The selected palette owns RGB profile, row count and per-index mask; scalar brightness and per-pixel A choose a row. Native ColorScheme, cell LightConvert and ordinary Convert are separate owners. Original-byte synthetic oracles cover active MMX565 and plain tables. The report preserves bounded GPU and scene evidence plus non-clear A, translucency, palette-source lifecycle and other producer residuals; this does not certify the whole system."
       ]
     }
   },
@@ -1689,8 +1874,8 @@
       "from": "GSI-12.10",
       "to": "GSI-09.07",
       "context": "Powered radar",
-      "detail": "Radar availability is gated by the house power state.",
-      "evidence": ["docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"]
+      "detail": "The ordinary provider branch is gated by house power; map FreeRadar bypasses that branch after the separate native radar-blackout gate.",
+      "evidence": ["docs/research/POWER_SYSTEM_GHIDRA_REPORT.md", "docs/research/FREE_RADAR_SCENARIO_AUTHORITY_2026_09_09.md"]
     },
     {
       "id": "EDGE-0016-POWER-SIDEBAR",
@@ -2110,14 +2295,15 @@
       "from": "GSI-13.24",
       "to": "GSI-02.01",
       "context": "Rust sidebar atlas construction",
-      "detail": "The production sidebar atlas resolves verified generic roles and SIDEBAR.PAL through immutable side-1/side-2 routes while leaving Yuri radar/background on sidec02md and RADARYURI.PAL.",
+      "detail": "The production atlas resolves generic chrome through side-1/side-2 routes and Yuri radar through sidec02md/RADARYURI.PAL. Original N1 conversion and source-zero skipping own chrome pixels. Installed-owner projection selects the same actual frame/palette/size/inset package for chrome and retained radar, after the new map owner is installed.",
       "evidence": [
         "src/assets/asset_manager.rs",
         "src/render/sidebar_chrome.rs",
         "src/app/presentation/sidebar_build.rs",
-        "src/render/sidebar_chrome_tests.rs"
-      ],
-      "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
+        "src/render/sidebar_chrome_tests.rs",
+        "src/app/presentation/sidebar_render.rs",
+        "tools/sidebar_oracle/README.md"
+      ]
     },
     {
       "id": "EDGE-0056-IRON-CURTAIN-CELL-MEMBERSHIP",

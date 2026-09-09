@@ -1634,6 +1634,7 @@ impl MapLoadInitial {
             theater: map_data.header.theater.clone(),
             game_mode_nonzero: true,
             no_damage: false,
+            free_radar: map_data.basic.free_radar.unwrap_or(false),
             // Skirmish start forces `TiberiumGrows|TiberiumSpreads` (`OR 0xC0`
             // at `0x005E74CD`), copied into the scenario at `0x00687C23`.
             tiberium_grows_flag: true,
@@ -2221,6 +2222,7 @@ pub(crate) fn load_map_from_initial(
         // Campaign/editor reads `[SpecialFlags] Inert=`. Nonzero game modes
         // replace active SpecialFlags from session staging.
         no_damage: false,
+        free_radar: map_data.basic.free_radar.unwrap_or(false),
         // Skirmish start forces `TiberiumGrows|TiberiumSpreads` (`OR 0xC0`
         // at `0x005E74CD`), copied into the scenario at `0x00687C23`.
         tiberium_grows_flag: true,

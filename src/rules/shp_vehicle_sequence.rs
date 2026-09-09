@@ -196,6 +196,7 @@ mod tests {
             report: None,
             start_sound: None,
             extra_light: 0,
+            terrain_palette: false,
             queueing_cell: None,
             pads: Vec::new(),
             damage_fire_offsets: Vec::new(),

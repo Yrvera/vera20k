@@ -13,6 +13,7 @@ use crate::render::gpu::GpuContext;
 pub(crate) struct RendererState {
     pub(crate) gpu: GpuContext,
     pub(crate) batch_renderer: BatchRenderer,
+    pub(crate) terrain_draw_renderer: crate::render::terrain_draw::TerrainDrawRenderer,
     pub(crate) combat_light_renderer: crate::render::combat_light::CombatLightRenderer,
     /// Reusable GPU instance buffers — avoids per-frame GPU buffer allocation.
     pub(crate) instance_pool: crate::render::batch::InstanceBufferPool,
@@ -27,9 +28,8 @@ pub(crate) struct RendererState {
     pub(crate) vxl_compute: Option<crate::render::vxl_compute::VxlComputeRenderer>,
     /// GAME.FNT bitmap font (falls back to the built-in 5x7 face).
     pub(crate) bit_font: BitFont,
-    pub(crate) vxl_slope_transition_cache: std::cell::RefCell<
-        crate::render::unit_slope_transition_cache::VxlSlopeTransitionCache,
-    >,
+    pub(crate) vxl_slope_transition_cache:
+        std::cell::RefCell<crate::render::unit_slope_transition_cache::VxlSlopeTransitionCache>,
     /// Previous presented pre-cursor composition, retained for input-time
     /// screenshot parity.
     pub(crate) retail_screenshot_frame_cache: crate::render::screenshot::PresentedFrameCache,

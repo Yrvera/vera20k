@@ -119,7 +119,11 @@ impl<'tex, 'inst> DrawGroup<'tex, 'inst> {
 /// change the signed integer parent order established by `TacticalDrawPlan`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_native_ground_object_pass<'a>(
-    pass: &mut wgpu::RenderPass<'a>,
+    encoder: &mut wgpu::CommandEncoder,
+    color: &wgpu::TextureView,
+    depth: &wgpu::TextureView,
+    terrain: &mut crate::render::terrain_draw::TerrainDrawRenderer,
+    tactical: [u32; 4],
     batch: &'a BatchRenderer,
     pool: &'a InstanceBufferPool,
     ground: &GroundObjectPass,
@@ -129,95 +133,137 @@ pub(super) fn draw_native_ground_object_pass<'a>(
     sprite_atlas: Option<&'a SpriteAtlas>,
     palette_set: Option<&'a PaletteSet>,
     zshape: &'a wgpu::BindGroup,
-) {
+) -> crate::render::terrain_draw::TerrainBatchStats {
     let Some((buffer, count)) = pool.get("ground_objects") else {
-        return;
+        return Default::default();
     };
-    assert_eq!(
-        count as usize,
-        ground.instances.len(),
-        "native Ground upload must preserve every lowered instance"
-    );
-
-    for run in &ground.runs {
-        match run.target {
-            GroundTexture::OverlayAtlas => {
-                if let Some(atlas) = overlay_atlas {
-                    batch.draw_passthrough_range(
-                        pass,
-                        &atlas.texture,
-                        buffer,
-                        run.start,
-                        run.count,
-                    );
-                }
+    let mut terrain_stats = crate::render::terrain_draw::TerrainBatchStats::default();
+    assert_eq!(count as usize, ground.instances.len());
+    let mut cursor = 0;
+    while cursor < ground.runs.len() {
+        let run = &ground.runs[cursor];
+        if matches!(run.target, GroundTexture::TerrainStatic(_)) {
+            let start = cursor;
+            while cursor < ground.runs.len()
+                && matches!(ground.runs[cursor].target, GroundTexture::TerrainStatic(_))
+            {
+                cursor += 1;
             }
-            GroundTexture::UnitAtlasPage(page) => {
-                if let (Some(palette), Some(texture)) = (
-                    palette_set,
-                    unit_atlas.and_then(|atlas| atlas.page_texture(page)),
-                ) {
-                    batch.draw_voxel_sprites_range(
-                        pass,
-                        texture,
-                        &palette.bind_group,
-                        buffer,
-                        run.start,
-                        run.count,
-                    );
-                }
+            if let Some(atlas) = overlay_atlas {
+                // Every ordinary run is a hard fence. Within this TREE-only
+                // span the renderer can share snapshots across disjoint clips,
+                // preserving every overlapping predecessor and original index.
+                let commands = ground.runs[start..cursor].iter().flat_map(|run| {
+                    let GroundTexture::TerrainStatic(piece) = run.target else {
+                        unreachable!("TREE span ended at an ordinary fence")
+                    };
+                    (run.start..run.start + run.count).map(move |index| (index, piece))
+                });
+                terrain_stats.accumulate(terrain.draw_span(
+                    encoder,
+                    color,
+                    depth,
+                    batch,
+                    &atlas.texture,
+                    buffer,
+                    &ground.instances,
+                    commands,
+                    tactical,
+                ));
             }
-            GroundTexture::UnitTransitionPage(page) => {
-                if let (Some(texture), Some(palette)) =
-                    (transition_cache.page_texture(page), palette_set)
-                {
-                    batch.draw_voxel_sprites_range(
-                        pass,
-                        texture,
-                        &palette.bind_group,
-                        buffer,
-                        run.start,
-                        run.count,
-                    );
+            continue;
+        }
+        let mut pass =
+            crate::app::presentation::sidebar_render::begin_main_load_pass(encoder, color, depth);
+        pass.set_scissor_rect(tactical[0], tactical[1], tactical[2], tactical[3]);
+        while cursor < ground.runs.len()
+            && !matches!(ground.runs[cursor].target, GroundTexture::TerrainStatic(_))
+        {
+            let run = &ground.runs[cursor];
+            match run.target {
+                GroundTexture::TerrainStatic(_) => {
+                    unreachable!("native destination edits split normal runs")
                 }
-            }
-            GroundTexture::ShpPage(page) => {
-                if let Some(texture) = sprite_atlas.and_then(|atlas| atlas.page(page)) {
-                    // The plan's Z policy selects the native leaf family:
-                    // buildings write (`0x6E00` -> `0x004990e0`), everything
-                    // else tests only (`0x2E00` -> `0x00494b60`).
-                    match run.render_z {
-                        RenderZPolicy::None => batch.draw_passthrough_range(
-                            pass,
-                            &texture.texture,
+                GroundTexture::OverlayAtlas => {
+                    if let Some(atlas) = overlay_atlas {
+                        batch.draw_passthrough_range(
+                            &mut pass,
+                            &atlas.texture,
                             buffer,
                             run.start,
                             run.count,
-                        ),
-                        RenderZPolicy::ReadOnly => batch.draw_zsprite_range(
-                            pass,
-                            &texture.texture,
-                            zshape,
+                        );
+                    }
+                }
+                GroundTexture::UnitAtlasPage(page) => {
+                    if let (Some(palette), Some(texture)) = (
+                        palette_set,
+                        unit_atlas.and_then(|atlas| atlas.page_texture(page)),
+                    ) {
+                        batch.draw_voxel_sprites_range(
+                            &mut pass,
+                            texture,
+                            &palette.bind_group,
                             buffer,
                             run.start,
                             run.count,
-                            false,
-                        ),
-                        RenderZPolicy::ReadWrite | RenderZPolicy::AlphaReadWrite => batch
-                            .draw_zsprite_range(
-                                pass,
+                        );
+                    }
+                }
+                GroundTexture::UnitTransitionPage(page) => {
+                    if let (Some(texture), Some(palette)) =
+                        (transition_cache.page_texture(page), palette_set)
+                    {
+                        batch.draw_voxel_sprites_range(
+                            &mut pass,
+                            texture,
+                            &palette.bind_group,
+                            buffer,
+                            run.start,
+                            run.count,
+                        );
+                    }
+                }
+                GroundTexture::ShpPage(page) => {
+                    if let Some(texture) = sprite_atlas.and_then(|atlas| atlas.page(page)) {
+                        // The plan's Z policy selects the native leaf family:
+                        // buildings write (`0x6E00` -> `0x004990e0`), everything
+                        // else tests only (`0x2E00` -> `0x00494b60`).
+                        match run.render_z {
+                            RenderZPolicy::None => batch.draw_passthrough_range(
+                                &mut pass,
+                                &texture.texture,
+                                buffer,
+                                run.start,
+                                run.count,
+                            ),
+                            RenderZPolicy::ReadOnly => batch.draw_zsprite_range(
+                                &mut pass,
                                 &texture.texture,
                                 zshape,
                                 buffer,
                                 run.start,
                                 run.count,
-                                true,
+                                false,
                             ),
+                            RenderZPolicy::ReadWrite | RenderZPolicy::AlphaReadWrite => batch
+                                .draw_zsprite_range(
+                                    &mut pass,
+                                    &texture.texture,
+                                    zshape,
+                                    buffer,
+                                    run.start,
+                                    run.count,
+                                    true,
+                                ),
+                        }
                     }
                 }
             }
+            cursor += 1;
         }
     }
+    terrain_stats
 }
 
 /// Unified Y-sorted object pass: multi-way merge of VXL units and SHP entities.
@@ -610,3 +656,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "terrain_ground_gpu_tests.rs"]
+mod terrain_ground_gpu_tests;

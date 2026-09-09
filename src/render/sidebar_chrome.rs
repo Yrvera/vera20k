@@ -15,13 +15,33 @@ use crate::assets::shp_file::ShpFile;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 
+#[path = "sidebar_chrome_command_bar.rs"]
+mod command_bar;
+pub use command_bar::CommandBarArt;
+
+#[cfg(test)]
+pub(crate) fn packed_command_bar_fixture(assets: &AssetManager, theme: SidebarTheme) -> (CommandBarArt<SidebarChromeEntry>, Vec<u8>, [u32; 2]) {
+    let route = SidebarSideRoute::for_theme(assets, theme);
+    let palette = decode_sidebar_palette(route.resolve("SIDEBAR.PAL").unwrap().bytes).unwrap();
+    let rendered = command_bar::load(route, &palette);
+    let width = rendered.entries().map(|entry| entry.width).max().unwrap();
+    let height = rendered.entries().map(|entry| entry.height + CHROME_PADDING).sum();
+    let mut rgba = vec![0; (width * height * 4) as usize];
+    let mut y = 0;
+    let packed = rendered.map(|entry| {
+        let packed = blit_entry(&mut rgba, width, height, y, entry);
+        y += entry.height + CHROME_PADDING;
+        packed
+    });
+    (packed, rgba, [width, height])
+}
+
 const CHROME_PADDING: u32 = 2;
 /// R-UP.SHP / R-DN.SHP frame count. The strip-scroll art uses a 3-frame
 /// convention (0 = idle, 1 = pressed, 2 = disabled) — NOT the 5-frame tab /
 /// repair / sell convention.
 const SCROLL_FRAME_COUNT: usize = 3;
-// Frame 0 is the intact stock radar shell. Frame 32 is effectively a blank
-// inner state and makes the top cap look missing when used as the default.
+// RadarClass::Draw 653100: frame 0 is offline, frame 32 is online.
 const RADAR_DEFAULT_FRAME: usize = 0;
 const TOP_STRIP_LEFT_ID: i32 = 0xD508C1A4u32 as i32;
 const TOP_STRIP_SIDEBAR_ID: i32 = 0xF0F1CE8Du32 as i32;
@@ -34,6 +54,9 @@ const GENERIC_SIDEBAR_SHP_NAMES: &[&str] = &[
     "side1.shp",
     "side2.shp",
     "side3.shp",
+    "addon.shp",
+    "top.shp",
+    "credits.shp",
     "tab00.shp",
     "tab01.shp",
     "tab02.shp",
@@ -43,15 +66,12 @@ const GENERIC_SIDEBAR_SHP_NAMES: &[&str] = &[
     "r-up.shp",
     "r-dn.shp",
     "powerp.shp",
+    "diplobtn.shp",
+    "optbtn.shp",
     "gclock2.shp",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SidebarTheme {
-    Allied,
-    Soviet,
-    Yuri,
-}
+pub use crate::sidebar::SidebarTheme;
 
 /// One logical sidebar input and the archive selected by the existing resolver.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +199,7 @@ pub struct SidebarChromeExtraEntry {
 pub struct SidebarChromeAtlas {
     source_identity: SidebarChromeAtlasIdentity,
     pub texture: BatchTexture,
+    pub command_bar: CommandBarArt<SidebarChromeEntry>,
     pub top_strip_left: Option<SidebarChromeEntry>,
     pub top_strip_sidebar: Option<SidebarChromeEntry>,
     pub top_strip_thin: Option<SidebarChromeEntry>,
@@ -188,11 +209,11 @@ pub struct SidebarChromeAtlas {
     pub background_medium: Option<SidebarChromeEntry>,
     pub background_small: Option<SidebarChromeEntry>,
     /// All pre-rendered RGBA frames of radar.shp for the opening/closing animation.
-    /// Frame 0 = fully open radar housing, last frame = fully closed.
+    /// Frame 0 = closed/offline housing; frame 32 is the opening endpoint.
     pub radar_frames: Vec<Vec<u8>>,
     /// Pixel dimensions of each radar frame (width, height).
     pub radar_frame_size: [u32; 2],
-    /// Content insets derived from the transparent opening in radar.shp frame 0.
+    /// Fixed native aperture from RadarClass One_Time (`652CF0`).
     /// [left, top, right, bottom] in unscaled pixels. The minimap fills the area
     /// inside these insets. Derived automatically — no manual tuning needed.
     pub radar_content_insets: [u32; 4],
@@ -213,6 +234,8 @@ pub struct SidebarChromeAtlas {
     /// Strip scroll-up (R-UP.SHP, −page) — 3-frame convention:
     /// 0 = idle, 1 = pressed, 2 = disabled. Missing frames fall back to
     /// frame 0 at draw exactly like repair/sell.
+    /// DIPLOBTN / OPTBTN, ordinary plain-button idle/pressed frames.
+    pub top_button_frames: [[Option<SidebarChromeEntry>; 2]; 2],
     pub scroll_up_frames: [Option<SidebarChromeEntry>; SCROLL_FRAME_COUNT],
     /// Strip scroll-down (R-DN.SHP, +page) — same 3-frame convention.
     pub scroll_down_frames: [Option<SidebarChromeEntry>; SCROLL_FRAME_COUNT],
@@ -264,7 +287,7 @@ impl SidebarChromeSet {
     }
 }
 
-fn select_sidebar_theme<'a, T>(
+pub(crate) fn select_sidebar_theme<'a, T>(
     requested_theme: SidebarTheme,
     allied: Option<&'a T>,
     soviet: Option<&'a T>,
@@ -442,6 +465,19 @@ fn build_gclock_texture(
     Some((texture, atlas.frames))
 }
 
+// Original72ADE0 expands six-bit PAL; ordinary Convert48E740->4BBB00 N=1
+// stores exact R5G6B5. Precompose once through the enrolled retail output
+// profile; the shared RGBA shader must not apply LightConvert row lighting.
+fn decode_sidebar_palette(bytes: &[u8]) -> Result<Palette, crate::assets::error::AssetError> {
+    let mut palette = Palette::from_bytes_gamemd_ui(bytes)?;
+    for color in &mut palette.colors {
+        let [r, g, b, a] = crate::render::native_surface_format::ACTIVE_RETAIL_RGB565_PRESENTATION
+            .quantize_rgba8([color.r, color.g, color.b, color.a]);
+        *color = crate::assets::pal_file::Color { r, g, b, a };
+    }
+    Ok(palette)
+}
+
 fn resolve_theme_palette_with_source(
     asset_manager: &AssetManager,
     mix: &MixArchive,
@@ -449,13 +485,13 @@ fn resolve_theme_palette_with_source(
     palette_name: &str,
 ) -> Option<(Palette, String)> {
     if let Some(bytes) = mix.get_by_name(palette_name) {
-        if let Ok(palette) = Palette::from_bytes(bytes) {
+        if let Ok(palette) = decode_sidebar_palette(bytes) {
             return Some((palette, mix_name.to_string()));
         }
     }
 
     let (bytes, source_archive) = asset_manager.get_with_source_ref(palette_name)?;
-    Palette::from_bytes(bytes)
+    decode_sidebar_palette(bytes)
         .ok()
         .map(|palette| (palette, source_archive.to_string()))
 }
@@ -495,7 +531,8 @@ fn build_theme_atlas(
     let side_route = SidebarSideRoute::for_theme(asset_manager, theme);
     let generic_palette_name = "SIDEBAR.PAL";
     let generic_palette_source = side_route.resolve(generic_palette_name)?;
-    let generic_palette = Palette::from_bytes(generic_palette_source.bytes).ok()?;
+    let generic_palette = decode_sidebar_palette(generic_palette_source.bytes).ok()?;
+    let command_bar_art = command_bar::load(side_route, &generic_palette);
     log::debug!(
         "{theme:?} generic sidebar palette resolved from {}",
         generic_palette_source.archive_name
@@ -565,6 +602,15 @@ fn build_theme_atlas(
         sell_frame_entries[frame] = entry;
     }
 
+    // 652E90 + 653010: both top controls use the generic SIDEBAR.PAL
+    // converter (87F6CC), including Yuri. Native mask5, plain toggle kind0.
+    let top_button_entries: [[Option<RenderedChromeEntry>; 2]; 2] = ["diplobtn.shp", "optbtn.shp"]
+        .map(|name| {
+            std::array::from_fn(|frame| {
+                render_side_entry(side_route, name, &generic_palette, frame)
+            })
+        });
+
     // Strip-scroll pair — 3-frame art (0 idle, 1 pressed, 2 disabled).
     // render_entry returns None for absent frames and the draw falls back to
     // frame 0, so a short retail SHP still degrades gracefully.
@@ -585,25 +631,15 @@ fn build_theme_atlas(
         log::warn!("r-dn.shp missing in MIX — strip scroll-down button will not render");
     }
     let power = render_entry(asset_manager, &mix, "power.shp", &theme_palette, 0);
-    // powerp.shp: strip frames for the power bar meter.
-    // Use raw frame pixel data (not the full SHP canvas) to avoid transparent
-    // padding from frame offsets. Then force opaque: the original CC_Draw_Shape
-    // skips index-0 pixels, letting the sidebar background show through. Since
-    // our renderer uses textured quads, we make them opaque black instead.
+    // 63FB20 uses the actual SHP frame/canvas; transparent samples keep
+    // their skipped-store meaning and the renderer advances by 3 pixels.
     let powerp_rendered: Vec<RenderedChromeEntry> = (0..5)
-        .filter_map(|i| {
-            let mut entry =
-                render_side_shp_frame_only(side_route, "powerp.shp", &generic_palette, i)?;
-            for pixel in entry.rgba.chunks_exact_mut(4) {
-                pixel[3] = 255;
-            }
-            Some(entry)
-        })
+        .filter_map(|i| render_side_entry(side_route, "powerp.shp", &generic_palette, i))
         .collect();
     let top_strip_left = render_entry_by_id(&mix, TOP_STRIP_LEFT_ID, &tabs_palette, 0);
-    let top_strip_sidebar = render_entry_by_id(&mix, TOP_STRIP_SIDEBAR_ID, &tabs_palette, 0);
-    let top_strip_thin = render_entry_by_id(&mix, TOP_STRIP_THIN_ID, &tabs_palette, 0);
-    let unknown_top_housing = render_entry_by_id(&mix, UNKNOWN_TOP_HOUSING_ID, &theme_palette, 0);
+    let top_strip_sidebar = render_side_entry(side_route, "top.shp", &generic_palette, 0);
+    let top_strip_thin = render_side_entry(side_route, "credits.shp", &generic_palette, 0);
+    let unknown_top_housing = render_side_entry(side_route, "addon.shp", &generic_palette, 0);
     let unknown_mid_panel = render_entry_by_id(&mix, UNKNOWN_MID_PANEL_ID, &theme_palette, 0);
     let (background_large, background_medium, background_small) =
         if let Some((large, medium, small)) = background_names {
@@ -660,6 +696,7 @@ fn build_theme_atlas(
 
     // Collect all pieces to pack into the atlas.
     let mut all_entries: Vec<&RenderedChromeEntry> = vec![&radar, &side1, &side2, &side3];
+    all_entries.extend(command_bar_art.entries());
     if let Some(ref top) = top_strip_left {
         all_entries.push(top);
     }
@@ -704,6 +741,9 @@ fn build_theme_atlas(
             all_entries.push(entry);
         }
     }
+    for entry in top_button_entries.iter().flatten().flatten() {
+        all_entries.push(entry);
+    }
     for entry in scroll_up_entries.iter().flatten() {
         all_entries.push(entry);
     }
@@ -727,6 +767,11 @@ fn build_theme_atlas(
         .sum::<u32>();
     let mut rgba = vec![0u8; (atlas_width * atlas_height * 4) as usize];
     let mut y = 0u32;
+    let command_bar = command_bar_art.map(|entry| {
+        let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
+        y += entry.height + CHROME_PADDING;
+        uv
+    });
 
     let top_strip_left_uv = top_strip_left.as_ref().map(|entry| {
         let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
@@ -811,6 +856,15 @@ fn build_theme_atlas(
             sell_frames_packed[frame] = Some(uv);
         }
     }
+    let top_button_frames = top_button_entries.each_ref().map(|frames| {
+        frames.each_ref().map(|entry| {
+            entry.as_ref().map(|entry| {
+                let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, &entry);
+                y += entry.height + CHROME_PADDING;
+                uv
+            })
+        })
+    });
     let mut scroll_up_frames_packed: [Option<SidebarChromeEntry>; SCROLL_FRAME_COUNT] =
         Default::default();
     for frame in 0..SCROLL_FRAME_COUNT {
@@ -885,6 +939,7 @@ fn build_theme_atlas(
     Some(SidebarChromeAtlas {
         source_identity,
         texture,
+        command_bar,
         top_strip_left: top_strip_left_uv,
         top_strip_sidebar: top_strip_sidebar_uv,
         top_strip_thin: top_strip_thin_uv,
@@ -904,6 +959,7 @@ fn build_theme_atlas(
         side3: side3_uv,
         repair_frames: repair_frames_packed,
         sell_frames: sell_frames_packed,
+        top_button_frames,
         scroll_up_frames: scroll_up_frames_packed,
         scroll_down_frames: scroll_down_frames_packed,
         power: power_uv,
@@ -987,8 +1043,7 @@ fn collect_extra_entries(
 
 /// Pre-render all frames of radar.shp to RGBA buffers for animation.
 /// Returns (Vec of RGBA buffers, [width, height], content insets).
-/// Content insets [left, top, right, bottom] are derived from the transparent
-/// opening in frame 0 (fully open housing).
+/// Content insets come from the native fixed radar aperture.
 fn render_all_radar_frames(
     asset_manager: &AssetManager,
     mix: &MixArchive,
@@ -1010,37 +1065,16 @@ fn render_all_radar_frames(
     let canvas_w: u32 = shp.width as u32;
     let canvas_h: u32 = shp.height as u32;
 
-    // Render frame 0 (the housing base) first — all other frames are composited
-    // on top of it so the housing art always shows through transparent areas.
-    let base_rgba: Vec<u8> = match render_shp(&shp, palette, RADAR_DEFAULT_FRAME) {
-        Some(entry) => entry.rgba,
-        None => vec![0u8; (canvas_w * canvas_h * 4) as usize],
-    };
-
-    // Detect the content opening by scanning frame 0 for the transparent region.
-    let content_insets = detect_radar_content_insets(&base_rgba, canvas_w, canvas_h);
-
-    let mut frames: Vec<Vec<u8>> = Vec::with_capacity(frame_count);
-    for i in 0..frame_count {
-        let frame_rgba = match render_shp(&shp, palette, i) {
-            Some(entry) => entry.rgba,
-            None => vec![0u8; (canvas_w * canvas_h * 4) as usize],
-        };
-        // Composite: start with housing base, overlay this frame's opaque pixels.
-        let mut composited: Vec<u8> = base_rgba.clone();
-        for (dst, src) in composited
-            .chunks_exact_mut(4)
-            .zip(frame_rgba.chunks_exact(4))
-        {
-            if src[3] > 0 {
-                dst[0] = src[0];
-                dst[1] = src[1];
-                dst[2] = src[2];
-                dst[3] = src[3];
-            }
-        }
-        frames.push(composited);
-    }
+    // Preserve each frame's skipped pixels. The animation surface owns backing
+    // history; aperture geometry comes from Radar One_Time/Init_For_House.
+    let content_insets = [16, 1, 12, 1];
+    let frames: Vec<Vec<u8>> = (0..frame_count)
+        .map(|i| {
+            render_shp(&shp, palette, i)
+                .map(|entry| entry.rgba)
+                .unwrap_or_else(|| vec![0u8; (canvas_w * canvas_h * 4) as usize])
+        })
+        .collect();
     log::info!(
         "Pre-rendered {} radar animation frames ({}x{}, content insets: l={} t={} r={} b={})",
         frames.len(),
@@ -1052,44 +1086,6 @@ fn render_all_radar_frames(
         content_insets[3],
     );
     (frames, [canvas_w, canvas_h], content_insets)
-}
-
-/// Scan the fully-open radar frame (frame 0) to find the transparent opening.
-///
-/// The radar chrome has an opaque border and a transparent interior where the
-/// minimap shows through. We find the bounding box of the transparent region
-/// and return it as [left, top, right, bottom] insets from the frame edges.
-fn detect_radar_content_insets(rgba: &[u8], width: u32, height: u32) -> [u32; 4] {
-    let mut min_x: u32 = width;
-    let mut min_y: u32 = height;
-    let mut max_x: u32 = 0;
-    let mut max_y: u32 = 0;
-    let mut found = false;
-
-    for y in 0..height {
-        for x in 0..width {
-            let idx = ((y * width + x) * 4 + 3) as usize;
-            if idx < rgba.len() && rgba[idx] == 0 {
-                // Transparent pixel — part of the content opening.
-                min_x = min_x.min(x);
-                min_y = min_y.min(y);
-                max_x = max_x.max(x);
-                max_y = max_y.max(y);
-                found = true;
-            }
-        }
-    }
-
-    if !found {
-        // No transparent region found — fall back to small default insets.
-        return [9, 7, 9, 7];
-    }
-
-    let left = min_x;
-    let top = min_y;
-    let right = width.saturating_sub(max_x + 1);
-    let bottom = height.saturating_sub(max_y + 1);
-    [left, top, right, bottom]
 }
 
 fn render_shp(shp: &ShpFile, palette: &Palette, frame_index: usize) -> Option<RenderedChromeEntry> {
@@ -1125,37 +1121,6 @@ fn render_shp(shp: &ShpFile, palette: &Palette, frame_index: usize) -> Option<Re
         width: canvas_w,
         height: canvas_h,
     })
-}
-
-/// Render an SHP frame using only the frame's own pixel dimensions, ignoring
-/// the SHP canvas size and frame offsets. This avoids transparent padding from
-/// frames that are smaller than or offset within the overall canvas.
-fn render_shp_frame_only(
-    shp_bytes: &[u8],
-    palette: &Palette,
-    frame_index: usize,
-) -> Option<RenderedChromeEntry> {
-    let shp = ShpFile::from_bytes(shp_bytes).ok()?;
-    if frame_index >= shp.frames.len() {
-        return None;
-    }
-    let frame = &shp.frames[frame_index];
-    let frame_rgba = shp.frame_to_rgba(frame_index, palette).ok()?;
-    Some(RenderedChromeEntry {
-        rgba: frame_rgba,
-        width: frame.frame_width as u32,
-        height: frame.frame_height as u32,
-    })
-}
-
-fn render_side_shp_frame_only(
-    route: SidebarSideRoute<'_>,
-    shp_name: &str,
-    palette: &Palette,
-    frame_index: usize,
-) -> Option<RenderedChromeEntry> {
-    let resolved = route.resolve_generic_shp(shp_name)?;
-    render_shp_frame_only(resolved.bytes, palette, frame_index)
 }
 
 /// Resolve a binary-proven generic sidebar role only through the active side

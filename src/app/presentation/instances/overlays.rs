@@ -33,6 +33,27 @@ use super::helpers::{
     compute_sprite_depth_params, in_view,
 };
 
+/// Ordinary global/cell AnimClass palette ownership; explicit per-instance
+/// converters remain with their producer until its brightness lifetime is known.
+fn anim_palette_light(
+    state: &AppState,
+    cell: (u16, u16),
+    cfg: Option<&AnimTypeRuntimeConfig>,
+    cell_drawer: bool,
+) -> crate::render::palette_light::PaletteLight {
+    crate::app::presentation::lighting::anim_palette_light(
+        state.match_state.match_presentation.lighting.grid(),
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|r| &r.simulation.session.lighting),
+        cell,
+        cfg,
+        cell_drawer,
+    )
+}
+
 /// Map terrain entries remain the render metadata source, but once rules-backed
 /// simulation authority exists the live cell index decides whether an instance
 /// still exists. This keeps loading/fallback screens static without letting a
@@ -243,6 +264,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         }
         let shp_name: &str = sim.interner.resolve(fx.shp_name);
         let key = ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::GlobalAnim,
             type_id: shp_name.to_string(),
             facing: 0,
             frame: fx.frame,
@@ -274,8 +296,10 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         let tint: [f32; 3] = state
             .match_state
             .match_presentation
-            .lighting.grid()
+            .lighting
+            .grid()
             .anim_tint_at((fx.rx, fx.ry), cfg);
+        let palette_light = anim_palette_light(state, (fx.rx, fx.ry), cfg, false);
         // Source-pixel weight the native blitter family gives this frame:
         // a fixed 25/50/75 stage from `Translucency=`, or the progressive
         // `Translucent=yes` fade keyed on the frame against the type's End.
@@ -287,6 +311,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
             uv_size: entry.uv_size,
             depth,
             tint,
+            palette_light,
             alpha,
             ..Default::default()
         });
@@ -431,9 +456,22 @@ pub(crate) fn build_anim_class_instances(
         let tint = state
             .match_state
             .match_presentation
-            .lighting.grid()
+            .lighting
+            .grid()
             .anim_tint_at((rx, ry), config);
+        let palette_light = if anim.remap_color.is_some() {
+            Default::default()
+        } else {
+            anim_palette_light(state, (rx, ry), config, anim.use_cell_drawer)
+        };
         let key = ShpSpriteKey {
+            palette_context: if anim.use_cell_drawer {
+                crate::render::sprite_atlas::ShpPaletteContext::Cell
+            } else if anim.remap_color.is_some() {
+                crate::render::sprite_atlas::ShpPaletteContext::SelectedScheme
+            } else {
+                crate::render::sprite_atlas::ShpPaletteContext::GlobalAnim
+            },
             type_id: type_name.to_string(),
             facing: 0,
             frame,
@@ -483,14 +521,13 @@ pub(crate) fn build_anim_class_instances(
                 world_height,
             ),
             tint,
+            palette_light,
             alpha,
             // YDrawOffset is baked into the atlas offset, so it must also
             // ride the Z term to keep Z on the un-offset row, as natively.
             z_adjust: super::helpers::ground_z_adjust(
                 z,
-                anim.z_adjust
-                    + config.map_or(0, |c| c.y_draw_offset)
-                    + ANIM_DRAW_DEPTH_BIAS_PX,
+                anim.z_adjust + config.map_or(0, |c| c.y_draw_offset) + ANIM_DRAW_DEPTH_BIAS_PX,
             ),
             z_gradient: crate::render::native_z::pack_z_gradient(
                 if config.is_some_and(|c| c.flat) {
@@ -804,8 +841,31 @@ pub(crate) fn build_overlay_instances(
         let tint: [f32; 3] = state
             .match_state
             .match_presentation
-            .lighting.grid()
+            .lighting
+            .grid()
             .overlay_tint_at((entry.rx, entry.ry));
+        // 0047F6A0: ordinary cell Convert/common; resource and veins use
+        // global ordinary Convert, with resource brightness fixed at 1000.
+        // Wall owner palette remapping is still absent from this atlas.
+        let light_grid = state.match_state.match_presentation.lighting.grid();
+        let palette_light = if is_wall {
+            Default::default()
+        } else if overlay_flags.is_some_and(|f| f.tiberium) {
+            crate::render::palette_light::PaletteLight::plain(53, 1000)
+        } else if overlay_flags.is_some_and(|f| f.is_veins) {
+            crate::render::palette_light::PaletteLight::plain(
+                53,
+                light_grid
+                    .cell_light_at((entry.rx, entry.ry))
+                    .map_or(1000, |l| l.common_scalar),
+            )
+        } else {
+            crate::render::palette_light::PaletteLight::cell(
+                light_grid,
+                (entry.rx, entry.ry),
+                false,
+            )
+        };
         planned_cells.push(
             crate::app::presentation::render::draw_plan_lowering::PlannedCellInstance {
                 draw: crate::render::tactical_draw_plan::CellDraw {
@@ -825,6 +885,7 @@ pub(crate) fn build_overlay_instances(
                     uv_size: spr.uv_size,
                     depth,
                     tint,
+                    palette_light,
                     alpha: 1.0,
                     z_adjust,
                     z_gradient,
@@ -847,6 +908,8 @@ pub(crate) fn build_overlay_instances(
     }
 
     // Terrain objects from [Terrain] section.
+    // Residual raw/animated terrain paths retain the old editor adjustment.
+    // The proven ordinary extended body/shadow branch below does not use it.
     // FA2 IsoView.cpp:6389 applies a -3px Y fudge to terrain objects (trees, rocks):
     //   drawy = ... + f_y/2 - 3 - pic.wMaxHeight/2
     const TERRAIN_OBJECT_Y_FUDGE: f32 = -3.0;
@@ -908,12 +971,57 @@ pub(crate) fn build_overlay_instances(
         let tint: [f32; 3] = state
             .match_state
             .match_presentation
-            .lighting.grid()
+            .lighting
+            .grid()
             .terrain_object_tint_for_type((obj.rx, obj.ry), spawns_tiberium);
+        // Terrain DrawIt 0071C286..0071C304: SpawnsTiberium selects the
+        // global ordinary Convert/top; ordinary trees select cell Convert/common.
+        let light_grid = state.match_state.match_presentation.lighting.grid();
+        let palette_light = if spawns_tiberium {
+            crate::render::palette_light::PaletteLight::plain(
+                53,
+                light_grid
+                    .cell_light_at((obj.rx, obj.ry))
+                    .map_or(1000, |l| l.top_scalar),
+            )
+        } else {
+            crate::render::palette_light::PaletteLight::cell(light_grid, (obj.rx, obj.ry), false)
+        };
 
         let Some(parent) = ground_order.terrain_object_draw(obj.stable_id, obj.rx, obj.ry) else {
             continue;
         };
+        if let Some((body, shadow)) = atlas.native_static_terrain_pair(name) {
+            use crate::app::presentation::render::draw_plan_lowering::{
+                GroundPieceInstance, GroundTexture, PlannedGroundObjectInstance,
+            };
+            use crate::render::tactical_draw_plan::RenderZPolicy;
+            use crate::render::terrain_draw::TerrainPiece;
+            // Terrain DrawIt 0071C304/0071C34E preserves one draw point for
+            // body and shadow. Each SHP's own integer canvas/frame offsets
+            // then locate the stored rectangle. No FA2 editor Y adjustment.
+            let point = [screen_x + TILE_WIDTH / 2.0, screen_y + TILE_HEIGHT / 2.0];
+            let [body_instance, shadow_instance] =
+                native_static_terrain_instances(body, shadow, point, z, depth, tint, palette_light);
+            let mut parent = parent;
+            parent.policy.render_z = RenderZPolicy::ReadWrite;
+            ground_objects.push(PlannedGroundObjectInstance::object(
+                parent,
+                vec![
+                    GroundPieceInstance {
+                        target: GroundTexture::TerrainStatic(TerrainPiece::Body),
+                        render_z: RenderZPolicy::ReadWrite,
+                        instance: body_instance,
+                    },
+                    GroundPieceInstance {
+                        target: GroundTexture::TerrainStatic(TerrainPiece::Shadow),
+                        render_z: RenderZPolicy::ReadWrite,
+                        instance: shadow_instance,
+                    },
+                ],
+            ));
+            continue;
+        }
         ground_objects.push(
             crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance::object(
                 parent,
@@ -930,6 +1038,7 @@ pub(crate) fn build_overlay_instances(
                         uv_size: spr.uv_size,
                         depth,
                         tint,
+                        palette_light,
                         alpha: 1.0,
                         ..Default::default()
                     },
@@ -937,6 +1046,32 @@ pub(crate) fn build_overlay_instances(
             ),
         );
     }
+}
+
+/// Ordinary Terrain DrawIt 0071C304/0071C34E: both stored frames share one
+/// projected draw point. Native class terms and gradients remain piece data.
+fn native_static_terrain_instances(
+    body: &crate::render::overlay_atlas::OverlaySpriteEntry,
+    shadow: &crate::render::overlay_atlas::OverlaySpriteEntry,
+    point: [f32; 2],
+    height_level: u8,
+    depth: f32,
+    tint: [f32; 3],
+    palette_light: crate::render::palette_light::PaletteLight,
+) -> [SpriteInstance; 2] {
+    [(body, 2, -12), (shadow, 0, -3)].map(|(sprite, gradient, class_z)| SpriteInstance {
+        position: [point[0] + sprite.offset_x, point[1] + sprite.offset_y],
+        size: sprite.pixel_size,
+        uv_origin: sprite.uv_origin,
+        uv_size: sprite.uv_size,
+        depth,
+        tint,
+        palette_light,
+        alpha: 1.0,
+        z_gradient: gradient,
+        z_adjust: super::helpers::ground_z_adjust(height_level, class_z),
+        ..Default::default()
+    })
 }
 
 /// Build SpriteInstances for garrison muzzle flash animations (OccupantAnim).
@@ -989,6 +1124,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         let start = cfg.map(|config| config.start).unwrap_or(0);
         let frame = (start + flash.runtime.current_frame).max(0) as u16;
         let key = ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::GlobalAnim,
             type_id: flash.runtime.type_name.clone(),
             facing: 0,
             frame,
@@ -1002,8 +1138,10 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         let tint: [f32; 3] = state
             .match_state
             .match_presentation
-            .lighting.grid()
+            .lighting
+            .grid()
             .anim_tint_at((flash.rx, flash.ry), cfg);
+        let palette_light = anim_palette_light(state, (flash.rx, flash.ry), cfg, false);
         let depth: f32 = garrison_flash_depth(
             origin_y,
             world_height,
@@ -1025,6 +1163,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
             uv_size: entry.uv_size,
             depth,
             tint,
+            palette_light,
             alpha,
             ..Default::default()
         });
@@ -1049,6 +1188,7 @@ fn garrison_flash_depth(
 
 fn weapon_muzzle_flash_key(flash: &WeaponMuzzleFlash) -> ShpSpriteKey {
     ShpSpriteKey {
+        palette_context: crate::render::sprite_atlas::ShpPaletteContext::GlobalAnim,
         type_id: flash.shp_name.clone(),
         facing: 0,
         frame: flash.frame,
@@ -1107,8 +1247,10 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
         let tint = state
             .match_state
             .match_presentation
-            .lighting.grid()
+            .lighting
+            .grid()
             .anim_tint_at((flash.rx, flash.ry), cfg);
+        let palette_light = anim_palette_light(state, (flash.rx, flash.ry), cfg, false);
         // Muzzle anims (e.g. GCMUZZLE, VTMUZZLE) carry their art section's
         // ZAdjust= as a sort bias plus the constant -2px anim bias.
         let type_z_adjust: i32 = cfg.map(|c| c.z_adjust).unwrap_or(0);
@@ -1131,6 +1273,7 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
             uv_size: entry.uv_size,
             depth,
             tint,
+            palette_light,
             alpha,
             ..Default::default()
         });
@@ -1153,7 +1296,10 @@ fn projectile_authoritative_screen_position(
 ///
 /// YR `BulletClass::AI` linkage: rendering reads the same committed CoordStruct
 /// that the next authoritative flight pass will advance.
-pub(crate) fn build_projectile_visual_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
+pub(crate) fn build_projectile_visual_instances(
+    state: &AppState,
+    paged: &mut [Vec<SpriteInstance>],
+) {
     let (sim, rules, atlas) = match (
         state
             .match_state
@@ -1205,6 +1351,7 @@ pub(crate) fn build_projectile_visual_instances(state: &AppState, paged: &mut [V
         let frame_count =
             presentation_anim_frame_count(&atlas.active_anim_frame_counts, image).unwrap_or(32);
         let key = ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
             type_id: image.to_string(),
             facing: 0,
             frame: if frame_count == 0 {
@@ -1353,6 +1500,7 @@ pub(crate) fn build_parachute_instances(
 
         // Single-facing anim (no Facings= in art.ini for PARACH).
         let key = ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::GlobalAnim,
             type_id: config.shp_name.clone(),
             facing: 0,
             frame: anim.frame,
@@ -1400,6 +1548,14 @@ pub(crate) fn build_parachute_instances(
                     uv_size: entry.uv_size,
                     depth,
                     tint,
+                    palette_light: anim_palette_light(
+                        state,
+                        (entity.position.rx, entity.position.ry),
+                        state
+                            .rules()
+                            .and_then(|r| r.art_registry.anim_runtime_config(&config.shp_name)),
+                        false,
+                    ),
                     alpha: 1.0,
                     ..Default::default()
                 },
@@ -1410,6 +1566,43 @@ pub(crate) fn build_parachute_instances(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn static_terrain_body_and_shadow_use_native_shared_point_and_piece_z() {
+        use crate::render::overlay_atlas::OverlaySpriteEntry;
+        let body = OverlaySpriteEntry {
+            uv_origin: [0.1, 0.2],
+            uv_size: [0.2, 0.3],
+            pixel_size: [33.0, 78.0],
+            offset_x: -16.0,
+            offset_y: -76.0,
+        };
+        let shadow = OverlaySpriteEntry {
+            uv_origin: [0.4, 0.5],
+            uv_size: [0.3, 0.4],
+            pixel_size: [74.0, 36.0],
+            offset_x: 2.0,
+            offset_y: -34.0,
+        };
+        let palette =
+            crate::render::palette_light::PaletteLight::new([288, 576, 992], 27, 799, false);
+        let pieces = super::native_static_terrain_instances(
+            &body,
+            &shadow,
+            [376.0, 404.0],
+            0,
+            0.3,
+            [0.5, 0.6, 0.7],
+            palette,
+        );
+        assert_eq!(pieces[0].position, [360.0, 328.0]);
+        assert_eq!(pieces[1].position, [378.0, 370.0]);
+        assert_eq!((pieces[0].z_gradient, pieces[0].z_adjust), (2, -12.0));
+        assert_eq!((pieces[1].z_gradient, pieces[1].z_adjust), (0, -3.0));
+        assert_eq!(pieces[0].palette_light, palette);
+        assert_eq!(pieces[0].uv_origin, body.uv_origin);
+        assert_eq!(pieces[1].uv_origin, shadow.uv_origin);
+    }
+
     use super::{
         ANIM_DRAW_DEPTH_BIAS_PX, AnimRenderDestination, CRATE_BODY_FRAME, anim_instance_alpha,
         anim_render_destination, apply_shape_z_adjust, garrison_flash_depth,

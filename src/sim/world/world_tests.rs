@@ -3783,21 +3783,22 @@ fn passive_house_is_never_defeated_even_with_nothing_left() {
     sim.session.game_options.short_game = true;
     let passive = insert_passive_house_with_counts(&mut sim, "Neutral", 0, 0);
     let player = insert_house_with_counts(&mut sim, "Americans", 2, 1);
+    let opponent = insert_house_with_counts(&mut sim, "Russians", 0, 0);
 
     sim.check_defeat(Some(&rules));
 
     assert!(!sim.houses[&passive].is_defeated);
     assert!(!sim.houses[&passive].has_lost);
     assert!(!sim.houses[&passive].has_won);
+    assert!(sim.houses[&opponent].is_defeated);
     assert!(sim.houses[&player].has_won);
 }
 
 #[test]
 fn passive_houses_do_not_make_a_solo_board_look_contested() {
-    // The "a real opponent exists" guard behind the victory screen and the
-    // termination frame. A one-player dev map whose [Houses] is the player plus
-    // Neutral/Special reaches alive.len() == 1 on tick 1, so counting the
-    // passive houses here would announce instant victory.
+    // The automatic victory creation guard. A one-player dev map whose
+    // [Houses] is the player plus Neutral/Special reaches alive.len() == 1 on
+    // tick 1, so counting passive houses here would announce instant victory.
     let mut sim = Simulation::new();
     insert_house_with_counts(&mut sim, "Americans", 1, 1);
     insert_passive_house_with_counts(&mut sim, "Neutral", 4, 0);
@@ -3811,29 +3812,53 @@ fn passive_houses_do_not_make_a_solo_board_look_contested() {
 }
 
 #[test]
-fn passive_houses_do_not_arm_the_termination_frame_for_a_tick_zero_win() {
-    // The sim-side consumer of the same guard. On a one-player dev map the
-    // human can accept a win immediately, and counting Neutral/Special as
-    // opponents would end the match as soon as its result timer expires.
+fn solo_developer_board_creates_no_automatic_victory_state_or_eva() {
     let mut sim = Simulation::new();
     let player = insert_house_with_counts(&mut sim, "Americans", 1, 1);
     insert_passive_house_with_counts(&mut sim, "Neutral", 4, 0);
     insert_passive_house_with_counts(&mut sim, "Special", 2, 0);
-    let player_house = sim.houses.get_mut(&player).expect("player house");
-    assert!(player_house.flag_to_win(0, 0));
-    assert!(player_house.advance_outcome_savour(0));
-
+    for tick in 0..300 {
+        sim.session.tick = tick;
+        sim.check_defeat(None);
+        assert!(!sim.houses[&player].has_won);
+        assert!(sim.houses[&player].outcome_state.is_none());
+        assert!(sim.ready_outcome_for_owner(player).is_none());
+        assert!(!sim.termination_frame_requested());
+    }
     assert!(
-        !sim.termination_frame_requested(),
-        "a win against only passive houses must not terminate the match"
+        sim.sound_events
+            .iter()
+            .all(|event| !matches!(event, SimSoundEvent::MatchOutcome { .. }))
     );
+}
 
-    // Add a real opponent and the same win now ends the game.
-    insert_house_with_counts(&mut sim, "Russians", 1, 1);
-    assert!(
-        sim.termination_frame_requested(),
-        "a win with a contending opponent present must terminate the match"
-    );
+#[test]
+fn explicit_solo_outcomes_advance_and_reach_the_shared_ready_query() {
+    use crate::sim::house_state::HouseOutcomeKind;
+    for kind in [HouseOutcomeKind::Victory, HouseOutcomeKind::Defeat] {
+        let mut sim = Simulation::new();
+        let player = insert_house_with_counts(&mut sim, "Americans", 1, 1);
+        insert_passive_house_with_counts(&mut sim, "Neutral", 4, 0);
+        insert_passive_house_with_counts(&mut sim, "Special", 2, 0);
+        let house = sim.houses.get_mut(&player).unwrap();
+        assert!(match kind {
+            HouseOutcomeKind::Victory => house.flag_to_win(0, 3),
+            HouseOutcomeKind::Defeat => house.flag_to_lose(0, 3),
+        });
+        // Accepted outcomes carry no automatic/explicit origin discriminator.
+        // Their timer and app-visible readiness must not depend on opponents.
+        for tick in 0..3 {
+            sim.session.tick = tick;
+            sim.check_defeat(None);
+            assert_eq!(sim.termination_frame_requested(), tick == 2);
+            assert_eq!(sim.ready_outcome_for_owner(player).is_some(), tick == 2);
+        }
+        assert_eq!(sim.ready_outcome_for_owner(player).unwrap().kind, kind);
+        assert!(
+            sim.sound_events.is_empty(),
+            "timer advancement must not replay EVA"
+        );
+    }
 }
 
 #[test]

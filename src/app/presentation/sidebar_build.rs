@@ -15,6 +15,9 @@ use crate::render::sidebar_chrome::{SidebarChromeAtlas, SidebarChromeEntry};
 use crate::sidebar::power_bar_anim::PowerBarAnimState;
 use crate::sidebar::{Rect, SidebarChromeLayoutSpec, SidebarLayout, SidebarTabButton, SidebarView};
 
+#[path = "sidebar_command_bar.rs"]
+pub(crate) mod command_bar;
+
 // ---------------------------------------------------------------------------
 // Main sidebar panel instances (backgrounds, progress, badges, buttons, meters)
 // ---------------------------------------------------------------------------
@@ -37,7 +40,7 @@ pub(crate) fn build_sidebar_chrome_instances(
     let Some(atlas) = current_sidebar_chrome(state) else {
         return Vec::new();
     };
-    build_sidebar_chrome_instances_for_layout(
+    let mut instances = build_sidebar_chrome_instances_for_layout(
         atlas,
         state.match_state.match_presentation.sidebar_layout_spec,
         &view.layout,
@@ -45,9 +48,15 @@ pub(crate) fn build_sidebar_chrome_instances(
         &view.tabs,
         &state.match_state.match_presentation.power_bar_anim,
         [state.render_width() as f32, state.render_height() as f32],
-        [state.match_state.input.camera_x, state.match_state.input.camera_y],
+        [
+            state.match_state.input.camera_x,
+            state.match_state.input.camera_y,
+        ],
         state.match_state.match_presentation.ui_scale,
-    )
+        state.match_state.match_presentation.radar_anim.is_none(),
+    );
+    command_bar::append(state, atlas, &mut instances);
+    instances
 }
 
 pub fn build_sidebar_chrome_instances_for_layout(
@@ -60,64 +69,31 @@ pub fn build_sidebar_chrome_instances_for_layout(
     _screen_size: [f32; 2],
     camera_offset: [f32; 2],
     ui_scale: f32,
+    static_radar_fallback: bool,
 ) -> Vec<SpriteInstance> {
     let mut inst = Vec::new();
     let d = 0.00048;
     let s = ui_scale;
     let cx = layout.sidebar_x;
-    if let Some(top_sidebar) = atlas.top_strip_sidebar {
-        push_chrome(
-            &mut inst,
-            top_sidebar,
-            cx + spec.top_strip_sidebar_x,
-            spec.top_strip_sidebar_y,
-            d + 0.00003,
-            camera_offset,
-            s,
-        );
+    // RadarClass::Draw 653100 and DrawCreditsSHPBackground 6D0E60.
+    if let Some(top) = atlas.top_strip_sidebar {
+        push_chrome(&mut inst, top, cx, 16.0, d, camera_offset, s);
     }
-    if let Some(top_thin) = atlas.top_strip_thin {
-        push_chrome(
-            &mut inst,
-            top_thin,
-            cx + spec.top_strip_thin_x,
-            spec.top_strip_thin_y,
-            d + 0.00002,
-            camera_offset,
-            s,
-        );
-    }
-    if let Some(unknown_top_housing) = atlas.unknown_top_housing {
-        let width = if spec.unknown_top_housing_width > 0.0 {
-            spec.unknown_top_housing_width
-        } else {
-            unknown_top_housing.pixel_size[0] * s
-        };
-        let height = if spec.unknown_top_housing_height > 0.0 {
-            spec.unknown_top_housing_height
-        } else {
-            unknown_top_housing.pixel_size[1] * s
-        };
-        push_chrome_sized(
-            &mut inst,
-            unknown_top_housing,
-            cx + spec.unknown_top_housing_x,
-            layout.side3_y + spec.side3_height - height + spec.unknown_top_housing_y,
-            [width, height],
-            d + 0.00001,
-            camera_offset,
-        );
+    if let Some(credits) = atlas.top_strip_thin {
+        push_chrome(&mut inst, credits, cx, 0.0, d, camera_offset, s);
     }
 
-    push_chrome(
-        &mut inst,
-        atlas.radar,
-        cx,
-        layout.radar_y,
-        d,
-        camera_offset,
-        s,
-    );
+    if static_radar_fallback {
+        push_chrome(
+            &mut inst,
+            atlas.radar,
+            cx,
+            layout.radar_y,
+            d,
+            camera_offset,
+            s,
+        );
+    }
     push_chrome(
         &mut inst,
         atlas.side1,
@@ -127,9 +103,6 @@ pub fn build_sidebar_chrome_instances_for_layout(
         camera_offset,
         s,
     );
-    if let Some(tabs) = atlas.tabs {
-        push_chrome(&mut inst, tabs, cx, layout.tabs_y, d, camera_offset, s);
-    }
     let td = d - 0.00001;
     for tab_btn in tabs {
         let idx = tab_btn.tab.tab_index();
@@ -148,11 +121,11 @@ pub fn build_sidebar_chrome_instances_for_layout(
             );
         }
     }
-    let mut y = layout.cameo_grid_top;
-    let side2_scaled_h = atlas.side2.pixel_size[1] * s;
-    while y < layout.cameo_grid_bottom - 1.0 {
+    // 6A6C30: row count is native capacity; pixel advance is SIDE2's
+    // loaded canvas height. SIDE3 and ADDON follow the last actual tile.
+    for row in 0..layout.side2_tile_count {
+        let y = layout.cameo_grid_top + row as f32 * atlas.side2.pixel_size[1];
         push_chrome(&mut inst, atlas.side2, cx, y, d, camera_offset, s);
-        y += side2_scaled_h;
     }
     push_chrome(
         &mut inst,
@@ -163,6 +136,17 @@ pub fn build_sidebar_chrome_instances_for_layout(
         camera_offset,
         s,
     );
+    if let Some(addon) = atlas.unknown_top_housing {
+        push_chrome(
+            &mut inst,
+            addon,
+            cx,
+            layout.side3_y + atlas.side3.pixel_size[1],
+            d,
+            camera_offset,
+            s,
+        );
+    }
 
     // --- Sell / Repair buttons (inside the side1 area). ---
     // The 5-frame state machine matches gamemd's SBGadgetClass::Draw conditional;
@@ -191,6 +175,22 @@ pub fn build_sidebar_chrome_instances_for_layout(
             camera_offset,
             s,
         );
+    }
+
+    // 653010/653100: draw and hit-test use the same loaded SHP canvas.
+    for i in 0..2 {
+        let button = &view.top_buttons[i];
+        if let Some(entry) = atlas.top_button_frames[i][button.frame_index as usize] {
+            push_chrome(
+                &mut inst,
+                entry,
+                button.rect.x,
+                button.rect.y,
+                btn_depth,
+                camera_offset,
+                s,
+            );
+        }
     }
 
     // --- Strip-scroll pair (R-DN +page left, R-UP −page right) ---
@@ -258,8 +258,7 @@ fn render_power_bar(
     base_depth: f32,
 ) {
     let bar_x: f32 = layout.sidebar_x + spec.power_bar_x;
-    let bar_top: f32 = layout.tabs_y + spec.power_bar_top_y;
-    let bar_w: f32 = spec.power_bar_width;
+    let bar_top: f32 = 227.0;
     let tile_h: f32 = spec.power_bar_tile_height;
 
     if tile_h <= 0.0 || anim.max_segments() <= 0 {
@@ -268,116 +267,19 @@ fn render_power_bar(
 
     let fill_depth: f32 = base_depth - 0.00002;
 
-    // Draw order top-to-bottom: empty → blink → surplus(green) → output(yellow) → drain(red).
-    let (n_empty, n_surplus, n_output, n_drain) = anim.segment_counts();
-
-    let bg_entry = atlas.powerp_frames[0];
-    let surplus_entry = atlas.powerp_frames[1]; // green
-    let output_entry = atlas.powerp_frames[2]; // yellow
-    let drain_entry = atlas.powerp_frames[3]; // red
-    let blink_entry = atlas.powerp_frames[4];
-
-    let flashing = anim.is_flashing();
-
-    let mut y: f32 = bar_top;
-
-    // 1. Empty segments (frame 0) — top of bar.
-    if let Some(bg) = bg_entry {
-        for _ in 0..n_empty {
+    anim.visit_draw_segments(|frame, row| {
+        if let Some(entry) = atlas.powerp_frames[usize::from(frame)] {
             push_chrome_sized(
                 inst,
-                bg,
+                entry,
                 bar_x,
-                y,
-                [bar_w, tile_h],
-                fill_depth,
-                camera_offset,
-            );
-            y += tile_h;
-        }
-    } else {
-        y += n_empty as f32 * tile_h;
-    }
-
-    // 2. Blink frame at empty/filled boundary (frame 4, replaces first surplus segment).
-    let mut surplus_drawn: i32 = 0;
-    if flashing && n_surplus > 0 {
-        if let Some(blink) = blink_entry {
-            push_chrome_sized(
-                inst,
-                blink,
-                bar_x,
-                y,
-                [bar_w, tile_h],
-                fill_depth,
-                camera_offset,
-            );
-        } else if let Some(s) = surplus_entry {
-            push_chrome_sized(
-                inst,
-                s,
-                bar_x,
-                y,
-                [bar_w, tile_h],
+                bar_top + row as f32 * tile_h,
+                entry.pixel_size,
                 fill_depth,
                 camera_offset,
             );
         }
-        y += tile_h;
-        surplus_drawn = 1;
-    }
-
-    // 3. Surplus segments (frame 1, green) — top of filled area.
-    if let Some(s) = surplus_entry {
-        for _ in surplus_drawn..n_surplus {
-            push_chrome_sized(
-                inst,
-                s,
-                bar_x,
-                y,
-                [bar_w, tile_h],
-                fill_depth,
-                camera_offset,
-            );
-            y += tile_h;
-        }
-    } else {
-        y += (n_surplus - surplus_drawn) as f32 * tile_h;
-    }
-
-    // 4. Output segments (frame 2, yellow) — middle.
-    if let Some(o) = output_entry {
-        for _ in 0..n_output {
-            push_chrome_sized(
-                inst,
-                o,
-                bar_x,
-                y,
-                [bar_w, tile_h],
-                fill_depth,
-                camera_offset,
-            );
-            y += tile_h;
-        }
-    } else {
-        y += n_output as f32 * tile_h;
-    }
-
-    // 5. Drain segments (frame 3, red) — bottom of bar.
-    if let Some(d) = drain_entry {
-        for _ in 0..n_drain {
-            push_chrome_sized(
-                inst,
-                d,
-                bar_x,
-                y,
-                [bar_w, tile_h],
-                fill_depth,
-                camera_offset,
-            );
-            y += tile_h;
-        }
-    }
+    });
 }
 
 fn push_chrome(
@@ -546,13 +448,21 @@ pub(crate) fn build_sidebar_cameo_instances(
     Vec<SpriteInstance>,
     Vec<SpriteInstance>,
 ) {
-    let Some(atlas) = state.match_state.match_presentation.sidebar_cameo_atlas.as_ref() else {
+    let Some(atlas) = state
+        .match_state
+        .match_presentation
+        .sidebar_cameo_atlas
+        .as_ref()
+    else {
         return (Vec::new(), Vec::new(), Vec::new());
     };
     let mut instances = Vec::new();
     let mut gclock_instances = Vec::new();
     let mut overlay_instances = Vec::new();
-    let co = [state.match_state.input.camera_x, state.match_state.input.camera_y];
+    let co = [
+        state.match_state.input.camera_x,
+        state.match_state.input.camera_y,
+    ];
     let gclock_frames: &[SidebarChromeEntry] =
         crate::app::presentation::sidebar_render::current_sidebar_chrome(state)
             .map(|a| a.gclock_frames.as_slice())
@@ -688,7 +598,10 @@ pub(crate) fn build_sidebar_text_instances(
     }
     let s = state.match_state.match_presentation.ui_scale;
     let ts = ready_text_scale(s);
-    let co = [state.match_state.input.camera_x, state.match_state.input.camera_y];
+    let co = [
+        state.match_state.input.camera_x,
+        state.match_state.input.camera_y,
+    ];
     let mut instances = Vec::new();
 
     for item in &view.items {
@@ -739,7 +652,8 @@ pub(crate) fn build_sidebar_text_instances(
             let text_y = slot.y + QUEUE_COUNT_PAD_Y * ts;
             instances.extend(
                 state
-                    .renderer.bit_font
+                    .renderer
+                    .bit_font
                     .build_text(&count_str, text_x, text_y, ts, 0.00042, ready_tint, co),
             );
         }

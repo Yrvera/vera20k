@@ -196,6 +196,17 @@ pub fn build_bridge_body_instances_inner(
             uv_size: spr.uv_size,
             depth,
             tint,
+            // Active high-bridge body 0047F7DA uses cell Convert/bottom10E.
+            palette_light: crate::render::palette_light::PaletteLight::cell(
+                lighting_grid,
+                (rx, ry),
+                false,
+            )
+            .with_brightness(
+                lighting_grid
+                    .cell_light_at((rx, ry))
+                    .map_or(1000, |l| l.bottom_scalar),
+            ),
             alpha: 1.0,
             draw_state,
             z_adjust: bridge_body_z_adjust(depth_z),
@@ -212,7 +223,12 @@ pub(crate) fn build_bridge_body_instances(
     sh: f32,
     out: &mut Vec<SpriteInstance>,
 ) {
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
         return;
     };
     let Some(bridge_state) = sim.bridge_state.as_ref() else {
@@ -222,7 +238,9 @@ pub(crate) fn build_bridge_body_instances(
         return;
     };
     let (origin_y, world_height) = state
-        .match_state.match_presentation.terrain_grid
+        .match_state
+        .match_presentation
+        .terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
@@ -332,7 +350,12 @@ pub(crate) fn build_bridge_shadow_instances(
     sh: f32,
     out: &mut Vec<SpriteInstance>,
 ) {
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
         return;
     };
     let Some(bridge_state) = sim.bridge_state.as_ref() else {
@@ -342,11 +365,16 @@ pub(crate) fn build_bridge_shadow_instances(
         return;
     };
     let (origin_y, world_height) = state
-        .match_state.match_presentation.terrain_grid
+        .match_state
+        .match_presentation
+        .terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
-    let (cam_x, cam_y) = (state.match_state.input.camera_x, state.match_state.input.camera_y);
+    let (cam_x, cam_y) = (
+        state.match_state.input.camera_x,
+        state.match_state.input.camera_y,
+    );
     let height_map = state.height_map();
     build_bridge_shadow_instances_inner(
         bridge_state,
@@ -373,21 +401,36 @@ pub(crate) fn build_bridge_railing_instances(
     sh: f32,
     out: &mut Vec<SpriteInstance>,
 ) {
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
         return;
     };
     let Some(bridge_state) = sim.bridge_state.as_ref() else {
         return;
     };
-    let Some(atlas) = state.match_state.match_presentation.bridge_railing_atlas.as_ref() else {
+    let Some(atlas) = state
+        .match_state
+        .match_presentation
+        .bridge_railing_atlas
+        .as_ref()
+    else {
         return;
     };
     let (origin_y, world_height) = state
-        .match_state.match_presentation.terrain_grid
+        .match_state
+        .match_presentation
+        .terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
-    let (cam_x, cam_y) = (state.match_state.input.camera_x, state.match_state.input.camera_y);
+    let (cam_x, cam_y) = (
+        state.match_state.input.camera_x,
+        state.match_state.input.camera_y,
+    );
 
     for ((rx, ry), cell) in bridge_state.iter_cells() {
         if !cell.deck_present || BridgeRuntimeState::effective_render_state(cell).is_none() {
@@ -451,7 +494,9 @@ fn resolve_bridge_kind_and_sub_idx(
     cell: &BridgeRuntimeCell,
 ) -> Option<(BridgeKind, i32, u8)> {
     let name = state
-        .match_state.match_presentation.overlay_names
+        .match_state
+        .match_presentation
+        .overlay_names
         .get(&cell.overlay_byte)?
         .to_ascii_uppercase();
     let kind = if matches!(
