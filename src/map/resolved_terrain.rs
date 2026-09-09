@@ -4099,7 +4099,6 @@ impl ResolvedTerrainGrid {
                 (
                     (cell.rx, cell.ry),
                     crate::map::terrain::TacticalBridgeCell {
-                        deck_z: cell.bridge_deck_level,
                         structural: cell.bridge_facts.has_structural_bridge(),
                         direction_zero: cell
                             .bridge_facts

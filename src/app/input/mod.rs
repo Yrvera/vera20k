@@ -16,3 +16,6 @@ pub(crate) mod messages;
 pub(crate) mod sidebar_eva;
 pub(crate) mod tooltips;
 pub(crate) mod transport_orders;
+
+#[cfg(test)]
+mod bridge_click_tests;

@@ -1342,11 +1342,25 @@ pub(crate) fn is_any_layer_walkable(
 }
 
 pub(crate) fn screen_point_to_world(state: &AppState, screen_x: f32, screen_y: f32) -> (f32, f32) {
-    // Screen pixel / zoom = world offset from camera top-left.
-    (
-        screen_x / state.match_state.input.zoom_level + state.match_state.input.camera_x,
-        screen_y / state.match_state.input.zoom_level + state.match_state.input.camera_y,
+    screen_point_to_world_with_camera(
+        (screen_x, screen_y),
+        (
+            state.match_state.input.camera_x,
+            state.match_state.input.camera_y,
+        ),
+        state.match_state.input.zoom_level,
     )
+}
+
+/// Undo the current view transform before resolving a tactical click. Keep
+/// subpixels here: the shared tactical inverse owns pixel quantization.
+pub(crate) fn screen_point_to_world_with_camera(
+    screen: (f32, f32),
+    camera: (f32, f32),
+    zoom: f32,
+) -> (f32, f32) {
+    // Screen pixel / zoom = world offset from camera top-left.
+    (screen.0 / zoom + camera.0, screen.1 / zoom + camera.1)
 }
 
 /// Shared owner for world-space point -> map-cell resolution in the app layer.
@@ -1752,7 +1766,6 @@ mod tests {
         let bridge_cells = BTreeMap::from([(
             (10, 5),
             crate::map::terrain::TacticalBridgeCell {
-                deck_z: 4,
                 structural: true,
                 direction_zero: true,
             },
