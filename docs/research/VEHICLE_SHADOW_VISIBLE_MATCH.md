@@ -78,9 +78,22 @@ Twenty thousand warmed same-key cache calls took 1.0034 ms; this is CPU lookup
 cost only, excluding caller key allocation, instance building, cold fill and
 GPU draws. It is not whole-game performance evidence.
 
-After these checks, the unchanged caller predicates and companion-key selection
-were extracted into small helpers for a direct Drive/temporary-Teleport/Hover/
-nonflat/cloak regression. That final test is deliberately unexecuted in this
-isolated checkout, awaiting the combined candidate's focused/full checks and
-clippy. Application capture and normal-size shadow-darkness acceptance also
-remain pending; no final renderer approval is implied.
+After those isolated checks, the unchanged caller predicates and companion-key
+selection were extracted into helpers for a direct Drive/active-Teleport/Hover/
+nonflat/cloak regression. The integrated candidate
+`2adc7854d40e17a267b80717f605708278062c52` passed the full library suite
+(8,581 passed, 0 failed, 119 ignored), including that regression, and clippy
+(exit 0). Its explicit stock shadow, atlas GPU and Ground replay checks passed
+2, 1 and 3 tests respectively. These checks do not prove a complete temporary
+locomotor enter/exit lifecycle.
+
+The subsequent user-captured 800 x 600 Neutral scene received independent
+visual approval at normal gameplay size, including vehicle shadow shape and
+darkness while retaining the body, terrain and TREE matches. The VERA PCX
+SHA256 is `c9e21d4003fd7677d0a31746991029c3d9d45070d0811203d48f96a7207966ea`;
+the paired original retail PCX is
+`c81dd77a62725a5318a32699d5ba5068dba61840120cdc4bd52b494c310f35e7`.
+The local `capture-scenes-v4/01-neutral` receipt ties this capture to the
+candidate above; retail bytes remain local. This is bounded scene acceptance,
+not exact packed-half parity or closure of the broader cases and performance
+limits listed above.

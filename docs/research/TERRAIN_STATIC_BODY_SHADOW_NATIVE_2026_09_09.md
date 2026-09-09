@@ -205,11 +205,18 @@ which separates that batching failure from a demonstrated per-piece texture
 leak. Dense-tree frame cost nevertheless remains a material open performance
 gate. An uncontended repeat is required before inferring the correction size.
 
-Independent review supports a bounded correctness capture candidate after
-these checks, with dense-tree performance open. Actual application TREE01
-capture, including ordinary static overlaps, remains required. Existing
-same-source neutral/tinted clear-terrain captures remain regression gates for
-the shared depth migration; the new candidate has not yet reproduced them.
+Independent review initially approved a bounded correctness capture candidate
+after these checks, with dense-tree performance open. The later integrated
+candidate `2adc7854d40e17a267b80717f605708278062c52` passed the full library
+suite (8,581 passed, 0 failed, 119 ignored), clippy (exit 0), and three explicit
+Ground replay GPU tests. Its user-captured 800 x 600 Neutral scene received
+independent visual approval: all 1,470 sampled TREE body pixels and 1,000 shadow
+pixels matched their native source/destination expectations, retaining the
+sampled terrain and vehicle-body matches. The VERA PCX SHA256 is
+`c9e21d4003fd7677d0a31746991029c3d9d45070d0811203d48f96a7207966ea`;
+the local `capture-scenes-v4/01-neutral` receipt records its build and original
+retail identities. That capture covers the isolated static TREE01, not all
+ordinary overlaps, tinted scenes or the dense-tree performance limits.
 
 The body conversion retains the approved opaque, clear tactical A=127
 boundary. Later shroud composition does not prove native non-clear-A behavior.
@@ -334,6 +341,6 @@ timing was a different run and is not a controlled comparison with this one.
 
 Independent review verified the source/fixture freeze, GPU logs and all timing
 medians; final integration review includes the full/clippy results and this
-report-only update. Actual user scene comparison and the broader rendering
-residuals above remain required. No full rendering or dense-overlap closure is
-claimed.
+report-only update. The later Neutral application comparison is recorded above;
+the broader rendering residuals and dense-overlap performance limits remain
+open. No full rendering or dense-overlap closure is claimed.

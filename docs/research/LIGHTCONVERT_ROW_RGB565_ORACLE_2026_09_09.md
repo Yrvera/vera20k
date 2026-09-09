@@ -242,9 +242,9 @@ Acceptance for a repair: feed native-generated palette/index/brightness/A fixtur
 through actual production GPU paths; compare packed/display output, including
 brightness boundaries, indices16..31 and240..255, colored profiles, N27 cell
 versus N53 house palettes, clear/shroud edges, and scalar/MMX mode policy. Then
-compare identical retail scenes. The current captures do not yet demonstrate
-that full composition, custom palette selection, house overrides or translucent
-effects match.
+compare identical retail scenes. The later bounded Neutral approval below
+does not establish full composition, custom palette selection, house overrides
+or translucent-effect parity.
 
 
 ## Ordinary ConvertClass is a separate palette owner
@@ -453,7 +453,15 @@ clear-tile selection. Native comparison table SHA256:
 `bf0d68b4865df9bc5ee172e23d45f797c4b38dd0c009e18742da221c358971e0`.
 The original PCX and local identification scripts are retained by the parent in
 its `flat8-v2` / `terrain-proof` audit directories; no retail bytes are shipped
-with this report. Candidate scene equivalence remains pending a fresh capture.
+with this report. The later integrated candidate
+`2adc7854d40e17a267b80717f605708278062c52` passed the full library suite
+(8,581 passed, 0 failed, 119 ignored) and clippy (exit 0). Its user-captured
+800 x 600 Neutral scene received independent visual approval, retaining the
+sampled terrain, vehicle-body and TREE matches. The VERA PCX SHA256 is
+`c9e21d4003fd7677d0a31746991029c3d9d45070d0811203d48f96a7207966ea`;
+the local `capture-scenes-v4/01-neutral` receipt records the candidate and
+original retail capture identities. This supersedes the fresh-capture gate
+for that scene only; the composition and producer exclusions above remain.
 
 
 ## Ground/Level parser correction
