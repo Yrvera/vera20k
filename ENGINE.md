@@ -43,6 +43,10 @@ not hand calculations or prior Rust. Avoid unqualified “VERIFIED”/“complet
 
 [Unicorn](tools/native_oracle.md) can help with native comparisons; use when useful.
 
+Preserve native comparisons as reproducible harnesses and results, recording binary
+identity and coverage limits. Link them to Rust tests where practical; parity claims
+must cite saved evidence and actual validation results.
+
 Each cohesive gamemd-derived Rust behavior carries nearby native identity/address
 and source; sim-behavior commits cite their evidence.
 Consult the [Ghidra reference](docs/research/ghidra-workflow.md) for access,
