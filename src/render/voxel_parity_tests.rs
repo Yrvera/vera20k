@@ -1,23 +1,120 @@
-//! Visual-parity regression tests for the voxel atlas pipeline.
+//! Stock-hull executable comparisons and a retained constructed-preview test.
 //!
-//! Tests in this file validate the post-VPL palette-index output of the
-//! software rasterizer, which is the byte gamemd writes to its visibility
-//! map (the byte the fragment shader then samples and resolves to RGB).
+//! The explicit GTNK acceptance probe compares all 32 flat hull facings,
+//! original visibility bytes and all six crop outputs through production
+//! preparation/raster APIs. Synthetic forward/backward, section, empty-run and
+//! zero-erasure fixtures live in vxl_native.rs; actual GPU readbacks live in
+//! vxl_compute.rs. Native VPL result zero is a real store that can erase a
+//! prior voxel. The small no-VPL test here only checks source colors in a
+//! manually constructed legacy preview; it does not define native zero rules.
 //!
-//! ## What's covered here
-//! - `color_0_voxels_never_written`: byte 0 = transparent invariant. The
-//!   rasterizer must never write byte 0 to a pixel that has a non-empty
-//!   voxel hit. Matches the engine's visibility-map convention.
-//!
-//! ## What's NOT covered (deferred)
-//! - End-to-end Grizzly facing-0 / slope-0 snapshot test against
-//!   gamemd-rendered output. Needs retail VXL assets and a blessed binary
-//!   snapshot. Add when the asset pipeline supports it.
+//! Hull evidence does not establish relative turret/barrel transforms, part
+//! composition, final RGB, or complete live scene equivalence.
 
 #[cfg(test)]
 mod tests {
     use crate::assets::vxl_file::{VxlFile, VxlLimb, VxlVoxel};
     use crate::render::vxl_raster::{self, VxlRenderParams, VxlSprite};
+
+    /// Explicit retail acceptance probe. Inputs and native observations come
+    /// from the original-executable loader/raster sweep, never Rust output.
+    /// Set VERA20K_VOXEL_PROBE_DIR to the local grizzly-raster-proof directory.
+    /// The canonical comparison retains native world offsets and transparent
+    /// pixels; no translation search, resizing or best-match alignment occurs.
+    #[test]
+    #[ignore = "requires extracted retail GTNK assets and original-executable all-facing observations"]
+    fn native_grizzly_hull_matches_retail_all_facings() {
+        use crate::assets::{hva_file::HvaFile, vpl_file::VplFile};
+        use std::{fs, path::PathBuf};
+
+        let root = PathBuf::from(
+            std::env::var_os("VERA20K_VOXEL_PROBE_DIR")
+                .expect("set VERA20K_VOXEL_PROBE_DIR to the native hull probe directory"),
+        );
+        let assets = root.join("extract");
+        let vxl = VxlFile::from_bytes(&fs::read(assets.join("gtnk.vxl")).unwrap()).unwrap();
+        let hva = HvaFile::from_bytes(&fs::read(assets.join("gtnk.hva")).unwrap()).unwrap();
+        let vpl = VplFile::from_bytes(&fs::read(assets.join("voxels.vpl")).unwrap()).unwrap();
+        assert_eq!(vxl.limbs.len(), 1);
+        assert_eq!((hva.frame_count, hva.section_count), (1, 1));
+        let output = root.join("rust-all-facings");
+        fs::create_dir_all(&output).unwrap();
+        let mut reports = Vec::new();
+        let mut total_differences = 0usize;
+        for step in 0..32u8 {
+            let native_dir = root.join("all-facings").join(format!("{step:02}"));
+            let native = fs::read(native_dir.join("gtnk-facing0-indexed.bin")).unwrap();
+            assert_eq!(native.len(), 256 * 256);
+            let metadata: serde_json::Value =
+                serde_json::from_slice(&fs::read(native_dir.join("probe-result.json")).unwrap())
+                    .unwrap();
+            let raw = metadata["rect_raw"].as_str().unwrap();
+            let mut rect_bytes = [0u8; 24];
+            for (i, byte) in rect_bytes.iter_mut().enumerate() {
+                *byte = u8::from_str_radix(&raw[i * 2..i * 2 + 2], 16).unwrap();
+            }
+            let rect: [i32; 6] = std::array::from_fn(|i| {
+                i32::from_le_bytes(rect_bytes[i * 4..i * 4 + 4].try_into().unwrap())
+            });
+            let params = VxlRenderParams {
+                facing: step * 8,
+                ..Default::default()
+            };
+            let prepared = vxl_raster::prepare_native_draw(&vxl, Some(&hva), &params, Some(&vpl))
+                .expect("stock GTNK must use the encoded native path");
+            assert_eq!(prepared.rect, rect, "all six native GTNK crop outputs");
+            let sprite = vxl_raster::render_vxl(&vxl, Some(&hva), &params, Some(&vpl));
+            assert_eq!(
+                sprite.palette_indices,
+                prepared.render_cpu().unwrap().palette_indices
+            );
+            let mut canonical = vec![0u8; 256 * 256];
+            let start_x = sprite.offset_x as i32 + rect[2] - rect[0];
+            let start_y = sprite.offset_y as i32 + rect[3] - rect[1];
+            for y in 0..sprite.height as i32 {
+                for x in 0..sprite.width as i32 {
+                    let color =
+                        sprite.palette_indices[(y as u32 * sprite.width + x as u32) as usize];
+                    if color == 0 {
+                        continue;
+                    }
+                    let (nx, ny) = (x + start_x, y + start_y);
+                    assert!((0..256).contains(&nx) && (0..256).contains(&ny));
+                    canonical[(ny * 256 + nx) as usize] = color;
+                }
+            }
+            let differences = canonical
+                .iter()
+                .zip(&native)
+                .filter(|(a, b)| a != b)
+                .count();
+            let mask_differences = canonical
+                .iter()
+                .zip(&native)
+                .filter(|(a, b)| (**a == 0) != (**b == 0))
+                .count();
+            total_differences += differences;
+            let report = serde_json::json!({
+                "step": step, "differences": differences, "mask_differences": mask_differences,
+                "native_nonzero": native.iter().filter(|v| **v != 0).count(),
+                "rust_nonzero": canonical.iter().filter(|v| **v != 0).count(),
+                "rust_offset": [sprite.offset_x, sprite.offset_y],
+                "rust_dimensions": [sprite.width, sprite.height], "native_rect": rect,
+            });
+            eprintln!("{report}");
+            fs::write(output.join(format!("{step:02}.bin")), canonical).unwrap();
+            reports.push(report);
+        }
+        fs::write(
+            output.join("report.json"),
+            serde_json::to_vec_pretty(&reports).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            total_differences, 0,
+            "native hull raster differences across 32 facings"
+        );
+    }
 
     /// Build a tiny 2×2×2 VXL with two opaque voxels (color indices 10 and 20)
     /// and otherwise empty cells. Verifies that the rasterizer writes those
@@ -31,6 +128,7 @@ mod tests {
             body_size: 0,
             palette: vec![[0; 3]; 256],
             limbs: vec![VxlLimb {
+                native_spans: None,
                 name: "body".to_string(),
                 scale: 1.0,
                 bounds: [-1.0, -1.0, -1.0, 1.0, 1.0, 1.0],
@@ -60,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn color_0_invariant_only_voxel_color_indices_appear_in_output() {
+    fn constructed_preview_without_vpl_contains_only_source_color_indices() {
         let vxl: VxlFile = make_two_voxel_vxl();
         let params: VxlRenderParams = VxlRenderParams::default();
         let sprite: VxlSprite = vxl_raster::render_vxl(&vxl, None, &params, None);

@@ -1,15 +1,10 @@
-//! Software voxel rasterizer — renders VXL models to 2D RGBA sprites.
+//! VXL palette-index sprite rendering and separate voxel-shadow geometry.
 //!
-//! Uses YR's original back-to-front spatial iteration: voxels are processed
-//! layer-by-layer in the order determined by the camera transform, so closer
-//! voxels naturally overwrite farther ones (painter's algorithm). Each voxel
-//! is projected to screen space and drawn as a small filled rectangle, giving
-//! the authentic flat-pixel look of the original game.
-//!
-//! Lighting uses Blinn-Phong via VPL lookup tables when available, falling
-//! back to simple N·L diffuse otherwise.
-//!
-//! Camera: 60° isometric tilt + 45° world rotation (matching RA2/YR original).
+//! Parsed ordinary VXLs use vxl_native.rs: original x87 box/crop preparation,
+//! encoded span traversal and literal 256x256 visibility writes. CPU and GPU
+//! share that owner. Native executable fixtures live in tools/voxel_oracle.
+//! Magnified previews and constructed diagnostics retain the legacy general
+//! projection below; its 16.16 splats are not the native 8.8 packed raster.
 //!
 //! ## Dependency rules
 //! - Part of render/ — depends on assets/ (VxlFile, HvaFile, VplFile).
@@ -21,6 +16,23 @@ use crate::assets::hva_file::HvaFile;
 use crate::assets::vpl_file::VplFile;
 use crate::assets::vxl_file::{VxlFile, VxlLimb};
 use crate::render::vxl_normals;
+
+#[path = "vxl_native.rs"]
+mod native;
+
+pub(crate) use native::PreparedDraw;
+
+/// Shared ordinary VXL preparation for CPU and GPU visibility writes. Preview
+/// magnification and constructed models without encoded spans keep their
+/// explicitly separate legacy renderer.
+pub(crate) fn prepare_native_draw(
+    vxl: &VxlFile,
+    hva: Option<&HvaFile>,
+    params: &VxlRenderParams,
+    vpl: Option<&VplFile>,
+) -> Option<PreparedDraw> {
+    native::prepare_draw(vxl, hva, params, vpl)
+}
 
 /// Isometric camera pitch (60°, matching the original engine's isometric projection).
 #[cfg(test)]
@@ -243,11 +255,8 @@ pub fn turret_pivot_screen_offset_for_slope_state(
 /// Margin in pixels added around the sprite to avoid clipping.
 const SPRITE_MARGIN: u32 = 2;
 
-/// Fixed-point shift for 16.16 integer projection.
-/// The original RA2/TS voxel renderer used integer math with truncation,
-/// producing characteristic pixel-snapping artifacts. We replicate this by
-/// projecting through 16.16 fixed-point and truncating (>> 16) rather than
-/// rounding, giving voxels the same "crunchy" pixel look as SHP sprites.
+/// Retained 16.16 projection for magnified previews and shadow preparation.
+/// Ordinary encoded VXL pixels instead use the native packed 8.8 owner.
 const FP_SHIFT: i32 = 16;
 const FP_SCALE: f32 = (1 << FP_SHIFT) as f32; // 65536.0
 
@@ -342,8 +351,8 @@ impl Default for VxlRenderParams {
 pub struct VxlSprite {
     /// Palette-index pixel data (row-major, width × height bytes).
     /// Each byte is the post-VPL-shaded, pre-house-remap palette index.
-    /// Byte 0 = transparent (no voxel rasterized at this pixel) — invariant
-    /// matches the original engine's visibility-map convention. House remap
+    /// Byte 0 = transparent, including a zero VPL result that erased a prior
+    /// voxel. This matches the original visibility-map convention. House remap
     /// and theater palette lookup happen at fragment-shader time.
     pub palette_indices: Vec<u8>,
     /// Per-pixel depth buffer (width × height floats). Used for depth-correct
@@ -462,8 +471,8 @@ fn axis_order(size: u8, depth_contribution: f32) -> AxisIter {
 // Precomputed per-limb data gathered before rendering begins.
 // ---------------------------------------------------------------------------
 
-/// Per-limb precomputed data for the two-phase render pipeline.
-/// Public so the GPU compute renderer can reuse the transform computation.
+/// Per-limb data for retained previews and separate shadow preparation.
+/// Ordinary CPU/GPU VXL paint uses the encoded native owner instead.
 pub struct LimbRenderData {
     pub grid: Vec<PackedVoxel>,
     pub combined: Mat4,
@@ -478,7 +487,7 @@ pub struct LimbRenderData {
 }
 
 /// Bounding box and layout info for a rendered VXL sprite.
-/// Produced by `compute_sprite_bounds` and consumed by the rasterizer or GPU compute.
+/// Produced by `compute_sprite_bounds` for retained previews and shadow bakes.
 pub struct SpriteBounds {
     pub width: u32,
     pub height: u32,
@@ -496,9 +505,10 @@ pub struct SpriteBounds {
 /// union. This is intentionally independent of atlas voxel-center storage
 /// bounds, SPRITE_MARGIN, splat footprint and zero/nonzero palette pixels.
 ///
-/// The projection inherits this renderer's existing f32 matrices; only the
-/// extent-to-rectangle leaf is transcribed here. This is not a claim of
-/// native raster/matrix pixel parity.
+/// Parsed production VXLs use the same exact corner/crop owner as their
+/// raster. Magnified previews and manually constructed diagnostics retain
+/// the old bounds calculation below. Caller slope/turret matrices retain
+/// their separately documented parity boundaries.
 pub fn native_vxl_draw_bounds(
     vxl: &VxlFile,
     hva: Option<&HvaFile>,
@@ -509,6 +519,11 @@ pub fn native_vxl_draw_bounds(
         params.slope_blend,
         voxel_facing_step(params.facing),
     );
+    if params.scale == 1.0 && vxl.limbs.iter().all(|limb| limb.native_spans.is_some()) {
+        let geometry = native::prepare_geometry(vxl, hva, params.frame, draw_matrix)?;
+        let [x, y, _, _, width, height] = geometry.rect;
+        return Some([x, y, width, height]);
+    }
     let mut minimum = [f32::INFINITY; 2];
     let mut maximum = [f32::NEG_INFINITY; 2];
     for (limb_index, limb) in vxl.limbs.iter().enumerate() {
@@ -666,8 +681,8 @@ fn compute_slope_blend_rotation(blend: VxlSlopeBlend) -> Mat4 {
 ///
 /// This is Phase 1 of the VXL render pipeline. It builds the combined
 /// world+section transform for each non-empty limb, computes VPL brightness
-/// pages, and returns the maximum voxel footprint. Both the CPU rasterizer
-/// and the GPU compute renderer use this function.
+/// pages, and returns the maximum voxel footprint for retained previews and
+/// the separate shadow owner. Ordinary CPU/GPU paint uses native preparation.
 pub fn prepare_limb_data(
     vxl: &VxlFile,
     hva: Option<&HvaFile>,
@@ -904,7 +919,7 @@ pub fn render_vxl_shadow(
 /// This is Phase 2 of the VXL render pipeline. It projects the 8 corners of
 /// each limb's voxel grid through the combined transform to find the screen-
 /// space bounding box, then computes pixel dimensions and buffer offsets.
-/// Both the CPU rasterizer and the GPU compute renderer use this function.
+/// Used by retained previews and shadow bakes, not ordinary encoded paint.
 pub fn compute_sprite_bounds(
     limb_data: &[LimbRenderData],
     scale: f32,
@@ -987,6 +1002,23 @@ pub fn render_vxl(
     params: &VxlRenderParams,
     vpl: Option<&VplFile>,
 ) -> VxlSprite {
+    if let Some(draw) = prepare_native_draw(vxl, hva, params, vpl) {
+        if let Some(sprite) = draw.render_cpu() {
+            return sprite;
+        }
+    }
+    // Magnified previews, constructed diagnostic models, or invalid native
+    // streams/crops use the prior general projection. Production stock VXLs
+    // use the encoded native path above; this fallback is not a parity claim.
+    render_vxl_legacy(vxl, hva, params, vpl)
+}
+
+fn render_vxl_legacy(
+    vxl: &VxlFile,
+    hva: Option<&HvaFile>,
+    params: &VxlRenderParams,
+    vpl: Option<&VplFile>,
+) -> VxlSprite {
     let scale: f32 = params.scale;
 
     // Phase 1: Precompute per-limb transforms, grids, and footprints.
@@ -1061,9 +1093,8 @@ pub fn render_vxl(
                         }
                         None => color_index,
                     };
-                    // Guard the transparency invariant: byte 0 = "no voxel"
-                    // and must never be written for a real opaque voxel. If a
-                    // VPL page maps to 0, fall back to the raw color_index.
+                    // Retained preview behavior, not a native invariant. The
+                    // ordinary encoded raster always stores zero VPL results.
                     let final_color_index: u8 = if final_color_index == 0 {
                         color_index
                     } else {
@@ -1410,6 +1441,7 @@ mod tests {
             body_size: 0,
             palette: vec![[0; 3]; 256],
             limbs: vec![VxlLimb {
+                native_spans: None,
                 name: "body".to_string(),
                 scale: 1.0,
                 bounds: [-1.0, -1.0, -1.0, 1.0, 1.0, 1.0],
