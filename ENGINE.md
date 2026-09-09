@@ -18,8 +18,7 @@ ask only for missing authority or consequential, undiscoverable preferences.
 Research/review alone does not authorize implementation. Preserve scope amendments
 and stop instructions across continuations.
 
-Be brief, plain and result-first. Explain severity through trigger frequency.
-GitHub issues use “Player-visible problem” and “Current Rust mismatch”.
+Be brief, plain and result-first.
 
 ## Exactness and evidence
 
@@ -30,7 +29,6 @@ wrong. Confirm active-YR reachability; unreachable claims need a breakpoint or
 flag-to-leaf trace. Never invent offsets, identities or behavior.
 
 Priority follows player visibility and frequency; it does not establish equivalence.
-Behavior/output differences remain **DRIFT** until equivalence is demonstrated.
 Missing or unproven required behavior keeps an exhaustive task open.
 
 Distinguish and cite:
@@ -43,9 +41,10 @@ Distinguish and cite:
 Parity goldens come from native execution/emulation, capture or retail bytes,
 not hand calculations or prior Rust. Avoid unqualified “VERIFIED”/“complete”.
 
+[Unicorn](tools/native_oracle.md) can help with native comparisons; use when useful.
+
 Each cohesive gamemd-derived Rust behavior carries nearby native identity/address
-and source; sim-behavior commits cite their evidence. Unproven internal rules say
-“VERA-internal, gamemd equivalent UNCHECKED”; the label does not prove equivalence.
+and source; sim-behavior commits cite their evidence.
 Consult the [Ghidra reference](docs/research/ghidra-workflow.md) for access,
 interpretation pitfalls and shared-database edits.
 
@@ -76,7 +75,7 @@ determinism/authority/lifecycle work cannot close that loop.
 Delegate independent work with clear ownership. Substantial/risky changes need a fresh
 read-only [critic](.agents/skills/_shared/review.md) free to inspect original evidence
 and challenge scope/design. Resolve confirmed findings, reject false positives with
-evidence. Continue authorized multi-mechanism goals through coherent transactions.
+evidence.
 Keep a concise [checkpoint](.agents/skills/_shared/handoff.md) for sustained work.
 
 ## Git and validation
@@ -90,15 +89,13 @@ directly to `main`. Publication requires user/goal authority; PRs target `main`.
 Integrate promptly when authorized. Owners resolve conflicts and revalidate.
 Preserve unique/local data; use `sync` for complex cleanup.
 
-Consider validating changed behavior through production paths with appropriate checks.
-
 - Working Rust: `cargo check -p vera20k` as needed; focused
   `cargo test -p vera20k --lib <module_path>::`.
 - Rust PR readiness: one full `cargo test -p vera20k --lib` plus
   `cargo clippy -p vera20k --lib` for the final candidate; repeat only if later
   changes/failures invalidate it.
 - Docs/skills: validate content, links/examples and tooling; no Cargo suite.
-- Every `cargo test` uses `--lib`; report literal `test result:` output.
+- Every `cargo test` uses `--lib`.
 
 Before Cargo: `Get-Process cargo,rustc -ErrorAction SilentlyContinue`. Wait for other
 owners; never compete or kill a compile. Confirm fresh-worktree config/assets.
