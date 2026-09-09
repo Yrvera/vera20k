@@ -56,9 +56,6 @@ pub(crate) struct TacticalStageBudgets {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TacticalExpectedLedger {
     pub yard_active_tick: u64,
-    pub radar_online_tick: u64,
-    pub second_readiness_tick: u64,
-    pub capture_tick: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -94,12 +91,6 @@ pub(crate) enum TacticalScriptConfigError {
     ProductionReadyLedger { role: StructureRole },
     #[error("{role:?} ready-to-active ledger is not exactly 31 ticks")]
     ConstructionLedger { role: StructureRole },
-    #[error("radar Online cannot precede completed radar construction")]
-    RadarOpeningLedger,
-    #[error("second readiness must be one tick after radar Online")]
-    SecondReadinessLedger,
-    #[error("capture tick does not equal second readiness plus warm frames")]
-    WarmFrameLedger,
     #[error("expected capture exceeds the overall tick cap")]
     OverallTickCap,
 }
@@ -187,26 +178,15 @@ impl TacticalScriptConfig {
                 return Err(TacticalScriptConfigError::ConstructionLedger { role: target.role });
             }
         }
-        if self.expected.radar_online_tick < self.radar.expected_active_tick {
-            return Err(TacticalScriptConfigError::RadarOpeningLedger);
-        }
-        let expected_second_readiness = self
-            .expected
-            .radar_online_tick
-            .checked_add(1)
+        // The opening timer belongs to actual render wall time, so its event
+        // tick is observed. Bound the worst admitted opening + warm-frame work.
+        let maximum_capture = self
+            .radar
+            .expected_active_tick
+            .checked_add(self.budgets.radar_opening.max_ticks)
+            .and_then(|tick| tick.checked_add(1 + u64::from(self.warm_frames)))
             .ok_or(TacticalScriptConfigError::LedgerOverflow)?;
-        if self.expected.second_readiness_tick != expected_second_readiness {
-            return Err(TacticalScriptConfigError::SecondReadinessLedger);
-        }
-        let expected_capture_tick = self
-            .expected
-            .second_readiness_tick
-            .checked_add(u64::from(self.warm_frames))
-            .ok_or(TacticalScriptConfigError::LedgerOverflow)?;
-        if self.expected.capture_tick != expected_capture_tick {
-            return Err(TacticalScriptConfigError::WarmFrameLedger);
-        }
-        if self.expected.capture_tick > self.overall_tick_cap {
+        if maximum_capture > self.overall_tick_cap {
             return Err(TacticalScriptConfigError::OverallTickCap);
         }
         Ok(())
@@ -759,12 +739,13 @@ impl TacticalScript {
             TacticalScriptStage::AwaitRadarOnline => self.await_radar_online(observation),
             TacticalScriptStage::WarmStableFrames => self.await_stable_frames(observation),
             TacticalScriptStage::CaptureRequested => {
-                if observation.tick != self.config.expected.capture_tick {
+                if Some(observation.tick) != self.observed.capture_requested_tick {
                     return Err(violation(
                         TacticalFailureCode::ExpectedLedgerDrift,
                         format!(
                             "capture completion was observed at tick {}, expected the simulation to remain stopped at {}",
-                            observation.tick, self.config.expected.capture_tick
+                            observation.tick,
+                            self.observed.capture_requested_tick.unwrap_or(0)
                         ),
                     ));
                 }
@@ -993,15 +974,17 @@ impl TacticalScript {
                         ScriptCommandPayload::QueueExactType { role: queued_role, .. }
                         if *queued_role == role)
             });
-            let expected_rate = if just_queued { 0 } else { target.expected_rate_frames };
+            let expected_rate = if just_queued {
+                0
+            } else {
+                target.expected_rate_frames
+            };
             if matching_queue[0].resolved_rate_frames != expected_rate {
                 return Err(violation(
                     TacticalFailureCode::ExpectedLedgerDrift,
                     format!(
                         "{role:?} target '{}' cadence drifted from {} to {}",
-                        target.type_id,
-                        expected_rate,
-                        matching_queue[0].resolved_rate_frames
+                        target.type_id, expected_rate, matching_queue[0].resolved_rate_frames
                     ),
                 ));
             }
@@ -1125,12 +1108,9 @@ impl TacticalScript {
                 "powered radar authority was lost while awaiting Online",
             ));
         }
-        if !self.require_exact_event_tick(
-            observation.tick,
-            self.config.expected.radar_online_tick,
-            observation.radar_online,
-            "radar Online",
-        )? {
+        // RadarAnimation consumes real wall-clock buckets at draw. Construction
+        // ticks stay exact, but readiness is condition-led within both budgets.
+        if !observation.radar_online {
             return Ok(None);
         }
         if !observation.readiness_complete {
@@ -1159,22 +1139,28 @@ impl TacticalScript {
                 "complete readiness tuple did not remain true during stable frames",
             ));
         }
-        if observation.tick < self.config.expected.second_readiness_tick {
+        let online_tick = self
+            .observed
+            .radar_online_tick
+            .expect("Online entered this stage");
+        let second_readiness_tick = online_tick + 1;
+        let capture_tick = second_readiness_tick + u64::from(self.config.warm_frames);
+        if observation.tick < second_readiness_tick {
             return Ok(None);
         }
-        if observation.tick == self.config.expected.second_readiness_tick {
+        if observation.tick == second_readiness_tick {
             self.observed.second_readiness_tick = Some(observation.tick);
             return Ok(None);
         }
-        if observation.tick < self.config.expected.capture_tick {
+        if observation.tick < capture_tick {
             return Ok(None);
         }
-        if observation.tick > self.config.expected.capture_tick {
+        if observation.tick > capture_tick {
             return Err(violation(
                 TacticalFailureCode::ExpectedLedgerDrift,
                 format!(
                     "capture became actionable at tick {}, expected {}",
-                    observation.tick, self.config.expected.capture_tick
+                    observation.tick, capture_tick
                 ),
             ));
         }
@@ -1221,10 +1207,7 @@ impl TacticalScript {
                         "queue result carried a non-production payload",
                     )
                 })?;
-                (
-                    self.resolve_queue(observation, type_id)?,
-                    ready_stage(role),
-                )
+                (self.resolve_queue(observation, type_id)?, ready_stage(role))
             }
             ExpectedCommandResult::BuildingPlacedReadyConsumed { type_id, cell } => {
                 let (role, choice) = match &pending.payload {
@@ -1904,7 +1887,7 @@ mod script_tests {
             refinery_harvester_type_id: Some("HARV".to_string()),
             placement_radius: 16,
             warm_frames: 16,
-            overall_tick_cap: 4096,
+            overall_tick_cap: 8192,
             budgets: TacticalStageBudgets {
                 deploy_yard: budget(48, 15),
                 power_production: budget(640, 90),
@@ -1913,14 +1896,11 @@ mod script_tests {
                 refinery_placement: budget(48, 15),
                 radar_production: budget(1024, 140),
                 radar_placement: budget(48, 15),
-                radar_opening: budget(96, 20),
+                radar_opening: budget(4096, 20),
                 stable_frames: budget(18, 10),
             },
             expected: TacticalExpectedLedger {
                 yard_active_tick: 32,
-                radar_online_tick: 3694,
-                second_readiness_tick: 3695,
-                capture_tick: 3711,
             },
         }
     }
@@ -2163,14 +2143,82 @@ mod script_tests {
     }
 
     #[test]
+    fn wall_clock_online_observation_controls_warm_frames_without_fixed_sim_tick() {
+        // Exercise the production script receiver with different render cadences:
+        // its Online observation is independent of deterministic construction.
+        for online in [3630, 3694, 3900, 7700] {
+            let mut script = TacticalScript::new(stock_config()).unwrap();
+            let capture = online + 17;
+            let actions = drive_until(&mut script, capture, |tick, observation| {
+                observation.radar_online = tick >= online;
+                observation.readiness_complete = tick >= online;
+            });
+            assert!(
+                matches!(actions.last(), Some((tick, TacticalAction::Capture)) if *tick == capture)
+            );
+            assert!(
+                !actions
+                    .iter()
+                    .any(|(_, action)| matches!(action, TacticalAction::Fail { .. }))
+            );
+            assert_eq!(script.command_ledger().len(), 8);
+            assert_eq!(script.observed_ledger().radar_online_tick, Some(online));
+            assert_eq!(
+                script.observed_ledger().second_readiness_tick,
+                Some(online + 1)
+            );
+            assert_eq!(
+                script.observed_ledger().capture_requested_tick,
+                Some(capture)
+            );
+        }
+    }
+
+    #[test]
+    fn radar_online_observation_is_bounded_by_tick_and_wall_budgets() {
+        let mut script = TacticalScript::new(stock_config()).unwrap();
+        let actions = drive_until(&mut script, 7726, |_, observation| {
+            observation.radar_online = false;
+            observation.readiness_complete = false;
+        });
+        assert!(actions.iter().any(|(_, action)| matches!(
+            action,
+            TacticalAction::Fail {
+                failure: TacticalFailure {
+                    code: TacticalFailureCode::BudgetExceeded,
+                    ..
+                }
+            }
+        )));
+        let mut script = TacticalScript::new(stock_config()).unwrap();
+        drive_until(&mut script, 3629, |_, _| {});
+        let mut late = observation(3630);
+        late.wall_elapsed_ms = 3629 + 20_001;
+        assert!(matches!(
+            script.next_action(&late),
+            Some(TacticalAction::Fail {
+                failure: TacticalFailure {
+                    code: TacticalFailureCode::BudgetExceeded,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
     fn raw_issue_stamp_precedes_the_observable_frame_result() {
         let mut script = TacticalScript::new(stock_config()).expect("valid config");
         let first = script.next_action(&observation(0)).expect("deploy action");
         record_if_command(&mut script, 0, &first);
         assert_eq!(script.pending_command().unwrap().execute_tick, 0);
         assert!(script.command_ledger().is_empty());
-        assert!(matches!(script.next_action(&observation(1)),
-            Some(TacticalAction::DeployMcv { attempt: DeployAttempt::Second, .. })));
+        assert!(matches!(
+            script.next_action(&observation(1)),
+            Some(TacticalAction::DeployMcv {
+                attempt: DeployAttempt::Second,
+                ..
+            })
+        ));
         assert_eq!(script.command_ledger().len(), 1);
     }
 
@@ -2321,11 +2369,22 @@ mod script_tests {
     fn first_factory_sweep_must_resolve_the_constructor_rate() {
         let mut script = TacticalScript::new(stock_config()).expect("valid config");
         let actions = drive_until(&mut script, 34, |tick, obs| {
-            if tick == 34 { obs.queued_production[0].resolved_rate_frames = 0; }
+            if tick == 34 {
+                obs.queued_production[0].resolved_rate_frames = 0;
+            }
         });
-        assert!(matches!(actions.last(), Some((34, TacticalAction::Fail {
-            failure: TacticalFailure { code: TacticalFailureCode::ExpectedLedgerDrift, .. }
-        }))));
+        assert!(matches!(
+            actions.last(),
+            Some((
+                34,
+                TacticalAction::Fail {
+                    failure: TacticalFailure {
+                        code: TacticalFailureCode::ExpectedLedgerDrift,
+                        ..
+                    }
+                }
+            ))
+        ));
     }
 
     #[test]
@@ -2404,7 +2463,7 @@ mod script_tests {
             Some((3711, TacticalAction::Capture))
         ));
 
-        let mut late = observation(stock_config().expected.capture_tick + 1);
+        let mut late = observation(3712);
         late.capture_complete = true;
         assert!(matches!(
             script.next_action(&late),

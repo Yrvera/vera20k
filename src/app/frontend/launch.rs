@@ -10,12 +10,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 
-use crate::app::diagnostics::shell_capture::{self, AppLaunchMode as ShellAppLaunchMode, ShellCaptureRequest};
-use crate::app::frontend::startup_options::{RetailStartupOptions, consume_retail_switches};
+use crate::app::diagnostics::shell_capture::{
+    self, AppLaunchMode as ShellAppLaunchMode, ShellCaptureRequest,
+};
 use crate::app::diagnostics::tactical_capture::profile::{
-    CHECKPOINT_RADAR_ONLINE_V1, SealedJsonFile, TacticalCaptureContract, TacticalCaptureProfile,
+    CHECKPOINT_RADAR_ONLINE_V2, SealedJsonFile, TacticalCaptureContract, TacticalCaptureProfile,
     validate_new_output_directory,
 };
+use crate::app::frontend::startup_options::{RetailStartupOptions, consume_retail_switches};
 use crate::skirmish_launch::SkirmishLaunchSession;
 
 const TACTICAL_CAPTURE_FLAG: &str = "--tactical-capture";
@@ -33,20 +35,20 @@ pub enum AppLaunchMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TacticalCaptureCheckpoint {
-    RadarOnlineV1,
+    RadarOnlineV2,
 }
 
 impl TacticalCaptureCheckpoint {
     fn parse(value: &str) -> Result<Self> {
         match value {
-            CHECKPOINT_RADAR_ONLINE_V1 => Ok(Self::RadarOnlineV1),
+            CHECKPOINT_RADAR_ONLINE_V2 => Ok(Self::RadarOnlineV2),
             _ => bail!("unsupported tactical-capture checkpoint {value:?}"),
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::RadarOnlineV1 => CHECKPOINT_RADAR_ONLINE_V1,
+            Self::RadarOnlineV2 => CHECKPOINT_RADAR_ONLINE_V2,
         }
     }
 }
@@ -263,12 +265,12 @@ mod tests {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         vec![
             TACTICAL_CAPTURE_FLAG.into(),
-            CHECKPOINT_RADAR_ONLINE_V1.into(),
+            CHECKPOINT_RADAR_ONLINE_V2.into(),
             "--profile".into(),
-            root.join("tools/tactical_certification/profiles/soviet-radar-online-v1.json")
+            root.join("tools/tactical_certification/profiles/soviet-radar-online-v2.json")
                 .into_os_string(),
             "--contract".into(),
-            root.join("src/app/diagnostics/tactical_capture/contract.v1.json")
+            root.join("src/app/diagnostics/tactical_capture/contract.v2.json")
                 .into_os_string(),
             "--output".into(),
             output.as_os_str().to_owned(),
@@ -404,9 +406,9 @@ mod tests {
         };
         assert_eq!(
             request.checkpoint(),
-            TacticalCaptureCheckpoint::RadarOnlineV1
+            TacticalCaptureCheckpoint::RadarOnlineV2
         );
-        assert_eq!(request.profile().profile_id, "soviet-radar-online-v1");
+        assert_eq!(request.profile().profile_id, "soviet-radar-online-v2");
         assert_eq!(request.width(), 800);
         assert_eq!(request.height(), 600);
         assert_eq!(request.output_dir(), output);

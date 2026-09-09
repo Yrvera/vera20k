@@ -60,7 +60,6 @@ def _fake_environment(directory: Path) -> EnvironmentInputs:
         executable=_small_snapshot(directory, "vera20k.exe", b"exe"),
         archive=_small_snapshot(directory, "archive.mix", b"archive"),
         font=_small_snapshot(directory, "verdana.ttf", b"font"),
-        layout=_small_snapshot(directory, "sidebar_layout.ron", b"layout"),
         retail_root=retail.absolute(),
     )
 
@@ -72,8 +71,13 @@ def _nonuniform_frame(profile) -> bytes:
     return b"\x00\x00\x00\xff" * (pixel_count - 1) + b"\x01\x02\x03\xff"
 
 
+def _fixture_ledger(profile, online=3694):
+    return {**profile.budgets["expected_ledger"], "radar_online": online,
+            "second_readiness": online + 1, "capture": online + 1 + profile.capture["warm_frames"]}
+
+
 def _observed_ledger(profile, *, capture_complete: int | None) -> dict[str, object]:
-    expected = profile.budgets["expected_ledger"]
+    expected = _fixture_ledger(profile)
     return {
         "capture_complete_tick": capture_complete,
         "capture_requested_tick": expected["capture"],
@@ -91,7 +95,7 @@ def _observed_ledger(profile, *, capture_complete: int | None) -> dict[str, obje
 
 
 def _production_fixture(profile) -> dict[str, object]:
-    expected = profile.budgets["expected_ledger"]
+    expected = _fixture_ledger(profile)
     owner = profile.document["launch"]["player_name"]
     targets = profile.capture["build_targets"]
     bindings = {
@@ -321,7 +325,7 @@ def _production_fixture(profile) -> dict[str, object]:
 
 def _render_fixture(profile) -> dict[str, object]:
     cursor = profile.capture["post_load_cursor"]
-    return {
+    render = {
         "app_has_radar": True,
         "bound_structures_ready": True,
         "cursor": {"x": float(cursor["x"]), "y": float(cursor["y"])},
@@ -338,50 +342,50 @@ def _render_fixture(profile) -> dict[str, object]:
                 "viewport_rect": 1,
             },
             "minimap_aperture": {
-                "height": 60.0,
-                "width": 70.0,
-                "x": 722.5,
-                "y": 25.0,
+                "height": 108.0,
+                "width": 140.0,
+                "x": 648.0,
+                "y": 49.0,
             },
-            "radar_content_insets": [9, 7, 9, 7],
+            "radar_content_insets": [16, 1, 12, 1],
             "sidebar_panel": {
                 "height": 600.0,
-                "width": 84.0,
-                "x": 716.0,
+                "width": 168.0,
+                "x": 632.0,
                 "y": 0.0,
             },
             "sidebar_view_present": True,
         },
         "radar_animation_source": {
-            "actual_theme": "Allied",
-            "atlas_theme": "Allied",
+            "actual_theme": "Soviet",
+            "atlas_theme": "Soviet",
             "backgrounds": [
                 {
                     "logical_name": "bkgdlg.shp",
-                    "source_archive": "sidec01.mix",
+                    "source_archive": "sidec02.mix",
                 },
                 {
                     "logical_name": "bkgdmd.shp",
-                    "source_archive": "sidec01.mix",
+                    "source_archive": "sidec02.mix",
                 },
                 {
                     "logical_name": "bkgdsm.shp",
-                    "source_archive": "sidec01.mix",
+                    "source_archive": "sidec02.mix",
                 },
             ],
             "generic_palette": {
                 "logical_name": "SIDEBAR.PAL",
-                "source_archive": "sidec01.mix",
+                "source_archive": "sidec02.mix",
             },
-            "parent_archive": "sidec01.mix",
+            "parent_archive": "sidec02.mix",
             "radar": {
                 "logical_name": "radar.shp",
-                "source_archive": "sidec01.mix",
+                "source_archive": "sidec02.mix",
             },
-            "requested_theme": "Allied",
+            "requested_theme": "Soviet",
             "theme_palette": {
                 "logical_name": "sidebar.pal",
-                "source_archive": "sidec01.mix",
+                "source_archive": "sidec02.mix",
             },
         },
         "radar_authority_active": True,
@@ -390,14 +394,14 @@ def _render_fixture(profile) -> dict[str, object]:
         "sidebar": {
             "credits": 6400,
             "layout": {
-                "cameo_grid_bottom": 562.5,
-                "cameo_grid_top": 112.5,
-                "radar_y": 25.0,
-                "side1_y": 80.0,
-                "side2_tile_count": 18,
-                "side3_y": 562.5,
-                "sidebar_x": 716.0,
-                "tabs_y": 112.5,
+                "cameo_grid_bottom": 527.0,
+                "cameo_grid_top": 227.0,
+                "radar_y": 48.0,
+                "side1_y": 158.0,
+                "side2_tile_count": 6,
+                "side3_y": 527.0,
+                "sidebar_x": 632.0,
+                "tabs_y": 197.0,
             },
             "low_power": False,
             "power_drained": 100,
@@ -406,6 +410,17 @@ def _render_fixture(profile) -> dict[str, object]:
         "sidebar_values_ready": True,
         "theme": "Soviet",
     }
+    if profile.profile_id.startswith("yuri-"):
+        render["theme"] = render["expected_theme"] = "Yuri"
+        source = render["radar_animation_source"]
+        for key in ("actual_theme", "requested_theme", "atlas_theme"):
+            source[key] = "Yuri"
+        source["parent_archive"] = "sidec02md.mix"
+        source["radar"] = {"logical_name": "radary.shp", "source_archive": "sidec02md.mix"}
+        source["theme_palette"] = {"logical_name": "radaryuri.pal", "source_archive": "sidec02md.mix"}
+        source["backgrounds"] = [{"logical_name": name, "source_archive": "sidec02md.mix"}
+            for name in ("bkgdlgy.shp", "bkgdmdy.shp", "bkgdsmy.shp")]
+    return render
 
 
 def _stable_fixture(
@@ -413,7 +428,7 @@ def _stable_fixture(
 ) -> dict[str, object]:
     production = _production_fixture(profile)
     render = _render_fixture(profile)
-    capture_tick = profile.budgets["expected_ledger"]["capture"]
+    capture_tick = _fixture_ledger(profile)["capture"]
     mix_entry_id = profile.fixture["mix_entry_id"]
     signed_entry_id = (
         mix_entry_id - (1 << 32)
@@ -436,7 +451,6 @@ def _stable_fixture(
             "executable": environment.executable.public_identity(),
             "archive": environment.archive.public_identity(),
             "font": environment.font.public_identity(),
-            "sidebar_layout": environment.layout.public_identity(),
         },
         "map_source": {
             "archive_name": profile.fixture["archive_name"],
@@ -485,10 +499,9 @@ def _stable_fixture(
             "app_ui_scale": profile.capture["app_ui_scale"],
             "egui_pixels_per_point": 1.0,
             "selected_font": environment.font.public_identity(),
-            "sidebar_layout": environment.layout.public_identity(),
         },
         "contract": {
-            "schema_version": "vera20k.tactical-capture-contract.v1",
+            "schema_version": "vera20k.tactical-capture-contract.v2",
             "sha256": contract.snapshot.sha256,
             "embedded_bytes_equal": True,
         },
@@ -510,7 +523,7 @@ def _stable_fixture(
         "render": render,
         "final_fingerprint": {
             "core": {
-                "binary_frame": profile.budgets["expected_ledger"]["capture"],
+                "binary_frame": _fixture_ledger(profile)["capture"],
                 "deterministic_state_hash": 7168770358871354549,
                 "simulation_tick": capture_tick,
                 "total_simulation_ms": (
@@ -542,11 +555,6 @@ def _stable_fixture(
             },
         },
         "known_residuals": [
-            (
-                "The radar animation is still constructed from the current "
-                "Allied source; this prerequisite records that production "
-                "fact and does not exactify the parent radar owner."
-            ),
             "Native pixels and whole-game parity remain unverified.",
         ],
     }
@@ -562,19 +570,19 @@ def _manifest(
 ) -> dict[str, object]:
     width = profile.capture["output_width"]
     height = profile.capture["output_height"]
-    capture_tick = profile.budgets["expected_ledger"]["capture"]
+    capture_tick = _fixture_ledger(profile)["capture"]
     manifest: dict[str, object] = {
-        "schema_version": "vera20k.tactical-capture.v1",
+        "schema_version": "vera20k.tactical-capture.v2",
         "status": "COMPLETE",
-        "checkpoint": "radar-online-v1",
+        "checkpoint": "radar-online-v2",
         "profile": {
             **profile.snapshot.public_identity(),
-            "schema_version": "vera20k.tactical-profile.v1",
+            "schema_version": "vera20k.tactical-profile.v2",
             "profile_id": profile.profile_id,
         },
         "contract": {
             **contract.snapshot.public_identity(),
-            "schema_version": "vera20k.tactical-capture-contract.v1",
+            "schema_version": "vera20k.tactical-capture-contract.v2",
             "embedded_sha256": contract.snapshot.sha256,
             "bytes_equal": True,
         },
@@ -661,8 +669,45 @@ def _set_nested(
 
 class OrchestratorTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.profile = load_profile(PROFILES / "soviet-radar-online-v1.json")
+        self.profile = load_profile(PROFILES / "soviet-radar-online-v2.json")
         self.contract = load_contract(repository_contract_path())
+
+    def test_current_theme_geometry_and_observed_online_time_classifier(self) -> None:
+        from tools.tactical_certification.evidence_validation import _require_render, _require_observed_ledger
+        for side in ("soviet", "yuri"):
+            profile = load_profile(PROFILES / f"{side}-radar-online-v2.json")
+            render = _render_fixture(profile)
+            for count in (1, 2, 3, 4):
+                render["production_render"]["instance_counts"]["viewport_rect"] = count
+                _require_render({"render": render}, profile)
+            for mutation in ("old_scale", "old_source", "zero_edges", "extra_edges"):
+                bad = copy.deepcopy(render)
+                if mutation == "old_scale": bad["production_render"]["sidebar_panel"]["width"] = 84
+                elif mutation == "old_source": bad["radar_animation_source"]["actual_theme"] = "Allied"
+                else: bad["production_render"]["instance_counts"]["viewport_rect"] = 0 if mutation == "zero_edges" else 5
+                with self.subTest(side=side, mutation=mutation), self.assertRaises(ValidationError):
+                    _require_render({"render": bad}, profile)
+        for online in (3630, 3694, 3900, 7700):
+            ledger = _observed_ledger(self.profile, capture_complete=online + 17)
+            ledger.update(radar_online_tick=online, second_readiness_tick=online + 1, capture_requested_tick=online + 17)
+            _require_observed_ledger(ledger, "ledger", self.profile, completed=True)
+            ledger["capture_requested_tick"] += 1
+            with self.assertRaisesRegex(ValidationError, "capture_requested_tick"):
+                _require_observed_ledger(ledger, "ledger", self.profile, completed=True)
+
+    def test_fingerprint_cannot_describe_a_different_valid_online_transition(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).absolute()
+            environment = _fake_environment(root)
+            capture = root / "child"
+            def mutate(manifest):
+                ledger = manifest["evidence"]["stable"]["final_fingerprint"]["script"]["observed_ledger"]
+                for key in ("radar_online_tick", "second_readiness_tick", "capture_requested_tick"):
+                    ledger[key] += 1
+            _write_capture(capture, self.profile, self.contract, environment,
+                           _nonuniform_frame(self.profile), mutate=mutate)
+            with self.assertRaisesRegex(ValidationError, "final_fingerprint.script.observed_ledger"):
+                validate_capture_bundle(capture, self.profile, self.contract, environment)
 
     def test_command_is_argument_list_with_exact_profile_contract_and_output(self) -> None:
         command = build_capture_command(
@@ -676,7 +721,7 @@ class OrchestratorTests(unittest.TestCase):
             [
                 "C:\\build\\vera20k.exe",
                 "--tactical-capture",
-                "radar-online-v1",
+                "radar-online-v2",
                 "--profile",
                 str(self.profile.path),
                 "--contract",
@@ -750,10 +795,10 @@ class OrchestratorTests(unittest.TestCase):
                 "instance_counts.viewport_rect",
             ),
             (
-                "obsolete unfiltered viewport edge count",
+                "impossible viewport edge count",
                 ("evidence", "stable", "render", "production_render",
                  "instance_counts", "viewport_rect"),
-                4,
+                5,
                 "instance_counts.viewport_rect",
             ),
             (
@@ -787,8 +832,8 @@ class OrchestratorTests(unittest.TestCase):
                     "observed_ledger",
                     "radar_online_tick",
                 ),
-                self.profile.budgets["expected_ledger"]["radar_online"] + 1,
-                "evidence.stable.production.observed_ledger.radar_online_tick",
+                _fixture_ledger(self.profile)["radar_online"] + 1,
+                "evidence.stable.production.observed_ledger.second_readiness_tick",
             ),
             (
                 "minimap draw count",
@@ -818,7 +863,7 @@ class OrchestratorTests(unittest.TestCase):
             (
                 "run exact-step count",
                 ("evidence", "run", "exact_steps"),
-                self.profile.budgets["expected_ledger"]["capture"] - 1,
+                _fixture_ledger(self.profile)["capture"] - 1,
                 "evidence.run.exact_steps",
             ),
         )
@@ -1325,7 +1370,7 @@ class OrchestratorTests(unittest.TestCase):
                     )
             self.assertGreaterEqual(inventory_calls, 2)
 
-    def test_real_preflight_hashes_archive_font_layout_and_rejects_loose_shadow(self) -> None:
+    def test_real_preflight_hashes_archive_font_and_rejects_loose_shadow(self) -> None:
         project = repository_root()
         if not (project / "config.toml").is_file():
             primary = project.parent / "ra2-rust-game"
@@ -1349,11 +1394,6 @@ class OrchestratorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             working = Path(temporary).absolute()
-            (working / "src" / "sidebar").mkdir(parents=True)
-            shutil.copyfile(
-                project / "src" / "sidebar" / "sidebar_layout.ron",
-                working / "src" / "sidebar" / "sidebar_layout.ron",
-            )
             (working / "config.toml").write_bytes(config.read_bytes())
             (working / "Fight.MAP").write_bytes(b"shadow")
             with self.assertRaisesRegex(ValidationError, "loose map shadow"):
@@ -1388,7 +1428,7 @@ class OrchestratorTests(unittest.TestCase):
                 "schema_version": "vera20k.tactical-validation.v1",
                 "status": VALID,
                 "errors": [],
-                "checkpoint": "radar-online-v1",
+                "checkpoint": "radar-online-v2",
                 "profile_id": self.profile.profile_id,
                 "capture": None,
             }
@@ -1471,7 +1511,7 @@ class OrchestratorTests(unittest.TestCase):
                 "schema_version": "vera20k.tactical-validation.v1",
                 "status": INVALID,
                 "errors": ["timeout"],
-                "checkpoint": "radar-online-v1",
+                "checkpoint": "radar-online-v2",
                 "profile_id": self.profile.profile_id,
                 "capture": None,
             }

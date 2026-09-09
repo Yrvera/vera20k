@@ -112,7 +112,6 @@ pub(crate) struct GraphicsEvidence {
     pub(crate) app_ui_scale: f64,
     pub(crate) egui_pixels_per_point: f64,
     pub(crate) selected_font: ArtifactEvidence,
-    pub(crate) sidebar_layout: ArtifactEvidence,
 }
 
 impl GraphicsEvidence {
@@ -124,7 +123,6 @@ impl GraphicsEvidence {
         render_extent: [u32; 2],
         app_ui_scale: f32,
         selected_font: ArtifactEvidence,
-        sidebar_layout: ArtifactEvidence,
     ) -> Result<Self> {
         ensure!(
             render_extent[0] > 0 && render_extent[1] > 0,
@@ -174,7 +172,6 @@ impl GraphicsEvidence {
             app_ui_scale: f64::from(app_ui_scale),
             egui_pixels_per_point: f64::from(pixels_per_point),
             selected_font,
-            sidebar_layout,
         })
     }
 }

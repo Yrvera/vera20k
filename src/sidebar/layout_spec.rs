@@ -17,8 +17,6 @@ pub struct SidebarChromeLayoutSpec {
     pub theme: SidebarTheme,
     pub sidebar_width: f32,
     pub top_inset: f32,
-    pub radar_height: f32,
-    pub side1_height: f32,
     pub side2_height: f32,
     pub side3_height: f32,
     pub footer_allowance: i32,
@@ -41,7 +39,6 @@ pub struct SidebarChromeLayoutSpec {
     pub power_bar_x: f32,
     pub power_bar_tile_height: f32,
     // VERA-local development controls do not reserve native chrome rows.
-    pub control_button_height: f32,
     pub control_button_gap: f32,
     pub control_block_top_pad: f32,
 }
@@ -57,8 +54,6 @@ impl SidebarChromeLayoutSpec {
             theme,
             sidebar_width: 168.0,
             top_inset: 48.0,
-            radar_height: 110.0,
-            side1_height: 69.0,
             side2_height: 50.0,
             side3_height: 26.0,
             footer_allowance: if allied { 26 } else { 18 },
@@ -80,7 +75,6 @@ impl SidebarChromeLayoutSpec {
             scroll_pitch: if allied { 46.0 } else { 45.0 },
             power_bar_x: if allied { 5.0 } else { 0.0 },
             power_bar_tile_height: 3.0,
-            control_button_height: 20.0,
             control_button_gap: 2.0,
             control_block_top_pad: 2.0,
         }

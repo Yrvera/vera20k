@@ -12,8 +12,6 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
 use crate::app::AppState;
-use crate::app::frontend::launch::TacticalCaptureRequest;
-use crate::app::presentation::render::GameRenderOutput;
 use crate::app::diagnostics::tactical_capture::evidence::{
     ArtifactEvidence, FinalFingerprint, GraphicsEvidence, SidebarRenderEvidence,
     SidebarSourceEvidence, build_evidence,
@@ -31,6 +29,8 @@ use crate::app::diagnostics::tactical_capture::script::{
     TacticalEntityObservation, TacticalExpectedLedger, TacticalObservation, TacticalScript,
     TacticalScriptConfig, TacticalScriptStage, TacticalStageBudgets,
 };
+use crate::app::frontend::launch::TacticalCaptureRequest;
+use crate::app::presentation::render::GameRenderOutput;
 use crate::app::types::{CursorId, SIM_TICK_MS};
 use crate::match_bootstrap::{MatchSeedClock, MatchSeedSource, StartupSessionClassification};
 use crate::render::radar_anim::RadarAnimPhase;
@@ -49,7 +49,6 @@ struct RuntimeInputs {
     executable: ArtifactEvidence,
     archive: ArtifactEvidence,
     font: ArtifactEvidence,
-    sidebar_layout: ArtifactEvidence,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -199,13 +198,11 @@ impl TacticalCaptureSession {
             std::env::current_exe().context("resolve tactical child executable")?;
         let archive_path = config.paths.ra2_dir.join(&profile.fixture.archive_name);
         let font_path = profile.pixel_inputs.font.path.clone();
-        let sidebar_layout_path = cwd.join(&profile.pixel_inputs.sidebar_layout.relative_path);
 
         let config_identity = artifact(&config_path, "config.toml")?;
         let executable_identity = artifact(&executable_path, "tactical executable")?;
         let archive_identity = artifact(&archive_path, "retail tactical archive")?;
         let font_identity = artifact(&font_path, "tactical system font")?;
-        let sidebar_layout_identity = artifact(&sidebar_layout_path, "tactical sidebar layout")?;
         require_identity(
             &archive_identity,
             profile.fixture.archive_byte_length,
@@ -218,12 +215,6 @@ impl TacticalCaptureSession {
             &profile.pixel_inputs.font.sha256,
             "system font",
         )?;
-        require_identity(
-            &sidebar_layout_identity,
-            profile.pixel_inputs.sidebar_layout.byte_length,
-            &profile.pixel_inputs.sidebar_layout.sha256,
-            "sidebar layout",
-        )?;
         reject_loose_shadow(&cwd.join(&profile.fixture.logical_map_name))?;
         reject_loose_shadow(&config.paths.ra2_dir.join(&profile.fixture.logical_map_name))?;
 
@@ -232,12 +223,13 @@ impl TacticalCaptureSession {
             executable: executable_identity,
             archive: archive_identity,
             font: font_identity,
-            sidebar_layout: sidebar_layout_identity,
         });
         state.match_state.input.cursor_x = capture.post_load_cursor.x as f32;
         state.match_state.input.cursor_y = capture.post_load_cursor.y as f32;
-        let now_ms =
-            crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
+        let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(
+            state,
+            std::time::Instant::now(),
+        );
         state.platform.frame_pacer.reanchor(now_ms);
         self.begin_accepted_loading(state)?;
         self.failure_stage = "loading".to_owned();
@@ -252,9 +244,10 @@ impl TacticalCaptureSession {
                 bail!("sealed tactical launch was not accepted: {reason:?}")
             }
         };
-        let correlation =
-            crate::match_bootstrap::allocate_match_correlation(&mut state.frontend.next_match_correlation)
-                .context("allocate tactical match correlation")?;
+        let correlation = crate::match_bootstrap::allocate_match_correlation(
+            &mut state.frontend.next_match_correlation,
+        )
+        .context("allocate tactical match correlation")?;
         let mut clock = ControlledSeedClock(self.request.profile().launch.seed);
         let startup =
             crate::match_bootstrap::prepare_match_startup(correlation, accepted, &mut clock);
@@ -507,7 +500,12 @@ impl TacticalCaptureSession {
         let ledger = &profile.budgets.expected_ledger;
         // Offline commands are observed one frame after their raw issue stamp.
         let result_delay = 1;
-        let power_rate = derive_rate(ledger.power_ready, ledger.yard_active, result_delay, "power")?;
+        let power_rate = derive_rate(
+            ledger.power_ready,
+            ledger.yard_active,
+            result_delay,
+            "power",
+        )?;
         let refinery_rate = derive_rate(
             ledger.refinery_ready,
             ledger.power_active,
@@ -575,9 +573,6 @@ impl TacticalCaptureSession {
             },
             expected: TacticalExpectedLedger {
                 yard_active_tick: ledger.yard_active,
-                radar_online_tick: ledger.radar_online,
-                second_readiness_tick: ledger.second_readiness,
-                capture_tick: ledger.capture,
             },
         };
         self.script = Some(TacticalScript::new(config).context("build tactical script")?);
@@ -929,8 +924,12 @@ impl TacticalCaptureSession {
         let owner = &profile.launch.player_name;
         let owner_id = sim.interner.get(owner).unwrap_or_default();
         let expected_theme = match profile.launch.local.country {
-            crate::app::diagnostics::tactical_capture::profile::TacticalCountry::Russia => SidebarTheme::Soviet,
-            crate::app::diagnostics::tactical_capture::profile::TacticalCountry::Yuri => SidebarTheme::Yuri,
+            crate::app::diagnostics::tactical_capture::profile::TacticalCountry::Russia => {
+                SidebarTheme::Soviet
+            }
+            crate::app::diagnostics::tactical_capture::profile::TacticalCountry::Yuri => {
+                SidebarTheme::Yuri
+            }
         };
         let actual_theme = crate::app::presentation::sidebar_render::current_sidebar_theme(state);
         let radar_phase_online = state
@@ -1002,9 +1001,9 @@ impl TacticalCaptureSession {
         let egui_ready = egui
             .pixels_per_point
             .is_some_and(|value| value.is_finite() && value > 0.0);
-        let source_is_current_allied = radar_source.requested_theme == SidebarTheme::Allied
-            && radar_source.actual_theme == SidebarTheme::Allied
-            && radar_source.atlas.atlas_theme == SidebarTheme::Allied;
+        let source_matches_owner = radar_source.requested_theme == expected_theme
+            && radar_source.actual_theme == expected_theme
+            && radar_source.atlas.atlas_theme == expected_theme;
 
         let ready = bound_structures_ready
             && power_ready
@@ -1012,7 +1011,7 @@ impl TacticalCaptureSession {
             && state.match_state.match_presentation.has_radar
             && radar_phase_online
             && actual_theme == expected_theme
-            && source_is_current_allied
+            && source_matches_owner
             && output.sidebar_view.is_some()
             && panel_contains_aperture
             && counts_ready
@@ -1276,10 +1275,12 @@ impl TacticalCaptureSession {
             state.renderer.gpu.capture_adapter_observation(),
             egui,
             format!("{:?}", state.renderer.gpu.config.format),
-            [state.renderer.gpu.config.width, state.renderer.gpu.config.height],
+            [
+                state.renderer.gpu.config.width,
+                state.renderer.gpu.config.height,
+            ],
             state.match_state.match_presentation.ui_scale,
             inputs.font.clone(),
-            inputs.sidebar_layout.clone(),
         )?;
         let script = self.script.as_ref().context("manifest script is absent")?;
         ensure!(
@@ -1292,7 +1293,6 @@ impl TacticalCaptureSession {
                 "executable": inputs.executable,
                 "archive": inputs.archive,
                 "font": inputs.font,
-                "sidebar_layout": inputs.sidebar_layout,
             },
             "map_source": self.map_source_evidence,
             "lifecycle": {
@@ -1327,7 +1327,6 @@ impl TacticalCaptureSession {
             "render": self.last_render_evidence,
             "final_fingerprint": self.fingerprint_before_readback,
             "known_residuals": [
-                "The radar animation is still constructed from the current Allied source; this prerequisite records that production fact and does not exactify the parent radar owner.",
                 "Native pixels and whole-game parity remain unverified."
             ],
         });
@@ -1512,7 +1511,7 @@ fn validate_houses_and_slots(
 
     ensure!(
         profile.launch.opponents.len() == 1,
-        "tactical v1 requires one AI"
+        "tactical v2 requires one AI"
     );
     let ai_name = "Computer1";
     let ai_id = sim.interner.get(ai_name).context("Computer1 is absent")?;
