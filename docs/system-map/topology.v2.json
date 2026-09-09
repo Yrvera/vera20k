@@ -31,6 +31,57 @@
     }
   ],
   "systems": {
+    "GSI-14.03": {
+      "native_anchors": [
+        {
+          "symbol": "Tactical screen pixel to cell inverse / bridge edge decisions",
+          "address": "0x006D6590",
+          "evidence": "docs/research/TACTICAL_BRIDGE_MOVE_CLICK_DIAGNOSIS_20260909.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/map/terrain.rs",
+          "symbol": "screen_to_cell_tactical_inverse / apply_tactical_bridge_inverse",
+          "coverage": "representative",
+          "observed_at_commit": "21c891b0fe36447af0ecb0fb4e7589b6866ab447"
+        },
+        {
+          "path": "src/map/resolved_terrain.rs",
+          "symbol": "build_tactical_bridge_inverse_map",
+          "coverage": "representative",
+          "observed_at_commit": "21c891b0fe36447af0ecb0fb4e7589b6866ab447"
+        },
+        {
+          "path": "src/app/match_runtime/sim_tick.rs",
+          "symbol": "screen_point_to_world_with_camera / world_point_to_cell",
+          "coverage": "representative",
+          "observed_at_commit": "21c891b0fe36447af0ecb0fb4e7589b6866ab447"
+        },
+        {
+          "path": "src/app/input/context_order.rs",
+          "symbol": "try_queue_context_order_at_screen_point / ordinary Move destination",
+          "coverage": "representative",
+          "observed_at_commit": "21c891b0fe36447af0ecb0fb4e7589b6866ab447"
+        },
+        {
+          "path": "src/map/terrain_bridge_click_tests.rs",
+          "symbol": "bridge_candidate_decisions_match_original_executable / complete_bridge_inverse_matches_original_executable",
+          "coverage": "representative",
+          "observed_at_commit": "21c891b0fe36447af0ecb0fb4e7589b6866ab447"
+        },
+        {
+          "path": "src/app/input/bridge_click_tests.rs",
+          "symbol": "native_bridge_destinations_survive_camera_zoom_and_ordinary_move_records / retail Hills clicked destinations",
+          "coverage": "representative",
+          "observed_at_commit": "21c891b0fe36447af0ecb0fb4e7589b6866ab447"
+        }
+      ],
+      "notes": [
+        "Bridge picking now uses the raw cell corner at signed base height and native signed half-X edge arithmetic. Shared inverse quantizes fractional world pixels once; fractional zoom is a VERA extension, native equivalent UNCHECKED. Resolved terrain owns structural/orientation flags, while camera adaptation and ordinary Move consume the same inverse result.",
+        "Tracked tools/bridge_click_oracle.py executes 1782 candidate decisions and 572 complete native inverse calls on synthetic flat terrain in both orientations. Production Rust matches those outputs. Separate app tests carry the clicked cells through Move records, due-command drain and real Hills movement to deck/ground arrivals. Native outer-railing pixels may legitimately resolve to ground. Window mouse events, the user's exact original click and exhaustive tactical picking parity remain outside this bounded evidence."
+      ]
+    },
     "GSI-06.01": {
       "native_anchors": [
         {
