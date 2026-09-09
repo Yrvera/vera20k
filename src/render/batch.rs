@@ -93,6 +93,8 @@ pub struct SpriteInstance {
     pub z_gradient: u32,
     /// World-pixel origin of the z-shape canvas (`native_z::zshape_origin`).
     pub zshape_origin: [f32; 2],
+    /// Selected native palette conversion; default preserves precomposed RGBA.
+    pub palette_light: crate::render::palette_light::PaletteLight,
 }
 
 #[cfg(test)]
@@ -126,7 +128,7 @@ mod tests {
 
 /// Number of vertex attributes in SpriteInstance: 7 base + 4 DrawState fields
 /// + 3 native-Z fields (z_adjust, z_gradient, zshape_origin / voxel z_rect).
-const INSTANCE_ATTRIBUTE_COUNT: usize = 14;
+const INSTANCE_ATTRIBUTE_COUNT: usize = 15;
 
 /// Size of one SpriteInstance in bytes (4 × vec2f = 32 bytes).
 const INSTANCE_STRIDE: u64 = std::mem::size_of::<SpriteInstance>() as u64;
@@ -199,6 +201,36 @@ pub fn create_r8_texture_view(
         bytes,
     );
     texture.create_view(&Default::default())
+}
+
+fn source_index_texture(
+    gpu: &GpuContext,
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> wgpu::TextureView {
+    assert_eq!(bytes.len(), (width * height) as usize);
+    gpu.device
+        .create_texture_with_data(
+            &gpu.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("SHP source palette indices"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Uint,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            bytes,
+        )
+        .create_view(&Default::default())
 }
 
 /// A GPU texture prepared for batch rendering.
@@ -364,6 +396,7 @@ pub struct BatchRenderer {
     depth_test_pipeline: wgpu::RenderPipeline,
     /// Layout for texture bind groups (group 1).
     texture_bind_group_layout: wgpu::BindGroupLayout,
+    default_source_indices: wgpu::TextureView,
     /// Layout for zdepth texture bind groups (group 1): color + sampler + R8 depth.
     zdepth_texture_bind_group_layout: wgpu::BindGroupLayout,
     /// Layout for the unit-atlas R8Uint texture (binding 0). Used by the voxel
@@ -402,7 +435,9 @@ impl BatchRenderer {
             gpu.device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("Batch Shader"),
-                    source: wgpu::ShaderSource::Wgsl(BATCH_SHADER.into()),
+                    source: wgpu::ShaderSource::Wgsl(
+                        crate::render::palette_light::shader_source(BATCH_SHADER).into(),
+                    ),
                 });
 
         // Bind group 0: Camera uniform.
@@ -444,8 +479,20 @@ impl BatchRenderer {
                             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                             count: None,
                         },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Uint,
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
                     ],
                 });
+
+        let default_source_indices = source_index_texture(gpu, &[1], 1, 1);
 
         // Camera uniform buffer (initialized with default values).
         let camera_uniform: CameraUniform = CameraUniform {
@@ -502,7 +549,8 @@ impl BatchRenderer {
         //   z_adjust(4) at offset 92 → loc 11 (Float32)
         //   z_gradient(4) at offset 96 → loc 12 (Uint32)
         //   zshape_origin(8) at offset 100 → loc 13 (Float32x2)
-        // Total stride: 108 bytes.
+        // PaletteLight(16) at offset 108 -> loc 14 (Uint32x4).
+        // Total stride: 124 bytes.
         let instance_attrs: [wgpu::VertexAttribute; INSTANCE_ATTRIBUTE_COUNT] = [
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x2,
@@ -573,6 +621,11 @@ impl BatchRenderer {
                 format: wgpu::VertexFormat::Float32x2,
                 offset: 100,
                 shader_location: 13,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32x4,
+                offset: std::mem::offset_of!(SpriteInstance, palette_light) as u64,
+                shader_location: 14,
             },
         ];
 
@@ -671,6 +724,10 @@ impl BatchRenderer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&spotlight_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&default_source_indices),
                 },
             ],
         });
@@ -944,7 +1001,9 @@ impl BatchRenderer {
             gpu.device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("ZDepth Shader"),
-                    source: wgpu::ShaderSource::Wgsl(ZDEPTH_SHADER.into()),
+                    source: wgpu::ShaderSource::Wgsl(
+                        crate::render::palette_light::shader_source(ZDEPTH_SHADER).into(),
+                    ),
                 });
         let zdepth_pipeline_layout: wgpu::PipelineLayout =
             gpu.device
@@ -1036,7 +1095,9 @@ impl BatchRenderer {
             gpu.device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("ZSprite Shader"),
-                    source: wgpu::ShaderSource::Wgsl(ZSPRITE_SHADER.into()),
+                    source: wgpu::ShaderSource::Wgsl(
+                        crate::render::palette_light::shader_source(ZSPRITE_SHADER).into(),
+                    ),
                 });
         let zsprite_pipeline_layout: wgpu::PipelineLayout =
             gpu.device
@@ -1162,7 +1223,9 @@ impl BatchRenderer {
             gpu.device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("Voxel Sprite Shader"),
-                    source: wgpu::ShaderSource::Wgsl(VOXEL_SPRITE_SHADER.into()),
+                    source: wgpu::ShaderSource::Wgsl(
+                        crate::render::palette_light::shader_source(VOXEL_SPRITE_SHADER).into(),
+                    ),
                 });
         let voxel_sprite_pipeline_layout: wgpu::PipelineLayout =
             gpu.device
@@ -1230,6 +1293,7 @@ impl BatchRenderer {
             depth_stamp_pipeline,
             depth_test_pipeline,
             texture_bind_group_layout,
+            default_source_indices,
             zdepth_texture_bind_group_layout,
             unit_atlas_bind_group_layout,
             voxel_palette_bind_group_layout,
@@ -1327,6 +1391,21 @@ impl BatchRenderer {
         width: u32,
         height: u32,
     ) -> BatchTexture {
+        self.create_texture_with_indices(gpu, rgba_data, width, height, None)
+    }
+
+    pub fn create_texture_with_indices(
+        &self,
+        gpu: &GpuContext,
+        rgba_data: &[u8],
+        width: u32,
+        height: u32,
+        indices: Option<&[u8]>,
+    ) -> BatchTexture {
+        let source_indices = indices.map(|bytes| source_index_texture(gpu, bytes, width, height));
+        let source_indices = source_indices
+            .as_ref()
+            .unwrap_or(&self.default_source_indices);
         let texture: wgpu::Texture = gpu.device.create_texture_with_data(
             &gpu.queue,
             &wgpu::TextureDescriptor {
@@ -1367,6 +1446,10 @@ impl BatchRenderer {
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(source_indices),
                     },
                 ],
             });
@@ -1642,6 +1725,10 @@ impl BatchRenderer {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(&sampler),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&self.default_source_indices),
+                    },
                 ],
             });
 
@@ -1709,6 +1796,10 @@ impl BatchRenderer {
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&self.default_source_indices),
                     },
                 ],
             });

@@ -52,6 +52,7 @@ struct Instance {
     // height means the layer's own quad. A turreted unit's hull, turret and
     // barrel are one native cache blit (`0x0073B140`), so they share one seed.
     @location(13) z_rect: vec2f,
+    @location(14) palette_light: vec4u,
 };
 
 struct VertexOutput {
@@ -69,6 +70,7 @@ struct VertexOutput {
     @location(8) @interpolate(flat) rect_top_height: vec2f,
     @location(9) @interpolate(flat) z_adjust: f32,
     @location(10) @interpolate(flat) z_gradient: u32,
+    @location(11) @interpolate(flat) palette_light: vec4u,
 };
 
 @vertex
@@ -116,6 +118,7 @@ fn vs_main(
     );
     out.z_adjust = instance.z_adjust;
     out.z_gradient = instance.z_gradient;
+    out.palette_light = instance.palette_light;
     return out;
 }
 
@@ -218,30 +221,7 @@ fn apply_fx(color: vec4f, _flags: u32, params: vec4f, effect_tint: vec4f) -> vec
 }
 
 
-// --- Map-light tint in the original's colour space -------------------------
-// gamemd lights a palette entry by scaling its 8-bit RGB bytes: LightConvert's
-// palette pass (FUN_00556090 -> FUN_007DE200 for RGB565) computes
-// (byte * scale16) >> 16 with scale16 = light_milli * 65536 / 1000 (three LEA x5
-// and a SHL 3 then the double 0.065536 at 0x007ED0B0) and clamps the product to
-// 255 before packing. That multiply happens on the palette bytes, i.e. in
-// sRGB-encoded space. These textures are sRGB-typed, so the sampled value is
-// already linear; multiplying it by the tint here would apply the light in
-// linear space, which reads as tint^(1/2.2) on screen (a 1.2 unit light became
-// ~1.09). Re-encode, scale, clamp, decode. The RGB565 quantisation that
-// follows natively is not modelled (DRIFT, sub-pixel colour).
-fn srgb_encode(c: vec3f) -> vec3f {
-    let lo = c * 12.92;
-    let hi = 1.055 * pow(max(c, vec3f(0.0)), vec3f(1.0 / 2.4)) - 0.055;
-    return select(hi, lo, c <= vec3f(0.0031308));
-}
-fn srgb_decode(c: vec3f) -> vec3f {
-    let lo = c / 12.92;
-    let hi = pow((c + 0.055) / 1.055, vec3f(2.4));
-    return select(hi, lo, c <= vec3f(0.04045));
-}
-fn palette_light(rgb_linear: vec3f, tint: vec3f) -> vec3f {
-    return srgb_decode(clamp(srgb_encode(rgb_linear) * tint, vec3f(0.0), vec3f(1.0)));
-}
+// Color resolution is supplied by palette_light::shader_source.
 
 
 // RA2_DEBUG_DEPTH_VIEW (camera.pad1 > 0.5): depth as grey, wrapping every
@@ -293,7 +273,7 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         rgb = textureLoad(palette, palette_coord, 0).rgb;
     }
 
-    var color: vec4f = vec4f(palette_light(rgb, in.tint * in.effect_tint.rgb), in.alpha);
+    var color: vec4f = vec4f(resolve_palette(rgb, in.tint, in.effect_tint.rgb, opaque_palette(in.palette_light, in.alpha, in.fx_flags), byte), in.alpha);
     color = apply_fx(color, in.fx_flags, in.fx_params, in.effect_tint);
     out.color = color;
     if (camera.pad1 > 0.5) {

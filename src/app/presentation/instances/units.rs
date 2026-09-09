@@ -373,6 +373,14 @@ pub(crate) fn build_unit_instances(
                 .rules()
                 .map_or(0, |rules| rules.general.extra_aircraft_light),
         );
+        let palette_light = crate::app::presentation::lighting::body_palette_light(
+            state.match_state.match_presentation.lighting.grid(),
+            &sim.session.lighting,
+            (pos.rx, pos.ry),
+            entity.category,
+            state.rules().map_or(0, |r| r.general.extra_unit_light),
+            state.rules().map_or(0, |r| r.general.extra_infantry_light),
+        );
         let center_x: f32 = sx;
         let center_y: f32 = sy;
 
@@ -427,6 +435,7 @@ pub(crate) fn build_unit_instances(
                 state,
                 interp_z,
                 tint,
+                palette_light,
                 alpha,
                 draw_state,
                 anim_frame,
@@ -481,6 +490,7 @@ pub(crate) fn build_unit_instances(
                     uv_size: entry.uv_size,
                     depth,
                     tint,
+                    palette_light,
                     alpha,
                     draw_state: body_draw_state,
                     z_adjust: voxel_adjust,
@@ -514,6 +524,7 @@ pub(crate) fn build_unit_instances(
                     center_y,
                     pos.z,
                     tint,
+                    palette_light.brightness(),
                     draw_state,
                 ) {
                     if collect_ground {
@@ -909,6 +920,7 @@ fn emit_turret_unit_sprites(
     state: &AppState,
     z: u8,
     tint: [f32; 3],
+    palette_light: crate::render::palette_light::PaletteLight,
     alpha: f32,
     draw_state: DrawState,
     anim_frame: u32,
@@ -1012,6 +1024,7 @@ fn emit_turret_unit_sprites(
             uv_size: entry.uv_size,
             depth: entity_depth,
             tint,
+            palette_light,
             alpha,
             draw_state: body_draw_state,
             z_adjust: voxel_adjust,
@@ -1040,6 +1053,7 @@ fn emit_turret_unit_sprites(
             uv_size: entry.uv_size,
             depth: entity_depth,
             tint,
+            palette_light,
             alpha,
             draw_state: body_draw_state,
             z_adjust: voxel_adjust,
@@ -1080,6 +1094,7 @@ fn emit_harvest_overlay(
     center_y: f32,
     z: u8,
     tint: [f32; 3],
+    brightness: i32,
     draw_state: DrawState,
 ) -> Option<(usize, SpriteInstance)> {
     let sprite_atlas = match &state.match_state.match_presentation.sprite_atlas {
@@ -1091,6 +1106,7 @@ fn emit_harvest_overlay(
     let facing_index: u16 = (8 - (body_facing.wrapping_add(32) / 32) as u16) % 8;
     let shp_frame: u16 = facing_index * 15 + overlay.frame;
     let key = ShpSpriteKey {
+        palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
         type_id: "OREGATH".to_string(),
         facing: 0,
         frame: shp_frame,
@@ -1114,6 +1130,10 @@ fn emit_harvest_overlay(
             uv_size: entry.uv_size,
             depth,
             tint,
+            // Unit DrawExtras 0073D276 selects global ANIM Convert, not the
+            // unit ColorScheme. Ordinary scalar is top + ExtraUnitLight.
+            // Its bridge/special-cell brightness branches remain unresolved.
+            palette_light: crate::render::palette_light::PaletteLight::plain(53, brightness),
             alpha: 1.0,
             draw_state,
             // An SHP draw of the harvester (`TechnoClass_DrawSHP`, a7 - 2).

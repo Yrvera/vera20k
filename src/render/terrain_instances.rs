@@ -160,6 +160,15 @@ pub fn build_visible_instances(
                 uv_size: p.uv_size,
                 depth,
                 tint,
+                palette_light: lighting_grid
+                    .map(|lights| {
+                        crate::render::palette_light::PaletteLight::cell(
+                            lights,
+                            (cell.rx, cell.ry),
+                            false,
+                        )
+                    })
+                    .unwrap_or_default(),
                 alpha: 1.0,
                 draw_state,
                 z_adjust: tile_z_adjust(p.draw_offset[1]),

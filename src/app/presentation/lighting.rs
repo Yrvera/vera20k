@@ -6,6 +6,103 @@ use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::world::Simulation;
 
+/// Ordinary Techno drawers select a ColorScheme Convert independently of
+/// the cell scalar: 00705D70 -> 0070720E; Init_Theater 00534D77 gives schemes
+/// neutral RGB. Ion propagation 0053C280 -> 0053AD00 substitutes global RGB.
+/// Aircraft altitude brightness and trigger-driven palette rebuild history
+/// remain unresolved; the former retains its existing compatibility path.
+pub(crate) fn body_palette_light(
+    grid: &CellLightGrid,
+    scenario: &crate::sim::scenario_session::ScenarioLightingState,
+    cell: (u16, u16),
+    category: crate::map::entities::EntityCategory,
+    extra_unit: i32,
+    extra_infantry: i32,
+) -> crate::render::palette_light::PaletteLight {
+    use crate::map::entities::EntityCategory;
+    use crate::render::palette_light::PaletteLight;
+    if category == EntityCategory::Aircraft {
+        return PaletteLight::default();
+    }
+    let light = grid.cell_light_at(cell);
+    let brightness = match category {
+        EntityCategory::Unit => light
+            .map_or(1000, |l| l.top_scalar)
+            .wrapping_add(extra_unit),
+        EntityCategory::Infantry => light
+            .map_or(1000, |l| l.top_scalar)
+            .wrapping_add(extra_infantry),
+        _ => light.map_or(1000, |l| l.top_scalar),
+    };
+    let rgb = color_scheme_rgb(Some(scenario));
+    PaletteLight::color_scheme(rgb, brightness)
+}
+
+/// Ordinary building DrawBody 0043D812..0043D85F; buildup 0043D644;
+/// TerrainPalette overrides both scalar and Convert in 00705EC7..00705F52.
+pub(crate) fn building_palette_light(
+    grid: &CellLightGrid,
+    scenario: &crate::sim::scenario_session::ScenarioLightingState,
+    cell: (u16, u16),
+    art: Option<&crate::rules::art_data::ArtEntry>,
+    buildup: bool,
+) -> crate::render::palette_light::PaletteLight {
+    use crate::render::palette_light::PaletteLight;
+    if art.is_some_and(|a| a.terrain_palette) {
+        return PaletteLight::cell(grid, cell, false);
+    }
+    let top = grid.cell_light_at(cell).map_or(1000, |l| l.top_scalar);
+    let extra = if buildup {
+        0
+    } else {
+        art.map_or(0, |a| i32::from(a.extra_light as i16))
+    };
+    PaletteLight::color_scheme(color_scheme_rgb(Some(scenario)), top.wrapping_add(extra))
+}
+
+/// AnimClass DrawIt 00423280..00423354: explicit cell drawer selects cell
+/// common; otherwise global ANIM Convert selects top. AltPalette selects the
+/// first ColorScheme (one row), not the player's 53-row scheme.
+pub(crate) fn anim_palette_light(
+    grid: &CellLightGrid,
+    scenario: Option<&crate::sim::scenario_session::ScenarioLightingState>,
+    cell: (u16, u16),
+    config: Option<&crate::rules::art_data::AnimTypeRuntimeConfig>,
+    cell_drawer: bool,
+) -> crate::render::palette_light::PaletteLight {
+    use crate::render::palette_light::PaletteLight;
+    let brightness = if config.is_some_and(|c| c.use_normal_light) {
+        1000
+    } else {
+        grid.cell_light_at(cell).map_or(1000, |l| {
+            if cell_drawer {
+                l.common_scalar
+            } else {
+                l.top_scalar
+            }
+        })
+    };
+    if cell_drawer {
+        PaletteLight::cell(grid, cell, false).with_brightness(brightness)
+    } else if config.is_some_and(|c| c.alt_palette) {
+        PaletteLight::new(color_scheme_rgb(scenario), 1, brightness, true)
+    } else {
+        PaletteLight::plain(53, brightness)
+    }
+}
+
+pub(crate) fn color_scheme_rgb(
+    scenario: Option<&crate::sim::scenario_session::ScenarioLightingState>,
+) -> [i32; 3] {
+    use crate::sim::scenario_session::ScenarioLightingProfile;
+    match scenario {
+        Some(s) if s.selected_profile == ScenarioLightingProfile::Ion => {
+            [s.ion.red_percent, s.ion.green_percent, s.ion.blue_percent].map(|v| v.wrapping_mul(10))
+        }
+        _ => [1000; 3],
+    }
+}
+
 const CELL_LIGHT_GATHER_BUDGET: usize = 8_192;
 
 pub(crate) struct MatchLighting {
@@ -362,5 +459,148 @@ impl LightingFingerprint {
 
     fn finish(self) -> u64 {
         self.0
+    }
+}
+
+#[cfg(test)]
+mod palette_producer_tests {
+    use super::*;
+    use crate::map::entities::EntityCategory;
+    use crate::rules::art_data::ArtRegistry;
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::scenario_session::ScenarioLightingState;
+
+    fn split_cell() -> CellLightGrid {
+        let mut grid = CellLightGrid::new();
+        let id = grid.profiles().default_profile_id();
+        grid.insert_light(
+            (4, 7),
+            lighting::CellLight::new(
+                id,
+                [512, 640, 768],
+                [512, 640, 768],
+                65536,
+                0,
+                0,
+                1200,
+                800,
+                1200,
+                900,
+                800,
+            ),
+        );
+        grid
+    }
+
+    #[test]
+    fn techno_selected_scheme_does_not_inherit_cell_hue_or_row_count() {
+        let grid = split_cell();
+        let scenario = ScenarioLightingState::default();
+        let unit = body_palette_light(&grid, &scenario, (4, 7), EntityCategory::Unit, 100, 200);
+        let infantry =
+            body_palette_light(&grid, &scenario, (4, 7), EntityCategory::Infantry, 100, 200);
+        let cell = crate::render::palette_light::PaletteLight::cell(&grid, (4, 7), false);
+        assert_eq!((unit.rows(), unit.brightness()), (53, 1300));
+        assert_eq!((infantry.rows(), infantry.brightness()), (53, 1400));
+        assert_eq!((cell.rows(), cell.brightness()), (27, 900));
+        assert_eq!(unit.0[0] & 0x3ffff, 65535);
+        assert_ne!(unit.0[0] & 0x3ffff, cell.0[0] & 0x3ffff);
+    }
+
+    #[test]
+    fn palette_producers_preserve_normalized_common_from_real_map_grid() {
+        let profile = lighting::parse_lighting_profiles(&IniFile::from_str(
+            "[Lighting]\nAmbient=1\nGround=0\nLevel=0\nRed=.24\nGreen=.48\nBlue=.80\n",
+        ))
+        .normal;
+        let grid = lighting::build_cell_light_grid_from_heights_and_units([((4, 7), 0)], profile);
+        let light = grid.cell_light_at((4, 7)).unwrap();
+        // Original 4845A2/5558E0/555AC0 fixture for this RGB triple.
+        assert_eq!(light.rgb_key, [288, 576, 992]);
+        assert_eq!((light.top_scalar, light.common_scalar), (1000, 799));
+        let cell = crate::render::palette_light::PaletteLight::cell(&grid, (4, 7), false);
+        let unit = body_palette_light(
+            &grid,
+            &ScenarioLightingState::default(),
+            (4, 7),
+            EntityCategory::Unit,
+            200,
+            200,
+        );
+        assert_eq!((cell.rows(), cell.brightness()), (27, 799));
+        assert_eq!((unit.rows(), unit.brightness()), (53, 1200));
+        assert_eq!(unit.0[0] & 0x3ffff, 65535);
+    }
+
+    #[test]
+    fn building_art_selects_cell_palette_or_top_plus_signed_extra() {
+        let grid = split_cell();
+        let scenario = ScenarioLightingState::default();
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[BODY]\nExtraLight=350\n[ISO]\nTerrainPalette=yes\nExtraLight=350\n[NEG]\nExtraLight=65535\n",
+        ));
+        let body = art.resolve_metadata_entry("BODY", "BODY");
+        assert_eq!(
+            building_palette_light(&grid, &scenario, (4, 7), body, false).brightness(),
+            1550
+        );
+        assert_eq!(
+            building_palette_light(&grid, &scenario, (4, 7), body, true).brightness(),
+            1200
+        );
+        let iso = building_palette_light(
+            &grid,
+            &scenario,
+            (4, 7),
+            art.resolve_metadata_entry("ISO", "ISO"),
+            false,
+        );
+        assert_eq!((iso.rows(), iso.brightness()), (27, 900));
+        // Building VXL uses the independent selected scheme/top producer even
+        // when the SHP body above uses TerrainPalette or ExtraLight.
+        let voxel = body_palette_light(
+            &grid,
+            &scenario,
+            (4, 7),
+            EntityCategory::Structure,
+            100,
+            200,
+        );
+        assert_eq!((voxel.rows(), voxel.brightness()), (53, 1200));
+        assert_eq!(voxel.0[0] & 0x3ffff, 65535);
+        assert_eq!(
+            building_palette_light(
+                &grid,
+                &scenario,
+                (4, 7),
+                art.resolve_metadata_entry("NEG", "NEG"),
+                false
+            )
+            .brightness(),
+            1199
+        );
+    }
+
+    #[test]
+    fn animation_explicit_cell_plain_global_and_first_scheme_keep_distinct_rows() {
+        let grid = split_cell();
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[PLAIN]\nUseNormalLight=no\n[ALT]\nAltPalette=yes\n[FULL]\nUseNormalLight=yes\n",
+        ));
+        let plain =
+            anim_palette_light(&grid, None, (4, 7), art.anim_runtime_config("PLAIN"), false);
+        let cell = anim_palette_light(&grid, None, (4, 7), art.anim_runtime_config("PLAIN"), true);
+        let alt = anim_palette_light(&grid, None, (4, 7), art.anim_runtime_config("ALT"), false);
+        assert_eq!(
+            (plain.rows(), plain.brightness(), plain.0[1] & (1 << 30)),
+            (53, 1200, 1 << 30)
+        );
+        assert_eq!((cell.rows(), cell.brightness()), (27, 900));
+        assert_eq!((alt.rows(), alt.brightness()), (1, 1200));
+        assert_eq!(
+            anim_palette_light(&grid, None, (4, 7), art.anim_runtime_config("FULL"), true)
+                .brightness(),
+            1000
+        );
     }
 }

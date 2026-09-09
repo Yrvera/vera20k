@@ -1172,17 +1172,26 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         bound_rules,
         Some(&sim.interner),
     );
-    let mut sprite_base_keys = sprite_atlas::collect_needed_base_keys(
+    let sprite_base_keys = sprite_atlas::collect_needed_base_keys(
         sim.entities(),
         &state.match_state.match_presentation.house_color_map,
         &extra_buildings,
         Some(&sim.interner),
     );
     let anim_remap_keys = sprite_atlas::collect_anim_remap_base_keys(sim);
-    sprite_base_keys.extend(anim_remap_keys.iter().cloned());
     let sprite_rebuild: bool = match &state.match_state.match_presentation.sprite_atlas {
-        Some(atlas) => !sprite_atlas::atlas_covers_base_keys(atlas, &sprite_base_keys),
-        None => !sprite_base_keys.is_empty(),
+        Some(atlas) => {
+            !sprite_atlas::atlas_covers_base_keys(
+                atlas,
+                &sprite_base_keys,
+                sprite_atlas::ShpPaletteContext::Legacy,
+            ) || !sprite_atlas::atlas_covers_base_keys(
+                atlas,
+                &anim_remap_keys,
+                sprite_atlas::ShpPaletteContext::SelectedScheme,
+            )
+        }
+        None => !sprite_base_keys.is_empty() || !anim_remap_keys.is_empty(),
     };
 
     // Early out: no new sprite types → skip the expensive atlas rebuild.

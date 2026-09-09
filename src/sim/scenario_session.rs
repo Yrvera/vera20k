@@ -20,7 +20,8 @@ pub struct ScenarioLightProfileUnits {
     pub red_percent: i32,
     pub green_percent: i32,
     pub blue_percent: i32,
-    /// Ground/Level retain ScenarioClass's 250-based integer scale.
+    /// Ground/Level use ScenarioClass's 1000-based INI conversion scale.
+    /// Native reset values remain 50/8 (006838F7/00683901), not .20/.032.
     pub ground_units: i32,
     pub level_units: i32,
 }

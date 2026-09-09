@@ -102,14 +102,23 @@ fn loader_uses_stored_shp_rect_for_depth_but_retains_logical_canvas_for_picking(
         let mut raw_rgba = None;
         for frame in 0..2 {
             let key = ShpSpriteKey {
+                palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
                 type_id: name.to_string(),
                 facing: 0,
                 frame,
                 house_color: crate::rules::house_colors::NO_REMAP,
             };
-            let rendered =
-                render_shp_sprite(&assets, &palette, &key, "tem", "TEMPERATE", None, None)
-                    .expect("actual loose-asset SHP loader must accept fixture");
+            let rendered = render_shp_sprite(
+                &assets,
+                &palette,
+                true,
+                &key,
+                "tem",
+                "TEMPERATE",
+                None,
+                None,
+            )
+            .expect("actual loose-asset SHP loader must accept fixture");
             assert_eq!(
                 [rendered.width, rendered.height],
                 size,
@@ -159,6 +168,7 @@ fn loader_uses_stored_shp_rect_for_depth_but_retains_logical_canvas_for_picking(
 
 fn make_shp_key(type_id: &str, facing: u8) -> ShpSpriteKey {
     ShpSpriteKey {
+        palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
         type_id: type_id.to_string(),
         facing,
         frame: 0,
@@ -170,18 +180,21 @@ fn make_shp_key(type_id: &str, facing: u8) -> ShpSpriteKey {
 fn test_shp_sprite_key_hash_equality() {
     let hc = HouseColorIndex::default();
     let k1 = ShpSpriteKey {
+        palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
         type_id: "E1".into(),
         facing: 64,
         frame: 10,
         house_color: hc,
     };
     let k2 = ShpSpriteKey {
+        palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
         type_id: "E1".into(),
         facing: 64,
         frame: 10,
         house_color: hc,
     };
     let k3 = ShpSpriteKey {
+        palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
         type_id: "E1".into(),
         facing: 64,
         frame: 11,
@@ -205,12 +218,14 @@ fn test_empty_world_returns_none() {
 fn rendered_test_sprite(type_id: &str, rgba: Vec<u8>) -> RenderedShpSprite {
     RenderedShpSprite {
         key: ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
             type_id: type_id.to_string(),
             facing: 0,
             frame: 0,
             house_color: HouseColorIndex::default(),
         },
         rgba,
+        indices: vec![1],
         width: 1,
         height: 1,
         offset_x: -1.0,
@@ -298,6 +313,7 @@ fn test_structure_facing_collapse() {
     for facing_raw in [64u8, 192u8] {
         let eff = 0u8; // structures collapse to facing 0
         needed.insert(ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
             type_id: "GAPOWR".to_string(),
             facing: eff,
             frame: 0,
@@ -313,12 +329,14 @@ fn test_different_houses_create_separate_keys() {
     let hc0 = HouseColorIndex(0); // [Colors] entry 0 (LightGold)
     let hc1 = HouseColorIndex(1); // [Colors] entry 1 (Gold)
     let k1 = ShpSpriteKey {
+        palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
         type_id: "E1".into(),
         facing: 64,
         frame: 10,
         house_color: hc0,
     };
     let k2 = ShpSpriteKey {
+        palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
         type_id: "E1".into(),
         facing: 64,
         frame: 10,
@@ -394,10 +412,17 @@ fn sprite_palette_choice_leaves_non_effect_and_unknown_art_on_the_unit_palette()
 #[test]
 fn declared_special_animation_frames_are_all_preloaded() {
     let mut needed = HashSet::new();
-    insert_building_anim_frame_keys(&mut needed, "GAREFNOR", 3, HouseColorIndex(2));
+    insert_building_anim_frame_keys(
+        &mut needed,
+        "GAREFNOR",
+        3,
+        HouseColorIndex(2),
+        ShpPaletteContext::SelectedScheme,
+    );
 
     for frame in 0..3 {
         assert!(needed.contains(&ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::SelectedScheme,
             type_id: "GAREFNOR".to_string(),
             facing: 0,
             frame,
@@ -430,6 +455,7 @@ fn cell_anim_remap_registration_covers_every_bound_frame_for_its_color() {
     assert_eq!(needed.len(), 3);
     for frame in 0..3 {
         assert!(needed.contains(&ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::SelectedScheme,
             type_id: "CRATE_SPARK".to_string(),
             facing: 0,
             frame,
@@ -470,6 +496,7 @@ fn gsi_13_08_warpout_keeps_all_frames_and_drives_the_progressive_alpha_ladder() 
     assert_eq!(needed.len(), 21);
     for frame in 0..=20 {
         assert!(needed.contains(&ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
             type_id: "WARPOUT".to_string(),
             facing: 0,
             frame,
@@ -591,6 +618,7 @@ fn gsi_13_04_tem_only_tile_root_uses_iso_palette_and_registers_every_frame() {
     assert_eq!(counts["CUSTOM_TILE_ANIM"], 4);
     for frame in 0..4 {
         assert!(needed.contains(&ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
             type_id: "CUSTOM_TILE_ANIM".to_string(),
             facing: 0,
             frame,
@@ -616,4 +644,137 @@ fn collect_effect_names_includes_weapon_anim_entries() {
     assert!(names.iter().any(|name| name == "MGUN-N"));
     assert!(names.iter().any(|name| name == "MGUN-NW"));
     assert!(names.iter().any(|name| name == "UCFLASH"));
+}
+
+/// Real loose SHP decoding, palette application and production atlas page copy.
+pub(crate) fn native_palette_probe_page() -> (Vec<u8>, Vec<u8>, [u32; 2]) {
+    let directory = StoredFrameTestDirectory::new();
+    let mut bytes = Vec::new();
+    for value in [0u16, 256, 1, 1] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    let mut header = [0u8; 24];
+    header[4..6].copy_from_slice(&256u16.to_le_bytes());
+    header[6..8].copy_from_slice(&1u16.to_le_bytes());
+    header[8] = 1;
+    header[20..24].copy_from_slice(&32u32.to_le_bytes());
+    bytes.extend_from_slice(&header);
+    bytes.extend(0..=255u8);
+    std::fs::write(directory.0.join("PALPROBE.SHP"), bytes).unwrap();
+    let assets = AssetManager::from_loose_root_for_test(&directory.0);
+    let palette = Palette {
+        colors: std::array::from_fn(|i| {
+            let i = i as u8;
+            crate::assets::pal_file::Color {
+                r: i,
+                g: i.wrapping_mul(73),
+                b: 255 - i,
+                a: if i == 0 { 0 } else { 255 },
+            }
+        }),
+    };
+    let key = ShpSpriteKey {
+        palette_context: ShpPaletteContext::SelectedScheme,
+        type_id: "PALPROBE".into(),
+        facing: 0,
+        frame: 0,
+        house_color: crate::rules::house_colors::NO_REMAP,
+    };
+    let sprite = render_shp_sprite(
+        &assets,
+        &palette,
+        true,
+        &key,
+        "tem",
+        "TEMPERATE",
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(sprite.indices, (0..=255u8).collect::<Vec<_>>());
+    let size = [262, 3];
+    let mut rgba = vec![0; size[0] * size[1] * 4];
+    let mut indices = vec![0; size[0] * size[1]];
+    blit_sprite_pixels(&sprite, [3, 1], size[0] as u32, &mut rgba, &mut indices);
+    assert_eq!(&indices[265..521], (0..=255u8).collect::<Vec<_>>());
+    (rgba, indices, size.map(|v| v as u32))
+}
+
+#[test]
+fn palette_context_preserves_simultaneous_global_cell_and_attached_sprite_keys() {
+    let art = ArtRegistry::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+        "[SHARED]\nShouldUseCellDrawer=yes\n",
+    ));
+    let mut key = make_shp_key("SHARED", 0);
+    let mut keys = HashSet::new();
+    let effects = HashSet::from(["SHARED".to_string()]);
+    let cells = HashSet::from(["SHARED".to_string()]);
+    for (context, palette) in [
+        (ShpPaletteContext::GlobalAnim, SpritePaletteChoice::Anim),
+        (ShpPaletteContext::SelectedScheme, SpritePaletteChoice::Unit),
+        (ShpPaletteContext::Cell, SpritePaletteChoice::CellIso),
+    ] {
+        key.palette_context = context;
+        keys.insert(key.clone());
+        assert_eq!(
+            sprite_palette_for_key(&key, Some(&art), &effects, &cells),
+            palette
+        );
+    }
+    assert_eq!(keys.len(), 3);
+    let (rgba, indices, _) = native_palette_probe_page();
+    assert_eq!(&indices[505..520], (240..=254u8).collect::<Vec<_>>());
+    assert_eq!(rgba[505 * 4], 240);
+}
+
+#[test]
+fn palette_context_refresh_coverage_preserves_loaded_remaps_and_detects_missing_ones() {
+    let mut key = make_shp_key("CRATE_SPARK", 0);
+    key.house_color = HouseColorIndex(3);
+    let entry = ShpSpriteEntry {
+        uv_origin: [0.0; 2],
+        uv_size: [1.0; 2],
+        pixel_size: [1.0; 2],
+        offset_x: 0.0,
+        offset_y: 0.0,
+        canvas_rect: [0.0, 0.0, 1.0, 1.0],
+        extended: false,
+        page: 0,
+    };
+    let mut atlas = SpriteAtlas {
+        pages: Vec::new(),
+        entries: HashMap::from([(key.clone(), entry)]),
+        make_frame_counts: HashMap::new(),
+        active_anim_frame_counts: HashMap::new(),
+        building_bounds: HashMap::new(),
+        rendered_cache: Vec::new(),
+    };
+    let needs = HashSet::from([("CRATE_SPARK".to_string(), HouseColorIndex(3))]);
+    assert!(atlas_covers_base_keys(
+        &atlas,
+        &needs,
+        ShpPaletteContext::Legacy
+    ));
+    assert!(
+        !atlas_covers_base_keys(&atlas, &needs, ShpPaletteContext::SelectedScheme),
+        "a coincident entity must not suppress animation preload"
+    );
+    key.palette_context = ShpPaletteContext::SelectedScheme;
+    atlas.entries.insert(key.clone(), entry);
+    assert!(
+        atlas_covers_base_keys(&atlas, &needs, ShpPaletteContext::SelectedScheme),
+        "loaded animation must not force repeated atlas uploads"
+    );
+    key.palette_context = ShpPaletteContext::Legacy;
+    atlas.entries.remove(&key);
+    assert!(atlas_covers_base_keys(
+        &atlas,
+        &needs,
+        ShpPaletteContext::SelectedScheme
+    ));
+    assert!(!atlas_covers_base_keys(
+        &atlas,
+        &needs,
+        ShpPaletteContext::Legacy
+    ));
 }

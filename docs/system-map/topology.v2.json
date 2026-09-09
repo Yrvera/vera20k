@@ -31,6 +31,53 @@
     }
   ],
   "systems": {
+    "GSI-13.07": {
+      "native_anchors": [
+        {
+          "symbol": "Single VXL geometry preparation",
+          "address": "0x007540F0",
+          "evidence": "tools/voxel_oracle/raster.py"
+        },
+        {
+          "symbol": "Single VXL draw preparation",
+          "address": "0x00754510",
+          "evidence": "tools/voxel_oracle/raster.py"
+        },
+        {
+          "symbol": "Native voxel traversal",
+          "address": "0x007DF9C0",
+          "evidence": "tools/voxel_oracle/raster.py"
+        },
+        {
+          "symbol": "Native indexed painter",
+          "address": "0x007DFAE0",
+          "evidence": "tools/voxel_oracle/raster.py"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/render/vxl_native.rs",
+          "symbol": "prepare_geometry / prepare_draw",
+          "coverage": "representative",
+          "observed_at_commit": "2b18839831c234917cde6597d8d8ea016f8ad9aa"
+        },
+        {
+          "path": "src/render/vxl_compute.rs",
+          "symbol": "render_native",
+          "coverage": "representative",
+          "observed_at_commit": "2b18839831c234917cde6597d8d8ea016f8ad9aa"
+        },
+        {
+          "path": "src/render/unit_atlas.rs",
+          "symbol": "native crop propagation",
+          "coverage": "representative",
+          "observed_at_commit": "2b18839831c234917cde6597d8d8ea016f8ad9aa"
+        }
+      ],
+      "notes": [
+        "Bounded original single-VXL preparation/core painter proof and production buffer readback. Relative parts, caller slopes/mirrors, and final scene composition remain open."
+      ]
+    },
     "GSI-14.03": {
       "native_anchors": [
         {
@@ -1288,6 +1335,38 @@
       "notes": [
         "Rust bincode snapshots are regression infrastructure, not native SAV parity.",
         "Version 136 persists Infantry terminal policy and sequence progress. Admission rejects transient AwaitingConsequences, native-dead policies and live dying Infantry without a policy; retained policies require serialized Logic membership or limbo. PreparedLoad tests cover finite progress, held factory release, and delivered fatal consequences surviving an aborted deletion frame before resumed cleanup. Older snapshot versions are rejected by the version gate."
+      ]
+    },
+    "GSI-13.08": {
+      "native_anchors": [
+        {
+          "symbol": "LightConvert RGB565/MMX row construction",
+          "address": "0x00556090",
+          "evidence": "docs/research/LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md"
+        },
+        {
+          "symbol": "ordinary Convert RGB565 row construction",
+          "address": "0x004BBB00",
+          "evidence": "docs/research/LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md"
+        },
+        {
+          "symbol": "brightness/A-buffer to palette-row lookup",
+          "address": "0x00420140",
+          "evidence": "docs/research/LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md"
+        },
+        {
+          "symbol": "AnimClass explicit/cell/global palette selection",
+          "address": "0x00423280",
+          "evidence": "docs/research/LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md"
+        },
+        {
+          "symbol": "Cell common brightness normalization and field publication",
+          "address": "0x004845A2",
+          "evidence": "docs/research/LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md"
+        }
+      ],
+      "notes": [
+        "The selected palette owns RGB profile, row count and per-index mask; scalar brightness and per-pixel A choose a row. Native ColorScheme, cell LightConvert and ordinary Convert are separate owners. Original-byte synthetic oracles cover active MMX565 and plain tables. The report preserves bounded GPU and scene evidence plus non-clear A, translucency, palette-source lifecycle and other producer residuals; this does not certify the whole system."
       ]
     }
   },

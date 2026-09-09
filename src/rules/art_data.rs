@@ -117,10 +117,13 @@ pub struct ArtEntry {
     pub report: Option<String>,
     /// Animation `StartSound=` sound ID. Takes priority over `Report=`.
     pub start_sound: Option<String>,
-    /// Signed building body draw-depth/Z adjustment (ExtraLight= in art.ini).
-    /// This is not a map RGB lighting value.
+    /// Signed building brightness addition (ExtraLight= in art.ini).
+    /// DrawBody 0043D824 adds signed BuildingType+1548 to top-cell brightness;
+    /// buildup 0043D644 omits it. It is separate from NormalZAdjust.
     /// Retail values: GADPSA=350, GAICBM=-100.
     pub extra_light: i32,
+    /// BuildingType +0x1702, art parser 004612B4: use the cell ISO Convert.
+    pub terrain_palette: bool,
     /// Harvester queueing cell offset from building origin (QueueingCell= in art.ini).
     /// Where miners wait outside the dock when it is occupied. e.g. `(4, 1)` for GAREFN.
     pub queueing_cell: Option<(u16, u16)>,
@@ -1204,6 +1207,7 @@ impl ArtRegistry {
                     report,
                     start_sound,
                     extra_light,
+                    terrain_palette: section.get_bool("TerrainPalette").unwrap_or(false),
                     queueing_cell,
                     pads,
                     damage_fire_offsets,

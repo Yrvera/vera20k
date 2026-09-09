@@ -1,41 +1,212 @@
-//! Reference for how the original lights a palette entry, kept next to the
-//! shaders that emulate it (`palette_light` in `batch_shader.wgsl`,
-//! `sprite_voxel_shader.wgsl`, `zdepth_shader.wgsl`).
+//! Native LightConvert color resolution for ordinary clear-A draws.
 //!
-//! `LightConvertClass::Constructor` (0x00555DA0) -> `FUN_00556090` builds the
-//! per-format table through `FUN_007DE200` (RGB565) and siblings: for every
-//! palette entry, each 8-bit channel is multiplied by a 16.16 scale
-//! `scale16 = ftol(light_milli * 1000 * 0.065536)` (three `LEA x5` and a `SHL 3`
-//! at 0x00556192..0x0055619B, then the double 0.065536 at 0x007ED0B0), i.e.
-//! `light_milli * 65536 / 1000` so neutral 1000 is exactly 0x10000. It is
-//! shifted right by 16, clamped to 255 when the product overflows a byte, then
-//! packed to the display format. The multiply is on the palette bytes, so it
-//! is a gamma-space scale.
-//!
-//! How a brightness such as Ambient 1.0 + ExtraUnitLight 0.2 reaches that
-//! multiply is by row selection, not by passing 1200: the constructor builds
-//! N rows (0x35 = 53, or 0x1B = 27 when r+g+b < 2000, per 0x00544E70) with
-//! `scale_k = k * 2 * scale16 / (N - 1)`, the colour key itself is clamped to
-//! 0..1000 by 0x00555AC0, and the draw picks a row for its brightness. So 1.2
-//! quantises to row 31 (1.192) or 32 (1.231) of a 53-row table; the row pick
-//! is UNCHECKED here. The shaders apply the exact product instead of a row
-//! (DRIFT: 3.85% brightness steps, 7.7% on 27-row tables) and do not model
-//! the RGB565 packing that follows (DRIFT: up to 3 bits per channel).
+//! `0x00556090 -> 0x007DE200` constructs RGB565 rows; `0x00420140`
+//! selects them from brightness and A-buffer. The captured retail process uses
+//! MMX, RGB565 and x87 CW 0x0e7f. See
+//! `docs/research/LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md`.
+//! Palette ownership (cell versus ColorScheme), scalar brightness and the
+//! per-index mask remain separate. Zero/default means precomposed RGBA/UI.
 
-/// Native 16.16 scale for a light value in milliunits (1000 = neutral).
-pub fn native_scale16(light_milli: i32) -> i64 {
-    // ftol truncates toward zero under gamemd's chop control word.
-    ((light_milli as f64) * 1000.0 * 0.065536) as i64
+use crate::map::lighting::CellLightGrid;
+
+/// RGB scale uses bits 0..17; red's high byte stores N, green bit 31 the
+/// ColorScheme mask. The fourth word retains the signed brightness argument.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct PaletteLight(pub [u32; 4]);
+
+impl PaletteLight {
+    pub fn new(rgb_milli: [i32; 3], rows: u32, brightness: i32, color_scheme: bool) -> Self {
+        assert!(matches!(rows, 1 | 27 | 53));
+        let rgb = rgb_milli.map(native_scale16);
+        Self([
+            rgb[0] | (rows << 24),
+            rgb[1] | (u32::from(color_scheme) << 31),
+            rgb[2],
+            brightness as u32,
+        ])
+    }
+
+    /// CellClass owns its normalized hue-profile and row count (0x00544E70).
+    pub fn cell(grid: &CellLightGrid, cell: (u16, u16), top: bool) -> Self {
+        let (rgb, brightness) = grid.cell_light_at(cell).map_or(([1000; 3], 1000), |light| {
+            (
+                light.rgb_key,
+                if top {
+                    light.top_scalar
+                } else {
+                    light.common_scalar
+                },
+            )
+        });
+        Self::new(
+            rgb,
+            if rgb.iter().sum::<i32>() < 2000 {
+                27
+            } else {
+                53
+            },
+            brightness,
+            false,
+        )
+    }
+
+    /// The selected house Convert uses 53 rows even on a cell with 27 rows
+    /// (0x0066D3A0, 0x00705D70, selector caller 0x0070720E).
+    pub fn color_scheme(rgb_milli: [i32; 3], brightness: i32) -> Self {
+        Self::new(rgb_milli, 53, brightness, true)
+    }
+
+    /// Ordinary ConvertClass (0048E740 -> 004BBB00) uses exact unity and
+    /// scalar channel multiplication, independent of MMX availability.
+    pub fn plain(rows: u32, brightness: i32) -> Self {
+        assert!(matches!(rows, 1 | 53));
+        Self([
+            65536 | (rows << 24),
+            65536 | (1 << 30),
+            65536,
+            brightness as u32,
+        ])
+    }
+
+    pub fn with_brightness(mut self, brightness: i32) -> Self {
+        self.0[3] = brightness as u32;
+        self
+    }
+
+    pub fn rows(self) -> u32 {
+        self.0[0] >> 24
+    }
+    pub fn brightness(self) -> i32 {
+        self.0[3] as i32
+    }
+
+    pub fn rgb565(self, rgb: [u8; 3], source_index: u8, a: u8) -> u16 {
+        let n = self.rows();
+        assert!(n != 0, "precomposed RGBA has no native palette");
+        if source_index == 0 && self.0[1] & (1 << 30) == 0 {
+            return 0;
+        }
+        let row = native_row(self.brightness(), a, n);
+        let mask = self.0[1] >> 31 != 0 && (240..=254).contains(&source_index);
+        let scale = if mask {
+            let d = (n * 30 / 200).saturating_sub(1).min((n - 1) / 2);
+            [if n > 1 && row <= d {
+                row * 65536 / d
+            } else {
+                65536
+            }; 3]
+        } else {
+            [self.0[0], self.0[1], self.0[2]].map(|s| {
+                let base = s & 0x3ffff;
+                if n == 1 {
+                    base
+                } else {
+                    base * 2 * row / (n - 1)
+                }
+            })
+        };
+        let lit: [u32; 3] = std::array::from_fn(|i| {
+            if self.0[1] & (1 << 30) != 0 {
+                ((u32::from(rgb[i]) * scale[i]) >> 16).min(255)
+            } else {
+                ((u32::from(rgb[i]) * (scale[i] >> 4)) >> 12).min(255)
+            }
+        });
+        (((lit[0] >> 3) << 11) | ((lit[1] >> 2) << 5) | (lit[2] >> 3)) as u16
+    }
 }
 
-/// One palette byte lit the native way: `(byte * scale16) >> 16`, clamped to 255.
-pub fn native_lit_byte(byte: u8, light_milli: i32) -> u8 {
-    let product = byte as i64 * native_scale16(light_milli);
-    if product > 0x00FF_FFFF {
-        255
-    } else {
-        (product >> 16) as u8
+/// Exact reduction of the 53-bit/chop x87 expression on the clamped domain
+/// 0..2000. Binary64 0.065536 is slightly below nominal: neutral is 65535.
+/// The original-byte oracle covers all 2001 inputs.
+pub fn native_scale16(light_milli: i32) -> u32 {
+    let light = light_milli.clamp(0, 2000) as u32;
+    (light * 65536).saturating_sub(1) / 1000
+}
+
+/// 0x00420140 table and 0x00493DF0/0x00494B60 active selectors.
+pub fn native_row(brightness: i32, a: u8, rows: u32) -> u32 {
+    let q = ((i64::from(brightness.max(0)) * 261) >> 11).min(254) as u32;
+    (u32::from(a) * q * (rows - 1) / 32258).min(rows - 1)
+}
+
+/// One shared shader implementation and one existing presentation-profile
+/// owner. wgpu27 sRGB texture reads decode RGB; framebuffer writes encode it.
+/// https://docs.rs/wgpu/27.0.1/wgpu/enum.TextureFormat.html
+pub(crate) fn shader_source(body: &str) -> String {
+    let profile = super::native_surface_format::ACTIVE_RETAIL_RGB565_PRESENTATION;
+    let words = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "const RETAIL_FIVE = array<u32,32>({});\nconst RETAIL_SIX = array<u32,64>({});\n{}\n{}",
+        words(&profile.five_bit),
+        words(&profile.six_bit),
+        include_str!("palette_light.wgsl"),
+        body
+    )
+}
+
+#[cfg(test)]
+pub(crate) struct NativePaletteFixture {
+    pub rows: u32,
+    pub rgb: [i32; 3],
+    pub house: bool,
+    pub plain: bool,
+    pub bytes: &'static [u8],
+}
+
+#[cfg(test)]
+pub(crate) fn native_fixtures() -> [NativePaletteFixture; 9] {
+    macro_rules! fixture {
+        ($n:expr, $rgb:expr, $house:expr, $file:literal) => {
+            NativePaletteFixture {
+                rows: $n,
+                rgb: $rgb,
+                house: $house,
+                plain: false,
+                bytes: include_bytes!(concat!("../../tools/palette_oracle/fixtures/", $file)),
+            }
+        };
     }
+    [
+        fixture!(1, [1000; 3], true, "palette-1-1000-1000-1000-mmx-house.bin"),
+        fixture!(53, [1000; 3], false, "palette-53-1000-1000-1000-mmx.bin"),
+        fixture!(53, [992, 768, 512], false, "palette-53-992-768-512-mmx.bin"),
+        fixture!(27, [512, 640, 768], false, "palette-27-512-640-768-mmx.bin"),
+        fixture!(53, [2000, 1, 1999], false, "palette-53-2000-1-1999-mmx.bin"),
+        fixture!(
+            53,
+            [1000; 3],
+            true,
+            "palette-53-1000-1000-1000-mmx-house.bin"
+        ),
+        fixture!(
+            53,
+            [992, 768, 512],
+            true,
+            "palette-53-992-768-512-mmx-house.bin"
+        ),
+        NativePaletteFixture {
+            rows: 1,
+            rgb: [1000; 3],
+            house: false,
+            plain: true,
+            bytes: include_bytes!("../../tools/palette_oracle/fixtures/palette-1-plain.bin"),
+        },
+        NativePaletteFixture {
+            rows: 53,
+            rgb: [1000; 3],
+            house: false,
+            plain: true,
+            bytes: include_bytes!("../../tools/palette_oracle/fixtures/palette-53-plain.bin"),
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -43,44 +214,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn neutral_light_is_identity() {
-        for b in [0u8, 1, 52, 116, 200, 255] {
-            assert_eq!(native_lit_byte(b, 1000), b);
+    fn all_clamped_base_scales_match_original_x87_bytes() {
+        let golden = include_bytes!("../../tools/palette_oracle/fixtures/base-scales-0-2000.bin");
+        for (light, value) in golden.chunks_exact(4).enumerate() {
+            assert_eq!(
+                native_scale16(light as i32),
+                u32::from_le_bytes(value.try_into().unwrap()),
+                "light={light}"
+            );
         }
     }
 
     #[test]
-    fn table_scale_is_a_byte_multiply() {
-        // Native table arithmetic for a 1.2 scale (what the shader now applies;
-        // the native row pick would land on 1.192 or 1.231, see the module doc).
-        // Retail Iron Gull container top: unittem index 106 red byte 116 reads
-        // ~139-144 in a gamemd capture at Ambient 1.0 + ExtraUnitLight 0.2.
-        assert_eq!(native_lit_byte(116, 1200), 139);
-        // Hull grey 52 (index 56) -> 62.
-        assert_eq!(native_lit_byte(52, 1200), 62);
-        // A linear-space multiply would give only ~1.09x on these bytes.
-    }
-
-    #[test]
-    fn overflow_clamps_to_white() {
-        assert_eq!(native_lit_byte(255, 1200), 255);
-        assert_eq!(native_lit_byte(220, 2000), 255);
-    }
-
-    #[test]
-    fn shaders_declare_the_same_helper() {
-        for src in [
-            include_str!("batch_shader.wgsl"),
-            include_str!("sprite_voxel_shader.wgsl"),
-            include_str!("zdepth_shader.wgsl"),
-            include_str!("zsprite_shader.wgsl"),
+    fn brightness_a_row_selection_matches_original_generated_luts() {
+        for (n, bytes) in [
+            (
+                27,
+                include_bytes!("../../tools/palette_oracle/fixtures/intensity-27.bin"),
+            ),
+            (
+                53,
+                include_bytes!("../../tools/palette_oracle/fixtures/intensity-53.bin"),
+            ),
         ] {
-            assert!(src.contains("fn palette_light(rgb_linear: vec3f, tint: vec3f)"));
-            assert!(
-                src.contains("palette_light(")
-                    && !src.contains("rgb * in.tint")
-                    && !src.contains("color.rgb * input.tint")
-            );
+            for b in -1i32..=2000 {
+                let q = ((b.max(0) * 261) >> 11).min(254) as usize;
+                for a in 0..=255u8 {
+                    let offset = (usize::from(a) * 256 + q) * 2;
+                    let native = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]) >> 8;
+                    assert_eq!(
+                        native_row(b, a, n),
+                        u32::from(native),
+                        "n={n}, b={b}, A={a}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_entry_in_original_palette_tables_matches() {
+        for fixture in native_fixtures() {
+            for row in 0..fixture.rows {
+                let b = (0..=2000)
+                    .find(|b| native_row(*b, 127, fixture.rows) == row)
+                    .unwrap();
+                let light = if fixture.plain {
+                    PaletteLight::plain(fixture.rows, b)
+                } else {
+                    PaletteLight::new(fixture.rgb, fixture.rows, b, fixture.house)
+                };
+                for index in 0..=255u8 {
+                    let rgb = [index, index.wrapping_mul(73), 255 - index];
+                    let offset = (row as usize * 256 + usize::from(index)) * 2;
+                    let native =
+                        u16::from_le_bytes([fixture.bytes[offset], fixture.bytes[offset + 1]]);
+                    assert_eq!(
+                        light.rgb565(rgb, index, 127),
+                        native,
+                        "rgb={:?}, n={}, house={}, row={row}, index={index}",
+                        fixture.rgb,
+                        fixture.rows,
+                        fixture.house
+                    );
+                }
+            }
         }
     }
 }

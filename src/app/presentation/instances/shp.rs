@@ -254,6 +254,7 @@ pub(crate) fn build_shp_instances(
             }
         };
         let key: ShpSpriteKey = ShpSpriteKey {
+            palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
             type_id: make_type_id.as_deref().unwrap_or(type_str).to_string(),
             facing: 0,
             frame: shp_frame,
@@ -274,6 +275,7 @@ pub(crate) fn build_shp_instances(
                     .unwrap_or(false) =>
             {
                 let fallback_key = ShpSpriteKey {
+                    palette_context: crate::render::sprite_atlas::ShpPaletteContext::Legacy,
                     type_id: make_type_id.as_deref().unwrap_or(type_str).to_string(),
                     facing: 0,
                     frame: 0,
@@ -321,6 +323,30 @@ pub(crate) fn build_shp_instances(
                 .rules()
                 .map_or(0, |rules| rules.general.extra_infantry_light),
         );
+        let selected_palette_light = crate::app::presentation::lighting::body_palette_light(
+            state.match_state.match_presentation.lighting.grid(),
+            &sim.session.lighting,
+            (pos.rx, pos.ry),
+            entity.category,
+            state.rules().map_or(0, |r| r.general.extra_unit_light),
+            state.rules().map_or(0, |r| r.general.extra_infantry_light),
+        );
+        let palette_light = if entity.category == EntityCategory::Structure {
+            let obj = state.rules().and_then(|r| r.object(type_str));
+            let image = obj.map_or(type_str, |o| o.image.as_str());
+            let art = state
+                .rules()
+                .and_then(|r| r.art_registry.resolve_metadata_entry(type_str, image));
+            crate::app::presentation::lighting::building_palette_light(
+                state.match_state.match_presentation.lighting.grid(),
+                &sim.session.lighting,
+                (pos.rx, pos.ry),
+                art,
+                is_building_up || is_building_down,
+            )
+        } else {
+            selected_palette_light
+        };
         // Direct SHP and infantry keep native Ground parent order. Infantry
         // does not use the Unit composite bridge split at 0x73B140.
         let collect_ground = band == EntityDrawBand::Ground;
@@ -387,6 +413,7 @@ pub(crate) fn build_shp_instances(
             uv_size: entry.uv_size,
             depth,
             tint,
+            palette_light,
             alpha: 1.0,
             draw_state,
             z_adjust,
@@ -454,6 +481,7 @@ pub(crate) fn build_shp_instances(
                     interp_z,
                     depth,
                     tint,
+                    palette_light,
                     draw_state,
                 );
                 // Building anims render in the same pass as building bodies so they
@@ -480,6 +508,10 @@ pub(crate) fn build_shp_instances(
                     sy,
                     depth,
                     tint,
+                    selected_palette_light,
+                    state.match_state.match_presentation.lighting.grid(),
+                    &sim.session.lighting,
+                    (pos.rx, pos.ry),
                     entity.building_anim_overlays.as_ref(),
                     crate::app::presentation::building_anim::building_anim_elapsed_logic_frames(
                         state,
@@ -513,6 +545,10 @@ pub(crate) fn build_shp_instances(
                             interp_z,
                             depth,
                             tint,
+                            // Building VXL 0043DA80 reads top directly (e.g.
+                            // 0043E2B4..0043E2FF); 00707194 selects the scheme.
+                            // SHP TerrainPalette/ExtraLight do not apply here.
+                            selected_palette_light,
                             draw_state,
                             rules_obj.turret_anim_x,
                             rules_obj.turret_anim_y,
@@ -583,6 +619,7 @@ fn emit_building_turret_vxl(
     z: u8,
     building_depth: f32,
     tint: [f32; 3],
+    palette_light: crate::render::palette_light::PaletteLight,
     draw_state: DrawState,
     anim_x: i32,
     anim_y: i32,
@@ -614,6 +651,7 @@ fn emit_building_turret_vxl(
             uv_size: entry.uv_size,
             depth: building_depth,
             tint,
+            palette_light,
             alpha: 1.0,
             draw_state,
             // VXL blit: gradient entry 2, lift cancelled, no DrawSHP -2.
@@ -641,6 +679,7 @@ fn emit_building_bib(
     z: u8,
     building_depth: f32,
     tint: [f32; 3],
+    palette_light: crate::render::palette_light::PaletteLight,
     draw_state: DrawState,
 ) {
     let rules_image: String = rules
@@ -656,6 +695,11 @@ fn emit_building_bib(
         None => return,
     };
     let bib_key: ShpSpriteKey = ShpSpriteKey {
+        palette_context: if art_entry.terrain_palette {
+            crate::render::sprite_atlas::ShpPaletteContext::Cell
+        } else {
+            crate::render::sprite_atlas::ShpPaletteContext::SelectedScheme
+        },
         type_id: bib_name.to_uppercase(),
         facing: 0,
         frame: 0,
@@ -687,6 +731,7 @@ fn emit_building_bib(
             uv_size: bib_entry.uv_size,
             depth: building_depth,
             tint,
+            palette_light,
             alpha: 1.0,
             draw_state,
             z_adjust: ground_z_adjust(z, BIB_Z_ADJUST_PX + SHP_DRAW_Z_ADJUST_PX),
@@ -852,6 +897,10 @@ fn emit_building_anims(
     screen_y: f32,
     building_depth: f32,
     tint: [f32; 3],
+    attached_palette: crate::render::palette_light::PaletteLight,
+    light_grid: &crate::map::lighting::CellLightGrid,
+    scenario: &crate::sim::scenario_session::ScenarioLightingState,
+    cell: (u16, u16),
     overlays: Option<&crate::sim::components::BuildingAnimOverlays>,
     anim_elapsed_logic_frames: u32,
     game_options: Option<&crate::sim::game_options::GameOptions>,
@@ -982,11 +1031,19 @@ fn emit_building_anims(
         // available frame rather than skipping the overlay entirely.
         // This prevents a visual glitch where the anim disappears for one
         // tick when the atlas has fewer frames than the art.ini loop range.
+        let context = crate::render::sprite_atlas::attached_anim_palette_context(
+            art_reg.anim_runtime_config(&selected.anim_type),
+        );
         let mut anim_key: ShpSpriteKey = ShpSpriteKey {
+            palette_context: context,
             type_id: selected.anim_type.to_string(),
             facing: 0,
             frame,
-            house_color,
+            house_color: if context == crate::render::sprite_atlas::ShpPaletteContext::GlobalAnim {
+                HouseColorIndex(0)
+            } else {
+                house_color
+            },
         };
         let mut anim_entry_opt = atlas.get(&anim_key);
         if anim_entry_opt.is_none() && frame > 0 {
@@ -1020,6 +1077,25 @@ fn emit_building_anims(
             effective_anim_z_adjust(anim.z_adjust, type_z_adjust) + ANIM_DRAW_DEPTH_BIAS_PX;
         let anim_depth: f32 = apply_shape_z_adjust(building_depth, z_adjust_px, world_height);
 
+        let config = art_reg.anim_runtime_config(&selected.anim_type);
+        // Building mark 0043F9A6..0043FA68 supplies explicit selected Convert/top
+        // only when ShouldUseCellDrawer. Its effect brightness hook remains a
+        // residual for affected buildings; ordinary brightness is unchanged.
+        let palette_light = if config.is_none_or(|c| c.should_use_cell_drawer) {
+            if config.is_some_and(|c| c.use_normal_light) {
+                attached_palette.with_brightness(1000)
+            } else {
+                attached_palette
+            }
+        } else {
+            crate::app::presentation::lighting::anim_palette_light(
+                light_grid,
+                Some(scenario),
+                cell,
+                config,
+                false,
+            )
+        };
         // Native Z (`AnimClass__DrawIt @ 0x00422CA0`): an anim draw carries
         // 0x2800 with gradient entry 2 and `YDrawOffset + ZAdjust -
         // AdjustForZ - 2`; it tests Z per pixel and never writes.
@@ -1035,6 +1111,7 @@ fn emit_building_anims(
                 uv_size: anim_entry.uv_size,
                 depth: anim_depth,
                 tint,
+                palette_light,
                 alpha: 1.0,
                 draw_state,
                 // The anim's YDrawOffset is baked into the atlas offset, so it
