@@ -1,5 +1,7 @@
 # Native comparison workflow
 
+Native comparison guidance; adapt as useful and distinguish findings from hypotheses.
+
 Use original `gamemd.exe` instructions to produce reference outputs, then compare
 the Rust function used by the engine against them. The shared Python runner handles
 executable identity, bounded execution, fresh function-call state, diagnostics, and
