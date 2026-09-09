@@ -111,9 +111,9 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
             .as_ref()
             .map(|rt| &rt.simulation)
             .and_then(|sim| {
-                crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
-                    .and_then(|house| house.outcome_state)
-                    .filter(|outcome| outcome.exit_ready)
+                sim.interner
+                    .get(owner)
+                    .and_then(|owner| sim.ready_outcome_for_owner(owner))
             });
         let Some(outcome) = outcome else {
             return;

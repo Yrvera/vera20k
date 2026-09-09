@@ -713,10 +713,9 @@ impl App {
 
         if let Ok(quickplay) = std::env::var("RA2_QUICKPLAY") {
             let skirmish_settings = state.frontend.skirmish_settings.clone();
-            // The fresh-scenario admission only accepts a typed skirmish
-            // startup, so the dev shortcut carries a minimal America-vs-Russia
-            // Battle session for the named map through the unverified legacy
-            // path (the same one the shell uses for non-catalog maps).
+            // The developer shortcut carries an authored-map sandbox through
+            // the unverified legacy Battle loader. It has no artificial AI
+            // opponent or starting forces; this is not campaign admission.
             let session = quickplay_launch_session(quickplay);
             let mut clock = crate::match_bootstrap::OrdinaryMatchSeedClock;
             let seed = crate::match_bootstrap::read_match_seed(&mut clock);
@@ -732,12 +731,12 @@ impl App {
     }
 }
 
-/// `RA2_QUICKPLAY=<map>`: a stock Battle session, America versus one Easy
-/// Russia, on the named map file or seed.
+/// `RA2_QUICKPLAY=<map>`: VERA-internal authored-map sandbox using the legacy
+/// Battle loader, with one local house and no generated opponents or forces.
 fn quickplay_launch_session(selected_map: String) -> crate::skirmish_launch::SkirmishLaunchSession {
     use crate::skirmish_launch::{
-        AiDifficulty, LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishAiSlot,
-        SkirmishLaunchMode, SkirmishLaunchOptions, SkirmishLaunchSession, SkirmishLocalSlot,
+        LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishLaunchMode, SkirmishLaunchOptions,
+        SkirmishLaunchSession, SkirmishLocalSlot,
     };
     SkirmishLaunchSession {
         mode: SkirmishLaunchMode {
@@ -764,16 +763,10 @@ fn quickplay_launch_session(selected_map: String) -> crate::skirmish_launch::Ski
             start_position: LaunchStartPosition::Position(0),
             team: LaunchTeam::None,
         },
-        opponents: vec![SkirmishAiSlot {
-            country: LaunchCountry::Russia,
-            country_random: false,
-            color_index: 1,
-            color_random: false,
-            start_position: LaunchStartPosition::Position(1),
-            team: LaunchTeam::None,
-            difficulty: AiDifficulty::Easy,
-        }],
-        pre_fill_house_roster: crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(1),
+        // An empty AI house is still a contender: its automatic defeat would
+        // award victory to the fixture owner and end the comparison session.
+        opponents: Vec::new(),
+        pre_fill_house_roster: crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(0),
         options: SkirmishLaunchOptions {
             // VERA developer shortcut: fixture maps carry their own objects.
             // Both native starting-force gates must be off: UnitCount=0 alone
@@ -801,72 +794,155 @@ mod tests {
             "an MCV would reveal an extra start area"
         );
         assert_eq!(session.options.unit_count, 0);
+        assert!(session.opponents.is_empty());
+        assert_eq!(session.pre_fill_house_roster.required_start_count(), 1);
+        assert!(
+            session
+                .pre_fill_house_roster
+                .ai_slots()
+                .iter()
+                .all(|slot| !slot.valid)
+        );
     }
 
     #[test]
     #[ignore = "requires retail archives and VERA_SIDEBAR_FIXTURE_MAP"]
-    fn quickplay_bootstrap_preserves_all_19_authored_capture_entities() {
-        use crate::sim::scenario_bootstrap::{
-            MatchLaunchDescriptor, apply_explicit_skirmish_launch_session_with_overlay_registry,
-            initialize_skirmish_launch_houses,
+    fn quickplay_authored_capture_runs_300_production_frames_without_false_victory() {
+        use crate::sim::house_state::HouseOutcomeKind;
+        use crate::sim::scenario_bootstrap::MatchLaunchDescriptor;
+        use crate::sim::world::{SimSoundEvent, TickLane};
+        use crate::skirmish_launch::{
+            AiDifficulty, LaunchCountry, LaunchStartPosition, LaunchTeam, PreFillHouseRoster,
+            SkirmishAiSlot,
         };
+
         let path = std::env::var("VERA_SIDEBAR_FIXTURE_MAP").expect("exact neutral capture map");
         let root = crate::util::config::GameConfig::load()
             .unwrap()
             .paths
             .ra2_dir;
-        let loaded = crate::headless_scenario::load(&root, &path, 12345).unwrap();
-        assert_eq!(loaded.map.entities.len(), 19);
-        let resources = &loaded.runtime.resources;
-        let rules = &resources.rules;
-        let terrain = loaded.sim().resolved_terrain.as_ref().unwrap();
-        let roster = crate::map::houses::parse_house_roster(
-            &loaded.map.ini,
-            &rules.color_schemes,
-            Some(rules),
-        );
-        let mut session = quickplay_launch_session(path);
-        for bases in [false, true] {
-            session.options.bases = bases;
-            let descriptor = MatchLaunchDescriptor::from_resolved(session.clone()).unwrap();
-            let mut sim = crate::sim::world::Simulation::with_seed(12345);
-            sim.session.map_width = loaded.sim().session.map_width;
-            sim.session.map_height = loaded.sim().session.map_height;
-            sim.install_resolved_terrain_for_new_map(terrain.clone());
-            sim.install_playfield_from_map_header(&loaded.map.header);
-            initialize_skirmish_launch_houses(&mut sim, &roster, rules, &descriptor);
+        for previous_empty_opponent in [false, true] {
+            let mut session = quickplay_launch_session(path.clone());
+            if previous_empty_opponent {
+                // Reproduce the v3 launch defect without adding any MCVs.
+                // Its empty second contender must still exercise ordinary
+                // automatic defeat/victory, rather than globally disabling it.
+                session.opponents.push(SkirmishAiSlot {
+                    country: LaunchCountry::Russia,
+                    country_random: false,
+                    color_index: 1,
+                    color_random: false,
+                    start_position: LaunchStartPosition::Position(1),
+                    team: LaunchTeam::None,
+                    difficulty: AiDifficulty::Easy,
+                });
+                session.pre_fill_house_roster = PreFillHouseRoster::from_compact_skirmish(1);
+            }
+            let descriptor = MatchLaunchDescriptor::from_resolved(session).unwrap();
+            let mut loaded =
+                crate::headless_scenario::load_with_launch(&root, &path, 12345, descriptor)
+                    .unwrap();
+            assert_eq!(loaded.map.entities.len(), 19);
+            assert_eq!(loaded.sim().entities().len(), 19, "no generated forces");
+            let owner = loaded.sim().interner.get("Americans").unwrap();
+            let authored: Vec<_> = loaded
+                .sim()
+                .entities()
+                .values()
+                .map(|e| e.stable_id())
+                .collect();
+            assert!(loaded.sim().entities().values().all(|e| e.owner() == owner));
             assert_eq!(
-                sim.spawn_from_map_with_resolved_and_overlay_registry(
-                    &loaded.map.entities,
-                    Some(rules),
-                    &resources.height_map,
-                    Some(terrain),
-                    Some(&resources.overlay_registry)
-                ),
-                19
+                loaded.sim().contending_house_count(),
+                if previous_empty_opponent { 2 } else { 1 }
             );
-            let authored: Vec<_> = sim.entities().values().map(|e| e.stable_id()).collect();
-            let output = apply_explicit_skirmish_launch_session_with_overlay_registry(
-                &mut sim,
-                &loaded.map,
-                &roster,
-                rules,
-                &resources.height_map,
-                terrain,
-                &descriptor,
-                &resources.overlay_registry,
+            assert!(
+                loaded.sim().path_grid().is_some(),
+                "full construction publishes navigation"
             );
-            assert_eq!(output.spawned_mcvs, if bases { 2 } else { 0 });
-            assert_eq!(sim.entities().len(), if bases { 21 } else { 19 });
+            assert!(loaded.sim().ready_outcome_for_owner(owner).is_none());
+
+            let mut victory_edges = 0;
+            let mut terminal_frame = None;
+            for frame in 1..=300 {
+                // Use the app's cadence and bound production transaction, not
+                // the tooling tick helper's different millisecond cadence.
+                let output = loaded.runtime.advance_frame(
+                    &[],
+                    crate::app::types::SIM_TICK_MS,
+                    TickLane::Ordinary,
+                );
+                victory_edges += output.sound_events.iter().filter(|event| matches!(event,
+                    SimSoundEvent::MatchOutcome { owner: event_owner, kind: HouseOutcomeKind::Victory }
+                        if *event_owner == owner
+                )).count();
+                if previous_empty_opponent {
+                    if loaded.sim().ready_outcome_for_owner(owner).is_some() {
+                        assert!(!output.tick.frame_committed);
+                        assert!(output.tick.terminal_score_finalized);
+                        terminal_frame = Some(frame);
+                        break;
+                    }
+                } else {
+                    assert!(
+                        output.tick.frame_committed,
+                        "sandbox stopped on frame {frame}"
+                    );
+                    assert!(!output.tick.terminal_score_finalized);
+                    assert!(loaded.sim().ready_outcome_for_owner(owner).is_none());
+                    let house = &loaded.sim().houses[&owner];
+                    assert!(!house.has_won && !house.has_lost && !house.is_defeated);
+                    assert!(
+                        house.outcome_state.is_none(),
+                        "no hidden false outcome on frame {frame}"
+                    );
+                }
+            }
+            assert_eq!(loaded.sim().entities().len(), 19);
             assert!(
                 authored
                     .iter()
-                    .all(|id| sim.entities().get(*id).is_some())
+                    .all(|id| loaded.sim().entities().get(*id).is_some())
             );
+            if previous_empty_opponent {
+                let frame =
+                    terminal_frame.expect("two-contender control must reach the ending loop");
+                assert!(
+                    frame <= 100,
+                    "control must reproduce the observed early result"
+                );
+                assert_eq!(
+                    victory_edges, 1,
+                    "ordinary victory EVA remains a single edge"
+                );
+                eprintln!(
+                    "Previous empty-opponent control: victory on production frame {frame}; 19 authored entities retained"
+                );
+            } else {
+                assert_eq!(loaded.sim().session.tick, 300);
+                assert_eq!(victory_edges, 0, "no phantom victory EVA");
+                let exit = crate::sim::command::CommandEnvelope::new(
+                    owner,
+                    1,
+                    crate::sim::command::Command::ExitMatch,
+                );
+                let output = loaded.runtime.advance_frame(
+                    &[exit],
+                    crate::app::types::SIM_TICK_MS,
+                    TickLane::Ordinary,
+                );
+                assert_eq!(output.tick.executed_commands, 1);
+                assert!(!output.tick.frame_committed);
+                assert!(
+                    loaded.sim().quit_requested,
+                    "the sandbox still accepts explicit exit"
+                );
+                assert!(loaded.sim().ready_outcome_for_owner(owner).is_none());
+                eprintln!(
+                    "Authored quickplay: 300 production frames; 19 entities retained; no generated MCVs, victory state, EVA or ready exit; explicit ExitMatch still exits"
+                );
+            }
         }
-        eprintln!(
-            "Authored neutral fixture: 19 retained; Bases=false adds 0 MCVs; prior Bases=true adds 2"
-        );
     }
 
     #[derive(Debug, PartialEq)]

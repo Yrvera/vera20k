@@ -187,6 +187,23 @@ pub const SIM_TICK_MS: u32 = 1000 / crate::util::fixed_math::RA2_LOGIC_FRAMES_PE
 ///
 /// `map_file_name` is resolved relative to the retail root (e.g. `"Dustbowl.mmx"`).
 pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<HeadlessScenario, String> {
+    load_with_launch(
+        retail_dir,
+        map_file_name,
+        seed,
+        one_player_battle_launch(map_file_name)?,
+    )
+}
+
+/// Run the same construction and bound-resource handoff with an explicit
+/// resolved launch. The quickplay regression uses its real app descriptor here
+/// so house creation and starting forces cannot drift from the tested session.
+pub(crate) fn load_with_launch(
+    retail_dir: &Path,
+    map_file_name: &str,
+    seed: u32,
+    launch: crate::sim::scenario_bootstrap::MatchLaunchDescriptor,
+) -> Result<HeadlessScenario, String> {
     crate::map::retail_trig::install_from_dir(retail_dir);
     if !crate::map::retail_trig::wave_tables_available() {
         return Err(format!(
@@ -211,7 +228,6 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         crate::app::loading::init_helpers::load_startup_rules(&assets)
             .ok_or_else(|| "load native startup rules".to_string())?
             .into_parts();
-    let launch = one_player_battle_launch(map_file_name)?;
     let scenario_prefix_plan =
         crate::sim::scenario_bootstrap::prepare_stock_offline_scenario_prefix_plan(
             &launch,

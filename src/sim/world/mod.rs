@@ -3220,17 +3220,23 @@ impl Simulation {
         }
     }
 
+    /// Accepted House result after its serialized SavourDelay has expired.
+    /// Simulation termination and app outcome presentation share this query.
+    /// Explicit solo wins/losses remain valid; the developer solo exception
+    /// belongs only to automatic victory creation in `check_defeat`.
+    pub(crate) fn ready_outcome_for_owner(
+        &self,
+        owner: InternedId,
+    ) -> Option<crate::sim::house_state::HouseOutcomeState> {
+        self.houses
+            .get(&owner)?
+            .outcome_state
+            .filter(|outcome| outcome.exit_ready)
+    }
+
     fn natural_outcome_exit_ready(&self) -> bool {
-        let contending_houses = self.contending_house_count();
-        self.houses.values().any(|house| {
-            house.is_human
-                && house.outcome_state.is_some_and(|outcome| {
-                    outcome.exit_ready
-                        && (outcome.kind == crate::sim::house_state::HouseOutcomeKind::Defeat
-                            // VERA-internal opponent precondition; gamemd equivalent
-                            // UNCHECKED. See `contending_house_count`.
-                            || contending_houses > 1)
-                })
+        self.houses.iter().any(|(&owner, house)| {
+            house.is_human && self.ready_outcome_for_owner(owner).is_some()
         })
     }
 
@@ -4533,7 +4539,12 @@ impl Simulation {
             .map(|(k, _)| *k)
             .collect();
 
-        if alive.len() == 1 {
+        // VERA-internal developer policy, gamemd equivalent UNCHECKED: an
+        // authored solo sandbox must not create a victory state or EVA merely
+        // for being the only contender. Keep accepted explicit outcomes and
+        // their timers below independent of this automatic-creation gate.
+        let automatic_victory_allowed = self.contending_house_count() > 1;
+        if automatic_victory_allowed && alive.len() == 1 {
             // Last player standing.
             if let Some(h) = self.houses.get_mut(&alive[0]) {
                 if h.flag_to_win(outcome_tick, savour_frames) {
@@ -4543,7 +4554,7 @@ impl Simulation {
                     });
                 }
             }
-        } else if !alive.is_empty() {
+        } else if automatic_victory_allowed && !alive.is_empty() {
             // O(n^2) mutual-alliance check. Native alliance is directional — each
             // house owns its own ally bits — and the game-over scan requires BOTH
             // houses of a pair to name the other, so a one-way alliance must not end
@@ -4585,15 +4596,16 @@ impl Simulation {
     ///
     /// MultiplayPassive houses (stock Civilian/JP) are roster filler: they are
     /// never defeated and never counted alive, so they must not make a
-    /// single-player board look contested. Callers use `> 1` to mean "a real
-    /// opponent exists" before announcing a victory that would otherwise be
-    /// true from tick 0.
+    /// solo developer board look contested. Automatic victory creation uses
+    /// `> 1`; accepted explicit outcomes never depend on this count.
     ///
     /// VERA-internal: the gamemd equivalent is UNCHECKED. Neither the native
     /// defeat block nor its all-allied scan has an "is there a real opponent"
-    /// precondition — this exists only to keep zero-opponent sandbox and dev
-    /// maps, which the retail game cannot launch, from declaring instant
-    /// victory. The passive filter it counts with IS gamemd-derived.
+    /// precondition. Native campaign instead skips automatic empty-house defeat
+    /// at 0x004F8E86..0x004F8F87 when SessionType is zero. This developer Battle
+    /// sandbox policy is not that campaign lifecycle. The passive filter is
+    /// gamemd-derived; the count includes defeated opponents so an ordinary
+    /// last-player victory remains valid.
     pub(crate) fn contending_house_count(&self) -> usize {
         self.houses
             .values()

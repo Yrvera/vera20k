@@ -335,9 +335,8 @@ impl App {
                 .sim_runtime
                 .as_ref()
                 .map(|rt| &rt.simulation)
-                .and_then(|sim| sim.houses.get(&owner))
-                .and_then(|house| house.outcome_state)
-                .is_some_and(|outcome| outcome.exit_ready)
+                .and_then(|sim| sim.ready_outcome_for_owner(owner))
+                .is_some()
         });
         let executed_owner = state
             .match_state
