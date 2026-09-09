@@ -1,4 +1,4 @@
-"""Strict v1 evidence-leaf validation for tactical certification.
+"""Strict v2 evidence-leaf validation for tactical certification.
 
 This module interprets only the immutable manifest objects emitted by the
 tactical child. Process launch, filesystem publication, and report ownership
@@ -44,18 +44,11 @@ STABLE_KEYS = (
     "known_residuals",
 )
 RUN_KEYS = ("process_id", "elapsed_ms", "render_frames", "exact_steps")
-KNOWN_RESIDUALS = [
-    (
-        "The radar animation is still constructed from the current Allied "
-        "source; this prerequisite records that production fact and does not "
-        "exactify the parent radar owner."
-    ),
-    "Native pixels and whole-game parity remain unverified.",
-]
+KNOWN_RESIDUALS = ["Native pixels and whole-game parity remain unverified."]
 ALLOWED_SURFACE_FORMATS = frozenset(("Bgra8Unorm", "Bgra8UnormSrgb"))
 PRODUCTION_PROGRESS_INTERVALS = 53
 STOCK_DEPLOY_FACING = 0x80
-# Merged retail art.ini/artmd.ini Foundation= values for the fixed v1 types.
+# Stock Foundation= values for the fixed profile types.
 STOCK_FOUNDATIONS = {
     "NACNST": (4, 4),
     "YACNST": (4, 4),
@@ -73,7 +66,6 @@ class EnvironmentEvidence(Protocol):
     executable: FileSnapshot
     archive: FileSnapshot
     font: FileSnapshot
-    layout: FileSnapshot
 
 
 def _exact_object(value: Any, keys: tuple[str, ...], field: str) -> Mapping[str, Any]:
@@ -156,7 +148,7 @@ def _require_inputs(
 ) -> None:
     inputs = _exact_object(
         stable.get("inputs"),
-        ("config", "executable", "archive", "font", "sidebar_layout"),
+        ("config", "executable", "archive", "font"),
         "evidence.stable.inputs",
     )
     for key, snapshot in (
@@ -164,7 +156,6 @@ def _require_inputs(
         ("executable", environment.executable),
         ("archive", environment.archive),
         ("font", environment.font),
-        ("sidebar_layout", environment.layout),
     ):
         require_identity(
             inputs[key],
@@ -264,7 +255,6 @@ def _require_graphics(
             "app_ui_scale",
             "egui_pixels_per_point",
             "selected_font",
-            "sidebar_layout",
         ),
         field,
     )
@@ -305,12 +295,7 @@ def _require_graphics(
         environment.font,
         extra={},
     )
-    require_identity(
-        graphics["sidebar_layout"],
-        f"{field}.sidebar_layout",
-        environment.layout,
-        extra={},
-    )
+
 
 
 def _require_contract(
@@ -373,40 +358,36 @@ def _require_startup(stable: Mapping[str, Any], profile: ValidatedProfile) -> No
     )
 
 
-def _expected_ledger(profile: ValidatedProfile, *, completed: bool) -> dict[str, int | None]:
-    expected = require_object(
-        profile.budgets["expected_ledger"],
-        "budgets.expected_ledger",
-    )
-    capture_tick = require_int(expected["capture"], "budgets.expected_ledger.capture")
-    return {
-        "rust_l0_tick": 0,
-        "yard_active_tick": expected["yard_active"],
-        "power_ready_tick": expected["power_ready"],
-        "power_active_tick": expected["power_active"],
-        "refinery_ready_tick": expected["refinery_ready"],
-        "refinery_active_tick": expected["refinery_active"],
-        "radar_ready_tick": expected["radar_ready"],
-        "radar_active_tick": expected["radar_active"],
-        "radar_online_tick": expected["radar_online"],
-        "second_readiness_tick": expected["second_readiness"],
-        "capture_requested_tick": capture_tick,
-        "capture_complete_tick": capture_tick if completed else None,
-    }
-
-
 def _require_observed_ledger(
-    value: Any,
-    field: str,
-    profile: ValidatedProfile,
-    *,
-    completed: bool,
+    value: Any, field: str, profile: ValidatedProfile, *, completed: bool,
 ) -> Mapping[str, Any]:
-    expected = _expected_ledger(profile, completed=completed)
-    ledger = _exact_object(value, tuple(expected), field)
-    for key, expected_value in expected.items():
-        require_value(ledger[key], expected_value, f"{field}.{key}")
+    expected = profile.budgets["expected_ledger"]
+    fixed = {"rust_l0_tick": 0, **{f"{key}_tick": value for key, value in expected.items()}}
+    ledger = _exact_object(value, (*fixed, "radar_online_tick", "second_readiness_tick",
+                                  "capture_requested_tick", "capture_complete_tick"), field)
+    for key, value in fixed.items():
+        require_value(ledger[key], value, f"{field}.{key}")
+    online = _nonnegative_int(ledger["radar_online_tick"], f"{field}.radar_online_tick")
+    active = expected["radar_active"]
+    opening_cap = profile.budgets["stages"][7]["tick_cap"]
+    if not active <= online <= active + opening_cap:
+        raise ValidationError(f"{field}.radar_online_tick is outside the bounded opening interval")
+    second = online + 1
+    capture = second + profile.capture["warm_frames"]
+    if capture > profile.budgets["overall_tick_cap"]:
+        raise ValidationError(f"{field}.capture_requested_tick exceeds overall tick cap")
+    require_value(ledger["second_readiness_tick"], second, f"{field}.second_readiness_tick")
+    require_value(ledger["capture_requested_tick"], capture, f"{field}.capture_requested_tick")
+    require_value(ledger["capture_complete_tick"], capture if completed else None,
+                  f"{field}.capture_complete_tick")
     return ledger
+
+
+def _observed_capture_tick(stable: Mapping[str, Any], profile: ValidatedProfile) -> int:
+    production = require_object(stable["production"], "evidence.stable.production")
+    ledger = _require_observed_ledger(production["observed_ledger"],
+        "evidence.stable.production.observed_ledger", profile, completed=True)
+    return ledger["capture_complete_tick"]
 
 
 def _require_step_receipt(
@@ -611,7 +592,7 @@ def _require_production(
         profile.budgets["expected_ledger"],
         "budgets.expected_ledger",
     )
-    capture_tick = require_int(expected_ledger["capture"], "budgets.expected_ledger.capture")
+    capture_tick = _observed_capture_tick(stable, profile)
     sim_tick_ms = require_int(capture["sim_tick_ms"], "capture.sim_tick_ms")
     require_value(production["exact_step_count"], capture_tick, f"{field}.exact_step_count")
     first = _require_step_receipt(
@@ -1193,15 +1174,18 @@ def _require_render(
         ("minimap", "radar_animation", "viewport_rect"),
         f"{field}.production_render.instance_counts",
     )
-    # This sealed half-scale view emits one sampled viewport edge. Production
-    # native_radar_outline_instances filters each of the four source edges by
-    # nearest-scaled pixel coverage and sidebar clipping; four is not invariant.
-    for key, expected in (("minimap", 1), ("radar_animation", 1), ("viewport_rect", 1)):
-        require_value(
-            counts[key],
-            expected,
-            f"{field}.production_render.instance_counts.{key}",
-        )
+    require_value(aperture, {"x": 648.0, "y": 49.0, "width": 140.0, "height": 108.0},
+                  f"{field}.production_render.minimap_aperture")
+    require_value(panel, {"x": 632.0, "y": 0.0, "width": 168.0, "height": 600.0},
+                  f"{field}.production_render.sidebar_panel")
+    require_value(insets, [16, 1, 12, 1], f"{field}.production_render.radar_content_insets")
+    for key in ("minimap", "radar_animation"):
+        require_value(counts[key], 1, f"{field}.production_render.instance_counts.{key}")
+    # Up to four native rectangle edges survive actual camera/source clipping.
+    # This observation alone cannot certify their pixel positions or coverage.
+    edges = require_int(counts["viewport_rect"], f"{field}.production_render.instance_counts.viewport_rect")
+    if not 1 <= edges <= 4:
+        raise ValidationError(f"{field}.production_render.instance_counts.viewport_rect must be between 1 and 4")
 
     source_field = f"{field}.radar_animation_source"
     source = _exact_object(
@@ -1219,16 +1203,18 @@ def _require_render(
         source_field,
     )
     for key in ("actual_theme", "requested_theme", "atlas_theme"):
-        require_value(source[key], "Allied", f"{source_field}.{key}")
-    require_value(source["parent_archive"], "sidec01.mix", f"{source_field}.parent_archive")
+        require_value(source[key], expected_theme, f"{source_field}.{key}")
+    parent_archive = "sidec02.mix" if expected_theme == "Soviet" else "sidec02md.mix"
+    require_value(source["parent_archive"], parent_archive, f"{source_field}.parent_archive")
     _require_asset(
         source["radar"],
         f"{source_field}.radar",
-        logical_name="radar.shp",
-        source_archive="sidec01.mix",
+        logical_name="radar.shp" if expected_theme == "Soviet" else "radary.shp",
+        source_archive=parent_archive,
     )
     backgrounds = require_array(source["backgrounds"], f"{source_field}.backgrounds")
-    expected_backgrounds = ("bkgdlg.shp", "bkgdmd.shp", "bkgdsm.shp")
+    expected_backgrounds = (("bkgdlg.shp", "bkgdmd.shp", "bkgdsm.shp") if expected_theme == "Soviet"
+                            else ("bkgdlgy.shp", "bkgdmdy.shp", "bkgdsmy.shp"))
     if len(backgrounds) != len(expected_backgrounds):
         raise ValidationError(f"{source_field}.backgrounds has the wrong length")
     for index, logical_name in enumerate(expected_backgrounds):
@@ -1236,19 +1222,19 @@ def _require_render(
             backgrounds[index],
             f"{source_field}.backgrounds[{index}]",
             logical_name=logical_name,
-            source_archive="sidec01.mix",
+            source_archive=parent_archive,
         )
     _require_asset(
         source["generic_palette"],
         f"{source_field}.generic_palette",
         logical_name="SIDEBAR.PAL",
-        source_archive="sidec01.mix",
+        source_archive="sidec02.mix",
     )
     _require_asset(
         source["theme_palette"],
         f"{source_field}.theme_palette",
-        logical_name="sidebar.pal",
-        source_archive="sidec01.mix",
+        logical_name="sidebar.pal" if expected_theme == "Soviet" else "radaryuri.pal",
+        source_archive=parent_archive,
     )
 
     sidebar = _exact_object(
@@ -1286,7 +1272,11 @@ def _require_render(
         "side3_y",
     ):
         require_number(layout[key], f"{field}.sidebar.layout.{key}")
-    _positive_int(layout["side2_tile_count"], f"{field}.sidebar.layout.side2_tile_count")
+    require_value(layout, {
+        "sidebar_x": 632.0, "radar_y": 48.0, "side1_y": 158.0, "tabs_y": 197.0,
+        "cameo_grid_top": 227.0, "cameo_grid_bottom": 527.0, "side3_y": 527.0,
+        "side2_tile_count": 6,
+    }, f"{field}.sidebar.layout")
     return render
 
 
@@ -1302,11 +1292,7 @@ def _require_final_fingerprint(
         ("core", "cursor", "power", "radar", "render", "script", "wallet"),
         field,
     )
-    expected_ledger = require_object(
-        profile.budgets["expected_ledger"],
-        "budgets.expected_ledger",
-    )
-    capture_tick = require_int(expected_ledger["capture"], "budgets.expected_ledger.capture")
+    capture_tick = _observed_capture_tick(stable, profile)
     sim_tick_ms = require_int(profile.capture["sim_tick_ms"], "capture.sim_tick_ms")
     core = _exact_object(
         fingerprint["core"],
@@ -1375,6 +1361,11 @@ def _require_final_fingerprint(
         profile,
         completed=False,
     )
+    # The fingerprint is frozen before readback completion, but it must describe
+    # the same observed transition/capture as the completed production ledger.
+    require_value(script["observed_ledger"],
+                  {**production["observed_ledger"], "capture_complete_tick": None},
+                  f"{field}.script.observed_ledger")
 
     wallet = _exact_object(
         fingerprint["wallet"],
@@ -1403,7 +1394,7 @@ def require_stable_evidence(
     contract: ValidatedContract,
     environment: EnvironmentEvidence,
 ) -> None:
-    """Require the full child-emitted stable v1 evidence contract."""
+    """Require the full child-emitted stable v2 evidence contract."""
 
     require_exact_keys(stable, STABLE_KEYS, "evidence.stable")
     _require_inputs(stable, environment)
@@ -1419,18 +1410,14 @@ def require_stable_evidence(
     require_value(stable["known_residuals"], KNOWN_RESIDUALS, "evidence.stable.known_residuals")
 
 
-def require_run_evidence(value: Any, profile: ValidatedProfile) -> None:
+def require_run_evidence(value: Any, profile: ValidatedProfile, *, stable: Mapping[str, Any]) -> None:
     """Require typed completion counters while keeping run values non-repeatable."""
 
     field = "evidence.run"
     run = _exact_object(value, RUN_KEYS, field)
     _positive_int(run["process_id"], f"{field}.process_id")
     _nonnegative_int(run["elapsed_ms"], f"{field}.elapsed_ms")
-    expected = require_object(
-        profile.budgets["expected_ledger"],
-        "budgets.expected_ledger",
-    )
-    capture_tick = require_int(expected["capture"], "budgets.expected_ledger.capture")
+    capture_tick = _observed_capture_tick(stable, profile)
     require_value(run["exact_steps"], capture_tick, f"{field}.exact_steps")
     require_value(run["render_frames"], capture_tick + 1, f"{field}.render_frames")
 

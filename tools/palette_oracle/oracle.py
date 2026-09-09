@@ -309,7 +309,11 @@ def main():
     report = {'exe': EXE.name, 'sha256': EXPECTED, 'unicorn': __import__('unicorn').__version__, 'x87_control_word': '0x0e7f', 'cached_x87_control_word': hex(struct.unpack_from('<I', IMAGE, 0x822d80-BASE)[0]), 'scope': 'isolated original x86 table/scanline execution; RGB565 only; no retail scene capture', 'tables': [], 'scanlines': []}
     scales = base_scales()
     ground = ground_level_samples()
-    (OUT / 'ground-level.json').write_text(json.dumps(ground, indent=2) + '\n')
+    # This original-output golden is pinned with CRLF bytes in provenance.json.
+    # Emit the same bytes on every platform, independent of text-mode newlines.
+    (OUT / 'ground-level.json').write_bytes(
+        (json.dumps(ground, indent=2) + '\n').replace('\n', '\r\n').encode('utf-8')
+    )
     report['ground_level'] = ground
     cells, cell_count = cell_light_samples()
     (OUT / 'cell-light-finalization.bin').write_bytes(cells)

@@ -20,10 +20,10 @@ pub(crate) use super::integrity::{
     validate_new_output_directory,
 };
 
-pub(crate) const PROFILE_SCHEMA: &str = "vera20k.tactical-profile.v1";
-pub(crate) const CONTRACT_SCHEMA: &str = "vera20k.tactical-capture-contract.v1";
-pub(crate) const CHECKPOINT_RADAR_ONLINE_V1: &str = "radar-online-v1";
-pub(crate) const EMBEDDED_CONTRACT: &str = include_str!("contract.v1.json");
+pub(crate) const PROFILE_SCHEMA: &str = "vera20k.tactical-profile.v2";
+pub(crate) const CONTRACT_SCHEMA: &str = "vera20k.tactical-capture-contract.v2";
+pub(crate) const CHECKPOINT_RADAR_ONLINE_V2: &str = "radar-online-v2";
+pub(crate) const EMBEDDED_CONTRACT: &str = include_str!("contract.v2.json");
 pub(crate) const ABSOLUTE_TIMEOUT_MAX_SECONDS: u32 = 900;
 pub(crate) const FRAME_FILE_NAME: &str = "frame.bgra";
 pub(crate) const MANIFEST_FILE_NAME: &str = "capture.json";
@@ -34,10 +34,8 @@ const EXPECTED_ENTRY_SHA256: &str =
     "d751dce7cd3611077e9228c33235f39c71681fff6ac08ca1f716d963ad6ce070";
 const EXPECTED_FONT_SHA256: &str =
     "6a8481fe107ee547893c018b13dba291c2020bec3de5da6525d9ac09f6bc2105";
-const EXPECTED_LAYOUT_SHA256: &str =
-    "27fe2405990000468b1d6b9f4316d8b6104d72c82bb3386a9942332ba323316c";
 
-const ENVIRONMENT_DENYLIST: [&str; 16] = [
+const ENVIRONMENT_DENYLIST: [&str; 17] = [
     "RA2_QUICKPLAY",
     "RA2_DEV_SKIRMISH_SHELL",
     "RA2_DEBUG_SPAWN_UNITS",
@@ -54,6 +52,7 @@ const ENVIRONMENT_DENYLIST: [&str; 16] = [
     "RA2_QUEUE_FRAME_MS",
     "RA2_DIR",
     "RA2_DUMP_SHROUD",
+    "RA2_DEBUG_DEPTH_VIEW",
 ];
 
 const STAGE_NAMES: [&str; 9] = [
@@ -67,7 +66,7 @@ const STAGE_NAMES: [&str; 9] = [
     "radar_online",
     "readiness_and_warm_frames",
 ];
-const STAGE_TICK_CAPS: [u32; 9] = [48, 640, 48, 2048, 48, 1024, 48, 96, 18];
+const STAGE_TICK_CAPS: [u32; 9] = [48, 640, 48, 2048, 48, 1024, 48, 4096, 18];
 const STAGE_WALL_CAPS: [u32; 9] = [15, 90, 15, 270, 15, 140, 15, 20, 10];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -268,30 +267,18 @@ pub(crate) struct ExpectedLedger {
     pub(crate) refinery_active: u64,
     pub(crate) radar_ready: u64,
     pub(crate) radar_active: u64,
-    pub(crate) radar_online: u64,
-    pub(crate) second_readiness: u64,
-    pub(crate) capture: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TacticalPixelInputs {
     pub(crate) font: AbsolutePixelFile,
-    pub(crate) sidebar_layout: RelativePixelFile,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AbsolutePixelFile {
     pub(crate) path: PathBuf,
-    pub(crate) byte_length: u64,
-    pub(crate) sha256: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RelativePixelFile {
-    pub(crate) relative_path: PathBuf,
     pub(crate) byte_length: u64,
     pub(crate) sha256: String,
 }
@@ -318,7 +305,12 @@ fn require_lower_sha256(value: &str, label: &str) -> Result<()> {
 impl TacticalCaptureProfile {
     pub(crate) fn load_strict(path: &Path) -> Result<SealedJsonFile<Self>> {
         let (bytes, digest) = read_stable_regular_bytes(path, "tactical profile")?;
-        let value: Self = parse_strict_json(&bytes, "tactical profile")?;
+        let document: serde_json::Value = parse_strict_json(&bytes, "tactical profile")?;
+        ensure!(
+            document["schema_version"] == PROFILE_SCHEMA,
+            "unsupported profile schema; current capture requires tactical-profile.v2 (native 1x sidebar); retain v1 only as historical evidence"
+        );
+        let value: Self = serde_json::from_value(document)?;
         value.validate()?;
         Ok(SealedJsonFile {
             path: path.to_path_buf(),
@@ -332,17 +324,17 @@ impl TacticalCaptureProfile {
     pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             self.schema_version == PROFILE_SCHEMA,
-            "unsupported profile schema"
+            "unsupported profile schema; current capture requires tactical-profile.v2 (native 1x sidebar); retain v1 only as historical evidence"
         );
         ensure!(
-            self.checkpoint == CHECKPOINT_RADAR_ONLINE_V1,
+            self.checkpoint == CHECKPOINT_RADAR_ONLINE_V2,
             "unsupported tactical checkpoint {:?}",
             self.checkpoint
         );
         ensure!(
             matches!(
                 self.profile_id.as_str(),
-                "soviet-radar-online-v1" | "yuri-radar-online-v1"
+                "soviet-radar-online-v2" | "yuri-radar-online-v2"
             ),
             "unsupported tactical profile {:?}",
             self.profile_id
@@ -364,7 +356,7 @@ impl TacticalCaptureProfile {
     }
 
     fn is_soviet(&self) -> bool {
-        self.profile_id == "soviet-radar-online-v1"
+        self.profile_id == "soviet-radar-online-v2"
     }
 
     fn validate_fixture(&self) -> Result<()> {
@@ -451,7 +443,7 @@ impl TacticalCaptureProfile {
                 && capture.internal_height == 600
                 && capture.output_width == 800
                 && capture.output_height == 600,
-            "v1 supports only an 800x600 internal/final surface"
+            "v2 supports only an 800x600 internal/final surface"
         );
         ensure!(
             capture.surface_formats.len() == 2
@@ -467,7 +459,10 @@ impl TacticalCaptureProfile {
             capture.exact_step_hz == 45 && capture.sim_tick_ms == 22,
             "capture exact-step convention differs"
         );
-        ensure!(capture.app_ui_scale == 0.5, "app UI scale must be 0.5");
+        ensure!(
+            capture.app_ui_scale == 1.0,
+            "current native sidebar requires app UI scale 1.0; half-scale profiles are historical"
+        );
         ensure!(
             capture.post_load_cursor.x == 316 && capture.post_load_cursor.y == 284,
             "post-load cursor must be tactical-interior center"
@@ -509,11 +504,11 @@ impl TacticalCaptureProfile {
                 stage.name == STAGE_NAMES[index]
                     && stage.tick_cap == STAGE_TICK_CAPS[index]
                     && stage.wall_seconds == STAGE_WALL_CAPS[index],
-                "stage budget {index} differs from tactical v1"
+                "stage budget {index} differs from tactical v2"
             );
         }
         ensure!(
-            self.budgets.overall_tick_cap == 4096
+            self.budgets.overall_tick_cap == 8192
                 && self.budgets.post_l0_timeout_seconds == 600
                 && self.budgets.child_timeout_seconds == 720
                 && self.budgets.absolute_timeout_max_seconds == ABSOLUTE_TIMEOUT_MAX_SECONDS,
@@ -521,12 +516,9 @@ impl TacticalCaptureProfile {
         );
         // Current Rust production timing: factory enqueue is observed at N+1,
         // first progress at N+2, then 53 intervals at the resolved rate.
-        // Radar authority starts during buildup on placement-result tick 3599.
-        // The retained Allied radar.shp (ra2.mix -> sidec01.mix, 33 frames)
-        // opens in ceil(33 * 64 / 22) samples, including that first frame:
-        // 3599 + 96 - 1 = 3694. See power_system::has_active_radar,
-        // presentation::building_anim::update_radar_state and RadarAnimState::tick.
-        // These are Rust regression expectations, not native parity goldens.
+        // Radar availability can begin during buildup, but its rendered Online
+        // transition uses wall time. Only deterministic construction milestones
+        // belong in this fixed ledger; the script records bounded readiness.
         let ledger = &self.budgets.expected_ledger;
         ensure!(
             ledger.yard_active == 32
@@ -535,10 +527,7 @@ impl TacticalCaptureProfile {
                 && ledger.refinery_ready == 2611
                 && ledger.refinery_active == 2642
                 && ledger.radar_ready == 3598
-                && ledger.radar_active == 3629
-                && ledger.radar_online == 3694
-                && ledger.second_readiness == 3695
-                && ledger.capture == 3711,
+                && ledger.radar_active == 3629,
             "expected current-production ledger differs"
         );
         Ok(())
@@ -548,23 +537,13 @@ impl TacticalCaptureProfile {
         let font = &self.pixel_inputs.font;
         ensure!(
             font.path == Path::new(r"C:\Windows\Fonts\verdana.ttf"),
-            "font path differs from the sealed tactical v1 pixel input"
+            "font path differs from the sealed tactical v2 pixel input"
         );
         ensure!(
             font.byte_length == 243_304 && font.sha256 == EXPECTED_FONT_SHA256,
             "font identity differs"
         );
-        let layout = &self.pixel_inputs.sidebar_layout;
-        ensure!(
-            layout.relative_path == Path::new("src/sidebar/sidebar_layout.ron"),
-            "sidebar layout path differs from the sealed tactical v1 pixel input"
-        );
-        ensure!(
-            layout.byte_length == 721 && layout.sha256 == EXPECTED_LAYOUT_SHA256,
-            "sidebar layout identity differs"
-        );
         require_lower_sha256(&font.sha256, "font")?;
-        require_lower_sha256(&layout.sha256, "sidebar layout")?;
         Ok(())
     }
 
@@ -669,7 +648,7 @@ impl TacticalCaptureContract {
         ensure!(
             self.environment_denylist.as_slice()
                 == ENVIRONMENT_DENYLIST.map(str::to_owned).as_slice(),
-            "environment denylist differs from tactical v1"
+            "environment denylist differs from tactical v2"
         );
         let unique: BTreeSet<&str> = self
             .environment_denylist
@@ -762,7 +741,7 @@ fn validate_options(options: &TacticalOptions) -> Result<()> {
             && !options.multi_engineer
             && !options.harvester_truce
             && options.ally_change_allowed,
-        "launch options differ from tactical v1"
+        "launch options differ from tactical v2"
     );
     Ok(())
 }
@@ -789,7 +768,7 @@ mod tests {
         assert!(parse_strict_json::<TacticalCaptureContract>(duplicate, "test").is_err());
 
         let boolean_timeout = br#"{
-            "schema_version":"vera20k.tactical-capture-contract.v1",
+            "schema_version":"vera20k.tactical-capture-contract.v2",
             "absolute_max_child_timeout_seconds":true,
             "environment_denylist":[]
         }"#;
@@ -803,11 +782,11 @@ mod tests {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         for (file_name, expected_country, expected_harvester) in [
             (
-                "soviet-radar-online-v1.json",
+                "soviet-radar-online-v2.json",
                 LaunchCountry::Russia,
                 Some("HARV"),
             ),
-            ("yuri-radar-online-v1.json", LaunchCountry::Yuri, None),
+            ("yuri-radar-online-v2.json", LaunchCountry::Yuri, None),
         ] {
             let path = root
                 .join("tools/tactical_certification/profiles")
@@ -835,10 +814,57 @@ mod tests {
     }
 
     #[test]
-    fn tactical_ui_scale_and_cursor_are_code_derived_fixture_values() {
+    fn current_profiles_match_compiled_native_geometry_and_reject_old_scale() {
+        use crate::sidebar::{
+            SidebarChromeLayoutSpec, SidebarTheme, compute_layout_with_spec,
+            radar_minimap_rect_with_spec,
+        };
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        for (side, theme) in [
+            ("soviet", SidebarTheme::Soviet),
+            ("yuri", SidebarTheme::Yuri),
+        ] {
+            let directory = root.join("tools/tactical_certification/profiles");
+            let old = TacticalCaptureProfile::load_strict(
+                &directory.join(format!("{side}-radar-online-v1.json")),
+            )
+            .unwrap_err();
+            assert!(old.to_string().contains("v1 only as historical"));
+            let mut profile = TacticalCaptureProfile::load_strict(
+                &directory.join(format!("{side}-radar-online-v2.json")),
+            )
+            .unwrap()
+            .value;
+            assert_eq!(profile.capture.app_ui_scale, 1.0);
+            let spec = SidebarChromeLayoutSpec::for_theme(theme);
+            let layout = compute_layout_with_spec(spec, 800.0, 600.0, 0);
+            assert_eq!(
+                (
+                    layout.sidebar_x,
+                    layout.side1_y,
+                    layout.cameo_grid_top,
+                    layout.side3_y,
+                    layout.side2_tile_count
+                ),
+                (632.0, 158.0, 227.0, 527.0, 6)
+            );
+            let aperture = radar_minimap_rect_with_spec(800.0, spec);
+            assert_eq!(
+                (aperture.x, aperture.y, aperture.w, aperture.h),
+                (648.0, 49.0, 140.0, 108.0)
+            );
+            profile.capture.app_ui_scale = 0.5;
+            assert!(
+                profile
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("half-scale profiles are historical")
+            );
+        }
         let (width, height) = crate::app::input::camera::tactical_viewport_size_px(800, 600);
-        // Map admission centers the cursor in the native tactical rectangle;
-        // app UI scaling does not rescale its right/bottom exclusions.
+        // UI artwork no longer scales; native tactical exclusions remain 168x32.
+        assert_eq!((width, height), (632, 568));
         assert_eq!((width / 2, height / 2), (316, 284));
     }
 }

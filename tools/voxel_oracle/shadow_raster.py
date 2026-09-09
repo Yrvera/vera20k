@@ -3,7 +3,6 @@
 The renderer's inputs are immutable file bytes and a caller matrix. Only file
 vtable IO and allocation are substituted; original render instructions run.
 """
-from pathlib import Path
 import struct
 
 from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE
@@ -35,9 +34,8 @@ def render_shadow_native(vxl_bytes, hva_bytes, vpl_bytes, draw_matrix, body_pixe
         u.mem_write(VTABLE + offset, pack(CALLBACK + offset))
     heap = BASE + 0x10000
     data, pos = b'', 0
-    substitutions, params = [], []
-    writes, zero_writes, zero_erases = 0, 0, 0
-    visited, uninitialized = set(), set()
+    substitutions = []
+    uninitialized = set()
     initialized = bytearray(oracle.IMAGE_SIZE)
     for rva, raw, size, _vsz, _flags in oracle._sections(oracle.image_bytes()):
         initialized[rva:rva + size] = b'\1' * size
@@ -70,24 +68,8 @@ def render_shadow_native(vxl_bytes, hva_bytes, vpl_bytes, draw_matrix, body_pixe
         u.reg_write(UC_X86_REG_EIP, read32(sp))
 
     def code(_u, address, _size, _userdata):
-        nonlocal heap, pos, writes, zero_writes, zero_erases
-        visited.add(address)
+        nonlocal heap, pos
         sp = u.reg_read(UC_X86_REG_ESP)
-        if address in (0x7dfab6, 0x7dfbc8):
-            writes += 1
-            if u.reg_read(UC_X86_REG_EDX) & 255 == 0:
-                zero_writes += 1
-                destination = 0xb2ff78 + u.reg_read(UC_X86_REG_EAX)
-                zero_erases += int(bytes(u.mem_read(destination, 1))[0] != 0)
-        if address in (0x7df9c0, 0x7dfae0):
-            raw = bytes(u.mem_read(read32(sp + 4), 0x34))
-            params.append({
-                'entry': address,
-                'column_steps': list(struct.unpack_from('<3i', raw, 12)),
-                'origin_xy': list(struct.unpack_from('<2H', raw, 24)),
-                'axis_xy': [list(struct.unpack_from('<2h', raw, offset)) for offset in (30, 36, 42)],
-                'sizes': list(raw[48:51]),
-            })
         if address == 0x7c8e17:
             count = read32(sp + 4)
             allocation = heap

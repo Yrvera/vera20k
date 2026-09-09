@@ -108,7 +108,7 @@ mod tests {
     }
     #[test]
     fn original_800_by_600_command_bar_layout() {
-        // Original complete72FC60, retail canvas headers: parent buttonbar-proof/layout-native.json.
+        // Original complete72FC60, retail canvas headers: tools/sidebar_oracle/command_bar/layout-native.json.
         let layout =
             CommandBarLayout::new([800, 600], 168, [28, 32], [52, 32], [28, 32], true).unwrap();
         assert_eq!(layout.tile_count, 11);

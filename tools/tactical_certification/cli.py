@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m tools.tactical_certification",
         description=(
-            "Validate and run immutable VERA20k radar-online-v1 tactical captures."
+            "Validate and run immutable VERA20k radar-online-v2 tactical captures."
         ),
     )
     commands = parser.add_subparsers(dest="command_name", required=True)
