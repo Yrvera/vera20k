@@ -86,6 +86,7 @@ pub(crate) fn build_sidebar_view(
         sell_button_size,
         None,
         None,
+        [None; 2],
     )
 }
 
@@ -111,6 +112,7 @@ pub(crate) fn build_sidebar_view_with_spec(
     sell_button_size: Option<[f32; 2]>,
     scroll_down_button_size: Option<[f32; 2]>,
     scroll_up_button_size: Option<[f32; 2]>,
+    top_button_sizes: [Option<[f32; 2]>; 2],
 ) -> SidebarView {
     // Collect items first to know how many rows we need.
     let selected_category = active_tab.category();
@@ -126,7 +128,7 @@ pub(crate) fn build_sidebar_view_with_spec(
     let total_items = all_entries.len();
     let total_rows = (total_items + CAMEO_COLUMNS - 1) / CAMEO_COLUMNS;
 
-    // Compute layout with actual item row count — sidebar height adapts to content.
+    // Native screen capacity is independent of the item count.
     let layout = compute_layout_with_spec(layout_spec, screen_w, screen_h, total_rows);
     let panel_rect = Rect {
         x: layout.sidebar_x,
@@ -142,37 +144,23 @@ pub(crate) fn build_sidebar_view_with_spec(
     };
     let low_power = power_produced < power_drained;
 
-    // Tab buttons bottom-align to the 16px strip so the extra button height
-    // overhangs upward into side1 instead of downward into the cameo grid.
-    let tab_count = SidebarTab::all().len();
-    let tab_w = tab_button_size.map(|s| s[0]).unwrap_or(28.0);
-    let tab_h = tab_button_size.map(|s| s[1]).unwrap_or(27.0);
-    let tab_total = tab_w * tab_count as f32;
-    let tab_start_x = layout.sidebar_x + (layout_spec.sidebar_width - tab_total) * 0.5;
-    let tab_y = layout.cameo_grid_top - tab_h;
+    // 6ABD30 positions the four SBGadgets with the side-specific tab pitch.
+    // Their actual SHP canvas determines size (`69DE00`), not the pitch.
+    let [tab_w, tab_h] = tab_button_size.unwrap_or([0.0, 0.0]);
     let tabs: Vec<SidebarTabButton> = SidebarTab::all()
         .into_iter()
         .enumerate()
-        .map(|(idx, tab)| {
-            // Per-tab X nudges: tab00 shifted left 2px, tab03 shifted right 2px.
-            let nudge = match idx {
-                0 => -2.0,
-                1 => -1.0,
-                3 => 2.0,
-                _ => 0.0,
-            };
-            SidebarTabButton {
-                tab,
-                rect: Rect {
-                    x: tab_start_x + idx as f32 * tab_w + nudge,
-                    y: tab_y,
-                    w: tab_w,
-                    h: tab_h,
-                },
-                active: tab == active_tab,
-                disabled: gadget_state.tab_disabled[idx],
-                frame_index: gadget_state.tab_frame(idx, tab == active_tab),
-            }
+        .map(|(idx, tab)| SidebarTabButton {
+            tab,
+            rect: Rect {
+                x: layout.sidebar_x + layout_spec.tab_x + idx as f32 * layout_spec.tab_pitch,
+                y: layout.tabs_y,
+                w: tab_w,
+                h: tab_h,
+            },
+            active: tab == active_tab,
+            disabled: gadget_state.tab_disabled[idx],
+            frame_index: gadget_state.tab_frame(idx, tab == active_tab),
         })
         .collect();
 
@@ -214,19 +202,43 @@ pub(crate) fn build_sidebar_view_with_spec(
     };
     let (scroll_down_rect, scroll_up_rect) = scroll_button_rects(
         &layout,
-        layout_spec.sidebar_width,
+        layout_spec,
         scroll_down_button_size,
         scroll_up_button_size,
     );
+    // Ordinary local-player branch of 6A6610: both arrows share capacity
+    // availability, independent of the current end position.
+    let scroll_disabled = total_items <= layout.side2_tile_count * CAMEO_COLUMNS;
+    let top_buttons = std::array::from_fn(|i| {
+        let [w, h] = top_button_sizes[i].unwrap_or([0.0, 0.0]);
+        SidebarScrollButton {
+            rect: Rect {
+                x: layout.sidebar_x + layout_spec.top_button_x + 72.0 * i as f32,
+                y: layout_spec.top_button_y,
+                w,
+                h,
+            },
+            disabled: false,
+            frame_index: u8::from(gadget_state.top_pressed[i]),
+        }
+    });
     let scroll_down_button = SidebarScrollButton {
         rect: scroll_down_rect,
-        disabled: false,
-        frame_index: gadget_state.scroll_down_frame(),
+        disabled: scroll_disabled,
+        frame_index: if scroll_disabled {
+            2
+        } else {
+            gadget_state.scroll_down_frame()
+        },
     };
     let scroll_up_button = SidebarScrollButton {
         rect: scroll_up_rect,
-        disabled: false,
-        frame_index: gadget_state.scroll_up_frame(),
+        disabled: scroll_disabled,
+        frame_index: if scroll_disabled {
+            2
+        } else {
+            gadget_state.scroll_up_frame()
+        },
     };
 
     // Cameo grid positioning.
@@ -277,8 +289,11 @@ pub(crate) fn build_sidebar_view_with_spec(
         .collect();
 
     // Control buttons at bottom of sidebar (below side3).
-    let btn_w = layout_spec.sidebar_width * 0.45;
-    let btn_h = layout_spec.control_button_height;
+    // VERA-local development actions have no painted controls in the
+    // ordinary retail shell. Keep their semantic projection, but give them
+    // no hit area over native ADDON artwork (dev hotkeys remain available).
+    let btn_w = 0.0;
+    let btn_h = 0.0;
     let btn_y = layout.side3_y + layout_spec.side3_height + layout_spec.control_block_top_pad;
     let btn_pad = 4.0 * (layout_spec.sidebar_width / 168.0); // scale padding proportionally
     let btn_x1 = layout.sidebar_x + btn_pad;
@@ -335,6 +350,7 @@ pub(crate) fn build_sidebar_view_with_spec(
         items,
         repair_button,
         sell_button,
+        top_buttons,
         scroll_down_button,
         scroll_up_button,
         pause_button: active_queue_category.map(|category| SidebarControlButton {
@@ -644,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_buttons_bottom_align_to_cameo_grid_top() {
+    fn tab_buttons_keep_native_gap_above_cameo_strip() {
         let view = build_sidebar_view(
             1280.0,
             960.0,
@@ -666,7 +682,8 @@ mod tests {
         );
 
         for tab in &view.tabs {
-            approx_eq(tab.rect.y + tab.rect.h, view.layout.cameo_grid_top);
+            approx_eq(tab.rect.y, 197.0);
+            approx_eq(tab.rect.y + tab.rect.h, 224.0);
         }
     }
 
@@ -700,8 +717,9 @@ mod tests {
         assert!(view.tabs[1].disabled);
         assert!(view.repair_button.active);
         assert!(view.sell_button.disabled);
-        assert_eq!(view.scroll_down_button.frame_index, 1);
-        assert_eq!(view.scroll_up_button.frame_index, 0);
+        assert_eq!(view.scroll_down_button.frame_index, 2);
+        assert_eq!(view.scroll_up_button.frame_index, 2);
+        assert!(view.scroll_down_button.disabled && view.scroll_up_button.disabled);
     }
 
     #[test]

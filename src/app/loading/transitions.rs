@@ -191,39 +191,12 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         );
     }
 
-    // Initialize radar animation from the default (Allied) sidebar chrome atlas.
-    // Uses pre-rendered radar.shp frames for the 33-frame open/close animation.
-    // Also extract content insets derived from the transparent opening in frame 0.
-    let allied_radar = state
-        .match_state
-        .match_presentation
-        .sidebar_chrome
-        .as_ref()
-        .and_then(|set| set.resolve_theme(crate::render::sidebar_chrome::SidebarTheme::Allied))
-        .map(|resolved| {
-            (
-                resolved.identity(),
-                resolved.atlas.radar_frames.clone(),
-                resolved.atlas.radar_frame_size,
-                resolved.atlas.radar_content_insets,
-            )
-        });
-    if let Some((identity, frames, [w, h], insets)) = allied_radar {
-        state.match_state.match_presentation.radar_animation_source = Some(identity);
-        state.match_state.match_presentation.radar_anim =
-            crate::render::radar_anim::RadarAnimState::new(
-                &state.renderer.gpu,
-                &state.renderer.batch_renderer,
-                frames,
-                w,
-                h,
-            );
-        state.match_state.match_presentation.radar_content_insets = Some(insets);
-    } else {
-        state.match_state.match_presentation.radar_animation_source = None;
-        state.match_state.match_presentation.radar_anim = None;
-        state.match_state.match_presentation.radar_content_insets = None;
-    }
+    // A new match discards the outgoing radar presentation. Source selection
+    // runs in the existing final sidebar refresh, after roster and the pinned
+    // local owner have been installed, so it cannot observe the prior player.
+    state.match_state.match_presentation.radar_anim = None;
+    state.match_state.match_presentation.radar_animation_source = None;
+    state.match_state.match_presentation.radar_content_insets = None;
     state.match_state.match_presentation.has_radar = false;
 
     state.match_state.match_presentation.software_cursor = result.presentation.software_cursor;

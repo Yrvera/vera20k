@@ -125,8 +125,7 @@ pub fn frame_select(disabled: bool, mode_active: bool, state: u8) -> u8 {
 /// Pick a SHP frame index for the 3-frame strip-scroll art (`r-up.shp` /
 /// `r-dn.shp`). The scroll buttons do NOT use the 5-frame tab convention —
 /// their art has exactly 3 frames: 0 = idle, 1 = pressed, 2 = disabled.
-/// There is no disabled path for the scroll pair today (the gadget driver
-/// hardwires disabled=false), so only idle/pressed are ever selected.
+/// The view applies the native `6A6610` capacity-disabled state first.
 pub fn scroll_frame_select(pressed: bool) -> u8 {
     u8::from(pressed)
 }
@@ -172,6 +171,7 @@ pub struct SidebarGadgetState {
     pub sell_pressed: bool,
     pub scroll_down_pressed: bool,
     pub scroll_up_pressed: bool,
+    pub top_pressed: [bool; 2],
 }
 
 impl SidebarGadgetState {

@@ -64,19 +64,9 @@ pub(super) fn dispatch_draw_passes(
     // the intersection of its screen rect with the tactical rect as a clip. VERA
     // composes into one target, so the scissor is what enforces it.
     //
-    // Without it the guarantee degrades to "the sidebar art happens to cover
-    // it", and coverage is per-theme, not universal. Allied and Soviet do cover:
-    // side3 is drawn at its own SHP height, not the RON's `side3_height` (which
-    // is 0), and the top-housing panel follows it, so the stack runs past the
-    // window bottom and only a few pixels of the top strip are bare. Yuri does
-    // not. Its atlas is built from sidec02md.mix, whose seven entries are
-    // radary.shp, the three background plates, two palettes and key.ini — and
-    // the by-hash-ID lookups (`render_entry_by_id`, used for the top strips and
-    // the housing panel) have no asset-manager fallback, unlike the by-name
-    // ones. They all resolve to None, leaving the whole top-inset block and a
-    // strip below side3 unpainted. Those are the holes live terrain, units and
-    // any overhanging bracket or health bar were showing through. Clipped, the
-    // region reads black, which is what opaque chrome looks like there.
+    // Keep the native surface boundary independent of chrome coverage. The
+    // ordinary sidebar now uses the resolved stock side archive, real source
+    // canvas heights, and one pixel per source pixel in every theme.
     let (tac_x, tac_y, tac_w, tac_h) = crate::app::input::camera::tactical_viewport_px(state);
     pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);
 

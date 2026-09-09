@@ -73,6 +73,13 @@ pub(crate) fn render_game(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
 ) -> Result<GameRenderOutput> {
+    // RadarClass::Draw 653100 uses wall-clock buckets, not simulation ticks.
+    let wall_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(
+        state, std::time::Instant::now(),
+    );
+    if let Some(radar) = state.match_state.match_presentation.radar_anim.as_mut() {
+        radar.tick(&state.renderer.gpu, wall_ms);
+    }
     let (sw, sh) = (state.render_width() as f32, state.render_height() as f32);
 
     // Trigger action 0x28 mutates scroll/radar authority inside the committed

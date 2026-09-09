@@ -1,8 +1,8 @@
-//! Authentic power bar animation state for the sidebar.
+//! Power segment state and native sidebar draw commands.
 //!
-//! Implements the original RA2 `PowerClass` (Power.CPP) animation system.
-//! Three segment counters (surplus/output/drain) slide toward target values
-//! one segment at a time, with a flash phase on power changes.
+//! `visit_draw_segments` reproduces the original 63FB20 command loop from
+//! executable fixtures. The inherited target/count/tick producers are retained;
+//! their complete gamemd timing and numeric equivalence remain UNCHECKED.
 //!
 //! Draw order top-to-bottom: empty → blink → surplus (green, frame 1)
 //! → output (yellow, frame 2) → drain (red, frame 3).
@@ -10,7 +10,7 @@
 //! ## Dependency rules
 //! - Part of sidebar/ — pure data + logic, no rendering or sim dependencies.
 
-/// Segment height in pixels (each powerp.shp frame is 3px tall in the original).
+/// Segment paint stride. Native POWERP canvas is 2px tall, separated by 1px.
 const SEGMENT_HEIGHT_PX: i32 = 3;
 
 /// Number of flashes when power values change (original: 10).
@@ -18,7 +18,7 @@ const FLASH_COUNT: i32 = 10;
 
 /// Ticks between flash blink steps.
 /// Original game: 48ms wall-clock per step (16ms timer × 3 units).
-/// Our engine: 2 ticks at 45Hz = ~44ms per step (closest equivalent).
+/// Retained VERA approximation: 2 ticks at 45Hz = ~44ms per step.
 const FLASH_TICKS_PER_STEP: i32 = 2;
 
 /// Ticks between segment-slide animation steps.
@@ -209,6 +209,40 @@ impl PowerBarAnimState {
     /// The maximum number of segments the bar can display.
     pub fn max_segments(&self) -> i32 {
         self.max_segments
+    }
+
+    /// Original PowerClass draw loop `63FB20..63FDA5`, called after strips.
+    /// Emits (SHP frame, vertical row). Its blink consumes the first segment
+    /// of the first nonempty band; zero bands do not reset that cursor.
+    pub fn visit_draw_segments(&self, mut emit: impl FnMut(u8, i32)) {
+        let mut row = 0;
+        for _ in 0..self.max_segments
+            - self.surplus_segments
+            - self.output_segments
+            - self.drain_segments
+        {
+            emit(0, row);
+            row += 1;
+        }
+        let mut consumed = 0;
+        if self.is_flashing() {
+            emit(4, row);
+            row += 1;
+            consumed = 1;
+        }
+        for (frame, count) in [
+            (1, self.surplus_segments),
+            (2, self.output_segments),
+            (3, self.drain_segments),
+        ] {
+            if count > 0 {
+                for _ in consumed..count {
+                    emit(frame, row);
+                    row += 1;
+                }
+                consumed = 0;
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -513,5 +547,54 @@ mod tests {
         assert_eq!(surplus, 0, "surplus_portion is 0 when surplus < 100");
         assert!(output > 0, "output band should exist for small surplus");
         assert!(drain > 0, "drain should be nonzero");
+    }
+}
+
+#[cfg(test)]
+mod native_draw_tests {
+    use super::*;
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    struct Packet {
+        cases: Vec<Case>,
+    }
+    #[derive(Deserialize)]
+    struct Case {
+        side: usize,
+        strip_height: i32,
+        counts_surplus_output_drain: [i32; 3],
+        flashes: i32,
+        frame_x_y: Vec<[i32; 3]>,
+    }
+    #[test]
+    fn original_1215_power_draw_sequences_match() {
+        let packet: Packet =
+            serde_json::from_str(include_str!("../../tools/sidebar_oracle/power_draw.json"))
+                .unwrap();
+        assert_eq!(packet.cases.len(), 1215);
+        for c in packet.cases {
+            let [surplus_segments, output_segments, drain_segments] = c.counts_surplus_output_drain;
+            let a = PowerBarAnimState {
+                surplus_segments,
+                output_segments,
+                drain_segments,
+                max_segments: (c.strip_height + 3) / 3,
+                flashes_remaining: c.flashes,
+                ..Default::default()
+            };
+            let mut commands = Vec::new();
+            a.visit_draw_segments(|frame, row| {
+                commands.push([
+                    i32::from(frame),
+                    if c.side == 0 { 5 } else { 0 },
+                    227 + 3 * row,
+                ])
+            });
+            assert_eq!(
+                commands, c.frame_x_y,
+                "side{} height{} counts{:?} flashes{}",
+                c.side, c.strip_height, c.counts_surplus_output_drain, c.flashes
+            );
+        }
     }
 }

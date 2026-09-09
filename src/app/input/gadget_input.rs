@@ -29,6 +29,8 @@ pub(crate) const ID_TAB_BASE: u16 = 0x00CB; // tabs 0xCB..=0xCE, Kind 2 latch-ON
 pub(crate) const ID_REPAIR: u16 = 0x0065; // Kind 1 flip
 pub(crate) const ID_SELL: u16 = 0x0066; // Kind 1 flip
 pub(crate) const ID_SCROLL_DOWN: u16 = 0x00C9; // +1 page, Kind 0
+pub(crate) const ID_DIPLOMACY: u16 = 0x00F2; // 653010, mask5, plain
+pub(crate) const ID_OPTIONS: u16 = 0x00F3;
 pub(crate) const ID_SCROLL_UP: u16 = 0x00C8; // −1 page, Kind 0
 /// Cameo control id base (A2, study cameo lane §2): runtime id = 1000 + visible
 /// slot index. Mirrors the gamemd id space and the A4 tooltip id base
@@ -73,6 +75,7 @@ pub(crate) struct SidebarButtonHandles {
     pub sell: GadgetHandle,
     pub scroll_down: GadgetHandle,
     pub scroll_up: GadgetHandle,
+    pub top: [GadgetHandle; 2],
 }
 
 /// Persistent driver state on `AppState`.
@@ -164,12 +167,15 @@ fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
         let scroll_up = list.add_tail(
             GadgetSpec::button(zero, ID_SCROLL_UP, ToggleKind::Plain).with_flags(SCROLL_FLAGS),
         );
+        let top = [ID_DIPLOMACY, ID_OPTIONS]
+            .map(|id| list.add_tail(GadgetSpec::button(zero, id, ToggleKind::Plain).with_flags(5)));
         gadgets.handles = Some(SidebarButtonHandles {
             tabs,
             repair,
             sell,
             scroll_down,
             scroll_up,
+            top,
         });
     }
     let handles = gadgets.handles.expect("built above");
@@ -224,6 +230,15 @@ fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
         view.scroll_up_button.disabled,
         None,
     );
+    for (h, button) in handles.top.into_iter().zip(&view.top_buttons) {
+        sync(
+            &mut gadgets.list,
+            h,
+            rect_px(button.rect),
+            button.disabled,
+            None,
+        );
+    }
     sync_regions(state, view);
     sync_cameos(state, view);
     sync_controls(state, view);
@@ -294,8 +309,10 @@ fn sync_regions(state: &mut AppState, _view: &SidebarView) {
     // Tactical catcher rect = the play area left of the sidebar panel (the Rust
     // equivalent of gamemd's g_RadarViewport*). Always enabled in-game — we have
     // no in-game map editor (gamemd registers it only when !g_IsMapEditor).
-    let (tactical_width, tactical_height) =
-        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    let (tactical_width, tactical_height) = crate::app::input::camera::tactical_viewport_size_px(
+        state.render_width(),
+        state.render_height(),
+    );
     let play_rect = GadgetRect::new(0, 0, tactical_width as i32, tactical_height as i32);
     if let Some(th) = state.match_state.match_presentation.in_game_gadgets.tactical
         && let Some(g) = state.match_state.match_presentation.in_game_gadgets.list.get_mut(th)
@@ -372,8 +389,20 @@ pub(crate) fn handle_mouse_button_event(
     // The held record updates on every edge (G8 idle-tick source). The gadget
     // masks cover left/right only; middle input has no tactical behavior.
     match button {
-        MouseButton::Left => state.match_state.match_presentation.in_game_gadgets.left_held = pressed,
-        MouseButton::Right => state.match_state.match_presentation.in_game_gadgets.right_held = pressed,
+        MouseButton::Left => {
+            state
+                .match_state
+                .match_presentation
+                .in_game_gadgets
+                .left_held = pressed
+        }
+        MouseButton::Right => {
+            state
+                .match_state
+                .match_presentation
+                .in_game_gadgets
+                .right_held = pressed
+        }
         _ => return GadgetConsume::NotConsumed,
     }
     let Some(view) = current_sidebar_view(state).cloned() else {
@@ -468,10 +497,32 @@ fn classify(state: &AppState, routed: Option<GadgetHandle>, fired: bool) -> Gadg
 /// hover transition (`out.hover_entered`/`hover_left`) is the Mouse_Enter/Leave
 /// edge — reproducing SelectClass::Mouse_Enter/Leave's save-and-zero / restore.
 fn apply_cameo_hover_tooltip(state: &mut AppState) {
-    let entered = state.match_state.match_presentation.in_game_gadgets.out.hover_entered;
-    let left = state.match_state.match_presentation.in_game_gadgets.out.hover_left;
-    let entered_cameo = entered.is_some_and(|h| state.match_state.match_presentation.in_game_gadgets.is_cameo(h));
-    let left_cameo = left.is_some_and(|h| state.match_state.match_presentation.in_game_gadgets.is_cameo(h));
+    let entered = state
+        .match_state
+        .match_presentation
+        .in_game_gadgets
+        .out
+        .hover_entered;
+    let left = state
+        .match_state
+        .match_presentation
+        .in_game_gadgets
+        .out
+        .hover_left;
+    let entered_cameo = entered.is_some_and(|h| {
+        state
+            .match_state
+            .match_presentation
+            .in_game_gadgets
+            .is_cameo(h)
+    });
+    let left_cameo = left.is_some_and(|h| {
+        state
+            .match_state
+            .match_presentation
+            .in_game_gadgets
+            .is_cameo(h)
+    });
     if entered_cameo {
         state.match_state.match_presentation.tooltips.set_delay_override(Some(0));
     } else if left_cameo {
@@ -509,8 +560,17 @@ fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
             crate::app::input::dispatch::apply_sidebar_action(state, SidebarAction::SelectTab(tab));
             play_gui_tab_sound(state);
         }
+        ID_DIPLOMACY => {
+            crate::app::input::dispatch::apply_sidebar_action(state, SidebarAction::OpenDiplomacy);
+        }
+        ID_OPTIONS => {
+            crate::app::input::dispatch::apply_sidebar_action(state, SidebarAction::OpenPauseMenu);
+        }
         ID_REPAIR => {
-            crate::app::input::dispatch::apply_sidebar_action(state, SidebarAction::ToggleRepairMode);
+            crate::app::input::dispatch::apply_sidebar_action(
+                state,
+                SidebarAction::ToggleRepairMode,
+            );
             play_gui_main_button_sound(state);
         }
         ID_SELL => {
@@ -583,10 +643,12 @@ fn publish_pressed_visuals(state: &mut AppState) {
     let sell = pressed(handles.sell);
     let down = pressed(handles.scroll_down);
     let up = pressed(handles.scroll_up);
+    let top = handles.top.map(pressed);
     let gs = &mut state.match_state.match_presentation.sidebar_gadget_state;
     gs.tab_pressed = tabs;
     gs.repair_pressed = repair;
     gs.sell_pressed = sell;
     gs.scroll_down_pressed = down;
     gs.scroll_up_pressed = up;
+    gs.top_pressed = top;
 }

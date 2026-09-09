@@ -96,6 +96,11 @@ fn generic_route_is_bounded_away_from_yuri_theme_art() {
         "R-DN.SHP",
         "POWERP.SHP",
         "GCLOCK2.SHP",
+        "TOP.SHP",
+        "CREDITS.SHP",
+        "ADDON.SHP",
+        "DIPLOBTN.SHP",
+        "OPTBTN.SHP",
     ] {
         assert!(is_generic_sidebar_shp_name(name), "{name}");
     }
@@ -108,7 +113,6 @@ fn generic_route_is_bounded_away_from_yuri_theme_art() {
         "BKGDSMY.SHP",
         "TABS.SHP",
         "POWER.SHP",
-        "ADDON.SHP",
         "UNKNOWN.SHP",
     ] {
         assert!(!is_generic_sidebar_shp_name(name), "{name}");
@@ -214,4 +218,139 @@ fn retail_yuri_generic_route_uses_side_two_and_builds_production_clock() {
     assert_eq!(instance.size, [60.0, 48.0]);
     assert_eq!(instance.uv_origin, atlas.frames[28].uv_origin);
     assert_eq!(instance.uv_size, atlas.frames[28].uv_size);
+}
+
+#[test]
+fn original_n1_tables_drive_sidebar_palette_and_skip_alpha() {
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    struct Packet {
+        cases: Vec<Case>,
+    }
+    #[derive(Deserialize)]
+    struct Case {
+        raw: Vec<u8>,
+        rgb: Vec<u8>,
+        words: Vec<u16>,
+    }
+    let packet: Packet =
+        serde_json::from_str(include_str!("../../tools/sidebar_oracle/palette.json")).unwrap();
+    for c in packet.cases {
+        let p = super::decode_sidebar_palette(&c.raw).unwrap();
+        assert_eq!(p.colors.len(), c.words.len());
+        for (i, color) in p.colors.iter().enumerate() {
+            let native = c.words[i];
+            let actual = ((u16::from(color.r) >> 3) << 11)
+                | ((u16::from(color.g) >> 2) << 5)
+                | (u16::from(color.b) >> 3);
+            assert_eq!(actual, native, "palette index{i}");
+            assert_eq!(color.a, 255, "index-zero suppression belongs to SHP");
+            assert_eq!(
+                crate::render::palette_light::PaletteLight::plain(1, 1000).rgb565(
+                    c.rgb[i * 3..i * 3 + 3].try_into().unwrap(),
+                    i as u8,
+                    127
+                ),
+                native
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires the configured original stock retail archives"]
+fn retail_radar_histories_match_original_4912b0_stores() {
+    use crate::util::sha256::sha256_hex;
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    struct Packet {
+        cases: Vec<Case>,
+    }
+    #[derive(Deserialize)]
+    struct Case {
+        archive: String,
+        name: String,
+        palette: String,
+        source_sha256: String,
+        decoded_frame_sha256: Vec<String>,
+        zero_counts: Vec<usize>,
+        sequences: Vec<Sequence>,
+    }
+    #[derive(Deserialize)]
+    struct Sequence {
+        name: String,
+        frames: Vec<usize>,
+        output_rgb565_sha256: Vec<String>,
+    }
+    let packet: Packet = serde_json::from_str(include_str!(
+        "../../tools/sidebar_oracle/radar_surface.json"
+    ))
+    .unwrap();
+    let assets = AssetManager::new(&retail_ra2_dir()).unwrap();
+    for c in packet.cases {
+        let archive = assets.archive(&c.archive).unwrap();
+        let raw = archive.get_by_name(&c.name).unwrap();
+        assert_eq!(sha256_hex(raw), c.source_sha256);
+        let shp = ShpFile::from_bytes(raw).unwrap();
+        let palette =
+            super::decode_sidebar_palette(archive.get_by_name(&c.palette).unwrap()).unwrap();
+        let frames: Vec<_> = (0..shp.frames.len())
+            .map(|i| super::render_shp(&shp, &palette, i).unwrap().rgba)
+            .collect();
+        for (i, f) in shp.frames.iter().enumerate() {
+            assert_eq!(sha256_hex(&f.pixels), c.decoded_frame_sha256[i]);
+            assert_eq!(
+                f.pixels.iter().filter(|&&p| p == 0).count(),
+                c.zero_counts[i]
+            );
+            assert_eq!(
+                frames[i].chunks_exact(4).filter(|p| p[3] == 0).count(),
+                c.zero_counts[i]
+            );
+        }
+        assert!(
+            c.zero_counts[12..].iter().all(|&n| n == 0),
+            "closing overwrites minimap before first zero frame"
+        );
+        for seq in c.sequences {
+            let mut radar =
+                crate::render::radar_anim::RadarPresentation::new(frames.clone(), 168, 110)
+                    .unwrap();
+            for (step, (&frame, expected)) in
+                seq.frames.iter().zip(&seq.output_rgb565_sha256).enumerate()
+            {
+                if step == 0 {
+                    assert_eq!(frame, 0);
+                } else {
+                    let previous = seq.frames[step - 1];
+                    assert_eq!(
+                        frame.abs_diff(previous),
+                        1,
+                        "one native draw per history step"
+                    );
+                    radar.set_has_radar(frame > previous);
+                    assert!(radar.advance_draw((step as u64 - 1) * 64));
+                }
+                let bytes: Vec<u8> = radar
+                    .surface
+                    .rgba
+                    .chunks_exact(4)
+                    .flat_map(|p| {
+                        (((u16::from(p[0]) >> 3) << 11)
+                            | ((u16::from(p[1]) >> 2) << 5)
+                            | (u16::from(p[2]) >> 3))
+                            .to_le_bytes()
+                    })
+                    .collect();
+                assert_eq!(
+                    sha256_hex(&bytes),
+                    *expected,
+                    "{} {} frame{}",
+                    c.archive,
+                    seq.name,
+                    frame
+                );
+            }
+        }
+    }
 }

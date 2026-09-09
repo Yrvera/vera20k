@@ -950,6 +950,26 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         );
     }
 
+    // Preserve the pixels actually drawn online for a possible pre-due loss.
+    // This is display history, separate from ongoing internal minimap updates.
+    let origin = [
+        state.match_state.input.camera_x + state.render_width() as f32 - 168.0,
+        state.match_state.input.camera_y + 48.0,
+    ];
+    let presentation = &mut state.match_state.match_presentation;
+    if let (Some(radar), Some(mm)) = (
+        presentation.radar_anim.as_mut(),
+        presentation.minimap.as_ref(),
+    ) {
+        let (rgba, size) = mm.composed_rgba();
+        radar.retain_online_content(
+            rgba,
+            size,
+            &minimap,
+            viewport_rect.iter().chain(&content_boundary).copied(),
+            origin,
+        );
+    }
     let radar_anim = build_radar_anim_instance(state);
 
     SidebarInstances {
@@ -979,9 +999,6 @@ fn build_radar_anim_instance(state: &AppState) -> Vec<SpriteInstance> {
         Some(ra) => ra,
         None => return Vec::new(),
     };
-    if ra.phase() == crate::render::radar_anim::RadarAnimPhase::Offline {
-        return Vec::new();
-    }
 
     let sw: f32 = state.render_width() as f32;
     let sh: f32 = state.render_height() as f32;

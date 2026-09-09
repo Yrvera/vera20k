@@ -12,8 +12,8 @@ use super::{
     BitFont, DEV_SKIRMISH_SHELL_ENV, EguiIntegration, GameConfig, GameScreen, GpuContext, HashMap,
     HashSet, HouseRoster, Instant, ModifiersState, MusicPlayer, PhysicalSize, PlatformState,
     RandomMapGenerationRetention, Result, SelectionState, SfxPlayer, SidebarChromeLayoutSpec,
-    SidebarTab, StartupAudioDisposition, Window, WindowAttributes, auto_detect_ui_scale,
-    frontend::startup_splash, should_load_audio_indices,
+    SidebarTab, StartupAudioDisposition, Window, WindowAttributes, frontend::startup_splash,
+    should_load_audio_indices,
 };
 
 fn startup_window_projection(
@@ -170,18 +170,10 @@ impl App {
                 );
                 crate::render::upscale_pass::UpscalePass::new(&gpu, rw, rh)
             });
-        let base_sidebar_layout_spec = SidebarChromeLayoutSpec::load_optional_default()
-            .map(|spec| spec.unwrap_or_else(SidebarChromeLayoutSpec::stock))
-            .unwrap_or_else(|err| {
-                log::warn!("Could not load sidebar layout override: {:#}", err);
-                SidebarChromeLayoutSpec::stock()
-            });
-        // Auto-detect integer UI scale from window size.
-        let screen_w = window.inner_size().width;
-        let screen_h = window.inner_size().height;
-        let ui_scale: f32 = auto_detect_ui_scale(screen_w, screen_h);
-        log::info!("UI scale: {}x ({}x{})", ui_scale, screen_w, screen_h);
-        let sidebar_layout_spec = base_sidebar_layout_spec.with_scale(ui_scale);
+        // Ordinary gamemd chrome is one physical render pixel per asset pixel.
+        // 6A5090/6A5130 change row capacity on resize, never artwork scale.
+        let ui_scale = 1.0;
+        let sidebar_layout_spec = SidebarChromeLayoutSpec::stock();
         let vxl_compute = crate::render::vxl_compute::VxlComputeRenderer::new(&gpu.device);
         let dev_skirmish_shell_enabled = Self::dev_skirmish_shell_enabled();
         if dev_skirmish_shell_enabled {
@@ -532,7 +524,6 @@ impl App {
                     sidebar_projection: Default::default(),
                     active_sidebar_tab: SidebarTab::default_active_tab(),
                     sidebar_layout_spec,
-                    sidebar_layout_spec_base: base_sidebar_layout_spec,
                     ui_scale,
                     sidebar_scroll_rows: 0,
                     sidebar_scroll_rows_parked: [0; 4],

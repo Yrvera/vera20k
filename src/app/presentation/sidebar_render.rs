@@ -86,6 +86,13 @@ pub(crate) fn advance_sidebar_credits_after_frame(
 /// projection. This is called only from explicit simulation/input/lifecycle
 /// transitions, never from a view consumer.
 pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
+    refresh_radar_animation_source(state);
+    let mut spec = crate::sidebar::SidebarChromeLayoutSpec::for_theme(current_sidebar_theme(state));
+    if let Some(atlas) = current_sidebar_chrome(state) {
+        spec.side2_height = atlas.side2.pixel_size[1];
+        spec.side3_height = atlas.side3.pixel_size[1];
+    }
+    state.match_state.match_presentation.sidebar_layout_spec = spec;
     let owner_name: String =
         preferred_local_owner_name(state).unwrap_or_else(|| "Americans".to_string());
     let Some((
@@ -186,7 +193,14 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         .match_presentation
         .sidebar_projection
         .displayed_credits_or_seed(&owner_name, credits);
-    let (tab_btn_size, repair_btn_size, sell_btn_size, scroll_down_btn_size, scroll_up_btn_size) = {
+    let (
+        tab_btn_size,
+        repair_btn_size,
+        sell_btn_size,
+        scroll_down_btn_size,
+        scroll_up_btn_size,
+        top_btn_sizes,
+    ) = {
         let scale = state.match_state.match_presentation.ui_scale;
         let size = |entry: Option<&crate::render::sidebar_chrome::SidebarChromeEntry>| {
             entry.map(|entry| [entry.pixel_size[0] * scale, entry.pixel_size[1] * scale])
@@ -198,6 +212,9 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
             size(atlas.and_then(|atlas| atlas.sell_frames[0].as_ref())),
             size(atlas.and_then(|atlas| atlas.scroll_down_frames[0].as_ref())),
             size(atlas.and_then(|atlas| atlas.scroll_up_frames[0].as_ref())),
+            std::array::from_fn(|i| {
+                size(atlas.and_then(|atlas| atlas.top_button_frames[i][0].as_ref()))
+            }),
         )
     };
     sync_targeting_mode(
@@ -253,6 +270,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         sell_btn_size,
         scroll_down_btn_size,
         scroll_up_btn_size,
+        top_btn_sizes,
     );
     state.match_state.match_presentation.sidebar_scroll_rows = view.scroll_rows;
     if let Some(atlas) = state
@@ -438,23 +456,10 @@ pub(crate) fn active_minimap_screen_rect(state: &AppState) -> crate::sidebar::Re
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
     if current_sidebar_chrome(state).is_some() {
-        // One_Time @ 0x00652CF0 installs the 140x108 aperture. Ordinary
-        // Init_For_House places it at sidebar+16, y=49; Update @ 0x00656EC0
-        // copies the centered generated primary surface into it 1:1.
-        const MINIMAP_LEFT: f32 = 16.0;
-        const MINIMAP_TOP_FROM_CHROME: f32 = -1.0;
-        const MINIMAP_WIDTH: f32 = 140.0;
-        const MINIMAP_HEIGHT: f32 = 108.0;
-
-        let spec = state.match_state.match_presentation.sidebar_layout_spec;
-        let s = state.match_state.match_presentation.ui_scale;
-        let sidebar_x = sw - spec.sidebar_width + spec.x_offset;
-        crate::sidebar::Rect {
-            x: sidebar_x + MINIMAP_LEFT * s,
-            y: spec.top_inset + MINIMAP_TOP_FROM_CHROME * s,
-            w: MINIMAP_WIDTH * s,
-            h: MINIMAP_HEIGHT * s,
-        }
+        crate::sidebar::radar_minimap_rect_with_spec(
+            sw,
+            state.match_state.match_presentation.sidebar_layout_spec,
+        )
     } else {
         let (x, y, w, h) = crate::render::minimap::default_minimap_rect(sh);
         crate::sidebar::Rect { x, y, w, h }
@@ -491,16 +496,116 @@ pub(crate) fn current_sidebar_theme(
         .unwrap_or(crate::render::sidebar_chrome::SidebarTheme::Allied)
 }
 
-pub(crate) fn current_sidebar_chrome(
+/// Shared installed-owner and atlas fallback projection for chrome and radar.
+/// The map loader calls the final sidebar refresh only after installing the
+/// new simulation, roster and pinned owner; this helper never reads old load inputs.
+pub(crate) fn project_sidebar_source<'a, T>(
+    simulation: Option<&crate::sim::world::Simulation>,
+    roster: &crate::map::houses::HouseRoster,
+    owner: Option<&str>,
+    allied: Option<&'a T>,
+    soviet: Option<&'a T>,
+    yuri: Option<&'a T>,
+) -> Option<(
+    crate::render::sidebar_chrome::SidebarTheme,
+    crate::render::sidebar_chrome::SidebarTheme,
+    &'a T,
+)> {
+    let requested = owner
+        .and_then(|owner| sidebar_theme_for_owner_sources(simulation, roster, owner))
+        .unwrap_or(crate::render::sidebar_chrome::SidebarTheme::Allied);
+    let (actual, source) =
+        crate::render::sidebar_chrome::select_sidebar_theme(requested, allied, soviet, yuri)?;
+    Some((requested, actual, source))
+}
+
+fn current_sidebar_resolution(
     state: &AppState,
-) -> Option<&crate::render::sidebar_chrome::SidebarChromeAtlas> {
+) -> Option<crate::render::sidebar_chrome::ResolvedSidebarChrome<'_>> {
     let set = state
         .match_state
         .match_presentation
         .sidebar_chrome
         .as_ref()?;
-    let theme = current_sidebar_theme(state);
-    set.for_theme(theme)
+    let owner = preferred_local_owner_name(state);
+    let (requested_theme, actual_theme, atlas) = project_sidebar_source(
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.house_roster,
+        owner.as_deref(),
+        set.allied.as_ref(),
+        set.soviet.as_ref(),
+        set.yuri.as_ref(),
+    )?;
+    Some(crate::render::sidebar_chrome::ResolvedSidebarChrome {
+        requested_theme,
+        actual_theme,
+        atlas,
+    })
+}
+
+pub(crate) fn current_sidebar_chrome(
+    state: &AppState,
+) -> Option<&crate::render::sidebar_chrome::SidebarChromeAtlas> {
+    current_sidebar_resolution(state).map(|resolved| resolved.atlas)
+}
+
+/// 652E90 installs radar shape/palette from the current scenario side, without
+/// resetting frame/time. VERA's unpinned sandbox owner switch uses a forced
+/// source redraw; this development interaction has no native lifecycle claim.
+fn refresh_radar_animation_source(state: &mut AppState) {
+    let Some(resolved) = current_sidebar_resolution(state) else {
+        let presentation = &mut state.match_state.match_presentation;
+        presentation.radar_anim = None;
+        presentation.radar_animation_source = None;
+        presentation.radar_content_insets = None;
+        return;
+    };
+    if state
+        .match_state
+        .match_presentation
+        .radar_animation_source
+        .as_ref()
+        .is_some_and(|current| {
+            current.requested_theme == resolved.requested_theme
+                && current.actual_theme == resolved.actual_theme
+                && &current.atlas == resolved.atlas.source_identity()
+        })
+    {
+        return;
+    }
+    let identity = resolved.identity();
+    let frames = resolved.atlas.radar_frames.clone();
+    let [width, height] = resolved.atlas.radar_frame_size;
+    let insets = resolved.atlas.radar_content_insets;
+    let presentation = &mut state.match_state.match_presentation;
+    if let Some(radar) = presentation.radar_anim.as_mut() {
+        if !radar.replace_frames(
+            &state.renderer.gpu,
+            &state.renderer.batch_renderer,
+            frames,
+            width,
+            height,
+        ) {
+            presentation.radar_anim = None;
+        }
+    } else {
+        presentation.radar_anim = crate::render::radar_anim::RadarAnimState::new(
+            &state.renderer.gpu,
+            &state.renderer.batch_renderer,
+            frames,
+            width,
+            height,
+        );
+        if let Some(radar) = presentation.radar_anim.as_mut() {
+            radar.set_has_radar(presentation.has_radar);
+        }
+    }
+    presentation.radar_animation_source = Some(identity);
+    presentation.radar_content_insets = Some(insets);
 }
 
 pub(crate) fn sidebar_theme_for_owner_sources(

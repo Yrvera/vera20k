@@ -8,7 +8,6 @@ use super::{
     ActiveEventLoop, App, AppState, ApplicationHandler, ControlFlow, GameScreen, Instant, KeyCode,
     KeyEventExtModifierSupplement, MouseButton, MouseScrollDelta, PhysicalKey, PhysicalSize,
     ShellKey, WindowEvent, WindowId,
-    auto_detect_ui_scale,
 };
 
 trait ShellWindowModeOperations {
@@ -76,12 +75,6 @@ impl App {
         state.renderer.shell_surface_presenter.resize(&state.renderer.gpu);
         // The frame-index wave is driven by wall-clock ticks and repaints every
         // frame, so a mid-flight resize simply lets it finish; no snap/cancel.
-        let new_scale = auto_detect_ui_scale(size.width, size.height);
-        if (new_scale - state.match_state.match_presentation.ui_scale).abs() > f32::EPSILON {
-            log::info!("UI scale changed: {}x -> {}x", state.match_state.match_presentation.ui_scale, new_scale);
-            state.match_state.match_presentation.sidebar_layout_spec = state.match_state.match_presentation.sidebar_layout_spec_base.with_scale(new_scale);
-            state.match_state.match_presentation.ui_scale = new_scale;
-        }
         Self::invalidate_main_menu_movie_if_base_changed(state);
         crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
     }
@@ -591,7 +584,9 @@ impl ApplicationHandler for App {
                             state.match_state.input.keys_held.remove(&code);
                             if let Some(scroll_key) =
                                 crate::app::input::hotkeys::fallback_scroll_key(hotkey_resolution)
-                                    .or_else(|| crate::app::input::hotkeys::physical_scroll_key(code))
+                                    .or_else(|| {
+                                        crate::app::input::hotkeys::physical_scroll_key(code)
+                                    })
                             {
                                 state.match_state.input.keys_held.remove(&scroll_key);
                             }

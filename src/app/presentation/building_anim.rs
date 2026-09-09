@@ -144,9 +144,8 @@ pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
     let layout = crate::sidebar::compute_layout_with_spec(spec, sw, sh, 0);
-    let region_bottom = layout.side3_y + spec.side3_height - spec.power_bar_bottom_y;
-    let region_top = layout.tabs_y + spec.power_bar_top_y;
-    let bar_height_px = (region_bottom - region_top).max(0.0) as i32;
+    // 63FB20: segment budget is (native strip height + 3) / 3.
+    let bar_height_px = (layout.cameo_grid_bottom - layout.cameo_grid_top) as i32 + 3;
 
     state
         .match_state
@@ -162,7 +161,7 @@ pub(crate) fn update_power_bar_anim(state: &mut AppState) {
 }
 
 /// Update radar availability from ECS and tick the radar chrome animation.
-pub(crate) fn update_radar_state(state: &mut AppState, dt_ms: f32) {
+pub(crate) fn update_radar_state(state: &mut AppState) {
     let new_has_radar: bool = match (
         state
             .match_state
@@ -181,7 +180,6 @@ pub(crate) fn update_radar_state(state: &mut AppState, dt_ms: f32) {
 
     if let Some(ref mut ra) = state.match_state.match_presentation.radar_anim {
         ra.set_has_radar(new_has_radar);
-        ra.tick(&state.renderer.gpu, dt_ms);
     }
 }
 

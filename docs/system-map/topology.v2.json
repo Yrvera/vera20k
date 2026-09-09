@@ -1336,9 +1336,8 @@
         },
         {
           "path": "src/app/presentation/sidebar_render.rs",
-          "symbol": "current_sidebar_theme / sidebar_theme_for_owner_sources",
-          "coverage": "representative",
-          "observed_at_commit": "82b022134ab98c7203c8a680bd7479d71f60bed6"
+          "symbol": "project_sidebar_source / refresh_sidebar_projection",
+          "coverage": "representative"
         },
         {
           "path": "src/app/frontend/skirmish.rs",
@@ -1349,7 +1348,8 @@
       ],
       "notes": [
         "Production progress presentation consumes side-correct generic art and resolves ordinary launch-created local owners through their live side identity when no matching map-roster row exists.",
-        "Matching map-roster rows intentionally retain priority, including a deliberate launch-name collision; map-load radar animation initialization is separate GSI-13.23 drift and remains hardwired to Allied.",
+        "Matching map-roster rows retain priority. The final map-install and SpawnPick refresh resolve one installed-owner source package for both chrome and radar, including fallback identity; source replacement preserves the animation frame and draw timer.",
+        "Ordinary sidebar geometry and hit rectangles consume native screen/theme and SHP size authorities at one pixel per source pixel. Radar timing and retained housing stores have original executable fixtures; production CPU/GPU final-pixel comparisons cover the fixed 168x110 housing. Native minimap producers and transition history outside that housing remain open.",
         "Retail Yuri/side-2 provenance, SHP decode, GCLOCK CPU atlas geometry/frame count, and production instance construction have named executable coverage; GPU pixels, exact conversion/blending, and progress cadence remain unverified."
       ]
     },
@@ -2267,14 +2267,15 @@
       "from": "GSI-13.24",
       "to": "GSI-02.01",
       "context": "Rust sidebar atlas construction",
-      "detail": "The production sidebar atlas resolves verified generic roles and SIDEBAR.PAL through immutable side-1/side-2 routes while leaving Yuri radar/background on sidec02md and RADARYURI.PAL.",
+      "detail": "The production atlas resolves generic chrome through side-1/side-2 routes and Yuri radar through sidec02md/RADARYURI.PAL. Original N1 conversion and source-zero skipping own chrome pixels. Installed-owner projection selects the same actual frame/palette/size/inset package for chrome and retained radar, after the new map owner is installed.",
       "evidence": [
         "src/assets/asset_manager.rs",
         "src/render/sidebar_chrome.rs",
         "src/app/presentation/sidebar_build.rs",
-        "src/render/sidebar_chrome_tests.rs"
-      ],
-      "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
+        "src/render/sidebar_chrome_tests.rs",
+        "src/app/presentation/sidebar_render.rs",
+        "tools/sidebar_oracle/README.md"
+      ]
     },
     {
       "id": "EDGE-0056-IRON-CURTAIN-CELL-MEMBERSHIP",

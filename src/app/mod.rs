@@ -160,22 +160,6 @@ impl App {
     }
 }
 
-/// Auto-detect UI scale from screen dimensions.
-/// Returns 0.5, 1.0, or 1.5 to keep pixel art crisp at all resolutions.
-/// Requires both enough height AND enough width so the sidebar doesn't
-/// eat the entire screen at small window sizes.
-fn auto_detect_ui_scale(screen_width: u32, screen_height: u32) -> f32 {
-    // 1.5x: needs at least 2560×1441 (typical 1440p+ / 4K).
-    if screen_width >= 2560 && screen_height > 1440 {
-        return 1.5;
-    }
-    // 1.5x: needs at least 1600×900 so the sidebar leaves enough map view.
-    if screen_width >= 1600 && screen_height >= 900 {
-        return 1.5;
-    }
-    0.5
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

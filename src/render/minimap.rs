@@ -747,6 +747,11 @@ impl MinimapRenderer {
         }
     }
 
+    /// Already-composed pixel input retained by the ordinary radar housing.
+    pub(crate) fn composed_rgba(&self) -> (&[u8], [u32; 2]) {
+        (&self.rgba_scratch, [MINIMAP_WIDTH, MINIMAP_HEIGHT])
+    }
+
     /// Get a reference to the minimap texture for drawing.
     pub fn map_texture(&self) -> &BatchTexture {
         &self.map_texture

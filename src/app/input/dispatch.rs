@@ -1003,6 +1003,8 @@ fn sidebar_build_click(state: &mut AppState, type_id: &str) {
 pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
     match action {
         SidebarAction::None => {}
+        SidebarAction::OpenPauseMenu => open_pause_menu(state),
+        SidebarAction::OpenDiplomacy => open_diplomacy_menu(state),
         SidebarAction::SelectTab(tab) => {
             // gamemd's scroll row is per build strip, so switching tabs must not
             // carry the outgoing strip's position over — nor throw it away. Park
@@ -1400,8 +1402,7 @@ pub(crate) fn handle_hotkey_pressed(
     match resolution {
         HotkeyResolution::Command(command) => dispatch_retail_hotkey(state, command),
         HotkeyResolution::Fallback(HotkeyFallback::DiplomacyDialog) => {
-            // RT_DIALOG 0x73 is owned by the later diplomacy/communication
-            // milestone. Preserve the semantic event without inventing a modal.
+            open_diplomacy_menu(state);
         }
         HotkeyResolution::Fallback(
             HotkeyFallback::ArrowLeft
@@ -1603,6 +1604,32 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
     }
 }
 
+// Native 653952 -> GameState1 -> 48C9BA/4F10E0 opens the pause menu.
+// The button calls this directly; Escape's cancel/resume priority is separate.
+fn open_pause_menu(state: &mut AppState) {
+    state.match_state.paused = true;
+    state
+        .match_state
+        .match_presentation
+        .in_game_options
+        .on_open();
+    if state
+        .match_state
+        .match_presentation
+        .software_cursor
+        .is_some()
+    {
+        state.platform.window.set_cursor_visible(true);
+    }
+    log::info!("Game paused");
+}
+
+fn open_diplomacy_menu(_state: &mut AppState) {
+    // 6538FE -> GameState8 (diplomacy), or9 (mission briefing in mode0).
+    // Existing diplomacy hotkey boundary: the actual modal is not implemented.
+    // Keep this residual explicit; this increment establishes its gadget only.
+}
+
 fn handle_options_hotkey(state: &mut AppState) {
     if state.match_state.paused {
         state.match_state.paused = false;
@@ -1641,21 +1668,7 @@ fn handle_options_hotkey(state: &mut AppState) {
             .sidebar_gadget_state
             .sell_mode_on = false;
     } else {
-        state.match_state.paused = true;
-        state
-            .match_state
-            .match_presentation
-            .in_game_options
-            .on_open();
-        if state
-            .match_state
-            .match_presentation
-            .software_cursor
-            .is_some()
-        {
-            state.platform.window.set_cursor_visible(true);
-        }
-        log::info!("Game paused");
+        open_pause_menu(state);
     }
 }
 

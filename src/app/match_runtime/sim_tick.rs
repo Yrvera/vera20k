@@ -727,7 +727,7 @@ fn advance_in_game_runtime_mode(
     // Cell refresh itself remains all-gathered-before-commit.
     refresh_cell_lighting(state);
 
-    crate::app::presentation::building_anim::update_radar_state(state, SIM_TICK_MS as f32);
+    crate::app::presentation::building_anim::update_radar_state(state);
     crate::app::presentation::building_anim::update_power_bar_anim(state);
     crate::app::presentation::sidebar_gadgets::update_sidebar_gadget_state(state);
     // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
