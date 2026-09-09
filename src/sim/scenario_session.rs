@@ -176,6 +176,9 @@ pub struct ScenarioDescriptor {
     /// Native `ScenarioClass` flags bit `0x20`. The shared direct and area
     /// damage entries return before any receiver or terrain mutation while set.
     pub no_damage: bool,
+    /// Map `[Basic] FreeRadar`, native Scenario+34A4. Fresh reset at 0068383C
+    /// is false; House 00508DF0 bypasses ordinary power/providers when set.
+    pub free_radar: bool,
     /// Native `ScenarioClass` flags bit `0x40` (`[SpecialFlags] TiberiumGrows`,
     /// bit layout from the writer `0x006B8B30`). Every skirmish/multiplayer
     /// start forces it on (`OR 0xC0` at `0x005E74CD` on the ordinary skirmish
@@ -249,6 +252,9 @@ pub struct ScenarioSession {
     /// Persisted native `ScenarioClass` flags bit `0x20`.
     #[serde(default)]
     pub no_damage: bool,
+    /// Persistent native Scenario+34A4, included by original CRC at 0068BC16.
+    #[serde(default)]
+    pub free_radar: bool,
     /// Persisted native `ScenarioClass` flags bit `0x40` (`TiberiumGrows`);
     /// see the descriptor field of the same name.
     #[serde(default)]
@@ -311,6 +317,11 @@ impl ScenarioSession {
         // the native ScenarioFlags 0x20 state lockstep-visible.
         if s.no_damage {
             b"scenario-no-damage-v1".hash(hasher);
+        }
+        // Keep the historical absent/false stream while distinguishing the
+        // map-owned radar availability flag in lockstep state.
+        if s.free_radar {
+            b"scenario-free-radar-v1".hash(hasher);
         }
         // Same legacy-preserving shape for the `0x40`/`0x80` tiberium bits.
         if s.tiberium_grows_flag {
@@ -387,6 +398,7 @@ impl ScenarioSession {
             theater: desc.theater.clone(),
             game_mode_nonzero: desc.game_mode_nonzero,
             no_damage: desc.no_damage,
+            free_radar: desc.free_radar,
             tiberium_grows_flag: desc.tiberium_grows_flag,
             tiberium_spreads_flag: desc.tiberium_spreads_flag,
             lighting: desc.lighting,
@@ -635,6 +647,40 @@ mod tests {
         assert_eq!(descriptor.map_name, "arena.map");
         assert_eq!(descriptor.map_width, 0);
         assert_eq!(descriptor.map_height, 0);
+    }
+
+    #[test]
+    fn free_radar_is_persistent_hashed_scenario_authority() {
+        let desc = ScenarioDescriptor {
+            seed: 0,
+            free_radar: true,
+            ..Default::default()
+        };
+        let sim = Simulation::from_descriptor(&desc);
+        let ordinary = Simulation::from_descriptor(&ScenarioDescriptor {
+            free_radar: false,
+            ..desc
+        });
+        assert!(sim.session.free_radar);
+        assert_ne!(sim.state_hash(), ordinary.state_hash());
+        let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 1, 2, "radar.map", 0);
+        let restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
+            .expect("FreeRadar snapshot")
+            .sim;
+        assert!(restored.session.free_radar);
+        assert_eq!(restored.state_hash(), sim.state_hash());
+
+        // Self-describing formats may omit a newly added field; bincode saves
+        // have a separate mandatory version boundary and are not defaulted.
+        let mut json = serde_json::to_value(&sim.session).unwrap();
+        json.as_object_mut().unwrap().remove("free_radar");
+        let missing: ScenarioSession = serde_json::from_value(json).unwrap();
+        assert!(!missing.free_radar);
+        let header = crate::sim::replay::NativeReplayHeader::new(0, "radar.map");
+        assert!(
+            !ScenarioDescriptor::from_native_replay_header(&header).free_radar,
+            "recording header does not contain this map field"
+        );
     }
 
     #[test]

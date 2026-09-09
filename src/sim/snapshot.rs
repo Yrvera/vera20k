@@ -442,7 +442,9 @@ use crate::sim::world::Simulation;
 // v138 combines both branches. The locally runnable v137 candidate did not
 // contain infantry_terminal, so its serialized entity layout differs from this
 // merged build. Reject v136/v137 saves instead of treating either as compatible.
-const SNAPSHOT_VERSION: u32 = 138;
+// v139 persists Scenario+34A4 (map FreeRadar) in ScenarioSession. Bincode
+// encodes fields positionally, so serde(default) cannot safely read v138 bytes.
+const SNAPSHOT_VERSION: u32 = 139;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2978,6 +2980,29 @@ mod tests {
     }
 
     #[test]
+    fn free_radar_rejects_v138_before_decoding_the_changed_session() {
+        let bytes = bincode::serialize(&GameSnapshotHeader {
+            product_magic: SNAPSHOT_PRODUCT_MAGIC,
+            envelope_version: SNAPSHOT_ENVELOPE_VERSION,
+            version: 138,
+            description: "pre-FreeRadar header only".into(),
+            map_hash: 1,
+            rules_hash: 2,
+            tick: 0,
+            save_timestamp: 0,
+            map_name: "radar.map".into(),
+        })
+        .unwrap();
+        assert!(matches!(
+            GameSnapshot::load(&bytes),
+            Err(SnapshotError::VersionMismatch {
+                expected: SNAPSHOT_VERSION,
+                found: 138
+            })
+        ));
+    }
+
+    #[test]
     fn gsi_04_07_v38_header_is_rejected_before_wall_owner_decode() {
         let bytes = bincode::serialize(&GameSnapshotHeader {
             product_magic: SNAPSHOT_PRODUCT_MAGIC,
@@ -3232,13 +3257,14 @@ mod tests {
     /// 132 -> 133 persists the `HouseClass+0x57D4` funds-nag timer and the
     /// `[0xA8F040]` low-power guard.
     #[test]
-    fn house_eva_advice_snapshot_version_is_133() {
+    fn current_snapshot_version_includes_scenario_free_radar() {
         // 133 -> 134: repair-depot docking layout (see the constant's comment).
         // 134 -> 135: GameEntity ProduceCash timer + drain link pair (GSI-09.01).
         // 135 -> 136: explicit retained Infantry terminal lifetime policy.
         // Separate v137: ordinary ground-coordinate resume invariants.
         // v138 combines both layouts without accepting prior local v137 saves.
-        assert_eq!(super::SNAPSHOT_VERSION, 138);
+        // 138 -> 139: map-owned ScenarioSession FreeRadar authority.
+        assert_eq!(super::SNAPSHOT_VERSION, 139);
     }
 
     #[test]

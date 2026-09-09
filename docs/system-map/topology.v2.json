@@ -31,6 +31,18 @@
     }
   ],
   "systems": {
+    "GSI-12.10": {
+      "native_anchors": [
+        {"symbol": "Scenario Basic FreeRadar parser", "address": "0x0068A5E3", "evidence": "docs/research/FREE_RADAR_SCENARIO_AUTHORITY_2026_09_09.md"},
+        {"symbol": "House local radar availability", "address": "0x00508DF0", "evidence": "tools/free_radar_oracle/oracle.py"}
+      ],
+      "rust_surfaces": [
+        {"path": "src/map/basic.rs", "symbol": "parse_basic_section", "coverage": "representative", "observed_at_commit": "cdad58dde35bfbd48420af4e6d100e0d58e9fc88"},
+        {"path": "src/sim/scenario_session.rs", "symbol": "ScenarioSession::from_descriptor / fold_identity", "coverage": "representative", "observed_at_commit": "cdad58dde35bfbd48420af4e6d100e0d58e9fc88"},
+        {"path": "src/sim/radar.rs", "symbol": "has_radar_for_owner", "coverage": "representative", "observed_at_commit": "cdad58dde35bfbd48420af4e6d100e0d58e9fc88"}
+      ],
+      "notes": ["Map FreeRadar bypasses ordinary provider/power aggregation through persistent scenario authority. Native spy-radar blackout is distinct from power blackout and remains unimplemented; complete provider/UI/pixel parity remains open."]
+    },
     "GSI-13.09": {
       "native_anchors": [
         {
@@ -1846,8 +1858,8 @@
       "from": "GSI-12.10",
       "to": "GSI-09.07",
       "context": "Powered radar",
-      "detail": "Radar availability is gated by the house power state.",
-      "evidence": ["docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"]
+      "detail": "The ordinary provider branch is gated by house power; map FreeRadar bypasses that branch after the separate native radar-blackout gate.",
+      "evidence": ["docs/research/POWER_SYSTEM_GHIDRA_REPORT.md", "docs/research/FREE_RADAR_SCENARIO_AUTHORITY_2026_09_09.md"]
     },
     {
       "id": "EDGE-0016-POWER-SIDEBAR",

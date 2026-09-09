@@ -1,9 +1,9 @@
 //! Radar availability detection and event system.
 //!
-//! In RA2/YR, the minimap (Radar Screen) only appears when the player owns a
-//! radar-providing building. Buildings with `Radar=yes` provide the tactical
-//! radar; `SpySat=yes` is handled by the separate shroud-reveal path. Radar goes
-//! offline when the house power balance is negative (produced < drained).
+//! Map `[Basic] FreeRadar` enables radar independently of buildings and power.
+//! Otherwise buildings with `Radar=yes` provide the tactical
+//! radar; `SpySat=yes` is handled by the separate shroud-reveal path. The
+//! ordinary provider branch goes offline at negative house power balance.
 //!
 //! Also implements the radar event (ping) system: animated rectangles that flash
 //! on the minimap when combat or other events occur. Spacebar cycles through the
@@ -20,15 +20,22 @@ use crate::util::fixed_math::{SimFixed, int_distance_to_sim};
 use crate::util::native_x87::{NativeF32Bits, X87Chop53, X87Ordering};
 use std::collections::VecDeque;
 
-/// Check if the given owner has at least one operational radar-providing building.
+/// Query map-owned FreeRadar or ordinary building availability for an owner.
 ///
 /// A building provides radar if its ObjectType has `Radar=yes` and the house is
 /// not in low power. This is a house-level gate; stock Allied `GAAIRC` and
 /// `AMRADR` omit `Powered=yes`.
+/// Native House 00508DF0 checks Scenario+34A4 before power/providers; the app
+/// supplies its preferred local owner. Native's earlier, separate spy-radar
+/// blackout gate has no Rust state/writer yet and remains unsupported. The
+/// existing power-blackout timer is not that gate and must not replace it.
 pub fn has_radar_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -> bool {
     let Some(owner_id) = sim.interner.get(owner) else {
         return false;
     };
+    if sim.session.free_radar {
+        return true;
+    }
     crate::sim::power_system::has_active_radar(
         &sim.substrate.entities,
         &sim.power_states,
@@ -375,6 +382,80 @@ mod tests {
         let sim = Simulation::new();
         let rules = make_rules_with_radar();
         assert!(!has_radar_for_owner(&sim, &rules, "Americans"));
+    }
+
+    #[test]
+    fn free_radar_matches_original_empty_provider_decisions_without_radar_blackout() {
+        let original: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/free_radar_oracle/fixtures/native-free-radar.json"
+        ))
+        .unwrap();
+        let rules = make_rules_with_radar();
+        let mut checked = 0;
+        for case in original["availability_cases"].as_array().unwrap() {
+            let timer = case["timer_start_duration_frame"].as_array().unwrap();
+            let timer: Vec<_> = timer.iter().map(|v| v.as_i64().unwrap()).collect();
+            // Native expired/stopped states only. Rust has no separate radar
+            // blackout owner; the other 30 original cases remain outside scope.
+            if !matches!(
+                timer.as_slice(),
+                [-1, 0, 100] | [100, 10, 110 | 111] | [100, 0, 100]
+            ) {
+                continue;
+            }
+            let mut sim =
+                Simulation::from_descriptor(&crate::sim::scenario_session::ScenarioDescriptor {
+                    free_radar: case["free_radar"].as_u64().unwrap() != 0,
+                    ..Default::default()
+                });
+            let owner = sim.interner.intern("Americans");
+            let power = case["power_output_drain"].as_array().unwrap();
+            let output = power[0].as_i64().unwrap() as i32;
+            let drain = power[1].as_i64().unwrap() as i32;
+            sim.power_states.insert(
+                owner,
+                crate::sim::power_system::PowerState {
+                    total_output: output,
+                    total_drain: drain,
+                    is_low_power: output < drain,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                has_radar_for_owner(&sim, &rules, "Americans"),
+                case["available"].as_u64().unwrap() != 0,
+                "{case}"
+            );
+            assert!(!has_radar_for_owner(&sim, &rules, "UnknownOwner"));
+            checked += 1;
+        }
+        assert_eq!(checked, 40);
+    }
+
+    #[test]
+    fn free_radar_bypasses_low_power_and_power_blackout_with_a_provider() {
+        let mut sim = Simulation::new();
+        let rules = make_rules_with_radar();
+        spawn_building(&mut sim, 1, "Americans", "GARADR");
+        crate::sim::power_system::tick_power_states(
+            &mut sim.power_states,
+            &mut sim.substrate.entities,
+            &rules,
+            &sim.interner,
+        );
+        let owner = sim.interner.get("Americans").unwrap();
+        assert!(sim.power_states[&owner].is_low_power);
+        assert!(!has_radar_for_owner(&sim, &rules, "Americans"));
+        sim.session.free_radar = true;
+        assert!(has_radar_for_owner(&sim, &rules, "Americans"));
+        sim.power_states
+            .get_mut(&owner)
+            .unwrap()
+            .power_blackout_remaining = 100;
+        assert!(
+            has_radar_for_owner(&sim, &rules, "Americans"),
+            "power outage is not native radar outage"
+        );
     }
 
     #[test]
