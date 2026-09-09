@@ -58,7 +58,7 @@ from .profile import (
 )
 
 
-CAPTURE_SCHEMA = "vera20k.tactical-capture.v1"
+CAPTURE_SCHEMA = "vera20k.tactical-capture.v2"
 VALIDATION_SCHEMA = "vera20k.tactical-validation.v1"
 RUN_SCHEMA = "vera20k.tactical-run.v1"
 REPEAT_SCHEMA = "vera20k.tactical-repeat.v1"
@@ -81,7 +81,6 @@ class EnvironmentInputs:
     executable: FileSnapshot
     archive: FileSnapshot
     font: FileSnapshot
-    layout: FileSnapshot
     retail_root: Path
 
     def snapshots(self) -> tuple[tuple[str, FileSnapshot], ...]:
@@ -90,7 +89,6 @@ class EnvironmentInputs:
             ("VERA executable", self.executable),
             ("retail archive", self.archive),
             ("selected font", self.font),
-            ("sidebar layout", self.layout),
         )
 
 
@@ -199,28 +197,6 @@ def validate_environment_inputs(
     ):
         raise ValidationError("selected font SHA-256 differs from profile")
 
-    layout_profile = require_object(
-        pixel_inputs["sidebar_layout"], "pixel_inputs.sidebar_layout"
-    )
-    relative_layout = Path(
-        require_string(
-            layout_profile["relative_path"],
-            "pixel_inputs.sidebar_layout.relative_path",
-        )
-    )
-    layout = require_regular_file(
-        cwd / relative_layout,
-        "sidebar layout",
-        exact_length=require_int(
-            layout_profile["byte_length"],
-            "pixel_inputs.sidebar_layout.byte_length",
-        ),
-    )
-    if layout.sha256 != require_sha256(
-        layout_profile["sha256"], "pixel_inputs.sidebar_layout.sha256"
-    ):
-        raise ValidationError("sidebar layout SHA-256 differs from profile")
-
     executable = require_regular_file(executable_path, "VERA executable")
     return EnvironmentInputs(
         working_directory=cwd,
@@ -228,7 +204,6 @@ def validate_environment_inputs(
         executable=executable,
         archive=archive,
         font=font,
-        layout=layout,
         retail_root=retail_root,
     )
 
@@ -361,7 +336,7 @@ def _validate_manifest_envelope(
         require_exact_keys(evidence, ("stable", "run"), "evidence")
         stable = require_object(evidence["stable"], "evidence.stable")
         require_stable_evidence(stable, profile, contract, environment)
-        require_run_evidence(evidence["run"], profile)
+        require_run_evidence(evidence["run"], profile, stable=evidence["stable"])
         return frame, stable
     if status == "FAILED":
         if manifest["frame"] is not None or manifest["evidence"] is not None:
@@ -541,7 +516,7 @@ def capture_once(
     if not (0.0 < timeout <= float(profile.budgets["absolute_timeout_max_seconds"])):
         raise ValidationError("child timeout exceeds the tactical schema maximum")
     if _timeout_seconds is None and timeout != CHILD_TIMEOUT_SECONDS:
-        raise ValidationError("v1 child timeout must be exactly 720 seconds")
+        raise ValidationError("v2 child timeout must be exactly 720 seconds")
 
     run_dir = create_directory_exclusive(Path(run_directory), "wrapper run directory")
     write_bytes_exclusive(run_dir / PROFILE_COPY_NAME, profile.snapshot.raw)

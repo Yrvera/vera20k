@@ -14,12 +14,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::profile::{
-    CHECKPOINT_RADAR_ONLINE_V1, CONTRACT_SCHEMA, EMBEDDED_CONTRACT, FRAME_FILE_NAME,
+    CHECKPOINT_RADAR_ONLINE_V2, CONTRACT_SCHEMA, EMBEDDED_CONTRACT, FRAME_FILE_NAME,
     MANIFEST_FILE_NAME, PROFILE_SCHEMA, SealedJsonFile, TacticalCaptureContract,
     TacticalCaptureProfile, sha256_hex, validate_new_output_directory,
 };
 
-pub(crate) const CAPTURE_SCHEMA: &str = "vera20k.tactical-capture.v1";
+pub(crate) const CAPTURE_SCHEMA: &str = "vera20k.tactical-capture.v2";
 const NATIVE_COMPARATOR_NONE: &str = "NONE";
 const PARITY_CERTIFICATION_NONE: &str = "NONE";
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -229,7 +229,7 @@ impl TacticalCaptureManifest {
         let manifest = Self {
             schema_version: CAPTURE_SCHEMA.to_owned(),
             status: TacticalCaptureStatus::Complete,
-            checkpoint: CHECKPOINT_RADAR_ONLINE_V1.to_owned(),
+            checkpoint: CHECKPOINT_RADAR_ONLINE_V2.to_owned(),
             profile: ProfileIdentity::new(profile),
             contract: ContractIdentity::new(contract),
             frame: Some(frame),
@@ -252,7 +252,7 @@ impl TacticalCaptureManifest {
         let manifest = Self {
             schema_version: CAPTURE_SCHEMA.to_owned(),
             status: TacticalCaptureStatus::Failed,
-            checkpoint: CHECKPOINT_RADAR_ONLINE_V1.to_owned(),
+            checkpoint: CHECKPOINT_RADAR_ONLINE_V2.to_owned(),
             profile: ProfileIdentity::new(profile),
             contract: ContractIdentity::new(contract),
             frame: None,
@@ -275,7 +275,7 @@ impl TacticalCaptureManifest {
             "wrong manifest schema"
         );
         ensure!(
-            self.checkpoint == CHECKPOINT_RADAR_ONLINE_V1,
+            self.checkpoint == CHECKPOINT_RADAR_ONLINE_V2,
             "wrong manifest checkpoint"
         );
         ensure!(
@@ -290,7 +290,7 @@ impl TacticalCaptureManifest {
         ensure!(
             self.native_comparator == NATIVE_COMPARATOR_NONE
                 && self.parity_certification == PARITY_CERTIFICATION_NONE,
-            "tactical v1 has no native comparator or parity certification"
+            "tactical v2 has no native comparator or parity certification"
         );
         ensure!(
             !self.evidence_limitations.is_empty()
@@ -556,11 +556,11 @@ mod tests {
     ) {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let profile = TacticalCaptureProfile::load_strict(
-            &root.join("tools/tactical_certification/profiles/soviet-radar-online-v1.json"),
+            &root.join("tools/tactical_certification/profiles/soviet-radar-online-v2.json"),
         )
         .expect("profile");
         let contract = TacticalCaptureContract::load_external(
-            &root.join("src/app/diagnostics/tactical_capture/contract.v1.json"),
+            &root.join("src/app/diagnostics/tactical_capture/contract.v2.json"),
         )
         .expect("contract");
         (profile, contract)

@@ -1,4 +1,4 @@
-"""Strict v1 tactical profile and shared environment-contract validation."""
+"""Strict v2 tactical profile and shared environment-contract validation."""
 
 from __future__ import annotations
 
@@ -24,13 +24,13 @@ from .core import (
 )
 
 
-PROFILE_SCHEMA = "vera20k.tactical-profile.v1"
-CONTRACT_SCHEMA = "vera20k.tactical-capture-contract.v1"
-CHECKPOINT = "radar-online-v1"
+PROFILE_SCHEMA = "vera20k.tactical-profile.v2"
+CONTRACT_SCHEMA = "vera20k.tactical-capture-contract.v2"
+CHECKPOINT = "radar-online-v2"
 ABSOLUTE_TIMEOUT_MAX_SECONDS = 900
 CHILD_TIMEOUT_SECONDS = 720
 POST_L0_TIMEOUT_SECONDS = 600
-OVERALL_TICK_CAP = 4096
+OVERALL_TICK_CAP = 8192
 EVIDENCE_LIMITATIONS = (
     "Rust production-route regression evidence only",
     "native comparator NONE",
@@ -55,6 +55,7 @@ ENVIRONMENT_DENYLIST = (
     "RA2_QUEUE_FRAME_MS",
     "RA2_DIR",
     "RA2_DUMP_SHROUD",
+    "RA2_DEBUG_DEPTH_VIEW",
 )
 
 _TOP_KEYS = (
@@ -170,7 +171,7 @@ _STAGE_NAMES = (
     "radar_online",
     "readiness_and_warm_frames",
 )
-_STAGE_TICKS = (48, 640, 48, 2048, 48, 1024, 48, 96, 18)
+_STAGE_TICKS = (48, 640, 48, 2048, 48, 1024, 48, 4096, 18)
 _STAGE_WALL = (15, 90, 15, 270, 15, 140, 15, 20, 10)
 _LEDGER = {
     "yard_active": 32,
@@ -180,9 +181,6 @@ _LEDGER = {
     "refinery_active": 2642,
     "radar_ready": 3598,
     "radar_active": 3629,
-    "radar_online": 3694,
-    "second_readiness": 3695,
-    "capture": 3711,
 }
 _OPTIONS: Mapping[str, Any] = {
     "starting_credits": 10000,
@@ -256,7 +254,7 @@ def repository_contract_path() -> Path:
         / "app"
         / "diagnostics"
         / "tactical_capture"
-        / "contract.v1.json"
+        / "contract.v2.json"
     )
 
 
@@ -300,10 +298,11 @@ def _validate_slot(
 
 def validate_profile_document(document: Mapping[str, Any]) -> None:
     require_exact_keys(document, _TOP_KEYS, "profile")
-    _fixed(document["schema_version"], PROFILE_SCHEMA, "schema_version")
+    if document["schema_version"] != PROFILE_SCHEMA:
+        raise ValidationError("unsupported profile schema; use tactical-profile.v2 for the native 1x sidebar; v1 is historical")
     _fixed(document["checkpoint"], CHECKPOINT, "checkpoint")
     profile_id = require_string(document["profile_id"], "profile_id")
-    if profile_id not in {"soviet-radar-online-v1", "yuri-radar-online-v1"}:
+    if profile_id not in {"soviet-radar-online-v2", "yuri-radar-online-v2"}:
         raise ValidationError(f"unsupported tactical profile_id {profile_id!r}")
 
     fixture = _exact_object(document["fixture"], _FIXTURE_KEYS, "fixture")
@@ -405,8 +404,8 @@ def validate_profile_document(document: Mapping[str, Any]) -> None:
     formats = require_array(capture["surface_formats"], "capture.surface_formats")
     if formats != ["Bgra8Unorm", "Bgra8UnormSrgb"]:
         raise ValidationError("capture.surface_formats has unsupported values/order")
-    if require_number(capture["app_ui_scale"], "capture.app_ui_scale") != 0.5:
-        raise ValidationError("capture.app_ui_scale must be exactly 0.5")
+    if require_number(capture["app_ui_scale"], "capture.app_ui_scale") != 1.0:
+        raise ValidationError("current native sidebar requires capture.app_ui_scale exactly 1.0; half-scale profiles are historical")
     cursor = _exact_object(
         capture["post_load_cursor"], ("x", "y"), "capture.post_load_cursor"
     )
@@ -468,7 +467,7 @@ def validate_profile_document(document: Mapping[str, Any]) -> None:
         _fixed(ledger[key], expected, f"budgets.expected_ledger.{key}")
 
     pixel_inputs = _exact_object(
-        document["pixel_inputs"], ("font", "sidebar_layout"), "pixel_inputs"
+        document["pixel_inputs"], ("font",), "pixel_inputs"
     )
     font = _exact_object(
         pixel_inputs["font"], ("path", "byte_length", "sha256"), "pixel_inputs.font"
@@ -484,29 +483,12 @@ def validate_profile_document(document: Mapping[str, Any]) -> None:
         "6a8481fe107ee547893c018b13dba291c2020bec3de5da6525d9ac09f6bc2105",
         "pixel_inputs.font.sha256",
     )
-    layout = _exact_object(
-        pixel_inputs["sidebar_layout"],
-        ("relative_path", "byte_length", "sha256"),
-        "pixel_inputs.sidebar_layout",
-    )
-    _fixed(
-        layout["relative_path"],
-        "src/sidebar/sidebar_layout.ron",
-        "pixel_inputs.sidebar_layout.relative_path",
-    )
-    _fixed(layout["byte_length"], 721, "pixel_inputs.sidebar_layout.byte_length")
-    _fixed(
-        layout["sha256"],
-        "27fe2405990000468b1d6b9f4316d8b6104d72c82bb3386a9942332ba323316c",
-        "pixel_inputs.sidebar_layout.sha256",
-    )
-
     limitations = require_array(
         document["evidence_limitations"], "evidence_limitations"
     )
     if limitations != list(EVIDENCE_LIMITATIONS):
         raise ValidationError(
-            "evidence_limitations differ from the honest tactical v1 limits"
+            "evidence_limitations differ from the honest tactical v2 limits"
         )
 
 
@@ -545,7 +527,7 @@ def load_contract(
         for index, value in enumerate(denylist_values)
     )
     if denylist != ENVIRONMENT_DENYLIST:
-        raise ValidationError("contract.environment_denylist differs from v1")
+        raise ValidationError("contract.environment_denylist differs from v2")
     if len(set(denylist)) != len(denylist):
         raise ValidationError("contract.environment_denylist contains duplicates")
     if require_repository_bytes:
