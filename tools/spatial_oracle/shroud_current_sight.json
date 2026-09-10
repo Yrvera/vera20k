@@ -1354,6 +1354,554 @@
           "shrouded": 0
         }
       ]
+    },
+    {
+      "name": "spysat_bulk_preserves_pending",
+      "observations": [
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 0,
+          "op": "constructed",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 0,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 1,
+          "op": "leave",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 0,
+          "op": "remove",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 0,
+          "flags": 35,
+          "gap": 0,
+          "op": "map_reveal_bulk",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 35,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 1
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 1,
+          "op": "frame120",
+          "shrouded": 1
+        }
+      ]
+    },
+    {
+      "name": "reset_bulk_preserves_pending",
+      "observations": [
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 0,
+          "op": "constructed",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 0,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 1,
+          "op": "leave",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 0,
+          "flags": 34,
+          "gap": 0,
+          "op": "remove_mapclear",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 32,
+          "gap": 0,
+          "op": "map_reset_bulk",
+          "shrouded": 1
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 32,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 1
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 1,
+          "op": "frame120",
+          "shrouded": 1
+        }
+      ]
+    },
+    {
+      "name": "spysat_source_before_gaps",
+      "observations": [
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 0,
+          "op": "constructed",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 0,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 1,
+          "op": "leave",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 2,
+          "op": "gap",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 34,
+          "gap": 2,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 2,
+          "op": "leave",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 1,
+          "op": "remove",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 0,
+          "op": "remove",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 0,
+          "flags": 35,
+          "gap": 0,
+          "op": "map_reveal_bulk",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 3,
+          "gap": 0,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 3,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 3,
+          "gap": 2,
+          "op": "gap",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 3,
+          "gap": 2,
+          "op": "frame120",
+          "shrouded": 0
+        }
+      ]
+    },
+    {
+      "name": "spysat_gap_before_source",
+      "observations": [
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 0,
+          "op": "constructed",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 0,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 1,
+          "op": "leave",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 2,
+          "op": "gap",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 34,
+          "gap": 2,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 34,
+          "gap": 1,
+          "op": "remove",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 1,
+          "op": "leave",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 0,
+          "op": "remove",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 0,
+          "flags": 35,
+          "gap": 0,
+          "op": "map_reveal_bulk",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 35,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 35,
+          "gap": 1,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 35,
+          "gap": 2,
+          "op": "gap",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 0,
+          "gap": 2,
+          "op": "frame120",
+          "shrouded": 1
+        }
+      ]
     }
   ],
   "timer_cases": [

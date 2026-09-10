@@ -22,7 +22,9 @@ Direct source-to-viewer admission precedes writes. Display copies the selected
 viewer; it never re-exports derived knowledge through A-B-C alliances. Fire keeps
 its separately admitted local writer. Psychic performs mode0 then mode1 for the
 source/direct allies. Stable generator receipts distinguish new writes from House
-materialization; removal reads actual House MapIsClear and preserves pending.
+materialization; removal reads actual House577A SpySatActive and preserves pending.
+Concealed cells publish VISIBLE=false even when source/transient receipts remain;
+combat visibility and tactical darkness therefore agree immediately.
 
 The early master-frame rung consumes pending at signed `binary_frame %120`, after
 triggers and before ore, Teams and objects. The high-flying FootAI refresh runs
@@ -30,7 +32,7 @@ before locomotor Process. Each viewer retains an independent entity-lifetime
 65C/664 clock initialized from the constructor frame; nonallied viewers never
 borrow another viewer's timer. A due event releases/re-admits only its viewer and
 reloads15 even if the reveal leaves reject membership. Losing an admission does
-not reset this clock. Snapshot142 persists state/footprints/gap receipts/clocks;
+not reset this clock. Snapshot142 persists state/footprints/gap receipts/clocks/Map240;
 current hashes include them, historical probes omit them and the four new bits.
 **The Rust revision is not yet validated.**
 
@@ -42,7 +44,9 @@ current hashes include them, historical probes omit them and the four new bits.
 | MapCell4A9CA0, reduce487630/increase487690 | Mode0 adds a contribution, mode1 releases it. Opening missing alt18 retains pending20; only an already-open reveal cancels pending |
 | Fire4876F0 from5673A0 | Opens without decrementing; counter130>0 schedules pending even without a gap |
 | Psychic6CD773/6CD79C through5678E0 | Final0 then final1; the older identical-arguments report was incorrect |
-| Gap6FB170/removal6FB470 | Selected blocks6FB2F7..6FB3C1 and6FB5E1..6FB69E update counter/gap/open; ordinary removal preserves pending, MapIsClear is distinct |
+| Gap6FB170/removal6FB470 | Selected blocks6FB2F7..6FB3C1 and6FB5E1..6FB69E update counter/gap/open; ordinary removal preserves pending; the restoration predicate is House577A SpySatActive, not MapIsClear241 |
+| Map577D90/577AB0 | Activation checks House240; explicit reset does not. Bulk changes counters/open while preserving pending20, bracketed by4ADEE0/4ADCD0 |
+| House508F60 | Activation/deactivation call Map before changing577A; repeated active House calls emit no map event |
 | Logic55B29A..55B2C4 through578100 | Signed modulo120; first iterator pass consumes pending20 and clears alt18/flags23, second updates edges |
 | Techno70AF50/70B1D0 | Latch250 suppresses unchanged ordinary calls; stores254XYZ/260radius. Release clears latch before radius check/call and retains stored geometry |
 | Drive/UnitPerCellProcess739EC0 | Object9C coordinate write precedes release73AC5F then admit73AC74; older +504 attribution was wrong |
@@ -83,13 +87,30 @@ python -B -m tools.spatial_oracle.shroud_current_sight --write
 python -B -m tools.spatial_oracle.shroud_current_sight --check
 ```
 
-Both exited0. The read-only check reproduced **19 sequences and9 timer cases**.
-Sequences cover never/current/past/overlapping sight, entry/removal/MapIsClear,
+Both exited0. The read-only check reproduced **23 sequences and9 timer cases**.
+Sequences cover never/current/past/overlapping sight, entry/removal/SpySatActive,
 fire/Psychic, delayed departure, return, second-gap/return, first-fire versus
 first-Psychic history and the due same-footprint contrast. Counter/gap/pending and
 AL-only IsShrouded observations are retained. Original4DA6C8 timer cases stop at
 4DA6EF due or4DA7B0 not-due, including paused and signed-wrap cases. They start
 after supplied admission gates and stop before either reveal call.
+
+Four additional sequences execute original bulk stores577EBF..577EE3 and
+577B3C..577B66. They cover preserved pending and source-before-gap versus
+gap-before-source composition. These are composed leaves with explicitly supplied
+registration order, not execution of the complete Techno callback dispatcher.
+The legacy operation label `remove_mapclear` sets577A; its old name is not evidence
+for the separate MapIsClear241 predicate.
+
+Both callback loops snapshot Techno count and visit registration order, ordinary
+sight then Gap on each admitted object. They skip null/Techno81 objects. Human
+50B6F0 branches additionally require discovery latch41B; nonhuman directional
+allied Buildings with AllyReveal take ordinary sight only, other nonhuman objects
+take Gap only. The current production selector covers known-own ordinary
+multiplayer sources and directional allied Buildings. It preserves excluded
+allied mobile admission receipts across the bulk counter overwrite; unchanged
+refresh cannot replay them. The independent41B authority, campaign Human gates
+and Building RevealToAll alternate-recipient branch remain OPEN.
 
 Frame cases execute original modulo logic and complete578100 two-pass iteration
 on a fully allocated Size12x12 diamond with real Cell vtables. Sparse allocation
@@ -110,8 +131,16 @@ direct allied knowledge, cache freshness and hash authority.
 master-frame120/240, replacement and GameSnapshot continuation. Its high-flying
 source enters the actual live object pass and contrasts dueA/not-dueB/nonalliedC,
 then legitimate directC admission with independent persisted clocks.
-`render/shroud_buffer.rs` checks tactical CPU bright/dark output and nontransitive
-viewer knowledge. These Rust tests are written but not yet executed.
+SpySat tests exercise actual House activation, registration-order outcomes,
+repeated materialization, save/load and the allied mobile versus Building
+callback distinction. `render/shroud_buffer.rs` checks tactical CPU bright/dark;
+`combat/combat_tests.rs` checks concealed transient knowledge cannot admit fire.
+
+Focused v1 compiled successfully in3m50s, then exited101:14 passed,6 failed.
+Two fixtures cloned the interner before registering names, two inserted marked
+objects without occupancy, and two compared whole hashes across the documented
+Scenario Seed(0) restore reset. The corrected fixtures retain normal lifecycle
+and snapshot invariants. Focused v2 is running; no passing Rust receipt is claimed.
 
 Working `cargo check -p vera20k --lib` passed: exit0, 1m20s,90 warnings, retained
 in `.local/shroud-current-sight-check-v1.log`. Focused tests, historical
@@ -121,7 +150,8 @@ hash reconciliation, full `cargo test -p vera20k --lib`,
 ## Explicit remaining scope
 
 Legacy cache projection, full radius/height traversal and all arrival scheduling,
-alliance-history transfer, optional AllyReveal, fogged-object memory,
+alliance-history transfer, optional AllyReveal, general discovery/campaign/
+RevealToAll callback admission, fogged-object memory,
 FogOfWar/ShroudGrow and GPU output remain outside this comparison. The complete
 GapGenerator4555D0 operational predicate (EMP/engineer/mission/HasPower) and full
 fire owner policy remain open. Existing represented Jumpjet state5/6 limitations

@@ -39,6 +39,10 @@ def execute(name,ops):
    run_checked(u,0x4A9CA0,RET_MAGIC,count=10000)
   elif op=='unshroud':
    u.mem_write(sp,dwords(RET_MAGIC));u.reg_write(UC_X86_REG_ECX,center);run_checked(u,0x4876F0,RET_MAGIC,count=100)
+  elif op in ('map_reveal_bulk','map_reset_bulk'):
+   u.reg_write(UC_X86_REG_EAX,center);u.reg_write(UC_X86_REG_EDI,0);u.reg_write(UC_X86_REG_EBX,0);u.reg_write(UC_X86_REG_ESI,MAP)
+   if op=='map_reveal_bulk':run_checked(u,0x577EBF,0x577EE9,count=100)
+   else:run_checked(u,0x577B3C,0x577B6C,count=100)
   elif op.startswith('frame'):
    frame=int(op[5:]);u.mem_write(0xA8ED84,dwords(frame));u.reg_write(UC_X86_REG_EDI,frame);run_checked(u,0x55B29A,0x55B2C4,count=100000)
   elif op=='gap':
@@ -50,6 +54,13 @@ def execute(name,ops):
  return dict(name=name,observations=out)
 scenarios=[('never_seen',['gap','remove']),('current_sight',['reveal','gap','remove']),('past_sight',['reveal','leave','gap','remove']),('current_sight_overlap',['reveal','reveal','gap','leave','leave','remove']),('enter_gap',['gap','reveal','leave','remove']),('spysat_remove_gate',['reveal','leave','gap','remove_mapclear']),('fire_only',['unshroud','gap']),('psychic_only',['reveal','leave','gap']),('departure_boundary',['reveal','gap','leave','frame119','frame120']),('return_cancels_pending',['reveal','gap','leave','frame119','reveal','frame120']),('removal_preserves_pending',['gap','reveal','leave','remove','frame120']),('departure_after_boundary',['reveal','gap','frame120','leave','frame121','frame239','frame240']),('second_gap_consumes_pending',['reveal','gap','leave','gap']),('fire_under_gap',['gap','unshroud','frame119','frame120']),('psychic_under_gap',['gap','reveal','leave','frame119','frame120']),('second_gap_then_return',['reveal','gap','leave','gap','reveal','frame120']),('first_fire_without_gap',['unshroud','frame119','frame120']),('first_psychic_without_gap',['reveal','leave','frame119','frame120'])]
 scenarios.append(('due_same_footprint_refresh',['reveal','gap','leave','gap','reveal','frame119','leave','reveal','frame120']))
+
+scenarios.extend([
+ ('spysat_bulk_preserves_pending',['reveal','gap','leave','remove','map_reveal_bulk','gap','frame120']),
+ ('reset_bulk_preserves_pending',['reveal','gap','leave','remove_mapclear','map_reset_bulk','gap','frame120']),
+ ('spysat_source_before_gaps',['reveal','gap','leave','gap','reveal','leave','remove','remove','map_reveal_bulk','reveal','gap','gap','frame120']),
+ ('spysat_gap_before_source',['reveal','gap','leave','gap','reveal','remove','leave','remove','map_reveal_bulk','gap','reveal','gap','frame120']),
+])
 
 def timer_cases():
  values=[(0,0,0),(104,15,118),(104,15,119),(119,15,120),(-1,0,120),(-1,5,120),(-1,-1,120),(2147483640,15,-2147483641),(120,15,119)]
@@ -73,5 +84,7 @@ if __name__=='__main__':
    'FireUnshroud leaf corresponds5673A0 final0; PsychicReveal sequence corresponds6CD773 final0 then6CD79C final1',
    'Original Logic55B29A modulo gate and complete578100 two-pass sweep execute at supplied signed native frames; selected shroud observations do not certify all edge-cache outputs',
    'Foot timer4DA6C8 executes after admitted moving/high-flight/direct-ally gates to due4DA6EF or rejected4DA7B0 boundary; no reveal call is stubbed or executed by this timer fragment',
+   'Original577EBF..577EE9 and577B3C..577B6C bulk stores execute on the selected Cell; source/gap brackets compose existing original leaves with supplied object registration order, not full callback dispatch',
+   'Legacy remove_mapclear case label refers to actual House577A SpySatActive, not byte241 MapIsClear',
    'No renderer pixels, complete reveal traversal, optionalfogrecords or fullGapGenerator lifecycle comparison'],
-  substitutions=[],entry_points={'map_cell':0x4A9CA0,'unshroud':0x4876F0,'hostile_gap_cell':0x6FB2F7,'hostile_remove_cell':0x6FB5E1,'is_shrouded':0x586360,'periodic_logic':0x55B29A,'recalc_shroud':0x578100,'foot_timer_gate':0x4DA6C8}))
+  substitutions=[],entry_points={'map_cell':0x4A9CA0,'unshroud':0x4876F0,'hostile_gap_cell':0x6FB2F7,'hostile_remove_cell':0x6FB5E1,'is_shrouded':0x586360,'periodic_logic':0x55B29A,'recalc_shroud':0x578100,'foot_timer_gate':0x4DA6C8,'map_reveal_bulk':0x577EBF,'map_reset_bulk':0x577B3C}))
