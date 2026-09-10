@@ -629,10 +629,9 @@ pub struct GameEntity {
     pub building_down: Option<BuildingDown>,
     /// Active one-shot building animation overlays (e.g., ConYard crane).
     pub building_anim_overlays: Option<BuildingAnimOverlays>,
-    /// Scoped native-like damaged-state gate for building visuals.
-    ///
-    /// Models only the proven zero/nonzero damage gate, not the full native
-    /// BuildingClass BState table.
+    /// Health-derived damaged variant selection for building animation overlays.
+    /// This is not native BuildingClass+0x534 (the construction/idle animation
+    /// state), and must not gate occupied building body frames.
     #[serde(default)]
     pub building_damage_state_active: bool,
     /// Persisted type fact needed to recreate the owned light on later Unlimbo.
