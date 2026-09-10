@@ -19,7 +19,7 @@ references are starting evidence whose applicability must be checked per mechani
 | 38 | GSI-04.02 | `src/map/theater.rs`, `resolved_terrain.rs` | CalculateLegacyMapTileIndex `0x00544E30`; [translation](../../research/PHASE3_LAST_TILES_IN_SET_COMPATIBILITY_TRANSLATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Load, Fill, map-pack and generated-map paths must be checked separately. |
 | 39 | GSI-04.03 | `src/util/lepton.rs`; `src/sim/cell_kernel.rs`; `src/map/resolved_terrain.rs` | ComputeGroundHeightAtCoord `0x0047B3A0`; [domain census](../../research/PHASE3_CELL_GROUND_HEIGHT_104_DOMAIN_CONSUMER_CENSUS_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | The inherited 90-lepton Cell claim is false: both use 104. Ground-only and caller-selected 416-lepton deck composition are distinct. |
 | 40 | GSI-04.04 | `src/sim/cell_kernel.rs`, `overlay_grid.rs`, `pathfinding/terrain_cost.rs` | [RecalcZoneType](../../research/CELLCLASS_RECALCZONE_TYPE_00483C80_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Preserve synchronous publication before the next reader. |
-| 41 | GSI-04.06 | `src/sim/pathfinding/zone_map.rs`, `zone_build.rs`; `src/sim/world/navigation.rs` | FloodFillReachableZones `0x005840C0`; [flood fill](../../research/MAPCLASS_FLOODFILLREACHABLEZONES_005840C0_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Tube hierarchy registration is explicitly unimplemented in current source; verify its active callers before choosing the repair. |
+| 41 | GSI-04.06 | `src/sim/pathfinding/zone_map.rs`, `zone_build.rs`; `src/sim/world/navigation.rs` | FloodFillReachableZones `0x005840C0`; [flood fill](../../research/MAPCLASS_FLOODFILLREACHABLEZONES_005840C0_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Tube hierarchy registration and ordered path entry landed in PR #327. Flood publication, remaining lookup domains and lifecycle still require audit; see inherited residuals. |
 | 42 | GSI-04.05 | `src/sim/occupancy.rs`, `cell_rect.rs`; `src/sim/world/lifecycle.rs` | AddContent `0x0047E8A0`, RemoveContent `0x0047EA90`; [live list writers](../../research/CELLCLASS_SUBSTRATE_LIVE_OBJECT_LIST_WRITERS_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Cell lists, layer transitions and reservations are distinct authorities. Do not import all AI behavior merely because it reads occupancy. |
 | 43 | GSI-04.07 | `src/map/authored_overlay.rs`; `src/sim/overlay_grid.rs` | OverlayClass::Mark `0x005FC570`, DestroyOverlay `0x00480CB0`; [authored boundary](../../research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAYPACK_INLINE_TRANSACTION_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Includes mutation order, ownership, shared dummy effects and projection to consumers. |
 | 44 | GSI-04.09 | `src/sim/tiberium/mod.rs`, `overlay_grid.rs`; `src/map/authored_overlay.rs` | Reduce_Tiberium `0x00480A80`; [quantity mutation](../../research/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Identity and quantity are this row; growth/harvesting policy enters only as a proved prerequisite or consumer. |
@@ -107,6 +107,20 @@ status is historical; reconcile it against current source before selecting work.
   code nor a generic registry group is enough to establish applicability.
 
 ## Inherited residuals
+
+The current height-consumer increment repairs the Bounce adapter's selected Cell
+identity, ordered live queries, raw bridge flags and 416-lepton deck composition.
+Its [evidence report](../../research/PHASE3_BOUNCE_GROUND_QUERY_DELIVERY_NATIVE_REPORT.md)
+separates exact ground/surface query comparisons from bounded flat-contact
+outcomes. Broader slope reflection, cliff response and quaternion physics belong
+to GSI-05.14; their existence does not make them proven Phase 3 prerequisites.
+The surrounding VoxelAnim host's water, damage-list and expiry queries remain
+separate spatial audit work. Neither this increment nor its 48 native cases
+closes row 39 or the whole VoxelAnim update.
+The implementation at `af78c1bd` passed the full library suite (8,602 passed,
+zero failed, 119 ignored) and Clippy (exit zero, 1,144 warnings). The fresh
+read-only critic independently reproduced the final 48 native cases and
+reviewed the source and production stop case with no actionable finding.
 
 The Tube hierarchy and ordered path-entry increment is validated at source
 `154b171e`; report commit `906b7e40` records final receipts. Its
