@@ -133,6 +133,14 @@ fallible candidate navigation preparation and resets it only at commit. The new
 reader requires an isolated post-Resize candidate and coherent successful state
 publication; rejected preparation must not stamp the running world's dummy.
 
+Production tracing also found a blanket explicit-Tube hierarchy bypass in
+`zone_search.rs`. Native `0x0042C900` has no such gate. Enabling the repaired
+graph requires its actual route consumers and the native early base-zone
+equality check at `0x0042CB22`, using raw zone labels before hierarchy precheck.
+The shared raw zone lookup needs the same retained source Size projection.
+Broader bridge-aware GetZoneID cases and unexplained raw path-memory reads
+remain open; a bounded helper comparison cannot certify them.
+
 The bridge plan retains unresolved construction, restamp, topology and consumer
 transactions. Current shroud, smudge, terrain and lighting code has not received
 this goal's exhaustive reverse audit. These rows remain open regardless of the
