@@ -1,8 +1,8 @@
 # Clean-Slate System Implementation Order
 
 > **Repository execution note:** this is the dependency order and the row
-> enumeration, nothing more. Row status lives in the System Map registry and
-> per-phase working state lives in [`phase-briefs/`](phase-briefs/README.md);
+> enumeration, nothing more. Evidence-backed per-phase working state lives in
+> [`phase-briefs/`](phase-briefs/README.md); the System Map is retired historical reference;
 > a goal session reads its phase brief first. For a clean-slate rebuild,
 > follow the phases and rows in order. In the existing repository, never
 > reimplement rows 1–336 blindly.
@@ -16,8 +16,8 @@
 ## Purpose
 
 This document proposes a dependency-aware implementation order for rebuilding
-VERA20k from a clean slate. It covers all **336 canonical systems** in System
-Map v2 exactly once.
+VERA20k from a clean slate. It covers the **336 canonical systems** originally
+enumerated in System Map v2 exactly once. Their GSI IDs remain valid.
 
 The phase order is the dependency backbone. It also gives the existing
 repository one stable place to answer:
@@ -27,8 +27,8 @@ repository one stable place to answer:
 - how much production implementation currently exists;
 - where the per-phase working state lives (the phase briefs).
 
-This is still an evaluated planning overlay on the System Map, not a claim
-that missing map fields determine priority. Player-visible production loops,
+This is an evaluated planning order, not evidence of implementation or parity.
+The retired System Map does not determine priority. Player-visible production loops,
 current Rust, and active `gamemd.exe` evidence decide the actual task.
 
 ## Working briefs
@@ -36,7 +36,7 @@ current Rust, and active `gamemd.exe` evidence decide the actual task.
 This document does not prescribe a working mode. Each targeted phase has a
 brief under [`phase-briefs/`](phase-briefs/README.md) that carries what a
 session needs and this list cannot: current Rust owners per row, native
-anchors, registry status, loop membership, prior PRs, corrections to research
+anchors, evidence and coverage, production loops, prior PRs, corrections to research
 the rows depend on, inherited residuals, harness coverage and the open
 mechanism queue. The two goal modes (exhaustive phase close, bounded slice)
 are defined there, and the goal prompt names which one applies.
@@ -47,20 +47,18 @@ prelude to rebuild in isolation.
 
 ## Status
 
-Row status is not kept in this document. It lives in the System Map registry
-(`docs/system-map/registry.v2.json`, one `baseline_status` per GSI row with
-`native_evidence`, `rust_implementation`, `parity` and `basis`) and is updated
-only for touched, verified connections, then checked with
-`python -m tools.system_map check`.
-Read a row there before selecting work; `parity` stays `UNCHECKED`/`DRIFT`
-until a gamemd-derived executable comparison demonstrates equivalence.
+Row status is not kept in this document. Consult the phase brief and verify
+its claims against current Rust, native evidence and actual validation.
+The System Map registry is historical and no longer maintained; its status
+fields and checker are not delivery gates. Parity requires gamemd-derived
+executable comparisons or exhaustive proof with explicit coverage limits.
 
 Each closed phase links a closure record under `docs/gap-scans/` from its
 phase heading below: the disparity scans that enumerated the phase's
 mechanisms, the reverse audits, the merged PR list and the remaining
 residuals. A new session starts from the phase brief, which links that
 record; it does not re-enumerate. The 2026-07-30 four-way audit that once
-filled this section is superseded by the registry; its counts are no longer
+filled this section and the later registry are historical; their counts are no longer
 reproduced here.
 
 ## Legend
@@ -268,7 +266,7 @@ reproduced here.
     `+0x234` holds the base stub `0x005B2ED0` (`return 450`) in all eight
     vtables and no code path assigns mission 12; rulesmd.ini marks `[Return]`
     `; <unused>`. Harvester return-to-refinery runs *inside* the Harvest
-    mission's states — see item 157. Keep the enum slot; System Map records
+    mission's states — see item 157. Keep the enum slot; the archived System Map records
     `COMPILED_INACTIVE` / `ABSENT`.)
 159. **GSI-07.37** — Radio contact and link protocol
 160. **GSI-07.38** — Docking reservations, queues and authority handoff
@@ -518,9 +516,9 @@ A six-lane evidence review (INI + research corpus + spot Ghidra checks)
 verified the 336-row taxonomy is complete for missions (32/32), locomotors
 (8 stock + 3 correctly skipped), attached managers (one exception below), and
 superweapons (12/12 active `[SuperWeaponTypes]` entries). It found **seven
-stock-skirmish-visible mechanisms no row title reaches**. These are candidates
-for System Map v2 registration when verified work touches them (the surface is
-frozen; extend only with verified work). They do NOT get row numbers here —
+stock-skirmish-visible mechanisms no row title reaches**. Track verified work
+and remaining coverage in the owning phase brief, without updating the retired
+System Map. These do NOT get row numbers here —
 row numbering 1–336 stays stable.
 
 Genuine gaps, all player-visible in ordinary stock skirmish:
@@ -577,8 +575,8 @@ Phase 14 work; no SKIP flag is justified today.
 
 The phase order is the load-bearing part of this document. Exact ordering inside
 the large faction-breadth and superweapon phases is a recommended build sequence,
-not a binary-proven dependency chain, because System Map v2 does not encode
-complete causal edges for all 336 rows.
+not a binary-proven dependency chain. Establish causal dependencies from current
+source and native evidence; the archived map never encoded all such edges.
 
-Source registry:
+Historical source registry (retired; IDs retained):
 [`docs/system-map/registry.v2.json`](../system-map/registry.v2.json).

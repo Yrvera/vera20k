@@ -120,8 +120,7 @@ documentation and CPU-only tests alone do not establish rendered gamemd parity.
 Use source and `research-index`; ranked results are not exhaustive. Verify index
 worktree provenance. Tracked research/plans belong in the task checkout; requested
 research documents need no accompanying code. Avoid unsolicited reports or permanent
-completion ledgers. Update [System Map](docs/system-map/) only for touched, verified
-connections, then `python -m tools.system_map check`.
+completion ledgers.
 
 Resolve `<main-checkout>` with `git worktree list`; its `ini/`, config, index cache
 and `LOCAL.md` are machine-local. Read retail data before selecting constants.

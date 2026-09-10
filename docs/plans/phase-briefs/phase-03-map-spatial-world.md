@@ -7,9 +7,10 @@ This is the current investigation frontier, not a completed mechanism census.
 
 ## Rows
 
-Registry values below are native evidence / Rust implementation / parity from
+Historical registry values below are native evidence / Rust implementation / parity from
 [registry.v2.json](../../system-map/registry.v2.json). They are inherited status,
-not newly established equivalence. Paths are current representative owners;
+not newly established equivalence. The System Map was retired on 2026-09-10;
+do not maintain these inherited values as current status. Paths are representative owners;
 references are starting evidence whose applicability must be checked per mechanism.
 
 | Row | GSI | Rust owner(s) | Native anchor or research starting point | Registry | Notes |
@@ -33,7 +34,7 @@ references are starting evidence whose applicability must be checked per mechani
 
 ## Loops
 
-The current [topology](../../system-map/topology.v2.json) records representative
+The archived [topology](../../system-map/topology.v2.json) records representative
 connections, not an exhaustive Phase 3 loop inventory:
 
 - `LOOP-005-BUILD-PLACE`: cell passability and occupancy, stages 10–11.
