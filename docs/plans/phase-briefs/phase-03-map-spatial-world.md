@@ -24,7 +24,7 @@ references are starting evidence whose applicability must be checked per mechani
 | 43 | GSI-04.07 | `src/map/authored_overlay.rs`; `src/sim/overlay_grid.rs` | OverlayClass::Mark `0x005FC570`, DestroyOverlay `0x00480CB0`; [authored boundary](../../research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAYPACK_INLINE_TRANSACTION_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Includes mutation order, ownership, shared dummy effects and projection to consumers. |
 | 44 | GSI-04.09 | `src/sim/tiberium/mod.rs`, `overlay_grid.rs`; `src/map/authored_overlay.rs` | Reduce_Tiberium `0x00480A80`; [quantity mutation](../../research/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Identity and quantity are this row; growth/harvesting policy enters only as a proved prerequisite or consumer. |
 | 45 | GSI-04.10 | `src/sim/terrain_object.rs`, `terrain_spawn.rs` | [TerrainClass timing](../../research/TIBTRE_TERRAINCLASS_AI_TIMING_AND_RNG_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Verify ordinary trees/rocks as well as TIBTRE; spawning is not full destruction/fire coverage. |
-| 46 | GSI-04.12 | `src/sim/bridge_state/mod.rs`, `map/bridge_topology.rs`, `world/bridge_orchestrator.rs` | [bridge coverage](../../research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Existing bridge work is substantial but explicitly incomplete. |
+| 46 | GSI-04.12 | `src/sim/bridge_state/mod.rs`, `src/map/bridge_facts.rs`, `src/sim/world/bridge_orchestrator.rs` | [bridge coverage](../../research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Existing bridge work is substantial but explicitly incomplete. Fresh-load record restamping is a conditional investigation priority; see below. |
 | 47 | GSI-04.13 | `src/map/bridge_facts.rs`; `src/sim/movement/movement_bridge.rs` | [bridge coverage](../../research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Distinguish high bridge decks, wood bridges and low bridge tubes. |
 | 48 | GSI-04.15 | `src/map/tubes.rs`, `tube_facts.rs`; `src/sim/movement/tube_movement.rs` | ReadTubesINI `0x007283C0`; [bridge coverage](../../research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Active low-bridge tubes cannot be excluded as TS-only based on their name. |
 | 49 | GSI-04.16 | `src/map/waypoints.rs`; `src/map/map_file.rs` | Read_Waypoints `0x0068BDC0`; [map substrate](../../research/CELLCLASS_MAPCLASS_ENGINE_SUBSTRATE_SERVICE_STUDY.md) | CONTRACTED / PARTIAL / DRIFT | Signed values and canonical key recovery already landed; audit starts/regions and downstream use separately. |
@@ -107,6 +107,28 @@ status is historical; reconcile it against current source before selecting work.
   code nor a generic registry group is enough to establish applicability.
 
 ## Inherited residuals
+
+The reverse-audit triage at `6c7ccf92` found substantial production code in every
+row, but no phase-wide completion evidence. Three previously asset-gated checks
+now pass on the available retail installation: automatic bridge shells, low-end
+bridge TMP fields and all six theater compatibility tables (one test each, zero
+failures). These validate their named data contracts, not complete traversal.
+
+The leading conditional investigation is fresh-load `0x00586BF0`, called after
+record construction and zone setup by `0x00684C30`. It visits inactive non-Tube
+records in reverse and stamps four transverse cells at nonstructural gaps.
+Current source has no identified matching owner. Retail activation and a changed
+consumer result still require a witness. Native `0x004838E0` and the Rust ore
+admission both read mask `0x500`; new `0x400/0x800` writes would also need coherent
+real-cell and shared-dummy persistence beyond the current serialized `0x1180`
+mask. A synthetic gap alone does not establish stock-map incidence.
+
+Whole movement, combat, reveal-policy and drawing systems retain their later
+phase owners. Their trigger phase does not exclude spatial publication required
+by Phase 3. Fogged-object storage and restore tests do not establish production
+insertion; its active-retail fog gate remains unproved. A fresh read of terrain
+damage `0x0071B920` rejects the old surviving-corpse hypothesis: both lethal arms
+destroy and uninitialize immediately, consistent with current Rust removal.
 
 The current height-consumer increment repairs the Bounce adapter's selected Cell
 identity, ordered live queries, raw bridge flags and 416-lepton deck composition.
