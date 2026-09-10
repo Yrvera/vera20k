@@ -2,7 +2,7 @@
 
 Rows 37–52 of the [implementation order](../2026-07-30-clean-slate-system-implementation-order.md).
 State: **IN PROGRESS; every row remains open**. Baseline: fetched `origin/main`
-`6c7ccf92b0855d296ae6e930144e087940d945ca`, refreshed before this mechanism on 2026-09-10.
+`c7432d8cd6f46d2b5c3227a64c0cc7f18ff65ebe`, refreshed after verified PR #329 merge on 2026-09-10.
 This is the current investigation frontier, not a completed mechanism census.
 
 ## Rows
@@ -24,11 +24,11 @@ references are starting evidence whose applicability must be checked per mechani
 | 43 | GSI-04.07 | `src/map/authored_overlay.rs`; `src/sim/overlay_grid.rs` | OverlayClass::Mark `0x005FC570`, DestroyOverlay `0x00480CB0`; [authored boundary](../../research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAYPACK_INLINE_TRANSACTION_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Includes mutation order, ownership, shared dummy effects and projection to consumers. |
 | 44 | GSI-04.09 | `src/sim/tiberium/mod.rs`, `overlay_grid.rs`; `src/map/authored_overlay.rs` | Reduce_Tiberium `0x00480A80`; [quantity mutation](../../research/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Identity and quantity are this row; growth/harvesting policy enters only as a proved prerequisite or consumer. |
 | 45 | GSI-04.10 | `src/sim/terrain_object.rs`, `terrain_spawn.rs` | [TerrainClass timing](../../research/TIBTRE_TERRAINCLASS_AI_TIMING_AND_RNG_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Verify ordinary trees/rocks as well as TIBTRE; spawning is not full destruction/fire coverage. |
-| 46 | GSI-04.12 | `src/sim/bridge_state/mod.rs`, `src/map/bridge_facts.rs`, `src/sim/world/bridge_orchestrator.rs` | [bridge coverage](../../research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Existing bridge work is substantial but explicitly incomplete. Fresh-load record restamping is implemented and validated at `8b147e5e`; broader bridge lifecycle remains open. |
+| 46 | GSI-04.12 | `src/sim/bridge_state/mod.rs`, `src/map/bridge_facts.rs`, `src/sim/world/bridge_orchestrator.rs` | [bridge coverage](../../research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Existing bridge work is substantial but explicitly incomplete. Fresh-load record restamping merged in PR #329 after validation at `8b147e5e`; broader bridge lifecycle remains open. |
 | 47 | GSI-04.13 | `src/map/bridge_facts.rs`; `src/sim/movement/movement_bridge.rs` | [bridge coverage](../../research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Distinguish high bridge decks, wood bridges and low bridge tubes. |
 | 48 | GSI-04.15 | `src/map/tubes.rs`, `tube_facts.rs`; `src/sim/movement/tube_movement.rs` | ReadTubesINI `0x007283C0`; [bridge coverage](../../research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Active low-bridge tubes cannot be excluded as TS-only based on their name. |
 | 49 | GSI-04.16 | `src/map/waypoints.rs`; `src/map/map_file.rs` | Read_Waypoints `0x0068BDC0`; [map substrate](../../research/CELLCLASS_MAPCLASS_ENGINE_SUBSTRATE_SERVICE_STUDY.md) | CONTRACTED / PARTIAL / DRIFT | Signed values and canonical key recovery already landed; audit starts/regions and downstream use separately. |
-| 50 | GSI-04.18 | `src/sim/vision/mod.rs`; `src/sim/snapshot.rs` | [shroud reveal](../../research/SHROUD_REVEAL_SYSTEM_GHIDRA_REPORT.md) | ANCHORED / PARTIAL / UNCHECKED | Persisted knowledge, reveal counters and present visibility are distinct. Historical SHROUD_DISPARITIES is not a current gap list. |
+| 50 | GSI-04.18 | `src/sim/vision/mod.rs`; `src/sim/snapshot.rs` | [shroud reveal](../../research/SHROUD_REVEAL_SYSTEM_GHIDRA_REPORT.md) | ANCHORED / PARTIAL / UNCHECKED | Ordinary sight under hostile gaps has a confirmed production mismatch; sustained sight, transient reveal and periodic pending conceal are distinct. Historical SHROUD_DISPARITIES is not a current gap list. |
 | 51 | GSI-04.11 | `src/sim/smudge_grid.rs`, `combat/smudge_dispatch.rs` | [smudge class](../../research/SMUDGE_CLASS_GHIDRA_REPORT.md), [spawn callers](../../research/SMUDGE_SPAWN_TRIGGERS_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / UNCHECKED | Placement, caller-specific ore mutation, RNG order and restore require evidence. |
 | 52 | GSI-04.20 | `src/map/lighting.rs`; `src/app/presentation/lighting.rs` | ApplyAreaLightConvert `0x00554AF0`; [light source lifecycle](../../research/LIGHTSOURCE_LIFECYCLE_POWER_DAMAGE_SAVELOAD_GHIDRA_REPORT.md) | N/A / N/A / N/A (group) | Group status is not exclusion or closure. Separate active ambience, lamp lifecycle and global tint from dormant TS behavior. |
 
@@ -136,6 +136,51 @@ rejection. The full library passed 8,605 tests with zero failures and 120 ignore
 Clippy exited zero with 1,144 warnings. Report commit `6ec64a17` records these
 receipts and the synthetic building-placement and restore coverage limits.
 
+The [ordinary-shroud comparison](../../research/PHASE3_SHROUD_CURRENT_SIGHT_NATIVE_REPORT.md)
+establishes that hostile gap concealment
+preserves active unit sight. At `c7432d8c`, Rust cleared that sight and the resulting
+map knowledge. Fire and psychic reveals cannot be treated as sustained sight:
+original fire unshrouds without reducing the sight counter, while psychic reveal
+reduces and then increases it. Effective allied sight requires source-aware writes
+to direct viewers; copying another viewer's derived knowledge makes alliances
+incorrectly transitive.
+
+Departure from an existing gap schedules concealment. Original `0x00578100`
+runs at the early Logic `frame % 120 == 0` gate before object and House updates.
+Returning sight can cancel pending conceal when knowledge remains mapped; a
+second fresh gap can change that outcome. Removing the generator after
+departure does not cancel pending. Independent original execution established these observations,
+including the frame-119/frame-120 boundary and the complete two-pass cell sweep.
+The retained original corpus contains 23 sequences and nine signed timer cases, including temporary reveals,
+departure after frame 120 waiting until frame 240, return after a second gap,
+first-ever fire versus Psychic mapping at the periodic boundary, and an admitted
+timed refresh preserving knowledge before concealment. Selected original SpySat
+bulk stores preserve pending conceal; composed source/gap cases retain supplied
+object order. These cases do not execute the full conditional callback dispatch.
+Fresh review additionally proved that unchanged visibility refreshes must not
+invent new native reveal events, and first-ever fire mapping has different pending
+behavior from Psychic mapping even without a gap. Retained source admissions and
+distinct transition writers are necessary prerequisites. Original movement callers
+release stored sight geometry before admitting current geometry. The explicit
+15-frame refresh for admitted moving, high-flying sources changes pending conceal
+and is a required dependency, with per-viewer timer history in Rust's all-viewer
+model. Passive House/cache materialization cannot substitute for that event.
+The same distinction applies to SpySat: actual activation or loss brackets the
+bulk map change with source and gap release/re-admission, in forward object
+order. Repeated active updates do not map the cells again. Native gap removal
+reads the old SpySat-active latch; the bulk change preserves pending conceal.
+Independent review also requires concealed cells to lose public targetable
+visibility, directional source-to-viewer admission for the new timed event, and
+indexed source lookup at the project's 20,000-unit scale. Implementation
+`4823a1b7` passed independent source/native review, 21 focused tests, 69 vision
+tests, 17 GSI tests and deterministic replay. The pre-v142 hash and all three RNG
+pins remain unchanged; the documented new composition is `C9FF66052C998226`.
+At final tested commit `2038cbea`, the full library passed 8,626 tests with zero
+failures and 120 ignored; Clippy exited zero with 1,145 warnings. The fresh
+independent critic verified these receipts, all three retained pre-v142 hash
+guards and unchanged production source, and passed final publication review.
+These bounded results do not close row 50 or the phase.
+Full generator admission, reveal traversal and edge-cache equivalence remain open.
 Whole movement, combat, reveal-policy and drawing systems retain their later
 phase owners. Their trigger phase does not exclude spatial publication required
 by Phase 3. Fogged-object storage and restore tests do not establish production
@@ -230,16 +275,16 @@ unexecuted; they are not passing parity evidence.
 
 ## Open queue
 
-1. Finish publication, merge and merge verification of the inactive
-   high-bridge fresh-load restamp and its flag-authority prerequisite.
-2. From refreshed main, investigate ordinary unexplored/revealed state across
-   reveal, knowledge retention, gap clearing and restore. Substantial production
-   already exists; establish native differences before changing it. Optional
-   fogged-object memory requires its active-retail gate before promotion.
-3. Reconcile the remaining rows and retained hypotheses with current production
+1. Finish the ordinary current-sight/hostile-gap repair, including transient-source
+   distinction, effective allied sight, early periodic concealment and persistence.
+   Complete native comparisons, production tests, independent review and merge.
+2. Reconcile the remaining rows and retained hypotheses with current production
    and retail evidence. Prioritize observable ordinary gameplay; preserve open
    constructor, shared-dummy, iterator, connectivity and consumer-order domains.
-   The hierarchy helper already merged; its residuals require their own proof.
+   Hierarchy, height-query and fresh-load restamp increments already merged;
+   their residuals require their own evidence.
+3. Prove option-dependent fog applicability before accepting an exclusion. Stock
+   `FogOfWar=no` establishes the ordinary scenario, not a universal TS-only gate.
 4. Complete the phase-wide reverse audit only when every in-scope mechanism and
    evidence-backed exclusion is accounted for. Any omission keeps its row open.
 
