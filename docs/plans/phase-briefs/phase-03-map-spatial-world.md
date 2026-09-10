@@ -126,6 +126,12 @@ tokens and signed zone-word packing need explicit coverage. ReadTubesINI also
 writes a Tube index to the shared dummy on a lookup miss, which the hierarchy
 helper can read; the current Rust binding drops that index. Establish its exact
 authority and reset/restore lifecycle before claiming this prerequisite closed.
+Fresh restore tracing finds a coupled ordering obligation: MouseClass load calls
+Resize, which resets the dummy Tube index to -1, before LoadContent invokes
+RebuildAllZoneLevels at `0x0067E8CD`. Rust currently shares the live dummy during
+fallible candidate navigation preparation and resets it only at commit. The new
+reader requires an isolated post-Resize candidate and coherent successful state
+publication; rejected preparation must not stamp the running world's dummy.
 
 The bridge plan retains unresolved construction, restamp, topology and consumer
 transactions. Current shroud, smudge, terrain and lighting code has not received
