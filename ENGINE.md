@@ -122,13 +122,6 @@ worktree provenance. Tracked research/plans belong in the task checkout; request
 research documents need no accompanying code. Avoid unsolicited reports or permanent
 completion ledgers.
 
-The [System Map](docs/system-map/) is retired historical reference. Do not maintain
-its data or run its checker as a delivery requirement. Existing GSI IDs remain valid
-for phase scope. Derive current behavior and coverage from Rust and its nearby native
-references, focused research and reproducible comparisons; recheck consequential
-claims against native bodies/callers and retail data. Archived map claims may be stale,
-contradictory or incorrect and do not establish current status or parity.
-
 Resolve `<main-checkout>` with `git worktree list`; its `ini/`, config, index cache
 and `LOCAL.md` are machine-local. Read retail data before selecting constants.
 YR loads standalone `RULESMD.INI`/`ARTMD.INI`/`AIMD.INI`, then applicable language,
