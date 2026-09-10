@@ -201,8 +201,13 @@ retail executable. Raw local logs are retained under `.local/`.
   stronger connectivity/restore coverage and the schema-140 assertion. The prior
   v2 run exposed only a stale fixture count (83 versus 84), then corrected as the
   corpus expanded; no native output was rebaselined from Rust.
-- Full library suite, Clippy and independent final review: pending.
-  No readiness claim until completed.
+- Final full `cargo test -p vera20k --lib`: exit 0, 8590 passed, 0 failed,
+  119 ignored, 16.75s; 58 warnings. Log `.local/bridge-full-lib-final.log`.
+  Docs-only refreshed-main integrations changed no source or tool implementation.
+- Final `cargo clippy -p vera20k --lib`: exit 0, finished in 38.72s with
+  1144 warnings; `.local/bridge-clippy-final.log`. The warning backlog was not
+  rebaselined or bulk-edited. Independent source/evidence review passed after
+  the confirmed fixes; final publication review reconciles these actual receipts.
 
 The first full suite after docs-only main integration (`1c055245`) exited 101:
 8589 passed, 1 failed, 119 ignored, 15.10s (`.local/bridge-full-lib.log`). Its sole
