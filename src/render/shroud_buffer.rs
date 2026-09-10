@@ -49,21 +49,10 @@ pub(crate) enum CellFill {
 
 /// Decide what one cell contributes to the shroud brightness buffer.
 ///
-/// The original engine picks a SHROUD.SHP frame from one cell field — the
-/// explored bit — and from nothing else. Its shroud renderer never sees gap
-/// coverage: an exhaustive program-wide scan for the instruction that clears
-/// the explored bits finds it only in the three map-wide shroud resets and in
-/// the dormant shroud-regrow path, none of them reachable from a gap
-/// generator.
-///
-/// Gap coverage is nevertheless still darkened here for *hostile* viewers. The
-/// retail bubble does black out the victim's view — through a separate overlay
-/// subsystem that has not been decompiled — so removing it would lose real
-/// behaviour; it is composited through this buffer as an approximation, and
-/// that residual belongs to the gap-generator row. What is gone is the
-/// half-bright fill that used to be painted over the generator's **own**
-/// territory: no such constant exists anywhere in the retail shroud path, and
-/// it dimmed the owner's own base by half for the rest of the match.
+/// Native6FB170 changes Cell+12C shroud knowledge only without sustained sight;
+/// native578100 consumes pending departure conceal at the120-frame Logic boundary.
+/// FogState publishes that selected-cell result here. This CPU decision comparison
+/// does not certify the complete native edge cache or GPU pixel composition.
 pub(crate) fn cell_fill(
     fog: &FogState,
     owner: InternedId,
@@ -607,9 +596,7 @@ mod tests {
         );
     }
 
-    /// The victim's half of the bubble is unchanged. Retail darkens it through
-    /// a different subsystem; compositing it here is an approximation this row
-    /// deliberately leaves in place rather than removing behaviour blind.
+    /// Past mapping without a sustained sight contribution is concealed.
     #[test]
     fn a_hostile_gap_generator_still_blacks_the_cell_out() {
         let victim = intern::test_intern("Soviet");
@@ -623,6 +610,129 @@ mod tests {
             cell_fill(&fog, victim, 6, 6, &SHROUD_EDGE_LUT),
             CellFill::Dark
         );
+    }
+
+    #[test]
+    fn shroud_current_sight_keeps_tactical_cell_bright_until_pending_boundary() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::{components::Health, game_entity::GameEntity, vision};
+        let owner = intern::test_intern("Americans");
+        let gapper = intern::test_intern("Soviet");
+        let interner = intern::test_interner();
+        let mut fog = fog_16();
+        let entity = GameEntity::new_at_frame_zero_for_test(
+            1,
+            6,
+            6,
+            0,
+            0,
+            owner,
+            Health {
+                current: 100,
+                max: 100,
+            },
+            intern::test_intern("E1"),
+            EntityCategory::Infantry,
+            0,
+            3,
+            false,
+        );
+        vision::reveal_entity_vision(
+            &mut fog,
+            &entity,
+            &vision::VisionConfig::default(),
+            None,
+            false,
+            &interner,
+        );
+        apply_gap_generators(&mut fog, &[(gapper, 6, 6, 2)], &interner);
+        assert_eq!(
+            cell_fill(&fog, owner, 6, 6, &SHROUD_EDGE_LUT),
+            CellFill::None
+        );
+        vision::recompute_owner_visibility_in_place(
+            &mut fog,
+            &Default::default(),
+            None,
+            &Default::default(),
+            &vision::VisionConfig::default(),
+            None,
+            &interner,
+            None,
+        );
+        apply_gap_generators(&mut fog, &[(gapper, 6, 6, 2)], &interner);
+        fog.flush_pending_gap_conceal(119);
+        assert_eq!(
+            cell_fill(&fog, owner, 6, 6, &SHROUD_EDGE_LUT),
+            CellFill::None
+        );
+        fog.flush_pending_gap_conceal(120);
+        assert_eq!(
+            cell_fill(&fog, owner, 6, 6, &SHROUD_EDGE_LUT),
+            CellFill::Dark
+        );
+    }
+
+    #[test]
+    fn shroud_current_sight_nontransitive_allied_view_stays_dark() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::{components::Health, game_entity::GameEntity, vision};
+        let a = intern::test_intern("Americans");
+        let b = intern::test_intern("Alliance");
+        let c = intern::test_intern("Soviet");
+        let gapper = intern::test_intern("Neutral");
+        let mut fog = fog_16();
+        for (left, right) in [
+            ("AMERICANS", "ALLIANCE"),
+            ("ALLIANCE", "AMERICANS"),
+            ("ALLIANCE", "SOVIET"),
+            ("SOVIET", "ALLIANCE"),
+        ] {
+            fog.alliances
+                .entry(left.into())
+                .or_default()
+                .insert(right.into());
+        }
+        for owner in [b, c] {
+            fog.mark_visible_for_owner(owner, 0, 0);
+        }
+        let entity = GameEntity::new_at_frame_zero_for_test(
+            1,
+            6,
+            6,
+            0,
+            0,
+            a,
+            Health {
+                current: 100,
+                max: 100,
+            },
+            intern::test_intern("E1"),
+            EntityCategory::Infantry,
+            0,
+            3,
+            false,
+        );
+        let interner = intern::test_interner();
+        vision::reveal_entity_vision(
+            &mut fog,
+            &entity,
+            &vision::VisionConfig::default(),
+            None,
+            false,
+            &interner,
+        );
+        for _ in 0..3 {
+            apply_gap_generators(&mut fog, &[(gapper, 6, 6, 2)], &interner);
+            fog.build_merged_for(b, &interner);
+            assert_eq!(cell_fill(&fog, b, 6, 6, &SHROUD_EDGE_LUT), CellFill::None);
+            fog.build_merged_for(c, &interner);
+            assert_eq!(cell_fill(&fog, c, 6, 6, &SHROUD_EDGE_LUT), CellFill::Dark);
+            assert!(!fog.is_cell_visible(c, 6, 6));
+        }
+        apply_gap_generators(&mut fog, &[], &interner);
+        fog.build_merged_for(c, &interner);
+        assert_eq!(cell_fill(&fog, c, 6, 6, &SHROUD_EDGE_LUT), CellFill::Dark);
     }
 
     #[test]

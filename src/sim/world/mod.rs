@@ -20,41 +20,42 @@ pub(crate) mod building_anim;
 pub mod edge_cell;
 mod hash_schema;
 mod infantry_terminal;
-pub(crate) use infantry_terminal::{InfantryDeathPostlude, InfantryTerminal};
 #[cfg(test)]
 pub(crate) use infantry_terminal::InfantryDeathSequence;
+pub(crate) use infantry_terminal::{InfantryDeathPostlude, InfantryTerminal};
+pub(crate) mod damage_consequences;
 mod lifecycle;
 mod load_object_lifecycle;
 mod logic_vector;
 mod navigation;
-pub(crate) mod damage_consequences;
 mod object_turn;
+mod shroud_refresh;
 #[cfg(test)]
 use object_turn::shp_vehicle_counter_admitted;
 mod projectile_collision;
 mod substrate;
 mod techno_ai;
-pub(crate) use techno_ai::harvester_enter_idle_mode_selector;
 #[cfg(test)]
 pub(crate) use techno_ai::ObjectAiCtx;
+pub(crate) use techno_ai::harvester_enter_idle_mode_selector;
+mod command_schedule;
 pub(crate) mod techno_ai_cloak;
 pub(crate) mod unit_post;
-mod command_schedule;
 mod world_commands;
 mod world_hash;
 mod world_orders;
 mod world_spawn;
 
 #[cfg(test)]
+mod damage_consequence_tests;
+#[cfg(test)]
+mod eva_dispatch_tests;
+#[cfg(test)]
 mod gsi_04_18_tests;
 #[cfg(test)]
 mod house_ai_activation_tests;
 #[cfg(test)]
-mod eva_dispatch_tests;
-#[cfg(test)]
 mod lifecycle_tests;
-#[cfg(test)]
-mod damage_consequence_tests;
 #[cfg(test)]
 mod team_script_vm_tests;
 
@@ -62,9 +63,9 @@ pub(crate) use lifecycle::{
     ConcealOutcome, LifecycleOutput, NULL_TARGET_CELL_SENTINEL, PlacementEvidence, RevealOutcome,
     RevealPosition, RevealRequest, UninitContext,
 };
-pub(crate) use load_object_lifecycle::LoadObjectLifecycle;
 #[cfg(test)]
 pub(crate) use lifecycle::{LifecycleTestEvent, RevealFailure};
+pub(crate) use load_object_lifecycle::LoadObjectLifecycle;
 pub(crate) use logic_vector::LogicVector;
 pub use substrate::EnterOrderCounter;
 pub(crate) use substrate::ObjectSubstrate;
@@ -145,8 +146,7 @@ const DEFAULT_SIM_SEED: u64 = 0x5EED_CAFE_D15E_A5E5;
 
 #[derive(Default)]
 struct ActiveVisionStructures {
-    spy_sat_owners: Vec<InternedId>,
-    gap_generators: Vec<(InternedId, u16, u16, i32)>,
+    gap_generators: Vec<vision::GapGeneratorSource>,
 }
 
 /// Result of one deterministic simulation tick.
@@ -394,7 +394,10 @@ pub enum SimSoundEvent {
     /// One of the `HouseClass::Update` advice lines
     /// (`EVA_InsufficientFunds` `0x004F8BA0`, `EVA_LowPower` `0x004F8D14`)
     /// for a human house; `event` is the `evamd.ini` section name.
-    HouseEva { owner: InternedId, event: &'static str },
+    HouseEva {
+        owner: InternedId,
+        event: &'static str,
+    },
     /// `BuildingClass::Sell @ 0x00449B70`, sell state 2 (`0x00449C99..
     /// 0x00449CE5`, the building is gone): `+0x6DD` (the build-animation-
     /// complete flag: set at `0x004467C9`, cleared in sell states 0 and 1,
@@ -438,7 +441,10 @@ pub enum SimSoundEvent {
     /// `HouseClass::Update`). `sw_type` is the `[SuperWeaponTypes]` section;
     /// the app maps its `Type=` onto the `*Ready` line through the
     /// `0x006CBDE6` jump table (`0x006CBEA8`).
-    SuperWeaponReady { owner: InternedId, sw_type: InternedId },
+    SuperWeaponReady {
+        owner: InternedId,
+        sw_type: InternedId,
+    },
     /// `BuildingClass::OnConstructionComplete @ 0x00445F80`
     /// (`0x004468AD..0x00446995`): a building whose type carries
     /// `SuperWeapon=` finished building up. Native speaks only when the owner
@@ -449,7 +455,10 @@ pub enum SimSoundEvent {
     /// owner (`0x0044692E CountOwnedInstances`); the line comes from the
     /// `[SuperWeaponTypes]` list index (`0x00446948` table at `0x00446FC0`).
     /// The app applies the listener gates and the table.
-    SuperWeaponDetected { owner: InternedId, sw_type: InternedId },
+    SuperWeaponDetected {
+        owner: InternedId,
+        sw_type: InternedId,
+    },
     /// `HouseClass::MPlayer_Defeated @ 0x004FC0B0`, non-local branch
     /// (`0x004FC30C..0x004FC3BC`): a house whose type is not
     /// `MultiplayPassive` (`0x004FC30F`) was defeated. Native also skips the
@@ -1035,7 +1044,8 @@ pub struct Simulation {
     pub(crate) super_weapons:
         BTreeMap<InternedId, BTreeMap<InternedId, crate::sim::superweapon::SuperWeaponInstance>>,
     /// Active lightning storm state (global — only one at a time).
-    pub(crate) lightning_storm: Option<crate::sim::superweapon::lightning_storm::LightningStormState>,
+    pub(crate) lightning_storm:
+        Option<crate::sim::superweapon::lightning_storm::LightningStormState>,
     /// Whether superweapon grants have been initialized from map-placed buildings.
     pub(crate) super_weapons_initialized: bool,
     /// Per-cell terrain speed modifier config (slope climb/descend).
@@ -1188,11 +1198,7 @@ impl crate::sim::combat::combat_aoe::AoECellPrelude for SimulationAreaDamageCell
         let scenario_rng = scenario_rng
             .expect("production Apply_area_damage tiberium prelude requires scenario RNG");
         dispatch_tiberium_reduction_inline(
-            &crate::sim::combat::TiberiumReductionRequest {
-                rx,
-                ry,
-                amount,
-            },
+            &crate::sim::combat::TiberiumReductionRequest { rx, ry, amount },
             self.rules,
             overlay_registry,
             scenario_rng,
@@ -1490,19 +1496,18 @@ impl Simulation {
         self.wave_cell_target_position_in(self.resolved_terrain.as_ref(), rx, ry)
     }
 
-    fn wave_cell_target_position_in(&self, terrain: Option<&ResolvedTerrainGrid>, rx: u16, ry: u16) -> ProjectileCoord {
+    fn wave_cell_target_position_in(
+        &self,
+        terrain: Option<&ResolvedTerrainGrid>,
+        rx: u16,
+        ry: u16,
+    ) -> ProjectileCoord {
         use crate::sim::cell_rect::{CellRef, get_cellclass_fallback};
 
-        match get_cellclass_fallback(
-            terrain,
-            i32::from(rx),
-            i32::from(ry),
-        ) {
-            CellRef::Real(cell) => crate::sim::projectile::cell_target_coord(
-                terrain,
-                cell.rx,
-                cell.ry,
-            ),
+        match get_cellclass_fallback(terrain, i32::from(rx), i32::from(ry)) {
+            CellRef::Real(cell) => {
+                crate::sim::projectile::cell_target_coord(terrain, cell.rx, cell.ry)
+            }
             CellRef::Dummy { cell } => {
                 let live_dummy = if terrain.is_some() {
                     cell
@@ -1699,14 +1704,9 @@ impl Simulation {
                     return None;
                 };
                 ProjectileCoord::new(
-                    i32::from(entity.position.rx) * 256
-                        + entity.position.sub_x.to_num::<i32>(),
-                    i32::from(entity.position.ry) * 256
-                        + entity.position.sub_y.to_num::<i32>(),
-                    crate::sim::combat::object_world_z_leptons(
-                        entity,
-                        terrain,
-                    ),
+                    i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
+                    i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
+                    crate::sim::combat::object_world_z_leptons(entity, terrain),
                 )
             }
             crate::sim::combat::TargetKind::Cell(rx, ry) => {
@@ -1717,14 +1717,9 @@ impl Simulation {
             .get(event.attacker_id)
             .map(|entity| {
                 ProjectileCoord::new(
-                    i32::from(entity.position.rx) * 256
-                        + entity.position.sub_x.to_num::<i32>(),
-                    i32::from(entity.position.ry) * 256
-                        + entity.position.sub_y.to_num::<i32>(),
-                    crate::sim::combat::object_world_z_leptons(
-                        entity,
-                        terrain,
-                    ),
+                    i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
+                    i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
+                    crate::sim::combat::object_world_z_leptons(entity, terrain),
                 )
             })
             .unwrap_or_else(|| {
@@ -1931,13 +1926,16 @@ impl Simulation {
                 while let Some(receiver_object) = current {
                     let receiver = match receiver_object {
                         CellObject::Entity(target_id) => {
-                            let eligible = target_id != request.firer_id
-                                && self.substrate.entities.get(target_id).is_some_and(|entity| {
-                                    entity.is_alive()
-                                        && !entity.dying
-                                        && !entity.lifecycle.in_limbo
-                                        && entity.lifecycle.object_alive
-                                });
+                            let eligible =
+                                target_id != request.firer_id
+                                    && self.substrate.entities.get(target_id).is_some_and(
+                                        |entity| {
+                                            entity.is_alive()
+                                                && !entity.dying
+                                                && !entity.lifecycle.in_limbo
+                                                && entity.lifecycle.object_alive
+                                        },
+                                    );
                             if !eligible {
                                 let order = current_order(
                                     &self.substrate.occupancy,
@@ -1979,12 +1977,24 @@ impl Simulation {
                                 shared_damage = value;
                             }
                             #[cfg(test)]
-                            self.trace_lifecycle_for_test(LifecycleTestEvent::WaveDamageReceiverSelected { wave_id: request.wave_id, target_id: target_id, scenario_rng_state: self.scenario_rng.state() });
+                            self.trace_lifecycle_for_test(
+                                LifecycleTestEvent::WaveDamageReceiverSelected {
+                                    wave_id: request.wave_id,
+                                    target_id: target_id,
+                                    scenario_rng_state: self.scenario_rng.state(),
+                                },
+                            );
                             crate::sim::combat::combat_aoe::AreaDamageReceiver::Entity(event)
                         }
                         CellObject::Terrain(stable_id) => {
                             #[cfg(test)]
-                            self.trace_lifecycle_for_test(LifecycleTestEvent::WaveDamageReceiverSelected { wave_id: request.wave_id, target_id: stable_id, scenario_rng_state: self.scenario_rng.state() });
+                            self.trace_lifecycle_for_test(
+                                LifecycleTestEvent::WaveDamageReceiverSelected {
+                                    wave_id: request.wave_id,
+                                    target_id: stable_id,
+                                    scenario_rng_state: self.scenario_rng.state(),
+                                },
+                            );
                             crate::sim::combat::combat_aoe::AreaDamageReceiver::Terrain(
                                 crate::sim::combat::TerrainDamageEvent {
                                     stable_id,
@@ -1998,8 +2008,13 @@ impl Simulation {
                             )
                         }
                     };
-                    let (nested, mut pings) =
-                        crate::sim::combat::world_receiver::commit_area(self, &mut run, std::slice::from_ref(&receiver), rules, overlay_registry);
+                    let (nested, mut pings) = crate::sim::combat::world_receiver::commit_area(
+                        self,
+                        &mut run,
+                        std::slice::from_ref(&receiver),
+                        rules,
+                        overlay_registry,
+                    );
                     effects.append(nested);
                     under_attack_events.append(&mut pings);
 
@@ -2068,18 +2083,14 @@ impl Simulation {
                     let chance_draw = self.scenario_rng.next_range_u32_inclusive(0, 99) as i32;
                     if chance_draw < rules.combat_damage.collapse_chance
                         && let Some(mutation) = self.resolved_terrain.as_mut().and_then(|terrain| {
-                            terrain.collapse_destroyable_cliff_terrain(
-                                rx,
-                                ry,
-                                |cell_x, cell_y| {
-                                    if let Some(grid) = self.overlay_grid.as_mut() {
-                                        let _ = grid.clear_overlay(cell_x, cell_y);
-                                    }
-                                    if let Some(grid) = self.smudge_grid.as_mut() {
-                                        let _ = grid.clear_cell_slot(cell_x, cell_y);
-                                    }
-                                },
-                            )
+                            terrain.collapse_destroyable_cliff_terrain(rx, ry, |cell_x, cell_y| {
+                                if let Some(grid) = self.overlay_grid.as_mut() {
+                                    let _ = grid.clear_overlay(cell_x, cell_y);
+                                }
+                                if let Some(grid) = self.smudge_grid.as_mut() {
+                                    let _ = grid.clear_cell_slot(cell_x, cell_y);
+                                }
+                            })
                         })
                     {
                         // Native performs one complete zone rebuild after the
@@ -2419,9 +2430,8 @@ impl Simulation {
                 event.ry,
                 Some(event.owner),
             ) {
-                self.sound_events.push(SimSoundEvent::UnitLost {
-                    owner: event.owner,
-                });
+                self.sound_events
+                    .push(SimSoundEvent::UnitLost { owner: event.owner });
             }
         }
     }
@@ -3246,9 +3256,9 @@ impl Simulation {
     }
 
     fn natural_outcome_exit_ready(&self) -> bool {
-        self.houses.iter().any(|(&owner, house)| {
-            house.is_human && self.ready_outcome_for_owner(owner).is_some()
-        })
+        self.houses
+            .iter()
+            .any(|(&owner, house)| house.is_human && self.ready_outcome_for_owner(owner).is_some())
     }
 
     fn termination_frame_requested(&self) -> bool {
@@ -3376,9 +3386,9 @@ impl Simulation {
         header: &crate::map::map_file::MapHeader,
     ) {
         self.playfield_size_height = Some(header.height as i32);
-        self.playfield_bounds = Some(
-            crate::sim::cell_rect::PlayfieldBounds::from_map_header(header),
-        );
+        self.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds::from_map_header(
+            header,
+        ));
         self.playfield_revision = 0;
     }
 
@@ -3476,6 +3486,7 @@ impl Simulation {
                     &reveal_config,
                     height_grid.as_deref(),
                     sight_ability,
+                    &self.interner,
                 );
             }
         }
@@ -3720,11 +3731,7 @@ impl Simulation {
         stable_id
     }
 
-    pub(crate) fn admit_wave(
-        &mut self,
-        stable_id: u64,
-        wave: crate::sim::wave::Wave,
-    ) -> u64 {
+    pub(crate) fn admit_wave(&mut self, stable_id: u64, wave: crate::sim::wave::Wave) -> u64 {
         self.waves.spawn(stable_id, wave);
         let registered = self.register_wave(stable_id);
         debug_assert!(registered);
@@ -5127,14 +5134,7 @@ impl Simulation {
     /// Materialize vision effects from their final authorities: the persisted
     /// per-house SpySat latch and freshly qualified powered Gap generators.
     fn collect_active_vision_structures(&self, rules: &RuleSet) -> ActiveVisionStructures {
-        let mut effects = ActiveVisionStructures {
-            spy_sat_owners: self
-                .houses
-                .iter()
-                .filter_map(|(&owner, house)| house.spy_sat_active.then_some(owner))
-                .collect(),
-            gap_generators: Vec::new(),
-        };
+        let mut effects = ActiveVisionStructures::default();
         for entity in self.substrate.entities.values() {
             if entity.dying
                 || entity.lifecycle.in_limbo
@@ -5156,12 +5156,13 @@ impl Simulation {
                     &self.interner,
                 )
             {
-                effects.gap_generators.push((
-                    entity.owner(),
-                    entity.position.rx,
-                    entity.position.ry,
-                    i32::from(obj.gap_radius_in_cells),
-                ));
+                effects.gap_generators.push(vision::GapGeneratorSource {
+                    stable_id: entity.stable_id(),
+                    owner: entity.owner(),
+                    rx: entity.position.rx,
+                    ry: entity.position.ry,
+                    radius: i32::from(obj.gap_radius_in_cells),
+                });
             }
         }
         effects
@@ -5172,23 +5173,17 @@ impl Simulation {
         // but the later House rung must replace that earlier result after any
         // combat/lifecycle changes before it reapplies the final effect set.
         self.fog.clear_gap_flags();
-        if !effects.spy_sat_owners.is_empty() {
-            if let Some(terrain) = self.resolved_terrain.as_ref() {
-                for &owner in &effects.spy_sat_owners {
-                    self.fog.reveal_cells_for_owner(
-                        owner,
-                        terrain.iter().map(|cell| (cell.rx, cell.ry)),
-                    );
-                }
-            } else {
-                // Synthetic fixtures without production terrain retain the
-                // rectangular fallback owned by the visibility subsystem.
-                vision::apply_spy_sat(&mut self.fog, &effects.spy_sat_owners, &self.interner);
-            }
-        }
-        if !effects.gap_generators.is_empty() {
-            vision::apply_gap_generators(&mut self.fog, &effects.gap_generators, &self.interner);
-        }
+        let spy_sat_active_owners = self
+            .houses
+            .iter()
+            .filter_map(|(&owner, house)| house.spy_sat_active.then_some(owner))
+            .collect();
+        vision::apply_gap_generator_sources_with_spy_sat(
+            &mut self.fog,
+            &effects.gap_generators,
+            &self.interner,
+            &spy_sat_active_owners,
+        );
     }
 
     /// Commit aggregate SpySat transitions at the House update rung, then
@@ -5196,19 +5191,51 @@ impl Simulation {
     /// execute later and therefore become visible to this scan next frame.
     fn reconcile_active_vision_structures(&mut self, rules: &RuleSet) {
         let active_owners = self.collect_spy_sat_candidate_owners(rules);
-        let mut owners_losing_last_uplink = Vec::new();
-        for (&owner, house) in &mut self.houses {
-            let active = active_owners.contains(&owner);
-            if house.spy_sat_active && !active {
-                owners_losing_last_uplink.push(owner);
-            }
-            if house.spy_sat_active != active {
+        let transitions: Vec<_> = self
+            .houses
+            .iter()
+            .filter_map(|(&owner, house)| {
+                let active = active_owners.contains(&owner);
+                (house.spy_sat_active != active).then_some((owner, house.spy_sat_active, active))
+            })
+            .collect();
+        for (owner, old_active, active) in transitions {
+            let cells = self.resolved_terrain.as_ref().map_or_else(
+                || self.fog.rectangular_cells(),
+                |terrain| terrain.iter().map(|cell| (cell.rx, cell.ry)).collect(),
+            );
+            //509064/509012 call Map while577A still has its OLD value; callback
+            //gap removal reads577A, not the separate MapIsClear byte241.
+            //4ADEE0/4ADCD0 do not release allied mobile sight. The represented
+            //multiplayer known-own branch and stock AllyReveal=yes directional
+            //allied Building arm
+            //select callbacks; untouched admissions survive the bulk counter
+            //overwrite. Independent41B discovery, campaign Human and the
+            //RevealToAll alternate-recipient branch remain caller residuals.
+            let sources = self
+                .substrate
+                .entities
+                .iter_sorted()
+                .filter_map(|(id, entity)| {
+                    if !entity.lifecycle.object_alive || entity.lifecycle.in_limbo {
+                        return None;
+                    }
+                    let own = entity.owner() == owner;
+                    let allied_building = entity.category == EntityCategory::Structure
+                        && crate::map::houses::is_allied_with(
+                            &self.house_alliances,
+                            self.interner.resolve(entity.owner()),
+                            self.interner.resolve(owner),
+                        );
+                    (own || allied_building).then_some(id)
+                })
+                .collect();
+            self.fog
+                .transition_whole_map_with_sources(owner, cells, !active, old_active, &sources);
+            if let Some(house) = self.houses.get_mut(&owner) {
                 house.map_is_clear = active;
+                house.spy_sat_active = active;
             }
-            house.spy_sat_active = active;
-        }
-        for owner in owners_losing_last_uplink {
-            self.fog.restore_shroud_after_spy_sat_loss(owner);
         }
         let effects = self.collect_active_vision_structures(rules);
         self.apply_active_vision_structures(&effects);
@@ -5230,11 +5257,7 @@ impl Simulation {
             let owner = self.session.house_order[index];
             let represented = self.houses.contains_key(&owner);
             if let Some(house) = self.houses.get_mut(&owner) {
-                house_strategy::decay_anger_scores(
-                    house,
-                    &self.session.house_order,
-                    current_frame,
-                );
+                house_strategy::decay_anger_scores(house, &self.session.house_order, current_frame);
             }
             if represented {
                 #[cfg(test)]
@@ -5504,9 +5527,7 @@ impl Simulation {
         if self.session.tick > 0 {
             self.check_defeat(rules);
             #[cfg(test)]
-            self.trace_house_ai_activation_order(
-                HouseAiActivationOrderTestEvent::DefeatProcessed,
-            );
+            self.trace_house_ai_activation_order(HouseAiActivationOrderTestEvent::DefeatProcessed);
         }
 
         // --- Phase 8 (cont.): AI ---
@@ -5704,10 +5725,12 @@ impl Simulation {
         registry: &crate::rules::team_ai_ini::TeamAiIniRegistry,
         rules: &RuleSet,
     ) -> Vec<crate::sim::team_script_vm::TeamAiInstallDiagnostic> {
-        let (vm, diagnostics) = TeamScriptVm::from_ini_registry(registry, &mut self.interner, rules);
-        if !diagnostics.iter().any(
-            crate::sim::team_script_vm::TeamAiInstallDiagnostic::is_fixed_source_refusal,
-        ) {
+        let (vm, diagnostics) =
+            TeamScriptVm::from_ini_registry(registry, &mut self.interner, rules);
+        if !diagnostics
+            .iter()
+            .any(crate::sim::team_script_vm::TeamAiInstallDiagnostic::is_fixed_source_refusal)
+        {
             self.team_script_vm = vm;
         }
         diagnostics
@@ -5735,7 +5758,9 @@ impl Simulation {
             .entities
             .keys_sorted()
             .iter()
-            .filter_map(|id| wake_anchor_for(self.substrate.entities.get(*id)?, terrain, binary_frame))
+            .filter_map(|id| {
+                wake_anchor_for(self.substrate.entities.get(*id)?, terrain, binary_frame)
+            })
             .collect();
         if wake_positions.is_empty() {
             return;
@@ -5897,6 +5922,11 @@ impl Simulation {
         if let Some(inputs) = trigger_inputs {
             self.poll_triggers_for_master_frame(inputs);
         }
+
+        // Logic55B29A/55B2AD: consume prior pending conceal at the signed
+        // pre-increment native frame boundary, before ore, Teams and live objects.
+        self.fog
+            .flush_pending_gap_conceal(self.session.binary_frame as i32);
 
         // Object-AI stage: the authoritative per-object Mission host, run
         // immediately BEFORE Phase-1 ground movement — gamemd decides each

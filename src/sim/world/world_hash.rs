@@ -1081,13 +1081,28 @@ impl Simulation {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_sustained_gap_sight_v142(&self) -> u64 {
+        self.state_hash_with_schema(HashSchema::Before(142))
+    }
+
     /// Hash fog-of-war visibility and house alliance data.
     fn hash_fog_and_alliances(&self, hasher: &mut impl Hasher, schema: HashSchema) {
         self.fog.width.hash(hasher);
         self.fog.height.hash(hasher);
         for (owner, fog) in &self.fog.by_owner {
             owner.hash(hasher);
-            fog.cells_raw().hash(hasher);
+            if schema.includes(HashFeature::SustainedGapSight) {
+                fog.cells_raw().hash(hasher);
+                fog.shroud_knowledge_raw().hash(hasher);
+            } else {
+                // Historical probes predate the four persisted provenance bits.
+                fog.cells_raw()
+                    .iter()
+                    .map(|cell| cell & !0xF0)
+                    .collect::<Vec<_>>()
+                    .hash(hasher);
+            }
             // CellClass visibility counters/flags are serialized simulation
             // state, not renderer cache; fold their row-major projection too.
             for cell in fog.cell_runtime_raw() {
@@ -1099,6 +1114,11 @@ impl Simulation {
                 cell.foggedness.hash(hasher);
             }
             fog.visibility_marks_raw().hash(hasher);
+        }
+        if schema.includes(HashFeature::SustainedGapSight) {
+            self.fog.gap_sources.hash(hasher);
+            self.fog.sight_admissions.hash(hasher);
+            self.fog.whole_map_revealed_owners.hash(hasher);
         }
         b"fogged-object-footprints-v1".hash(hasher);
         self.fog.next_fogged_object_id.hash(hasher);
@@ -1448,6 +1468,9 @@ impl Simulation {
             entity.damage_fire_state_active.hash(hasher);
             entity.damage_fire_anim_ids.hash(hasher);
             entity.vision_range.hash(hasher);
+            if schema.includes(HashFeature::SustainedGapSight) {
+                entity.sight_refresh_timers.hash(hasher);
+            }
 
             if let Some(ref movement) = entity.movement_target {
                 1u8.hash(hasher);

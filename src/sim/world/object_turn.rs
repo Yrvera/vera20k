@@ -118,6 +118,10 @@ impl Simulation {
             return outcome;
         }
 
+        if !tube_active_at_entry {
+            sim.refresh_high_flying_sight_before_process(stable_id, rules, path_grid);
+        }
+
         let before_movement = sim.movement_sound_probe(stable_id);
         let cell_before_movement = sim
             .substrate

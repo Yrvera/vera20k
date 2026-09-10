@@ -34,7 +34,7 @@ borrow another viewer's timer. A due event releases/re-admits only its viewer an
 reloads15 even if the reveal leaves reject membership. Losing an admission does
 not reset this clock. Snapshot142 persists state/footprints/gap receipts/clocks/Map240;
 current hashes include them, historical probes omit them and the four new bits.
-**The Rust revision is not yet validated.**
+Focused validation has passed; final full-library and Clippy readiness is pending.
 
 ## Original bodies and active retail evidence
 
@@ -140,12 +140,31 @@ Focused v1 compiled successfully in3m50s, then exited101:14 passed,6 failed.
 Two fixtures cloned the interner before registering names, two inserted marked
 objects without occupancy, and two compared whole hashes across the documented
 Scenario Seed(0) restore reset. The corrected fixtures retain normal lifecycle
-and snapshot invariants. Focused v2 is running; no passing Rust receipt is claimed.
+and snapshot invariants. Focused v2 passed20/21; its last timer fixture let actual Jumpjet Process move
+current altitude to an unset target0 before a later high-flight assertion. Setting
+the fixture target to the same208 leptons preserves its intended admitted flight.
+Focused v3 then passed21/21, exit0 (2m36s compile,0.01s execution), retained in
+`.local/shroud-current-sight-focused-v3.log`. No production fix resulted from
+these mechanical fixture failures.
 
 Working `cargo check -p vera20k --lib` passed: exit0, 1m20s,90 warnings, retained
-in `.local/shroud-current-sight-check-v1.log`. Focused tests, historical
-hash reconciliation, full `cargo test -p vera20k --lib`,
-`cargo clippy -p vera20k --lib` and final independent review remain pending.
+in `.local/shroud-current-sight-check-v1.log`. The broader world module passed
+17/17, exit0 (`.local/shroud-current-sight-broader-v1-2.log`). The first broader
+vision run passed66/69: two old assertions expected hostile gaps to erase admitted
+sight, and one created the allied viewer only after its reveal writer. Those
+fixtures now distinguish current sight from retained knowledge and register the
+viewer before admission.
+
+The global replay passed every historical probe, including pre-v142
+`71EC0BD6ED9D45CC`, and all stream pins
+`78D48215F590AB97,39F3258BA550EB7C,1CE8184870436163`. Only new hash composition
+changed, to `C9FF66052C998226`; the single rebaseline retains all old probes and
+stream assertions. Receipt: `.local/shroud-current-sight-broader-v1-3.log`.
+The corrected affected rerun passed69/69 vision tests and1/1 global replay,
+both exit0 (`.local/shroud-current-sight-broader-v2-1.log` and `-2.log`).
+Full `cargo test -p vera20k --lib`, `cargo clippy -p vera20k --lib` and final
+receipt review remain pending.
+Independent corrected source/native review passed before these test-only updates.
 
 ## Explicit remaining scope
 
