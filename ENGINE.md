@@ -120,8 +120,14 @@ documentation and CPU-only tests alone do not establish rendered gamemd parity.
 Use source and `research-index`; ranked results are not exhaustive. Verify index
 worktree provenance. Tracked research/plans belong in the task checkout; requested
 research documents need no accompanying code. Avoid unsolicited reports or permanent
-completion ledgers. Update [System Map](docs/system-map/) only for touched, verified
-connections, then `python -m tools.system_map check`.
+completion ledgers.
+
+The [System Map](docs/system-map/) is a navigation aid. Its descriptions, status fields
+and cited research may be stale, contradictory or incorrect. Recheck consequential
+claims against current Rust, native bodies/callers and retail data; an existing
+citation or past review does not establish current accuracy or parity. Update only
+touched, verified connections, then `python -m tools.system_map check`. This checker
+checks paths and IDs, not claim accuracy, freshness or evidence coverage.
 
 Resolve `<main-checkout>` with `git worktree list`; its `ini/`, config, index cache
 and `LOCAL.md` are machine-local. Read retail data before selecting constants.
