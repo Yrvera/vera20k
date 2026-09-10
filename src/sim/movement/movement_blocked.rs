@@ -170,6 +170,13 @@ pub(super) fn handle_blocked_tick(
             urgency,
         )
     });
+    // Walk code2 retains its +6B7 latch and +668 grace timer across successful
+    // FindPath (0x75B979..0x75B9F9). Actual walking clears the latch at 0x75BFCD.
+    // The shared path installer retains its existing reset for other movers.
+    let walk_blocked_state = locomotor
+        .as_ref()
+        .filter(|l| l.kind == crate::rules::locomotor_type::LocomotorKind::Walk)
+        .map(|_| (target.path_blocked, target.blocked_delay));
     let repath_ok = try_repath_after_block(
         target,
         facing,
@@ -191,6 +198,10 @@ pub(super) fn handle_blocked_tick(
         marker_search.as_ref(),
     );
     if repath_ok {
+        if let Some((path_blocked, blocked_delay)) = walk_blocked_state {
+            target.path_blocked = path_blocked;
+            target.blocked_delay = blocked_delay;
+        }
         match locomotor.as_ref().map(|locomotor| locomotor.kind) {
             Some(crate::rules::locomotor_type::LocomotorKind::Drive) => {
                 if let Some(drive) = drive_locomotion.as_mut() {
@@ -215,7 +226,11 @@ pub(super) fn handle_blocked_tick(
             _ => {}
         }
         stats.repath_successes = stats.repath_successes.saturating_add(1);
-        if is_infantry {
+        if is_infantry
+            && !locomotor
+                .as_ref()
+                .is_some_and(|l| l.kind == crate::rules::locomotor_type::LocomotorKind::Walk)
+        {
             target.path_blocked = false;
         }
         target.path_stuck_counter = path_stuck_init;
@@ -274,5 +289,148 @@ pub(super) fn handle_blocked_tick(
         // rate-limit A* calls while the blocked_delay counter keeps ticking.
         target.movement_delay = mcfg.path_delay_ticks;
     }
+    // Walk restarts PathDelay after every actual FindPath attempt, including
+    // success and urgency-2 failure (0x75B98C..0x75B9B1). Drive does not.
+    if locomotor
+        .as_ref()
+        .is_some_and(|l| l.kind == crate::rules::locomotor_type::LocomotorKind::Walk)
+    {
+        target.movement_delay = mcfg.path_delay_ticks;
+    }
     deferred_events
+}
+
+#[cfg(test)]
+mod native_walk_timer_tests {
+    use super::*;
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::occupancy::OccupancyGrid;
+    use crate::sim::pathfinding::PathGrid;
+
+    // Fixture adapter only: the native oracle supplies absolute timer state,
+    // while MovementTarget stores already-elapsed remaining frame counts.
+    fn remaining(frame: i64, start: i64, duration: i64) -> u16 {
+        u16::try_from(if start == -1 {
+            duration
+        } else {
+            (duration - (frame - start)).max(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn walk_code_two_repath_timing_matches_native_vectors() {
+        // Original instructions 0x75B8A0..0x75B979 / 0x75C1F1. Recheck:
+        // python -m tools.infantry_scatter_oracle --check
+        // Coverage: grace initialization/preservation, movement-delay gate,
+        // and urgency selection. Native FindPath and final timer restart are
+        // outside the oracle; the open-grid success/restart checks below are
+        // Rust integration regressions, not native pathfinding parity.
+        let data: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tools/infantry_scatter_oracle.json"))
+                .unwrap();
+        assert_eq!(data["source"], "unicorn/gamemd.exe");
+        let cases = data["walk_code2_timers"].as_array().unwrap();
+        assert_eq!(cases.len(), 30);
+        let grid = PathGrid::new(20, 20);
+        let occupancy = OccupancyGrid::new();
+        let locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
+        let mut observed = [0usize; 3]; // wait, urgency1, urgency2
+
+        for case in cases {
+            let n = |key: &str| case[key].as_i64().unwrap();
+            let b = |key: &str| case[key].as_bool().unwrap();
+            let frame = n("frame");
+            let prior_movement = remaining(frame, n("movement_start"), n("movement_duration"));
+            let mut target = MovementTarget {
+                path: vec![(8, 12), (9, 12), (10, 12)],
+                path_layers: vec![MovementLayer::Ground; 3],
+                next_index: 1,
+                final_goal: Some((10, 12)),
+                path_blocked: b("already_blocked"),
+                blocked_delay: remaining(frame, n("grace_start"), n("grace_duration")),
+                movement_delay: prior_movement,
+                path_stuck_counter: 10,
+                ..Default::default()
+            };
+            let mut facing = 64;
+            let mut stats = MovementTickStats::default();
+            let mut finished = Vec::new();
+            let mut aborted = false;
+            let events = handle_blocked_tick(
+                &mut target,
+                &mut facing,
+                None,
+                &locomotor,
+                &mut None,
+                &mut None,
+                1,
+                (8, 12),
+                MovementLayer::Ground,
+                false,
+                &mut stats,
+                &mut finished,
+                &mut aborted,
+                PathfindingContext {
+                    path_grid: Some(&grid),
+                    zone_grid: None,
+                    resolved_terrain: None,
+                    playfield_bounds: None,
+                    blocker_neighbor_counts: None,
+                },
+                None,
+                None,
+                None,
+                false,
+                MovementConfig {
+                    close_enough: SIM_ZERO,
+                    path_delay_ticks: 3,
+                    blockage_path_delay_ticks: n("configured_grace") as u16,
+                },
+                &mut SimRng::new(7),
+                frame as u64,
+                10,
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                &occupancy,
+            );
+            assert_eq!(stats.repath_attempts, u32::from(b("repath")), "{case}");
+            assert_eq!(target.path_blocked, b("out_blocked"), "{case}");
+            assert_eq!(
+                target.blocked_delay,
+                remaining(frame, n("out_grace_start"), n("out_grace_duration")),
+                "{case}"
+            );
+            assert!(!aborted && finished.is_empty(), "{case}");
+            assert_eq!(target.final_goal, Some((10, 12)), "{case}");
+            if b("repath") {
+                let urgency = n("urgency");
+                observed[urgency as usize] += 1;
+                assert_eq!(case["goal"], serde_json::json!([10, 12]));
+                assert_eq!(stats.repath_successes, 1, "{case}");
+                assert!(
+                    events.iter().any(|(_, event)| matches!(event,
+                        DebugEventKind::Repath { reason, .. }
+                        if reason.contains(&format!("urgency={urgency} effective={urgency}"))
+                    )),
+                    "{case}"
+                );
+                assert_eq!(target.movement_delay, 3, "{case}");
+            } else {
+                observed[0] += 1;
+                assert_eq!(target.movement_delay, prior_movement, "{case}");
+                assert!(
+                    !events
+                        .iter()
+                        .any(|(_, event)| matches!(event, DebugEventKind::Repath { .. })),
+                    "{case}"
+                );
+            }
+        }
+        assert!(observed.iter().all(|&count| count > 0), "{observed:?}");
+    }
 }

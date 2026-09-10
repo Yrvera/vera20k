@@ -5862,3 +5862,194 @@ fn drive_track_ne_diagonal_costs_the_same_ticks_per_cell_as_se() {
          NE visited {ne_visited:?}, SE visited {se_visited:?}"
     );
 }
+
+// Reproduces the eight-GI ordinary-move report. Native scatter gate vectors
+// are retained in tools/infantry_scatter_oracle.json.
+#[test]
+fn group_gis_do_not_acquire_scatter_speed_or_lose_their_goal() {
+    let grid = PathGrid::new(30, 30);
+    let mut reached = 0;
+    for seed in 0..8 {
+        let mut entities = EntityStore::new();
+        for id in 1..=8u64 {
+            let mut e = GameEntity::test_default(
+                id,
+                "E1",
+                "Americans",
+                10 + (id % 3) as u16,
+                10 + (id / 3) as u16,
+            );
+            e.category = EntityCategory::Infantry;
+            e.lifecycle.in_limbo = false;
+            e.lifecycle.cell_marked = true;
+            e.sub_cell = Some(2);
+            let mut loco = LocomotorState::for_test_kind(LocomotorKind::Walk);
+            loco.speed_type = SpeedType::Foot;
+            e.locomotor = Some(loco);
+            entities.insert(e);
+        }
+        for id in 1..=8u64 {
+            assert!(issue_move_command(
+                &mut entities,
+                &grid,
+                id,
+                (3, 3),
+                SimFixed::from_num(150),
+                false,
+                None,
+                None,
+                None,
+                false
+            ));
+        }
+        let mut occupancy = OccupancyGrid::new();
+        for (id, e) in entities.iter_sorted() {
+            occupancy.add(
+                e.position.rx,
+                e.position.ry,
+                id,
+                MovementLayer::Ground,
+                e.sub_cell,
+                CellListInsertion::PrependNonBuilding,
+            );
+        }
+        let mut rng = SimRng::new(seed);
+        let mut interner = test_interner();
+        let mut requests = Vec::new();
+        for tick in 0..1000 {
+            let previous: Vec<_> = (1..=8u64)
+                .map(|id| entities.get(id).unwrap().position.clone())
+                .collect();
+            tick_movement_with_grid(
+                &mut entities,
+                Some(&grid),
+                &Default::default(),
+                &Default::default(),
+                &mut occupancy,
+                &mut rng,
+                tick,
+                &mut interner,
+                &mut requests,
+            );
+            for id in 1..=8u64 {
+                let p = &entities.get(id).unwrap().position;
+                let old = &previous[(id - 1) as usize];
+                let dx = (i32::from(p.rx) - i32::from(old.rx)) * 256
+                    + (p.sub_x - old.sub_x).to_num::<i32>();
+                let dy = (i32::from(p.ry) - i32::from(old.ry)) * 256
+                    + (p.sub_y - old.sub_y).to_num::<i32>();
+                assert!(
+                    dx * dx + dy * dy <= 32 * 32,
+                    "unexpected jump seed={seed} tick={tick} GI={id} delta=({dx},{dy})"
+                );
+                if let Some(mt) = entities.get(id).unwrap().movement_target.as_ref() {
+                    assert_eq!(
+                        mt.speed,
+                        SimFixed::from_num(150),
+                        "seed={seed} tick={tick} GI={id}"
+                    );
+                    if mt.final_goal != Some((3, 3)) {
+                        let e = entities.get(id).unwrap();
+                        let dx = i32::from(e.position.rx) - 3;
+                        let dy = i32::from(e.position.ry) - 3;
+                        assert!(
+                            dx * dx + dy * dy <= 9,
+                            "only a GI that reached the destination may be scattered: seed={seed} tick={tick} id={id}"
+                        );
+                    }
+                }
+            }
+        }
+        for id in 1..=8u64 {
+            let e = entities.get(id).unwrap();
+            let dx = i32::from(e.position.rx) - 3;
+            let dy = i32::from(e.position.ry) - 3;
+            if dx * dx + dy * dy <= 9 {
+                reached += 1;
+            }
+        }
+    }
+    assert_eq!(
+        reached, 64,
+        "the entire group must reach the destination area"
+    );
+}
+
+#[test]
+fn blocked_walk_keeps_exact_pre_step_position() {
+    let grid = PathGrid::new(30, 30);
+    let mut entities = EntityStore::new();
+    for id in 1..=2 {
+        let mut e = GameEntity::test_default(id, "E1", "Americans", 9 + id as u16, 10);
+        e.category = EntityCategory::Infantry;
+        e.lifecycle.in_limbo = false;
+        e.lifecycle.cell_marked = true;
+        e.sub_cell = Some(2);
+        let mut loco = LocomotorState::for_test_kind(LocomotorKind::Walk);
+        loco.speed_type = SpeedType::Foot;
+        e.locomotor = Some(loco);
+        entities.insert(e);
+        assert!(issue_move_command(
+            &mut entities,
+            &grid,
+            id,
+            (20, 10),
+            SimFixed::from_num(150),
+            false,
+            None,
+            None,
+            None,
+            false
+        ));
+    }
+    entities.get_mut(1).unwrap().position.sub_x = SimFixed::from_num(253);
+    entities.get_mut(1).unwrap().position.sub_y = SimFixed::from_num(77);
+    let before = entities.get(1).unwrap().position.clone();
+    let mut occupancy = OccupancyGrid::new();
+    for (id, e) in entities.iter_sorted() {
+        occupancy.add(
+            e.position.rx,
+            e.position.ry,
+            id,
+            MovementLayer::Ground,
+            e.sub_cell,
+            CellListInsertion::PrependNonBuilding,
+        );
+    }
+    let mut rng = SimRng::new(0);
+    tick_movement_with_grid(
+        &mut entities,
+        Some(&grid),
+        &Default::default(),
+        &Default::default(),
+        &mut occupancy,
+        &mut rng,
+        0,
+        &mut test_interner(),
+        &mut Vec::new(),
+    );
+    let e = entities.get(1).unwrap();
+    assert_eq!(
+        (
+            e.position.rx,
+            e.position.ry,
+            e.position.sub_x,
+            e.position.sub_y
+        ),
+        (before.rx, before.ry, before.sub_x, before.sub_y)
+    );
+    assert_eq!(
+        e.movement_target.as_ref().unwrap().final_goal,
+        Some((20, 10))
+    );
+    assert_eq!(
+        entities
+            .get(2)
+            .unwrap()
+            .movement_target
+            .as_ref()
+            .unwrap()
+            .final_goal,
+        Some((20, 10))
+    );
+}

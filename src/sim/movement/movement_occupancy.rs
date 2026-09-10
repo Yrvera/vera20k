@@ -658,7 +658,9 @@ pub(super) fn handle_deferred_occupancy(
             // Locomotor override (JumpJet) can clear a lower native code before
             // we reach this branch.
             if let Some(entity) = entities.get_mut(entity_id) {
-                snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                if mover_loco_kind != LocomotorKind::Walk {
+                    snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                }
                 if let Some(ref mut target) = entity.movement_target {
                     target.blocked_delay = 0;
                     target.path_blocked = false;
@@ -670,7 +672,9 @@ pub(super) fn handle_deferred_occupancy(
             // contact. The opener request has already been issued above; the
             // mover must wait/repath instead of entering this occupied cell.
             if let Some(entity) = entities.get_mut(entity_id) {
-                snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                if mover_loco_kind != LocomotorKind::Walk {
+                    snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                }
                 let cur_pos = (entity.position.rx, entity.position.ry);
                 let body_facing = entity.body_facing;
                 if let Some(ref mut target) = entity.movement_target {
@@ -753,8 +757,6 @@ pub(super) fn handle_deferred_occupancy(
                     if kill_set.contains(&blocker_id) {
                         continue;
                     }
-                    let blocker_fraidycat =
-                        bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
                     if !already_scattered.contains(&blocker_id)
                         && bump_crush::scatter_blocker(
                             entities,
@@ -763,8 +765,8 @@ pub(super) fn handle_deferred_occupancy(
                             occupancy,
                             object_list_layer,
                             rng,
-                            rules.map(|r| &r.mission_control),
-                            blocker_fraidycat,
+                            rules,
+                            interner,
                         )
                     {
                         already_scattered.insert(blocker_id);
@@ -802,7 +804,9 @@ pub(super) fn handle_deferred_occupancy(
                 crush_coord: crusher_cell,
             }));
             if let Some(entity) = entities.get_mut(entity_id) {
-                snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                if mover_loco_kind != LocomotorKind::Walk {
+                    snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                }
                 if let Some(ref mut target) = entity.movement_target {
                     target.blocked_delay = 0;
                     target.path_blocked = false;
@@ -824,8 +828,6 @@ pub(super) fn handle_deferred_occupancy(
             // movement command to walk to an adjacent cell.
             let mut scattered = false;
             if !blocker_is_structure && !already_scattered.contains(&blocker_id) {
-                let blocker_fraidycat =
-                    bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
                 scattered = bump_crush::scatter_blocker(
                     entities,
                     blocker_id,
@@ -833,8 +835,8 @@ pub(super) fn handle_deferred_occupancy(
                     occupancy,
                     object_list_layer,
                     rng,
-                    rules.map(|r| &r.mission_control),
-                    blocker_fraidycat,
+                    rules,
+                    interner,
                 );
                 if scattered {
                     already_scattered.insert(blocker_id);
@@ -844,7 +846,9 @@ pub(super) fn handle_deferred_occupancy(
             // Mover waits — blocker is walking away. If scatter failed,
             // fall through to handle_blocked_tick for repath.
             if let Some(entity) = entities.get_mut(entity_id) {
-                snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                if mover_loco_kind != LocomotorKind::Walk {
+                    snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                }
                 let cur_pos = (entity.position.rx, entity.position.ry);
                 let body_facing = entity.body_facing;
                 if let Some(ref mut target) = entity.movement_target {
@@ -852,10 +856,12 @@ pub(super) fn handle_deferred_occupancy(
                         // Blocker is walking away. The original writes its
                         // hardcoded 10-frame post-scatter wait here, not
                         // `[AI] BlockagePathDelay`, which is a separate timer.
-                        if !target.path_blocked {
+                        if mover_loco_kind != LocomotorKind::Walk && !target.path_blocked {
                             target.path_blocked = true;
                             target.blocked_delay = bump_crush::POST_SCATTER_WAIT_FRAMES;
                         }
+                        // Walk code 6 returns after CellScatter (0x75B891),
+                        // without installing Drive's fixed ten-frame wait.
                     } else {
                         let mut aborted_for_stuck = false;
                         let evts = handle_blocked_tick(
@@ -993,7 +999,9 @@ pub(super) fn handle_deferred_occupancy(
                     entities, alliances, interner, entity_id, blocker_id,
                 );
                 if let Some(entity) = entities.get_mut(entity_id) {
-                    snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                    if mover_loco_kind != LocomotorKind::Walk {
+                        snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                    }
                 }
                 // The tail. `finalize_finished_entities` is VERA's single stop
                 // path: it drops the path executor (the stored path array), puts
@@ -1003,7 +1011,9 @@ pub(super) fn handle_deferred_occupancy(
                     finished_entities.push(entity_id);
                 }
             } else if let Some(entity) = entities.get_mut(entity_id) {
-                snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                if mover_loco_kind != LocomotorKind::Walk {
+                    snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                }
                 if entity.attack_target.is_none() {
                     entity.attack_target = Some(AttackTarget::new(blocker_id));
                 }
@@ -1053,8 +1063,9 @@ pub(super) fn handle_deferred_occupancy(
                 CellEntryResult::TemporaryOccupation => None,
                 _ => unreachable!(),
             };
-            // Moving friendly — scatter the BLOCKER, then wait.
-            // Original engine: locomotor calls CellClass::Scatter_Objects with
+            // Drive moving-friendly response: scatter the BLOCKER, then wait.
+            // Walk bypasses that block below and only waits/repaths.
+            // Original Drive locomotor calls CellClass::Scatter_Objects with
             // force=1 regardless of whether blocker is moving or stationary,
             // and writes its 10-frame wait into the mover *immediately after*
             // that call. So the nudge comes first and the wait is what follows
@@ -1064,10 +1075,14 @@ pub(super) fn handle_deferred_occupancy(
             let mut grace_expired = false;
             let mut first_block = false;
             if let Some(entity) = entities.get_mut(entity_id) {
-                snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                if mover_loco_kind != LocomotorKind::Walk {
+                    snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                }
                 if let Some(ref mut target) = entity.movement_target {
                     first_block = !target.path_blocked;
-                    target.path_blocked = true;
+                    if mover_loco_kind != LocomotorKind::Walk {
+                        target.path_blocked = true;
+                    }
                     has_target = true;
                     grace_expired = target.blocked_delay == 0;
                 }
@@ -1082,14 +1097,15 @@ pub(super) fn handle_deferred_occupancy(
                 // Set_Destination_Internal, both of which store zero). Only the
                 // blocker scatter and the peer refresh below wait for the timer.
                 let mut refreshed_marker_peers = None;
-                if first_block || grace_expired {
+                // Walk ProcessMovement 0x75B8A0..0x75B9F9 (code 2) only waits/repaths.
+                // The blocker scatter and ten-frame wait below belong to Drive.
+                // Native timer cases: tools/infantry_scatter_oracle.py.
+                if mover_loco_kind != LocomotorKind::Walk && (first_block || grace_expired) {
                     // Scatter first — on the tick the block is detected, and
                     // again once the wait has run out.
                     if let Some(blocker_id) = blocker_id
                         && !already_scattered.contains(&blocker_id)
                     {
-                        let blocker_fraidycat =
-                            bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
                         let scattered = bump_crush::scatter_blocker(
                             entities,
                             blocker_id,
@@ -1097,8 +1113,8 @@ pub(super) fn handle_deferred_occupancy(
                             occupancy,
                             object_list_layer,
                             rng,
-                            rules.map(|r| &r.mission_control),
-                            blocker_fraidycat,
+                            rules,
+                            interner,
                         );
                         if scattered {
                             already_scattered.insert(blocker_id);
@@ -1183,7 +1199,9 @@ pub(super) fn handle_deferred_occupancy(
         CellEntryResult::FriendlyWall | CellEntryResult::Impassable => {
             // Shouldn't reach here from NeedsBlockerCheck, but handle gracefully.
             if let Some(entity) = entities.get_mut(entity_id) {
-                snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                if mover_loco_kind != LocomotorKind::Walk {
+                    snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                }
                 let cur_pos = (entity.position.rx, entity.position.ry);
                 let body_facing = entity.body_facing;
                 if let Some(ref mut target) = entity.movement_target {

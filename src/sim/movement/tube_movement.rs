@@ -561,10 +561,6 @@ fn scatter_exit_blockers(
         {
             continue;
         }
-        let fraidycat = rules
-            .and_then(|rules| rules.object(interner.resolve(blocker.type_ref())))
-            .is_some_and(|object| object.fraidycat);
-        let mission_control = rules.map(|rules| &rules.mission_control);
         bump_crush::scatter_blocker(
             entities,
             blocker_id,
@@ -572,8 +568,8 @@ fn scatter_exit_blockers(
             occupancy,
             MovementLayer::Ground,
             rng,
-            mission_control,
-            fraidycat,
+            rules,
+            interner,
         );
     }
 }
