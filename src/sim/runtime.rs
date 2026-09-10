@@ -691,10 +691,11 @@ where
         .map(|rules| rules.bridge_rules.strength)
         .unwrap_or(1500);
     sim.bridge_state = Some(
-        crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(
+        crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain_with_map_size(
             resolved_terrain,
             bridge_destroyable,
             bridge_strength,
+            (map_data.header.width as i32, map_data.header.height as i32),
         ),
     );
     sim.bridge_explosions = rules
@@ -1081,11 +1082,13 @@ where
     let bridge_destroyable = map_data
         .special_flags
         .effective_destroyable_bridges(bridge_destroyability_mode);
-    let bridge_state = crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(
-        &terrain,
-        bridge_destroyable,
-        rules.bridge_rules.strength,
-    );
+    let bridge_state =
+        crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain_with_map_size(
+            &terrain,
+            bridge_destroyable,
+            rules.bridge_rules.strength,
+            (map_data.header.width as i32, map_data.header.height as i32),
+        );
 
     let final_terrain = terrain.clone();
     let final_overlay = overlay_grid.clone();

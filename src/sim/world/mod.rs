@@ -1318,6 +1318,16 @@ pub(crate) fn repair_wall_damage_navigation_authorities(
     }
 
     *terrain_costs = build_canonical_terrain_cost_grids(terrain);
+    let bridge_records = bridge_state
+        .map(BridgeRuntimeState::endpoint_records)
+        .unwrap_or(&[]);
+    let bridge_geometry = bridge_state.and_then(BridgeRuntimeState::native_zone_source_size);
+    if zone_grid
+        .as_ref()
+        .is_some_and(|zones| !zones.bridge_inputs_match(bridge_records, bridge_geometry))
+    {
+        *zone_grid = None;
+    }
     if let Some(zone_grid) = zone_grid.as_mut() {
         let _ = zone_grid.refresh_base_movement_class_at(terrain, cell.0, cell.1);
         let bridge_records = bridge_state
@@ -1337,7 +1347,7 @@ pub(crate) fn repair_wall_damage_navigation_authorities(
             bridge_records,
         );
     } else {
-        *zone_grid = Some(ZoneGrid::build_with_terrain(
+        *zone_grid = Some(ZoneGrid::build_with_native_bridge_geometry(
             &tail_path_grid,
             terrain_costs,
             Some(terrain),
@@ -1346,6 +1356,7 @@ pub(crate) fn repair_wall_damage_navigation_authorities(
                 .unwrap_or(&[]),
             terrain.width(),
             terrain.height(),
+            bridge_geometry,
         ));
     }
     *path_grid = Some(Arc::new(tail_path_grid));

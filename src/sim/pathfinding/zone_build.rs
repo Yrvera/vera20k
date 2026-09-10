@@ -203,7 +203,7 @@ pub(crate) fn build_zone_map_with_terrain(
     height: u16,
 ) -> (ZoneMap, ZoneAdjacency) {
     if let Some(terrain) = resolved_terrain {
-        let base = build_base_zone_topology(path_grid, terrain, &[], width, height);
+        let base = build_base_zone_topology(path_grid, terrain, &[], width, height, None);
         return build_zone_map_from_base_topology(&base, mz, width, height);
     }
 
@@ -271,6 +271,7 @@ pub(crate) fn build_base_zone_topology(
     bridge_records: &[BridgeEndpointRecord],
     width: u16,
     height: u16,
+    native_bridge_source_size: Option<(i32, i32)>,
 ) -> BaseZoneTopology {
     let movement_classes: Vec<u8> = (0..height)
         .flat_map(|ry| (0..width).map(move |rx| movement_class_for_cell(resolved_terrain, rx, ry)))
@@ -278,7 +279,13 @@ pub(crate) fn build_base_zone_topology(
 
     let (zone_ids, zone_count, mut edge_buckets) =
         rebuild_node_indices(&movement_classes, path_grid, width, height);
-    register_bridge_base_edges(&mut edge_buckets, &zone_ids, bridge_records, width);
+    register_bridge_base_edges(
+        &mut edge_buckets,
+        &zone_ids,
+        bridge_records,
+        width,
+        native_bridge_source_size,
+    );
     let adjacency = edge_buckets.into_adjacency(zone_count);
 
     let raw_zone_ids_by_row = std::array::from_fn(|row| {
@@ -1644,39 +1651,64 @@ pub(crate) fn extract_adjacency(
     ZoneAdjacency::new(adj_sets)
 }
 
-/// The zone-edge side of the bridge family. gamemd splits it across
-/// `MapClass::AddBridgeZoneEdges` 0x005851B0 and
-/// `MapClass::RemoveBridgeZoneEdges` 0x00584E50, which derive the same three
-/// coordinate pairs — endpoints, same-side offsets, opposite-side offsets, off
-/// `g_nHighBridgeHierarchyOffsetDirectionByTileOffset` — and then add or splice
-/// them out of the per-zone adjacency buckets in place.
-/// `MapClass::FindBridgeAdjacentZoneCell` 0x00583820 is the lookup those two
-/// share for locating the cell on the other side of a span.
-///
-/// This crate never splices: zone state is rebuilt, so the add path is the only
-/// one with a counterpart and the remove path has no behaviour to diverge from.
-/// The pair derivation itself is recorded in
-/// `tube_hierarchy_pairs_are_unregistered`, which covers the branch of
-/// 0x00582D70 that neither path here reaches.
+/// Native bridge-record consumer inside RebuildZoneConnectivity56C510:
+/// reverse records, signed clamped native node lookup, canonical zone pair.
+/// See PHASE3_CELL_ITERATION_BRIDGE_RECORDS_20260910.md and native vectors.
 fn register_bridge_base_edges(
     edge_buckets: &mut BaseEdgeBuckets,
     ground_zones: &[ZoneId],
     bridge_records: &[BridgeEndpointRecord],
     width: u16,
+    native_source_size: Option<(i32, i32)>,
 ) {
-    let w = width as usize;
-    for record in bridge_records {
-        if !bridge_record_matches(record, BridgeRecordFilter::AllActive) {
+    for record in bridge_records.iter().rev().filter(|r| r.active) {
+        let zone =
+            |coord| bridge_endpoint_base_zone(ground_zones, width, native_source_size, coord);
+        let (Some(a), Some(b)) = (zone(record.endpoint_a), zone(record.endpoint_b)) else {
+            continue;
+        };
+        if a == b {
             continue;
         }
-        let (ax, ay) = record.endpoint_a;
-        let (bx, by) = record.endpoint_b;
-        let a_idx = ay as usize * w + ax as usize;
-        let b_idx = by as usize * w + bx as usize;
-        if a_idx >= ground_zones.len() || b_idx >= ground_zones.len() {
-            continue;
+        let pair = (a.min(b), a.max(b));
+        let bucket = usize::from(((pair.0 & 15) << 4) | (pair.1 & 15));
+        // Native includes node0; class7 prevents traversal, but the edge is
+        // retained in native bucket/adjacency state. Generic register excludes0.
+        if !edge_buckets.buckets[bucket].contains(&pair) {
+            edge_buckets.buckets[bucket].push(pair);
         }
-        edge_buckets.register(ground_zones[a_idx], ground_zones[b_idx]);
+    }
+}
+
+fn bridge_endpoint_base_zone(
+    zones: &[ZoneId],
+    rust_width: u16,
+    source_size: Option<(i32, i32)>,
+    (x, y): (u16, u16),
+) -> Option<ZoneId> {
+    let Some((w, h)) = source_size else {
+        // Explicit compatibility topology without native Size provenance.
+        return zones
+            .get(usize::from(y) * usize::from(rust_width) + usize::from(x))
+            .copied();
+    };
+    let side = w.wrapping_add(h).wrapping_add(1);
+    let count = side.checked_mul(side)?;
+    if side <= 0 || count <= 0 || rust_width == 0 {
+        return None;
+    }
+    let index = i32::from(y as i16)
+        .wrapping_mul(side)
+        .wrapping_add(i32::from(x as i16))
+        .clamp(0, count - 1);
+    let (nx, ny) = (index % side, index / side);
+    let width = usize::from(rust_width);
+    if nx as usize >= width || ny as usize >= zones.len() / width {
+        // InitZoneMap567110 initializes padding to class7, and the rebuild
+        // leaves its base node0 after clearing every zone word.
+        Some(0)
+    } else {
+        zones.get(ny as usize * width + nx as usize).copied()
     }
 }
 
@@ -1997,6 +2029,7 @@ pub(crate) fn add_adjacency(adj: &mut [Vec<ZoneId>], a: ZoneId, b: ZoneId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("bridge_base_native_tests.rs");
     use crate::map::resolved_terrain::ResolvedTerrainCell;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::bridge_state::{BridgeEndpointRecord, BridgeRecordKind};

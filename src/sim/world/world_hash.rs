@@ -1142,6 +1142,12 @@ impl Simulation {
             span.hash(hasher);
         }
         bridge_state.endpoint_records().len().hash(hasher);
+        if let Some(size) = bridge_state.native_zone_source_size() {
+            // Geometry affects signed/clamped bridge endpoint projection.
+            // The absent synthetic/legacy receipt retains its previous hash.
+            0x56c510u32.hash(hasher);
+            size.hash(hasher);
+        }
         for record in bridge_state.endpoint_records() {
             record.endpoint_a.hash(hasher);
             record.endpoint_b.hash(hasher);

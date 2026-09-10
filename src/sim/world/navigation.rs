@@ -76,6 +76,18 @@ impl NavigationCaches<'_> {
         terrain: &ResolvedTerrainGrid,
         bridges: Option<&BridgeRuntimeState>,
     ) {
+        let records = bridges
+            .map(BridgeRuntimeState::endpoint_records)
+            .unwrap_or(&[]);
+        let geometry = bridges.and_then(BridgeRuntimeState::native_zone_source_size);
+        if self
+            .zones
+            .as_ref()
+            .is_some_and(|zones| !zones.bridge_inputs_match(records, geometry))
+        {
+            self.rebuild_zones_full(path_grid, terrain, bridges);
+            return;
+        }
         if let (Some(prev), Some(zones)) = (self.path.as_deref(), self.zones.as_mut()) {
             if let Some(changed) = prev.diff_cells(path_grid) {
                 if changed.is_empty() && zones.movement_classes_match(terrain) {
@@ -113,7 +125,7 @@ impl NavigationCaches<'_> {
         terrain: &ResolvedTerrainGrid,
         bridges: Option<&BridgeRuntimeState>,
     ) {
-        *self.zones = Some(ZoneGrid::build_with_terrain(
+        *self.zones = Some(ZoneGrid::build_with_native_bridge_geometry(
             path_grid,
             self.terrain_costs,
             Some(terrain),
@@ -122,6 +134,7 @@ impl NavigationCaches<'_> {
                 .unwrap_or(&[]),
             terrain.width(),
             terrain.height(),
+            bridges.and_then(BridgeRuntimeState::native_zone_source_size),
         ));
         *self.path = Some(Arc::new(path_grid.clone()));
     }

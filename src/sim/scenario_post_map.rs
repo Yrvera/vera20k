@@ -209,11 +209,16 @@ impl Simulation {
         let Some(terrain) = self.resolved_terrain.as_ref() else {
             return false;
         };
+        let (Some(bounds), Some(size_height)) = (self.playfield_bounds, self.playfield_size_height)
+        else {
+            return false;
+        };
         self.bridge_state = Some(
-            crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(
+            crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain_with_map_size(
                 terrain,
                 destroyable,
                 bridge_strength,
+                (bounds.base, size_height),
             ),
         );
         true

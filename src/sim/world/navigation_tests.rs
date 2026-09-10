@@ -11,6 +11,121 @@ use crate::sim::snapshot::GameSnapshot;
 use crate::sim::world::{Simulation, TickLane};
 use std::collections::BTreeMap;
 
+#[test]
+fn native_bridge_record_geometry_changes_rebuild_and_restore_navigation() {
+    use crate::map::resolved_terrain::zone_class;
+    use crate::rules::locomotor_type::MovementZone;
+    use crate::sim::bridge_state::{BridgeEndpointRecord, BridgeRecordKind, BridgeRuntimeState};
+    use crate::sim::movement::locomotor::MovementLayer;
+    let (rules, _) = rules_and_overlays();
+    let mut sim = Simulation::with_seed(0x56c510);
+    let mut terrain = gsi_04_10_clear_terrain(16, 16);
+    for y in 0..16 {
+        let cell = terrain.cell_mut(8, y).unwrap();
+        cell.zone_type = zone_class::OUTSIDE;
+        cell.ground_walk_blocked = true;
+        cell.base_ground_walk_blocked = true;
+    }
+    let reachable = |sim: &Simulation| {
+        sim.zone_grid.as_ref().unwrap().can_reach(
+            MovementZone::Normal,
+            (5, 5),
+            MovementLayer::Ground,
+            (12, 5),
+            MovementLayer::Ground,
+        )
+    };
+    sim.install_resolved_terrain_for_new_map(terrain.clone());
+    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain_with_map_size(
+        &terrain,
+        true,
+        300,
+        (8, 8),
+    ));
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    assert!(
+        !reachable(&sim),
+        "the outside-class strip separates two ground regions"
+    );
+    let path = sim.path_grid_snapshot().unwrap();
+    let record = BridgeEndpointRecord {
+        endpoint_a: (5, 5),
+        endpoint_b: (26, 0),
+        group_id: 0,
+        active: true,
+        bridge_kind: BridgeRecordKind::Low,
+    };
+    // Side17 maps this out-of-rectangle endpoint to (9,1), across the strip.
+    sim.bridge_state
+        .as_mut()
+        .unwrap()
+        .test_set_endpoint_records(vec![record]);
+    sim.rebuild_zone_grid(&path);
+    assert!(
+        reachable(&sim),
+        "a record-only change must join the regions"
+    );
+    assert!(
+        path.diff_cells(&sim.path_grid_snapshot().unwrap())
+            .unwrap()
+            .is_empty()
+    );
+
+    let hash_before = sim.state_hash();
+    let mut replacement =
+        BridgeRuntimeState::from_resolved_terrain_with_map_size(&terrain, true, 300, (8, 10));
+    replacement.test_set_endpoint_records(vec![record]);
+    sim.bridge_state = Some(replacement);
+    assert_ne!(hash_before, sim.state_hash());
+    sim.rebuild_zone_grid(&path);
+    // Side19 maps the identical endpoint to (7,1), on the source side.
+    assert!(
+        !reachable(&sim),
+        "geometry-only change must remove the connection"
+    );
+
+    let bytes = GameSnapshot::save(&sim, 0, 0, "native-bridge-records.map", 0);
+    let mut restored = GameSnapshot::load(&bytes).unwrap().sim;
+    restored.restore_after_snapshot_load().unwrap();
+    assert_eq!(
+        restored
+            .bridge_state
+            .as_ref()
+            .unwrap()
+            .native_zone_source_size(),
+        Some((8, 10))
+    );
+    assert_eq!(
+        restored.bridge_state.as_ref().unwrap().endpoint_records(),
+        &[record]
+    );
+    restored.install_resolved_terrain_for_new_map(terrain.clone());
+    assert!(restored.rebuild_dynamic_navigation(&rules));
+    assert!(
+        !reachable(&restored),
+        "restore must retain the native source geometry"
+    );
+
+    let mut replacement =
+        BridgeRuntimeState::from_resolved_terrain_with_map_size(&terrain, true, 300, (8, 8));
+    replacement.test_set_endpoint_records(vec![record]);
+    restored.bridge_state = Some(replacement);
+    restored.rebuild_zone_grid(&path);
+    assert!(reachable(&restored));
+    let mut inactive = record;
+    inactive.active = false;
+    restored
+        .bridge_state
+        .as_mut()
+        .unwrap()
+        .test_set_endpoint_records(vec![inactive]);
+    restored.rebuild_zone_grid(&path);
+    assert!(
+        !reachable(&restored),
+        "activity-only change must remove the connection"
+    );
+}
+
 fn rules_and_overlays() -> (RuleSet, OverlayTypeRegistry) {
     let ini = IniFile::from_str(
         "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
