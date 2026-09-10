@@ -141,6 +141,15 @@ The shared raw zone lookup needs the same retained source Size projection.
 Broader bridge-aware GetZoneID cases and unexplained raw path-memory reads
 remain open; a bounded helper comparison cannot certify them.
 
+The original-process [startup capture](../../../tools/spatial_oracle/tube_startup_capture.json)
+now establishes floating control `0x0E7F` at the adjacent-constant initializers
+`0x0049F0E0` and `0x0049F190`. Its [reproducible tool](../../../tools/spatial_oracle/tube_startup_capture.py)
+uses hardware breakpoints, verifies the loaded executable section against the
+pinned original, and stops its owned process before WinMain. Independent replay
+passed. Original initializer emulation matches the captured constant bytes;
+this resolves that startup uncertainty, while runtime writer coverage and the
+remaining arbitrary raw-address domain remain open.
+
 The bridge plan retains unresolved construction, restamp, topology and consumer
 transactions. Current shroud, smudge, terrain and lighting code has not received
 this goal's exhaustive reverse audit. These rows remain open regardless of the
