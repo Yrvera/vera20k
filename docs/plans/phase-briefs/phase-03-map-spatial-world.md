@@ -14,7 +14,7 @@ references are starting evidence whose applicability must be checked per mechani
 
 | Row | GSI | Rust owner(s) | Native anchor or research starting point | Registry | Notes |
 |---|---|---|---|---|---|
-| 37 | GSI-04.01 | `src/map/cell_index.rs`, `playfield.rs`, `resolved_terrain.rs`; `src/sim/cell_rect.rs` | Get_CellClass `0x005657A0`, world lookup `0x00565730`, IsCellInPlayfield `0x00578460`; [dummy contract](../../research/MAPCLASS_GET_CELLCLASS_FALLBACK_DUMMY_CELL_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Current lookup/boundary executable comparison is the first increment. Constructor/iterator and unmodeled-state candidates require separate proof. |
+| 37 | GSI-04.01 | `src/map/cell_index.rs`, `playfield.rs`, `resolved_terrain.rs`; `src/sim/cell_rect.rs` | Get_CellClass `0x005657A0`, world lookup `0x00565730`, IsCellInPlayfield `0x00578460`; [dummy contract](../../research/MAPCLASS_GET_CELLCLASS_FALLBACK_DUMMY_CELL_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Current native comparison exposed reversed ClipRect operands under signed overflow; its repair is the first increment. Constructor/iterator and unmodeled-state candidates require separate proof. |
 | 38 | GSI-04.02 | `src/map/theater.rs`, `resolved_terrain.rs` | CalculateLegacyMapTileIndex `0x00544E30`; [translation](../../research/PHASE3_LAST_TILES_IN_SET_COMPATIBILITY_TRANSLATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Load, Fill, map-pack and generated-map paths must be checked separately. |
 | 39 | GSI-04.03 | `src/util/lepton.rs`; `src/sim/cell_kernel.rs`; `src/map/resolved_terrain.rs` | ComputeGroundHeightAtCoord `0x0047B3A0`; [domain census](../../research/PHASE3_CELL_GROUND_HEIGHT_104_DOMAIN_CONSUMER_CENSUS_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | The CellClass 90-lepton and object/VXL 104-lepton domains are distinct. |
 | 40 | GSI-04.04 | `src/sim/cell_kernel.rs`, `overlay_grid.rs`, `pathfinding/terrain_cost.rs` | [RecalcZoneType](../../research/CELLCLASS_RECALCZONE_TYPE_00483C80_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Preserve synchronous publication before the next reader. |
@@ -63,6 +63,12 @@ status is historical; reconcile it against current source before selecting work.
 
 ## Corrections
 
+- The new original-instruction corpus exposed reversed ClipRect operands in
+  `src/map/playfield.rs`: native clips candidate Size against LocalSize. Ordinary
+  intersection symmetry hides the difference; accepted signed-overflow input
+  does not. The pre-fix Rust comparison failed, and the first increment repairs
+  the production order. See the [comparison report](../../research/PHASE3_MAP_SPATIAL_NATIVE_COMPARISON_20260910.md).
+
 - Old GSI-04.01 gaps G1 dummy reservation reset and G2 IsoMapPack miss stamping
   have production implementations. The old reservation-writer candidate is also
   stale: current lifecycle code implements the Mark/Clear perimeter paths.
@@ -89,9 +95,7 @@ outcome of the first map-lookup comparison.
 
 No phase-wide native differential or completed reverse audit is recorded by this
 goal. Existing Rust regression tests and older scoped critic passes do not imply
-whole-row equivalence. The first comparison increment targets only map lookup,
-playfield predicates and normalization; its final evidence must name executable
-identity, fixtures, substitutions, covered branches and production test consumers.
+whole-row equivalence. The [first comparison increment](../../research/PHASE3_MAP_SPATIAL_NATIVE_COMPARISON_20260910.md) records 2,144 original-executable calls/prefixes for lookup, playfield predicates, normalization and retained dummy identity. Its report records the executable, fixtures, endpoint limits and production test consumers. Rust and critic results must pass before publication; this bounded corpus does not close GSI-04.01.
 
 ## Open queue
 
