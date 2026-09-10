@@ -826,6 +826,10 @@ pub struct Simulation {
     /// The app drains these without feeding them back into simulation.
     #[serde(skip)]
     pub(crate) lifecycle_outputs: Vec<LifecycleOutput>,
+    /// Conversion receipts drained into the same tick's navigation/app outputs.
+    /// Derived frame output, not gameplay state; saves occur at frame boundaries.
+    #[serde(skip)]
+    pub(crate) mission_spawned_entities: bool,
     /// Ordered occupied-cell identities finalized at the authoritative frame
     /// boundary. The app drains these into its render-only overlay list.
     #[serde(skip)]
@@ -2759,6 +2763,7 @@ impl Simulation {
             house_alliances: HouseAllianceMap::default(),
             substrate: ObjectSubstrate::new(),
             lifecycle_outputs: Vec::new(),
+            mission_spawned_entities: false,
             frame_overlay_updates: Vec::new(),
             frame_overlay_removals: Vec::new(),
             terminal_score_snapshot: None,
@@ -5545,12 +5550,13 @@ impl Simulation {
                 }
                 let placed_owner = self.successful_non_wall_placement_owner(cmd, applied, rules);
                 placed_building_owners.extend(placed_owner);
-                if placed_owner.is_some()
+                if (applied && matches!(cmd.payload, Command::DeployMcv { entity_id }
+                    if self.substrate.entities.get(entity_id).is_none_or(|e| e.dying)))
+                    || placed_owner.is_some()
                     || applied
                         && matches!(
                             cmd.payload,
-                            Command::DeployMcv { .. }
-                                | Command::UndeployBuilding { .. }
+                            Command::UndeployBuilding { .. }
                                 | Command::LaunchSuperWeapon { .. }
                         )
                 {
@@ -5939,6 +5945,7 @@ impl Simulation {
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::LogicVector);
         let object_pass = self.advance_live_object_pass(rules, path_grid, overlay_registry);
+        spawned_entities |= std::mem::take(&mut self.mission_spawned_entities);
         let movement_stats = object_pass.movement;
         destroyed_structure |= object_pass.destroyed_structure;
         let tube_turn_owned_ids = object_pass.tube_turn_owned_ids;
@@ -6355,6 +6362,7 @@ impl Simulation {
             &mut destroyed_structure,
             &mut placed_building_owners,
         );
+        spawned_entities |= std::mem::take(&mut self.mission_spawned_entities);
         self.frame_overlay_updates = self.finalize_frame_overlays_and_navigation(
             rules,
             overlay_registry,

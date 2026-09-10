@@ -5987,6 +5987,15 @@ fn test_deploy_mcv_replaces_vehicle_with_conyard() {
 
     let cmd = cmd_envelope(&sim, "Americans", 1, Command::DeployMcv { entity_id: mcv });
     let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, None, None, 33);
+    assert!(
+        sim.substrate.entities.get(mcv).is_some(),
+        "command queues the mission"
+    );
+    let result = sim.advance_tick(&[], Some(&rules), &heights, None, None, 33);
+    assert!(
+        result.spawned_entities,
+        "mission conversion publishes its spawn"
+    );
 
     assert!(
         sim.substrate.entities.get(mcv).is_none(),
@@ -7204,6 +7213,7 @@ fn test_undeploy_conyard_spawns_mcv() {
     }
     let deploy_cmd = cmd_envelope(&sim, "Americans", 1, Command::DeployMcv { entity_id: mcv });
     let _ = sim.advance_tick(&[deploy_cmd], Some(&rules), &heights, None, None, 33);
+    let _ = sim.advance_tick(&[], Some(&rules), &heights, None, None, 33);
 
     // Find the ConYard that was spawned.
     let yard_id: u64 = sim
@@ -7224,7 +7234,7 @@ fn test_undeploy_conyard_spawns_mcv() {
     let undeploy_cmd = cmd_envelope(
         &sim,
         "Americans",
-        2,
+        sim.session.tick + 1,
         Command::UndeployBuilding { entity_id: yard_id },
     );
     let _ = sim.advance_tick(&[undeploy_cmd], Some(&rules), &heights, None, None, 33);

@@ -311,7 +311,7 @@ pub(crate) fn clear_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
     }
 }
 
-fn mcv_deploy_terrain_with(
+pub(crate) fn mcv_deploy_terrain_with(
     mut mutate: impl FnMut(&mut ResolvedTerrainCell),
 ) -> ResolvedTerrainGrid {
     let width = 32;
@@ -336,13 +336,7 @@ fn deploy_mcv_with_terrain(terrain: ResolvedTerrainGrid) -> (bool, bool, usize) 
         .expect("spawn MCV");
     sim.resolved_terrain = Some(terrain);
 
-    let applied = sim.apply_command(
-        "Americans",
-        &Command::DeployMcv { entity_id: mcv },
-        Some(&rules),
-        None,
-        &height_map,
-    );
+    let applied = sim.deploy_mcv(mcv, &rules, &height_map);
     let mcv_remains = sim.substrate.entities.get(mcv).is_some();
     (applied, mcv_remains, sim.sound_events.len())
 }
@@ -357,13 +351,7 @@ fn deploy_mcv_uses_gamemd_large_foundation_origin_offset() {
         .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
         .expect("spawn MCV");
 
-    let applied = sim.apply_command(
-        "Americans",
-        &Command::DeployMcv { entity_id: mcv },
-        Some(&rules),
-        None,
-        &height_map,
-    );
+    let applied = sim.deploy_mcv(mcv, &rules, &height_map);
     assert!(applied, "clear ConYard footprint should deploy");
     // Deferred-delete: apply_command enqueues the consumed MCV; the end-of-tick P9
     // flush (here invoked directly) frees it. Until then it lingers resolvable-Dying.
@@ -413,13 +401,7 @@ fn deploy_then_undeploy_returns_the_mcv_to_its_original_cell() {
         )
         .expect("spawn MCV");
     assert!(
-        sim.apply_command(
-            "Americans",
-            &Command::DeployMcv { entity_id: mcv },
-            Some(&rules),
-            None,
-            &height_map,
-        ),
+        sim.deploy_mcv(mcv, &rules, &height_map),
         "clear ConYard footprint should deploy"
     );
     sim.flush_pending_delete();
@@ -475,13 +457,7 @@ fn deploy_mcv_accepts_mixed_height_clear_foundation() {
         .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
         .expect("spawn MCV");
 
-    let applied = sim.apply_command(
-        "Americans",
-        &Command::DeployMcv { entity_id: mcv },
-        Some(&rules),
-        None,
-        &height_map,
-    );
+    let applied = sim.deploy_mcv(mcv, &rules, &height_map);
     assert!(
         applied,
         "clear ConYard footprint should deploy even when foundation cells have mixed heights"
@@ -520,13 +496,7 @@ fn deploy_mcv_rejects_structure_in_rightmost_foundation_column() {
         .spawn_object("GAPOWR", "Soviets", 21, 22, 0, &rules, &height_map)
         .expect("spawn blocker");
 
-    let applied = sim.apply_command(
-        "Americans",
-        &Command::DeployMcv { entity_id: mcv },
-        Some(&rules),
-        None,
-        &height_map,
-    );
+    let applied = sim.deploy_mcv(mcv, &rules, &height_map);
     assert!(
         !applied,
         "structure in the deployed foundation footprint must block MCV deploy"
@@ -571,20 +541,14 @@ fn deploy_mcv_waits_for_target_building_deploy_facing() {
         .spawn_object("AMCV", "Americans", 20, 22, 64, &rules, &height_map)
         .expect("spawn MCV");
 
-    let applied = sim.apply_command(
-        "Americans",
-        &Command::DeployMcv { entity_id: mcv },
-        Some(&rules),
-        None,
-        &height_map,
-    );
+    let applied = sim.deploy_mcv(mcv, &rules, &height_map);
     assert!(applied, "misfaced deploy starts the facing turn");
     let entity = sim
         .substrate
         .entities
         .get(mcv)
         .expect("MCV should remain while turning");
-    assert_eq!(entity.facing, 0x80);
+    assert_eq!(entity.facing, 64, "turn must not snap at the request");
     assert_eq!(entity.facing_target, Some(0x80));
     assert!(
         sim.interner.get("GACNST").map_or(true, |yard| !sim
@@ -626,20 +590,14 @@ DeployFacing=2
         .spawn_object("AMCV", "Americans", 20, 22, 0x80, &rules, &height_map)
         .expect("spawn MCV");
 
-    assert!(sim.apply_command(
-        "Americans",
-        &Command::DeployMcv { entity_id: mcv },
-        Some(&rules),
-        None,
-        &height_map,
-    ));
+    assert!(sim.deploy_mcv(mcv, &rules, &height_map));
 
     let entity = sim
         .substrate
         .entities
         .get(mcv)
         .expect("MCV should remain while turning");
-    assert_eq!(entity.facing, 0x40);
+    assert_eq!(entity.facing, 0x80, "turn must not snap at the request");
     assert_eq!(entity.facing_target, Some(0x40));
 }
 
@@ -745,13 +703,7 @@ fn base_plan_recalc_deploy_generates_and_anchors_nonhuman_conyard() {
     let mut expected_rng = sim.scenario_rng.clone();
     let _replacement_constructor_word = expected_rng.next_u32();
 
-    assert!(sim.apply_command(
-        "Americans",
-        &Command::DeployMcv { entity_id: mcv },
-        Some(&rules),
-        None,
-        &height_map,
-    ));
+    assert!(sim.deploy_mcv(mcv, &rules, &height_map));
 
     let yard = deployed_type(&sim, "GACNST");
     assert_eq!((yard.position.rx, yard.position.ry), (19, 21));
@@ -792,13 +744,7 @@ fn base_plan_recalc_deploy_skips_human_campaign_and_non_conyard_targets() {
         let mut expected_rng = sim.scenario_rng.clone();
         let _replacement_constructor_word = expected_rng.next_u32();
 
-        assert!(sim.apply_command(
-            "Americans",
-            &Command::DeployMcv { entity_id: mcv },
-            Some(&rules),
-            None,
-            &height_map,
-        ));
+        assert!(sim.deploy_mcv(mcv, &rules, &height_map));
         assert!(deployed_type(&sim, "GACNST").building_up.is_some());
         let house = &sim.houses[&owner];
         assert_eq!(house.base_center, None);
@@ -824,13 +770,7 @@ fn base_plan_recalc_deploy_skips_human_campaign_and_non_conyard_targets() {
         .expect("spawn deployable miner");
     let mut expected_rng = sim.scenario_rng.clone();
     let _replacement_constructor_word = expected_rng.next_u32();
-    assert!(sim.apply_command(
-        "Americans",
-        &Command::DeployMcv { entity_id: miner },
-        Some(&rules),
-        None,
-        &height_map,
-    ));
+    assert!(sim.deploy_mcv(miner, &rules, &height_map));
     assert!(deployed_type(&sim, "YAREFN").building_up.is_some());
     assert_eq!(sim.houses[&owner].base_center, None);
     assert_eq!(sim.houses[&owner].base_plan_center, (0, 0));
@@ -868,13 +808,7 @@ fn base_plan_recalc_deploy_countryless_nonempty_plan_only_reanchors_node_zero() 
     let mut expected_rng = sim.scenario_rng.clone();
     let _replacement_constructor_word = expected_rng.next_u32();
 
-    assert!(sim.apply_command(
-        "Americans",
-        &Command::DeployMcv { entity_id: mcv },
-        Some(&rules),
-        None,
-        &height_map,
-    ));
+    assert!(sim.deploy_mcv(mcv, &rules, &height_map));
     assert!(deployed_type(&sim, "GACNST").building_up.is_some());
     let house = &sim.houses[&owner];
     assert_eq!(house.base_center, Some((19, 21)));
@@ -913,13 +847,7 @@ fn base_plan_recalc_deploy_countryless_empty_plan_fails_before_removal() {
         .expect("spawn MCV");
     let rng_before = sim.scenario_rng.state();
 
-    assert!(!sim.apply_command(
-        "Americans",
-        &Command::DeployMcv { entity_id: mcv },
-        Some(&rules),
-        None,
-        &height_map,
-    ));
+    assert!(!sim.deploy_mcv(mcv, &rules, &height_map));
 
     assert!(!sim.substrate.entities.get(mcv).unwrap().dying);
     let house = &sim.houses[&owner];
@@ -952,13 +880,7 @@ fn base_plan_recalc_deploy_failures_preserve_source_rng_plan_and_centers() {
         }
         let rng_before = sim.scenario_rng.state();
 
-        assert!(!sim.apply_command(
-            "Americans",
-            &Command::DeployMcv { entity_id: mcv },
-            Some(rules),
-            None,
-            &height_map,
-        ));
+        assert!(!sim.deploy_mcv(mcv, rules, &height_map));
         assert!(!sim.substrate.entities.get(mcv).unwrap().dying);
         let house = &sim.houses[&owner];
         assert_eq!(house.base_center, None);
@@ -992,13 +914,7 @@ fn base_plan_recalc_deploy_late_yard_unlimbo_failure_preserves_source_and_plan()
     let mut expected_rng = sim.scenario_rng.clone();
     let _failed_yard_constructor_word = expected_rng.next_u32();
 
-    assert!(!sim.apply_command(
-        "Americans",
-        &Command::DeployMcv { entity_id: mcv },
-        Some(&rules),
-        None,
-        &height_map,
-    ));
+    assert!(!sim.deploy_mcv(mcv, &rules, &height_map));
 
     let source = sim.substrate.entities.get(mcv).expect("source MCV remains");
     assert!(!source.dying);

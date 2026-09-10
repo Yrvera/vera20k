@@ -312,12 +312,16 @@ NavCom-null variant because it never reaches an arrival at all.
 
 ## Stage 6 — `DeployToFire` and `IsSlaveMiner` reachability
 
-- **`DeployToFire`** is `Unit+0x68C` (`0x0073D6BC`: `MOV AL, byte ptr [ESI+0x68C]`; also
-  `0x0073DDD5`). It selects mission-state 2 after a successful-looking deploy and gates the state-2
-  body at `0x0073DD5B`. `ini/rulesmd.ini:3613` shows the key defaults to `no` and stock `rulesmd.ini`
-  never sets it, so for a stock AMCV/SMCV/PCV **state 2 is unreachable**. Out of scope; do not
-  implement. (Correction: the state-2 fallback at `0x0073DD6A` tests `Unit+0x5A4` — the **NavCom** —
-  not a slave-miner flag, contrary to the prior report's `§3C` wording.)
+- **Correction (2026-09-10): Unit+0x68C is runtime deployment continuation.**
+  `UnitClass::Deploy` writes it at `0x00739650` on facing mismatch, regardless
+  of an absent `DeployToFire` INI key. Ordinary MCVs therefore reach Unload
+  state 2 via `0x0073DDD5..0x0073DDDF` and retry at `0x0073DD5D`. A failed
+  retry with non-null NavCom clears it at `0x0073DD76`. Drive turn completion
+  also retries through `PerCellProcess(0)` (`0x004B08A4` -> `0x00739EF8`).
+  The earlier claim that stock state 2 is unreachable was false. See
+  `tools/mcv_deploy_oracle.py` and `src/sim/mcv_deploy.rs` for bounded evidence
+  and the active implementation owner.
+
 - **The slave-miner / non-`DeploysInto` branch** at `0x0073DE6E` is only reached when
   `UnitTypeClass+0x404` (`DeploysInto`) is **zero** (`0x0073D694`: `CMP dword ptr [EAX+0x404], EBX` /
   `JZ 0x0073DE6E`). `[AMCV] DeploysInto=GACNST` is non-zero, so it is unreachable for this fixture in
@@ -345,7 +349,7 @@ NavCom-null variant because it never reaches an arrival at all.
 | 15 | Body facing at rest / turn to deploy facing | FAIL | Rust snaps `entity.facing = deploy_facing` with zero turn time and demands a second command; native has no facing write in this branch and turns via the locomotor. |
 | 16 | Generic Move-arrival same-tick clear + Move-gated queue advance | PASS | `finish_drive_arrival` matches the `0x004B2242..0x004B226D` sequence and the `GetCurrentMission == 2` gate. |
 | 17 | NavCom-null arrival variant (the deploy case) | NOT-IMPLEMENTED | Native skips the path-head reset and OnArrival; Rust has no NavCom-null end-of-track path because it never arrives. |
-| 18 | `DeployToFire` branch reachability | PASS | Unreachable for stock AMCV in both: key defaults `no` and is unset in `rulesmd.ini`; Rust has no such branch. |
+| 18 | Runtime deployment continuation reachability | CORRECTED | Stock MCV facing mismatch writes +0x68C and reaches state 2; see Stage 6 correction. |
 | 19 | Slave-miner / no-`DeploysInto` branch reachability | PASS | Gated on `DeploysInto == 0`; unreachable for AMCV, and Rust routes `Enslaves` units elsewhere first. |
 
 ## Top root findings

@@ -1434,6 +1434,19 @@ impl Simulation {
         rules: &RuleSet,
         _height_map: &BTreeMap<(u16, u16), u8>,
     ) -> bool {
+        // Native early navigation/movement exits (0x7393E4/0x73940A) retain
+        // runtime +0x68C. They must not attempt placement while stopping.
+        let Some(source) = self.substrate.entities.get(stable_id) else {
+            return false;
+        };
+        if source.dying || source.lifecycle.in_limbo {
+            return false;
+        }
+        if source.navigation.nav_com.is_some()
+            || crate::sim::movement::ready_producer::is_moving_for_unit_shp_draw(source)
+        {
+            return false;
+        }
         // Read deploy data from EntityStore before mutating.
         let deploy_data = self.substrate.entities.get(stable_id).and_then(|entity| {
             let type_str = self.interner.resolve(entity.type_ref());
@@ -1453,7 +1466,7 @@ impl Simulation {
                 yard_obj.deploy_facing,
                 entity.selected,
                 yard_obj.foundation.clone(),
-                entity.facing,
+                crate::sim::mcv_deploy::current_direction(entity, self.session.binary_frame),
                 yard_obj.construction_yard,
             ))
         });
@@ -1517,6 +1530,12 @@ impl Simulation {
                     log::info!("MCV deploy blocked: structure at ({},{})", cell_x, cell_y,);
                     self.sound_events
                         .push(SimSoundEvent::CannotDeployHere { owner: owner_id });
+                    self.substrate
+                        .entities
+                        .get_mut(stable_id)
+                        .unwrap()
+                        .mcv_deploy_pending = false;
+                    crate::sim::mcv_deploy::queue_guard(self, stable_id);
                     return false;
                 }
                 // Check terrain build-blocked.
@@ -1527,20 +1546,35 @@ impl Simulation {
                     log::info!("MCV deploy blocked: terrain at ({},{})", cell_x, cell_y,);
                     self.sound_events
                         .push(SimSoundEvent::CannotDeployHere { owner: owner_id });
+                    self.substrate
+                        .entities
+                        .get_mut(stable_id)
+                        .unwrap()
+                        .mcv_deploy_pending = false;
+                    crate::sim::mcv_deploy::queue_guard(self, stable_id);
                     return false;
                 }
             }
         }
 
         if source_facing != deploy_facing {
+            let now = self.session.binary_frame;
             if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
-                entity.facing_target = Some(deploy_facing);
-                entity.facing = deploy_facing;
-                entity.movement_target = None;
+                if !crate::sim::movement::ready_producer::is_moving_now_for(entity, now) {
+                    crate::sim::mcv_deploy::start_turn(entity, deploy_facing, now);
+                }
+                entity.mcv_deploy_pending = true;
             }
             return true;
         }
 
+        // Failure in the aligned construction transaction clears +0x68C
+        // (0x739AA7); a successful transaction removes the source entirely.
+        self.substrate
+            .entities
+            .get_mut(stable_id)
+            .unwrap()
+            .mcv_deploy_pending = false;
         // Native successful deploy transaction:
         // `UnitClass__Deploy @ 0x007393C0`, block `0x00739855..0x00739926`,
         // calls `FUN_00505180 @ 0x00505180` only for a non-controlled
@@ -1582,6 +1616,7 @@ impl Simulation {
             return false;
         };
 
+        self.mission_spawned_entities = true;
         self.uninit_with_rules(stable_id, rules);
 
         // Set selected and building-up state on the new entity.

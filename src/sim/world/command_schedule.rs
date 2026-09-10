@@ -134,13 +134,15 @@ impl Simulation {
             overlay_registry,
         );
         let placed_building_owner = self.successful_non_wall_placement_owner(cmd, applied, rules);
-        let spawned_entity = placed_building_owner.is_some()
+        let synchronous_deploy = applied
+            && matches!(cmd.payload, Command::DeployMcv { entity_id }
+            if self.substrate.entities.get(entity_id).is_none_or(|e| e.dying));
+        let spawned_entity = synchronous_deploy
+            || placed_building_owner.is_some()
             || applied
                 && matches!(
                     cmd.payload,
-                    Command::DeployMcv { .. }
-                        | Command::UndeployBuilding { .. }
-                        | Command::LaunchSuperWeapon { .. }
+                    Command::UndeployBuilding { .. } | Command::LaunchSuperWeapon { .. }
                 );
         let destroyed_structure = applied
             && matches!(

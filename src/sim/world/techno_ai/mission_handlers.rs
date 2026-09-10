@@ -176,7 +176,18 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
                 // the match, re-dispatched every single frame instead of
                 // settling onto Guard's cadence — and never eligible for the
                 // Guard-only arm of the passive-acquire gate.
-                move_arrival_evaluation(rules, input)
+                // Unit EnterIdle 0x738AB4 retains pending Deploy intent;
+                // arrival must not invent Guard after a replacement Move.
+                if sim
+                    .substrate
+                    .entities
+                    .get(id)
+                    .is_some_and(|e| e.mcv_deploy_pending)
+                {
+                    MissionHandlerEvaluation::cadence(1)
+                } else {
+                    move_arrival_evaluation(rules, input)
+                }
             }
         }
         // A repair-depot waiter: `FootClass::Mission_Enter @ 0x004D9290` run
@@ -435,6 +446,17 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
                 ctx.path_grid,
                 ctx.overlay_registry,
                 id,
+            ))
+        }
+        (EntityCategory::Unit, Some(MissionType::Unload))
+            if sim
+                .substrate
+                .entities
+                .get(id)
+                .is_some_and(|e| crate::sim::mcv_deploy::is_mcv(sim, e, rules)) =>
+        {
+            MissionHandlerEvaluation::cadence(crate::sim::mcv_deploy::mission_unload(
+                sim, id, rules,
             ))
         }
         (EntityCategory::Unit, Some(MissionType::Guard)) => {
@@ -1207,7 +1229,11 @@ fn evaluate_foot_hunt(
     rules: &RuleSet,
     ctx: super::ObjectAiCtx<'_>,
 ) -> MissionHandlerEvaluation {
-    let type_ref = sim.substrate.entities.get(id).map(|entity| entity.type_ref());
+    let type_ref = sim
+        .substrate
+        .entities
+        .get(id)
+        .map(|entity| entity.type_ref());
     let stupid_hunt = type_ref
         .and_then(|type_ref| sim.interner.try_resolve(type_ref))
         .and_then(|name| rules.object(name))
