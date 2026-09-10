@@ -46,6 +46,13 @@ owning system a Phase 3 prerequisite.
 
 ## Prior work
 
+The 2026-09-10 increment at `258a59ce` repairs LocalSize clipping operand order
+and adds original-executable spatial comparisons. Its [evidence report](../../research/PHASE3_MAP_SPATIAL_NATIVE_COMPARISON_20260910.md)
+records the failing pre-fix result, corrected production path, independent
+review, four passing focused tests, full library results (8,587 passed, zero
+failed, 119 ignored), and Clippy exit zero with 1,144 warnings. This is bounded
+mechanism evidence; it does not close a row.
+
 The archived **Phase 3 integration goal** task
 `01a0529b-815e-7e31-be6d-90511e997891` reports recovery through PRs #166/#167 and
 #173–#193 at `5062bcea`. That completed recovery of eligible slices, not Phase 3.
@@ -95,25 +102,29 @@ outcome of the first map-lookup comparison.
 
 No phase-wide native differential or completed reverse audit is recorded by this
 goal. Existing Rust regression tests and older scoped critic passes do not imply
-whole-row equivalence. The [first comparison increment](../../research/PHASE3_MAP_SPATIAL_NATIVE_COMPARISON_20260910.md) records 2,144 original-executable calls/prefixes for lookup, playfield predicates, normalization and retained dummy identity. Its report records the executable, fixtures, endpoint limits and production test consumers. Rust and critic results must pass before publication; this bounded corpus does not close GSI-04.01.
+whole-row equivalence. The [first comparison increment](../../research/PHASE3_MAP_SPATIAL_NATIVE_COMPARISON_20260910.md)
+records 2,144 original-executable calls/prefixes for lookup, playfield predicates,
+normalization and retained dummy identity. Its report records the executable,
+fixtures, endpoint limits, production test consumers and passing validation.
+This bounded corpus does not close GSI-04.01. Ignored library tests remain
+unexecuted; they are not passing parity evidence.
 
 ## Open queue
 
-1. Deliver and independently review reproducible native comparisons for current
-   GSI-04.01 lookup/playfield helpers; fix any demonstrated mismatch.
-2. Recheck the remaining constructor identity, shared-dummy field,
+1. Recheck the remaining constructor identity, shared-dummy field,
    Resize/restore, iterator and consumer-order hypotheses. Implement only proven
    observable differences; retain unresolved candidates explicitly.
-3. Reconcile each other row with current production source and active retail
+2. Reconcile each other row with current production source and active retail
    evidence. Reuse bridge and earlier Phase 3 research without importing their
    historical scope expansions automatically.
-4. Run the phase-wide reverse audit only after every in-scope mechanism and
+3. Run the phase-wide reverse audit only after every in-scope mechanism and
    evidence-backed exclusion is accounted for. Any omission reopens its row.
 
 ## Start here
 
-Read the current task checkpoint, verify Git/process state, finish the first
-mechanism and its independent critic gate, then required full library tests and
-Clippy. Push, open/update its PR, merge and verify refreshed `origin/main` before
-starting another mechanism. Preserve a blocked mechanism and continue independent
-work when necessary. No phase or row is closed by this brief.
+Read the current task checkpoint and verify Git/process state, including whether
+the validated clipping increment has merged. Verify refreshed `origin/main`
+before selecting the next open mechanism. Each mechanism needs independent
+review, the required library tests and Clippy, then PR publication, merge and
+verification before another mechanism starts. Preserve a blocked mechanism and
+continue independent work when necessary. No phase or row is closed by this brief.
