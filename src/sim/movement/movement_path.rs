@@ -725,7 +725,7 @@ pub(super) fn try_repath_after_block(
     );
     target.next_index = 1;
     // Infantry: clear blocking state on repath success (fresh grace period).
-    // Vehicles: keep both flags — permanent impatience after first blockage.
+    // Walk's blocked caller restores its grace until actual paid progress.
     if is_infantry {
         target.blocked_delay = 0;
         target.path_blocked = false;

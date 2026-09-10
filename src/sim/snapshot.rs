@@ -449,9 +449,11 @@ use crate::sim::world::Simulation;
 // pre-v140 automatic-shell records also contain non-native invented spans.
 // v141 retains CellClass400/800 alongside1180 and hashes live dummy gap flags.
 // Old saves lack authoritative post-load gap state; do not invent it on restore.
-// v142 adds MCV pending deployment and the Drive rotation-edge latch.
+// v142 retains viewer-owned knowledge, local/effective sight, pending conceal
+// and stable generator admission receipts. New positional fields require rejection.
+// v143 adds MCV pending deployment and the Drive rotation-edge latch.
 // Bincode positional entity layout changes; reject older payloads.
-const SNAPSHOT_VERSION: u32 = 142;
+const SNAPSHOT_VERSION: u32 = 143;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3273,8 +3275,9 @@ mod tests {
         // 138 -> 139: map-owned ScenarioSession FreeRadar authority.
         // 139 -> 140: retained bridge record source Size for native zone lookup.
         // 140 -> 141: retained real CellClass gap flags400/800.
-        // 141 -> 142: MCV pending and Drive previous-rotation latches.
-        assert_eq!(super::SNAPSHOT_VERSION, 142);
+        // 141 -> 142: sustained sight and pending 120-frame gap conceal.
+        // 142 -> 143: MCV pending and Drive previous-rotation latches.
+        assert_eq!(super::SNAPSHOT_VERSION, 143);
     }
 
     #[test]

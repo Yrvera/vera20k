@@ -142,6 +142,10 @@ impl Simulation {
         let mcv_retry_after_track = sim.substrate.entities.get(stable_id).is_some_and(|e| {
             e.mcv_deploy_pending && e.navigation.nav_com.is_none() && e.drive_track.is_some()
         });
+        if !tube_active_at_entry {
+            sim.refresh_high_flying_sight_before_process(stable_id, rules, path_grid);
+        }
+
         let before_movement = sim.movement_sound_probe(stable_id);
         let cell_before_movement = sim
             .substrate

@@ -661,6 +661,7 @@ pub(crate) fn commit_entities(
                         infantry_is_fraidycat,
                         has_scatter_ability,
                         &mut world.scenario_rng,
+                        &world.interner,
                     )
                 })
             } else {

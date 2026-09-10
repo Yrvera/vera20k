@@ -325,6 +325,8 @@ fn test_recompute_visibility_tracks_multiple_owners() {
 
 #[test]
 fn test_allied_visibility_is_shared() {
+    // The real House registry interns every viewer before source admission.
+    let alliance = intern::test_intern("Alliance");
     let mut store = EntityStore::new();
     spawn_with_vision(&mut store, 1, "Americans", 4, 4, 1);
     let mut alliances = HouseAllianceMap::new();
@@ -344,8 +346,8 @@ fn test_allied_visibility_is_shared() {
         &default_config(),
         &ti(),
     );
-    // Build merged grid so Alliance sees Americans' vision via the alliance.
-    fog.build_merged_for(intern::test_intern("Alliance"), &ti());
+    // Cache construction copies the already-published direct viewer knowledge.
+    fog.build_merged_for(alliance, &ti());
     assert!(fog.is_cell_visible(intern::test_intern("Alliance"), 4, 4));
     assert!(fog.is_friendly("Alliance", "Americans"));
 }
@@ -744,7 +746,7 @@ fn spy_sat_reveal_helper_does_not_implicitly_reshroud_an_absent_owner() {
 // -- Gap Generator tests --
 
 #[test]
-fn test_gap_generator_suppresses_enemy_visibility() {
+fn test_gap_generator_preserves_admitted_enemy_sight() {
     let mut store = EntityStore::new();
     // Spawn a Soviet unit at (10, 10) with sight 8.
     spawn_with_vision(&mut store, 1, "Soviet", 10, 10, 8);
@@ -765,12 +767,10 @@ fn test_gap_generator_suppresses_enemy_visibility() {
     let interner = ti();
     apply_gap_generators(&mut fog, &[(americans_id, 12, 10, 5)], &interner);
 
-    // Soviet's vision within gap radius should be suppressed.
-    // (13, 10) is distance 1 from gap center (12,10) — inside gap.
-    assert!(!fog.is_cell_visible(intern::test_intern("Soviet"), 13, 10));
-    // But the gap generator does NOT suppress friendly vision.
-    // (Soviet unit at 10,10 is outside the gap center's radius check scope
-    // but its own sight is cleared for cells inside the gap.)
+    // Original current_sight keeps the admitted negative counter open even
+    // inside a hostile gap. Merely knowing the cell would not protect it.
+    assert!(fog.is_cell_visible(intern::test_intern("Soviet"), 13, 10));
+    assert!(!fog.is_cell_gap_covered(intern::test_intern("Soviet"), 13, 10));
 }
 
 #[test]
@@ -824,7 +824,7 @@ fn gsi_04_18_hostile_gap_erases_map_knowledge_until_current_sight_returns() {
 }
 
 #[test]
-fn gsi_04_18_spy_sat_repeat_restores_uncovered_cells_and_active_gap_still_wins() {
+fn gsi_04_18_spy_sat_repeat_is_not_a_new_map_reveal_event() {
     let viewer = intern::test_intern("Soviet");
     let gapper = intern::test_intern("Americans");
     let interner = ti();
@@ -844,8 +844,8 @@ fn gsi_04_18_spy_sat_repeat_restores_uncovered_cells_and_active_gap_still_wins()
         .clear_all_visible();
     apply_spy_sat(&mut fog, &[viewer], &interner);
     assert!(
-        fog.is_cell_revealed(viewer, 16, 16),
-        "the repeated uplink pass restores a cell after the gap disappears"
+        !fog.is_cell_revealed(viewer, 16, 16),
+        "577D90 House240 guard: passive visible-clear did not remove the gap or reset the map latch"
     );
     apply_gap_generators(&mut fog, &[(gapper, 16, 16, 5)], &interner);
     assert!(
@@ -1005,6 +1005,22 @@ fn test_gap_generator_sets_gap_covered_flag() {
     assert!(fog.is_cell_visible(intern::test_intern("Soviet"), 12, 10));
     fog.build_merged_for(intern::test_intern("Soviet"), &ti());
     assert!(!fog.is_cell_gap_covered(intern::test_intern("Soviet"), 12, 10));
+
+    // Release the sustained source first: original past_sight retains mapped
+    // knowledge at counter0, which the next hostile write can conceal.
+    store.remove(1);
+    recompute_owner_visibility_in_place(
+        &mut fog,
+        &store,
+        Some(&PathGrid::new(30, 30)),
+        &Default::default(),
+        &default_config(),
+        None,
+        &ti(),
+        None,
+    );
+    assert!(fog.is_cell_revealed(intern::test_intern("Soviet"), 12, 10));
+    assert!(!fog.is_cell_visible(intern::test_intern("Soviet"), 12, 10));
 
     // American gap generator at (12, 10) with radius 5.
     let americans_id = intern::test_intern("Americans");
@@ -1604,7 +1620,9 @@ fn the_height_shift_reduces_to_half_the_terrain_level() {
 fn an_airborne_viewer_reveals_under_its_sprite() {
     let (w, h) = (64u16, 64u16);
     let mut vis = OwnerVisibility::new(w, h);
-    super::reveal_radius_into(&mut vis, 30, 30, 1, 1500, false, true, None, w, h);
+    for (x, y) in super::collect_reveal_cells(30, 30, 1, 1500, false, None, w, h) {
+        vis.mark_visible(x, y);
+    }
     assert!(
         vis.is_revealed(23, 23),
         "centre shifts 7 cells toward iso-north"
@@ -1625,31 +1643,13 @@ fn an_airborne_viewer_sees_past_a_cliff() {
     // 0, and far below one cruising at 1500 leptons (level 14).
     let heights: Vec<u8> = vec![12; usize::from(w) * usize::from(h)];
     let mut grounded = OwnerVisibility::new(w, h);
-    super::reveal_radius_into(
-        &mut grounded,
-        30,
-        30,
-        5,
-        0,
-        true,
-        true,
-        Some(&heights),
-        w,
-        h,
-    );
+    for (x, y) in super::collect_reveal_cells(30, 30, 5, 0, true, Some(&heights), w, h) {
+        grounded.mark_visible(x, y);
+    }
     let mut flying = OwnerVisibility::new(w, h);
-    super::reveal_radius_into(
-        &mut flying,
-        30,
-        30,
-        5,
-        1500,
-        true,
-        true,
-        Some(&heights),
-        w,
-        h,
-    );
+    for (x, y) in super::collect_reveal_cells(30, 30, 5, 1500, true, Some(&heights), w, h) {
+        flying.mark_visible(x, y);
+    }
 
     let count = |vis: &OwnerVisibility| {
         (0..h)
@@ -1780,4 +1780,420 @@ fn repeated_fog_view_builds_leave_state_hash_unchanged() {
         before,
         "fog view preparation is invisible to the deterministic hash"
     );
+}
+
+/// Original MapCell + hostile Gap cell blocks + real early-Logic 120-frame sweep.
+/// Compare the selected knowledge consumer, not the legacy projected raw counters.
+#[test]
+fn shroud_current_sight_matches_original_native_sequences() {
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/shroud_current_sight.json"
+    ))
+    .unwrap();
+    assert_eq!(corpus["cases"].as_array().unwrap().len(), 23);
+    let owner = intern::test_intern("Americans");
+    let gapper = intern::test_intern("Soviet");
+    let interner = ti();
+    for case in corpus["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let mut fog = FogState {
+            width: 32,
+            height: 32,
+            ..Default::default()
+        };
+        fog.by_owner.insert(owner, OwnerVisibility::new(32, 32));
+        let mut store = EntityStore::new();
+        let mut count = 0u64;
+        let mut gaps = Vec::new();
+        for observation in case["observations"].as_array().unwrap() {
+            let op = observation["op"].as_str().unwrap();
+            match op {
+                "constructed" => {}
+                "reveal" | "leave" => {
+                    if op == "reveal" {
+                        count += 1;
+                        spawn_with_vision(&mut store, count, "Americans", 10, 10, 2);
+                    } else {
+                        store.remove(count);
+                        count -= 1;
+                    }
+                    recompute_owner_visibility_in_place(
+                        &mut fog,
+                        &store,
+                        None,
+                        &Default::default(),
+                        &default_config(),
+                        None,
+                        &interner,
+                        None,
+                    );
+                    apply_gap_generators(&mut fog, &gaps, &interner);
+                }
+                "unshroud" => reveal_radius(&mut fog, owner, 10, 10, 2),
+                "map_reveal_bulk" => fog.reveal_all_for_owner(owner),
+                "map_reset_bulk" => fog.reset_explored_for_owner(owner),
+                "gap" => {
+                    gaps.push((gapper, 10, 10, 3));
+                    apply_gap_generators(&mut fog, &gaps, &interner);
+                }
+                "remove" | "remove_mapclear" => {
+                    gaps.pop();
+                    let sources: Vec<_> = gaps
+                        .iter()
+                        .enumerate()
+                        .map(|(index, &(owner, rx, ry, radius))| GapGeneratorSource {
+                            stable_id: index as u64,
+                            owner,
+                            rx,
+                            ry,
+                            radius,
+                        })
+                        .collect();
+                    let map_clear = if op == "remove_mapclear" {
+                        std::collections::BTreeSet::from([owner])
+                    } else {
+                        Default::default()
+                    };
+                    apply_gap_generator_sources_with_spy_sat(
+                        &mut fog, &sources, &interner, &map_clear,
+                    );
+                }
+                frame if frame.starts_with("frame") => {
+                    fog.flush_pending_gap_conceal(frame[5..].parse().unwrap())
+                }
+                _ => panic!("unknown native operation {op}"),
+            }
+            let vis = &fog.by_owner[&owner];
+            let state = vis.shroud_knowledge[vis.index(10, 10).unwrap()];
+            assert_eq!(
+                state.counter,
+                observation["counter"].as_i64().unwrap() as i32,
+                "{name}/{op}/counter"
+            );
+            assert_eq!(
+                state.gap_counter,
+                observation["gap"].as_i64().unwrap() as i32,
+                "{name}/{op}/gap"
+            );
+            assert_eq!(
+                state.pending,
+                observation["flags"].as_u64().unwrap() & 0x20 != 0,
+                "{name}/{op}/pending"
+            );
+            let shrouded =
+                !fog.is_cell_revealed(owner, 10, 10) || fog.is_cell_gap_covered(owner, 10, 10);
+            assert_eq!(
+                shrouded,
+                observation["shrouded"].as_u64().unwrap() != 0,
+                "{name}/{op}"
+            );
+        }
+    }
+}
+
+#[test]
+fn shroud_current_sight_allied_gap_and_pending_survive_serialization() {
+    let owner = intern::test_intern("Americans");
+    let ally = intern::test_intern("Alliance");
+    let gapper = intern::test_intern("Soviet");
+    let interner = ti();
+    let mut alliances = HouseAllianceMap::new();
+    alliances
+        .entry("AMERICANS".into())
+        .or_default()
+        .insert("ALLIANCE".into());
+    alliances
+        .entry("ALLIANCE".into())
+        .or_default()
+        .insert("AMERICANS".into());
+    let mut store = EntityStore::new();
+    spawn_with_vision(&mut store, 1, "Alliance", 10, 10, 3);
+    let mut fog = FogState {
+        width: 32,
+        height: 32,
+        ..Default::default()
+    };
+    fog.by_owner.insert(owner, OwnerVisibility::new(32, 32));
+    recompute_owner_visibility_in_place(
+        &mut fog,
+        &store,
+        None,
+        &alliances,
+        &default_config(),
+        None,
+        &interner,
+        None,
+    );
+    apply_gap_generators(&mut fog, &[(gapper, 10, 10, 3)], &interner);
+    fog.build_merged_for(owner, &interner);
+    assert!(fog.is_cell_visible(owner, 10, 10));
+    assert!(!fog.is_cell_gap_covered(owner, 10, 10));
+    let encoded = bincode::serialize(&fog).unwrap();
+    let mut restored: FogState = bincode::deserialize(&encoded).unwrap();
+    apply_gap_generators(&mut restored, &[(gapper, 10, 10, 3)], &interner);
+    assert!(restored.is_cell_revealed(owner, 10, 10));
+    store.remove(1);
+    recompute_owner_visibility_in_place(
+        &mut restored,
+        &store,
+        None,
+        &alliances,
+        &default_config(),
+        None,
+        &interner,
+        None,
+    );
+    apply_gap_generators(&mut restored, &[(gapper, 10, 10, 3)], &interner);
+    let encoded = bincode::serialize(&restored).unwrap();
+    let mut restored: FogState = bincode::deserialize(&encoded).unwrap();
+    apply_gap_generators(&mut restored, &[], &interner); // Removal does not cancel native pending20.
+    restored.flush_pending_gap_conceal(119);
+    assert!(restored.is_cell_revealed(owner, 10, 10));
+    restored.flush_pending_gap_conceal(120);
+    restored.build_merged_for(owner, &interner);
+    assert!(!restored.is_cell_revealed(owner, 10, 10));
+    assert!(!restored.is_cell_revealed(ally, 10, 10));
+}
+
+#[test]
+fn shroud_current_sight_provenance_changes_future_conceal_and_hash() {
+    let owner = intern::test_intern("Americans");
+    let gapper = intern::test_intern("Soviet");
+    let mut store = EntityStore::new();
+    spawn_with_vision(&mut store, 1, "Americans", 10, 10, 3);
+    let mut sim = crate::sim::world::Simulation::with_seed(142);
+    sim.interner = ti();
+    sim.fog = recompute_owner_visibility(
+        &store,
+        Some(&PathGrid::new(32, 32)),
+        &Default::default(),
+        &default_config(),
+        &sim.interner,
+    );
+    let sight_hash = sim.state_hash();
+    let historical_hash = sim.state_hash_without_sustained_gap_sight_v142();
+    let mut mapped = sim.fog.clone();
+    // Keep the public observation identical, but replace the source's selected
+    // state with a past mapping receipt. Historical projections remain equal.
+    mapped.sight_admissions.clear();
+    for state in &mut mapped.by_owner.get_mut(&owner).unwrap().shroud_knowledge {
+        if state.local_sources > 0 {
+            state.local_sources = 0;
+            state.counter = 0;
+            state.transient_visible = true;
+        }
+    }
+    let sight = std::mem::replace(&mut sim.fog, mapped);
+    assert_ne!(sim.state_hash(), sight_hash);
+    assert_eq!(
+        sim.state_hash_without_sustained_gap_sight_v142(),
+        historical_hash
+    );
+    apply_gap_generators(&mut sim.fog, &[(gapper, 10, 10, 3)], &sim.interner);
+    assert!(!sim.fog.is_cell_revealed(owner, 10, 10));
+    sim.fog = sight;
+    apply_gap_generators(&mut sim.fog, &[(gapper, 10, 10, 3)], &sim.interner);
+    assert!(sim.fog.is_cell_revealed(owner, 10, 10));
+}
+
+#[test]
+fn shroud_current_sight_direct_allies_do_not_reexport_immunity() {
+    let a = intern::test_intern("Americans");
+    let b = intern::test_intern("Alliance");
+    let c = intern::test_intern("Soviet");
+    let hostile = intern::test_intern("Neutral");
+    let mut alliances = HouseAllianceMap::new();
+    for (left, right) in [
+        ("AMERICANS", "ALLIANCE"),
+        ("ALLIANCE", "AMERICANS"),
+        ("ALLIANCE", "SOVIET"),
+        ("SOVIET", "ALLIANCE"),
+    ] {
+        alliances
+            .entry(left.into())
+            .or_default()
+            .insert(right.into());
+    }
+    let mut store = EntityStore::new();
+    spawn_with_vision(&mut store, 1, "Americans", 10, 10, 3);
+    let interner = ti();
+    let mut fog = FogState {
+        width: 32,
+        height: 32,
+        ..Default::default()
+    };
+    for owner in [a, b, c] {
+        fog.by_owner.insert(owner, OwnerVisibility::new(32, 32));
+    }
+    recompute_owner_visibility_in_place(
+        &mut fog,
+        &store,
+        None,
+        &alliances,
+        &default_config(),
+        None,
+        &interner,
+        None,
+    );
+    for _ in 0..3 {
+        apply_gap_generators(&mut fog, &[(hostile, 10, 10, 3)], &interner);
+        fog.build_merged_for(b, &interner);
+        assert!(!fog.is_cell_gap_covered(b, 10, 10));
+        fog.build_merged_for(c, &interner);
+        assert!(
+            fog.is_cell_gap_covered(c, 10, 10),
+            "A's sight must not become B's local source on the next House publication"
+        );
+        assert!(!fog.is_cell_visible(c, 10, 10));
+        assert!(!fog.is_cell_revealed(c, 10, 10));
+    }
+    apply_gap_generators(&mut fog, &[], &interner);
+    fog.build_merged_for(c, &interner);
+    assert!(!fog.is_cell_visible(c, 10, 10));
+    assert!(!fog.is_cell_revealed(c, 10, 10));
+    assert!(!fog.is_cell_gap_covered(c, 10, 10));
+}
+
+#[test]
+fn shroud_current_sight_view_cache_observes_fresh_viewer_writers() {
+    let owner = intern::test_intern("Americans");
+    let interner = ti();
+    let mut fog = FogState {
+        width: 16,
+        height: 16,
+        ..Default::default()
+    };
+    fog.build_merged_for(owner, &interner);
+    assert!(!fog.is_cell_revealed(owner, 6, 6));
+    fog.reveal_all_for_owner(owner);
+    assert!(fog.is_cell_revealed(owner, 6, 6));
+    fog.build_merged_for(owner, &interner);
+    fog.reset_explored_for_owner(owner);
+    assert!(!fog.is_cell_revealed(owner, 6, 6));
+    fog.build_merged_for(owner, &interner);
+    fog.reveal_cells_for_owner(owner, [(6, 6)]);
+    assert!(fog.is_cell_revealed(owner, 6, 6));
+    assert!(!fog.is_cell_revealed(owner, 7, 6));
+    fog.build_merged_for(owner, &interner);
+    reveal_radius(&mut fog, owner, 7, 6, 2);
+    assert!(fog.is_cell_visible(owner, 7, 6));
+    assert!(fog.is_cell_revealed(owner, 7, 6));
+}
+
+#[test]
+fn shroud_current_sight_unchanged_refresh_does_not_invent_a_return_event() {
+    let owner = intern::test_intern("Americans");
+    let gapper = intern::test_intern("Soviet");
+    let interner = ti();
+    let mut fog = FogState {
+        width: 32,
+        height: 32,
+        ..Default::default()
+    };
+    let mut store = EntityStore::new();
+    spawn_with_vision(&mut store, 1, "Americans", 10, 10, 2);
+    let refresh = |fog: &mut FogState, store: &EntityStore| {
+        recompute_owner_visibility_in_place(
+            fog,
+            store,
+            None,
+            &Default::default(),
+            &default_config(),
+            None,
+            &interner,
+            None,
+        )
+    };
+    refresh(&mut fog, &store);
+    let first = [(gapper, 10, 10, 3)];
+    let both = [(gapper, 10, 10, 3), (gapper, 10, 10, 3)];
+    apply_gap_generators(&mut fog, &first, &interner);
+    store.remove(1);
+    refresh(&mut fog, &store);
+    apply_gap_generators(&mut fog, &both, &interner);
+    assert!(fog.is_cell_gap_covered(owner, 10, 10));
+    spawn_with_vision(&mut store, 1, "Americans", 10, 10, 2);
+    reveal_entity_vision(
+        &mut fog,
+        store.get(1).unwrap(),
+        &default_config(),
+        None,
+        false,
+        &interner,
+    );
+    assert!(fog.is_cell_revealed(owner, 10, 10));
+    assert!(
+        !fog.is_cell_gap_covered(owner, 10, 10),
+        "writer publishes immediately, before House reconciliation"
+    );
+    let mut fog: FogState = bincode::deserialize(&bincode::serialize(&fog).unwrap()).unwrap();
+    for _ in 0..3 {
+        refresh(&mut fog, &store);
+        apply_gap_generators(&mut fog, &both, &interner);
+        fog.build_merged_for(owner, &interner);
+    }
+    fog.flush_pending_gap_conceal(120);
+    assert!(
+        !fog.is_cell_revealed(owner, 10, 10),
+        "original second-gap/return retains pending despite negative counter"
+    );
+    refresh(&mut fog, &store);
+    apply_gap_generators(&mut fog, &both, &interner);
+    assert!(
+        !fog.is_cell_revealed(owner, 10, 10),
+        "unchanged source cannot reopen after the sweep"
+    );
+    // Explicit native release/admit is a different event even with identical
+    // geometry; this API does not claim the full FootAI timer producer is wired.
+    force_refresh_entity_vision(
+        &mut fog,
+        store.get(1).unwrap(),
+        &default_config(),
+        None,
+        false,
+        &interner,
+    );
+    assert!(fog.is_cell_revealed(owner, 10, 10));
+    assert!(!fog.is_cell_gap_covered(owner, 10, 10));
+}
+
+#[test]
+fn shroud_current_sight_first_fire_and_psychic_have_distinct_pending_history() {
+    let owner = intern::test_intern("Americans");
+    let interner = ti();
+    let mut fire = FogState {
+        width: 32,
+        height: 32,
+        ..Default::default()
+    };
+    let mut psychic = fire.clone();
+    reveal_radius(&mut fire, owner, 10, 10, 2);
+    reveal_radius_for_direct_allies(&mut psychic, owner, 10, 10, 2, &interner);
+    assert!(fire.is_cell_revealed(owner, 10, 10));
+    assert!(psychic.is_cell_revealed(owner, 10, 10));
+    fire.flush_pending_gap_conceal(120);
+    psychic.flush_pending_gap_conceal(120);
+    assert!(!fire.is_cell_revealed(owner, 10, 10));
+    assert!(psychic.is_cell_revealed(owner, 10, 10));
+}
+
+#[test]
+fn shroud_current_sight_timer_gate_matches_original_signed_frame_cases() {
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/shroud_current_sight.json"
+    ))
+    .unwrap();
+    let cases = corpus["timer_cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 9);
+    for case in cases {
+        let timer = crate::sim::timer::CdTimer::from_raw(
+            case["start"].as_i64().unwrap() as i32,
+            case["duration"].as_i64().unwrap() as i32,
+        );
+        assert_eq!(
+            timer.expired(case["frame"].as_i64().unwrap() as i32),
+            case["due"].as_bool().unwrap(),
+            "{case}"
+        );
+    }
 }

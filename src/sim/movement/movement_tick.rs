@@ -1278,8 +1278,6 @@ fn handle_deferred_drive_track_chain(
             }));
         }
         CellEntryResult::FriendlyStationary { blocker_id } => {
-            let blocker_fraidycat =
-                bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
             if !already_scattered.contains(&blocker_id)
                 && bump_crush::scatter_blocker(
                     entities,
@@ -1288,8 +1286,8 @@ fn handle_deferred_drive_track_chain(
                     occupancy,
                     chain.layers.object_list_layer,
                     rng,
-                    rules.map(|r| &r.mission_control),
-                    blocker_fraidycat,
+                    rules,
+                    interner,
                 )
             {
                 already_scattered.insert(blocker_id);
@@ -1773,6 +1771,17 @@ fn tick_movement_with_grids_scoped(
         let Some(snap) = snapshot_mover(entities, entity_id, playfield_bounds) else {
             continue;
         };
+        // Walk tests CanEnter at 0x75B690 before its paid SetCoords calls
+        // (0x75BDC0/0x75C12E). A refused prospective step keeps exact XY.
+        let walk_position_before_step = snap
+            .locomotor
+            .as_ref()
+            .filter(|loco| loco.kind == crate::rules::locomotor_type::LocomotorKind::Walk)
+            .and_then(|_| {
+                entities
+                    .get(entity_id)
+                    .map(|entity| entity.position.clone())
+            });
         let prone_crawls = entities.get(entity_id).and_then(|entity| {
             if !infantry::is_prone_for_damage(entity) {
                 return None;
@@ -2717,6 +2726,18 @@ fn tick_movement_with_grids_scoped(
                     }
                 }
             }
+            // Walk clears the blocked latch when it makes a paid coordinate
+            // step (0x75BFCD), not merely when FindPath succeeds. A refused
+            // prospective step below is restored and must keep its grace.
+            if deferred_cell_check.is_none()
+                && !aborted_for_stuck
+                && let Some(before) = walk_position_before_step.as_ref()
+                && super::ground_pose::position_world_xy(before)
+                    != super::ground_pose::position_world_xy(&entity.position)
+            {
+                target.path_blocked = false;
+                target.blocked_delay = 0;
+            }
         } // mutable entity borrow released here
 
         if aborted_for_stuck || already_finished {
@@ -2788,6 +2809,13 @@ fn tick_movement_with_grids_scoped(
             let rejected_xy = entities
                 .get(entity_id)
                 .map(|entity| super::ground_pose::position_world_xy(&entity.position));
+            // The generic crossing loop already advanced subcell coordinates.
+            // Restore Walk before the blocked response/repath observes the mover.
+            if let Some(position) = walk_position_before_step.as_ref()
+                && let Some(entity) = entities.get_mut(entity_id)
+            {
+                entity.position = position.clone();
+            }
             let occ_evts = handle_deferred_occupancy(
                 entities,
                 check,

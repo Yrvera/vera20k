@@ -481,6 +481,9 @@ pub struct GameEntity {
     pub dont_score: bool,
     /// Fog-of-war sight range in cells.
     pub vision_range: u16,
+    /// Foot65C/664 high-flying sight refresh timer, virtualized per viewer.
+    /// Independent of the retained sight-admission latch and stored footprint.
+    pub(crate) sight_refresh_timers: crate::sim::vision::SightRefreshTimers,
 
     // --- Render model (mutually exclusive) ---
     /// True = VXL/HVA model, false = SHP sprite; effective art metadata is authoritative.
@@ -626,10 +629,9 @@ pub struct GameEntity {
     pub building_down: Option<BuildingDown>,
     /// Active one-shot building animation overlays (e.g., ConYard crane).
     pub building_anim_overlays: Option<BuildingAnimOverlays>,
-    /// Scoped native-like damaged-state gate for building visuals.
-    ///
-    /// Models only the proven zero/nonzero damage gate, not the full native
-    /// BuildingClass BState table.
+    /// Health-derived damaged variant selection for building animation overlays.
+    /// This is not native BuildingClass+0x534 (the construction/idle animation
+    /// state), and must not gate occupied building body frames.
     #[serde(default)]
     pub building_damage_state_active: bool,
     /// Persisted type fact needed to recreate the owned light on later Unlimbo.
@@ -1218,6 +1220,9 @@ impl GameEntity {
             elite_flash_frames: 0,
             armor_multiplier: NativeF64Bits::ONE,
             vision_range,
+            sight_refresh_timers: crate::sim::vision::SightRefreshTimers::at_construction(
+                construction_frame,
+            ),
             is_voxel,
             selected: false,
             repairing: false,

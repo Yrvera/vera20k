@@ -6,6 +6,13 @@ type: reference
 
 # Garrison Frame Swap — Ghidra Research Report
 
+> **Correction (2026-09-10):** The healthy-occupied-frame-zero conclusion and
+> interpretation of +0x534 as a damage flag are superseded. Completed buildings
+> use animation state 1 and healthy occupied body frame 2. See
+> [the native caller evidence and executable comparison](../../tools/garrison_oracle/body_frame.py).
+> Do not implement the health-based body-frame gate described below.
+
+
 **Primary address:** `0x0043EF90` — `BuildingClass::GetCurrentFrame`
 **Confidence:** HIGH (decompiled, helper calls resolved, all magic numbers identified)
 **Active in YR:** Yes — runs every frame for every CanBeOccupied building drawn.

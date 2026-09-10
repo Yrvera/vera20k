@@ -1006,39 +1006,28 @@ pub const POST_SCATTER_WAIT_FRAMES: u16 = 10;
 // destination cell of a blocked step. See the note at the head of
 // `movement_occupancy::handle_deferred_occupancy`.
 
-/// Whether an already-moving blocker still accepts a forced scatter.
-///
-/// The two native Scatter bodies do NOT agree with each other, and VERA's
-/// former blanket "already moving → refuse" gate matched neither:
-///
-/// * **Vehicles.** `UnitClass::Scatter` never asks its locomotor whether it is
-///   moving — the whole body contains no `Is_Moving` call. Its only gate before
-///   the displacement is `missionEntry.Scatter || forced`, and every locomotor
-///   blocked-cell caller passes `forced = 1`, so a moving vehicle is scattered
-///   unconditionally.
-/// * **Infantry.** `InfantryClass::Scatter` loads its OWN locomotor, calls
-///   `Is_Moving`, and on a positive answer demotes the caller's force byte to
-///   zero — and only then applies the same `missionEntry.Scatter || forced`
-///   gate. So a moving infantryman still scatters whenever the mission it is
-///   currently running has `Scatter=yes`.
-///
-/// An absent mission-control table resolves to the constructed `Scatter=yes`
-/// default, which is what an unread table slot holds in the original engine.
+/// A forced blocked-cell scatter loses its force when Infantry's locomotor
+/// reports moving. After the mission gate, the final Fraidycat gate at
+/// `InfantryClass::Scatter 0x0051D20E..0x0051D220` rejects ordinary moving
+/// infantry even without an attack target. `UnitClass::Scatter 0x00743A50`
+/// never demotes force. See `tools/infantry_scatter_oracle.py` for the bounded
+/// native gate comparison.
 fn moving_blocker_accepts_forced_scatter(
     blocker: &GameEntity,
-    mission_control: Option<&crate::sim::mission::MissionControl>,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    is_fraidycat: bool,
 ) -> bool {
-    // Vehicles: no locomotor query at all, so the force byte survives.
     if blocker.category != EntityCategory::Infantry {
         return true;
     }
-    let mission = blocker.mission.current().known();
-    match (mission, mission_control) {
-        (Some(mission), Some(control)) => {
-            control.entry(mission).map_or(true, |entry| entry.scatter)
-        }
+    let mission_allows = match (blocker.mission.current().known(), rules) {
+        (Some(mission), Some(rules)) => rules
+            .mission_control
+            .entry(mission)
+            .is_none_or(|entry| entry.scatter),
         _ => true,
-    }
+    };
+    mission_allows && is_fraidycat
 }
 
 /// Read a blocker type's `Fraidycat=` flag for [`scatter_blocker`].
@@ -1070,12 +1059,8 @@ pub fn blocker_is_fraidycat(
 /// walkable + unoccupied cell, issue the blocker a movement order to walk
 /// there.
 ///
-/// `mission_control` supplies the current mission's `Scatter=` flag, which the
-/// infantry body consults once its own locomotor reports moving (see
-/// [`moving_blocker_accepts_forced_scatter`]).
-///
-/// `blocker_is_fraidycat` is the blocker type's `Fraidycat=` flag, read by the
-/// infantry body's second force-gated early-out (see [`blocker_is_fraidycat`]).
+/// `rules` resolves the Infantry scatter gates and the normal movement speed.
+/// Scatter changes the destination; it does not grant a special speed.
 ///
 /// Returns `true` if the blocker was given a scatter movement command.
 #[allow(clippy::too_many_arguments)]
@@ -1086,8 +1071,8 @@ pub fn scatter_blocker(
     occupancy: &OccupancyGrid,
     layer: MovementLayer,
     rng: &mut SimRng,
-    mission_control: Option<&crate::sim::mission::MissionControl>,
-    blocker_is_fraidycat: bool,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    interner: &crate::sim::intern::StringInterner,
 ) -> bool {
     // Read blocker properties (immutable borrow).
     let Some(blocker) = entities.get(blocker_id) else {
@@ -1098,35 +1083,17 @@ pub fn scatter_blocker(
     if blocker.category == EntityCategory::Structure {
         return false;
     }
-    // A blocker that is already moving is NOT refused outright. VERA has no
-    // per-locomotor `Is_Moving` query yet, so an installed movement target
-    // stands in for it — VERA-internal, gamemd equivalent UNCHECKED.
+    // MovementTarget is VERA's existing walking destination authority. Native
+    // WalkLocomotion::Is_Moving (0x0075AB30) reads its moving byte, distinct
+    // from Is_Moving_Now; an installed target stands in for that byte here.
+    let is_fraidycat = blocker_is_fraidycat(entities, blocker_id, rules, interner);
     if blocker.movement_target.is_some()
-        && !moving_blocker_accepts_forced_scatter(blocker, mission_control)
-    {
-        return false;
-    }
-    // Second force-gated early-out in the infantry body: a non-`Fraidycat` type
-    // that currently holds a shoot-at target refuses the scatter unless the
-    // force byte survived. The force byte is demoted for exactly the infantry
-    // whose own locomotor reports moving, so this gate bites a moving,
-    // targeting, non-Fraidycat infantryman and nobody else. Vehicles never
-    // reach it — the vehicle Scatter body has no locomotor query and no such
-    // clause. VERA still stands an installed movement target in for the
-    // per-locomotor `Is_Moving` query; gamemd equivalent UNCHECKED.
-    if blocker.category == EntityCategory::Infantry
-        && !blocker_is_fraidycat
-        && blocker.attack_target.is_some()
-        && blocker.movement_target.is_some()
+        && !moving_blocker_accepts_forced_scatter(blocker, rules, is_fraidycat)
     {
         return false;
     }
     let bpos = (blocker.position.rx, blocker.position.ry);
-    let speed = blocker
-        .locomotor
-        .as_ref()
-        .map(|l| l.speed_multiplier * crate::util::fixed_math::SimFixed::from_num(1024))
-        .unwrap_or(crate::util::fixed_math::SimFixed::from_num(1024));
+    let speed = scatter_movement_speed(blocker, rules, interner);
 
     // Find a valid adjacent cell. Random start direction matches Branch A.
     let start_dir = rng.next_range_u32(8) as usize;
@@ -1167,6 +1134,31 @@ pub fn scatter_blocker(
     crate::sim::movement::movement_commands::issue_direct_move(entities, blocker_id, dest, speed)
 }
 
+/// Normal speed shared by blocked-cell and damage-triggered displacement.
+fn scatter_movement_speed(
+    entity: &GameEntity,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    interner: &crate::sim::intern::StringInterner,
+) -> SimFixed {
+    // Scatter installs a destination; the walking process still calls
+    // InfantryClass::GetCurrentSpeed (0x00521D80), delegating to
+    // FootClass::GetCurrentSpeed (0x004DB1A0). Use the same resolver as ordinary
+    // Move orders, including FASTER and the locomotor multiplier. The former
+    // literal 1024 made a stock Speed=4 GI scatter at 6.8 times normal speed.
+    let obj = rules.and_then(|r| r.object(interner.resolve(entity.type_ref())));
+    let base_speed = crate::sim::combat::veterancy::entity_mover_speed_leptons_per_second(
+        entity,
+        obj,
+        obj.map_or(4, |o| o.speed),
+        rules.map_or(1.0, |r| r.general.veteran_speed),
+    );
+    let multiplier = entity
+        .locomotor
+        .as_ref()
+        .map_or(SimFixed::from_num(1), |loco| loco.speed_multiplier);
+    (base_speed * multiplier).max(SimFixed::from_num(25))
+}
+
 /// One accepted nonfatal Infantry damage scatter, selected before the
 /// receiver's fear callback mutates the target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1195,6 +1187,7 @@ pub(crate) fn select_infantry_damage_scatter(
     infantry_is_fraidycat: bool,
     has_scatter_ability: bool,
     rng: &mut SimRng,
+    interner: &crate::sim::intern::StringInterner,
 ) -> Option<InfantryDamageScatter> {
     if infantry.category != EntityCategory::Infantry
         || infantry.dying
@@ -1327,7 +1320,7 @@ pub(crate) fn select_infantry_damage_scatter(
 
         return Some(InfantryDamageScatter {
             destination: (nx, ny),
-            speed: locomotor.speed_multiplier * SimFixed::from_num(1024),
+            speed: scatter_movement_speed(infantry, Some(rules), interner),
         });
     }
 
@@ -2387,6 +2380,73 @@ mod tests {
 
     // -- scatter_blocker tests --
 
+    /// Native interior gate evidence only: forced obstruction calls, before
+    /// candidate selection and RNG. The harness bypasses special animation
+    /// entry gates; this is not a complete Scatter or walking parity claim.
+    #[test]
+    fn infantry_forced_scatter_gates_match_native_oracle() {
+        let oracle: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tools/infantry_scatter_oracle.json"))
+                .unwrap();
+        let mut checked = 0;
+        for case in oracle["scatter_gates"].as_array().unwrap() {
+            let flag = |key: &str| case[key].as_bool().unwrap();
+            if !flag("first_bool") {
+                continue;
+            }
+            let rules = scatter_rules(flag("fraidycat"));
+            let mut gi = infantry(1, 5, 5, 2);
+            set_mission(
+                &mut gi,
+                if flag("mission_scatter") {
+                    crate::sim::mission::MissionType::Move
+                } else {
+                    crate::sim::mission::MissionType::Sleep
+                },
+            );
+            if flag("has_target") {
+                gi.attack_target = Some(crate::sim::combat::AttackTarget::new(9));
+            }
+            let admitted = !flag("moving")
+                || moving_blocker_accepts_forced_scatter(&gi, Some(&rules), flag("fraidycat"));
+            assert_eq!(admitted, flag("gate_admitted"), "native case: {case}");
+            checked += 1;
+        }
+        assert_eq!(checked, 32);
+    }
+
+    #[test]
+    fn damage_scatter_uses_the_same_normal_type_speed() {
+        let rules = scatter_rules(true);
+        let mut civilian = infantry(1, 5, 5, 2);
+        let interner = crate::sim::intern::test_interner();
+        civilian.locomotor = Some(
+            crate::sim::movement::locomotor::LocomotorState::from_object_type(
+                rules.object("E1").unwrap(),
+                0,
+                0,
+            ),
+        );
+        let mut rng = SimRng::new(42);
+        let scatter = select_infantry_damage_scatter(
+            &civilian,
+            (0, 0),
+            None,
+            &OccupancyGrid::new(),
+            &rules,
+            false,
+            true,
+            false,
+            &mut rng,
+            &interner,
+        )
+        .expect("unoccupied civilian damage scatter");
+        assert_eq!(
+            scatter.speed,
+            crate::util::fixed_math::ra2_speed_to_leptons_per_second(4)
+        );
+    }
+
     #[test]
     fn test_scatter_blocker_issues_movement() {
         let grid = PathGrid::new(10, 10);
@@ -2405,7 +2465,7 @@ mod tests {
             MovementLayer::Ground,
             &mut rng,
             None,
-            false,
+            &crate::sim::intern::test_interner(),
         );
         assert!(result, "scatter_blocker should succeed with open cells");
 
@@ -2450,7 +2510,7 @@ mod tests {
             MovementLayer::Ground,
             &mut rng,
             None,
-            false,
+            &crate::sim::intern::test_interner(),
         );
         assert!(!result, "scatter_blocker should fail when all blocked");
         assert!(store.get(1).unwrap().movement_target.is_none());
@@ -2481,12 +2541,11 @@ mod tests {
             });
     }
 
-    /// Stock mission control: `[Move] Scatter=` keeps the constructed yes,
-    /// `[Sleep] Scatter=no`.
-    fn scatter_mission_control() -> crate::sim::mission::MissionControl {
-        crate::sim::mission::MissionControl::from_ini(&crate::rules::ini_parser::IniFile::from_str(
-            "[Move]\nRate=.016\n\n[Sleep]\nScatter=no\n",
-        ))
+    fn scatter_rules(fraidycat: bool) -> crate::rules::ruleset::RuleSet {
+        let ini = crate::rules::ini_parser::IniFile::from_str(&format!(
+            "[InfantryTypes]\n0=E1\n[VehicleTypes]\n0=MTNK\n[E1]\nSpeed=4\nFraidycat={fraidycat}\n[MTNK]\nSpeed=6\n[Move]\nRate=.016\n[Sleep]\nScatter=no\n"
+        ));
+        crate::rules::ruleset::RuleSet::from_ini(&ini).unwrap()
     }
 
     /// `UnitClass::Scatter` never queries its locomotor — with the force byte
@@ -2497,7 +2556,7 @@ mod tests {
         let grid = PathGrid::new(10, 10);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(42);
-        let control = scatter_mission_control();
+        let rules = scatter_rules(false);
 
         let mut store = EntityStore::new();
         let mut v = vehicle(1, 5, 5);
@@ -2513,8 +2572,8 @@ mod tests {
                 &occupancy,
                 MovementLayer::Ground,
                 &mut rng,
-                Some(&control),
-                false,
+                Some(&rules),
+                &crate::sim::intern::test_interner(),
             ),
             "a moving vehicle must still be scattered — the vehicle body has no Is_Moving gate"
         );
@@ -2529,7 +2588,7 @@ mod tests {
         let grid = PathGrid::new(10, 10);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(42);
-        let control = scatter_mission_control();
+        let rules = scatter_rules(false);
 
         let mut store = EntityStore::new();
         let mut i = infantry(1, 5, 5, 0);
@@ -2546,13 +2605,14 @@ mod tests {
                 &occupancy,
                 MovementLayer::Ground,
                 &mut rng,
-                Some(&control),
-                false, // Fraidycat=no — every stock combat infantry type
+                Some(&rules),
+                &crate::sim::intern::test_interner(), // Fraidycat=no — every stock combat infantry type
             ),
             "a moving, targeting, non-Fraidycat infantryman refuses the demoted-force scatter"
         );
 
         // A Fraidycat type in exactly the same state still scatters.
+        let rules = scatter_rules(true);
         let mut store = EntityStore::new();
         let mut i = infantry(1, 5, 5, 0);
         i.movement_target = Some(moving_target());
@@ -2567,42 +2627,48 @@ mod tests {
                 &occupancy,
                 MovementLayer::Ground,
                 &mut rng,
-                Some(&control),
-                true, // Fraidycat=yes — the 26 stock civilian sections
+                Some(&rules),
+                &crate::sim::intern::test_interner(), // Fraidycat=yes
             ),
             "the Fraidycat branch skips the early-out entirely"
         );
     }
 
-    /// `InfantryClass::Scatter` demotes the force byte when its own locomotor
-    /// reports moving, then applies `missionEntry.Scatter || forced`. A moving
-    /// infantryman on a `Scatter=yes` mission (the constructed default, kept by
-    /// Move) therefore still scatters.
+    /// The final Fraidycat gate matters even when Move allows scatter and the
+    /// soldier has no attack target. A refused request must not replace the
+    /// player's destination or consume the scatter direction draw.
     #[test]
-    fn scatter_blocker_displaces_a_moving_infantryman_on_a_scatter_yes_mission() {
+    fn scatter_blocker_preserves_moving_gi_order_and_rng() {
         let grid = PathGrid::new(10, 10);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(42);
-        let control = scatter_mission_control();
-
+        let rules = scatter_rules(false);
         let mut store = EntityStore::new();
-        let mut i = infantry(1, 5, 5, 0);
-        i.movement_target = Some(moving_target());
-        set_mission(&mut i, crate::sim::mission::MissionType::Move);
-        store.insert(i);
-
-        assert!(
-            scatter_blocker(
-                &mut store,
-                1,
-                Some(&grid),
-                &occupancy,
-                MovementLayer::Ground,
-                &mut rng,
-                Some(&control),
-                false,
-            ),
-            "Move keeps the constructed Scatter=yes, so the demoted force byte still scatters"
+        let mut gi = infantry(1, 5, 5, 2);
+        gi.movement_target = Some(moving_target());
+        set_mission(&mut gi, crate::sim::mission::MissionType::Move);
+        store.insert(gi);
+        let before_rng = rng.state();
+        let before_target = store.get(1).unwrap().movement_target.clone();
+        assert!(!scatter_blocker(
+            &mut store,
+            1,
+            Some(&grid),
+            &occupancy,
+            MovementLayer::Ground,
+            &mut rng,
+            Some(&rules),
+            &crate::sim::intern::test_interner(),
+        ));
+        assert_eq!(rng.state(), before_rng);
+        let target = store.get(1).unwrap().movement_target.as_ref().unwrap();
+        let original = before_target.unwrap();
+        assert_eq!(target.path, original.path);
+        assert_eq!(target.next_index, original.next_index);
+        assert_eq!(target.speed, original.speed);
+        assert_eq!(
+            store.get(1).unwrap().mission.current().known(),
+            Some(crate::sim::mission::MissionType::Move)
         );
     }
 
@@ -2614,7 +2680,7 @@ mod tests {
         let grid = PathGrid::new(10, 10);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(42);
-        let control = scatter_mission_control();
+        let rules = scatter_rules(true);
 
         let mut store = EntityStore::new();
         let mut i = infantry(1, 5, 5, 0);
@@ -2630,8 +2696,8 @@ mod tests {
                 &occupancy,
                 MovementLayer::Ground,
                 &mut rng,
-                Some(&control),
-                false,
+                Some(&rules),
+                &crate::sim::intern::test_interner(),
             ),
             "[Sleep] Scatter=no and the force byte was demoted, so the gate refuses"
         );
@@ -2644,7 +2710,7 @@ mod tests {
         let grid = PathGrid::new(10, 10);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(42);
-        let control = scatter_mission_control();
+        let rules = scatter_rules(false);
 
         let mut store = EntityStore::new();
         let mut i = infantry(1, 5, 5, 0);
@@ -2659,10 +2725,21 @@ mod tests {
                 &occupancy,
                 MovementLayer::Ground,
                 &mut rng,
-                Some(&control),
-                false,
+                Some(&rules),
+                &crate::sim::intern::test_interner(),
             ),
             "forced=1 survives when the object is not moving"
+        );
+        assert_eq!(
+            store
+                .get(1)
+                .unwrap()
+                .movement_target
+                .as_ref()
+                .unwrap()
+                .speed,
+            crate::util::fixed_math::ra2_speed_to_leptons_per_second(4),
+            "stationary GI scatter retains its ordinary retail type speed"
         );
     }
 
@@ -2683,7 +2760,7 @@ mod tests {
             MovementLayer::Ground,
             &mut rng,
             None,
-            false,
+            &crate::sim::intern::test_interner(),
         );
 
         assert!(
@@ -2725,7 +2802,7 @@ mod tests {
             MovementLayer::Ground,
             &mut rng1,
             None,
-            false,
+            &crate::sim::intern::test_interner(),
         );
 
         let mut store2 = EntityStore::new();
@@ -2739,7 +2816,7 @@ mod tests {
             MovementLayer::Ground,
             &mut rng2,
             None,
-            false,
+            &crate::sim::intern::test_interner(),
         );
 
         let t1 = store1.get(1).unwrap().movement_target.as_ref().unwrap();
