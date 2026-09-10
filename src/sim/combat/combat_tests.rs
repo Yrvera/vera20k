@@ -7511,9 +7511,14 @@ fn deployed_desolator_self_irradiates_and_refires_below_third() {
 
     // Tick 1: gate open (no site) → self-targeted deploy-weapon shot.
     let result = rad_combat_tick(&mut sim, &rules, 1);
-    assert_eq!(result.consequences.fire_events().len(), 1, "deployed self-irradiate fires");
     assert_eq!(
-        sim.interner.resolve(result.consequences.fire_events()[0].weapon_id),
+        result.consequences.fire_events().len(),
+        1,
+        "deployed self-irradiate fires"
+    );
+    assert_eq!(
+        sim.interner
+            .resolve(result.consequences.fire_events()[0].weapon_id),
         "RadEruptionWeapon"
     );
     assert_eq!(result.consequences.fire_events()[0].target, TargetKind::Cell(10, 10));
@@ -7695,10 +7700,20 @@ fn unit_lost_events_come_from_damage_kills_of_unspawned_non_buildings() {
 
     let tank = make_entity_owned(10, "MTNK", 8, 5, 10, "Defender");
     let result = run_kill(tank);
-    assert_eq!(result.consequences.effects().unit_lost_events.len(), 1, "vehicle kill announces");
-    assert_eq!(result.consequences.effects().unit_lost_events[0].owner, test_intern("Defender"));
     assert_eq!(
-        (result.consequences.effects().unit_lost_events[0].rx, result.consequences.effects().unit_lost_events[0].ry),
+        result.consequences.effects().unit_lost_events.len(),
+        1,
+        "vehicle kill announces"
+    );
+    assert_eq!(
+        result.consequences.effects().unit_lost_events[0].owner,
+        test_intern("Defender")
+    );
+    assert_eq!(
+        (
+            result.consequences.effects().unit_lost_events[0].rx,
+            result.consequences.effects().unit_lost_events[0].ry
+        ),
         (8, 5)
     );
 
@@ -9313,4 +9328,65 @@ fn gsi_08_33_direct_rocker_only_claims_a_vehicle_target() {
         1,
         "infantry falls through 0x004697b2 to the next test, so damage runs"
     );
+}
+
+/// The real receiver checks visible directly, so newly concealed transient
+/// mapping must not leave a bright-object targeting loophole over dark terrain.
+#[test]
+fn shroud_current_sight_concealed_transient_rejects_combat_fire() {
+    for psychic in [false, true] {
+        let rules = test_rules();
+        let mut interner = test_interner();
+        let owner = test_intern("Americans");
+        let enemy = test_intern("Soviet");
+        let mut fog = FogState {
+            width: 24,
+            height: 24,
+            ..Default::default()
+        };
+        if psychic {
+            crate::sim::vision::reveal_radius_for_direct_allies(
+                &mut fog, owner, 8, 5, 2, &interner,
+            );
+            crate::sim::vision::apply_gap_generators(&mut fog, &[(enemy, 8, 5, 3)], &interner);
+        } else {
+            crate::sim::vision::reveal_radius(&mut fog, owner, 8, 5, 2);
+            fog.flush_pending_gap_conceal(120);
+        }
+        assert!(!fog.is_cell_revealed(owner, 8, 5));
+        assert!(!fog.is_cell_visible(owner, 8, 5));
+        let mut store = EntityStore::new();
+        store.insert(make_entity_owned(1, "MTNK", 5, 5, 300, "Americans"));
+        store.insert(make_entity_owned(2, "MTNK", 8, 5, 300, "Soviet"));
+        issue_attack_command(&mut store, 1, 2, None, &interner);
+        let mut main_rng = SimRng::new(1);
+        let result = tick_combat_with_fog(
+            &mut store,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            Some(&fog),
+            &BTreeMap::<InternedId, PowerState>::new(),
+            None,
+            &mut BTreeMap::new(),
+            None,
+            None,
+            None,
+            0u64,
+            100,
+            0u32,
+            &[],
+            None,
+            &mut main_rng,
+        );
+        assert!(
+            result.consequences.fire_events().is_empty(),
+            "concealed transient must not emit a fire event"
+        );
+        assert_eq!(
+            store.get(2).unwrap().health.current,
+            300,
+            "concealed transient source psychic={psychic}"
+        );
+    }
 }

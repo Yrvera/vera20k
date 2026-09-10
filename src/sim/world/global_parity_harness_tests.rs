@@ -604,7 +604,12 @@ const GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x53C3_17DD_E1B0_51F
 // 2026-09-08 integration of main 33f36d79 with ramp branch 5f41f2ea:
 // the pre-v136 probe and all older probes pass, isolating this new current
 // value to main's retained InfantryTerminal fold; replay and RNG pins hold.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x71EC_0BD6_ED9D_45CC;
+// v142 retains selected shroud knowledge, per-viewer source/gap admissions,
+// Map240 and Foot sight clocks. The pre-v142 probe remains71EC0BD6ED9D45CC;
+// every older probe, replay tick and all three RNG streams pass unchanged.
+// Receipt: .local/shroud-current-sight-broader-v1-3.log. This is Rust hash
+// composition provenance, not a native full-simulation comparison.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xC9FF_6605_2C99_8226;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -922,6 +927,11 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
         );
     }
 
+    assert_eq!(
+        rep.state_hash_without_sustained_gap_sight_v142(),
+        0x71EC_0BD6_ED9D_45CC,
+        "pre-v142 fog provenance projection must reproduce the prior current baseline"
+    );
     let pre_lifecycle_hash = rep.state_hash_before_lifecycle_v28_and_mission_v29();
     let pre_mission_hash = rep.state_hash_without_mission_v29();
     let pre_base_plan_hash = rep.state_hash_without_base_plan_v110();

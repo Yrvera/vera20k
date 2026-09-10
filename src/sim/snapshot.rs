@@ -449,7 +449,9 @@ use crate::sim::world::Simulation;
 // pre-v140 automatic-shell records also contain non-native invented spans.
 // v141 retains CellClass400/800 alongside1180 and hashes live dummy gap flags.
 // Old saves lack authoritative post-load gap state; do not invent it on restore.
-const SNAPSHOT_VERSION: u32 = 141;
+// v142 retains viewer-owned knowledge, local/effective sight, pending conceal
+// and stable generator admission receipts. New positional fields require rejection.
+const SNAPSHOT_VERSION: u32 = 142;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3262,7 +3264,7 @@ mod tests {
     /// 132 -> 133 persists the `HouseClass+0x57D4` funds-nag timer and the
     /// `[0xA8F040]` low-power guard.
     #[test]
-    fn current_snapshot_version_includes_retained_bridge_gap_flags() {
+    fn current_snapshot_version_includes_sustained_gap_sight() {
         // 133 -> 134: repair-depot docking layout (see the constant's comment).
         // 134 -> 135: GameEntity ProduceCash timer + drain link pair (GSI-09.01).
         // 135 -> 136: explicit retained Infantry terminal lifetime policy.
@@ -3271,7 +3273,8 @@ mod tests {
         // 138 -> 139: map-owned ScenarioSession FreeRadar authority.
         // 139 -> 140: retained bridge record source Size for native zone lookup.
         // 140 -> 141: retained real CellClass gap flags400/800.
-        assert_eq!(super::SNAPSHOT_VERSION, 141);
+        // 141 -> 142: sustained sight and pending 120-frame gap conceal.
+        assert_eq!(super::SNAPSHOT_VERSION, 142);
     }
 
     #[test]

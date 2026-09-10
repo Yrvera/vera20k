@@ -481,6 +481,9 @@ pub struct GameEntity {
     pub dont_score: bool,
     /// Fog-of-war sight range in cells.
     pub vision_range: u16,
+    /// Foot65C/664 high-flying sight refresh timer, virtualized per viewer.
+    /// Independent of the retained sight-admission latch and stored footprint.
+    pub(crate) sight_refresh_timers: crate::sim::vision::SightRefreshTimers,
 
     // --- Render model (mutually exclusive) ---
     /// True = VXL/HVA model, false = SHP sprite; effective art metadata is authoritative.
@@ -1209,6 +1212,9 @@ impl GameEntity {
             elite_flash_frames: 0,
             armor_multiplier: NativeF64Bits::ONE,
             vision_range,
+            sight_refresh_timers: crate::sim::vision::SightRefreshTimers::at_construction(
+                construction_frame,
+            ),
             is_voxel,
             selected: false,
             repairing: false,

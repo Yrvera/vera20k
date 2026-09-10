@@ -154,7 +154,11 @@ const BRIDGE_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x964B_448B_A90B_D06
 // 2026-09-08 integration of main 33f36d79 with ramp branch 5f41f2ea:
 // the pre-v136 probe and all older probes pass, isolating this new current
 // value to main's retained InfantryTerminal fold; route and replay checks hold.
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x3CCC_DF29_4DDA_4D4F;
+// v142 adds retained shroud knowledge/admissions, Map240 and Foot sight clocks.
+// The dedicated pre-v142 assertion below retains this fixture's prior current
+// pin; older probes and existing replay/stream checks remain unchanged.
+// Receipt: .local/shroud-current-sight-full-v1.log (composition-only candidates).
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0xE2AC_4ADB_9F48_24F8;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
@@ -546,6 +550,11 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
         );
     }
 
+    assert_eq!(
+        rep.state_hash_without_sustained_gap_sight_v142(),
+        0x3CCC_DF29_4DDA_4D4F,
+        "pre-v142 composition must reproduce this fixture's prior current baseline"
+    );
     let final_hash = *replayed.last().expect("at least one tick replayed");
     let pre_base_plan_hash = rep.state_hash_without_base_plan_v110();
     let pre_crate_authority_hash = rep.state_hash_without_crate_authority_v114();
