@@ -815,6 +815,213 @@
           "shrouded": 1
         }
       ]
+    },
+    {
+      "name": "second_gap_consumes_pending",
+      "observations": [
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 0,
+          "op": "constructed",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 0,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 1,
+          "op": "leave",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 2,
+          "op": "gap",
+          "shrouded": 1
+        }
+      ]
+    },
+    {
+      "name": "fire_under_gap",
+      "observations": [
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 0,
+          "op": "constructed",
+          "shrouded": 1
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 32,
+          "gap": 1,
+          "op": "unshroud",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 32,
+          "gap": 1,
+          "op": "frame119",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 1,
+          "op": "frame120",
+          "shrouded": 1
+        }
+      ]
+    },
+    {
+      "name": "psychic_under_gap",
+      "observations": [
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 0,
+          "op": "constructed",
+          "shrouded": 1
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 1,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 1,
+          "op": "leave",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 1,
+          "op": "frame119",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 1,
+          "op": "frame120",
+          "shrouded": 1
+        }
+      ]
     }
   ]
 }

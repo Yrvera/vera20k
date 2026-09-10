@@ -13,17 +13,21 @@ native paths do not retain a reveal-counter contribution. Departure under an
 already-active gap is deferred until the early Logic 120-frame sweep, including
 when the generator disappears before that sweep.
 
-The candidate retains separate sustained-sight, hostile-coverage and pending-conceal
-bits in the existing serialized owner plane. The ordinary entity reveal owner
-writes sustained sight; generic radius mapping does not. Effective allied sight
-protects each participating viewer plane, preventing an allied merged view from
-OR-ing a false hostile-gap result back into the display. Empty generator sets
-publish removal while retaining pending conceal. `advance_master_frame` consumes
-pending state using signed pre-increment `binary_frame % 120`, after trigger work
-and before ore, Teams and live object work. Snapshot142 rejects older snapshots
-that lack this behavioral provenance; historical hash probes mask only the three
-new bits. The old raw-counter/cache projection is deliberately not asserted equal
-to native by these tests.
+The candidate stores knowledge per viewer. Fresh Techno and Psychic writers apply
+the source house's direct-alliance relation before publishing to recipient planes;
+display caching never ORs another viewer's derived knowledge. Only the actual
+Techno owner receives the local SOURCE bit; admitted allied viewers receive the
+separate EFFECTIVE sight bit. Generic transient mapping receives neither.
+
+Stable generator identity/owner/geometry admission receipts distinguish a fresh
+native gap write from repeat refresh/House materialization and survive save/load.
+Existing hostile coverage lets transient mapping schedule pending conceal without
+inventing sustained sight. Empty generator sets publish removal without canceling
+pending. `advance_master_frame` consumes prior pending state using signed
+pre-increment `binary_frame % 120`, after trigger work and before ore, Teams and
+live object work. Snapshot142 rejects earlier representations. Historical hash
+probes mask the four new bits and omit admission receipts. Raw legacy counters and
+edge caches are not asserted equal to native by these bitmap tests.
 
 Rust validation is pending at this evidence checkpoint; this paragraph describes
 the unvalidated working candidate, not a passed production receipt.
@@ -73,11 +77,12 @@ python -B -m tools.spatial_oracle.shroud_current_sight --write
 python -B -m tools.spatial_oracle.shroud_current_sight --check
 ```
 
-Both commands exited0 on2026-09-10. The read-only check reproduced all12 sequences
+Both commands exited0 on2026-09-10. The read-only check reproduced all15 sequences
 without writing files. Cases cover never-seen/current/past/overlapping sight,
 entering an existing gap, ordinary and MapIsClear removal, fire-only/Psychic-only
 mapping, departure119→120, return before120, removal preserving pending, and a
-post120 departure waiting until240. The frame cases execute the original modulo
+post120 departure waiting until240, a second fresh gap consuming pending
+knowledge, and fire/Psychic mapping under an existing gap. The frame cases execute the original modulo
 gate and complete578100 two-pass loop on a fully allocated Size12x12 diamond with
 real Cell vtables. Sparse allocation would terminate the native iterator early
 and is not used for that claim. Original49F2F0 initializes direction data.
@@ -88,12 +93,42 @@ full MapCell callbacks execute with supplied empty scenario/tactical state.
 This compares selected IsShrouded and pending observations, not all native edge
 cache shapes, complete reveal traversal, every map coordinate, or GPU pixels.
 
+## Coherent viewer authority after review
+
+Independent review rejected both re-exporting allied sight as a local source and
+using a permanent gap-only display override. Both could make A-B-C alliances
+transitive or suppress a fresh legitimate ally reveal. The final candidate has one
+viewer knowledge authority: direct source-aware writes update it; presentation
+only copies that viewer. There is no retained gap-knowledge override plane.
+
+| Writer/consumer | Final production boundary |
+| --- | --- |
+| Ordinary Techno recompute and SetLocalSize membership promotion | `reveal_entity_vision` computes the existing source geometry once and publishes it to the source/direct allied viewers; SOURCE only on the source, EFFECTIVE on recipients |
+| Psychic launch | Both original-mode counterparts publish a fresh transient event to source/direct allies; derived recipient knowledge is never a new source |
+| Fire `damage_consequences` | Existing admitted local `reveal_radius` writer; no unsupported5673A0 allied broadcast |
+| Whole-map/allocated-cell reveal and reset | Explicit recipient viewer writes, including SpySat and trigger callers; fresh writes invalidate presentation cache |
+| Display/cache bootstrap and owner switch | Copies the already-resolved selected viewer plane; no cross-viewer OR |
+| Snapshot continuation | Viewer bytes and stable gap admissions persist; presentation cache is discarded and rebuilt |
+
+Original reveal→gap→leave→second gap immediately clears alt18. Admission receipts
+and a fresh-write mask preserve this, while repeated materialization and restored
+admissions remain idempotent. Replacement at identical coordinates has an actual
+owning-world regression. This does not certify every generator operational gate.
+Original gap→fire4876F0→119 stays open with pending20, then120 closes; Psychic
+add/remove has the same selected-cell result. These additional original cases are
+retained alongside actual Psychic-under-gap/House regressions.
+
+A-B-C tests cover sustained and Psychic sources, never-gapped cells, mixed gapped
+and ungapped cells, existing gaps, removal, repeated House/cache publication and
+snapshot continuation. C cannot see A through B; a fresh B event reaches both of
+its direct allies. Tactical CPU tests check bright versus dark cell output.
+
 ## Rust regression owners and remaining gates
 
 Candidate tests in `vision/vision_tests.rs` replay every saved operation through
 actual entity sight production and gap application; compare the knowledge
 consumer, not raw counters. Allied sight, serialization, source-vs-transient
-future conceal and hash authority have separate witnesses.
+future conceal, cache freshness and hash authority have separate witnesses.
 `world/gsi_04_18_tests.rs` uses the actual GAGAP collector, entity departure,
 master-frame rung and GameSnapshot continuation; a real Psychic launch remains
 concealable. `render/shroud_buffer.rs` tests the actual CPU cell-fill output from
@@ -107,10 +142,11 @@ Focused Rust, historical-hash reconciliation, full `cargo test -p vera20k --lib`
 The existing CellVisibilityRuntime defaults/map-visible/clear-visible transitions
 and forced cache values are not a native counter/cache model. They remain a
 separate row50 obligation; the new pending owner must not consume those fields.
-Full reveal radius/height/traversal and event scheduling, fogged-object memory,
+Full reveal radius/height/traversal and event scheduling, alliance-change history
+transfer, optional AllyReveal=false, fogged-object memory,
 optional FogOfWar/ShroudGrow and full rendered pixels remain outside this bounded
 comparison. The GapGenerator collector does not yet prove every4555D0 operational
 term (EMP, engineer, mission, HasPower); fixtures use an admitted operational
 producer. Full firing reveal owner policy and Psychic raw counter publication are
 also not closed. These are explicit residuals, not grounds for claiming the whole
-row or phase complete from12 samples.
+row or phase complete from15 samples.
