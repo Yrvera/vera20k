@@ -11,12 +11,12 @@ struct NativePathEntry {
 }
 
 // Projection also reads real Cell.Flags800, outside the narrower1180
-// shared stamp facade. Dummy retains only its currently represented subset;
-// unmodeled dummy flag writers remain a separate explicit authority residual.
+// shared stamp facade. The retained dummy authority now includes400/800 from
+// fresh-load gap restamping and the associated SetBridgeDirection writers.
 fn live_cell_flags(cell: &CellRef<'_>) -> u32 {
     match cell {
         CellRef::Real(cell) => cell.bridge_facts.raw_flags,
-        CellRef::Dummy { cell } => cell.bridge_flags_0x1180(),
+        CellRef::Dummy { cell } => cell.retained_bridge_flags(),
     }
 }
 

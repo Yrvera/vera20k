@@ -25,6 +25,7 @@ use crate::map::bridge_facts::{
     BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL,
     BRIDGE_FLAG_TRANSITION, BridgeAnchorRelation, BridgeCellFacts, BridgeFlagStamp,
     BridgeStampFamily, BridgeStampSlot, MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+    RETAINED_CELLCLASS_BRIDGE_FLAG_MASK,
 };
 use crate::map::lat;
 use crate::map::map_file::{MapCell, MapFile};
@@ -684,15 +685,16 @@ pub(crate) struct CellClassProjectionView {
 
 const UNALLOCATED_REAL_CELL_BRIDGE_FLAGS: u16 = u16::MAX;
 
-/// Serialized value authority for the exact `CellClass+0x140 & 0x1180`
+/// Serialized value authority for the exact `CellClass+0x140 & 0x1D80`
 /// subset of every allocated real cell.
 ///
 /// Native `CellClass::Load` restores real object flag words directly, while
 /// `MapClass::Resize` reconstructs only the process-global dummy. Rust keeps
 /// the derived terrain grid out of Scenario serialization, so this compact
-/// aligned projection carries the three future-affecting bits without retaining
+/// aligned projection carries the five future-affecting bits without retaining
 /// setter history. `u16::MAX` marks native-unallocated slots; every other
-/// value is exactly one masked `0x1180` subset, including zero after collapse.
+/// value is exactly one masked `0x1D80` subset. The historical type/field name
+/// remains1180 for schema continuity; snapshot141 rejects pre-restamp saves.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RealCellBridgeFlags0x1180 {
     width: u16,
@@ -712,7 +714,7 @@ impl RealCellBridgeFlags0x1180 {
                     .as_deref()
                     .is_none_or(|mask| mask.get(index).copied().unwrap_or(false))
                 {
-                    (cell.bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK) as u16
+                    (cell.bridge_facts.raw_flags & RETAINED_CELLCLASS_BRIDGE_FLAG_MASK) as u16
                 } else {
                     UNALLOCATED_REAL_CELL_BRIDGE_FLAGS
                 }
@@ -737,7 +739,7 @@ impl RealCellBridgeFlags0x1180 {
             return;
         };
         debug_assert_ne!(*slot, UNALLOCATED_REAL_CELL_BRIDGE_FLAGS);
-        *slot = (flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK) as u16;
+        *slot = (flags & RETAINED_CELLCLASS_BRIDGE_FLAG_MASK) as u16;
     }
 }
 
@@ -771,7 +773,7 @@ impl CellClassBridgeFlagState {
                 .cells
                 .iter()
                 .map(|cell| {
-                    (cell.bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK) as u16
+                    (cell.bridge_facts.raw_flags & RETAINED_CELLCLASS_BRIDGE_FLAG_MASK) as u16
                 })
                 .collect(),
             shared_cell_dummy: grid.shared_cell_dummy.clone(),
@@ -809,14 +811,20 @@ impl CellClassBridgeFlagState {
                 y,
             ) {
                 let mut flags = u32::from(self.flags[index]);
-                crate::map::bridge_facts::apply_modeled_cellclass_bridge_slot(
-                    &mut flags, slot, stamp.set,
+                crate::map::bridge_facts::apply_retained_cellclass_bridge_slot(
+                    &mut flags,
+                    slot,
+                    stamp.set,
+                    stamp.direction,
                 );
                 self.flags[index] = flags as u16;
             } else {
                 self.shared_cell_dummy.stamp_coord(x, y);
-                self.shared_cell_dummy
-                    .apply_bridge_flag_slot(slot, stamp.set);
+                self.shared_cell_dummy.apply_retained_bridge_flag_slot(
+                    slot,
+                    stamp.set,
+                    stamp.direction,
+                );
             }
         }
     }
@@ -1176,6 +1184,7 @@ impl SharedCellDummy {
 
     /// Apply one exact `SetBridgeDirection_*` slot to the modeled flag subset
     /// without disturbing coordinate, level, or slope writers.
+    #[cfg(test)]
     pub(crate) fn apply_bridge_flag_slot(&self, slot: BridgeStampSlot, set: bool) {
         const FLAGS_MASK: u64 = 0xffff << 48;
         let _ = self
@@ -1192,6 +1201,40 @@ impl SharedCellDummy {
 
     pub(crate) fn bridge_flags_0x1180(&self) -> u32 {
         self.snapshot().bridge_flags_0x1180
+    }
+
+    pub(crate) fn retained_bridge_flags(&self) -> u32 {
+        (self.state.cell.load(Ordering::Relaxed) >> 48) as u32 & RETAINED_CELLCLASS_BRIDGE_FLAG_MASK
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_retained_bridge_flags(&self, flags: u32) {
+        self.update_retained_bridge_flags(|_| flags);
+    }
+
+    fn update_retained_bridge_flags(&self, update: impl Fn(u32) -> u32) {
+        const FLAGS_MASK: u64 = 0xffff << 48;
+        let _ = self
+            .state
+            .cell
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                let flags = update((current >> 48) as u32) & RETAINED_CELLCLASS_BRIDGE_FLAG_MASK;
+                Some((current & !FLAGS_MASK) | (u64::from(flags) << 48))
+            });
+    }
+
+    pub(crate) fn apply_retained_bridge_flag_slot(
+        &self,
+        slot: BridgeStampSlot,
+        set: bool,
+        direction: u8,
+    ) {
+        self.update_retained_bridge_flags(|mut flags| {
+            crate::map::bridge_facts::apply_retained_cellclass_bridge_slot(
+                &mut flags, slot, set, direction,
+            );
+            flags
+        });
     }
 
     #[cfg(test)]
@@ -1282,16 +1325,17 @@ fn apply_native_bridge_flag_stamp_to_parts(
                     stamp.set,
                 );
             } else {
-                crate::map::bridge_facts::apply_modeled_cellclass_bridge_slot(
+                crate::map::bridge_facts::apply_retained_cellclass_bridge_slot(
                     &mut facts.raw_flags,
                     slot,
                     stamp.set,
+                    stamp.direction,
                 );
             }
-            real_cell_updates.push((index, facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK));
+            real_cell_updates.push((index, facts.raw_flags & RETAINED_CELLCLASS_BRIDGE_FLAG_MASK));
         } else {
             shared_cell_dummy.stamp_coord(x, y);
-            shared_cell_dummy.apply_bridge_flag_slot(slot, stamp.set);
+            shared_cell_dummy.apply_retained_bridge_flag_slot(slot, stamp.set, stamp.direction);
         }
     }
     real_cell_updates
@@ -1321,12 +1365,13 @@ fn apply_planned_bridge_flag_stamp_to_real_parts(
             continue;
         };
         let facts = &mut cells[index].bridge_facts;
-        crate::map::bridge_facts::apply_modeled_cellclass_bridge_slot(
+        crate::map::bridge_facts::apply_retained_cellclass_bridge_slot(
             &mut facts.raw_flags,
             slot,
             stamp.set,
+            stamp.direction,
         );
-        real_cell_updates.push((index, facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK));
+        real_cell_updates.push((index, facts.raw_flags & RETAINED_CELLCLASS_BRIDGE_FLAG_MASK));
     }
     real_cell_updates
 }
@@ -2207,8 +2252,11 @@ impl ResolvedTerrainGrid {
             Some(index)
         } else {
             self.shared_cell_dummy.stamp_coord(x, y);
-            self.shared_cell_dummy
-                .apply_bridge_flag_slot(slot, stamp.set);
+            self.shared_cell_dummy.apply_retained_bridge_flag_slot(
+                slot,
+                stamp.set,
+                stamp.direction,
+            );
             None
         }
     }
@@ -2340,6 +2388,33 @@ impl ResolvedTerrainGrid {
         RealCellBridgeFlags0x1180::from_grid(self)
     }
 
+    /// One original586BF0 write through packed fixed lookup. Missing slots
+    /// publish their requested coordinate and mutate the retained shared dummy.
+    /// Other real flag bits are preserved; no topology/zone rebuild is implied.
+    pub(crate) fn apply_bridge_gap_flag_write(
+        &mut self,
+        coord: (i16, i16),
+        horizontal: bool,
+    ) -> (Option<usize>, u32) {
+        let update = |flags: u32| {
+            if horizontal {
+                flags | 0xC00
+            } else {
+                (flags & !0x800) | 0x400
+            }
+        };
+        if let Some(index) = self.native_fixed_cell_index(coord.0, coord.1) {
+            let flags = &mut self.cells[index].bridge_facts.raw_flags;
+            *flags = update(*flags);
+            (Some(index), *flags)
+        } else {
+            self.shared_cell_dummy
+                .stamp_coord(i32::from(coord.0), i32::from(coord.1));
+            self.shared_cell_dummy.update_retained_bridge_flags(update);
+            (None, self.shared_cell_dummy.retained_bridge_flags())
+        }
+    }
+
     pub(crate) fn bridge_flag_authority_matches_shape(
         &self,
         authority: &RealCellBridgeFlags0x1180,
@@ -2370,7 +2445,7 @@ impl ResolvedTerrainGrid {
                 .is_none_or(|mask| mask[index]);
             if allocated == (saved == UNALLOCATED_REAL_CELL_BRIDGE_FLAGS)
                 || (saved != UNALLOCATED_REAL_CELL_BRIDGE_FLAGS
-                    && u32::from(saved) & !MODELED_CELLCLASS_BRIDGE_FLAG_MASK != 0)
+                    && u32::from(saved) & !RETAINED_CELLCLASS_BRIDGE_FLAG_MASK != 0)
             {
                 return false;
             }
@@ -2379,7 +2454,7 @@ impl ResolvedTerrainGrid {
         for (cell, &saved) in self.cells.iter_mut().zip(&authority.flags_or_unallocated) {
             if saved != UNALLOCATED_REAL_CELL_BRIDGE_FLAGS {
                 cell.bridge_facts.raw_flags = (cell.bridge_facts.raw_flags
-                    & !MODELED_CELLCLASS_BRIDGE_FLAG_MASK)
+                    & !RETAINED_CELLCLASS_BRIDGE_FLAG_MASK)
                     | u32::from(saved);
             }
         }
@@ -2883,7 +2958,8 @@ impl ResolvedTerrainGrid {
                 return None;
             }
             let index = y.wrapping_mul(512).wrapping_add(x);
-            let cell = (0..0x40000).contains(&index)
+            let cell = (0..0x40000)
+                .contains(&index)
                 .then(|| self.cell((index % 512) as u16, (index / 512) as u16))
                 .flatten();
             if remaining != 0 {

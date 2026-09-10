@@ -624,6 +624,11 @@ impl Simulation {
             self.hash_projectiles(&mut hasher);
             let shared_dummy_handle = self.effective_shared_cell_dummy();
             let shared_dummy = shared_dummy_handle.snapshot();
+            let gap_flags = shared_dummy_handle.retained_bridge_flags() & 0xC00;
+            if gap_flags != 0 {
+                b"shared-cell-dummy-gap-v1".hash(&mut hasher);
+                gap_flags.hash(&mut hasher);
+            }
             let shared_dummy_overlay = shared_dummy_handle.overlay_identity_state();
             let shared_dummy_tube = shared_dummy_handle.raw_tube_index();
             if shared_dummy_tube != -1 {

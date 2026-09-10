@@ -98,6 +98,29 @@ fn retail_inactive_high_record_restamp_inventory() {
                 "ground_walkable": sim.path_grid().and_then(|g| g.cell(coord.0, coord.1)).map(|c| c.ground_walkable),
             }))})
         }).collect();
+        if map_name.eq_ignore_ascii_case("Deadman.mmx") {
+            let native: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../tools/spatial_oracle/bridge_restamp_retail.json"
+            ))
+            .unwrap();
+            for change in native["changes"].as_array().unwrap() {
+                let x = change["coord"][0].as_u64().unwrap() as u16;
+                let y = change["coord"][1].as_u64().unwrap() as u16;
+                assert_eq!(
+                    u64::from(terrain.cell(x, y).unwrap().bridge_flags()),
+                    change["after"].as_u64().unwrap(),
+                    "post-load native flags at{x},{y}"
+                );
+            }
+            let witness = facts
+                .iter()
+                .find(|row| row["coord"] == serde_json::json!([57, 42]))
+                .unwrap();
+            assert_eq!(
+                witness["cell"]["live_new_tiberium_admission"], false,
+                "fresh stock load must publish native placement rejection"
+            );
+        }
         println!(
             "{map_name}: records={}, inactive_high={}, gaps={}, affected_cells={}",
             records.len(),

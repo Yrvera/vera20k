@@ -173,6 +173,24 @@ impl Simulation {
             None
         };
 
+        // Original684C30 performs586BF0 after the zone rebuilds and before its
+        // particle/twinkle tail. This command is fresh-load-only: restore writes
+        // saved real flags, and ordinary navigation rebuilds never rerun it.
+        if let (Some(terrain), Some(bridges)) =
+            (self.resolved_terrain.as_mut(), self.bridge_state.as_ref())
+        {
+            crate::sim::bridge_state::gap_restamp::restamp_inactive_high_records(
+                terrain,
+                bridges.endpoint_records(),
+                |_, index, flags| {
+                    if let Some(index) = index {
+                        self.real_cell_bridge_flags_0x1180
+                            .set_allocated_cell(index, flags);
+                    }
+                },
+            );
+        }
+
         // Native `FUN_00684C30` runs after `Full_Init` (and therefore after the
         // Post_Map_Init credit/crate/alliance work above): the GasCloudSys
         // particle-system ID, then the OreTwinkle Scenario draws.
