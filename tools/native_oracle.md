@@ -39,6 +39,7 @@ These generators now default to **read-only checks**, also spelled `--check`:
 | `tools.projectile_oracle.ordinary_motion` | 120 cases, eight gravity/candidate blocks each | `src/sim/projectile.rs`, `src/sim/world/projectile_collision.rs` |
 | `tools.projectile_oracle.vertical_motion` | 110 cases, eight velocity/candidate blocks each | Same projectile consumers |
 | `tools.color_oracle.hsv_to_rgb` | All 256 hues at nine saturation/value pairs | `src/rules/color_scheme.rs` |
+| `tools.spatial_oracle.map_queries` | 114 lookup cases, 15 LocalSize prefixes, 2,010 playfield queries and five retained-dummy calls | `src/sim/cell_rect_native_tests.rs`, production `cell_rect.rs` / `map/playfield.rs` |
 
 Run them as modules (`python -m ...`). Imports do not emulate or write files;
 `--help` works without retail configuration. `--output <path>` selects another
@@ -109,7 +110,7 @@ zero, and native bit dumps remain preferable where precise representation matter
 `tools/rmg_oracle/harness.py` keeps legacy imports working through the verified loader
 and checked `call`. Other scripts that directly invoke `emu_start` have **not** all
 been migrated. In particular, do not infer completion checking or read-only CLI
-behavior for the entire oracle directory from these five examples.
+behavior for the entire oracle directory from the listed examples.
 
 Run the runner's synthetic failure checks with:
 
