@@ -451,7 +451,9 @@ use crate::sim::world::Simulation;
 // Old saves lack authoritative post-load gap state; do not invent it on restore.
 // v142 retains viewer-owned knowledge, local/effective sight, pending conceal
 // and stable generator admission receipts. New positional fields require rejection.
-const SNAPSHOT_VERSION: u32 = 142;
+// v143 adds MCV pending deployment and the Drive rotation-edge latch.
+// Bincode positional entity layout changes; reject older payloads.
+const SNAPSHOT_VERSION: u32 = 143;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3264,7 +3266,7 @@ mod tests {
     /// 132 -> 133 persists the `HouseClass+0x57D4` funds-nag timer and the
     /// `[0xA8F040]` low-power guard.
     #[test]
-    fn current_snapshot_version_includes_sustained_gap_sight() {
+    fn current_snapshot_version_includes_mcv_deploy_continuation() {
         // 133 -> 134: repair-depot docking layout (see the constant's comment).
         // 134 -> 135: GameEntity ProduceCash timer + drain link pair (GSI-09.01).
         // 135 -> 136: explicit retained Infantry terminal lifetime policy.
@@ -3274,7 +3276,8 @@ mod tests {
         // 139 -> 140: retained bridge record source Size for native zone lookup.
         // 140 -> 141: retained real CellClass gap flags400/800.
         // 141 -> 142: sustained sight and pending 120-frame gap conceal.
-        assert_eq!(super::SNAPSHOT_VERSION, 142);
+        // 142 -> 143: MCV pending and Drive previous-rotation latches.
+        assert_eq!(super::SNAPSHOT_VERSION, 143);
     }
 
     #[test]

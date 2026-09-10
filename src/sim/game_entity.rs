@@ -879,6 +879,14 @@ pub struct GameEntity {
     /// read it (weapon pick is target-driven).
     #[serde(default)]
     pub deploy_state: Option<DeployPhase>,
+    /// Unit+0x68C: runtime Deploy continuation, not the type's DeployToFire.
+    /// Writers/readers are owned by sim::mcv_deploy (gamemd 0x007393C0).
+    #[serde(default)]
+    pub(crate) mcv_deploy_pending: bool,
+    /// Drive Process +0x5E rotation-edge latch, currently consumed by MCV
+    /// PerCellProcess(0). Retained across replacement orders and save/load.
+    #[serde(default)]
+    pub(crate) mcv_drive_was_rotating: bool,
     /// Infantry fear/prone runtime. `None` for non-infantry entities.
     #[serde(default)]
     pub infantry: Option<InfantryRuntime>,
@@ -1316,6 +1324,8 @@ impl GameEntity {
             building_gate: None,
             bunker_runtime: None,
             deploy_state: None,
+            mcv_deploy_pending: false,
+            mcv_drive_was_rotating: false,
             infantry: if category == EntityCategory::Infantry {
                 Some(InfantryRuntime::new())
             } else {

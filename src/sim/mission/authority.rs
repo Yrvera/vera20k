@@ -499,7 +499,18 @@ fn evaluate_ready(
                         // and the Unit moving-defer branch is inert — which is
                         // why none of the Drive/Ship readiness mapping can
                         // affect vehicle behaviour yet.
-                        signed_height: None,
+                        // MCV Event9 stops before queuing Unload, so this route
+                        // can supply native GetHeight without the existing Move
+                        // adapter's start-before-Commence dependency cycle.
+                        signed_height: (mission.queued()
+                            == MissionId::from_known(super::MissionType::Unload)
+                            && crate::sim::mcv_deploy::is_mcv(sim, entity, rules))
+                        .then(|| {
+                            entity
+                                .locomotor
+                                .as_ref()
+                                .map_or(0, |l| l.altitude.to_num::<i32>())
+                        }),
                         attack_target_present,
                         position,
                         world: &LiveUnitWorld { sim, rules, entity },

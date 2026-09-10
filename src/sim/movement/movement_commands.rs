@@ -81,6 +81,67 @@ pub fn clear_navigation_for_entity(entity: &mut GameEntity) {
     entity.navigation.nav_queue.clear();
 }
 
+/// Clear a destination while preserving only an already committed Drive/Ship
+/// segment. Shared by Stop and the MCV EventClass deploy handoff.
+pub fn stop_navigation_at_committed_head(e: &mut GameEntity) {
+    let current_cell = (e.position.rx, e.position.ry);
+    let current_layer = e.movement_layer_or_ground();
+    let committed_head = e
+        .drive_track
+        .as_ref()
+        .and_then(|_| {
+            e.drive_locomotion
+                .as_ref()
+                .and_then(|drive| drive.occupation_head_to)
+        })
+        .map(|head| ((head.rx, head.ry), head.layer))
+        .or_else(|| {
+            let head = e
+                .drive_track
+                .as_ref()
+                .and_then(|_| e.ship_locomotion.as_ref()?.head_to)?;
+            let head_cell = (
+                u16::try_from(head.x.div_euclid(256)).ok()?,
+                u16::try_from(head.y.div_euclid(256)).ok()?,
+            );
+            let target = e.movement_target.as_ref()?;
+            let head_index = target.path.iter().position(|&cell| cell == head_cell)?;
+            Some((head_cell, target.layer_at(head_index)))
+        });
+    clear_navigation_for_entity(e);
+    // Stop clears the owner destination immediately, but an
+    // already committed Drive/Ship curve keeps only the
+    // current-to-head step. Removing every trailing A* entry
+    // prevents chaining or segment repath toward the abandoned
+    // owner goal.
+    if let (Some((head_cell, head_layer)), Some(target)) =
+        (committed_head, e.movement_target.as_mut())
+    {
+        if current_cell == head_cell {
+            target.path = vec![head_cell];
+            target.path_layers = vec![head_layer];
+            target.next_index = 1;
+            target.move_dir_x = SIM_ZERO;
+            target.move_dir_y = SIM_ZERO;
+            target.move_dir_len = SIM_ZERO;
+        } else {
+            target.path = vec![current_cell, head_cell];
+            target.path_layers = vec![current_layer, head_layer];
+            target.next_index = 1;
+            let (dir_x, dir_y, dir_len) = crate::util::lepton::cell_delta_to_lepton_dir(
+                i32::from(head_cell.0) - i32::from(current_cell.0),
+                i32::from(head_cell.1) - i32::from(current_cell.1),
+            );
+            target.move_dir_x = dir_x;
+            target.move_dir_y = dir_y;
+            target.move_dir_len = dir_len;
+        }
+        target.final_goal = Some(head_cell);
+    } else {
+        e.movement_target = None;
+    }
+}
+
 /// Issue a move command: compute an A* path and attach a MovementTarget to the entity.
 ///
 /// Returns `true` if a valid path was found and the entity is now moving.
