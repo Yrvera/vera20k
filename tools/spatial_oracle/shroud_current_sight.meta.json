@@ -15,6 +15,7 @@
     "IsShrouded586360 executes on ordinary worldZ0; boolean result isAL, upperEAX ignored",
     "FireUnshroud leaf corresponds5673A0 final0; PsychicReveal sequence corresponds6CD773 final0 then6CD79C final1",
     "Original Logic55B29A modulo gate and complete578100 two-pass sweep execute at supplied signed native frames; selected shroud observations do not certify all edge-cache outputs",
+    "Foot timer4DA6C8 executes after admitted moving/high-flight/direct-ally gates to due4DA6EF or rejected4DA7B0 boundary; no reveal call is stubbed or executed by this timer fragment",
     "No renderer pixels, complete reveal traversal, optionalfogrecords or fullGapGenerator lifecycle comparison"
   ],
   "substitutions": [],
@@ -25,7 +26,8 @@
     "hostile_remove_cell": "0x006FB5E1",
     "is_shrouded": "0x00586360",
     "periodic_logic": "0x0055B29A",
-    "recalc_shroud": "0x00578100"
+    "recalc_shroud": "0x00578100",
+    "foot_timer_gate": "0x004DA6C8"
   },
-  "payload_sha256": "a1d1ad0f94f8da2571088dea1a51fbdd6d52a9691969869b58e5a22ed659968a"
+  "payload_sha256": "0cd6084fa46e35f7f00647c3fa03c4e7598d8e394be9f6b7fb943dbb5ee0d162"
 }

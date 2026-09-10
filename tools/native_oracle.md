@@ -44,7 +44,7 @@ These generators now default to **read-only checks**, also spelled `--check`:
 | `tools.projectile_oracle.ordinary_motion` | 120 cases, eight gravity/candidate blocks each | `src/sim/projectile.rs`, `src/sim/world/projectile_collision.rs` |
 | `tools.projectile_oracle.vertical_motion` | 110 cases, eight velocity/candidate blocks each | Same projectile consumers |
 | `tools.color_oracle.hsv_to_rgb` | All 256 hues at nine saturation/value pairs | `src/rules/color_scheme.rs` |
-| `tools.spatial_oracle.shroud_current_sight` | 18 ordinary-cell reveal/gap/fire/Psychic/120-frame sequences; actual MapCell, selected Gap blocks and complete periodic sweep | `src/sim/vision/vision_tests.rs`; world, restore and tactical CPU regressions |
+| `tools.spatial_oracle.shroud_current_sight` | 19 ordinary-cell reveal/gap/fire/Psychic/120-frame sequences plus9 signed Foot timer gates; actual MapCell, selected Gap blocks and complete periodic sweep | `src/sim/vision/vision_tests.rs`; world, restore and tactical CPU regressions |
 | `tools.spatial_oracle.map_queries` | 114 lookup cases, 15 LocalSize prefixes, 2,010 playfield queries and five retained-dummy calls | `src/sim/cell_rect_native_tests.rs`, production `cell_rect.rs` / `map/playfield.rs` |
 | `tools.spatial_oracle.bridge_records` | 83 ordered high/Tube record cases, CellIterator first-null traversal and shared dummy coordinates | `src/sim/bridge_state/record_native_tests.rs`, production `record_scan.rs` / `map/resolved_terrain.rs` |
 | `tools.spatial_oracle.bridge_gap_flags` | 20 ordered fresh-load inactive high-record restamps and48 original setter anchor prefixes | `src/sim/bridge_state/gap_restamp_tests.rs`; real flags/save/hash and production building placement |

@@ -1229,6 +1229,187 @@
           "shrouded": 0
         }
       ]
+    },
+    {
+      "name": "due_same_footprint_refresh",
+      "observations": [
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 0,
+          "op": "constructed",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 0,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 1,
+          "op": "leave",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 2,
+          "op": "gap",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 34,
+          "gap": 2,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 34,
+          "gap": 2,
+          "op": "frame119",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 2,
+          "op": "leave",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 2,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 2,
+          "op": "frame120",
+          "shrouded": 0
+        }
+      ]
+    }
+  ],
+  "timer_cases": [
+    {
+      "due": true,
+      "duration": 0,
+      "frame": 0,
+      "start": 0
+    },
+    {
+      "due": false,
+      "duration": 15,
+      "frame": 118,
+      "start": 104
+    },
+    {
+      "due": true,
+      "duration": 15,
+      "frame": 119,
+      "start": 104
+    },
+    {
+      "due": false,
+      "duration": 15,
+      "frame": 120,
+      "start": 119
+    },
+    {
+      "due": true,
+      "duration": 0,
+      "frame": 120,
+      "start": -1
+    },
+    {
+      "due": false,
+      "duration": 5,
+      "frame": 120,
+      "start": -1
+    },
+    {
+      "due": false,
+      "duration": -1,
+      "frame": 120,
+      "start": -1
+    },
+    {
+      "due": true,
+      "duration": 15,
+      "frame": -2147483641,
+      "start": 2147483640
+    },
+    {
+      "due": false,
+      "duration": 15,
+      "frame": 119,
+      "start": 120
     }
   ]
 }

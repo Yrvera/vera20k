@@ -4,7 +4,7 @@ Run python -B -m tools.spatial_oracle.shroud_current_sight --check / --write.
 import json,struct
 from pathlib import Path
 from unicorn import Uc,UC_ARCH_X86,UC_MODE_32
-from unicorn.x86_const import UC_X86_REG_ECX,UC_X86_REG_ESP,UC_X86_REG_EAX,UC_X86_REG_EDI
+from unicorn.x86_const import UC_X86_REG_ECX,UC_X86_REG_ESP,UC_X86_REG_EAX,UC_X86_REG_EDI,UC_X86_REG_ESI,UC_X86_REG_EBX
 from tools.native_oracle import load_image,run_checked,finish_vectors,provenance,STACK_BASE,STACK_SIZE,RET_MAGIC
 from tools.spatial_oracle.map_queries import packed,dwords
 MAP,TABLE,CELL,QUERY,WORLD,PLAYER=0x87F7E8,0xC00000,0xB00000,0xB90000,0xB90020,0xBA0000
@@ -49,8 +49,22 @@ def execute(name,ops):
   out.append(observe(op))
  return dict(name=name,observations=out)
 scenarios=[('never_seen',['gap','remove']),('current_sight',['reveal','gap','remove']),('past_sight',['reveal','leave','gap','remove']),('current_sight_overlap',['reveal','reveal','gap','leave','leave','remove']),('enter_gap',['gap','reveal','leave','remove']),('spysat_remove_gate',['reveal','leave','gap','remove_mapclear']),('fire_only',['unshroud','gap']),('psychic_only',['reveal','leave','gap']),('departure_boundary',['reveal','gap','leave','frame119','frame120']),('return_cancels_pending',['reveal','gap','leave','frame119','reveal','frame120']),('removal_preserves_pending',['gap','reveal','leave','remove','frame120']),('departure_after_boundary',['reveal','gap','frame120','leave','frame121','frame239','frame240']),('second_gap_consumes_pending',['reveal','gap','leave','gap']),('fire_under_gap',['gap','unshroud','frame119','frame120']),('psychic_under_gap',['gap','reveal','leave','frame119','frame120']),('second_gap_then_return',['reveal','gap','leave','gap','reveal','frame120']),('first_fire_without_gap',['unshroud','frame119','frame120']),('first_psychic_without_gap',['reveal','leave','frame119','frame120'])]
+scenarios.append(('due_same_footprint_refresh',['reveal','gap','leave','gap','reveal','frame119','leave','reveal','frame120']))
+
+def timer_cases():
+ values=[(0,0,0),(104,15,118),(104,15,119),(119,15,120),(-1,0,120),(-1,5,120),(-1,-1,120),(2147483640,15,-2147483641),(120,15,119)]
+ out=[]
+ for start,duration,frame in values:
+  u=Uc(UC_ARCH_X86,UC_MODE_32);load_image(u)
+  foot=0xBD0000
+  u.mem_write(foot+0x65C,dwords(start,0,duration));u.mem_write(0xA8ED84,dwords(frame))
+  u.reg_write(UC_X86_REG_ESI,foot);u.reg_write(UC_X86_REG_EBX,0)
+  stop=run_checked(u,0x4DA6C8,(0x4DA6EF,0x4DA7B0),count=100)
+  out.append(dict(start=start,duration=duration,frame=frame,due=stop==0x4DA6EF))
+ return out
+
 if __name__=='__main__':
- finish_vectors(lambda:{'cases':[execute(*s) for s in scenarios]},Path(__file__).with_suffix('.json'),provenance=lambda:provenance(
+ finish_vectors(lambda:{'cases':[execute(*s) for s in scenarios],'timer_cases':timer_cases()},Path(__file__).with_suffix('.json'),provenance=lambda:provenance(
   scope='Original ordinary-cell current-sight versus hostile gap shroud observations',
   assumptions=['Constructor-derived Cell fields supplied:130=1,134=0,120/121=-2; complete Size12x12 allocated diamond, selected3x3 real-cell neighborhood',
    'Original MapCell4A9CA0 executes toreturn with real neighbor-cache and notify leaves; frame0,emptyobjectlists,scenarioFogOfWarclear',
@@ -58,5 +72,6 @@ if __name__=='__main__':
    'IsShrouded586360 executes on ordinary worldZ0; boolean result isAL, upperEAX ignored',
    'FireUnshroud leaf corresponds5673A0 final0; PsychicReveal sequence corresponds6CD773 final0 then6CD79C final1',
    'Original Logic55B29A modulo gate and complete578100 two-pass sweep execute at supplied signed native frames; selected shroud observations do not certify all edge-cache outputs',
+   'Foot timer4DA6C8 executes after admitted moving/high-flight/direct-ally gates to due4DA6EF or rejected4DA7B0 boundary; no reveal call is stubbed or executed by this timer fragment',
    'No renderer pixels, complete reveal traversal, optionalfogrecords or fullGapGenerator lifecycle comparison'],
-  substitutions=[],entry_points={'map_cell':0x4A9CA0,'unshroud':0x4876F0,'hostile_gap_cell':0x6FB2F7,'hostile_remove_cell':0x6FB5E1,'is_shrouded':0x586360,'periodic_logic':0x55B29A,'recalc_shroud':0x578100}))
+  substitutions=[],entry_points={'map_cell':0x4A9CA0,'unshroud':0x4876F0,'hostile_gap_cell':0x6FB2F7,'hostile_remove_cell':0x6FB5E1,'is_shrouded':0x586360,'periodic_logic':0x55B29A,'recalc_shroud':0x578100,'foot_timer_gate':0x4DA6C8}))
