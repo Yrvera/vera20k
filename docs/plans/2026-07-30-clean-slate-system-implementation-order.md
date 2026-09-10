@@ -1,65 +1,11 @@
 # Clean-Slate System Implementation Order
 
-> **Repository execution note:** this is the dependency order and the row
-> enumeration, nothing more. Evidence-backed per-phase working state lives in
-> [`phase-briefs/`](phase-briefs/README.md); the System Map is retired historical reference;
-> a goal session reads its phase brief first. For a clean-slate rebuild,
-> follow the phases and rows in order. In the existing repository, never
-> reimplement rows 1–336 blindly.
->
-> **Reviewed 2026-08-09:** a six-lane evidence review verified taxonomy
-> coverage and the Phase 15 SKIP list, corrected two dead-mission rows
-> (158, 306), flagged the crates milestone-visibility (303–304), and added a
-> coverage addendum (seven stock-visible gaps) before "Ordering confidence".
-> Row numbers 1–336 are unchanged.
-
-## Purpose
-
-This document proposes a dependency-aware implementation order for rebuilding
-VERA20k from a clean slate. It covers the **336 canonical systems** originally
-enumerated in System Map v2 exactly once. Their GSI IDs remain valid.
-
-The phase order is the dependency backbone. It also gives the existing
-repository one stable place to answer:
-
-- what systems exist;
-- which systems precede others;
-- how much production implementation currently exists;
-- where the per-phase working state lives (the phase briefs).
-
-This is an evaluated planning order, not evidence of implementation or parity.
-The retired System Map does not determine priority. Player-visible production loops,
-current Rust, and active `gamemd.exe` evidence decide the actual task.
-
-## Working briefs
-
-This document does not prescribe a working mode. Each targeted phase has a
-brief under [`phase-briefs/`](phase-briefs/README.md) that carries what a
-session needs and this list cannot: current Rust owners per row, native
-anchors, evidence and coverage, production loops, prior PRs, corrections to research
-the rows depend on, inherited residuals, harness coverage and the open
-mechanism queue. The two goal modes (exhaustive phase close, bounded slice)
-are defined there, and the goal prompt names which one applies.
-
-A phase heading below links its brief once one exists and its closure record
-once the phase is closed. Phase 0 is a set of standing contracts, not a
-prelude to rebuild in isolation.
-
-## Status
-
-Row status is not kept in this document. Consult the phase brief and verify
-its claims against current Rust, native evidence and actual validation.
-The System Map registry is historical and no longer maintained; its status
-fields and checker are not delivery gates. Parity requires gamemd-derived
-executable comparisons or exhaustive proof with explicit coverage limits.
-
-Each closed phase links a closure record under `docs/gap-scans/` from its
-phase heading below: the disparity scans that enumerated the phase's
-mechanisms, the reverse audits, the merged PR list and the remaining
-residuals. A new session starts from the phase brief, which links that
-record; it does not re-enumerate. The 2026-07-30 four-way audit that once
-filled this section and the later registry are historical; their counts are no longer
-reproduced here.
+This reference defines phase scope through 336 numbered GSI entries and the
+additional mechanisms below. The order is suggested; establish actual dependencies
+from current code and active-retail native evidence. Entries are scope hypotheses,
+not proof of complete coverage or instructions to rebuild existing implementations.
+Current progress and findings belong in [phase briefs](phase-briefs/README.md).
+Phase 0 describes standing contracts that apply throughout the work.
 
 ## Legend
 
@@ -69,8 +15,7 @@ reproduced here.
 - `LATE` — deliberately outside the first ordinary stock-skirmish milestone.
 - `SKIP/PROVE` — do not implement without evidence that the path is active in
   retail Yuri's Revenge.
-- **Milestone boundary:** the first ordinary stock-skirmish milestone
-  (ENGINE.md's delivery bar — skirmish vs AI on retail maps) is Phases 0–12
+- **Milestone grouping in this plan:** ordinary skirmish vs AI on retail maps is Phases 0–12
   plus items 303–304 (crates, which are `Crates=yes` by stock lobby default).
   Phase 13 (save dialogs, multiplayer) and Phase 14 sit outside that bar.
 
@@ -251,11 +196,7 @@ reproduced here.
 
 ## Phase 7 — Harvesting and economy
 
-> **Closed 2026-09-06** (parity-close pass; rows anchored, parity not
-> demonstrated). Closure record:
-> [`2026-09-06-phase7-closure/`](../gap-scans/2026-09-06-phase7-closure/README.md)
-> — merged PRs #242–#251, #253–#257, #259, #264; remaining residuals in its
-> final audit, Part C.
+Prior work and findings: [Phase 7 record](../gap-scans/2026-09-06-phase7-closure/README.md).
 
 153. **GSI-09.01** — Credits, transactions and displayed money
 154. **GSI-09.02** — Storage, silos and resource loss
@@ -266,8 +207,7 @@ reproduced here.
     `+0x234` holds the base stub `0x005B2ED0` (`return 450`) in all eight
     vtables and no code path assigns mission 12; rulesmd.ini marks `[Return]`
     `; <unused>`. Harvester return-to-refinery runs *inside* the Harvest
-    mission's states — see item 157. Keep the enum slot; the archived System Map records
-    `COMPILED_INACTIVE` / `ABSENT`.)
+    mission's states — see item 157. Keep the enum slot.)
 159. **GSI-07.37** — Radio contact and link protocol
 160. **GSI-07.38** — Docking reservations, queues and authority handoff
 161. **GSI-07.39** — Refinery docking, transfer and release
@@ -280,7 +220,7 @@ reproduced here.
 
 ## Phase 8 — Production, construction, power and radar
 
-> Brief: [`phase-briefs/phase-08-production-power-radar.md`](phase-briefs/phase-08-production-power-radar.md) (OPEN).
+Brief: [Phase 8](phase-briefs/phase-08-production-power-radar.md).
 
 166. **GSI-04.08** — Walls, gates, fences, pavement and buildable overlays
 167. **GSI-05.17** — Factory identity, registration and lifecycle
@@ -510,18 +450,9 @@ part of this phase so the `†` on item 19 is actually closed here.
 335. **GSI-18.07** — Editor-only behavior — `SKIP`
 336. **GSI-18.08** — Native cheats/developer controls — `SKIP`
 
-## Coverage addendum — verified gaps (2026-08-09 review)
+## Additional mechanisms
 
-A six-lane evidence review (INI + research corpus + spot Ghidra checks)
-verified the 336-row taxonomy is complete for missions (32/32), locomotors
-(8 stock + 3 correctly skipped), attached managers (one exception below), and
-superweapons (12/12 active `[SuperWeaponTypes]` entries). It found **seven
-stock-skirmish-visible mechanisms no row title reaches**. Track verified work
-and remaining coverage in the owning phase brief, without updating the retired
-System Map. These do NOT get row numbers here —
-row numbering 1–336 stays stable.
-
-Genuine gaps, all player-visible in ordinary stock skirmish:
+These seven mechanisms supplement the numbered rows; row numbering stays stable.
 
 - **Spy infiltration effect family** — per-building-type effects
   (`SpyPowerBlackout`, `SpyMoneyStealPercent`, radar reshroud, superweapon
@@ -555,10 +486,7 @@ Genuine gaps, all player-visible in ordinary stock skirmish:
   `DrainWeapon=yes`). Item 256 covers only the beam visual; widen it or add a
   sim row. Phase 11. Standard Yuri harassment.
 
-Title-obscured folds already annotated inline above: 85 (planning mode),
-202 (passive self-heal), 158/306 (dead missions), 303–304 (crates
-milestone-visibility), 190 (jumpjet dependents). Remaining small folds an
-implementer should know: crew survivors (`CrewEscape=50%`, `Crewed=`) fold
+Additional scope notes: crew survivors (`CrewEscape=50%`, `Crewed=`) fold
 under 132/177; suicide weapons (`Suicide=yes` — firer dies on shot: Terrorist,
 Demo Truck weapons) fold under 123/127 with `Explodes=yes` under 132/133;
 Industrial Plant cost bonus (`FactoryPlant=yes`, `UnitsCostBonus=0.75`) folds
@@ -570,13 +498,3 @@ under 138; Siege Chopper / simple-deployer type-transforms
 Mission-liveness residue: Harmless (307) and Rescue (308) have populated
 mission-control data but UNCHECKED liveness — run a liveness pass before
 Phase 14 work; no SKIP flag is justified today.
-
-## Ordering confidence
-
-The phase order is the load-bearing part of this document. Exact ordering inside
-the large faction-breadth and superweapon phases is a recommended build sequence,
-not a binary-proven dependency chain. Establish causal dependencies from current
-source and native evidence; the archived map never encoded all such edges.
-
-Historical source registry (retired; IDs retained):
-[`docs/system-map/registry.v2.json`](../system-map/registry.v2.json).
