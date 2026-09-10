@@ -108,11 +108,60 @@ status is historical; reconcile it against current source before selecting work.
 
 ## Inherited residuals
 
-`src/sim/pathfinding/zone_build.rs::tube_hierarchy_pairs_are_unregistered` records
-an ignored test for the tube arm of `0x00582D70`. Its hypothesized trigger is a
-long route across a low bridge; the consequence is a detour or no hierarchy route.
-Retail incidence and the active caller chain need rechecking; the source marker
-is an investigation lead, not a fresh native finding.
+The Tube hierarchy and ordered path-entry increment is validated at source
+`154b171e`; report commit `906b7e40` records final receipts. Its
+[evidence report](../../research/PHASE3_TUBE_HIERARCHY_20260910.md) covers original
+instructions for the shared high/Tube helper, full/local record order, raw path
+tokens, live bridge-aware DWORD queries, restore preparation and 19 ordered entry
+cases. Focused checks passed (11 tests, one ignored), zone-search passed 31 tests,
+and zone-build passed 32 tests with one ignored. The full library passed 8,600
+tests with zero failures and 119 ignored; Clippy exited zero with 1,146 warnings.
+The fresh independent critic passed merging this bounded increment after all
+confirmed candidate findings were fixed. This does not close M3 or any phase row.
+
+The native entry at `0x0042C900` retains source and destination Cell pointers,
+executes both zone queries, then projects those retained pointers and finally
+runs conditional playfield checks. Shared-dummy writes during the intervening
+queries can change what a retained pointer observes. Hoisting a pure projection
+or filtering out the zone grid before those queries changes native state order.
+The live entry owner now preserves this sequence even when hierarchy is disabled.
+
+Projection `0x00583180` uses packed signed-word arithmetic, lane-projected
+endpoint distances and a signed-short distance result. Its no-record helper
+`0x005835D0` alternates two live Cell pointers, checks both candidate endpoints
+and then reloads the source coordinate for distance selection. Missing candidates
+can fall through to an unchecked record[-1] read; cyclic walks and this raw-memory
+domain remain open rather than receiving invented native outcomes. Its immediate
+`0x0042C290` consumer independently projects endpoints into each hierarchy level;
+rectangular `zone_at` lookup is not sufficient for wrapped or signed coordinates.
+
+The remaining movement predicates also require explicit authority. The
+`0x004DA1D0` virtual checks current-or-queued Retreat and a Team predicate at
+`0x006EC300`; the latter performs a mode-1 waypoint lookup and can change the
+shared dummy before endpoint membership. These are not pure predicates.
+Fresh retail extraction of `mapsmd03.mix/all01umd.map` (SHA-256
+`dee38769f2247a85908705486c175ef14a4cf90437899defe7c8b4c0d1c51fb0`)
+contains Team `0925E45C`, TaskForce `0B0815BC` (two HTNK, one TTNK), Script
+`0973352C` beginning with action `3,14`, and reinforcement actions referencing
+that team. Native reinforcement `0x0065D8E0` calls `0x0065DD30`, which sets
+Team+0x77; Team AI then sets +0x7F before script execution. This establishes an
+active YR ground-team branch, while Rust currently lacks the corresponding
+Team+0x7F authority and refuses action 3. It cannot be excluded as TS-only.
+The six discovered direct set-one writers of mover+0x3D4 are aircraft-only;
+that narrower finding does not establish a general ground-mover flag.
+
+Unexplained raw path-memory reads, invalid registry references, native cycles,
+high-cardinality label packing and the wider movement-predicate authority remain
+open. A bounded helper comparison cannot certify the complete mechanism.
+
+The original-process [startup capture](../../../tools/spatial_oracle/tube_startup_capture.json)
+now establishes floating control `0x0E7F` at the adjacent-constant initializers
+`0x0049F0E0` and `0x0049F190`. Its [reproducible tool](../../../tools/spatial_oracle/tube_startup_capture.py)
+uses hardware breakpoints, verifies the loaded executable section against the
+pinned original, and stops its owned process before WinMain. Independent replay
+passed. Original initializer emulation matches the captured constant bytes;
+this resolves that startup uncertainty, while runtime writer coverage and the
+remaining arbitrary raw-address domain remain open.
 
 The bridge plan retains unresolved construction, restamp, topology and consumer
 transactions. Current shroud, smudge, terrain and lighting code has not received
@@ -132,16 +181,19 @@ unexecuted; they are not passing parity evidence.
 
 ## Open queue
 
-1. Recheck the remaining constructor identity, shared-dummy field,
+1. Finish the current hierarchy-record helper and proved prerequisites, including
+   production full/local delivery and native comparisons. The ignored source
+   marker alone cannot establish scope or certify its eventual repair.
+2. Recheck the remaining constructor identity, shared-dummy field,
    Resize/restore, iterator and consumer-order hypotheses. Implement only proven
    observable differences; retain unresolved candidates explicitly.
    In particular, compare specialized full-diamond sweeps with native first-null
    termination for width-one and internal-hole inputs; prove active loading and
    observable effects before treating either as another production gap.
-2. Reconcile each other row with current production source and active retail
+3. Reconcile each other row with current production source and active retail
    evidence. Reuse bridge and earlier Phase 3 research without importing their
    historical scope expansions automatically.
-3. Run the phase-wide reverse audit only after every in-scope mechanism and
+4. Run the phase-wide reverse audit only after every in-scope mechanism and
    evidence-backed exclusion is accounted for. Any omission reopens its row.
 
 ## Start here

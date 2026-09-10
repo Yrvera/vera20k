@@ -625,6 +625,11 @@ impl Simulation {
             let shared_dummy_handle = self.effective_shared_cell_dummy();
             let shared_dummy = shared_dummy_handle.snapshot();
             let shared_dummy_overlay = shared_dummy_handle.overlay_identity_state();
+            let shared_dummy_tube = shared_dummy_handle.raw_tube_index();
+            if shared_dummy_tube != -1 {
+                b"shared-cell-dummy-tube-v1".hash(&mut hasher);
+                shared_dummy_tube.hash(&mut hasher);
+            }
             // Unlike the requested coordinate, native `+0x140 & 0x1180`
             // survives ordinary lookups and changes later bridge/FNPC/target
             // behavior even when no Bullet currently retains the dummy.

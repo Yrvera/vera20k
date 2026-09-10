@@ -655,7 +655,7 @@ fn level0_hierarchy(
 }
 
 #[test]
-fn zone_precheck_hierarchy_path_bypasses_reduced_superzone_abort() {
+fn tube_hierarchy_precheck_rejects_unequal_base_labels_before_connected_graph() {
     let astar_grid = PathGrid::new(3, 1);
     let mut reduced_grid = PathGrid::new(3, 1);
     reduced_grid.set_blocked(1, 0, true);
@@ -679,6 +679,7 @@ fn zone_precheck_hierarchy_path_bypasses_reduced_superzone_abort() {
         (2, 0),
         (0, 0),
         (2, 0),
+        None, // no native raw-row receipt in this compatibility fixture
         None,
         None,
         Some(&zg),
@@ -691,10 +692,12 @@ fn zone_precheck_hierarchy_path_bypasses_reduced_superzone_abort() {
         false,
         false,
         Some(&blocker_counts),
-    )
-    .expect("eligible hierarchy precheck should not be preempted by reduced reachability");
+    );
 
-    assert_eq!(path, vec![(0, 0), (1, 0), (2, 0)]);
+    assert!(
+        path.is_none(),
+        "42CB22 rejects unequal base labels before a successful graph precheck"
+    );
 }
 
 #[test]
@@ -713,6 +716,7 @@ fn zone_precheck_failed_hierarchy_keeps_zone_map_same_zone_fallback() {
         (2, 0),
         (0, 0),
         (2, 0),
+        None, // no native raw-row receipt in this compatibility fixture
         None,
         None,
         Some(&zg),
@@ -849,6 +853,90 @@ fn gsi_04_12_layered_production_precheck_projects_only_hierarchy_coordinates() {
     );
 }
 
+// Shared caller witness: the ordinary ground shortcut differs from the marked
+// bridge detour. Its unmarked ground approach needs Cell+122; bridge-deck
+// height exemption alone cannot admit that approach.
+fn caller_count_bridge_detour(
+    mz: MovementZone,
+    reverse: bool,
+) -> (PathGrid, ZoneGrid, ResolvedTerrainGrid) {
+    let mut path = PathGrid::new(6, 4);
+    let mut terrain = gsi_04_12_terrain(6, 4);
+    for y in 0..4 {
+        for x in 0..6 {
+            let open = (y == 0 && x >= 1) || (y == 1 && (x == 1 || x == 5)) || (y == 2 && x >= 1);
+            path.set_blocked(x, y, !open);
+            if open {
+                path.set_cell_for_test(x, y, 4, false, false);
+                terrain.cell_mut(x, y).unwrap().level = 4;
+            }
+        }
+    }
+    for x in 2..=4 {
+        path.set_cell_for_test(x, 2, 0, true, true);
+        let cell = terrain.cell_mut(x, 2).unwrap();
+        cell.level = 0;
+        cell.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_DIRECTION_ZERO;
+        cell.has_bridge_deck = true;
+        cell.bridge_walkable = true;
+        cell.bridge_transition = true;
+        cell.bridge_deck_level = 4;
+    }
+    let mut zones = ZoneGrid::build(&PathGrid::new(6, 4), &BTreeMap::new(), 6, 4);
+    let mut labels = vec![3; 24];
+    for (x, y) in [(1, 0), (5, 0), (5, 1), (5, 2), (1, 2)] {
+        labels[y * 6 + x] = 1;
+    }
+    zones.set_hierarchy(level0_hierarchy(labels, 6, 4, &[]));
+    let (start, goal) = if reverse {
+        ((5, 0), (1, 0))
+    } else {
+        ((1, 0), (5, 0))
+    };
+    let route = |counts: Option<&BlockerNeighborCounts>| {
+        find_layered_path_zoned_marker(
+            &path,
+            None,
+            None,
+            start,
+            MovementLayer::Ground,
+            goal,
+            Some(&zones),
+            mz,
+            None,
+            Some(mz),
+            Some(&terrain),
+            None,
+            None,
+            counts,
+            0,
+            false,
+            mz == MovementZone::Infantry,
+            true,
+            None,
+        )
+    };
+    let ordinary = route(None).expect("no-count route must take the available shortcut");
+    assert!(
+        ordinary
+            .iter()
+            .all(|step| step.ry == 0 && step.layer == MovementLayer::Ground)
+    );
+    assert!(
+        route(Some(&BlockerNeighborCounts::new(6, 4))).is_none(),
+        "zero counts cannot enter the unmarked ground approach"
+    );
+    let mut live_counts = BlockerNeighborCounts::new(6, 4);
+    live_counts.add_single_cell_neighbor_source(0, 2);
+    let marked = route(Some(&live_counts)).expect("neighbor escape admits marked bridge detour");
+    assert!(
+        marked
+            .iter()
+            .any(|step| step.layer == MovementLayer::Bridge)
+    );
+    (path, zones, terrain)
+}
+
 #[test]
 fn gsi_04_12_completed_ground_unit_rally_threads_exact_blocker_counts() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
@@ -860,67 +948,9 @@ fn gsi_04_12_completed_ground_unit_rally_threads_exact_blocker_counts() {
     .expect("ground-unit production rules should parse");
 
     // The real war-factory exit is ground cell (1,0); the rally is ground cell
-    // (5,0), across the intact high bridge at x=2..=4. The dynamic blocker is
-    // adjacent at (3,1), so its exact neighbor counts cover the unmarked bridge
-    // cells without its live occupation illegally standing on the only route.
-    let mut path_grid = PathGrid::new(6, 2);
-    for x in 0..6 {
-        path_grid.set_blocked(x, 1, true);
-    }
-    path_grid.set_cell_for_test(1, 0, 4, false, false);
-    path_grid.set_cell_for_test(5, 0, 4, false, false);
-    for x in 2..=4 {
-        path_grid.set_cell_for_test(x, 0, 0, true, true);
-    }
-    let mut reduced_grid = PathGrid::new(6, 2);
-    for x in 0..6 {
-        reduced_grid.set_blocked(x, 1, true);
-    }
-    reduced_grid.set_blocked(3, 0, true);
-    let mut zone_grid = ZoneGrid::build(&reduced_grid, &BTreeMap::new(), 6, 2);
-    zone_grid.set_hierarchy(level0_hierarchy(
-        vec![
-            1,
-            1,
-            3,
-            1,
-            4,
-            2,
-            ZONE_INVALID,
-            ZONE_INVALID,
-            ZONE_INVALID,
-            ZONE_INVALID,
-            ZONE_INVALID,
-            ZONE_INVALID,
-        ],
-        6,
-        2,
-        &[(1, 2)],
-    ));
-    assert!(
-        !zone_grid.can_reach(
-            MovementZone::Normal,
-            (1, 0),
-            MovementLayer::Ground,
-            (5, 0),
-            MovementLayer::Ground,
-        ),
-        "fixture must make the old no-count rally path abort in reduced reachability"
-    );
-
-    let mut terrain = gsi_04_12_terrain(6, 2);
-    for x in 2..=4 {
-        let cell = terrain.cell_mut(x, 0).unwrap();
-        cell.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_DIRECTION_ZERO;
-        cell.has_bridge_deck = true;
-        cell.bridge_walkable = true;
-        cell.bridge_transition = true;
-        cell.bridge_deck_level = 4;
-    }
-    terrain.cell_mut(1, 0).unwrap().final_tile_index = 100;
-    terrain.cell_mut(1, 0).unwrap().level = 4;
-    terrain.cell_mut(5, 0).unwrap().final_tile_index = 100;
-    terrain.cell_mut(5, 0).unwrap().level = 4;
+    // (5,0). Exact counts admit the ground approach to the bridge detour;
+    // omitted counts instead select the distinct ordinary ground shortcut.
+    let (path_grid, zone_grid, terrain) = caller_count_bridge_detour(MovementZone::Normal, false);
 
     let mut height_map = BTreeMap::new();
     height_map.insert((1, 0), 4);
@@ -930,7 +960,7 @@ fn gsi_04_12_completed_ground_unit_rally_threads_exact_blocker_counts() {
     sim.zone_grid = Some(zone_grid);
     sim.spawn_object("GAWEAP", "Americans", 0, 0, 0, &rules, &height_map)
         .expect("war factory should spawn");
-    sim.spawn_object("MTNK", "Russians", 3, 1, 0, &rules, &height_map)
+    sim.spawn_object("MTNK", "Russians", 0, 2, 0, &rules, &height_map)
         .expect("dynamic blocker should spawn");
 
     let owner = sim.interner.intern("Americans");
@@ -1013,67 +1043,9 @@ fn gsi_04_12_miner_dock_approach_threads_exact_blocker_counts() {
     .expect("dock-approach rules should parse");
 
     // The refinery's 1x1 geometric QueueingCell is (1,0). The live miner
-    // starts at (5,0), across the intact high bridge at x=2..=4. The blocker
-    // at (3,1) contributes exact neighbor counts without occupying the route.
-    let mut path_grid = PathGrid::new(6, 2);
-    for x in 0..6 {
-        path_grid.set_blocked(x, 1, true);
-    }
-    path_grid.set_cell_for_test(1, 0, 4, false, false);
-    path_grid.set_cell_for_test(5, 0, 4, false, false);
-    for x in 2..=4 {
-        path_grid.set_cell_for_test(x, 0, 0, true, true);
-    }
-    let mut reduced_grid = PathGrid::new(6, 2);
-    for x in 0..6 {
-        reduced_grid.set_blocked(x, 1, true);
-    }
-    reduced_grid.set_blocked(3, 0, true);
-    let mut zone_grid = ZoneGrid::build(&reduced_grid, &BTreeMap::new(), 6, 2);
-    zone_grid.set_hierarchy(level0_hierarchy(
-        vec![
-            1,
-            1,
-            3,
-            1,
-            4,
-            2,
-            ZONE_INVALID,
-            ZONE_INVALID,
-            ZONE_INVALID,
-            ZONE_INVALID,
-            ZONE_INVALID,
-            ZONE_INVALID,
-        ],
-        6,
-        2,
-        &[(1, 2)],
-    ));
-    assert!(
-        !zone_grid.can_reach(
-            MovementZone::Normal,
-            (5, 0),
-            MovementLayer::Ground,
-            (1, 0),
-            MovementLayer::Ground,
-        ),
-        "fixture must make the old no-count dock approach abort in reduced reachability"
-    );
-
-    let mut terrain = gsi_04_12_terrain(6, 2);
-    for x in 2..=4 {
-        let cell = terrain.cell_mut(x, 0).unwrap();
-        cell.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_DIRECTION_ZERO;
-        cell.has_bridge_deck = true;
-        cell.bridge_walkable = true;
-        cell.bridge_transition = true;
-        cell.bridge_deck_level = 4;
-    }
-    for x in [1, 5] {
-        let cell = terrain.cell_mut(x, 0).unwrap();
-        cell.final_tile_index = 100;
-        cell.level = 4;
-    }
+    // starts at (5,0). The blocker at(0,2) admits the unmarked ground approach
+    // to the bridge detour without occupying the route.
+    let (path_grid, zone_grid, terrain) = caller_count_bridge_detour(MovementZone::Normal, true);
 
     let mut height_map = BTreeMap::new();
     height_map.insert((1, 0), 4);
@@ -1088,7 +1060,7 @@ fn gsi_04_12_miner_dock_approach_threads_exact_blocker_counts() {
     let miner_id = sim
         .spawn_object("HARV", "Americans", 5, 0, 0, &rules, &height_map)
         .expect("harvester should spawn");
-    sim.spawn_object("BLOCK", "Russians", 3, 1, 0, &rules, &height_map)
+    sim.spawn_object("BLOCK", "Russians", 0, 2, 0, &rules, &height_map)
         .expect("dynamic blocker should spawn");
     {
         let entity = sim.substrate.entities.get_mut(miner_id).unwrap();
@@ -1142,65 +1114,7 @@ fn gsi_04_12_interaction_order_entry_threads_exact_blocker_counts() {
     ))
     .expect("interaction-order rules should parse");
 
-    let mut path_grid = PathGrid::new(6, 2);
-    for x in 0..6 {
-        path_grid.set_blocked(x, 1, true);
-    }
-    path_grid.set_cell_for_test(1, 0, 4, false, false);
-    path_grid.set_cell_for_test(5, 0, 4, false, false);
-    for x in 2..=4 {
-        path_grid.set_cell_for_test(x, 0, 0, true, true);
-    }
-    let mut reduced_grid = PathGrid::new(6, 2);
-    for x in 0..6 {
-        reduced_grid.set_blocked(x, 1, true);
-    }
-    reduced_grid.set_blocked(3, 0, true);
-    let mut zone_grid = ZoneGrid::build(&reduced_grid, &BTreeMap::new(), 6, 2);
-    zone_grid.set_hierarchy(level0_hierarchy(
-        vec![
-            1,
-            1,
-            3,
-            1,
-            4,
-            2,
-            ZONE_INVALID,
-            ZONE_INVALID,
-            ZONE_INVALID,
-            ZONE_INVALID,
-            ZONE_INVALID,
-            ZONE_INVALID,
-        ],
-        6,
-        2,
-        &[(1, 2)],
-    ));
-    assert!(
-        !zone_grid.can_reach(
-            MovementZone::Infantry,
-            (1, 0),
-            MovementLayer::Ground,
-            (5, 0),
-            MovementLayer::Ground,
-        ),
-        "fixture must make the old no-count interaction path abort in reduced reachability"
-    );
-
-    let mut terrain = gsi_04_12_terrain(6, 2);
-    for x in 2..=4 {
-        let cell = terrain.cell_mut(x, 0).unwrap();
-        cell.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_DIRECTION_ZERO;
-        cell.has_bridge_deck = true;
-        cell.bridge_walkable = true;
-        cell.bridge_transition = true;
-        cell.bridge_deck_level = 4;
-    }
-    for x in [1, 5] {
-        let cell = terrain.cell_mut(x, 0).unwrap();
-        cell.final_tile_index = 100;
-        cell.level = 4;
-    }
+    let (path_grid, zone_grid, terrain) = caller_count_bridge_detour(MovementZone::Infantry, false);
 
     let mut height_map = BTreeMap::new();
     height_map.insert((1, 0), 4);
@@ -1215,7 +1129,7 @@ fn gsi_04_12_interaction_order_entry_threads_exact_blocker_counts() {
     let target_id = sim
         .spawn_object("TARGET", "Russians", 5, 0, 0, &rules, &height_map)
         .expect("capture target should spawn");
-    sim.spawn_object("BLOCK", "Russians", 3, 1, 0, &rules, &height_map)
+    sim.spawn_object("BLOCK", "Russians", 0, 2, 0, &rules, &height_map)
         .expect("dynamic blocker should spawn");
 
     assert!(sim.apply_command(
@@ -1245,7 +1159,7 @@ fn gsi_04_12_interaction_order_entry_threads_exact_blocker_counts() {
     );
     assert_eq!(
         movement.path.last().copied(),
-        Some((4, 0)),
+        Some((5, 1)),
         "the concrete Capture path should stop adjacent to the occupied building"
     );
 }
@@ -1772,4 +1686,650 @@ fn gsi_06_02_reduced_zone_precheck_covers_every_land_movement_zone() {
     assert!(!can_use_reduced_zone_precheck(Some(
         MovementZone::WaterBeach
     )));
+}
+
+#[test]
+fn tube_hierarchy_explicit_registry_keeps_flat_and_layered_corridor_active() {
+    use crate::map::tube_facts::TubeFact;
+    let (width, height) = (40, 3);
+    let grid = PathGrid::new(width, height);
+    let mut zones = ZoneGrid::build(&grid, &BTreeMap::new(), width, height);
+    let labels = (0..height)
+        .flat_map(|y| {
+            (0..width).map(move |x| {
+                if y == 1 && x > 0 && x < width - 1 {
+                    2
+                } else {
+                    1
+                }
+            })
+        })
+        .collect();
+    zones.set_hierarchy(level0_hierarchy(labels, width, height, &[]));
+    let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+        width,
+        height,
+        gsi_04_12_terrain(width, height).cells,
+        vec![TubeFact::explicit((50, 50), (60, 50), 2, vec![2; 10])],
+    );
+    let counts = BlockerNeighborCounts::new(width, height);
+    let flat = find_path_zoned_marker(
+        &grid,
+        (0, 1),
+        (39, 1),
+        None,
+        None,
+        Some(&zones),
+        MovementZone::Normal,
+        Some(MovementZone::Normal),
+        Some(&terrain),
+        None,
+        None,
+        Some(&counts),
+        0,
+        false,
+        false,
+        true,
+        None,
+    )
+    .expect("flat hierarchy route");
+    assert!(
+        !flat.contains(&(20, 1)),
+        "an irrelevant explicit Tube must not disable the stamped corridor"
+    );
+    let flat_unrestricted = find_path_zoned_marker(
+        &grid,
+        (0, 1),
+        (39, 1),
+        None,
+        None,
+        Some(&zones),
+        MovementZone::Normal,
+        Some(MovementZone::Normal),
+        Some(&terrain),
+        None,
+        None,
+        Some(&counts),
+        0,
+        false,
+        false,
+        false,
+        None,
+    )
+    .unwrap();
+    assert!(
+        flat_unrestricted.contains(&(20, 1)),
+        "fixture distinguishes ordinary A* from hierarchy routing"
+    );
+    let layered = find_layered_path_zoned_marker(
+        &grid,
+        None,
+        None,
+        (0, 1),
+        MovementLayer::Ground,
+        (39, 1),
+        Some(&zones),
+        MovementZone::Normal,
+        None,
+        Some(MovementZone::Normal),
+        Some(&terrain),
+        None,
+        None,
+        Some(&counts),
+        0,
+        false,
+        false,
+        true,
+        None,
+    )
+    .expect("layered hierarchy route");
+    assert!(
+        !layered.iter().any(|step| (step.rx, step.ry) == (20, 1)),
+        "layered entry must retain the same hierarchy admission"
+    );
+}
+
+#[test]
+fn tube_hierarchy_gate_uses_raw_invalid_labels_and_flat_goal_bridge_flag() {
+    let mut grid = PathGrid::new(2, 2);
+    grid.set_cell_for_test(0, 0, 4, false, false);
+    grid.set_cell_for_test(1, 0, 0, true, true);
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/tube_hierarchy.json"
+    ))
+    .unwrap();
+    let expected_admission = |a, b| {
+        corpus["path_gate"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["a"] == a && r["b"] == b && r["allow"] == 1)
+            .unwrap()["action"]
+            == "precheck"
+    };
+    let mut terrain = gsi_04_12_terrain(2, 2);
+    let mut zones = ZoneGrid::build_with_native_bridge_geometry(
+        &grid,
+        &BTreeMap::new(),
+        Some(&terrain),
+        &[BridgeEndpointRecord {
+            endpoint_a: (0, 0),
+            endpoint_b: (1, 0),
+            group_id: 0,
+            active: true,
+            bridge_kind: BridgeRecordKind::High,
+        }],
+        2,
+        2,
+        Some((1, 1)),
+    );
+    let row = MovementZone::Normal.matrix_row().unwrap();
+    {
+        let base = zones.base_topology_mut().unwrap();
+        base.zone_ids = vec![2, 3, 2, 3];
+        base.zone_count = 3;
+        base.raw_zone_ids_by_row[row] = vec![0, 0, 1, u16::MAX];
+    }
+    {
+        let map = zones.map_mut(MovementZone::Normal).unwrap();
+        for index in 0..4 {
+            map.set_ground_zone_at_index(index, 0);
+        }
+    }
+    zones.set_hierarchy(level0_hierarchy(vec![1; 4], 2, 2, &[]));
+    let counts = BlockerNeighborCounts::new(2, 2);
+    let route = |zones: &ZoneGrid, terrain: &ResolvedTerrainGrid| {
+        find_path_zoned_marker(
+            &grid,
+            (0, 0),
+            (1, 0),
+            None,
+            None,
+            Some(zones),
+            MovementZone::Normal,
+            Some(MovementZone::Normal),
+            Some(terrain),
+            None,
+            None,
+            Some(&counts),
+            0,
+            false,
+            false,
+            true,
+            None,
+        )
+    };
+    assert_eq!(
+        zones.get_zone_id_native((0, 0), MovementZone::Normal, false),
+        Some(1)
+    );
+    assert_eq!(
+        zones.get_zone_id_native((1, 0), MovementZone::Normal, false),
+        Some(u16::MAX)
+    );
+    assert_eq!(
+        zones
+            .map_for(MovementZone::Normal)
+            .unwrap()
+            .zone_at(0, 0, MovementLayer::Ground),
+        0
+    );
+    assert_eq!(
+        zones
+            .map_for(MovementZone::Normal)
+            .unwrap()
+            .zone_at(1, 0, MovementLayer::Ground),
+        0
+    );
+    assert_eq!(
+        route(&zones, &terrain).is_some(),
+        expected_admission(1, 65535),
+        "distinct native invalid labels must reject before a connected graph"
+    );
+    {
+        let base = zones.base_topology_mut().unwrap();
+        base.raw_zone_ids_by_row[row][2] = 2;
+        base.raw_zone_ids_by_row[row][3] = 3;
+    }
+    zones
+        .map_mut(MovementZone::Normal)
+        .unwrap()
+        .set_bridge_redirect(Some(vec![None, Some((0, 0)), None, None]));
+    zones.set_hierarchy(level0_hierarchy(vec![1; 4], 2, 2, &[]));
+    terrain.cell_mut(0, 0).unwrap().level = 4;
+    {
+        let cell = terrain.cell_mut(1, 0).unwrap();
+        cell.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
+        cell.has_bridge_deck = true;
+        cell.bridge_walkable = true;
+        cell.bridge_transition = true;
+        cell.bridge_deck_level = 4;
+    }
+    assert_eq!(
+        zones.get_zone_id_native((1, 0), MovementZone::Normal, true),
+        Some(2)
+    );
+    assert_eq!(
+        route(&zones, &terrain).is_some(),
+        expected_admission(2, 2),
+        "flat goal Flags0x100 must select the redirected raw zone"
+    );
+    terrain.cell_mut(1, 0).unwrap().bridge_facts.raw_flags = 0;
+    assert_eq!(
+        route(&zones, &terrain).is_some(),
+        expected_admission(2, 3),
+        "ground goal reads its different underlying raw label"
+    );
+}
+
+#[test]
+fn tube_hierarchy_dword_zone_query_matches_original_executable() {
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/tube_hierarchy.json"
+    ))
+    .unwrap();
+    for case in corpus["get_zone"].as_array().unwrap() {
+        let coord =
+            |v: &serde_json::Value| (v[0].as_i64().unwrap() as u16, v[1].as_i64().unwrap() as u16);
+        let query = coord(&case["query"]);
+        let linear = i32::from(query.1 as i16) * 512 + i32::from(query.0 as i16);
+        let real = case["real"].as_bool().unwrap();
+        let canonical = ((linear.rem_euclid(512)) as u16, (linear / 512) as u16);
+        let extras = case["extra"].as_array().cloned().unwrap_or_default();
+        let mut allocated = if real { vec![canonical] } else { vec![] };
+        allocated.extend(extras.iter().map(|entry| coord(&entry[0])));
+        let width = allocated.iter().map(|c| c.0).max().unwrap_or(0).max(15) + 1;
+        let height = allocated.iter().map(|c| c.1).max().unwrap_or(0).max(15) + 1;
+        let mut terrain = gsi_04_12_terrain(width, height);
+        terrain.test_set_native_allocated_cells(&allocated);
+        terrain.test_set_high_bridge_set_starts(Some(100), Some(200));
+        for entry in &extras {
+            let c = coord(&entry[0]);
+            let cell = terrain.cell_mut(c.0, c.1).unwrap();
+            cell.final_tile_index = entry[1].as_i64().unwrap() as i32;
+            cell.yr_cell_land_type = entry[2].as_u64().unwrap() as u8;
+            cell.bridge_facts.raw_flags = entry[3].as_u64().unwrap() as u32;
+        }
+        let flags = case["flags"].as_u64().unwrap() as u32;
+        let dummy = terrain.shared_cell_dummy();
+        dummy.stamp_coord(1234, -2345);
+        if real {
+            terrain
+                .cell_mut(canonical.0, canonical.1)
+                .unwrap()
+                .bridge_facts
+                .raw_flags = flags;
+        } else if flags & 0x100 != 0 {
+            dummy.apply_bridge_flag_slot(crate::map::bridge_facts::BridgeStampSlot::Anchor, true);
+        }
+        let records = case["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| BridgeEndpointRecord {
+                endpoint_a: coord(&r[0]),
+                endpoint_b: coord(&r[1]),
+                group_id: 0,
+                active: r[2].as_bool().unwrap(),
+                bridge_kind: if r[3] == 0 {
+                    BridgeRecordKind::High
+                } else {
+                    BridgeRecordKind::Low
+                },
+            })
+            .collect::<Vec<_>>();
+        let mut zones = ZoneGrid::build_with_native_bridge_geometry(
+            &PathGrid::new(width, height),
+            &BTreeMap::new(),
+            Some(&terrain),
+            &records,
+            width,
+            height,
+            Some((8, 8)),
+        );
+        {
+            let base = zones.base_topology_mut().unwrap();
+            base.zone_ids.fill(1);
+            for record in &records {
+                if !record.active {
+                    let index = (i32::from(record.endpoint_b.1 as i16) * 17
+                        + i32::from(record.endpoint_b.0 as i16))
+                    .clamp(0, 288) as usize;
+                    let (x, y) = (index % 17, index / 17);
+                    assert!(
+                        x < 16 && y < 16,
+                        "fixture endpoint must project into real node storage"
+                    );
+                    base.zone_ids[y * usize::from(width) + x] = 2;
+                }
+            }
+            base.raw_zone_ids_by_row[MovementZone::Normal.matrix_row().unwrap()] =
+                vec![0, case["raw"].as_u64().unwrap() as u16, 3];
+        }
+        dummy.stamp_coord(1234, -2345);
+        assert_eq!(
+            zones.get_path_zone_id_native(
+                &terrain,
+                query,
+                MovementZone::Normal,
+                case["check"] == 1
+            ),
+            Some(case["result"].as_u64().unwrap() as u32),
+            "{}",
+            case["name"]
+        );
+        assert_eq!(
+            dummy.snapshot().coord,
+            (
+                case["dummy_coord"][0].as_i64().unwrap() as i32,
+                case["dummy_coord"][1].as_i64().unwrap() as i32
+            ),
+            "{}",
+            case["name"]
+        );
+    }
+}
+
+#[test]
+fn tube_hierarchy_missing_record_sentinel_controls_actual_route_gate() {
+    let grid = PathGrid::new(16, 16);
+    let mut terrain = gsi_04_12_terrain(16, 16);
+    // Native producer corpus high_no_far: no far matching bridge tile, so the
+    // real factory leaves the structural middle cell without a high record.
+    {
+        let start = terrain.cell_mut(4, 7).unwrap();
+        start.final_tile_index = 106;
+        start.final_sub_tile = 4;
+    }
+    for x in [5, 6] {
+        let c = terrain.cell_mut(x, 7).unwrap();
+        c.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
+        c.has_bridge_deck = true;
+        c.bridge_walkable = true;
+        c.bridge_transition = true;
+        c.bridge_deck_level = 0;
+    }
+    terrain.test_set_high_bridge_set_starts(Some(100), None);
+    let bridges = crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain_with_map_size(
+        &terrain,
+        true,
+        100,
+        (8, 8),
+    );
+    assert!(bridges.endpoint_records().is_empty());
+    let mut zones = ZoneGrid::build_with_native_bridge_geometry(
+        &grid,
+        &BTreeMap::new(),
+        Some(&terrain),
+        bridges.endpoint_records(),
+        16,
+        16,
+        Some((8, 8)),
+    );
+    zones.set_hierarchy(level0_hierarchy(vec![1; 256], 16, 16, &[]));
+    let counts = BlockerNeighborCounts::new(16, 16);
+    assert_eq!(
+        zones.get_path_zone_id_native(&terrain, (5, 7), MovementZone::Normal, true),
+        Some(u32::MAX)
+    );
+    assert_ne!(
+        zones.get_path_zone_id_native(&terrain, (4, 7), MovementZone::Normal, false),
+        Some(u32::MAX)
+    );
+    assert!(
+        find_path_zoned_marker(
+            &grid,
+            (4, 7),
+            (5, 7),
+            None,
+            None,
+            Some(&zones),
+            MovementZone::Normal,
+            Some(MovementZone::Normal),
+            Some(&terrain),
+            None,
+            None,
+            Some(&counts),
+            0,
+            false,
+            false,
+            true,
+            None
+        )
+        .is_none(),
+        "ordinary label differs from missing structural DWORD sentinel"
+    );
+    assert_eq!(
+        native_path_zone_equality(
+            &zones,
+            Some(&terrain),
+            MovementZone::Normal,
+            (5, 7),
+            true,
+            (6, 7),
+            true
+        ),
+        Some(true),
+        "two missing structural records compare equal at DWORD width"
+    );
+    assert!(
+        find_layered_path_zoned_marker(
+            &grid,
+            None,
+            None,
+            (5, 7),
+            MovementLayer::Bridge,
+            (6, 7),
+            Some(&zones),
+            MovementZone::Normal,
+            None,
+            Some(MovementZone::Normal),
+            Some(&terrain),
+            None,
+            None,
+            Some(&counts),
+            0,
+            false,
+            false,
+            true,
+            None
+        )
+        .is_some(),
+        "equal missing sentinels admit hierarchy; physical route remains independently passable"
+    );
+}
+
+#[test]
+fn tube_hierarchy_native_entry_prefix_matches_original_executable() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/path_entry.json"
+    ))
+    .unwrap();
+    assert_eq!(cases.as_array().unwrap().len(), 19);
+    for case in cases.as_array().unwrap() {
+        let coord =
+            |v: &serde_json::Value| (v[0].as_i64().unwrap() as u16, v[1].as_i64().unwrap() as u16);
+        let rows = case["cells"].as_array().unwrap();
+        let allocated: Vec<_> = rows.iter().map(|r| coord(&r[0])).collect();
+        let width = allocated.iter().map(|c| c.0).max().unwrap().max(15) + 1;
+        let height = allocated.iter().map(|c| c.1).max().unwrap().max(15) + 1;
+        let grid = PathGrid::new(width, height);
+        let mut terrain = gsi_04_12_terrain(width, height);
+        terrain.test_set_native_allocated_cells(&allocated);
+        terrain.test_set_high_bridge_set_starts(Some(100), Some(200));
+        for row in rows {
+            let c = coord(&row[0]);
+            let cell = terrain.cell_mut(c.0, c.1).unwrap();
+            cell.bridge_facts.raw_flags = row[1].as_u64().unwrap() as u32;
+            cell.final_tile_index = row[2].as_i64().unwrap() as i32;
+            cell.yr_cell_land_type = row[3].as_u64().unwrap() as u8;
+        }
+        let records: Vec<_> = case["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| BridgeEndpointRecord {
+                endpoint_a: coord(&r[0]),
+                endpoint_b: coord(&r[1]),
+                active: r[2].as_bool().unwrap(),
+                group_id: 0,
+                bridge_kind: BridgeRecordKind::High,
+            })
+            .collect();
+        let mut zones = ZoneGrid::build_with_native_bridge_geometry(
+            &grid,
+            &BTreeMap::new(),
+            Some(&terrain),
+            &records,
+            width,
+            height,
+            Some((8, 8)),
+        );
+        let base = zones.base_topology_mut().unwrap();
+        base.zone_ids.fill(1);
+        base.raw_zone_ids_by_row[MovementZone::Normal.matrix_row().unwrap()] = vec![0, 2];
+        let b = &case["bounds"];
+        let bounds = PlayfieldBounds::from_normalized_local_size(
+            b[0].as_i64().unwrap() as i32,
+            b[1].as_i64().unwrap() as i32,
+            b[2].as_i64().unwrap() as i32,
+            b[3].as_i64().unwrap() as i32,
+            b[4].as_i64().unwrap() as i32,
+        );
+        assert_eq!(
+            case["dummy_flags"], 0,
+            "fixture currently supplies constructor bridge flags"
+        );
+        let dummy = terrain.shared_cell_dummy();
+        dummy.reconstruct_for_map_resize();
+        dummy.stamp_coord(1234, -2345);
+        let start = coord(&case["start"]);
+        let goal = coord(&case["goal"]);
+        let entry = prepare_native_path_entry(
+            Some(&zones),
+            Some(&terrain),
+            MovementZone::Normal,
+            start,
+            case["start_bridge"].as_bool().unwrap(),
+            goal,
+            case["allow"].as_bool().unwrap(),
+            Some(bounds),
+        );
+        assert_eq!(
+            entry.raw_equal,
+            Some(case["labels"][0] == case["labels"][1]),
+            "{}",
+            case["name"]
+        );
+        assert_eq!(
+            entry.hierarchy_start,
+            coord(&case["hierarchy_start"]),
+            "{}",
+            case["name"]
+        );
+        assert_eq!(
+            entry.hierarchy_goal,
+            coord(&case["hierarchy_goal"]),
+            "{}",
+            case["name"]
+        );
+        assert_eq!(
+            entry.endpoints_in_playfield,
+            case["endpoints_inside"].as_bool().unwrap(),
+            "{}",
+            case["name"]
+        );
+        let terminal = coord(&case["dummy_coord"]);
+        assert_eq!(
+            dummy.snapshot().coord,
+            (i32::from(terminal.0 as i16), i32::from(terminal.1 as i16)),
+            "{}",
+            case["name"]
+        );
+        if case["name"] == "initial_source_miss_False" {
+            // Physical backing admits this same-cell request, while the native
+            // allocation table has a hole. With no playfield configured and
+            // hierarchy disabled, only the live entry lookup publishes it.
+            let hole = (4, 4);
+            assert!(terrain.cell(hole.0, hole.1).is_none());
+            dummy.stamp_coord(1234, -2345);
+            assert!(
+                find_path_zoned_marker(
+                    &grid,
+                    hole,
+                    hole,
+                    None,
+                    None,
+                    Some(&zones),
+                    MovementZone::Normal,
+                    Some(MovementZone::Normal),
+                    Some(&terrain),
+                    None,
+                    None,
+                    None,
+                    0,
+                    false,
+                    false,
+                    false,
+                    None
+                )
+                .is_some()
+            );
+            assert_eq!(dummy.snapshot().coord, (4, 4));
+            dummy.stamp_coord(1234, -2345);
+            assert!(
+                find_layered_path_zoned_marker(
+                    &grid,
+                    None,
+                    None,
+                    hole,
+                    MovementLayer::Ground,
+                    hole,
+                    Some(&zones),
+                    MovementZone::Normal,
+                    None,
+                    Some(MovementZone::Normal),
+                    Some(&terrain),
+                    None,
+                    None,
+                    None,
+                    0,
+                    false,
+                    false,
+                    false,
+                    None
+                )
+                .is_some()
+            );
+            assert_eq!(dummy.snapshot().coord, (4, 4));
+        }
+    }
+}
+
+// Preserve the existing height/projection assertions through the live entry owner.
+#[allow(clippy::too_many_arguments)]
+fn resolve_hierarchy_endpoint_contract(
+    zones: Option<&ZoneGrid>,
+    terrain: Option<&ResolvedTerrainGrid>,
+    bounds: Option<PlayfieldBounds>,
+    start: (u16, u16),
+    start_bridge: bool,
+    goal: (u16, u16),
+    _goal_bridge: bool,
+) -> ((u16, u16), (u16, u16), bool) {
+    let entry = prepare_native_path_entry(
+        zones,
+        terrain,
+        MovementZone::Normal,
+        start,
+        start_bridge,
+        goal,
+        true,
+        bounds,
+    );
+    (
+        entry.hierarchy_start,
+        entry.hierarchy_goal,
+        entry.endpoints_in_playfield,
+    )
 }

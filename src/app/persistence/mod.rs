@@ -226,6 +226,11 @@ impl PreparedLoad {
         // Scenario->Random after reading ScenarioClass, while the process-global
         // seed and Main/MapGen cursors retain their live values.
         simulation.retain_in_scenario_process_state_from(current_simulation);
+        // Native MouseLoad->Resize reconstructs the dummy before subsequent
+        // LoadContent67E8CD hierarchy reads. The fallible candidate must see
+        // that state without touching the running match's retained identity.
+        simulation.bind_shared_cell_dummy(crate::map::resolved_terrain::SharedCellDummy::fresh());
+        simulation.reconstruct_cellclass_dummy_for_map_resize();
         simulation.restore_after_snapshot_load()?;
         crate::sim::production::validate_restored_factory_state(&simulation, rules)?;
         simulation.rebuild_caches_after_load(
@@ -257,13 +262,12 @@ impl PreparedLoad {
         mut self,
         runtime: &mut crate::sim::runtime::SimRuntime,
     ) -> Vec<crate::map::overlay::OverlayEntry> {
-        // This is the first infallible successful-load seam. Native
-        // `MouseClass::Load @ 0x005BE150` reaches
-        // `MapClass::Resize @ 0x00565C10` and reconstructs the fixed fallback
-        // CellClass here, including its split `+0xDC` reservation state; doing
-        // it during candidate preparation would leak mutation from a rejected
-        // transactional load into the running match.
-        self.simulation.reconstruct_cellclass_dummy_for_map_resize();
+        // Commit the candidate's post-Resize fields and subsequent lookup
+        // effects onto the live process identity only after all checks pass.
+        // Resetting here would make its already-built hierarchy disagree.
+        let live_dummy = runtime.simulation.effective_shared_cell_dummy();
+        live_dummy.adopt_prepared_load_state(&self.simulation.effective_shared_cell_dummy());
+        self.simulation.bind_shared_cell_dummy(live_dummy);
         runtime.replace_simulation(self.simulation);
         self.map_restore.occupied_overlays
     }
@@ -656,6 +660,8 @@ mod tests {
     mod factory_restore_tests;
     mod infantry_terminal_restore_tests;
 
+    include!("tube_hierarchy_restore_tests.rs");
+
     fn load_fixture_rules() -> RuleSet {
         let ini = IniFile::from_str(
             "[InfantryTypes]\n\
@@ -1010,7 +1016,7 @@ mod tests {
                 slope_type: 0,
                 bridge_flags_0x1180: 0,
             },
-            "successful in-scenario load reconstructs the fixed dummy at the commit seam"
+            "successful load publishes the prepared post-Resize dummy fields"
         );
         assert_eq!(
             simulation
