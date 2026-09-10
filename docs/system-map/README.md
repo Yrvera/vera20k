@@ -1,19 +1,25 @@
-# VERA20k System Map
+# VERA20k System Map — retired
 
-Three hand-maintained JSON files that name the engine's systems and record
-what has been established about them. They are a navigation aid for parity
-work, not a completion ledger, and nothing in them certifies parity.
+**Retired from active maintenance on 2026-09-10.** The files remain in place
+to preserve existing GSI, loop and mechanism references and historical evidence.
+Do not update them for new engine work or require their checker for delivery.
 
-## Files
+Descriptions, status fields and cited research may be stale, contradictory or
+incorrect. An archived citation or review is not proof of current accuracy.
+Use current Rust and its nearby native references, focused research, and
+reproducible native comparisons. Per-phase handoffs live in
+[`docs/plans/phase-briefs/`](../plans/phase-briefs/README.md).
+
+## Preserved files
 
 - `registry.v2.json` — the 336 canonical systems (`GSI-NN.NN`), grouped by
   family, each with a `baseline_status` (`native_evidence`,
   `rust_implementation`, `parity`, `basis`). Originally imported from
   `docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md` and
-  `GAMEMD_SYSTEM_STATUS_MATRIX_SYSTEM_MODEL_SYNTHESIS.md`; since 2026-09-06 it
-  is edited directly.
+  `GAMEMD_SYSTEM_STATUS_MATRIX_SYSTEM_MODEL_SYNTHESIS.md`; edited directly from
+  2026-09-06 until retirement. Status values are historical snapshots.
 - `topology.v2.json` — reviewed annotations on load-bearing systems (native
-  anchors with addresses, current Rust surfaces, notes), typed edges between
+  anchors with addresses, then-observed Rust surfaces, notes), typed edges between
   systems, the ordered stock player-visible loops (`LOOP-NNN-*`), coupled
   sets, and legacy slice aliases.
 - `mechanisms.v1.json` — reviewed mechanism blocks (`MBLK-NNN-*`): one
@@ -22,24 +28,23 @@ work, not a completion ledger, and nothing in them certifies parity.
 - `schemas/*.schema.json` — the shapes of the three files, kept as
   documentation. Nothing validates against them any more.
 
-## Checking
+## Optional archive check
 
 ```powershell
 python -m tools.system_map check
 ```
 
-Reports every cited repository path that does not exist and every
-GSI/loop/block id that is not defined. That is the whole tool. The previous
+The retained compatibility tool reports missing cited repository paths and
+undefined GSI/loop/block IDs. It does not check accuracy or freshness. The previous
 importer, freshness model, renderer, source lock and query commands were
 removed on 2026-09-06 (about 11,600 lines of Python) after an audit found the
 data useful and the machinery unused; see the git history of
 `tools/system_map/` if a piece is wanted back.
 
-## Reading the data
+## Reading historical data
 
-- `parity` stays `UNCHECKED` or `DRIFT` until a gamemd-derived executable
-  comparison demonstrates equivalence. `ANCHORED` native evidence means the
-  bodies were read, not that Rust matches them.
+- `parity` and other statuses record past assessments, not current coverage.
+  `ANCHORED` native evidence meant the bodies were read, not that Rust matched them.
 - Native anchors, Rust surfaces and edges sit on separate planes. A native
   edge never implies Rust implements or orders the connection; a Rust surface
   marked `representative` names one place the mechanism lives, not all of
@@ -59,12 +64,12 @@ data useful and the machinery unused; see the git history of
 - Loops are `LOOP-NNN-SLUG`, edges `EDGE-NNNN-SLUG`, mechanism blocks
   `MBLK-NNN-SLUG`, mechanism edges `MBEDGE-NNNN-SLUG`.
 
-## Maintenance
+## Retirement boundary
 
-Update only the rows, surfaces, edges and blocks your change touched and
-verified, then run the checker. Do not pause parity work to annotate the
-whole registry, and do not pick work from missing fields: unannotated systems
-are unmapped, not unimportant. Per-phase working state (owners per row,
-corrections, residuals, open queue) belongs in
-[`docs/plans/phase-briefs/`](../plans/phase-briefs/README.md), which cites
-this map rather than duplicating it.
+The inventory IDs and existing links remain valid identifiers, not current
+status claims. Neither missing annotations nor old status fields select the
+next implementation task. Record current evidence beside the implementation
+and in focused research; use a phase brief for the current working handoff.
+
+The research-index `research_map` tool is separate: it searches and groups
+research documents and is not retired with these hand-maintained JSON files.

@@ -2,8 +2,8 @@
 
 One brief per phase of
 [`2026-07-30-clean-slate-system-implementation-order.md`](../2026-07-30-clean-slate-system-implementation-order.md).
-A goal session reads the brief for its phase **before** the plan, the registry
-or the research index. The brief is the handover between sessions working the
+A goal session reads the brief for its phase **before** the plan or the
+research index. The brief is the handover between sessions working the
 same phase; the plan is only the dependency order.
 
 Briefs are written when a phase is first targeted and updated by the session
@@ -24,16 +24,18 @@ Rows <first>–<last> of the plan. State: OPEN | IN PROGRESS | CLOSED <date>.
 
 ## Rows
 
-| Row | GSI | Rust owner(s) | Native anchor(s) | Registry | Notes |
+| Row | GSI | Rust owner(s) | Native anchor(s) | Evidence and coverage | Notes |
 
 One line per row. Owners are current file paths (check they exist). Anchors are
-symbol + address with the research doc that established them. Registry is
-`native_evidence / rust_implementation / parity` from `registry.v2.json`.
+symbol + address with the research doc that established them. Evidence and
+coverage cite the inspected code revision and actual native comparisons or
+Rust checks, with their limits. Do not copy status from the retired System Map.
 
 ## Loops
 
-Which `topology.v2.json` loops the rows sit in, and which stage each row owns.
-The loop is what a session traces; rows alone do not order the work.
+The production loops the rows participate in and which stage each row owns,
+established from current code and native evidence. Historical loop IDs may be
+retained as references, but archived topology does not establish ordering.
 
 ## Prior work
 
@@ -77,8 +79,8 @@ with a builder and an independent read-only critic, merge one coherent
 mechanism (or its prerequisite foundation) per PR,
 run a phase-wide reverse audit, and close only when no omission or regression
 remains and `cargo test -p vera20k --lib` passes. Parity stays
-`UNCHECKED`/`DRIFT` in the registry until a gamemd-derived executable
-comparison demonstrates it; closure is by evidence, not by claim.
+undemonstrated until a gamemd-derived executable comparison or exhaustive
+proof establishes it within stated coverage; closure is by evidence, not by claim.
 
 **Bounded slice.** Select one ordinary-stock end-to-end loop from the brief's
 loop list, trace it in runtime stage order, find the first player-visible or
@@ -88,5 +90,7 @@ first with its own evidence, validation and review. Rerun the parent loop;
 close it only if its end-to-end check passes, otherwise record residuals in
 the brief and stop after the handoff.
 
-Both modes update the brief and the System Map registry for touched, verified
-rows (`python -m tools.system_map check`).
+Both modes update the brief for touched, verified work. The System Map is
+retired: no registry/topology/mechanism updates or map checker are required.
+Existing briefs may retain explicitly historical map citations and status
+columns; revalidate them before using them to select work or claim completion.
