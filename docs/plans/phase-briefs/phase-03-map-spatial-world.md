@@ -121,17 +121,19 @@ unexecuted; they are not passing parity evidence.
 
 ## Open queue
 
-1. The current iterator investigation has selected bridge endpoint production
-   (`ComputeBridgeZones @ 0x0056D6E0`) for repair: one native ordered sweep
-   interleaves high-bridge and TubeClass records, and a strict ordinal test
-   excludes same-cell automatic tube shells. Current Rust synthesized spans
-   for those shells. Native callers include map initialization and runtime
-   bridge-zone invalidation/validation. Validation and independent review are
-   pending; this does not close the separate hierarchy consumer or all iterator
-   consumers.
+1. Finish the current bridge-record increment and its immediate connectivity
+   consumer; see the [evidence report](../../research/PHASE3_CELL_ITERATION_BRIDGE_RECORDS_20260910.md).
+   Native `ComputeBridgeZones @ 0x0056D6E0` interleaves high/Tube records and
+   excludes same-cell shells. Its `0x0056C510` consumer needs signed linear
+   endpoint clamping with native side `W+H+1`, reverse record traversal and
+   canonical zone pairs. Raw Size belongs with the derived record set through
+   cache reuse and restore. Full readiness and final review remain pending.
 2. Recheck the remaining constructor identity, shared-dummy field,
    Resize/restore, iterator and consumer-order hypotheses. Implement only proven
    observable differences; retain unresolved candidates explicitly.
+   In particular, compare specialized full-diamond sweeps with native first-null
+   termination for width-one and internal-hole inputs; prove active loading and
+   observable effects before treating either as another production gap.
 3. Reconcile each other row with current production source and active retail
    evidence. Reuse bridge and earlier Phase 3 research without importing their
    historical scope expansions automatically.
