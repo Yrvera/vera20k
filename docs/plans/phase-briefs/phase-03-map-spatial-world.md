@@ -82,6 +82,16 @@ status is historical; reconcile it against current source before selecting work.
 - The old copied-dummy target-Z claim is a [documented false positive](../../gap-scans/2026-08-25-disparity-scan-gsi-04-01-dummy-cell-target-z.md).
 - CellClass constructor order and anti-diagonal Fill/RNG order are different;
   never fix a hypothetical identity gap by reordering Fill.
+- The old multiplayer Resize-prefix hypothesis is partly stale. Current
+  `src/sim/native_identity.rs::build_noncampaign_fresh_id_prefix` accounts for
+  both Cell/dummy constructor generations, and `scenario_bootstrap` tests their
+  identity checkpoints. This does not establish individual Cell identity
+  consumers, preview reuse or save/restore equivalence. See the current
+  [prefix investigation](../../research/bridges/01-assets-map-load-overlay/FULL_INIT_AND_PREVIEW_NATIVE_ID_PREFIX_REINVESTIGATION_GHIDRA_REPORT.md).
+- Generic storage iteration is not a native-order contract. Authored overlay
+  recalculation already has `NativeOverlayMapShape::recalc_cells`, and other
+  owners explicitly order their sweeps. Audit each active consumer before
+  changing iteration shared by unrelated systems.
 - TS-only exclusions require active-binary/data evidence. Neither inherited TS
   code nor a generic registry group is enough to establish applicability.
 
@@ -111,13 +121,21 @@ unexecuted; they are not passing parity evidence.
 
 ## Open queue
 
-1. Recheck the remaining constructor identity, shared-dummy field,
+1. The current iterator investigation has selected bridge endpoint production
+   (`ComputeBridgeZones @ 0x0056D6E0`) for repair: one native ordered sweep
+   interleaves high-bridge and TubeClass records, and a strict ordinal test
+   excludes same-cell automatic tube shells. Current Rust synthesized spans
+   for those shells. Native callers include map initialization and runtime
+   bridge-zone invalidation/validation. Validation and independent review are
+   pending; this does not close the separate hierarchy consumer or all iterator
+   consumers.
+2. Recheck the remaining constructor identity, shared-dummy field,
    Resize/restore, iterator and consumer-order hypotheses. Implement only proven
    observable differences; retain unresolved candidates explicitly.
-2. Reconcile each other row with current production source and active retail
+3. Reconcile each other row with current production source and active retail
    evidence. Reuse bridge and earlier Phase 3 research without importing their
    historical scope expansions automatically.
-3. Run the phase-wide reverse audit only after every in-scope mechanism and
+4. Run the phase-wide reverse audit only after every in-scope mechanism and
    evidence-backed exclusion is accounted for. Any omission reopens its row.
 
 ## Start here
