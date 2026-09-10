@@ -1,8 +1,52 @@
 """Execute stock YR GetCurrentFrame for completed garrison bodies.
 
-Native virtual table and helper instructions run without replacement. The
-fixture supplies an initialized idle building, type, occupant count and rules;
-it does not execute map loading, boarding, animation scheduling or GPU drawing.
+Reverify from the repository root (Python needs Unicorn 2.1.4 and the original
+executable configured through VERA20K_GAMEMD_EXE or RA2_DIR):
+    python -m tools.garrison_oracle.body_frame --check
+    cargo test -p vera20k --lib completed_garrison_body_frames_match_native_oracle
+The first command checks native execution against body_frame.json without
+writing; the Rust test checks the production selector against that same file.
+body_frame.meta.json records binary identity, assumptions and coverage.
+
+Native evidence, checked in Ghidra 2026-09-10: project testProsjekt,
+/gamemd.exe, x86:LE:32:default, image base 0x00400000. The shared oracle loader
+requires SHA256 1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c.
+
+BuildingClass+0x534 is the body animation state, NOT a health-derived damage
+flag. Earlier garrison reports missed its writers and incorrectly concluded
+that healthy occupied buildings retain empty frame 0:
+- Constructor 0x0043B740 initializes +0x534 to -1.
+- GrandOpening 0x00447780 stages its argument in +0x538, writing +0x534 at
+  0x004477C1 when uninitialized, starting state 0, or in map-editor mode.
+  That state indexes the type's animation triples at +0xF04, stride 12.
+- Guard pushes 1 at 0x0044995D and calls GrandOpening at 0x00449961.
+  Construction selects 0 at 0x00449B36 and requests 1 at 0x00449AC9 on completion.
+- GetCurrentFrame 0x0043EF90 checks +0x534 at 0x0043EFC6. Nonzero reaches
+  CanBeOccupied at 0x0043F02C: occupants select 2; damage adds 1 at ConditionRed,
+  or ConditionYellow for TechLevel > 0. TechLevel -1 collapses 3 to 1.
+  DrawBody calls GetCurrentFrame at 0x0043D7B5/0x0043D7CB/0x0043D8D4.
+- SetDamagedState 0x00451EE0 uses a separate IsDamaged flag for overlay variants;
+  it does not define +0x534.
+
+Production Rust: src/app/presentation/instances/shp.rs::building_frame_index.
+Build-up/down branches precede completed body selection; the health-derived
+flag remains for overlay variants. The atlas already requests body frames 0..3.
+
+The 54 cases cover empty/occupied, TechLevel -1/0/5, and health around both
+stock thresholds at strength 2000 (CABUNK01). Original virtual table and helper
+instructions run without replacement. The fixture supplies initialized idle
+building/type/rules data, not map loading, boarding or animation scheduling.
+This is bounded frame-selection equivalence, not all-input or GPU parity.
+
+Validation 2026-09-10: native --check and Rust comparison passed; release and
+clippy passed with existing warnings. Full library suite: 8587 passed, 7 failed,
+119 ignored. Four untouched capture tests reject macOS /var symlinks; three
+assume Windows paths on Unix (independently reviewed as unrelated).
+On Apple M4/Metal, a release CABUNK01/GI fixture showed reinforced occupied
+artwork and restored plain concrete after D ejected the soldier; the user also
+confirmed it. This was Rust visual smoke, not a native screenshot comparison.
+The temporary fixture required a player construction yard to avoid immediate
+match end and 1024x768 to avoid an unrelated 640x480 scissor validation error.
 """
 from pathlib import Path
 import struct

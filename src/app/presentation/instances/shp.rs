@@ -1185,8 +1185,9 @@ fn resolve_infantry_shp_frame(
 /// Completed `CanBeOccupied` body frame: native GetCurrentFrame 0x0043EF90.
 /// Building+0x534 is the animation state, not damage: Guard selects state 1
 /// (0x0044995D), while construction selects state 0. Build-up/down are handled
-/// before this caller. See GARRISON_BODY_STATE_CORRECTION_20260910.md and the
-/// executable-derived tools/garrison_oracle/body_frame.json fixture.
+/// before this caller. Native caller evidence and Unicorn rerun commands live
+/// in tools/garrison_oracle/body_frame.py; its body_frame.json native outputs
+/// are checked by completed_garrison_body_frames_match_native_oracle below.
 /// Civilian red-health occupied art collapses frame 3 to frame 1.
 fn building_frame_index(
     occupant_count: u32,
