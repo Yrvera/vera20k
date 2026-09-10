@@ -31,6 +31,23 @@
     }
   ],
   "systems": {
+    "GSI-04.01": {
+      "native_anchors": [
+        {"symbol": "MapClass::Set_Clipped_LocalSize / ClipRect", "address": "0x00567230", "evidence": "docs/research/PHASE3_MAP_SPATIAL_NATIVE_COMPARISON_20260910.md"},
+        {"symbol": "MapClass::Get_CellClass", "address": "0x005657A0", "evidence": "docs/research/PHASE3_MAP_SPATIAL_NATIVE_COMPARISON_20260910.md"},
+        {"symbol": "MapClass::IsCellInPlayfield", "address": "0x00578460", "evidence": "docs/research/PHASE3_MAP_SPATIAL_NATIVE_COMPARISON_20260910.md"}
+      ],
+      "rust_surfaces": [
+        {"path": "src/map/playfield.rs", "symbol": "PlayfieldBounds::from_map_header; clip_local_size_to_map", "coverage": "representative", "observed_at_commit": "258a59ce2023d5c73be035ff8c6a613f9958b48a"},
+        {"path": "src/sim/cell_rect.rs", "symbol": "get_cellclass_fallback; get_cellclass_fallback_leptons; cell_is_in_playfield_height_aware", "coverage": "representative", "observed_at_commit": "258a59ce2023d5c73be035ff8c6a613f9958b48a"},
+        {"path": "src/sim/cell_rect_native_tests.rs", "symbol": "map_localsize_normalization_matches_native_executed_prefix; map_lookup_matches_native_executable_pointer_and_dummy_effects; map_playfield_matches_native_executable_modes_heights_and_stamps; map_retained_dummy_alias_matches_native_query_sequence", "coverage": "representative", "observed_at_commit": "258a59ce2023d5c73be035ff8c6a613f9958b48a"}
+      ],
+      "notes": [
+        "Original retail instruction comparisons exposed reversed clipping operands for accepted signed-overflow LocalSize input. Production normalization now clips candidate Size against LocalSize in the native operation order. A physical MapFile input is installed through the Simulation playfield owner in the regression.",
+        "The saved 2,144-call/prefix corpus covers bounded packed/world lookups, dummy writes and retained identity, playfield modes/heights and the LocalSize normalization prefix. The native prefix stops before redraw and Techno membership effects. No substituted native instructions or call results are used.",
+        "This representative evidence does not close GSI-04.01: constructor/ID observability, Resize/restore lifecycle, remaining dummy writer/reader chains and iterator consumer ordering still need the wider audit. Registry PARTIAL/DRIFT status remains unchanged."
+      ]
+    },
     "GSI-12.10": {
       "native_anchors": [
         {"symbol": "Scenario Basic FreeRadar parser", "address": "0x0068A5E3", "evidence": "docs/research/FREE_RADAR_SCENARIO_AUTHORITY_2026_09_09.md"},
