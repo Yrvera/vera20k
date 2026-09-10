@@ -1,0 +1,97 @@
+# Phase 3: Building gap operational publication
+
+The original updates a GAGAP's deposited gap at its Building turn when its
+operational state changes. Rust at baseline `417dfe4d` instead reclassifies all
+generators after the object pass and again during House reconciliation. These
+orders can produce different shroud knowledge at the next 120-frame sweep.
+The implementation and production regression are pending in this evidence
+checkpoint; this is not row50 closure.
+
+## Evidence and active caller
+
+The original executable is `gamemd.exe`, SHA256
+`1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c`.
+[The retained comparison](../../tools/spatial_oracle/gap_admission.py) executes
+18 complete `4555D0` predicate cases with original Mission `5B3040` and House
+power-ratio `4FCE30` callees, and two ordered shroud sequences using the original
+leaves and complete periodic sweep. [Outputs](../../tools/spatial_oracle/gap_admission.json)
+and [provenance](../../tools/spatial_oracle/gap_admission.meta.json) are retained.
+No instructions, return values, or callees are replaced.
+
+Fresh retail `rulesmd.ini` SHA256
+`3d341ef8a13a4b5ab24af2eef48ac94931ac2bb87d950fe3330a07e2d25672ef`
+declares GAGAP `GapGenerator=yes`, `Powered=true`, `Power=-100`, radius10,
+SuperGapRadius10, Strength600, Sight5, Capturable=false and AIBuildThis=yes.
+This binds ordinary power-dependent incidence; optional predicate cases do not
+establish retail producers for every raw field.
+
+Building constructor `43B9FA` installs vtable `7E3EBC`. Slot+5C at `7E3F18`
+is `43FB20`, reached by the live Logic object call at `55B610`. Its initial
+operational result is compared with retained byte+6C8 at `43FB59/5F`.
+Only a changed result calls `4549B0` at `43FBEA`, then stores the result at
+`43FBEF`. Unchanged visits emit no gap write.
+
+`4549B0` rechecks operational+350. Type+CD1 and inactive+269 call gap-add+414
+at `454A59`; rejection and active+269 call gap-remove+418 at `454BA9`.
+The other direct caller, `6E0B60` via `6E0C7A`, processes an ownership action;
+the older report's generic power-plant destruction interpretation is unsupported.
+House `4F8440` calls aggregate power assessment `508C30`; its Building power
+notification `454CE0` is an empty return. This does not publish a gap removal
+before the next Building visit.
+
+## Operational predicate
+
+`4555D0` reads Type at Building+520 and House at+21C. It rejects when:
+
+- byte+660 is clear and signed+67C is below2;
+- signed+504 is positive, or health+6C is exactly zero;
+- Type+1573 is set, signed Type+EE4 is positive, House power ratio is below1,
+  and signed+67C is below2;
+- the Type+1574 House timer/+577B gate is not satisfied;
+- Type+1552 is set without Building+6CC;
+- effective Mission is Construction12 or Selling13.
+
+The actual Mission virtual+184 is `5B3040`: current+AC, falling back to queued+B4
+only when current is -1. A queued Selling mission does not reject an active
+Guard current mission. `4FCE30` reads signed output+53A4/drain+53A8: output at
+least drain or zero drain returns1; otherwise it returns the original ratio.
+The comparison supplies normal stock power inputs and executes this callee.
+
+## Observable ordering witness
+
+The original sequence `reveal, gap, leave, gap, reveal, remove, frame120`
+reaches one ordinary sight receipt, one hostile gap, counter-1, closed knowledge,
+and no pending conceal. All state comes from actual original writes.
+The source is parked so no intervening moving high-flight timer event refreshes
+it. A due release/admit is admitted at frame239. Then:
+
+| Event order before frame240 | Final counter/gap | Original IsShrouded AL |
+|---|---|---|
+| Source release/admit, then gap removal | -1 / 0 | 1 |
+| Gap removal, then source release/admit | -1 / 0 | 0 |
+
+The native witness composes supplied object order, not a full Logic/power-system
+execution. The proposed production witness damages the generator owner's power
+plant before House assessment at frame238. Rust's current House collector removes
+the gap then; the original retains it until the Building turn at239. Source-first
+registration consequently chooses different rows. Both registration orders and
+snapshot continuation must be exercised by the production regression.
+
+## Delivery boundary and limits
+
+The existing shroud counter and per-viewer gap receipt owner remain applicable;
+see [the current-sight report](PHASE3_SHROUD_CURRENT_SIGHT_NATIVE_REPORT.md).
+Required work is operational-edge publication, actual lifecycle entry/removal,
+and persistence of the selected Building admission state. House/cache refresh
+must not substitute a new power classification for a Building event.
+
+General EMP/NeedsEngineer/PoweredSpecial/+67C producers, mobile gap geometry,
+campaign/discovery gates and optional fog records remain separate unproved
+domains. No entire Building policy or power system equivalence is claimed.
+
+## Validation receipts
+
+- 2026-09-10: native `gap_admission --write`, actual exit0, 1.44s.
+- Native `gap_admission --check`, actual exit0, 1.44s; 18 predicate cases and
+  two ordered sequences matched; no files written.
+- No Rust behavior was changed or Cargo run for this evidence checkpoint.
