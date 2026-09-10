@@ -2,7 +2,7 @@
 
 Rows 37–52 of the [implementation order](../2026-07-30-clean-slate-system-implementation-order.md).
 State: **IN PROGRESS; every row remains open**. Baseline: fetched `origin/main`
-`8f988ab256b3b38c30bdd3db67fee215c54e25ac`, inspected 2026-09-10.
+`6c7ccf92b0855d296ae6e930144e087940d945ca`, refreshed before this mechanism on 2026-09-10.
 This is the current investigation frontier, not a completed mechanism census.
 
 ## Rows
@@ -24,7 +24,7 @@ references are starting evidence whose applicability must be checked per mechani
 | 43 | GSI-04.07 | `src/map/authored_overlay.rs`; `src/sim/overlay_grid.rs` | OverlayClass::Mark `0x005FC570`, DestroyOverlay `0x00480CB0`; [authored boundary](../../research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAYPACK_INLINE_TRANSACTION_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Includes mutation order, ownership, shared dummy effects and projection to consumers. |
 | 44 | GSI-04.09 | `src/sim/tiberium/mod.rs`, `overlay_grid.rs`; `src/map/authored_overlay.rs` | Reduce_Tiberium `0x00480A80`; [quantity mutation](../../research/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Identity and quantity are this row; growth/harvesting policy enters only as a proved prerequisite or consumer. |
 | 45 | GSI-04.10 | `src/sim/terrain_object.rs`, `terrain_spawn.rs` | [TerrainClass timing](../../research/TIBTRE_TERRAINCLASS_AI_TIMING_AND_RNG_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Verify ordinary trees/rocks as well as TIBTRE; spawning is not full destruction/fire coverage. |
-| 46 | GSI-04.12 | `src/sim/bridge_state/mod.rs`, `map/bridge_topology.rs`, `world/bridge_orchestrator.rs` | [bridge coverage](../../research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Existing bridge work is substantial but explicitly incomplete. |
+| 46 | GSI-04.12 | `src/sim/bridge_state/mod.rs`, `src/map/bridge_facts.rs`, `src/sim/world/bridge_orchestrator.rs` | [bridge coverage](../../research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Existing bridge work is substantial but explicitly incomplete. Fresh-load record restamping is implemented and validated at `8b147e5e`; broader bridge lifecycle remains open. |
 | 47 | GSI-04.13 | `src/map/bridge_facts.rs`; `src/sim/movement/movement_bridge.rs` | [bridge coverage](../../research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Distinguish high bridge decks, wood bridges and low bridge tubes. |
 | 48 | GSI-04.15 | `src/map/tubes.rs`, `tube_facts.rs`; `src/sim/movement/tube_movement.rs` | ReadTubesINI `0x007283C0`; [bridge coverage](../../research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md) | CONTRACTED / PARTIAL / DRIFT | Active low-bridge tubes cannot be excluded as TS-only based on their name. |
 | 49 | GSI-04.16 | `src/map/waypoints.rs`; `src/map/map_file.rs` | Read_Waypoints `0x0068BDC0`; [map substrate](../../research/CELLCLASS_MAPCLASS_ENGINE_SUBSTRATE_SERVICE_STUDY.md) | CONTRACTED / PARTIAL / DRIFT | Signed values and canonical key recovery already landed; audit starts/regions and downstream use separately. |
@@ -108,7 +108,42 @@ status is historical; reconcile it against current source before selecting work.
 
 ## Inherited residuals
 
-The current height-consumer increment repairs the Bounce adapter's selected Cell
+The reverse-audit triage at `6c7ccf92` found substantial production code in every
+row, but no phase-wide completion evidence. Three previously asset-gated checks
+now pass on the available retail installation: automatic bridge shells, low-end
+bridge TMP fields and all six theater compatibility tables (one test each, zero
+failures). These validate their named data contracts, not complete traversal.
+
+The fresh-load omission is `0x00586BF0`, called after
+record construction and zone setup by `0x00684C30`. It visits inactive non-Tube
+records in reverse and stamps four transverse cells at nonstructural gaps.
+The [original comparison](../../research/PHASE3_BRIDGE_RECORD_GAP_RESTAMP_NATIVE_REPORT.md)
+uses Deadman retail cell data: original record production emits four inactive
+records, and restamping changes 80 real cells. At empty cell `(57,42)`, flags
+change from zero to `0xC00`; original ore admission changes from allowed to denied,
+while pre-fix Rust admits it. Independent replay reproduced the result. Targeted
+dataflow evidence establishes that the intervening zone calls preserve these
+records and real-cell flags; this is not full zone execution or terminal shared-
+dummy equivalence. The implementation publishes the operation at the fresh-
+load tail and retains real-cell `0x400/0x800` through hashing and restoration;
+live shared-dummy state is retained and hashed. Twenty original restamp cases
+cover vertical, preserved-bit, ordering and dummy behavior; 48 original setter
+prefixes cover the direction/destruction prerequisite. Snapshot version is 141.
+Independent source review and replay of all 68 original cases passed. At
+`8b147e5e`, focused tests passed 35 cases with zero failures and two ignored;
+the repaired Deadman check passed all 80 native cell flags and production ore
+rejection. The full library passed 8,605 tests with zero failures and 120 ignored;
+Clippy exited zero with 1,144 warnings. Report commit `6ec64a17` records these
+receipts and the synthetic building-placement and restore coverage limits.
+
+Whole movement, combat, reveal-policy and drawing systems retain their later
+phase owners. Their trigger phase does not exclude spatial publication required
+by Phase 3. Fogged-object storage and restore tests do not establish production
+insertion; its active-retail fog gate remains unproved. A fresh read of terrain
+damage `0x0071B920` rejects the old surviving-corpse hypothesis: both lethal arms
+destroy and uninitialize immediately, consistent with current Rust removal.
+
+The height-consumer increment merged in PR #328 repairs the Bounce adapter's selected Cell
 identity, ordered live queries, raw bridge flags and 416-lepton deck composition.
 Its [evidence report](../../research/PHASE3_BOUNCE_GROUND_QUERY_DELIVERY_NATIVE_REPORT.md)
 separates exact ground/surface query comparisons from bounded flat-contact
@@ -122,7 +157,7 @@ zero failed, 119 ignored) and Clippy (exit zero, 1,144 warnings). The fresh
 read-only critic independently reproduced the final 48 native cases and
 reviewed the source and production stop case with no actionable finding.
 
-The Tube hierarchy and ordered path-entry increment is validated at source
+The Tube hierarchy and ordered path-entry increment merged in PR #327 is validated at source
 `154b171e`; report commit `906b7e40` records final receipts. Its
 [evidence report](../../research/PHASE3_TUBE_HIERARCHY_20260910.md) covers original
 instructions for the shared high/Tube helper, full/local record order, raw path
@@ -195,20 +230,18 @@ unexecuted; they are not passing parity evidence.
 
 ## Open queue
 
-1. Finish the current hierarchy-record helper and proved prerequisites, including
-   production full/local delivery and native comparisons. The ignored source
-   marker alone cannot establish scope or certify its eventual repair.
-2. Recheck the remaining constructor identity, shared-dummy field,
-   Resize/restore, iterator and consumer-order hypotheses. Implement only proven
-   observable differences; retain unresolved candidates explicitly.
-   In particular, compare specialized full-diamond sweeps with native first-null
-   termination for width-one and internal-hole inputs; prove active loading and
-   observable effects before treating either as another production gap.
-3. Reconcile each other row with current production source and active retail
-   evidence. Reuse bridge and earlier Phase 3 research without importing their
-   historical scope expansions automatically.
-4. Run the phase-wide reverse audit only after every in-scope mechanism and
-   evidence-backed exclusion is accounted for. Any omission reopens its row.
+1. Finish publication, merge and merge verification of the inactive
+   high-bridge fresh-load restamp and its flag-authority prerequisite.
+2. From refreshed main, investigate ordinary unexplored/revealed state across
+   reveal, knowledge retention, gap clearing and restore. Substantial production
+   already exists; establish native differences before changing it. Optional
+   fogged-object memory requires its active-retail gate before promotion.
+3. Reconcile the remaining rows and retained hypotheses with current production
+   and retail evidence. Prioritize observable ordinary gameplay; preserve open
+   constructor, shared-dummy, iterator, connectivity and consumer-order domains.
+   The hierarchy helper already merged; its residuals require their own proof.
+4. Complete the phase-wide reverse audit only when every in-scope mechanism and
+   evidence-backed exclusion is accounted for. Any omission keeps its row open.
 
 ## Start here
 

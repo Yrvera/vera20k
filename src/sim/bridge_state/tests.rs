@@ -8,6 +8,7 @@ use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 
 include!("record_native_tests.rs");
+include!("gap_restamp_tests.rs");
 
 #[test]
 fn playfield_retail_high_bridge_walks_make_native_records_monotone() {

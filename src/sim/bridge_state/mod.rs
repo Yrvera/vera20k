@@ -39,6 +39,7 @@
 pub mod walker;
 mod damaged_variant;
 mod record_scan;
+pub(crate) mod gap_restamp;
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

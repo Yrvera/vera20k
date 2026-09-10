@@ -13,6 +13,38 @@ pub const BRIDGE_FLAG_EXTRA_SIDE: u32 = 0x10000;
 pub const MODELED_CELLCLASS_BRIDGE_FLAG_MASK: u32 =
     BRIDGE_FLAG_ANCHOR_SELF | BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_FORWARD_SIDE;
 
+/// Retained real/dummy flag authority includes the post-load gap writer586BF0.
+/// The older1180 projection remains a narrow query view, not the storage mask.
+pub(crate) const RETAINED_CELLCLASS_BRIDGE_FLAG_MASK: u32 =
+    MODELED_CELLCLASS_BRIDGE_FLAG_MASK | BRIDGE_FLAG_DESTROYED_OR_RAMP | BRIDGE_FLAG_DIRECTION_ZERO;
+
+/// The additional400/800 stores of SetBridgeDirection47E040/47E470.
+/// Anchor/F1/F2/opposite share them; F3/extra preserve both. This matches the
+/// existing full BridgeCellFacts Mark/Destroy writer without inventing relations.
+pub(crate) fn apply_retained_cellclass_bridge_slot(
+    flags: &mut u32,
+    slot: BridgeStampSlot,
+    set: bool,
+    direction: u8,
+) {
+    apply_modeled_cellclass_bridge_slot(flags, slot, set);
+    if matches!(
+        slot,
+        BridgeStampSlot::Anchor
+            | BridgeStampSlot::Forward1
+            | BridgeStampSlot::Forward2
+            | BridgeStampSlot::Opposite
+    ) {
+        *flags &= !(BRIDGE_FLAG_DESTROYED_OR_RAMP | BRIDGE_FLAG_DIRECTION_ZERO);
+        if !set {
+            *flags |= BRIDGE_FLAG_DESTROYED_OR_RAMP;
+        }
+        if direction == 0 {
+            *flags |= BRIDGE_FLAG_DIRECTION_ZERO;
+        }
+    }
+}
+
 /// Typed view of the CellClass flag word, single-sourced from the consts above.
 ///
 /// Bit values are NOT redefined here — every predicate references the
@@ -274,7 +306,7 @@ pub(crate) fn apply_bridge_fact_slot(
     if set {
         stamp_intact(cell, slot, relation);
     } else {
-        stamp_destroy(cell, slot);
+        stamp_destroy(cell, slot, relation.direction);
     }
 }
 
@@ -322,7 +354,7 @@ fn stamp_intact(cell: &mut BridgeCellFacts, slot: BridgeStampSlot, relation: Bri
     }
 }
 
-fn stamp_destroy(cell: &mut BridgeCellFacts, slot: BridgeStampSlot) {
+fn stamp_destroy(cell: &mut BridgeCellFacts, slot: BridgeStampSlot, direction: u8) {
     apply_modeled_cellclass_bridge_slot(&mut cell.raw_flags, slot, false);
     match slot {
         BridgeStampSlot::Anchor => {
@@ -331,6 +363,7 @@ fn stamp_destroy(cell: &mut BridgeCellFacts, slot: BridgeStampSlot) {
                 | BRIDGE_FLAG_DIRECTION_ZERO
                 | BRIDGE_FLAG_EXTRA_SIDE);
             cell.raw_flags |= BRIDGE_FLAG_DESTROYED_OR_RAMP;
+            set_direction_zero_flag(cell, direction == 0);
             cell.state_byte = 0;
             detach(cell);
         }
@@ -338,6 +371,7 @@ fn stamp_destroy(cell: &mut BridgeCellFacts, slot: BridgeStampSlot) {
             cell.raw_flags &=
                 !(BRIDGE_FLAG_TRANSITION | BRIDGE_FLAG_DIRECTION_ZERO | BRIDGE_FLAG_EXTRA_SIDE);
             cell.raw_flags |= BRIDGE_FLAG_DESTROYED_OR_RAMP;
+            set_direction_zero_flag(cell, direction == 0);
             cell.state_byte = 0;
             detach(cell);
         }

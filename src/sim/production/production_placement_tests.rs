@@ -11,7 +11,6 @@ use super::{
     producer_candidates_for_owner_category, ready_buildings_for_owner, sell_building,
     tick_production,
 };
-use crate::map::bridge_facts::BRIDGE_FLAG_DESTROYED_OR_RAMP;
 use crate::map::entities::EntityCategory;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::{
@@ -2883,7 +2882,7 @@ fn place_ready_building_rejects_bridge_deck_cells() {
 }
 
 #[test]
-fn place_ready_building_rejects_bridge_0x400_marker_cells() {
+fn place_ready_building_rejects_native_gap_restamp_cells() {
     let mut sim = Simulation::new();
     let rules = placement_radius_rules();
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
@@ -2895,11 +2894,43 @@ fn place_ready_building_rejects_bridge_0x400_marker_cells() {
     sim.production
         .ready_by_owner
         .insert(americans, VecDeque::from([gapowr]));
-    sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |cell| {
-        if cell.rx == 12 && cell.ry == 10 {
-            cell.bridge_facts.raw_flags |= BRIDGE_FLAG_DESTROYED_OR_RAMP;
-        }
-    }));
+    sim.install_resolved_terrain_for_new_map(resolved_clear_grid_with_override(64, 64, |_| {}));
+    assert!(super::production_placement::can_this_exist_here(
+        &sim,
+        &sim.substrate.entities,
+        &rules,
+        rules.object("GAPOWR").unwrap(),
+        Some(&grid),
+        12,
+        10,
+    ));
+    let records = [crate::sim::bridge_state::BridgeEndpointRecord {
+        endpoint_a: (11, 12),
+        endpoint_b: (15, 12),
+        group_id: 0,
+        active: false,
+        bridge_kind: crate::sim::bridge_state::BridgeRecordKind::High,
+    }];
+    let flags = &mut sim.real_cell_bridge_flags_0x1180;
+    crate::sim::bridge_state::gap_restamp::restamp_inactive_high_records(
+        sim.resolved_terrain.as_mut().unwrap(),
+        &records,
+        |_, index, value| {
+            if let Some(index) = index {
+                flags.set_allocated_cell(index, value);
+            }
+        },
+    );
+    assert_eq!(
+        sim.resolved_terrain
+            .as_ref()
+            .unwrap()
+            .cell(12, 10)
+            .unwrap()
+            .bridge_flags()
+            & 0xC00,
+        0xC00
+    );
 
     assert!(!place_ready_building_without_overlays(
         &mut sim,
