@@ -54,6 +54,16 @@ review, four passing focused tests, full library results (8,587 passed, zero
 failed, 119 ignored), and Clippy exit zero with 1,144 warnings. This is bounded
 mechanism evidence; it does not close a row.
 
+The bridge-record increment at `9b6de643`, with test-contract correction
+`e92629af`, follows the native interleaved record scan and its immediate base-zone
+consumer. Its [evidence report](../../research/PHASE3_CELL_ITERATION_BRIDGE_RECORDS_20260910.md)
+records 83 original-executable producer cases, 86 consumer cases, production
+cache/connectivity/restore checks, independent source review, and final library
+results (8,590 passed, zero failed, 119 ignored). Clippy exited zero with 1,144
+warnings. Derived record geometry persists under snapshot schema 140; schema 139
+is rejected. This bounded repair does not close bridge lifecycle, hierarchy,
+other iterator consumers or any Phase 3 row.
+
 The archived **Phase 3 integration goal** task
 `01a0529b-815e-7e31-be6d-90511e997891` reports recovery through PRs #166/#167 and
 #173–#193 at `5062bcea`. That completed recovery of eligible slices, not Phase 3.
@@ -83,6 +93,16 @@ status is historical; reconcile it against current source before selecting work.
 - The old copied-dummy target-Z claim is a [documented false positive](../../gap-scans/2026-08-25-disparity-scan-gsi-04-01-dummy-cell-target-z.md).
 - CellClass constructor order and anti-diagonal Fill/RNG order are different;
   never fix a hypothetical identity gap by reordering Fill.
+- The old multiplayer Resize-prefix hypothesis is partly stale. Current
+  `src/sim/native_identity.rs::build_noncampaign_fresh_id_prefix` accounts for
+  both Cell/dummy constructor generations, and `scenario_bootstrap` tests their
+  identity checkpoints. This does not establish individual Cell identity
+  consumers, preview reuse or save/restore equivalence. See the current
+  [prefix investigation](../../research/bridges/01-assets-map-load-overlay/FULL_INIT_AND_PREVIEW_NATIVE_ID_PREFIX_REINVESTIGATION_GHIDRA_REPORT.md).
+- Generic storage iteration is not a native-order contract. Authored overlay
+  recalculation already has `NativeOverlayMapShape::recalc_cells`, and other
+  owners explicitly order their sweeps. Audit each active consumer before
+  changing iteration shared by unrelated systems.
 - TS-only exclusions require active-binary/data evidence. Neither inherited TS
   code nor a generic registry group is enough to establish applicability.
 
@@ -115,6 +135,9 @@ unexecuted; they are not passing parity evidence.
 1. Recheck the remaining constructor identity, shared-dummy field,
    Resize/restore, iterator and consumer-order hypotheses. Implement only proven
    observable differences; retain unresolved candidates explicitly.
+   In particular, compare specialized full-diamond sweeps with native first-null
+   termination for width-one and internal-hole inputs; prove active loading and
+   observable effects before treating either as another production gap.
 2. Reconcile each other row with current production source and active retail
    evidence. Reuse bridge and earlier Phase 3 research without importing their
    historical scope expansions automatically.
@@ -123,8 +146,8 @@ unexecuted; they are not passing parity evidence.
 
 ## Start here
 
-Read the current task checkpoint and verify Git/process state, including whether
-the validated clipping increment has merged. Verify refreshed `origin/main`
+Read the current task checkpoint and verify Git/process and PR/merge state.
+Verify refreshed `origin/main`
 before selecting the next open mechanism. Each mechanism needs independent
 review, the required library tests and Clippy, then PR publication, merge and
 verification before another mechanism starts. Preserve a blocked mechanism and

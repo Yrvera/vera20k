@@ -444,7 +444,10 @@ use crate::sim::world::Simulation;
 // merged build. Reject v136/v137 saves instead of treating either as compatible.
 // v139 persists Scenario+34A4 (map FreeRadar) in ScenarioSession. Bincode
 // encodes fields positionally, so serde(default) cannot safely read v138 bytes.
-const SNAPSHOT_VERSION: u32 = 139;
+// v140 pairs BridgeRuntimeState records with source Map Size for the native
+// signed/clamped zone-node projection. Bincode positional layout changes;
+// pre-v140 automatic-shell records also contain non-native invented spans.
+const SNAPSHOT_VERSION: u32 = 140;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3257,14 +3260,15 @@ mod tests {
     /// 132 -> 133 persists the `HouseClass+0x57D4` funds-nag timer and the
     /// `[0xA8F040]` low-power guard.
     #[test]
-    fn current_snapshot_version_includes_scenario_free_radar() {
+    fn current_snapshot_version_includes_native_bridge_zone_geometry() {
         // 133 -> 134: repair-depot docking layout (see the constant's comment).
         // 134 -> 135: GameEntity ProduceCash timer + drain link pair (GSI-09.01).
         // 135 -> 136: explicit retained Infantry terminal lifetime policy.
         // Separate v137: ordinary ground-coordinate resume invariants.
         // v138 combines both layouts without accepting prior local v137 saves.
         // 138 -> 139: map-owned ScenarioSession FreeRadar authority.
-        assert_eq!(super::SNAPSHOT_VERSION, 139);
+        // 139 -> 140: retained bridge record source Size for native zone lookup.
+        assert_eq!(super::SNAPSHOT_VERSION, 140);
     }
 
     #[test]

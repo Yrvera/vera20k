@@ -2840,6 +2840,42 @@ impl ResolvedTerrainGrid {
         })
     }
 
+    /// `CellIterator_Init @ 0x00578350` / `Next @ 0x00578290`: advance
+    /// anti-diagonals and stop at the first null pointer, without dummy lookup.
+    /// The signed Size width is independent of rectangular storage dimensions.
+    pub(crate) fn native_cell_iterator(
+        &self,
+        size_width: i32,
+    ) -> impl Iterator<Item = &ResolvedTerrainCell> {
+        let (mut x, mut y, mut remaining) = (1i32, size_width, size_width.wrapping_sub(1));
+        let mut ended = false;
+        std::iter::from_fn(move || {
+            if ended {
+                return None;
+            }
+            let index = y.wrapping_mul(512).wrapping_add(x);
+            let cell = (0..0x40000).contains(&index)
+                .then(|| self.cell((index % 512) as u16, (index / 512) as u16))
+                .flatten();
+            if remaining != 0 {
+                x = x.wrapping_add(1);
+                y = y.wrapping_sub(1);
+                remaining = remaining.wrapping_sub(1);
+            } else {
+                (x, y) = (y, x);
+                if x.wrapping_sub(size_width).wrapping_sub(1).wrapping_add(y) & 1 == 0 {
+                    remaining = size_width.wrapping_sub(2);
+                    x = x.wrapping_add(1);
+                } else {
+                    remaining = size_width.wrapping_sub(1);
+                    y = y.wrapping_add(1);
+                }
+            }
+            ended = cell.is_none();
+            cell
+        })
+    }
+
     /// Recompute the playfield-derived part of every live CellClass cache.
     ///
     /// `FUN_006E21E0`, reached by TriggerAction kind 0x28 from

@@ -38,6 +38,7 @@
 //!   reference.
 pub mod walker;
 mod damaged_variant;
+mod record_scan;
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -550,7 +551,8 @@ pub struct BridgeRuntimeCell {
 /// Binary bridge record kind (`BridgeRecord+0x0C`).
 ///
 /// Verified against `MapClass__ComputeBridgeZones @ 0x0056D6E0`:
-/// high bridges write `0`, low bridges write `1`. `MapClass__FindBridgeRecord`
+/// high bridges write `0`, accepted Tube endpoints write `1`. The historical
+/// `Low` Rust name is retained for compatibility. `MapClass__FindBridgeRecord`
 /// skips non-zero kinds, so callers must choose high-only vs all-record use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BridgeRecordKind {
@@ -599,6 +601,11 @@ pub struct BridgeRuntimeState {
     /// Used by the dispatcher's per-path BridgeStrength RNG gate.
     bridge_strength: u16,
     endpoint_records: Vec<BridgeEndpointRecord>,
+    /// Source Map Size paired with this derived record set. Only construction
+    /// writes it; this receipt is not an independently editable map authority.
+    /// Native base-zone endpoint lookup uses stride W+H+1, not terrain width.
+    #[serde(default)]
+    native_zone_source_size: Option<(i32, i32)>,
     /// First-class anchor spans (one per anchor cell). Replaces emergent
     /// flag-bit detection.
     anchor_spans: BTreeMap<u16, AnchorSpan>,
@@ -613,10 +620,30 @@ pub struct BridgeRuntimeState {
 }
 
 impl BridgeRuntimeState {
+    /// Production entry with the raw Map Size authority, not backing dimensions.
+    pub(crate) fn from_resolved_terrain_with_map_size(
+        terrain: &ResolvedTerrainGrid,
+        destroyable: bool,
+        bridge_strength: u16,
+        size: (i32, i32),
+    ) -> Self {
+        Self::build_from_terrain(terrain, destroyable, bridge_strength, Some(size))
+    }
+
+    #[cfg(test)]
     pub fn from_resolved_terrain(
         terrain: &ResolvedTerrainGrid,
         destroyable: bool,
         bridge_strength: u16,
+    ) -> Self {
+        Self::build_from_terrain(terrain, destroyable, bridge_strength, None)
+    }
+
+    fn build_from_terrain(
+        terrain: &ResolvedTerrainGrid,
+        destroyable: bool,
+        bridge_strength: u16,
+        size: Option<(i32, i32)>,
     ) -> Self {
         let width = terrain.width();
         let height = terrain.height();
@@ -817,7 +844,7 @@ impl BridgeRuntimeState {
             });
         }
 
-        let endpoint_records = compute_bridge_endpoints(terrain, width, height, &cells);
+        let endpoint_records = record_scan::compute_bridge_endpoints(terrain, size, &cells);
 
         Self {
             width,
@@ -826,6 +853,7 @@ impl BridgeRuntimeState {
             group_cells,
             bridge_strength: bridge_strength.max(1),
             endpoint_records,
+            native_zone_source_size: size,
             anchor_spans,
             bridge_destroyable_flag: destroyable,
             overlay_projection_ops: Vec::new(),
@@ -1768,6 +1796,10 @@ impl BridgeRuntimeState {
         &self.endpoint_records
     }
 
+    pub(crate) fn native_zone_source_size(&self) -> Option<(i32, i32)> {
+        self.native_zone_source_size
+    }
+
     /// Recompute `endpoint_records[*].active` flags from current cell render
     /// state, BIDIRECTIONALLY. A record is active iff its bridge group is
     /// intact — i.e. no cell in the group is severed. When any cell of a group
@@ -1853,97 +1885,6 @@ pub fn cells_in_5x5_scan(center: (u16, u16)) -> impl Iterator<Item = (u16, u16)>
     })
 }
 
-fn compute_bridge_endpoints(
-    terrain: &ResolvedTerrainGrid,
-    width: u16,
-    height: u16,
-    runtime_cells: &[Option<BridgeRuntimeCell>],
-) -> Vec<BridgeEndpointRecord> {
-    let mut records = compute_high_bridge_endpoints(terrain, width, height, runtime_cells);
-
-    records.extend(compute_low_bridge_tube_endpoints(
-        terrain,
-        width,
-        height,
-        runtime_cells,
-    ));
-
-    records
-}
-
-fn compute_high_bridge_endpoints(
-    terrain: &ResolvedTerrainGrid,
-    width: u16,
-    height: u16,
-    runtime_cells: &[Option<BridgeRuntimeCell>],
-) -> Vec<BridgeEndpointRecord> {
-    // CellClass slots are traversed diagonally, not in the rectangular backing
-    // vector's row-major order.
-    let mut starts: Vec<_> = terrain.iter().collect();
-    starts.sort_by_key(|cell| (u32::from(cell.rx) + u32::from(cell.ry), cell.rx));
-
-    let mut records = Vec::new();
-    for start in starts {
-        let Some(offset) = terrain.high_bridge_tile_offset(start) else {
-            continue;
-        };
-        if HIGH_BRIDGE_START_SUBTILE[offset] != i32::from(start.final_sub_tile) {
-            continue;
-        }
-        let Ok(direction) = u8::try_from(HIGH_BRIDGE_WALK_DIRECTION[offset]) else {
-            continue;
-        };
-
-        let endpoint_a = (start.rx, start.ry);
-        let mut cursor = endpoint_a;
-        let mut far_match_seen = false;
-        let mut intact = true;
-        let mut group_id =
-            bridge_runtime_group_at(runtime_cells, width, height, endpoint_a.0, endpoint_a.1);
-
-        loop {
-            let previous = cursor;
-            let Some(next) = terrain.step_coord_by_direction(cursor, direction) else {
-                break;
-            };
-            let Some(next_cell) = terrain.cell(next.0, next.1) else {
-                break;
-            };
-            cursor = next;
-
-            // A far match is committed only after the walker successfully
-            // enters the following allocated cell. Endpoint B is the prior one.
-            if far_match_seen {
-                records.push(BridgeEndpointRecord {
-                    endpoint_a,
-                    endpoint_b: previous,
-                    // The Rust-only group link exists to refresh records that
-                    // loaded intact. A record already proven broken by a plain
-                    // gap must retain the zero sentinel so a later refresh of
-                    // an unrelated surviving segment cannot revive it.
-                    group_id: if intact { group_id.unwrap_or(0) } else { 0 },
-                    active: intact,
-                    bridge_kind: BridgeRecordKind::High,
-                });
-                break;
-            }
-
-            group_id = group_id.or_else(|| {
-                bridge_runtime_group_at(runtime_cells, width, height, cursor.0, cursor.1)
-            });
-
-            if let Some(next_offset) = terrain.high_bridge_tile_offset(next_cell) {
-                far_match_seen =
-                    HIGH_BRIDGE_END_SUBTILE[next_offset] == i32::from(next_cell.final_sub_tile);
-            } else if !next_cell.bridge_facts.has_structural_bridge() {
-                intact = false;
-            }
-        }
-    }
-
-    records
-}
-
 fn bridge_runtime_group_at(
     runtime_cells: &[Option<BridgeRuntimeCell>],
     width: u16,
@@ -1955,144 +1896,6 @@ fn bridge_runtime_group_at(
         .and_then(|index| runtime_cells.get(index))
         .and_then(|cell| cell.as_ref())
         .and_then(|cell| cell.bridge_group_id)
-}
-
-fn compute_low_bridge_tube_endpoints(
-    terrain: &ResolvedTerrainGrid,
-    width: u16,
-    height: u16,
-    runtime_cells: &[Option<BridgeRuntimeCell>],
-) -> Vec<BridgeEndpointRecord> {
-    let mut records = Vec::new();
-    let mut seen = BTreeSet::new();
-    for cell in terrain.iter() {
-        if !cell.is_low_bridge_tube_cell()
-            || !has_opposite_low_bridge_tube_neighbors(terrain, cell.rx, cell.ry)
-        {
-            continue;
-        }
-        let Some(tube) = terrain.tube_at_cell(cell.rx, cell.ry) else {
-            continue;
-        };
-        let Some(idx) = index_of(width, height, cell.rx, cell.ry) else {
-            continue;
-        };
-        let Some(group_id) = runtime_cells
-            .get(idx)
-            .and_then(|runtime| runtime.as_ref())
-            .and_then(|runtime| runtime.bridge_group_id)
-        else {
-            continue;
-        };
-        let (endpoint_a, endpoint_b) = if tube.source
-            == crate::map::tube_facts::TubeSource::ExplicitMap
-            && tube.path_len() > 0
-            && tube.exit != (cell.rx, cell.ry)
-        {
-            ((cell.rx, cell.ry), tube.exit)
-        } else {
-            let Some(endpoints) = low_bridge_span_endpoints(terrain, cell.rx, cell.ry) else {
-                continue;
-            };
-            endpoints
-        };
-        let key = ordered_endpoint_key(endpoint_a, endpoint_b);
-        if !seen.insert(key) {
-            continue;
-        }
-        records.push(BridgeEndpointRecord {
-            endpoint_a,
-            endpoint_b,
-            group_id,
-            active: true,
-            bridge_kind: BridgeRecordKind::Low,
-        });
-    }
-    records
-}
-
-fn low_bridge_span_endpoints(
-    terrain: &ResolvedTerrainGrid,
-    rx: u16,
-    ry: u16,
-) -> Option<((u16, u16), (u16, u16))> {
-    let axis = if neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::E)
-        && neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::W)
-    {
-        (Direction::W, Direction::E)
-    } else if neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::N)
-        && neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::S)
-    {
-        (Direction::N, Direction::S)
-    } else {
-        return None;
-    };
-
-    let start = walk_low_bridge_span(terrain, (rx, ry), axis.0);
-    let end = walk_low_bridge_span(terrain, (rx, ry), axis.1);
-    let before_start = adjacent_coord(start, axis.0, terrain.width(), terrain.height())?;
-    let after_end = adjacent_coord(end, axis.1, terrain.width(), terrain.height())?;
-
-    Some((before_start, after_end))
-}
-
-fn walk_low_bridge_span(
-    terrain: &ResolvedTerrainGrid,
-    start: (u16, u16),
-    direction: Direction,
-) -> (u16, u16) {
-    let mut cur = start;
-    while let Some(next) = adjacent_coord(cur, direction, terrain.width(), terrain.height()) {
-        let Some(cell) = terrain.cell(next.0, next.1) else {
-            break;
-        };
-        if !cell.is_low_bridge_tube_cell() {
-            break;
-        }
-        cur = next;
-    }
-    cur
-}
-
-fn adjacent_coord(
-    coord: (u16, u16),
-    direction: Direction,
-    width: u16,
-    height: u16,
-) -> Option<(u16, u16)> {
-    let (dx, dy) = direction.offset();
-    let nx = coord.0 as i32 + dx;
-    let ny = coord.1 as i32 + dy;
-    (nx >= 0 && ny >= 0 && (nx as u16) < width && (ny as u16) < height)
-        .then_some((nx as u16, ny as u16))
-}
-
-fn has_opposite_low_bridge_tube_neighbors(terrain: &ResolvedTerrainGrid, rx: u16, ry: u16) -> bool {
-    (neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::E)
-        && neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::W))
-        || (neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::S)
-            && neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::N))
-}
-
-fn neighbor_is_low_bridge_tube(
-    terrain: &ResolvedTerrainGrid,
-    rx: u16,
-    ry: u16,
-    direction: Direction,
-) -> bool {
-    let (dx, dy) = direction.offset();
-    let nx = rx as i32 + dx;
-    let ny = ry as i32 + dy;
-    if nx < 0 || ny < 0 || nx >= terrain.width() as i32 || ny >= terrain.height() as i32 {
-        return false;
-    }
-    terrain
-        .cell(nx as u16, ny as u16)
-        .is_some_and(|cell| cell.is_low_bridge_tube_cell())
-}
-
-fn ordered_endpoint_key(a: (u16, u16), b: (u16, u16)) -> ((u16, u16), (u16, u16)) {
-    if a <= b { (a, b) } else { (b, a) }
 }
 
 fn cardinal_neighbors(

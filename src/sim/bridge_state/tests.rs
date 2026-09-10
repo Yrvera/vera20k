@@ -7,6 +7,8 @@ use crate::map::resolved_terrain::{
 use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 
+include!("record_native_tests.rs");
+
 #[test]
 fn playfield_retail_high_bridge_walks_make_native_records_monotone() {
     assert!(HIGH_BRIDGE_WALK_DIRECTION
@@ -612,15 +614,10 @@ fn gsi_04_12_topology_native_diagonal_scan_order_keeps_each_start() {
 }
 
 #[test]
-fn bridge_endpoint_records_mark_low_groups_low() {
+fn automatic_shells_do_not_invent_bridge_records() {
     let state = BridgeRuntimeState::from_resolved_terrain(&make_low_bridge_terrain(), true, 300);
     let records = state.endpoint_records();
-    assert_eq!(records.len(), 1);
-    let record = records[0];
-    assert_eq!(record.bridge_kind, BridgeRecordKind::Low);
-    assert!(!record.is_high());
-    assert_eq!(record.endpoint_a, (0, 0));
-    assert_eq!(record.endpoint_b, (4, 0));
+    assert!(records.is_empty(), "same-cell Tube exits fail native strict ordinal order");
 }
 
 #[test]

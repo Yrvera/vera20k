@@ -201,9 +201,10 @@ pub struct ZoneGrid {
     /// Cell-owned reduced classes, shared base clusters, and the retained raw
     /// per-row cluster mappings used by exact one-cell repair.
     base_topology: Option<zone_build::BaseZoneTopology>,
-    /// Map-load bridge records paired with the hierarchy snapshot. These are
-    /// consumed only by hierarchy-coordinate projection.
+    /// Ordered bridge records paired with the native base-zone projection and
+    /// hierarchy snapshot; record-only changes invalidate cached connectivity.
     bridge_records: Vec<crate::sim::bridge_state::BridgeEndpointRecord>,
+    native_bridge_source_size: Option<(i32, i32)>,
     pub width: u16,
     pub height: u16,
 }
@@ -230,11 +231,38 @@ impl ZoneGrid {
         width: u16,
         height: u16,
     ) -> Self {
+        Self::build_with_native_bridge_geometry(
+            path_grid,
+            terrain_costs,
+            resolved_terrain,
+            bridge_records,
+            width,
+            height,
+            None,
+        )
+    }
+
+    pub(crate) fn build_with_native_bridge_geometry(
+        path_grid: &PathGrid,
+        terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        bridge_records: &[crate::sim::bridge_state::BridgeEndpointRecord],
+        width: u16,
+        height: u16,
+        native_bridge_source_size: Option<(i32, i32)>,
+    ) -> Self {
         let mut maps = BTreeMap::new();
         let mut adjacency = BTreeMap::new();
         let mut super_zones = BTreeMap::new();
         let base_topology = resolved_terrain.map(|terrain| {
-            zone_build::build_base_zone_topology(path_grid, terrain, bridge_records, width, height)
+            zone_build::build_base_zone_topology(
+                path_grid,
+                terrain,
+                bridge_records,
+                width,
+                height,
+                native_bridge_source_size,
+            )
         });
         let hierarchy = base_topology.as_ref().map(|base| {
             zone_build::build_zone_hierarchy(
@@ -291,9 +319,18 @@ impl ZoneGrid {
             hierarchy,
             base_topology,
             bridge_records: bridge_records.to_vec(),
+            native_bridge_source_size,
             width,
             height,
         }
+    }
+
+    pub(crate) fn bridge_inputs_match(
+        &self,
+        records: &[crate::sim::bridge_state::BridgeEndpointRecord],
+        source_size: Option<(i32, i32)>,
+    ) -> bool {
+        self.bridge_records == records && self.native_bridge_source_size == source_size
     }
 
     /// Get the zone map for a movement zone.
@@ -372,11 +409,7 @@ impl ZoneGrid {
         };
 
         if !source_in_tactical_playfield
-            && cell_is_in_native_map_diamond(
-                source,
-                map_size_width,
-                map_size_height,
-            )
+            && cell_is_in_native_map_diamond(source, map_size_width, map_size_height)
         {
             return true;
         }
@@ -562,6 +595,7 @@ impl ZoneGrid {
             bridge_records,
             self.width,
             self.height,
+            self.native_bridge_source_size,
         );
         let mut maps = BTreeMap::new();
         let mut adjacency = BTreeMap::new();
@@ -702,8 +736,7 @@ fn cell_is_in_native_map_diamond(
     map_size_width < sum
         && x.wrapping_sub(y) < map_size_width
         && y.wrapping_sub(x) < map_size_width
-        && sum
-            <= map_size_width.wrapping_add(map_size_height.wrapping_mul(2))
+        && sum <= map_size_width.wrapping_add(map_size_height.wrapping_mul(2))
 }
 
 /// BFS on the zone adjacency graph to check connectivity.
