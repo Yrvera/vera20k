@@ -116,6 +116,8 @@ Run from the repository root with the original retail executable configured:
 $env:VERA20K_GAMEMD_EXE = 'C:/your-retail-install/gamemd.exe'
 python -m tools.spatial_oracle.map_queries --check
 cargo test -p vera20k --lib sim::cell_rect::tests::map_
+cargo test -p vera20k --lib
+cargo clippy -p vera20k --lib
 ```
 
 Generation and a separate read-only `--check` passed under Unicorn 2.1.4:
@@ -127,7 +129,14 @@ the physical-map-input production seam (0.04 seconds; initial recompile
 4 minutes 15 seconds). The library emitted 58 existing warnings. Native
 reference values were retained unchanged for the fix. A fresh independent
 read-only critic passed the bounded code/evidence revision without findings.
-Final-candidate full-library and Clippy results are pending at this checkpoint.
+Final-candidate full-library validation exited **0**: **8,587 passed, 0 failed,
+119 ignored**, in 26.29 seconds. Clippy exited **0** in 3 minutes 20 seconds
+with **1,144 warnings**; this increment does not resolve the repository warning
+backlog. No Rust changes followed the validated implementation commit
+`258a59ce`. Full local receipts are preserved in
+`.local/spatial-full-lib.log` and `.local/spatial-clippy.log`; focused and native
+check receipts are `.local/spatial-focused-fixed.log` and
+`.local/spatial-native-check.log`. These local logs are not tracked artifacts.
 
 ## Residual scope
 
