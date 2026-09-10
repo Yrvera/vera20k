@@ -145,6 +145,12 @@ incorrectly admit the new raw-equality gate. This value must remain distinct
 from raw row label `0xFFFF`. The prior original producer corpus includes
 `high_no_far` and rejected-start cases retaining structural cells but producing
 no record. The gate repair must include this state and original lookup evidence.
+The live query also requires native inactive-span walking: `0x0056D230` reloads
+the query cell, then `0x00481810` steps from its stored coordinate and publishes
+fallback-cell lookups. The existing pure redirect cache starts from the query
+coordinate and clips at its rectangle, losing those writes and potentially
+selecting a different endpoint for aliases. Correct the live query without
+introducing query side effects into cache construction.
 Broader bridge-aware query cases and unexplained raw path-memory reads remain
 open; a bounded helper comparison cannot certify them.
 
