@@ -7,6 +7,9 @@ work).
 
 ## Rows
 
+The System Map was retired on 2026-09-10. Its citations and Registry column
+below are historical; revalidate claims rather than maintaining map status.
+
 Registry column is `native_evidence / rust_implementation / parity` from
 `docs/system-map/registry.v2.json` at `cca05d50`. Owners were checked to exist
 at that commit. `topology.v2.json` still lists ten `src/app_*.rs` paths that
@@ -38,7 +41,7 @@ under `src/app/` (`presentation/`, `loading/`, `input/commands.rs`,
 
 ## Loops
 
-From `topology.v2.json`:
+Historical references from the archived `topology.v2.json`:
 
 - **LOOP-005-BUILD-PLACE**: 14.10 (1) → 09.08 (2) → 09.09 (3) → 09.10 (4) → 13.24 (6) → 14.08 (7) → 09.11 (9, 12) → 09.12 (14) → 09.07 (15).
 - **LOOP-006-FACTORY-EXIT**: 14.10 → 09.08 → 09.09 → 09.10 → 07.41 (6).
