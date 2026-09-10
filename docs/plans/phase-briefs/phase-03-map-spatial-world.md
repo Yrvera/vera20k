@@ -54,6 +54,16 @@ review, four passing focused tests, full library results (8,587 passed, zero
 failed, 119 ignored), and Clippy exit zero with 1,144 warnings. This is bounded
 mechanism evidence; it does not close a row.
 
+The bridge-record increment at `9b6de643`, with test-contract correction
+`e92629af`, follows the native interleaved record scan and its immediate base-zone
+consumer. Its [evidence report](../../research/PHASE3_CELL_ITERATION_BRIDGE_RECORDS_20260910.md)
+records 83 original-executable producer cases, 86 consumer cases, production
+cache/connectivity/restore checks, independent source review, and final library
+results (8,590 passed, zero failed, 119 ignored). Clippy exited zero with 1,144
+warnings. Derived record geometry persists under snapshot schema 140; schema 139
+is rejected. This bounded repair does not close bridge lifecycle, hierarchy,
+other iterator consumers or any Phase 3 row.
+
 The archived **Phase 3 integration goal** task
 `01a0529b-815e-7e31-be6d-90511e997891` reports recovery through PRs #166/#167 and
 #173–#193 at `5062bcea`. That completed recovery of eligible slices, not Phase 3.
@@ -122,29 +132,22 @@ unexecuted; they are not passing parity evidence.
 
 ## Open queue
 
-1. Finish the current bridge-record increment and its immediate connectivity
-   consumer; see the [evidence report](../../research/PHASE3_CELL_ITERATION_BRIDGE_RECORDS_20260910.md).
-   Native `ComputeBridgeZones @ 0x0056D6E0` interleaves high/Tube records and
-   excludes same-cell shells. Its `0x0056C510` consumer needs signed linear
-   endpoint clamping with native side `W+H+1`, reverse record traversal and
-   canonical zone pairs. Raw Size belongs with the derived record set through
-   cache reuse and restore. Full readiness and final review remain pending.
-2. Recheck the remaining constructor identity, shared-dummy field,
+1. Recheck the remaining constructor identity, shared-dummy field,
    Resize/restore, iterator and consumer-order hypotheses. Implement only proven
    observable differences; retain unresolved candidates explicitly.
    In particular, compare specialized full-diamond sweeps with native first-null
    termination for width-one and internal-hole inputs; prove active loading and
    observable effects before treating either as another production gap.
-3. Reconcile each other row with current production source and active retail
+2. Reconcile each other row with current production source and active retail
    evidence. Reuse bridge and earlier Phase 3 research without importing their
    historical scope expansions automatically.
-4. Run the phase-wide reverse audit only after every in-scope mechanism and
+3. Run the phase-wide reverse audit only after every in-scope mechanism and
    evidence-backed exclusion is accounted for. Any omission reopens its row.
 
 ## Start here
 
-Read the current task checkpoint and verify Git/process state, including whether
-the validated clipping increment has merged. Verify refreshed `origin/main`
+Read the current task checkpoint and verify Git/process and PR/merge state.
+Verify refreshed `origin/main`
 before selecting the next open mechanism. Each mechanism needs independent
 review, the required library tests and Clippy, then PR publication, merge and
 verification before another mechanism starts. Preserve a blocked mechanism and
