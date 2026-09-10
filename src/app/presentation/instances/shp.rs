@@ -235,9 +235,7 @@ pub(crate) fn build_shp_instances(
                             .rules()
                             .map(|r| (r.general.condition_yellow, r.general.condition_red))
                             .unwrap_or((0.5, 0.25));
-                        rendered_garrison_body_frame_index(
-                            0,
-                            entity.building_damage_state_active,
+                        building_frame_index(
                             occupant_count,
                             entity.health.current,
                             entity.health.max,
@@ -1184,39 +1182,12 @@ fn resolve_infantry_shp_frame(
     animation::infantry_facing_slot(entity.facing)
 }
 
-/// Rendered body SHP frame index for a `CanBeOccupied=yes` building.
-///
-/// Native `GetCurrentFrame` only enters the garrison body-frame formula when
-/// the building damage/BState field is nonzero. Healthy idle garrisons keep
-/// the raw body frame, which is frame 0 in the current Rust model.
-fn rendered_garrison_body_frame_index(
-    raw_body_frame: u16,
-    building_damage_state_active: bool,
-    occupant_count: u32,
-    health_current: u16,
-    health_max: u16,
-    tech_level: i32,
-    condition_yellow: f32,
-    condition_red: f32,
-) -> u16 {
-    if !building_damage_state_active {
-        return raw_body_frame;
-    }
-    building_frame_index(
-        occupant_count,
-        health_current,
-        health_max,
-        tech_level,
-        condition_yellow,
-        condition_red,
-    )
-}
-
-/// BState-gated body SHP formula for a `CanBeOccupied=yes` building.
-///
-/// For civilian buildings (`tech_level == -1`) the yellow-tier damage step is
-/// skipped, and the (occupied, red-HP) collapse maps frame 3 → frame 1 so
-/// 3-frame civilian SHPs render correctly.
+/// Completed `CanBeOccupied` body frame: native GetCurrentFrame 0x0043EF90.
+/// Building+0x534 is the animation state, not damage: Guard selects state 1
+/// (0x0044995D), while construction selects state 0. Build-up/down are handled
+/// before this caller. See GARRISON_BODY_STATE_CORRECTION_20260910.md and the
+/// executable-derived tools/garrison_oracle/body_frame.json fixture.
+/// Civilian red-health occupied art collapses frame 3 to frame 1.
 fn building_frame_index(
     occupant_count: u32,
     health_current: u16,
@@ -1250,7 +1221,6 @@ mod tests {
     use super::building_frame_index;
     use super::infantry_absorb_slot_is_hidden;
     use super::looping_frame_values;
-    use super::rendered_garrison_body_frame_index;
     use super::resting_building_anim_frame;
     use super::selected_building_anim_view;
     use super::shp_body_tint;
@@ -1691,42 +1661,27 @@ mod tests {
     }
 
     #[test]
-    fn occupied_cagas01_healthy_bstate_zero_renders_frame_zero() {
-        assert_eq!(
-            rendered_garrison_body_frame_index(0, false, 1, 100, 100, -1, 0.5, 0.25),
-            0
-        );
-    }
-
-    #[test]
-    fn occupied_cagas01_yellow_bstate_false_stays_raw_frame() {
-        assert_eq!(
-            rendered_garrison_body_frame_index(7, false, 1, 40, 100, -1, 0.5, 0.25),
-            7
-        );
-    }
-
-    #[test]
-    fn occupied_cagas01_yellow_bstate_true_uses_frame_two() {
-        assert_eq!(
-            rendered_garrison_body_frame_index(0, true, 1, 40, 100, -1, 0.5, 0.25),
-            2
-        );
-    }
-
-    #[test]
-    fn occupied_cagas01_red_bstate_true_collapses_to_frame_one() {
-        assert_eq!(
-            rendered_garrison_body_frame_index(0, true, 1, 20, 100, -1, 0.5, 0.25),
-            1
-        );
-    }
-
-    #[test]
-    fn zero_max_hp_render_frame_treats_as_healthy() {
-        assert_eq!(
-            rendered_garrison_body_frame_index(4, false, 1, 0, 0, -1, 0.5, 0.25),
-            4
-        );
+    fn completed_garrison_body_frames_match_native_oracle() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../tools/garrison_oracle/body_frame.json"
+        ))
+        .unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 54);
+        for case in cases {
+            let n = |key: &str| case[key].as_i64().unwrap();
+            assert_eq!(
+                building_frame_index(
+                    n("occupants") as u32,
+                    n("health") as u16,
+                    2000,
+                    n("tech_level") as i32,
+                    0.5,
+                    0.25,
+                ),
+                n("frame") as u16,
+                "{case}"
+            );
+        }
     }
 }

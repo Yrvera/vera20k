@@ -7,6 +7,13 @@ date: 2026-05-27
 
 # Garrison Occupied Building Visual State - Ghidra Report
 
+> **Correction (2026-09-10):** The healthy-occupied-frame-zero conclusion and
+> interpretation of +0x534 as a damage flag are superseded. Completed buildings
+> use animation state 1 and healthy occupied body frame 2. See
+> [the native caller/state correction](GARRISON_BODY_STATE_CORRECTION_20260910.md).
+> Do not implement the health-based body-frame gate described below.
+
+
 ## Target Question
 
 Resolve what Rust should render for healthy and damaged occupied `CanBeOccupied=yes` civilian buildings:
