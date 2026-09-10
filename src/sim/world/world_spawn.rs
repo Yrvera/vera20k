@@ -1468,6 +1468,11 @@ impl Simulation {
                 yard_obj.foundation.clone(),
                 crate::sim::mcv_deploy::current_direction(entity, self.session.binary_frame),
                 yard_obj.construction_yard,
+                rules
+                    .object(type_str)
+                    .and_then(|obj| obj.deploy_sound.clone())
+                    .filter(|sound| !sound.is_empty())
+                    .map(|sound| (sound, entity.position.rx, entity.position.ry)),
             ))
         });
         let Some((
@@ -1481,6 +1486,7 @@ impl Simulation {
             foundation,
             source_facing,
             is_construction_yard,
+            deploy_cue,
         )) = deploy_data
         else {
             return false;
@@ -1657,6 +1663,20 @@ impl Simulation {
             }
             house.base_plan_center = (rx, ry);
             house.enable_ai_deploy_latches();
+        }
+
+        // UnitClass::Deploy 0x00739A19..0x00739A54 plays Type+0x56C
+        // (DeploySound) at the source MCV's location, only after the yard's
+        // Unlimbo succeeded. This accompanies build-up; it is not a sound on
+        // the turn request or an animation-completion cue. Stock MCVs use
+        // PlaceBuilding -> uplace (RULESMD.INI / SOUNDMD.INI).
+        if let Some((sound, rx, ry)) = deploy_cue {
+            let deploy_sound_id = self.interner.intern(&sound);
+            self.sound_events.push(SimSoundEvent::EntityDeployed {
+                deploy_sound_id,
+                rx,
+                ry,
+            });
         }
 
         true

@@ -5,8 +5,19 @@ use crate::sim::world::TickResult;
 use std::collections::BTreeMap;
 
 fn fixture(kind: &str, facing: u8, rot: u8, deploy_facing: u8) -> (Simulation, RuleSet, u64) {
+    fixture_with_sound(kind, facing, rot, deploy_facing, None)
+}
+
+fn fixture_with_sound(
+    kind: &str,
+    facing: u8,
+    rot: u8,
+    deploy_facing: u8,
+    sound: Option<&str>,
+) -> (Simulation, RuleSet, u64) {
+    let sound_line = sound.map_or(String::new(), |s| format!("DeploySound={s}\n"));
     let text = format!(
-        "[InfantryTypes]\n[AircraftTypes]\n[VehicleTypes]\n0={kind}\n[BuildingTypes]\n0=YARD\n[{kind}]\nStrength=1000\nSpeed=5\nROT={rot}\nLocomotor={{4A582741-9839-11d1-B709-00A024DDAFD1}}\nDeploysInto=YARD\n[YARD]\nStrength=1000\nConstructionYard=yes\nFoundation=4x3\nDeployFacing={deploy_facing}\n[Unload]\nRate=0.016\n"
+        "[InfantryTypes]\n[AircraftTypes]\n[VehicleTypes]\n0={kind}\n[BuildingTypes]\n0=YARD\n[{kind}]\nStrength=1000\nSpeed=5\nROT={rot}\nLocomotor={{4A582741-9839-11d1-B709-00A024DDAFD1}}\nDeploysInto=YARD\n{sound_line}[YARD]\nStrength=1000\nConstructionYard=yes\nFoundation=4x3\nDeployFacing={deploy_facing}\n[Unload]\nRate=0.016\n"
     );
     let rules = RuleSet::from_ini(&IniFile::from_str(&text)).unwrap();
     let mut sim = Simulation::new();
@@ -414,4 +425,69 @@ fn active_track_and_same_cell_destination_preserve_the_rotation_latch() {
         .nav_com = None;
     drive_process_prelude(&mut sim, id, &rules);
     assert_eq!(yards(&sim), 1);
+}
+
+#[test]
+fn mcv_deploy_sound_occurs_once_with_conversion_at_the_source_cell() {
+    use crate::sim::world::SimSoundEvent;
+    for facing in [64, 128] {
+        let (mut sim, rules, id) = fixture_with_sound("AMCV", facing, 5, 4, Some("PlaceBuilding"));
+        tick(&mut sim, &rules, Some(Command::DeployMcv { entity_id: id }));
+        let mut sounds = 0;
+        for _ in 0..50 {
+            // Repeated D while waiting must not repeat the conversion cue.
+            let command = (yards(&sim) == 0).then_some(Command::DeployMcv { entity_id: id });
+            sim.sound_events.clear();
+            let result = tick(&mut sim, &rules, command);
+            let cues: Vec<_> = sim
+                .sound_events
+                .iter()
+                .filter_map(|event| match event {
+                    SimSoundEvent::EntityDeployed {
+                        deploy_sound_id,
+                        rx,
+                        ry,
+                    } => Some((sim.interner.resolve(*deploy_sound_id), *rx, *ry)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cues.len(), usize::from(result.spawned_entities));
+            if !cues.is_empty() {
+                assert_eq!(cues, vec![("PlaceBuilding", 20, 22)]);
+            }
+            sounds += cues.len();
+        }
+        assert_eq!(sounds, 1);
+    }
+}
+
+#[test]
+fn blocked_or_unconfigured_mcv_deploy_does_not_emit_deploy_sound() {
+    use crate::sim::world::SimSoundEvent;
+    for blocked in [false, true] {
+        let (mut sim, rules, id) =
+            fixture_with_sound("AMCV", 64, 5, 4, blocked.then_some("PlaceBuilding"));
+        tick(&mut sim, &rules, Some(Command::DeployMcv { entity_id: id }));
+        tick(&mut sim, &rules, None);
+        if blocked {
+            sim.spawn_object("YARD", "Americans", 19, 21, 0, &rules, &BTreeMap::new())
+                .unwrap();
+        }
+        for _ in 0..50 {
+            tick(&mut sim, &rules, None);
+            assert!(
+                !sim.sound_events
+                    .iter()
+                    .any(|e| matches!(e, SimSoundEvent::EntityDeployed { .. }))
+            );
+        }
+        if !blocked {
+            assert_eq!(
+                yards(&sim),
+                1,
+                "an unconfigured cue must not prevent conversion"
+            );
+            assert!(sim.substrate.entities.get(id).is_none_or(|e| e.dying));
+        }
+    }
 }

@@ -134,7 +134,7 @@ pub enum GameSoundEvent {
         source: Option<SoundSource>,
     },
 
-    /// An infantry entity entered the Deploying phase — play DeploySound.
+    /// DeploySound on infantry stance entry or successful unit-to-building conversion.
     EntityDeployed {
         /// sound.ini ID from the entity's DeploySound= field.
         sound_id: String,

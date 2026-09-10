@@ -290,7 +290,7 @@ pub enum SimSoundEvent {
         rx: u16,
         ry: u16,
     },
-    /// An infantry entity entered the Deploying phase — play its DeploySound=.
+    /// DeploySound on infantry stance entry or successful unit-to-building conversion.
     EntityDeployed {
         deploy_sound_id: InternedId,
         rx: u16,
