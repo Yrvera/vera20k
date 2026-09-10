@@ -1683,12 +1683,20 @@ pub(crate) fn find_high_bridge_record(
         if !record.is_high() {
             return false;
         }
-        let (ax, ay) = record.endpoint_a;
-        let (bx, by) = record.endpoint_b;
+        //56DA10 compares signed endpoint words and widens before distance.
+        let (ax, ay) = (
+            i32::from(record.endpoint_a.0 as i16),
+            i32::from(record.endpoint_a.1 as i16),
+        );
+        let (bx, by) = (
+            i32::from(record.endpoint_b.0 as i16),
+            i32::from(record.endpoint_b.1 as i16),
+        );
+        let (qx, qy) = (i32::from(query.0 as i16), i32::from(query.1 as i16));
         if ax == bx {
-            query.1 >= ay && query.1 <= by && query.0.abs_diff(ax) <= tolerance
+            qy >= ay && qy <= by && (qx - ax).abs() <= i32::from(tolerance)
         } else {
-            query.0 >= ax && query.0 <= bx && query.1.abs_diff(ay) <= tolerance
+            qx >= ax && qx <= bx && (qy - ay).abs() <= i32::from(tolerance)
         }
     })
 }
@@ -2548,8 +2556,10 @@ mod tests {
 
     #[test]
     fn gsi_04_12_hierarchy_geometry_clamps_side_pair_linear_indices_at_boundaries() {
+        // Original corpus high_native_boundary_negative/padding uses this
+        // Size2,2 square: native stride5 with a final zero padding row/column.
         let width = 4;
-        let height = 3;
+        let height = 4;
         let terrain = redirect_terrain(width, height, Some(100), None, |cell| {
             if matches!((cell.rx, cell.ry), (0, 0) | (1, 1)) {
                 cell.final_tile_index = 102;
@@ -2565,7 +2575,7 @@ mod tests {
             },
             BridgeEndpointRecord {
                 endpoint_a: (1, 1),
-                endpoint_b: (3, 2),
+                endpoint_b: (3, 3),
                 group_id: 2,
                 active: true,
                 bridge_kind: BridgeRecordKind::High,
@@ -2580,7 +2590,7 @@ mod tests {
             &records,
             width,
             height,
-            None,
+            Some((2, 2)),
         );
         let mut graph = ZoneLevelGraph::new(width * height);
         buckets.drain_into(&mut graph);
@@ -2590,8 +2600,8 @@ mod tests {
             "NW (-1,-1) must clamp its negative linear index to the first zone cell"
         );
         assert!(
-            graph.edges(11).contains(&ZoneEdgeRecord::new(12, 0)),
-            "SE (4,3) must clamp its oversized linear index to the last zone cell"
+            graph.edges(11).contains(&ZoneEdgeRecord::new(0, 0)),
+            "SE (4,4) selects native padding zone0, not the last materialized cell"
         );
     }
 
@@ -2629,7 +2639,15 @@ mod tests {
         ];
         let mut buckets = HierarchyEdgeBuckets::new();
         buckets.register(1, 2, 1);
-        register_high_bridge_hierarchy_edges(&mut buckets, &zone_ids, &terrain, &records, 5, 3, None);
+        register_high_bridge_hierarchy_edges(
+            &mut buckets,
+            &zone_ids,
+            &terrain,
+            &records,
+            5,
+            3,
+            None,
+        );
         let mut graph = ZoneLevelGraph::new(8);
         buckets.drain_into(&mut graph);
 

@@ -69,13 +69,13 @@
 //!   it by one ring, and retries up to [`MAX_CORRIDOR_RETRIES`] excluding
 //!   corridor edges. The count coincides with gamemd's 5, but gamemd's retries
 //!   re-run `UpdateHierarchicalEdges` and re-precheck rather than excluding
-//!   edges. Trigger: `has_explicit_tube_scenario` — a map with authored tubes.
+//!   edges. The former explicit-Tube bypass was removed with582D70 delivery.
 //!   Every production caller supplies blocker counts (`movement_tick`,
 //!   `world_commands`, the miner system, the production queue) and the
-//!   production `ZoneGrid` always carries levels 0/1/2, so that is the only live
-//!   trigger. Player effect: a corridor that excludes the only viable route
-//!   makes the unit refuse to move where retail walks it. Frequency: tube maps
-//!   only, and there only for cross-zone orders. Downstream risk: it is a whole
+//!   production `ZoneGrid` always carries levels 0/1/2; fallback availability
+//!   remains for incomplete callers. Player effect: a corridor excluding a route
+//!   can make the unit refuse to move where retail walks it. No current live
+//!   missing-cache trigger is established here. Downstream risk: it is a whole
 //!   alternative search; replacing it is row GSI-06.03's work, not this row's.
 //!
 //! ## Dependency rules
@@ -198,14 +198,22 @@ fn can_reach_through_explicit_tube(
     })
 }
 
-fn has_explicit_tube_scenario(resolved_terrain: Option<&ResolvedTerrainGrid>) -> bool {
-    let Some(terrain) = resolved_terrain else {
-        return false;
-    };
-    terrain
-        .tube_facts()
-        .iter()
-        .any(|tube| tube.source == TubeSource::ExplicitMap && tube.path_len() > 0)
+// Original42C900 compares raw GetZoneID results, including distinct invalid
+// row labels1/FFFF. Compatibility-only test/cache grids have no raw row.
+fn native_path_zone_equality(
+    zones: &ZoneGrid,
+    terrain: Option<&ResolvedTerrainGrid>,
+    movement: MovementZone,
+    start: (u16, u16),
+    start_bridge: bool,
+    goal: (u16, u16),
+    goal_bridge: bool,
+) -> Option<bool> {
+    let terrain = terrain?;
+    Some(
+        zones.get_path_zone_id_native(terrain, start, movement, start_bridge)?
+            == zones.get_path_zone_id_native(terrain, goal, movement, goal_bridge)?,
+    )
 }
 
 /// Resolve the two hierarchy-only coordinates and apply the active
@@ -428,16 +436,38 @@ fn find_path_zoned_marker_inner(
         );
     };
     let start_zone = zone_map.zone_at(start.0, start.1, MovementLayer::Ground);
-    let goal_zone = zone_map.zone_at(goal.0, goal.1, MovementLayer::Ground);
-    let zones_match = start_zone == goal_zone;
+    let goal_bridge = resolved_terrain
+        .and_then(|terrain| terrain.cell(goal.0, goal.1))
+        .is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
+    let goal_zone = zone_map.zone_at(
+        goal.0,
+        goal.1,
+        if goal_bridge {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        },
+    );
+    let zones_match = native_path_zone_equality(
+        zg,
+        resolved_terrain,
+        movement_zone.unwrap_or(mz),
+        start,
+        false,
+        goal,
+        goal_bridge,
+    )
+    .unwrap_or(start_zone == goal_zone);
 
     let hierarchy_counts_available = blocker_neighbor_counts.is_some();
-    let explicit_tube_deferred = has_explicit_tube_scenario(resolved_terrain);
     if hierarchy_counts_available
-        && !explicit_tube_deferred
         && let Some(hierarchy) = zg.hierarchy_for(mz)
         && let Some(level0_zones) = hierarchy.level(0)
     {
+        //42CB22..42CB3F rejects unequal native base labels before precheck.
+        if !zones_match {
+            return None;
+        }
         let hierarchy_start_zone = level0_zones.zone_at(hierarchy_start.0, hierarchy_start.1);
         let hierarchy_goal_zone = level0_zones.zone_at(hierarchy_goal.0, hierarchy_goal.1);
         match zone_precheck_flat(
@@ -750,17 +780,30 @@ pub(crate) fn find_layered_path_zoned_marker(
         // `GetZoneID`; these are distinct from the later 0x00583180 projection.
         // `ZoneMap::zone_at` performs that redirect from the raw coordinate and
         // selected movement layer, so equality must remain on this pair.
-        let zones_match = zg.map_for(mz).is_some_and(|zone_map| {
-            zone_map.zone_at(start.0, start.1, source_layer)
-                == zone_map.zone_at(goal.0, goal.1, goal_layer)
+        let zones_match = native_path_zone_equality(
+            zg,
+            resolved_terrain,
+            movement_zone.unwrap_or(mz),
+            start,
+            source_layer == MovementLayer::Bridge,
+            goal,
+            goal_layer == MovementLayer::Bridge,
+        )
+        .unwrap_or_else(|| {
+            zg.map_for(mz).is_some_and(|zone_map| {
+                zone_map.zone_at(start.0, start.1, source_layer)
+                    == zone_map.zone_at(goal.0, goal.1, goal_layer)
+            })
         });
 
         if blocker_neighbor_counts.is_some()
-            && !has_explicit_tube_scenario(resolved_terrain)
             && resolved_terrain.is_some()
             && let Some(hierarchy) = zg.hierarchy_for(mz)
             && let Some(level0_zones) = hierarchy.level(0)
         {
+            if !zones_match {
+                return None;
+            }
             match zone_precheck_flat(
                 hierarchy,
                 level0_zones.zone_at(hierarchy_start.0, hierarchy_start.1),

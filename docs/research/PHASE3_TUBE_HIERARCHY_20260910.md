@@ -84,9 +84,29 @@ conflating them through the flattened invalid0 presentation. Same-zone failed
 precheck retains ordinary A* fallback. Compatibility-only grids without raw rows
 still use their available flattened equality.
 
-This does not certify the existing GetZoneID bridge-redirection implementation:
-missing structural records and signed aliases have separate unproved return/state
-semantics. Other allowHS predicates, hierarchy retry/edge updates and whole cell
+The route gate now owns a separate live DWORD `GetZoneID` query. Original56D230
+returnsFFFFFFFF when current Flags100 has no matching high record; raw rowFFFF
+remains distinct. The prior cached16-bit getter conflated this case with the ground
+row, which could newly admit an order after enabling the native hierarchy gate.
+Activation is established by the earlier native producer `high_no_far` case:
+Size8,8, tile106/subtile4 at(4,7), structural middle(5,7), no far tile, records[].
+The Rust production record factory and actual flat/layered route regression retain
+that admission witness rather than supplying a fabricated record failure.
+
+Original56DA10 compares signed coordinate words, inclusive span bounds and signed
+axis-distance tolerance, with first high-kind record and no activity filter. The
+shared record matcher now preserves these signed comparisons. Original56D230's
+inactive branch reloads the fixed cell and481810 steps from the **returned cell's**
+stored coordinates, with packed word addition. The live route query follows that
+walk and publishes dummy miss coordinates; its pure cache counterpart remains
+side-effect free. A real nonstructural high/wood exit with land other than Rock
+selects B, otherwise A. Constructor dummy tile65535 is outside the hash-bound
+retail high sets. The query oracle covers signed fixed aliases, inactive east/south
+exits, wood, Rock, ordinary exits, missing cells and retained dummy writes.
+
+This does not certify older cached16-bit `get_zone_id_native` consumers in
+base-defense and threat selection: missing-record DWORD and live walk/state
+semantics there remain unresolved Phase3 query authority. Other allowHS predicates, hierarchy retry/edge updates and whole cell
 A* remain outside this bounded helper delivery and must stay open where unproved.
 
 ## Reproducible comparisons and Rust checks
@@ -99,13 +119,20 @@ A* remain outside this bounded helper delivery and must stay open where unproved
 bucket storage; there are no code patches or substituted helper returns. They do
 not execute complete flood fills, final edge allocation or whole path search.
 
-Current corpus:58 helper cases, covering all center directions, all high tile
+Current corpus:65 helper cases, covering all center directions, all high tile
 branches and wood, all hierarchy levels, null sides in both orders, retained dummy
 Tube reads, zero/bent/marker8 paths, source/query/declared-exit distinctions, signed
 aliases and packed wrap, zero/equal pairs, orientation, genuine bucket collision,
 first flags and signed zone packing. A separate five-write original ReadTubes tail
 transcript covers miss-to-real-to-alias-to-miss and ordinal truncation. This tail
 comparison excludes parsing/allocation, whose successful receipt is supplied.
+Six original42CB22 gate cases additionally compare unequal/equal raw labels with
+allowHS on/off, stopping before reject return, precheck call setup or ordinary
+continuation. They do not substitute a precheck result. Five standalone original429780 walks
+compare exact endpoints for the new constant-slot domain, before zone clamping
+can hide a wrong offset. Seventeen whole original56D230 query cases compare
+DWORD results and terminal dummy coordinates, using supplied raw movement rows
+and cell/record inputs; they do not certify flood-fill label construction.
 
 Rust checks use the actual production helper, raw receipt binder, record factory,
 full/local builders and precheck. App tests exercise detached candidate preparation,
@@ -125,6 +152,45 @@ Validation receipts (intermediate):
   fixture failed its pre-restoration record-count premise; correction now supplies
   real east/west Tunnel neighbors with diagonal hierarchy sides. This is a fixture
   correction, not evidence of a restored-state implementation failure.
+- Focusedv5: exit0,7 passed,0 failed,1 ignored,8707 filtered,0.02s. The corrected
+  direction1 restore fixture and raw invalid-label/goal bridge flag tests pass.
+- Zone-searchv5: exit101,25 passed,3 failed. Three historical caller fixtures
+  previously demanded hierarchy override unequal coarse labels. After making
+  labels consistent, their newly added zero-count counterfactual revealed bridge
+  deck exemption; the revised shared fixture uses a mandatory unmarked **ground**
+  approach to a bridge detour, with a different ordinary ground shortcut. It checks
+  no-count shortcut, zero-count rejection and actual-count bridge routing.
+- Extended native63 generation: exit0, original initialized constant bytes agree
+  with the saved process startup capture at FPCW0xE7F.
+- Focusedv6: exit0,7 passed,1 ignored. Zone-searchv6: exit101,27 passed,1 failed;
+  capture approached the changed bridge fixture from(5,1), adjacent to(5,0), rather
+  than the old(4,0). The exact endpoint expectation was corrected while retaining
+  the bridge-layer and adjacency assertions; rally/dock counterfactuals passed.
+- Focusedv7: exit0,10 passed,1 ignored,8707 filtered,0.02s, including the prior
+  ten-query corpus. Queued zone-searchv7 embedded the expanded seventeen-query
+  corpus and exited101 (29 passed,1 failed). Its new inactive fixture inputs had
+  not yet been supplied by the Rust adapter; this is a fixture-version mismatch,
+  not a valid executable mismatch receipt. The independently established inactive
+  walk defect is repaired and the final adapter supplies every exit cell and row.
+- Native v8 `--check`: exit0,63 helper +5 binding +6 gate +5 constant walker +17
+  DWORD query cases, stable before Rust validation. An initial invocation lacked
+  the EXE environment and failed configuration; the corrected explicit-image run
+  produced this receipt.
+- V8 focused exit0:10 passed,1 ignored,8707 filtered,0.03s, including all17
+  DWORD queries. Zone-search exit0:30 passed,8688 filtered,0.02s. Zone-build
+  exit101:31 passed,1 failed,1 ignored. The old boundary fixture passed no source
+  Size and expected rectangular clamp-to-last-cell; native uses a padded square.
+  Corrected fixture supplies Size2,2: NW negative clamp selects node0, while
+  SE(4,4) selects native padding0. Two matching original582D70 cases were added;
+  v9 native generation exit0 (65 helper cases). This repair changes tests only.
+- V9 focused exit0:10 passed,1 ignored,8707 filtered,0.03s; zone-build exit0:
+  32 passed,1 ignored,8685 filtered. Final native --check exit0 reproduces all
+  65+5+6+5+17 cases. The leaf candidate is checkpointed with these receipts.
+- Independent caller-order review then confirmed42C900 performs initial source/
+  destination cell lookups, raw queries, projections and finally conditional
+  playfield probes. Existing wrappers perform live queries after projection and
+  skip them when hierarchy is disabled. This newly material live-write ordering
+  obligation is under repair; these leaf passes do not certify that corridor.
 - Expanded focused, full library and Clippy validation are pending. No readiness
   claim is made from the earlier candidate's result.
 
@@ -135,10 +201,17 @@ initialize adjacent slots8..12 to0; slot13 is zero BSS with no direct xrefs in t
 examined image. Native comparisons cover9..13 and positive/negative address-wrap
 aliases, including0x40000008 (ordinary zero read, not token8 teleport).
 
-Other accepted tokens can read neighboring constants or mutable process data;
-slots14 and negative neighbors have demonstrated accessible original instruction
-paths, but their startup floating-control/data provenance is not yet established.
-The Rust walker returns an explicit unresolved-read diagnostic and contributes no
+The [original-process startup capture tool](../../tools/spatial_oracle/tube_startup_capture.py)
+and [captured evidence](../../tools/spatial_oracle/tube_startup_capture.json) bind
+FPCW0xE7F at49F0E0/49F190 to initialized constant bytes. Hardware breakpoints stop
+before application startup, and all4,063,232 executable-section bytes match the
+original image. The helper oracle executes those original initializers and compares
+known ranges to the process capture. Slots14/15 and effective slots-2/-1 (the
+latter reached by non--1 address aliases) now use those exact signed-word offsets.
+Direct xrefs identify initializer-only writes at49F0FE/49F19C; runtime indirect
+mutation and arbitrary neighboring addresses have not been exhaustively excluded.
+
+Other accepted tokens can read unmodeled mutable process data. The Rust walker returns an explicit unresolved-read diagnostic and contributes no
 pairs for that record, preserving the prior absent-Tube-pair outcome without a new
 panic or invented direction mask. This is **not parity** for that raw domain.
 Likewise token8 with a non--1 invalid raw registry index remains explicit unresolved
@@ -147,3 +220,10 @@ Effect: missing hierarchy pairs may reject or redirect orders. Stock occurrence 
 not established; earlier retail census found no explicit Tubes in385 payloads,
 which does not make this live loader domain out of scope. These obligations keep
 this mechanism and the phase rows open.
+
+A retained structural dummy can make native's inactive query walk nonterminating.
+Rust detects repeated actual coordinate/identity-kind states, emits a diagnostic
+and returns unavailable; the current route caller then uses compatibility equality.
+This can admit a route where native does not return. The explicit cycle behavior
+is **unresolved**, not an endpoint or termination parity claim. No stock incidence
+is established. The row stays open for this and the older cached query consumers.

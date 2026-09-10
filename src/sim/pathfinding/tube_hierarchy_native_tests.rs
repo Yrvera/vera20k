@@ -6,7 +6,7 @@ fn native_tube_hierarchy_pairs_match_original_executable() {
     ))
     .unwrap();
     let cases = corpus["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 58);
+    assert_eq!(cases.len(), 65);
     for case in cases {
         let coord =
             |v: &serde_json::Value| (v[0].as_i64().unwrap() as u16, v[1].as_i64().unwrap() as u16);
@@ -307,6 +307,27 @@ fn tube_hierarchy_native_read_tubes_tail_publishes_retained_dummy_index() {
         assert_eq!(
             terrain.raw_tube_index_at_native_coord((1, 0)),
             expected["real_index"].as_i64().unwrap() as i16
+        );
+    }
+}
+
+#[test]
+fn tube_hierarchy_constant_walk_endpoints_match_original_executable() {
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/tube_hierarchy.json"
+    ))
+    .unwrap();
+    let terrain = redirect_terrain(1, 1, None, None, |_| {});
+    let cases = corpus["constant_walks"].as_array().unwrap();
+    assert_eq!(cases.len(), 5);
+    for case in cases {
+        let coord =
+            |v: &serde_json::Value| (v[0].as_i64().unwrap() as u16, v[1].as_i64().unwrap() as u16);
+        let token = case["token"].as_i64().unwrap() as i32;
+        assert_eq!(
+            hierarchy_walk_tube_path(&terrain, coord(&case["start"]), &[token]),
+            Ok(coord(&case["end"])),
+            "raw token {token}"
         );
     }
 }

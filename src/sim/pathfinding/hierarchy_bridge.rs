@@ -129,6 +129,13 @@ fn hierarchy_walk_tube_path(
                 // Original49F2D0/49F280 initialize slots8..12 to0; slot13
                 // is zero BSS with no direct xrefs in the examined image.
                 8..=13 => (0, 0),
+                // Original startup49F0E0/49F190 at captured FPCW0xE7F.
+                // Their initialized bytes match the unpatched process capture
+                // (tube_startup_capture.json); arbitrary neighboring data stays open.
+                14 => (0, 0x6000),
+                15 => (-24418, 16502),
+                0x3fff_fffe => (11544, 21572),
+                0x3fff_ffff => (8699, 16377),
                 _ => {
                     return Err(HierarchyPathReadError::DirectionData {
                         raw_token: step,

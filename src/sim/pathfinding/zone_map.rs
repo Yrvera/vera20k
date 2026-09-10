@@ -22,6 +22,7 @@ use super::zone_build;
 use super::zone_hierarchy::{SuperZoneMap, ZoneHierarchy};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
+use crate::rules::terrain_rules::LandType;
 use crate::sim::movement::locomotor::MovementLayer;
 
 /// Zone ID: 0 = impassable/unassigned, 1+ = valid zone.
@@ -341,7 +342,9 @@ impl ZoneGrid {
     /// Exact non-bridge `MapClass::GetZoneID` raw-row lookup.
     ///
     /// Native `MapClass::GetZoneID @ 0x0056D230` packs both coordinate
-    /// components to signed 16-bit, indexes an `(W + 1) * (W + 1)` square,
+    /// components to signed16-bit and indexes the retained source Size square
+    /// `(Size.width + Size.height + 1)^2`. Legacy square fixtures without a
+    /// source receipt retain their prior backing-width+1 inferred stride. Native
     /// clamps only the resulting signed linear index, and projects the base
     /// cluster through the requested raw movement-zone row. The extra final
     /// row and column are zero-initialized base cluster 0; raw labels `1` and
@@ -357,33 +360,109 @@ impl ZoneGrid {
         movement_zone: MovementZone,
     ) -> Option<ZoneId> {
         let base = self.base_topology.as_ref()?;
-        if self.width != self.height {
+        let cell_count = usize::from(self.width) * usize::from(self.height);
+        if base.zone_ids.len() != cell_count || base.movement_classes.len() != cell_count {
             return None;
         }
-
-        let width = usize::from(self.width);
-        let cell_count = width.checked_mul(width)?;
-        if base.movement_classes.len() != cell_count || base.zone_ids.len() != cell_count {
-            return None;
-        }
-
         let row = movement_zone.matrix_row()?;
         let raw_row = base.raw_zone_ids_by_row.get(row)?;
-        let side = i32::from(self.width).checked_add(1)?;
-        let padded_count = side.checked_mul(side)?;
-        let x = i32::from(coord.0 as i16);
-        let y = i32::from(coord.1 as i16);
-        let linear = side.wrapping_mul(y).wrapping_add(x);
-        let clamped = linear.clamp(0, padded_count - 1);
-        let padded_x = clamped % side;
-        let padded_y = clamped / side;
-        let cluster = if padded_x < i32::from(self.width) && padded_y < i32::from(self.height) {
-            let index = padded_y as usize * width + padded_x as usize;
-            *base.zone_ids.get(index)?
-        } else {
-            ZONE_INVALID
-        };
+        // Same signed native node projection as56D430/56C510; source Size
+        // travels with the derived record set, not the materialized rectangle.
+        let source_size = base
+            .native_bridge_source_size
+            .or_else(|| (self.width == self.height).then_some((i32::from(self.width), 0)))?;
+        let cluster = zone_build::bridge_endpoint_base_zone(
+            &base.zone_ids,
+            self.width,
+            Some(source_size),
+            (coord.0 as u16, coord.1 as u16),
+        )?;
         raw_row.get(cluster as usize).copied()
+    }
+
+    ///56D230 result as consumed by42C900: missing structural high record is
+    /// DWORDFFFFFFFF, distinct from raw rowFFFF. Query current native cell
+    /// identity/flags rather than inferring structural presence from a cache.
+    pub(crate) fn get_path_zone_id_native(
+        &self,
+        terrain: &ResolvedTerrainGrid,
+        coord: (u16, u16),
+        movement_zone: MovementZone,
+        check_bridge: bool,
+    ) -> Option<u32> {
+        use crate::sim::cell_rect::{CellRef, get_cellclass_fallback};
+        let mut selected = coord;
+        if check_bridge {
+            let cell = get_cellclass_fallback(
+                Some(terrain),
+                i32::from(coord.0 as i16),
+                i32::from(coord.1 as i16),
+            );
+            let structural = match cell {
+                CellRef::Real(cell) => cell.bridge_facts.has_structural_bridge(),
+                CellRef::Dummy { cell } => cell.snapshot().bridge_flags_0x1180 & 0x100 != 0,
+            };
+            if structural {
+                let Some(record) =
+                    zone_build::find_high_bridge_record(&self.bridge_records, 0, coord, 1)
+                else {
+                    return Some(u32::MAX);
+                };
+                selected = record.endpoint_a;
+                if !record.active {
+                    //56D2B3 reloads the cell;481810 steps from the returned
+                    // CellClass+24, including fixed-stride aliases and dummy.
+                    // This live query owns writes; cache construction must not.
+                    let mut current = get_cellclass_fallback(
+                        Some(terrain),
+                        i32::from(coord.0 as i16),
+                        i32::from(coord.1 as i16),
+                    );
+                    let vertical = record.endpoint_a.0 == record.endpoint_b.0;
+                    let mut visited = std::collections::BTreeSet::new();
+                    while current.bridge_flags_0x1180() & 0x100 != 0 {
+                        let (position, is_dummy) = match &current {
+                            CellRef::Real(cell) => ((cell.rx as i16, cell.ry as i16), false),
+                            CellRef::Dummy { cell } => {
+                                let c = cell.snapshot().coord;
+                                ((c.0 as i16, c.1 as i16), true)
+                            }
+                        };
+                        if !visited.insert((position, is_dummy)) {
+                            // Native never returns on a repeated walk state.
+                            // Explicit unresolved domain: None currently uses
+                            // the caller's compatibility equality fallback.
+                            log::warn!("unresolved cyclic native inactive bridge zone query");
+                            return None;
+                        }
+                        let next = if vertical {
+                            (position.0, position.1.wrapping_add(1))
+                        } else {
+                            (position.0.wrapping_add(1), position.1)
+                        };
+                        current = get_cellclass_fallback(
+                            Some(terrain),
+                            i32::from(next.0),
+                            i32::from(next.1),
+                        );
+                    }
+                    // Constructor dummy tile65535 is outside both high sets
+                    // in all six hash-bound retail theaters (bridge report).
+                    if let CellRef::Real(exit) = current {
+                        if terrain.high_bridge_tile_offset(exit).is_some()
+                            && exit.yr_cell_land_type != LandType::Rock.as_index()
+                        {
+                            selected = record.endpoint_b;
+                        }
+                    }
+                }
+            }
+        }
+        self.get_zone_id_nonbridge_native(
+            (i32::from(selected.0), i32::from(selected.1)),
+            movement_zone,
+        )
+        .map(u32::from)
     }
 
     /// Exact `MapClass::Can_Reach_Zone @ 0x0056D100` surface as the
@@ -430,7 +509,9 @@ impl ZoneGrid {
     /// through the requested movement row. `checkBridge` clear skips the
     /// record lookup entirely.
     ///
-    /// Two consumers so far, both passing exactly what native passes:
+    /// Legacy cached16-bit consumers pass the source/destination bridge flag.
+    /// Missing-record DWORD and live inactive-walk parity remain unresolved
+    /// here;42C900 uses get_path_zone_id_native with current terrain instead:
     /// - `Can_Reach_Zone @ 0x0056D100` (base-defence response), the candidate's
     ///   `ShouldBeOnBridge` for source A and `false` for B;
     /// - `TechnoClass::Greatest_Threat @ 0x006F8EBF`, a literal `1` for the

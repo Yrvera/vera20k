@@ -1098,9 +1098,17 @@ impl SharedCellDummy {
     /// Publish an already validated post-Resize candidate onto the retained
     /// process identity. Preserve its later lookup effects; do not reset twice.
     pub(crate) fn adopt_prepared_load_state(&self, prepared: &Self) {
-        self.state.cell.store(prepared.state.cell.load(Ordering::Relaxed), Ordering::Relaxed);
-        self.state.overlay.store(prepared.state.overlay.load(Ordering::Relaxed), Ordering::Relaxed);
-        self.state.tube_index.store(prepared.raw_tube_index(), Ordering::Relaxed);
+        self.state.cell.store(
+            prepared.state.cell.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.state.overlay.store(
+            prepared.state.overlay.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.state
+            .tube_index
+            .store(prepared.raw_tube_index(), Ordering::Relaxed);
     }
 
     /// Stamp only CellClass+0x24, preserving the live level and slope bytes.
@@ -3001,7 +3009,8 @@ impl ResolvedTerrainGrid {
                     .stamp_coord(i32::from(x), i32::from(y));
                 // ReadTubesINI728515 writes through the returned pointer,
                 // including the one retained shared dummy CellClass.
-                self.shared_cell_dummy.write_raw_tube_index(source_ordinal as i16);
+                self.shared_cell_dummy
+                    .write_raw_tube_index(source_ordinal as i16);
             }
         }
         Ok(entries)
@@ -3035,7 +3044,8 @@ impl ResolvedTerrainGrid {
         if let Some(index) = self.native_fixed_cell_index(x, y) {
             self.native_tube_indices[index].raw()
         } else {
-            self.shared_cell_dummy.stamp_coord(i32::from(x), i32::from(y));
+            self.shared_cell_dummy
+                .stamp_coord(i32::from(x), i32::from(y));
             self.shared_cell_dummy.raw_tube_index()
         }
     }
