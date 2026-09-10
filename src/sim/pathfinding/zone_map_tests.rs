@@ -199,7 +199,7 @@ fn clear_beach_water_row_terrain() -> ResolvedTerrainGrid {
     ResolvedTerrainGrid::from_cells(3, 1, cells)
 }
 
-fn stock_low_bridge_auto_shell_terrain() -> ResolvedTerrainGrid {
+fn automatic_tube_shell_ground_terrain() -> ResolvedTerrainGrid {
     let mut cells = Vec::new();
     let mut tubes = Vec::new();
     for rx in 0..5u16 {
@@ -1599,8 +1599,8 @@ fn waterbeach_zone_grid_connects_beach_to_water_with_resolved_terrain() {
 }
 
 #[test]
-fn stock_low_bridge_auto_shell_zone_grid_uses_low_records_without_explicit_tubes() {
-    let terrain = stock_low_bridge_auto_shell_terrain();
+fn automatic_tube_shells_keep_ground_connectivity_without_bridge_records() {
+    let terrain = automatic_tube_shell_ground_terrain();
     assert!(
         terrain
             .tube_facts()
@@ -1610,10 +1610,11 @@ fn stock_low_bridge_auto_shell_zone_grid_uses_low_records_without_explicit_tubes
 
     let bridge_state = BridgeRuntimeState::from_resolved_terrain(&terrain, true, 300);
     let records = bridge_state.endpoint_records();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].bridge_kind, BridgeRecordKind::Low);
-    assert_eq!(records[0].endpoint_a, (0, 0));
-    assert_eq!(records[0].endpoint_b, (4, 0));
+    // ComputeBridgeZones56D6E0 requires current ordinal < Tube exit ordinal.
+    // Native bridge_records.json automatic_shells proves these same-cell
+    // shells emit nothing. This synthetic row remains class GROUND throughout;
+    // ordinary class connectivity must not depend on an invented Tube span.
+    assert!(records.is_empty());
 
     let grid = PathGrid::from_resolved_terrain(&terrain);
     let zg = ZoneGrid::build_with_terrain(&grid, &BTreeMap::new(), Some(&terrain), records, 5, 1);
@@ -1636,7 +1637,7 @@ fn stock_low_bridge_auto_shell_zone_grid_uses_low_records_without_explicit_tubes
     assert_eq!(
         normal_map.zone_at(2, 0, MovementLayer::Bridge),
         ZONE_INVALID,
-        "low records are all-active zone data, not high-bridge redirect records"
+        "automatic Tube shells do not create high-bridge redirect records"
     );
 }
 

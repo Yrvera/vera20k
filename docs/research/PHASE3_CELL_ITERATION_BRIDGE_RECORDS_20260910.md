@@ -203,3 +203,18 @@ retail executable. Raw local logs are retained under `.local/`.
   corpus expanded; no native output was rebaselined from Rust.
 - Full library suite, Clippy and independent final review: pending.
   No readiness claim until completed.
+
+The first full suite after docs-only main integration (`1c055245`) exited 101:
+8589 passed, 1 failed, 119 ignored, 15.10s (`.local/bridge-full-lib.log`). Its sole
+failure was an older test expecting an invented automatic-shell span. Inspection
+showed a hand-built five-cell all-GROUND row, not a decoded stock map. The corrected
+`automatic_tube_shells_keep_ground_connectivity_without_bridge_records` test
+requires no records while retaining Normal/Infantry connectivity and absence of
+high-layer redirects. Native no-record evidence comes from the separate original
+`automatic_shells` corpus case. This corrects a false fixture contract; it does not
+weaken passability assertions or change production code to accommodate a test.
+Its focused command
+`cargo test -p vera20k --lib sim::pathfinding::zone_map_tests::automatic_tube_shells_keep_ground_connectivity_without_bridge_records`
+exited 0: 1 passed, 0 failed, 8708 filtered, 0.00s; log
+`.local/bridge-shell-connectivity-focused.log`. Independent read-only review
+accepted this exact correction and retained the bounded source/evidence PASS.
