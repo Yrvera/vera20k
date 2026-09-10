@@ -373,7 +373,11 @@ const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x34D6_7612_D63B_1A87;
 // 2026-09-08 integration of main 33f36d79 with ramp branch 5f41f2ea:
 // the pre-v136 probe and all older probes pass, isolating this new current
 // value to main's retained InfantryTerminal fold; existing command checks hold.
-const SLICE6_BASELINE_HASH: u64 = 0xBD1A_450A_FE28_594E;
+// v142 adds retained shroud knowledge/admissions, Map240 and Foot sight clocks.
+// The dedicated pre-v142 assertion below retains this fixture's prior current
+// pin; older probes and existing replay/stream checks remain unchanged.
+// Receipt: .local/shroud-current-sight-full-v1.log (composition-only candidates).
+const SLICE6_BASELINE_HASH: u64 = 0x9CDA_1908_000F_0176;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -448,6 +452,11 @@ fn replay_hash_stable_through_slice6() {
         let _ = sim.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, 67);
     }
 
+    assert_eq!(
+        sim.state_hash_without_sustained_gap_sight_v142(),
+        0xBD1A_450A_FE28_594E,
+        "pre-v142 composition must reproduce this fixture's prior current baseline"
+    );
     let pre_lifecycle_hash = sim.state_hash_before_lifecycle_v28_and_mission_v29();
     let pre_mission_hash = sim.state_hash_without_mission_v29();
     let pre_base_plan_hash = sim.state_hash_without_base_plan_v110();

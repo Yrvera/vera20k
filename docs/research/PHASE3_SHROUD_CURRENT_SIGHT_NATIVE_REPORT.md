@@ -34,7 +34,7 @@ borrow another viewer's timer. A due event releases/re-admits only its viewer an
 reloads15 even if the reveal leaves reject membership. Losing an admission does
 not reset this clock. Snapshot142 persists state/footprints/gap receipts/clocks/Map240;
 current hashes include them, historical probes omit them and the four new bits.
-Focused validation has passed; final full-library and Clippy readiness is pending.
+Focused, full-library and Clippy checks have passed; Phase3 row50 remains open.
 
 ## Original bodies and active retail evidence
 
@@ -162,8 +162,19 @@ changed, to `C9FF66052C998226`; the single rebaseline retains all old probes and
 stream assertions. Receipt: `.local/shroud-current-sight-broader-v1-3.log`.
 The corrected affected rerun passed69/69 vision tests and1/1 global replay,
 both exit0 (`.local/shroud-current-sight-broader-v2-1.log` and `-2.log`).
-Full `cargo test -p vera20k --lib`, `cargo clippy -p vera20k --lib` and final
-receipt review remain pending.
+Full-library v1 passed8624 tests and failed only the two remaining current hash
+pins (bridge and Slice6), with120 ignored. Each fixture now retains its exact
+previous current hash as a pre-v142 assertion: bridge `3CCCDF294DDA4D4F`, Slice6
+`BD1A450AFE28594E`. Full-library v2 passed both old-layout assertions and the new
+current pins `E2AC4ADB9F4824F8` / `9CDA1908000F0176`, plus all existing behavior,
+replay and stream checks. These are guarded Rust hash-composition rebaselines.
+
+Final `cargo test -p vera20k --lib` passed **8626 tests,0 failed,120 ignored**,
+exit0,20.41s execution (`.local/shroud-current-sight-full-v2.log`).
+`cargo clippy -p vera20k --lib` passed, exit0,42.55s,1145 warnings
+(`.local/shroud-current-sight-clippy-v1.log`). Final independent receipt review
+precedes publication; no further implementation work is pending for this bounded
+candidate.
 Independent corrected source/native review passed before these test-only updates.
 
 ## Explicit remaining scope
