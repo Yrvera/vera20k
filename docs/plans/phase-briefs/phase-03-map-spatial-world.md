@@ -111,8 +111,21 @@ status is historical; reconcile it against current source before selecting work.
 `src/sim/pathfinding/zone_build.rs::tube_hierarchy_pairs_are_unregistered` records
 an ignored test for the tube arm of `0x00582D70`. Its hypothesized trigger is a
 long route across a low bridge; the consequence is a detour or no hierarchy route.
-Retail incidence and the active caller chain need rechecking; the source marker
-is an investigation lead, not a fresh native finding.
+Fresh 2026-09-10 inspection confirms the missing arm and active full/local callers:
+`0x00581F90` from InitZoneMap and `0x00584550` from runtime cell changes. Full
+rebuild traverses active records forward; local rebuild traverses them backward
+with signed endpoint/block tests. The helper needs both lateral Tube pointers,
+walks their paths from the lateral coordinates, and stages three oriented pairs.
+Its shared high/Tube coordinate projection and zero/equal-pair retention also
+need correction. Production delivery and executable comparisons are in progress;
+retail incidence and complete route behavior remain unproved.
+
+The path walker `0x00429780` treats exact token 8 as a current-cell Tube-exit
+lookup; other tokens read the direction table without masking. Accepted unusual
+tokens and signed zone-word packing need explicit coverage. ReadTubesINI also
+writes a Tube index to the shared dummy on a lookup miss, which the hierarchy
+helper can read; the current Rust binding drops that index. Establish its exact
+authority and reset/restore lifecycle before claiming this prerequisite closed.
 
 The bridge plan retains unresolved construction, restamp, topology and consumer
 transactions. Current shroud, smudge, terrain and lighting code has not received
@@ -132,16 +145,19 @@ unexecuted; they are not passing parity evidence.
 
 ## Open queue
 
-1. Recheck the remaining constructor identity, shared-dummy field,
+1. Finish the current hierarchy-record helper and proved prerequisites, including
+   production full/local delivery and native comparisons. The ignored source
+   marker alone cannot establish scope or certify its eventual repair.
+2. Recheck the remaining constructor identity, shared-dummy field,
    Resize/restore, iterator and consumer-order hypotheses. Implement only proven
    observable differences; retain unresolved candidates explicitly.
    In particular, compare specialized full-diamond sweeps with native first-null
    termination for width-one and internal-hole inputs; prove active loading and
    observable effects before treating either as another production gap.
-2. Reconcile each other row with current production source and active retail
+3. Reconcile each other row with current production source and active retail
    evidence. Reuse bridge and earlier Phase 3 research without importing their
    historical scope expansions automatically.
-3. Run the phase-wide reverse audit only after every in-scope mechanism and
+4. Run the phase-wide reverse audit only after every in-scope mechanism and
    evidence-backed exclusion is accounted for. Any omission reopens its row.
 
 ## Start here
