@@ -8,6 +8,11 @@ executable identity, bounded execution, fresh function-call state, diagnostics, 
 reference-file checks. It does not establish that a chosen function or fixture
 represents the game's active path.
 
+### Capstone
+
+Python `capstone` is also installed in this development environment. Use it when
+helpful for native binary analysis; consult its documentation as needed.
+
 ## Run an existing comparison
 
 From the repository root, with Python 3.10+ and Unicorn **2.1.4** installed:
