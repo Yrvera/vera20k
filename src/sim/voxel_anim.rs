@@ -337,7 +337,7 @@ pub enum VoxelAnimAiOutcome {
 ///   ring. Frequency: only when a piece scatters off a shoreline.
 pub fn voxel_anim_ai(
     object: &mut VoxelAnimObject,
-    terrain: &dyn BounceTerrain,
+    terrain: &impl BounceTerrain,
 ) -> Result<VoxelAnimAiOutcome, NativeX87Error> {
     if object.marked_for_deletion {
         return Ok(VoxelAnimAiOutcome::Delete);
@@ -897,10 +897,14 @@ mod tests {
     struct FlatGround;
 
     impl BounceTerrain for FlatGround {
+        type Cell = IVec3;
+        fn select_cell(&self, coord: IVec3) -> IVec3 {
+            coord
+        }
         fn ground_height_leptons(&self, _coord: IVec3) -> i32 {
             0
         }
-        fn is_bridge_cell(&self, _coord: IVec3) -> bool {
+        fn selected_is_bridge(&self, _coord: &IVec3) -> bool {
             false
         }
         fn cell_height_level(&self, _coord: IVec3) -> i32 {
@@ -909,7 +913,7 @@ mod tests {
         fn ramp(&self, _coord: IVec3) -> u8 {
             0
         }
-        fn has_bounce_surface(&self, _coord: IVec3) -> bool {
+        fn has_bounce_surface(&self, _coord: &IVec3) -> bool {
             false
         }
         fn is_water(&self, _coord: IVec3) -> bool {
@@ -988,10 +992,14 @@ mod tests {
         // shoreline sinks rather than skipping.
         struct Water;
         impl BounceTerrain for Water {
+            type Cell = IVec3;
+            fn select_cell(&self, coord: IVec3) -> IVec3 {
+                coord
+            }
             fn ground_height_leptons(&self, _coord: IVec3) -> i32 {
                 0
             }
-            fn is_bridge_cell(&self, _coord: IVec3) -> bool {
+            fn selected_is_bridge(&self, _coord: &IVec3) -> bool {
                 false
             }
             fn cell_height_level(&self, _coord: IVec3) -> i32 {
@@ -1000,7 +1008,7 @@ mod tests {
             fn ramp(&self, _coord: IVec3) -> u8 {
                 0
             }
-            fn has_bounce_surface(&self, _coord: IVec3) -> bool {
+            fn has_bounce_surface(&self, _coord: &IVec3) -> bool {
                 false
             }
             fn is_water(&self, _coord: IVec3) -> bool {
