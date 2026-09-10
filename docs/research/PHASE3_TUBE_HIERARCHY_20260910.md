@@ -1,6 +1,6 @@
 # Phase 3 — Tube hierarchy publication (2026-09-10)
 
-Phase-wide status: **OPEN; bounded increment under validation.** This increment implements the active
+Phase-wide status: **OPEN; bounded increment required validation passes.** This increment implements the active
 high/Tube hierarchy record helper and proven production prerequisites. It does not
 close GSI-04.01, GSI-04.06, GSI-04.12 or Phase 3. Accepted raw path tokens can address
 unmodeled process data; those cases remain an explicit residual below.
@@ -260,8 +260,14 @@ Validation receipts (intermediate):
   1.52s. The current entry19 corpus, real lane flag repair, migrated live projection
   assertions and both production wrapper witnesses pass. Final native entry
   `--check` also exits0; independent critic reproduced it.
-- Full library and Clippy validation are pending; focused success alone is not
-  publication readiness.
+- Candidate154b171e full `cargo test -p vera20k --lib`: actual exit0,
+  **8600 passed,0 failed,119 ignored**,26.02s. Saved full output:
+  `.local/tube-hierarchy-full-final.log`.
+- Same candidate `cargo clippy -p vera20k --lib`: actual exit0,1146 warnings,
+  1m18s. Saved full output: `.local/tube-hierarchy-clippy-final.log`. Warnings
+  remain non-denied; this includes one harmless needless-borrow style diagnostic
+  in the new entry owner, not a behavior failure. No warning backlog rebaseline
+  or unrelated cleanup was performed.
 
 ## Review boundary
 
@@ -270,8 +276,11 @@ in this candidate: native pair production/order, raw Tube binding and retained
 dummy publication, detached restore preparation, raw DWORD zone equality and
 ordered terminating live projections. Their focused/native receipts are distinct
 from the phase-wide residuals below. No remaining introduced stock-retail regression
-is established by the independent review at this point; full library/Clippy receipts
-still govern publication readiness.
+is established by the independent review. The required full library and Clippy
+checks pass for the unchanged source candidate154b171e. The fresh independent
+read-only critic issued final **PASS for this bounded increment** after reconciling
+its native reproductions, source, full test output and Clippy receipt. This verdict
+does not close the phase rows or the explicitly unproved domains.
 
 Team predicate authority is active and pre-existing, but a changed path outcome
 caused by its interaction with this increment has not been demonstrated. Jumpjet
