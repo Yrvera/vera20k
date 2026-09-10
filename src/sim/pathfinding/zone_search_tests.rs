@@ -679,6 +679,7 @@ fn tube_hierarchy_precheck_rejects_unequal_base_labels_before_connected_graph() 
         (2, 0),
         (0, 0),
         (2, 0),
+        None, // no native raw-row receipt in this compatibility fixture
         None,
         None,
         Some(&zg),
@@ -715,6 +716,7 @@ fn zone_precheck_failed_hierarchy_keeps_zone_map_same_zone_fallback() {
         (2, 0),
         (0, 0),
         (2, 0),
+        None, // no native raw-row receipt in this compatibility fixture
         None,
         None,
         Some(&zg),
@@ -2135,4 +2137,199 @@ fn tube_hierarchy_missing_record_sentinel_controls_actual_route_gate() {
         .is_some(),
         "equal missing sentinels admit hierarchy; physical route remains independently passable"
     );
+}
+
+#[test]
+fn tube_hierarchy_native_entry_prefix_matches_original_executable() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/path_entry.json"
+    ))
+    .unwrap();
+    assert_eq!(cases.as_array().unwrap().len(), 19);
+    for case in cases.as_array().unwrap() {
+        let coord =
+            |v: &serde_json::Value| (v[0].as_i64().unwrap() as u16, v[1].as_i64().unwrap() as u16);
+        let rows = case["cells"].as_array().unwrap();
+        let allocated: Vec<_> = rows.iter().map(|r| coord(&r[0])).collect();
+        let width = allocated.iter().map(|c| c.0).max().unwrap().max(15) + 1;
+        let height = allocated.iter().map(|c| c.1).max().unwrap().max(15) + 1;
+        let grid = PathGrid::new(width, height);
+        let mut terrain = gsi_04_12_terrain(width, height);
+        terrain.test_set_native_allocated_cells(&allocated);
+        terrain.test_set_high_bridge_set_starts(Some(100), Some(200));
+        for row in rows {
+            let c = coord(&row[0]);
+            let cell = terrain.cell_mut(c.0, c.1).unwrap();
+            cell.bridge_facts.raw_flags = row[1].as_u64().unwrap() as u32;
+            cell.final_tile_index = row[2].as_i64().unwrap() as i32;
+            cell.yr_cell_land_type = row[3].as_u64().unwrap() as u8;
+        }
+        let records: Vec<_> = case["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| BridgeEndpointRecord {
+                endpoint_a: coord(&r[0]),
+                endpoint_b: coord(&r[1]),
+                active: r[2].as_bool().unwrap(),
+                group_id: 0,
+                bridge_kind: BridgeRecordKind::High,
+            })
+            .collect();
+        let mut zones = ZoneGrid::build_with_native_bridge_geometry(
+            &grid,
+            &BTreeMap::new(),
+            Some(&terrain),
+            &records,
+            width,
+            height,
+            Some((8, 8)),
+        );
+        let base = zones.base_topology_mut().unwrap();
+        base.zone_ids.fill(1);
+        base.raw_zone_ids_by_row[MovementZone::Normal.matrix_row().unwrap()] = vec![0, 2];
+        let b = &case["bounds"];
+        let bounds = PlayfieldBounds::from_normalized_local_size(
+            b[0].as_i64().unwrap() as i32,
+            b[1].as_i64().unwrap() as i32,
+            b[2].as_i64().unwrap() as i32,
+            b[3].as_i64().unwrap() as i32,
+            b[4].as_i64().unwrap() as i32,
+        );
+        assert_eq!(
+            case["dummy_flags"], 0,
+            "fixture currently supplies constructor bridge flags"
+        );
+        let dummy = terrain.shared_cell_dummy();
+        dummy.reconstruct_for_map_resize();
+        dummy.stamp_coord(1234, -2345);
+        let start = coord(&case["start"]);
+        let goal = coord(&case["goal"]);
+        let entry = prepare_native_path_entry(
+            Some(&zones),
+            Some(&terrain),
+            MovementZone::Normal,
+            start,
+            case["start_bridge"].as_bool().unwrap(),
+            goal,
+            case["allow"].as_bool().unwrap(),
+            Some(bounds),
+        );
+        assert_eq!(
+            entry.raw_equal,
+            Some(case["labels"][0] == case["labels"][1]),
+            "{}",
+            case["name"]
+        );
+        assert_eq!(
+            entry.hierarchy_start,
+            coord(&case["hierarchy_start"]),
+            "{}",
+            case["name"]
+        );
+        assert_eq!(
+            entry.hierarchy_goal,
+            coord(&case["hierarchy_goal"]),
+            "{}",
+            case["name"]
+        );
+        assert_eq!(
+            entry.endpoints_in_playfield,
+            case["endpoints_inside"].as_bool().unwrap(),
+            "{}",
+            case["name"]
+        );
+        let terminal = coord(&case["dummy_coord"]);
+        assert_eq!(
+            dummy.snapshot().coord,
+            (i32::from(terminal.0 as i16), i32::from(terminal.1 as i16)),
+            "{}",
+            case["name"]
+        );
+        if case["name"] == "initial_source_miss_False" {
+            // Physical backing admits this same-cell request, while the native
+            // allocation table has a hole. With no playfield configured and
+            // hierarchy disabled, only the live entry lookup publishes it.
+            let hole = (4, 4);
+            assert!(terrain.cell(hole.0, hole.1).is_none());
+            dummy.stamp_coord(1234, -2345);
+            assert!(
+                find_path_zoned_marker(
+                    &grid,
+                    hole,
+                    hole,
+                    None,
+                    None,
+                    Some(&zones),
+                    MovementZone::Normal,
+                    Some(MovementZone::Normal),
+                    Some(&terrain),
+                    None,
+                    None,
+                    None,
+                    0,
+                    false,
+                    false,
+                    false,
+                    None
+                )
+                .is_some()
+            );
+            assert_eq!(dummy.snapshot().coord, (4, 4));
+            dummy.stamp_coord(1234, -2345);
+            assert!(
+                find_layered_path_zoned_marker(
+                    &grid,
+                    None,
+                    None,
+                    hole,
+                    MovementLayer::Ground,
+                    hole,
+                    Some(&zones),
+                    MovementZone::Normal,
+                    None,
+                    Some(MovementZone::Normal),
+                    Some(&terrain),
+                    None,
+                    None,
+                    None,
+                    0,
+                    false,
+                    false,
+                    false,
+                    None
+                )
+                .is_some()
+            );
+            assert_eq!(dummy.snapshot().coord, (4, 4));
+        }
+    }
+}
+
+// Preserve the existing height/projection assertions through the live entry owner.
+#[allow(clippy::too_many_arguments)]
+fn resolve_hierarchy_endpoint_contract(
+    zones: Option<&ZoneGrid>,
+    terrain: Option<&ResolvedTerrainGrid>,
+    bounds: Option<PlayfieldBounds>,
+    start: (u16, u16),
+    start_bridge: bool,
+    goal: (u16, u16),
+    _goal_bridge: bool,
+) -> ((u16, u16), (u16, u16), bool) {
+    let entry = prepare_native_path_entry(
+        zones,
+        terrain,
+        MovementZone::Normal,
+        start,
+        start_bridge,
+        goal,
+        true,
+        bounds,
+    );
+    (
+        entry.hierarchy_start,
+        entry.hierarchy_goal,
+        entry.endpoints_in_playfield,
+    )
 }

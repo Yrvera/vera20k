@@ -1,6 +1,6 @@
 # Phase 3 — Tube hierarchy publication (2026-09-10)
 
-Status: **OPEN, candidate under validation.** This increment implements the active
+Phase-wide status: **OPEN; bounded increment under validation.** This increment implements the active
 high/Tube hierarchy record helper and proven production prerequisites. It does not
 close GSI-04.01, GSI-04.06, GSI-04.12 or Phase 3. Accepted raw path tokens can address
 unmodeled process data; those cases remain an explicit residual below.
@@ -109,6 +109,52 @@ base-defense and threat selection: missing-record DWORD and live walk/state
 semantics there remain unresolved Phase3 query authority. Other allowHS predicates, hierarchy retry/edge updates and whole cell
 A* remain outside this bounded helper delivery and must stay open where unproved.
 
+## Ordered native path entry
+
+The new live entry owner follows42C938 initial source CellClass and42C94B initial
+Destination CellClass as retained identities. It then executes source zone query,
+42C9B7 fresh destination lookup/Flags100 and destination zone query, before source
+583180 projection and a fresh flag read from the retained destination for its
+projection. Only the supplied enabled-hierarchy predicate permits the later source
+mode1 playfield check and, if inside, the destination check. Both raw queries and
+initial lookups run even when hierarchy is disabled; queries are not replayed later.
+
+583180 now reads current coordinates from those retained real/dummy identities.
+Lane offsets and projected outputs wrap as packed words. Active selection compares
+lane-adjusted endpoints using signed-word differences and signed low-word results
+of Sqrt_Approx/Math_ftol; ties select B. Inactive selection steps actual cell
+identities and preserves dummy writes. Missing records invoke5835D0, whose positive
+and negative walks alternate, accept high/wood non-Rock exits, then both run mode1
+membership in positive/negative order even for sentinel(0,0). Distance reads the
+original retained coordinate after those writes; ties select positive. Constructor
+5618B0 establishes sentinel(0,0). Native's sentinel fallthrough reads record[-1];
+Rust diagnoses this unresolved process-memory domain and retains the current
+coordinate. Cyclic walks likewise diagnose and retain it. These fallbacks are
+explicitly **not parity**, and may change routing relative to native.
+
+[Entry harness](../../tools/spatial_oracle/path_entry.py),
+[entry vectors](../../tools/spatial_oracle/path_entry.json), and
+[entry provenance](../../tools/spatial_oracle/path_entry.meta.json) execute original
+42C927 through42CA43, then original conditional endpoint blocks CAEE/CB1D through
+CB22 with a supplied final allow predicate. There are19 cases: ordinary endpoints,
+initial source misses, shared initial dummy handles, inactive query/projection
+writes changing retained source or destination, disabled hierarchy, signed-distance
+and lane-word wrap, both-axis no-record fallback/Rock rejection and canonical
+fixed-cell alias projection. Type/mover virtual callbacks between the two executed
+ranges are not substituted or certified; that range is expressly outside the run.
+The Rust adapter calls the production entry owner and both production wrappers.
+
+Remaining predicate authority is material: native Foot+320 also considers Retreat
+and Team state, and Team6EC300 can run mode1 waypoint checks before the endpoint
+checks. Active retail all01umd.map contains the ground HTNK/TTNK team0925E45C with
+script0973352C action3,14; current Team script state/action3 does not deliver the
+native Team+7F authority. The conditional Infantry D94 body overrides precheck/retry row7, while raw zone
+queries keep their requested/type row; actual retail reachability remains a
+hypothesis because the ordinary Jumpjet entry bypasses42C900. These
+producer/ordering obligations remain open where active, as does42C290's native signed/clamped
+projected-node lookup where no ordinary admitted counterexample has yet been
+established. No full prefix-to-precheck or mover-predicate closure is claimed.
+
 ## Reproducible comparisons and Rust checks
 
 [Harness](../../tools/spatial_oracle/tube_hierarchy.py),
@@ -191,8 +237,48 @@ Validation receipts (intermediate):
   playfield probes. Existing wrappers perform live queries after projection and
   skip them when hierarchy is disabled. This newly material live-write ordering
   obligation is under repair; these leaf passes do not certify that corridor.
-- Expanded focused, full library and Clippy validation are pending. No readiness
-  claim is made from the earlier candidate's result.
+- Native entry18 `--write` and `--check`: exit0. Fresh independent critic
+  reproduced `--check` against the original image. Combined terminating-prefix
+  source review passes within the supplied-predicate boundary.
+- V10 focused/module compile exited101: six legacy test references still named
+  the removed endpoint helper. They now call the live entry owner; the obsolete
+  pure583180 implementation and its rectangular/sequential helper chain were
+  removed, and the old projection assertions invoke the production live resolver.
+  This was migration cleanup, not a failed executable comparison.
+- V11 focused exit101:10 passed,1 failed,1 ignored; zone-search exit101:29
+  passed,2 failed; zone-build exit101:28 passed,4 failed,1 ignored. Projection
+  incorrectly used the narrow1180 flag facade and lost real Flags800. It now
+  reads real raw flags; the dummy facade's unmodeled flag domain remains explicit.
+  The wrapper witness had also supplied an out-of-backing physical start to an
+  existing unchecked core index; it now uses a valid backing allocation hole and
+  same-cell request to isolate the disabled-hierarchy entry writes. One legacy
+  test expected a tie from unprojected endpoints; original19th prefix case proves
+  projected distances1/2 choose A. Its assertion now tests that native behavior.
+- Native entry19 generation exit0, including that lane-adjusted distance case.
+- V12 focused exit0:11 passed,1 ignored,8707 filtered,0.03s. Zone-search exit0:
+  31 passed,8688 filtered,0.03s. Zone-build exit0:32 passed,1 ignored,8686 filtered,
+  1.52s. The current entry19 corpus, real lane flag repair, migrated live projection
+  assertions and both production wrapper witnesses pass. Final native entry
+  `--check` also exits0; independent critic reproduced it.
+- Full library and Clippy validation are pending; focused success alone is not
+  publication readiness.
+
+## Review boundary
+
+Confirmed prerequisites introduced by enabling the Tube hierarchy are delivered
+in this candidate: native pair production/order, raw Tube binding and retained
+dummy publication, detached restore preparation, raw DWORD zone equality and
+ordered terminating live projections. Their focused/native receipts are distinct
+from the phase-wide residuals below. No remaining introduced stock-retail regression
+is established by the independent review at this point; full library/Clippy receipts
+still govern publication readiness.
+
+Team predicate authority is active and pre-existing, but a changed path outcome
+caused by its interaction with this increment has not been demonstrated. Jumpjet
+precheck-row and unusual42C290 coordinate admission remain reachability hypotheses.
+Arbitrary process reads, record[-1], cyclic walks and cardinality limits retain
+explicit nonparity/scale obligations. These keep their phase rows open; they do not
+by themselves establish an unsafe dependency in the validated terminating increment.
 
 ## Explicit unresolved domain
 

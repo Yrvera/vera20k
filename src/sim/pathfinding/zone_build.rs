@@ -14,13 +14,12 @@ use super::passability;
 use super::terrain_cost::TerrainCostGrid;
 use super::zone_hierarchy::{ZoneEdgeRecord, ZoneHierarchy, ZoneLevelGraph, ZoneRecord};
 use super::zone_map::{ZONE_INVALID, ZoneAdjacency, ZoneId, ZoneInfo, ZoneMap};
-use crate::map::bridge_facts::BRIDGE_FLAG_DIRECTION_ZERO;
 use crate::map::resolved_terrain::{ResolvedTerrainGrid, zone_class};
 use crate::rules::locomotor_type::MovementZone;
 use crate::rules::terrain_rules::LandType;
 use crate::sim::bridge_state::BridgeEndpointRecord;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::util::native_x87::{X87Chop53, X87Value, sqrt_approx_f32};
+use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 
 /// 8-directional neighbor offsets: (dx, dy, is_diagonal).
 pub(crate) const NEIGHBORS: [(i32, i32, bool); 8] = [
@@ -1701,131 +1700,15 @@ pub(crate) fn find_high_bridge_record(
     })
 }
 
-/// Resolve the coordinate used only by hierarchy lookup in the layered path
-/// precheck. The caller must continue to pass the unmodified start, layer, and
-/// goal to cell A* and must return its unmodified cell path.
-pub(crate) fn resolve_hierarchy_path_coord(
-    terrain: &ResolvedTerrainGrid,
-    bridge_records: &[BridgeEndpointRecord],
-    query: (u16, u16),
-    bridge_enabled: bool,
-) -> (u16, u16) {
-    if !bridge_enabled {
-        return query;
-    }
-    let Some(query_cell) = terrain.cell(query.0, query.1) else {
-        return query;
-    };
-    if !query_cell.bridge_facts.has_structural_bridge() {
-        return query;
-    }
-
-    let preserve_y = query_cell.bridge_facts.raw_flags & BRIDGE_FLAG_DIRECTION_ZERO != 0;
-    let Some(record) = find_high_bridge_record(bridge_records, 0, query, 2) else {
-        return resolve_hierarchy_coord_without_record(terrain, query, preserve_y);
-    };
-
-    let selected_endpoint = if record.active {
-        if native_cell_distance(query, record.endpoint_a)
-            < native_cell_distance(query, record.endpoint_b)
-        {
-            record.endpoint_a
-        } else {
-            record.endpoint_b
-        }
-    } else {
-        let walk_direction = if record.endpoint_a.0 == record.endpoint_b.0 {
-            4
-        } else {
-            2
-        };
-        let select_b = walk_to_nonstructural_exit(terrain, query, walk_direction)
-            .and_then(|exit| terrain.cell(exit.0, exit.1))
-            .is_some_and(|exit| {
-                terrain.high_bridge_tile_offset(exit).is_some()
-                    && exit.yr_cell_land_type != LandType::Rock.as_index()
-            });
-        if select_b {
-            record.endpoint_b
-        } else {
-            record.endpoint_a
-        }
-    };
-
-    project_bridge_endpoint(query, record.endpoint_a, selected_endpoint, preserve_y)
-        .unwrap_or(query)
-}
-
-fn project_bridge_endpoint(
-    query: (u16, u16),
-    endpoint_a: (u16, u16),
-    selected_endpoint: (u16, u16),
-    preserve_y: bool,
-) -> Option<(u16, u16)> {
-    if preserve_y {
-        let y = i32::from(selected_endpoint.1) + i32::from(query.1) - i32::from(endpoint_a.1);
-        Some((selected_endpoint.0, u16::try_from(y).ok()?))
-    } else {
-        let x = i32::from(selected_endpoint.0) + i32::from(query.0) - i32::from(endpoint_a.0);
-        Some((u16::try_from(x).ok()?, selected_endpoint.1))
-    }
-}
-
-fn resolve_hierarchy_coord_without_record(
-    terrain: &ResolvedTerrainGrid,
-    query: (u16, u16),
-    preserve_y: bool,
-) -> (u16, u16) {
-    let (positive_direction, negative_direction) = if preserve_y { (2, 6) } else { (4, 0) };
-    let positive = hierarchy_high_tile_exit(terrain, query, positive_direction);
-    let negative = hierarchy_high_tile_exit(terrain, query, negative_direction);
-    match (positive, negative) {
-        (Some(positive), Some(negative)) => {
-            if native_cell_distance(query, positive) <= native_cell_distance(query, negative) {
-                positive
-            } else {
-                negative
-            }
-        }
-        (Some(exit), None) | (None, Some(exit)) => exit,
-        (None, None) => query,
-    }
-}
-
-fn hierarchy_high_tile_exit(
-    terrain: &ResolvedTerrainGrid,
-    query: (u16, u16),
-    direction: u8,
-) -> Option<(u16, u16)> {
-    let exit = walk_to_nonstructural_exit(terrain, query, direction)?;
-    let cell = terrain.cell(exit.0, exit.1)?;
-    (!cell.outside_playfield && terrain.high_bridge_tile_offset(cell).is_some()).then_some(exit)
-}
-
-fn walk_to_nonstructural_exit(
-    terrain: &ResolvedTerrainGrid,
-    start: (u16, u16),
-    direction: u8,
-) -> Option<(u16, u16)> {
-    let mut cursor = start;
-    loop {
-        cursor = terrain.step_coord_by_direction(cursor, direction)?;
-        let cell = terrain.cell(cursor.0, cursor.1)?;
-        if !cell.bridge_facts.has_structural_bridge() {
-            return Some(cursor);
-        }
-    }
-}
-
-fn native_cell_distance(lhs: (u16, u16), rhs: (u16, u16)) -> i32 {
-    let dx = X87Chop53::load_i32(i32::from(lhs.0).wrapping_sub(i32::from(rhs.0)));
-    let dy = X87Chop53::load_i32(i32::from(lhs.1).wrapping_sub(i32::from(rhs.1)));
+///583180/5835D0 subtract packed words before floating distance and retain
+/// only the signed low word of Math_ftol for comparison.
+pub(crate) fn native_packed_cell_distance(lhs: (u16, u16), rhs: (u16, u16)) -> i16 {
+    let dx = X87Chop53::load_i32(i32::from(lhs.0.wrapping_sub(rhs.0) as i16));
+    let dy = X87Chop53::load_i32(i32::from(lhs.1.wrapping_sub(rhs.1) as i16));
     let squared = X87Chop53::add(X87Chop53::mul(dx, dx), X87Chop53::mul(dy, dy));
-    let root_bits =
-        sqrt_approx_f32(squared).expect("map-space squared distance stays in finite f32 range");
-    let root: X87Value =
-        X87Chop53::load_f32(root_bits).expect("Sqrt_Approx returns a finite normal or zero");
-    X87Chop53::ftol_i64(root).expect("map-space distance fits a signed integer") as i32
+    let root = sqrt_approx_f32(squared).expect("packed distance is finite");
+    let value = X87Chop53::load_f32(root).expect("packed distance root is finite");
+    X87Chop53::ftol_i64(value).expect("packed distance fits integer") as i16
 }
 
 /// Build the exact per-cell bridge redirect used by bridge-aware zone lookup.
@@ -1882,9 +1765,8 @@ pub(crate) fn build_bridge_redirect(
 /// is not Rock, otherwise A.
 ///
 /// This is NOT `MapClass::ResolvePathCoord_BridgeAware` 0x00583180, which is
-/// the separate hierarchy-only resolver implemented by
-/// `resolve_hierarchy_path_coord` above. The two share only their inactive
-/// branch. Do not merge them.
+/// the live hierarchy resolver in zone_search::live_hierarchy_projection.
+/// This legacy cache remains side-effect free; live queries own dummy writes.
 fn bridge_redirect_for_structural_cell(
     terrain: &ResolvedTerrainGrid,
     bridge_records: &[BridgeEndpointRecord],
@@ -1942,6 +1824,25 @@ mod tests {
     use crate::map::resolved_terrain::ResolvedTerrainCell;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::bridge_state::{BridgeEndpointRecord, BridgeRecordKind};
+
+    // Existing projection regressions now invoke the sole production owner.
+    // No configured bounds in these synthetic fixtures means membership is supplied.
+    fn project_live_cell_for_test(
+        terrain: &ResolvedTerrainGrid,
+        records: &[BridgeEndpointRecord],
+        query: (u16, u16),
+        enabled: bool,
+    ) -> (u16, u16) {
+        let cell = crate::sim::cell_rect::get_cellclass_fallback(
+            Some(terrain),
+            i32::from(query.0 as i16),
+            i32::from(query.1 as i16),
+        );
+        crate::sim::pathfinding::zone_search::live_hierarchy_projection(
+            terrain, records, &cell, enabled, None,
+        )
+        .expect("fixture has an addressable terminating projection")
+    }
 
     fn redirect_terrain(
         width: u16,
@@ -2263,7 +2164,7 @@ mod tests {
             bridge_kind: BridgeRecordKind::High,
         }];
         assert_eq!(
-            resolve_hierarchy_path_coord(&vertical, &vertical_record, (4, 4), true),
+            project_live_cell_for_test(&vertical, &vertical_record, (4, 4), true),
             (4, 5),
             "clear 0x800 preserves the X lane offset from endpoint A"
         );
@@ -2282,14 +2183,14 @@ mod tests {
             bridge_kind: BridgeRecordKind::High,
         }];
         assert_eq!(
-            resolve_hierarchy_path_coord(&horizontal, &horizontal_record, (4, 4), true),
+            project_live_cell_for_test(&horizontal, &horizontal_record, (4, 4), true),
             (5, 4),
             "set 0x800 preserves the Y lane offset from endpoint A"
         );
     }
 
     #[test]
-    fn gsi_04_12_hierarchy_projection_native_truncated_tie_chooses_b() {
+    fn gsi_04_12_hierarchy_projection_measures_lane_adjusted_endpoints() {
         let terrain = redirect_terrain(7, 6, None, None, |cell| {
             if (cell.rx, cell.ry) == (1, 2) {
                 cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
@@ -2303,11 +2204,12 @@ mod tests {
             bridge_kind: BridgeRecordKind::High,
         }];
 
-        // sqrt(5) and sqrt(8) both ftol to 2. The strict native comparison
-        // therefore ties even though A is geometrically nearer, and selects B.
+        // Native projects both endpoints onto X=1 before measuring: distances
+        // 1 and2 select A. The obsolete raw-endpoint sqrt5/sqrt8 tie was wrong.
+        // Original path_entry active_lane_adjusted_distance pins this fixture.
         assert_eq!(
-            resolve_hierarchy_path_coord(&terrain, &records, (1, 2), true),
-            (1, 4)
+            project_live_cell_for_test(&terrain, &records, (1, 2), true),
+            (1, 1)
         );
     }
 
@@ -2328,11 +2230,11 @@ mod tests {
         }];
 
         assert_eq!(
-            resolve_hierarchy_path_coord(&terrain, &records, (2, 1), false),
+            project_live_cell_for_test(&terrain, &records, (2, 1), false),
             (2, 1)
         );
         assert_eq!(
-            resolve_hierarchy_path_coord(&terrain, &records, (2, 0), true),
+            project_live_cell_for_test(&terrain, &records, (2, 0), true),
             (2, 0)
         );
     }
@@ -2357,12 +2259,12 @@ mod tests {
         }];
 
         assert_eq!(
-            resolve_hierarchy_path_coord(&terrain, &records, (2, 2), true),
+            project_live_cell_for_test(&terrain, &records, (2, 2), true),
             (6, 2)
         );
         terrain.cell_mut(4, 2).unwrap().yr_cell_land_type = LandType::Rock.as_index();
         assert_eq!(
-            resolve_hierarchy_path_coord(&terrain, &records, (2, 2), true),
+            project_live_cell_for_test(&terrain, &records, (2, 2), true),
             (1, 2)
         );
     }
@@ -2379,7 +2281,7 @@ mod tests {
             }
         });
         assert_eq!(
-            resolve_hierarchy_path_coord(&horizontal, &[], (3, 2), true),
+            project_live_cell_for_test(&horizontal, &[], (3, 2), true),
             (5, 2)
         );
 
@@ -2392,7 +2294,7 @@ mod tests {
             }
         });
         assert_eq!(
-            resolve_hierarchy_path_coord(&vertical, &[], (2, 3), true),
+            project_live_cell_for_test(&vertical, &[], (2, 3), true),
             (2, 5)
         );
     }

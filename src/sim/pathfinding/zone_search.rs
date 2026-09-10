@@ -54,14 +54,15 @@
 //!   `0x00712284` — absent from stock `rulesmd.ini`, so this term never fires);
 //!   the `0x004DA1D0` predicate, which — given the other terms already hold at
 //!   the call site — reduces to
-//!   `mover+0x3D4 != 0` **or** current mission == Retreat(4) **or**
+//!   `mover+0x3D4 != 0` **or** current-or-queued mission == Retreat(4) **or**
 //!   (`mover+0x5D4` non-null and `FUN_006EC300`). Player effect: for such a
 //!   mover gamemd runs an unrestricted A*
 //!   and can return a route where VERA answers "unreachable" from the zone map,
 //!   so the unit refuses an order retail accepts. Frequency: a unit on Retreat
 //!   or linked to the remaining team predicate — uncommon in ordinary
-//!   skirmish, but not zero. Downstream risk: these terms are pure predicates
-//!   at this function's head, so adding them later moves no state.
+//!   skirmish, but not zero. Team6EC300 can perform mode1 waypoint lookups
+//!   before endpoint membership, changing shared dummy state. Its Team+7F and
+//!   action3 authority/order remain open; the current bool is supplied externally.
 //! - **The corridor-Dijkstra fallback defines its corridor differently.**
 //!   gamemd's corridor is the set of zones `Zone_precheck` stamped, widened by
 //!   the per-cell `+0x122` escape (point 5). When VERA has no level-0 hierarchy
@@ -200,6 +201,7 @@ fn can_reach_through_explicit_tube(
 
 // Original42C900 compares raw GetZoneID results, including distinct invalid
 // row labels1/FFFF. Compatibility-only test/cache grids have no raw row.
+#[cfg(test)]
 fn native_path_zone_equality(
     zones: &ZoneGrid,
     terrain: Option<&ResolvedTerrainGrid>,
@@ -216,50 +218,7 @@ fn native_path_zone_equality(
     )
 }
 
-/// Resolve the two hierarchy-only coordinates and apply the active
-/// `AStar_pathfind_search @ 0x0042CAD6` mode-one endpoint gate. Native passes
-/// the resolved coordinates to `IsCellInPlayfield @ 0x00578460`, while cell A*
-/// keeps the raw source and destination. A configured playfield without its
-/// CellClass terrain state cannot establish mode-one membership, so hierarchy
-/// is disabled and the ordinary cell search remains available.
-fn resolve_hierarchy_endpoint_contract(
-    zone_grid: Option<&ZoneGrid>,
-    resolved_terrain: Option<&ResolvedTerrainGrid>,
-    playfield_bounds: Option<PlayfieldBounds>,
-    start: (u16, u16),
-    start_bridge_enabled: bool,
-    goal: (u16, u16),
-    goal_bridge_enabled: bool,
-) -> ((u16, u16), (u16, u16), bool) {
-    let Some(terrain) = resolved_terrain else {
-        return (start, goal, playfield_bounds.is_none());
-    };
-    let bridge_records = zone_grid.map_or(&[][..], ZoneGrid::bridge_records);
-    let resolved_start = super::zone_build::resolve_hierarchy_path_coord(
-        terrain,
-        bridge_records,
-        start,
-        start_bridge_enabled,
-    );
-    let resolved_goal = super::zone_build::resolve_hierarchy_path_coord(
-        terrain,
-        bridge_records,
-        goal,
-        goal_bridge_enabled,
-    );
-    let endpoints_in_playfield = playfield_bounds.is_none_or(|bounds| {
-        cell_is_in_playfield_height_aware(
-            (i32::from(resolved_start.0), i32::from(resolved_start.1)),
-            Some(bounds),
-            Some(terrain),
-        ) && cell_is_in_playfield_height_aware(
-            (i32::from(resolved_goal.0), i32::from(resolved_goal.1)),
-            Some(bounds),
-            Some(terrain),
-        )
-    });
-    (resolved_start, resolved_goal, endpoints_in_playfield)
-}
+include!("native_path_entry.rs");
 
 /// Zone-aware path search for flat (ground-only) paths.
 ///
@@ -327,28 +286,26 @@ pub(crate) fn find_path_zoned_marker(
     allow_zone_hierarchy: bool,
     playfield_bounds: Option<PlayfieldBounds>,
 ) -> Option<Vec<(u16, u16)>> {
-    let goal_bridge_enabled = resolved_terrain
-        .and_then(|terrain| terrain.cell(goal.0, goal.1))
-        .is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
-    let (hierarchy_start, hierarchy_goal, endpoints_in_playfield) =
-        resolve_hierarchy_endpoint_contract(
-            zone_grid,
-            resolved_terrain,
-            playfield_bounds,
-            start,
-            false,
-            goal,
-            goal_bridge_enabled,
-        );
+    let entry = prepare_native_path_entry(
+        zone_grid,
+        resolved_terrain,
+        movement_zone.unwrap_or(mz),
+        start,
+        false,
+        goal,
+        allow_zone_hierarchy,
+        playfield_bounds,
+    );
     find_path_zoned_marker_inner(
         grid,
         start,
         goal,
-        hierarchy_start,
-        hierarchy_goal,
+        entry.hierarchy_start,
+        entry.hierarchy_goal,
+        entry.raw_equal,
         costs,
         entity_blocks,
-        if allow_zone_hierarchy && endpoints_in_playfield {
+        if entry.endpoints_in_playfield {
             zone_grid
         } else {
             None
@@ -372,6 +329,7 @@ fn find_path_zoned_marker_inner(
     goal: (u16, u16),
     hierarchy_start: (u16, u16),
     hierarchy_goal: (u16, u16),
+    native_zone_equal: Option<bool>,
     costs: Option<&TerrainCostGrid>,
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
     zone_grid: Option<&ZoneGrid>,
@@ -448,16 +406,7 @@ fn find_path_zoned_marker_inner(
             MovementLayer::Ground
         },
     );
-    let zones_match = native_path_zone_equality(
-        zg,
-        resolved_terrain,
-        movement_zone.unwrap_or(mz),
-        start,
-        false,
-        goal,
-        goal_bridge,
-    )
-    .unwrap_or(start_zone == goal_zone);
+    let zones_match = native_zone_equal.unwrap_or(start_zone == goal_zone);
 
     let hierarchy_counts_available = blocker_neighbor_counts.is_some();
     if hierarchy_counts_available
@@ -734,25 +683,24 @@ pub(crate) fn find_layered_path_zoned_marker(
     } else {
         MovementLayer::Ground
     };
-    let goal_layer = if resolved_terrain
-        .and_then(|terrain| terrain.cell(goal.0, goal.1))
-        .is_some_and(|cell| cell.bridge_facts.has_structural_bridge())
-    {
+    let entry = prepare_native_path_entry(
+        zone_grid,
+        resolved_terrain,
+        movement_zone.unwrap_or(mz),
+        start,
+        source_layer == MovementLayer::Bridge,
+        goal,
+        allow_zone_hierarchy,
+        playfield_bounds,
+    );
+    let goal_layer = if entry.goal_bridge {
         MovementLayer::Bridge
     } else {
         MovementLayer::Ground
     };
-    let (hierarchy_start, hierarchy_goal, endpoints_in_playfield) =
-        resolve_hierarchy_endpoint_contract(
-            zone_grid,
-            resolved_terrain,
-            playfield_bounds,
-            start,
-            source_layer == MovementLayer::Bridge,
-            goal,
-            goal_layer == MovementLayer::Bridge,
-        );
-    let zone_grid = if allow_zone_hierarchy && endpoints_in_playfield {
+    let hierarchy_start = entry.hierarchy_start;
+    let hierarchy_goal = entry.hierarchy_goal;
+    let zone_grid = if entry.endpoints_in_playfield {
         zone_grid
     } else {
         None
@@ -776,20 +724,8 @@ pub(crate) fn find_layered_path_zoned_marker(
     }
 
     if let Some(zg) = zone_grid {
-        // Native first obtains source/destination zone IDs through bridge-aware
-        // `GetZoneID`; these are distinct from the later 0x00583180 projection.
-        // `ZoneMap::zone_at` performs that redirect from the raw coordinate and
-        // selected movement layer, so equality must remain on this pair.
-        let zones_match = native_path_zone_equality(
-            zg,
-            resolved_terrain,
-            movement_zone.unwrap_or(mz),
-            start,
-            source_layer == MovementLayer::Bridge,
-            goal,
-            goal_layer == MovementLayer::Bridge,
-        )
-        .unwrap_or_else(|| {
+        // Raw results were captured before retained-cell projection/playfield.
+        let zones_match = entry.raw_equal.unwrap_or_else(|| {
             zg.map_for(mz).is_some_and(|zone_map| {
                 zone_map.zone_at(start.0, start.1, source_layer)
                     == zone_map.zone_at(goal.0, goal.1, goal_layer)
