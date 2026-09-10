@@ -1075,6 +1075,8 @@ mod tests {
     use crate::sim::occupancy::CellListInsertion;
     use crate::sim::pathfinding::zone_map::ZoneGrid;
 
+    include!("cell_rect_native_tests.rs");
+
     fn map_header_with_rects(size: (i32, i32), local: [i32; 4]) -> MapHeader {
         MapHeader {
             theater: "TEMPERATE".to_string(),
