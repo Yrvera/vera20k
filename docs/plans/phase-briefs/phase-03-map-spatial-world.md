@@ -108,21 +108,23 @@ status is historical; reconcile it against current source before selecting work.
 
 ## Inherited residuals
 
-The current Tube hierarchy increment is committed through `c2d6fe0b`, with
-further path-entry repairs in progress. Its [evidence report](../../research/PHASE3_TUBE_HIERARCHY_20260910.md)
-records original-instruction coverage of the shared high/Tube helper, full/local
-record order, raw path tokens, live bridge-aware DWORD zone queries and restore
-preparation. The latest leaf checkpoint passed the focused checks and the
-zone-build module; the previous zone-search module run passed. These receipts
-precede the new entry-prefix changes and cannot establish final readiness.
-Full library tests, Clippy and independent readiness remain pending.
+The Tube hierarchy and ordered path-entry increment is validated at source
+`154b171e`; report commit `906b7e40` records final receipts. Its
+[evidence report](../../research/PHASE3_TUBE_HIERARCHY_20260910.md) covers original
+instructions for the shared high/Tube helper, full/local record order, raw path
+tokens, live bridge-aware DWORD queries, restore preparation and 19 ordered entry
+cases. Focused checks passed (11 tests, one ignored), zone-search passed 31 tests,
+and zone-build passed 32 tests with one ignored. The full library passed 8,600
+tests with zero failures and 119 ignored; Clippy exited zero with 1,146 warnings.
+The fresh independent critic passed merging this bounded increment after all
+confirmed candidate findings were fixed. This does not close M3 or any phase row.
 
 The native entry at `0x0042C900` retains source and destination Cell pointers,
 executes both zone queries, then projects those retained pointers and finally
 runs conditional playfield checks. Shared-dummy writes during the intervening
 queries can change what a retained pointer observes. Hoisting a pure projection
 or filtering out the zone grid before those queries changes native state order.
-The live entry owner must preserve this sequence even when hierarchy is disabled.
+The live entry owner now preserves this sequence even when hierarchy is disabled.
 
 Projection `0x00583180` uses packed signed-word arithmetic, lane-projected
 endpoint distances and a signed-short distance result. Its no-record helper
