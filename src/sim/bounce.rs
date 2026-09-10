@@ -302,42 +302,14 @@ impl BounceState {
 ///   `LaserFencePost=` key, which nothing authors either. Do not port it as a
 ///   default.
 ///
-/// Still UNCHECKED, and each blocks a piece of the implementation:
-/// - `DAT_0089C76C`'s runtime value. The image bytes are zero and its only
-///   writer (`FUN_00439610`) is reached indirectly, so the deck plane's offset
-///   is unknown statically. The bridge arm cannot be written faithfully
-///   without it.
-/// - The `+0x80` virtual on `BuildingClass`. Verified only that it returns a
-///   `char` and that nonzero suppresses the bounce.
-/// - `MATRIX_TABLE_0x00B45188` beyond ramp index 16; the init loop fills 0..16.
-
-/// The identity entry of `MATRIX_TABLE_0x00B45188`, ramp index 0 — flat ground.
-///
-/// `VXL_MasterLighting_Init @ 0x00755400` fills index 0 with the identity and
-/// indices 1..=16 with `Matrix3x4_BuildFromRotateXAndFacing(angle, slope)` over
-/// eight facings and two slope constants. Only the flat entry is modelled here;
-/// see [`reflect_off_ground`].
+/// Ground/deck queries are delivered by the current
+/// Phase 3 Bounce ground-height comparison. Cliff rollback and quaternion
+/// integration remain separate residuals below.
 const FLAT_RAMP: u8 = 0;
 
-/// `DAT_0089C76C`, the offset added to the ground height to get the bridge deck
-/// plane `BounceClass::Update` snaps to (`0x00439BF8`) and the stop test
-/// subtracts (`0x00439A7A`).
-///
-/// RESIDUAL (GSI-05.14) — the image bytes at `0x0089C76C` are zero, and the
-/// only writer, `FUN_00439610 @ 0x00439610`, has no direct caller: its single
-/// xref is a data reference from `0x00812738`, a vtable slot, so it is reached
-/// (if at all) only through a virtual dispatch this session did not resolve.
-/// The load-image value is therefore what is modelled.
-/// - Trigger: debris crossing a bridge deck plane.
-/// - Player effect: with a non-zero runtime offset the deck snap would land the
-///   debris that many leptons above or below the bridge surface.
-/// - Frequency: bounded by bridge cells only; a vehicle has to die on or
-///   directly under a bridge and throw voxel debris (32 stock types; the other
-///   4 of the 36 authoring `DebrisTypes=` mis-spell `MaxDebris=` and throw
-///   nothing).
-/// - Downstream risk: none to the stream — the offset is arithmetic on the
-///   position, it consumes no draws and gates no branch count.
-const DECK_PLANE_OFFSET_LEPTONS: i32 = 0;
+/// Original initializer439610 computes four times the initialized integer
+/// Bounce height104, stores416 at89C76C. Both439B00 and439A10 consume it.
+const DECK_PLANE_OFFSET_LEPTONS: i32 = 416;
 
 /// The drop applied when the body rises back through the deck plane
 /// (`0x00439D5D`, `local_118 + -0x14`).
@@ -365,10 +337,16 @@ const STOP_MAGNITUDE_THRESHOLD: f32 = 2.5;
 /// so the integrator takes them through this port rather than reaching for a
 /// map grid — `sim/` keeps the physics pure and the caller supplies terrain.
 pub trait BounceTerrain {
+    /// Retain native Cell identity across later lookups, including shared dummy.
+    type Cell;
+    fn select_cell(&self, coord: IVec3) -> Self::Cell;
+    fn selected_is_bridge(&self, cell: &Self::Cell) -> bool;
     /// `CellClass::GetGroundHeight` at the given world coordinate, in leptons.
     fn ground_height_leptons(&self, coord: IVec3) -> i32;
     /// `CellClass+0x140 & 0x100` — the cell carries a bridge deck.
-    fn is_bridge_cell(&self, coord: IVec3) -> bool;
+    fn is_bridge_cell(&self, coord: IVec3) -> bool {
+        self.selected_is_bridge(&self.select_cell(coord))
+    }
     /// `CellClass+0x11B`, the cell's height level. Only the difference between
     /// the pre- and post-move cells is read.
     fn cell_height_level(&self, coord: IVec3) -> i32;
@@ -376,7 +354,7 @@ pub trait BounceTerrain {
     fn ramp(&self, coord: IVec3) -> u8;
     /// `Look_up_building_in_cell` non-null, or
     /// `CellClass::IsWallConnectableInDirection(-1, -1)`.
-    fn has_bounce_surface(&self, coord: IVec3) -> bool;
+    fn has_bounce_surface(&self, cell: &Self::Cell) -> bool;
     /// `CellClass+0xEC == 2` — LandType WATER. `BounceClass::Update` itself
     /// never reads it; the hosts do, both at the death gate and on a landing.
     fn is_water(&self, coord: IVec3) -> bool;
@@ -471,30 +449,9 @@ impl BounceState {
         Ok(Some(out))
     }
 
-    /// [`Self::reflect_off_ground`] with the flat collapse standing in for the
-    /// ramps whose matrices are unread.
-    ///
-    /// RESIDUAL (GSI-05.14) — see [`Self::reflect_off_ground`] for why the
-    /// sloped entries of `MATRIX_TABLE_0x00B45188` cannot be derived here: the
-    /// table is built at runtime by `VXL_MasterLighting_Init @ 0x00755400`, its
-    /// image bytes are zero, and `emulate_function` reports registers only, so
-    /// a matrix a helper writes to memory is not observable through the
-    /// instrument. This wrapper exists because the alternative — refusing the
-    /// reflection inside `update` — would leave the body's downward velocity
-    /// intact on a hillside and drive it through the terrain, which is a larger
-    /// divergence than reflecting vertically.
-    /// - Trigger: debris contacting a sloped cell.
-    /// - Player effect: the piece rebounds straight up instead of along the
-    ///   slope normal, so it hops in place where retail sends it downhill.
-    /// - Frequency: every bounce that lands on a ramp cell. Only `[TIRE]`
-    ///   (`Elasticity=0.8`) bounces at all in stock — but all 36 stock
-    ///   `DebrisTypes=` lines name `TIRE`, so it is every voxel-debris death
-    ///   whose scatter reaches a ramp. (32 of those 36 sections reach the
-    ///   producer in gamemd; the other four spell `Maxdebris=`.)
-    /// - Downstream risk: none to the stream. The reflection consumes no draws;
-    ///   it only changes where a display object travels. The `Stopped` decision
-    ///   reads the reflected velocity, so a piece can rest one tick earlier or
-    ///   later than retail on a slope.
+    /// Pre-existing GSI-05.14 slope response remains a flat approximation.
+    /// Ordinary slopes were already selected before the Phase 3 query repair;
+    /// their reflection is separate physics work, not completed by this slice.
     fn reflect_off_ground_or_flat(
         velocity: [NativeF32Bits; 3],
         elasticity: NativeF64Bits,
@@ -518,7 +475,7 @@ impl BounceState {
     /// associates `(vz*vz + vx*vx) + vy*vy` — read from the `FLD ST(n)/FMUL
     /// ST(n)/FADDP` ladder at `0x00439AC3`..`0x00439AD1`, because the
     /// decompiler canonicalises the commutative sum.
-    fn stop_magnitude(&self, terrain: &dyn BounceTerrain) -> Result<i32, NativeX87Error> {
+    fn stop_magnitude(&self, terrain: &impl BounceTerrain) -> Result<i32, NativeX87Error> {
         let coord = ftol_coord(self.position)?;
         let ground = terrain.ground_height_leptons(coord);
         // `FILD ground` then `FSUBR float [pos.Z]` — the reverse subtract makes
@@ -575,7 +532,10 @@ impl BounceState {
     ///
     /// Two arms are NOT modelled, each recorded where it is skipped: the slope
     /// re-bounce (step 8 of the module spec) and the quaternion integration.
-    pub fn update(&mut self, terrain: &dyn BounceTerrain) -> Result<BounceOutcome, NativeX87Error> {
+    pub fn update(
+        &mut self,
+        terrain: &impl BounceTerrain,
+    ) -> Result<BounceOutcome, NativeX87Error> {
         self.velocity[2] = X87Chop53::store_f32(X87Chop53::sub(
             X87Chop53::load_f32(self.velocity[2])?,
             X87Chop53::load_f64(self.gravity)?,
@@ -591,11 +551,12 @@ impl BounceState {
         let new_coord = ftol_coord(self.position)?;
 
         let ground = terrain.ground_height_leptons(new_coord);
-        let deck = ground + DECK_PLANE_OFFSET_LEPTONS;
+        let deck = ground.wrapping_add(DECK_PLANE_OFFSET_LEPTONS);
+        let new_cell = terrain.select_cell(new_coord);
 
         let mut fell_through_deck = false;
         let mut rose_through_deck = false;
-        if terrain.is_bridge_cell(new_coord) || terrain.is_bridge_cell(old_coord) {
+        if terrain.selected_is_bridge(&new_cell) || terrain.is_bridge_cell(old_coord) {
             if new_coord.z < deck {
                 fell_through_deck = deck <= old_coord.z;
             } else {
@@ -610,11 +571,11 @@ impl BounceState {
             && !rose_through_deck
             && ground_f <= position_z
             && position_z - BUILDING_LOOKUP_PROXIMITY_LEPTONS < ground_f
-            && terrain.has_bounce_surface(new_coord);
+            && terrain.has_bounce_surface(&new_cell);
 
-        // The `LaserFence=` rejection inside native's building arm
-        // (`type+0x16BF` with `building+0x618 >= 8`) is Tiberian Sun legacy —
-        // no stock RA2/YR building authors the key — and is not ported.
+        // The LaserFence-dependent rejection (type+0x16BF and building+0x618
+        // >=8) remains outside this comparison. Its fixtures have that flag
+        // clear; this does not establish universal dormancy.
         let clamp_to_surface = |state: &mut Self| {
             let clamp_floor = (ground - GROUND_CLAMP_WINDOW_LEPTONS) as f32;
             if clamp_floor < f32_of(state.position[2]) {
@@ -666,10 +627,10 @@ impl BounceState {
         //   on top of the cliff where retail bounces it off the face.
         // - Frequency: rare. It needs a two-level step inside one tick's travel.
         // - Downstream risk: none to the stream; no draws are involved.
-        let _ = (
-            terrain.cell_height_level(new_coord),
-            terrain.cell_height_level(old_coord),
-        );
+        // Native439F3A then439F50: OLD first, then newly captured post-snap
+        // coordinates. Preserve miss stamps even though cliff response is open.
+        let _old_level = terrain.cell_height_level(old_coord);
+        let _new_level = terrain.cell_height_level(ftol_coord(self.position)?);
 
         self.finish_tick(terrain, BounceOutcome::Bounced)
     }
@@ -691,7 +652,7 @@ impl BounceState {
     /// takes, and nothing in the physics reads the orientation.
     fn finish_tick(
         &self,
-        terrain: &dyn BounceTerrain,
+        terrain: &impl BounceTerrain,
         contact: BounceOutcome,
     ) -> Result<BounceOutcome, NativeX87Error> {
         let magnitude = self.stop_magnitude(terrain)?;

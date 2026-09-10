@@ -10008,14 +10008,14 @@ fn gsi_05_14_death_debris_joins_the_live_order_the_hash_and_the_snapshot() {
     // order once its AI reaches Delete.
     let first = first_id;
     let before = sim.substrate.voxel_anims.get(first).unwrap().world_coord();
-    sim.visit_voxel_anim(first);
+    sim.visit_voxel_anim(first, None);
     let after = sim.substrate.voxel_anims.get(first).unwrap().world_coord();
     assert_ne!(before, after, "one AI visit moves the body");
     for _ in 0..200 {
         if !sim.substrate.voxel_anims.contains_key(first) {
             break;
         }
-        sim.visit_voxel_anim(first);
+        sim.visit_voxel_anim(first, None);
     }
     assert!(
         !sim.substrate.voxel_anims.contains_key(first),
