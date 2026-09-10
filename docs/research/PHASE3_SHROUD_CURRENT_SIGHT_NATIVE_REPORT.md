@@ -77,7 +77,7 @@ python -B -m tools.spatial_oracle.shroud_current_sight --write
 python -B -m tools.spatial_oracle.shroud_current_sight --check
 ```
 
-Both commands exited0 on2026-09-10. The read-only check reproduced all15 sequences
+Both commands exited0 on2026-09-10. The read-only check reproduced all18 sequences
 without writing files. Cases cover never-seen/current/past/overlapping sight,
 entering an existing gap, ordinary and MapIsClear removal, fire-only/Psychic-only
 mapping, departure119→120, return before120, removal preserving pending, and a
@@ -123,6 +123,29 @@ and ungapped cells, existing gaps, removal, repeated House/cache publication and
 snapshot continuation. C cannot see A through B; a fresh B event reaches both of
 its direct allies. Tactical CPU tests check bright versus dark cell output.
 
+## Admission state-machine revision in progress
+
+A fresh architecture critic found three additional required distinctions before
+any Cargo run. The retained original cases now include second-gap/return followed
+by120 (counter remains-1 but pending clears knowledge), first-ever fire without a
+gap (counter1/pending closes at120), and first Psychic without a gap (counter0,
+no pending, remains open). Original487630 only cancels pending when alt18 was
+already set; opening missing alt18 returns without clearing pending. Fire4876F0
+uses counter>0, not gap count. An admitted sustained reveal must also publish an
+immediately consistent gap-covered/knowledge result before a later materializer.
+
+The earlier full recompute invented new mode0 events every frame.70AF50's ordinary
+latch250 returns without MapCell writes while admitted;70B1D0 releases stored254XYZ
+and260radius before another admission. UnitPerCellProcess739EC0 dispatches release
+at73AC5F then admit at73AC74 after Drive has updated Object9C coordinates.
+FootAI4DA6F7/4DA706 also has an explicitly gated15-frame fresh refresh, even for an
+unchanged footprint. A footprint diff is not proof that this event never occurs.
+The current WIP is being revised to retained source identity/footprint admissions
+and selected native counter/knowledge history, with explicit refresh distinct from
+passive reconciliation. No production parity or readiness is claimed for this
+unfinished revision. Full periodic FootAI admission remains to be assessed at the
+actual production boundary; the early120-frame sweep proof itself is unchanged.
+
 ## Rust regression owners and remaining gates
 
 Candidate tests in `vision/vision_tests.rs` replay every saved operation through
@@ -149,4 +172,4 @@ comparison. The GapGenerator collector does not yet prove every4555D0 operationa
 term (EMP, engineer, mission, HasPower); fixtures use an admitted operational
 producer. Full firing reveal owner policy and Psychic raw counter publication are
 also not closed. These are explicit residuals, not grounds for claiming the whole
-row or phase complete from15 samples.
+row or phase complete from18 samples.

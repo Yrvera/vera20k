@@ -1022,6 +1022,213 @@
           "shrouded": 1
         }
       ]
+    },
+    {
+      "name": "second_gap_then_return",
+      "observations": [
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 0,
+          "op": "constructed",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 0,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 1,
+          "op": "gap",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 1,
+          "op": "leave",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 34,
+          "gap": 2,
+          "op": "gap",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 34,
+          "gap": 2,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 0,
+          "gap": 2,
+          "op": "frame120",
+          "shrouded": 1
+        }
+      ]
+    },
+    {
+      "name": "first_fire_without_gap",
+      "observations": [
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 0,
+          "op": "constructed",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 32,
+          "gap": 0,
+          "op": "unshroud",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 32,
+          "gap": 0,
+          "op": "frame119",
+          "shrouded": 0
+        },
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 0,
+          "op": "frame120",
+          "shrouded": 1
+        }
+      ]
+    },
+    {
+      "name": "first_psychic_without_gap",
+      "observations": [
+        {
+          "alt": 0,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 1,
+          "flags": 0,
+          "gap": 0,
+          "op": "constructed",
+          "shrouded": 1
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": -1,
+          "flags": 2,
+          "gap": 0,
+          "op": "reveal",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 0,
+          "flags": 2,
+          "gap": 0,
+          "op": "leave",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 0,
+          "flags": 2,
+          "gap": 0,
+          "op": "frame119",
+          "shrouded": 0
+        },
+        {
+          "alt": 24,
+          "cache": [
+            -2,
+            -2
+          ],
+          "counter": 0,
+          "flags": 2,
+          "gap": 0,
+          "op": "frame120",
+          "shrouded": 0
+        }
+      ]
     }
   ]
 }
