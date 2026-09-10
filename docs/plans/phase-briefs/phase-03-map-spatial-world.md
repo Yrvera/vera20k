@@ -108,51 +108,49 @@ status is historical; reconcile it against current source before selecting work.
 
 ## Inherited residuals
 
-`src/sim/pathfinding/zone_build.rs::tube_hierarchy_pairs_are_unregistered` records
-an ignored test for the tube arm of `0x00582D70`. Its hypothesized trigger is a
-long route across a low bridge; the consequence is a detour or no hierarchy route.
-Fresh 2026-09-10 inspection confirms the missing arm and active full/local callers:
-`0x00581F90` from InitZoneMap and `0x00584550` from runtime cell changes. Full
-rebuild traverses active records forward; local rebuild traverses them backward
-with signed endpoint/block tests. The helper needs both lateral Tube pointers,
-walks their paths from the lateral coordinates, and stages three oriented pairs.
-Its shared high/Tube coordinate projection and zero/equal-pair retention also
-need correction. Production delivery and executable comparisons are in progress;
-retail incidence and complete route behavior remain unproved.
+The current Tube hierarchy increment is committed through `c2d6fe0b`, with
+further path-entry repairs in progress. Its [evidence report](../../research/PHASE3_TUBE_HIERARCHY_20260910.md)
+records original-instruction coverage of the shared high/Tube helper, full/local
+record order, raw path tokens, live bridge-aware DWORD zone queries and restore
+preparation. The latest leaf checkpoint passed the focused checks and the
+zone-build module; the previous zone-search module run passed. These receipts
+precede the new entry-prefix changes and cannot establish final readiness.
+Full library tests, Clippy and independent readiness remain pending.
 
-The path walker `0x00429780` treats exact token 8 as a current-cell Tube-exit
-lookup; other tokens read the direction table without masking. Accepted unusual
-tokens and signed zone-word packing need explicit coverage. ReadTubesINI also
-writes a Tube index to the shared dummy on a lookup miss, which the hierarchy
-helper can read; the current Rust binding drops that index. Establish its exact
-authority and reset/restore lifecycle before claiming this prerequisite closed.
-Fresh restore tracing finds a coupled ordering obligation: MouseClass load calls
-Resize, which resets the dummy Tube index to -1, before LoadContent invokes
-RebuildAllZoneLevels at `0x0067E8CD`. Rust currently shares the live dummy during
-fallible candidate navigation preparation and resets it only at commit. The new
-reader requires an isolated post-Resize candidate and coherent successful state
-publication; rejected preparation must not stamp the running world's dummy.
+The native entry at `0x0042C900` retains source and destination Cell pointers,
+executes both zone queries, then projects those retained pointers and finally
+runs conditional playfield checks. Shared-dummy writes during the intervening
+queries can change what a retained pointer observes. Hoisting a pure projection
+or filtering out the zone grid before those queries changes native state order.
+The live entry owner must preserve this sequence even when hierarchy is disabled.
 
-Production tracing also found a blanket explicit-Tube hierarchy bypass in
-`zone_search.rs`. Native `0x0042C900` has no such gate. Enabling the repaired
-graph requires its actual route consumers and the native early base-zone
-equality check at `0x0042CB22`, using raw zone labels before hierarchy precheck.
-The shared raw zone lookup needs the same retained source Size projection.
-Fresh review confirmed a required bridge-aware GetZoneID correction: structural
-cells without a matching record return DWORD `0xFFFFFFFF` at `0x0056D230`.
-The current 16-bit Rust lookup falls through to the ground label, which can
-incorrectly admit the new raw-equality gate. This value must remain distinct
-from raw row label `0xFFFF`. The prior original producer corpus includes
-`high_no_far` and rejected-start cases retaining structural cells but producing
-no record. The gate repair must include this state and original lookup evidence.
-The live query also requires native inactive-span walking: `0x0056D230` reloads
-the query cell, then `0x00481810` steps from its stored coordinate and publishes
-fallback-cell lookups. The existing pure redirect cache starts from the query
-coordinate and clips at its rectangle, losing those writes and potentially
-selecting a different endpoint for aliases. Correct the live query without
-introducing query side effects into cache construction.
-Broader bridge-aware query cases and unexplained raw path-memory reads remain
-open; a bounded helper comparison cannot certify them.
+Projection `0x00583180` uses packed signed-word arithmetic, lane-projected
+endpoint distances and a signed-short distance result. Its no-record helper
+`0x005835D0` alternates two live Cell pointers, checks both candidate endpoints
+and then reloads the source coordinate for distance selection. Missing candidates
+can fall through to an unchecked record[-1] read; cyclic walks and this raw-memory
+domain remain open rather than receiving invented native outcomes. Its immediate
+`0x0042C290` consumer independently projects endpoints into each hierarchy level;
+rectangular `zone_at` lookup is not sufficient for wrapped or signed coordinates.
+
+The remaining movement predicates also require explicit authority. The
+`0x004DA1D0` virtual checks current-or-queued Retreat and a Team predicate at
+`0x006EC300`; the latter performs a mode-1 waypoint lookup and can change the
+shared dummy before endpoint membership. These are not pure predicates.
+Fresh retail extraction of `mapsmd03.mix/all01umd.map` (SHA-256
+`dee38769f2247a85908705486c175ef14a4cf90437899defe7c8b4c0d1c51fb0`)
+contains Team `0925E45C`, TaskForce `0B0815BC` (two HTNK, one TTNK), Script
+`0973352C` beginning with action `3,14`, and reinforcement actions referencing
+that team. Native reinforcement `0x0065D8E0` calls `0x0065DD30`, which sets
+Team+0x77; Team AI then sets +0x7F before script execution. This establishes an
+active YR ground-team branch, while Rust currently lacks the corresponding
+Team+0x7F authority and refuses action 3. It cannot be excluded as TS-only.
+The six discovered direct set-one writers of mover+0x3D4 are aircraft-only;
+that narrower finding does not establish a general ground-mover flag.
+
+Unexplained raw path-memory reads, invalid registry references, native cycles,
+high-cardinality label packing and the wider movement-predicate authority remain
+open. A bounded helper comparison cannot certify the complete mechanism.
 
 The original-process [startup capture](../../../tools/spatial_oracle/tube_startup_capture.json)
 now establishes floating control `0x0E7F` at the adjacent-constant initializers
