@@ -44,7 +44,7 @@ use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass, Terr
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicI16, AtomicU64, Ordering},
 };
 
 #[path = "resolved_terrain_mutation.rs"]
@@ -1033,6 +1033,8 @@ struct SharedCellDummyState {
     cell: AtomicU64,
     /// Low dword is signed Cell+0x44 identity; bits 32..39 are Cell+0x11E.
     overlay: AtomicU64,
+    /// CellClass+0x116, written even when ReadTubesINI resolves a dummy cell.
+    tube_index: AtomicI16,
 }
 
 const SHARED_DUMMY_DEFAULT_OVERLAY: u64 = u32::MAX as u64;
@@ -1049,6 +1051,7 @@ impl SharedCellDummy {
             state: Arc::new(SharedCellDummyState {
                 cell: AtomicU64::new(0),
                 overlay: AtomicU64::new(SHARED_DUMMY_DEFAULT_OVERLAY),
+                tube_index: AtomicI16::new(-1),
             }),
         }
     }
@@ -1060,10 +1063,12 @@ impl SharedCellDummy {
     /// `0x00ABDC50` (`0x005670E7..0x005670F2`). The address survives, while
     /// coordinate `+0x24`, level `+0x11B`, slope `+0x11C`, and modeled
     /// `+0x140 & 0x1180` bridge bits return to zero, while overlay identity
-    /// returns to signed `-1` and OverlayData to zero. Other constructor-owned
+    /// returns to signed `-1` and OverlayData to zero. Raw Tube index+0x116
+    /// returns to-1 at47BC48 (PHASE3_TUBE_HIERARCHY_20260910.md). Other constructor-owned
     /// fields are not represented by this handle yet.
     pub(crate) fn reconstruct_for_map_resize(&self) {
         self.state.cell.store(0, Ordering::Relaxed);
+        self.state.tube_index.store(-1, Ordering::Relaxed);
         self.state
             .overlay
             .store(SHARED_DUMMY_DEFAULT_OVERLAY, Ordering::Relaxed);
@@ -1080,6 +1085,22 @@ impl SharedCellDummy {
             slope_type: (packed >> 40) as u8,
             bridge_flags_0x1180: ((packed >> 48) as u32) & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
         }
+    }
+
+    pub(crate) fn raw_tube_index(&self) -> i16 {
+        self.state.tube_index.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn write_raw_tube_index(&self, index: i16) {
+        self.state.tube_index.store(index, Ordering::Relaxed);
+    }
+
+    /// Publish an already validated post-Resize candidate onto the retained
+    /// process identity. Preserve its later lookup effects; do not reset twice.
+    pub(crate) fn adopt_prepared_load_state(&self, prepared: &Self) {
+        self.state.cell.store(prepared.state.cell.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.state.overlay.store(prepared.state.overlay.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.state.tube_index.store(prepared.raw_tube_index(), Ordering::Relaxed);
     }
 
     /// Stamp only CellClass+0x24, preserving the live level and slope bytes.
@@ -2978,6 +2999,9 @@ impl ResolvedTerrainGrid {
             } else {
                 self.shared_cell_dummy
                     .stamp_coord(i32::from(x), i32::from(y));
+                // ReadTubesINI728515 writes through the returned pointer,
+                // including the one retained shared dummy CellClass.
+                self.shared_cell_dummy.write_raw_tube_index(source_ordinal as i16);
             }
         }
         Ok(entries)
@@ -3003,6 +3027,23 @@ impl ResolvedTerrainGrid {
             .copied()?
             .validated_id(self.tube_facts.len())?;
         self.tube(tube_id)
+    }
+
+    /// Get_CellClass5657A0 followed by the raw Cell+116 read used by429780.
+    pub(crate) fn raw_tube_index_at_native_coord(&self, coord: (u16, u16)) -> i16 {
+        let (x, y) = (coord.0 as i16, coord.1 as i16);
+        if let Some(index) = self.native_fixed_cell_index(x, y) {
+            self.native_tube_indices[index].raw()
+        } else {
+            self.shared_cell_dummy.stamp_coord(i32::from(x), i32::from(y));
+            self.shared_cell_dummy.raw_tube_index()
+        }
+    }
+
+    /// GetTube484F20 validates the signed registry index, without a Land gate.
+    pub(crate) fn tube_at_native_coord(&self, coord: (u16, u16)) -> Option<&TubeFact> {
+        let index = NativeTubeCellIndex::from_raw(self.raw_tube_index_at_native_coord(coord));
+        self.tube(index.validated_id(self.tube_facts.len())?)
     }
 
     pub fn step_coord_by_direction(&self, coord: (u16, u16), direction: u8) -> Option<(u16, u16)> {

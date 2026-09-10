@@ -37,6 +37,8 @@ pub(crate) const NEIGHBORS: [(i32, i32, bool); 8] = [
 /// Shared persistent topology projected through all 13 MovementZone rows.
 #[derive(Debug, Clone)]
 pub(crate) struct BaseZoneTopology {
+    /// Derived record source Size, shared by full and incremental hierarchy use.
+    pub(crate) native_bridge_source_size: Option<(i32, i32)>,
     pub(crate) movement_classes: Vec<u8>,
     pub(crate) zone_ids: Vec<ZoneId>,
     // Retained as exact base-topology state for incremental-repair parity
@@ -299,6 +301,7 @@ pub(crate) fn build_base_zone_topology(
     });
 
     BaseZoneTopology {
+        native_bridge_source_size,
         movement_classes,
         zone_ids,
         zone_count,
@@ -539,6 +542,7 @@ fn patch_hierarchy_level(
             record,
             width,
             height,
+            base.native_bridge_source_size,
         );
     }
 
@@ -547,7 +551,7 @@ fn patch_hierarchy_level(
 }
 
 fn hierarchy_block_contains_coord(block: HierarchyBlock, coord: (u16, u16)) -> bool {
-    block.contains(i32::from(coord.0), i32::from(coord.1))
+    block.contains(i32::from(coord.0 as i16), i32::from(coord.1 as i16))
 }
 
 fn refresh_local_hierarchy_parents(
@@ -665,6 +669,7 @@ fn build_hierarchy_level(
             bridge_records,
             width,
             height,
+            base.native_bridge_source_size,
         );
     }
 
@@ -685,112 +690,7 @@ fn build_hierarchy_level(
 const HIGH_BRIDGE_HIERARCHY_DIRECTIONS: [i8; 16] =
     [0, 0, -1, 2, 2, -1, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2];
 
-fn register_high_bridge_hierarchy_edges(
-    edge_buckets: &mut HierarchyEdgeBuckets,
-    zone_ids: &[ZoneId],
-    terrain: &ResolvedTerrainGrid,
-    bridge_records: &[BridgeEndpointRecord],
-    width: u16,
-    height: u16,
-) {
-    for record in bridge_records {
-        if !record.active {
-            continue;
-        }
-        register_bridge_hierarchy_edges_for_record(
-            edge_buckets,
-            zone_ids,
-            terrain,
-            record,
-            width,
-            height,
-        );
-    }
-}
-
-/// `MapClass::RegisterBridgeOrTubeHierarchyPairs` 0x00582D70, bridge branch.
-///
-/// The native enters this branch on `CellClass::IsBridge` 0x00486750 **OR**
-/// `CellClass::IsWoodBridge` 0x00486770, selecting `g_BridgeSet_TileSetBase`
-/// when the first matched and `g_WoodBridgeSet_TileSetBase` when the second
-/// did, then indexes the SAME direction table with
-/// `IsoTileTypeIndex - base`. Concrete and wooden bridges register the same
-/// three pairs.
-///
-/// This used to return early unless `record.is_high()`, which silently dropped
-/// every wooden bridge's hierarchy edges. `high_bridge_tile_offset` already
-/// probes both tileset windows, so it is the correct gate on its own: a cell in
-/// neither window yields `None` and returns, which is where the native falls
-/// into its tube branch instead — still unported, see
-/// `tube_hierarchy_pairs_are_unregistered`.
-fn register_bridge_hierarchy_edges_for_record(
-    edge_buckets: &mut HierarchyEdgeBuckets,
-    zone_ids: &[ZoneId],
-    terrain: &ResolvedTerrainGrid,
-    record: &BridgeEndpointRecord,
-    width: u16,
-    height: u16,
-) {
-    let Some(endpoint_a_cell) = terrain.cell(record.endpoint_a.0, record.endpoint_a.1) else {
-        return;
-    };
-    let Some(tile_offset) = terrain.high_bridge_tile_offset(endpoint_a_cell) else {
-        return;
-    };
-    let raw_direction = i32::from(HIGH_BRIDGE_HIERARCHY_DIRECTIONS[tile_offset]);
-    let direction = (raw_direction & 7) as u8;
-    let opposite = ((raw_direction - 4) & 7) as u8;
-
-    for (a, b) in [
-        (
-            (
-                i32::from(record.endpoint_a.0),
-                i32::from(record.endpoint_a.1),
-            ),
-            (
-                i32::from(record.endpoint_b.0),
-                i32::from(record.endpoint_b.1),
-            ),
-        ),
-        (
-            hierarchy_side_coord(record.endpoint_a, direction),
-            hierarchy_side_coord(record.endpoint_b, direction),
-        ),
-        (
-            hierarchy_side_coord(record.endpoint_a, opposite),
-            hierarchy_side_coord(record.endpoint_b, opposite),
-        ),
-    ] {
-        register_hierarchy_cell_pair(edge_buckets, zone_ids, a, b, width, height);
-    }
-}
-
-fn hierarchy_side_coord(coord: (u16, u16), direction: u8) -> (i32, i32) {
-    let (dx, dy) = crate::util::direction::direction_delta(direction)
-        .expect("high-bridge hierarchy direction is masked to 0..=7");
-    (i32::from(coord.0) + dx, i32::from(coord.1) + dy)
-}
-
-fn register_hierarchy_cell_pair(
-    edge_buckets: &mut HierarchyEdgeBuckets,
-    zone_ids: &[ZoneId],
-    a: (i32, i32),
-    b: (i32, i32),
-    width: u16,
-    height: u16,
-) {
-    let zone_cell_count = usize::from(width) * usize::from(height);
-    debug_assert_eq!(zone_ids.len(), zone_cell_count);
-    let zone_at = |coord: (i32, i32)| {
-        if zone_cell_count == 0 {
-            return ZONE_INVALID;
-        }
-        let linear_index = i64::from(coord.1) * i64::from(width) + i64::from(coord.0);
-        let clamped_index = linear_index.clamp(0, (zone_cell_count - 1) as i64) as usize;
-        zone_ids.get(clamped_index).copied().unwrap_or(ZONE_INVALID)
-    };
-    edge_buckets.register(zone_at(a), zone_at(b), 0);
-}
+include!("hierarchy_bridge.rs");
 
 #[allow(clippy::too_many_arguments)]
 fn flood_fill_hierarchy_scanline(
@@ -1680,7 +1580,7 @@ fn register_bridge_base_edges(
     }
 }
 
-fn bridge_endpoint_base_zone(
+pub(crate) fn bridge_endpoint_base_zone(
     zones: &[ZoneId],
     rust_width: u16,
     source_size: Option<(i32, i32)>,
@@ -2028,6 +1928,7 @@ pub(crate) fn add_adjacency(adj: &mut [Vec<ZoneId>], a: ZoneId, b: ZoneId) {
 
 #[cfg(test)]
 mod tests {
+    include!("tube_hierarchy_native_tests.rs");
     use super::*;
     include!("bridge_base_native_tests.rs");
     use crate::map::resolved_terrain::ResolvedTerrainCell;
@@ -2122,6 +2023,7 @@ mod tests {
             )
         });
         BaseZoneTopology {
+            native_bridge_source_size: None,
             movement_classes,
             zone_ids,
             zone_count,
@@ -2678,6 +2580,7 @@ mod tests {
             &records,
             width,
             height,
+            None,
         );
         let mut graph = ZoneLevelGraph::new(width * height);
         buckets.drain_into(&mut graph);
@@ -2726,7 +2629,7 @@ mod tests {
         ];
         let mut buckets = HierarchyEdgeBuckets::new();
         buckets.register(1, 2, 1);
-        register_high_bridge_hierarchy_edges(&mut buckets, &zone_ids, &terrain, &records, 5, 3);
+        register_high_bridge_hierarchy_edges(&mut buckets, &zone_ids, &terrain, &records, 5, 3, None);
         let mut graph = ZoneLevelGraph::new(8);
         buckets.drain_into(&mut graph);
 
@@ -2939,6 +2842,7 @@ mod tests {
         let (zone_ids, zone_count, edge_buckets) =
             rebuild_node_indices(&movement_classes, &grid, 2, 2);
         let base = BaseZoneTopology {
+            native_bridge_source_size: None,
             adjacency: edge_buckets.into_adjacency(zone_count),
             movement_classes,
             zone_ids,
@@ -3041,40 +2945,13 @@ mod tests {
         assert!(!adj.are_adjacent(1, 2));
     }
 
-    /// RESIDUAL — gamemd address 0x00582D70,
-    /// `MapClass::RegisterBridgeOrTubeHierarchyPairs`.
-    ///
-    /// Mechanism: the native helper branches on the cell. `CellClass::IsBridge`
-    /// or `CellClass::IsWoodBridge` takes the bridge path, deriving the pair
-    /// direction from `g_nHighBridgeHierarchyOffsetDirectionByTileOffset`
-    /// indexed by `IsoTileTypeIndex - tileset base`. Everything else takes the
-    /// TUBE path: it reads `CellClass::GetTubeAtCell` 0x00484F20 on the cell
-    /// and on the two cells at `direction +/- 2`, returns early if either tube
-    /// record is null, and otherwise walks each record's own path buffer
-    /// (`Path_walk_directions_to_cell(tube+0x1C0, tube+0x30)`) to get the far
-    /// endpoints. Both branches then register the SAME three zero-flag pairs in
-    /// the same order: endpoints, same-side offsets, opposite-side offsets.
-    ///
-    /// The wood-bridge half of this gap is FIXED: the `record.is_high()` early
-    /// return was dropped, so wooden bridges now register the same three pairs
-    /// concrete ones do, matching the native's `IsBridge` OR `IsWoodBridge`
-    /// entry. Only the tube branch remains unported.
-    ///
-    /// Trigger: a move order whose start and goal sit on opposite sides of a
-    /// low-bridge tunnel, far enough apart that the search uses the zone
-    /// hierarchy rather than a flat A*.
-    ///
-    /// Effect: the tunnel is invisible to the hierarchy, so the route is
-    /// planned around it. The unit either takes a visibly longer way round or,
-    /// where the tunnel is the only connection, finds no route at all.
-    ///
-    /// Frequency: bounded by how many retail maps ship a `[Tubes]` section and
-    /// by the order being long enough to reach the hierarchy. Not measured this
-    /// session, which is why it is recorded rather than ranked.
+    /// OPEN: accepted raw path tokens can address native process data outside
+    /// the proven direction/zero slots; missing Tube pairs may change routes.
+    /// See PHASE3_TUBE_HIERARCHY_20260910.md for trigger and bounded delivery.
     #[test]
-    #[ignore = "gamemd 0x00582D70 registers tube hierarchy pairs; VERA registers high-bridge pairs only"]
-    fn tube_hierarchy_pairs_are_unregistered() {
-        panic!("unimplemented: tube branch of RegisterBridgeOrTubeHierarchyPairs 0x00582D70");
+    #[ignore = "429780 arbitrary raw direction-data and invalid registry reads remain unproved"]
+    fn tube_hierarchy_raw_process_memory_domain_is_unresolved() {
+        panic!("unresolved: raw process-memory reads accepted by7283C0 into429780");
     }
 
     /// `MapClass::RegisterBridgeOrTubeHierarchyPairs` 0x00582D70 enters its
@@ -3105,6 +2982,7 @@ mod tests {
                 &record,
                 4,
                 1,
+                None,
             );
             buckets.buckets.iter().map(|b| b.len()).sum()
         }
@@ -3125,7 +3003,7 @@ mod tests {
         );
 
         // A tile in neither tileset window still registers nothing - that is
-        // where the native falls into its unported tube branch.
+        // where this synthetic record has no Tube to enter the other branch.
         let neither = edges_for(BridgeRecordKind::Low, 900, Some(300));
         assert_eq!(neither, 0, "no bridge tile, no bridge pairs");
     }

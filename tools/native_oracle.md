@@ -47,6 +47,7 @@ These generators now default to **read-only checks**, also spelled `--check`:
 | `tools.spatial_oracle.map_queries` | 114 lookup cases, 15 LocalSize prefixes, 2,010 playfield queries and five retained-dummy calls | `src/sim/cell_rect_native_tests.rs`, production `cell_rect.rs` / `map/playfield.rs` |
 | `tools.spatial_oracle.bridge_records` | 83 ordered high/Tube record cases, CellIterator first-null traversal and shared dummy coordinates | `src/sim/bridge_state/record_native_tests.rs`, production `record_scan.rs` / `map/resolved_terrain.rs` |
 | `tools.spatial_oracle.bridge_base_edges` | 86 signed/clamped endpoint, canonical pair, reverse bucket order and deduplication cases | `src/sim/pathfinding/bridge_base_native_tests.rs`, production `zone_build.rs`; cache/restore regression in `world/navigation_tests.rs` |
+| `tools.spatial_oracle.tube_hierarchy` | 58 high/Tube hierarchy helper cases and five original ReadTubes publication writes; raw data domain remains bounded | `src/sim/pathfinding/tube_hierarchy_native_tests.rs`, production `hierarchy_bridge.rs`; route/transaction regressions in `zone_search_tests.rs` and `app/persistence/tube_hierarchy_restore_tests.rs` |
 
 Run them as modules (`python -m ...`). Imports do not emulate or write files;
 `--help` works without retail configuration. `--output <path>` selects another
