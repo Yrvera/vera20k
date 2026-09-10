@@ -138,8 +138,15 @@ Production tracing also found a blanket explicit-Tube hierarchy bypass in
 graph requires its actual route consumers and the native early base-zone
 equality check at `0x0042CB22`, using raw zone labels before hierarchy precheck.
 The shared raw zone lookup needs the same retained source Size projection.
-Broader bridge-aware GetZoneID cases and unexplained raw path-memory reads
-remain open; a bounded helper comparison cannot certify them.
+Fresh review confirmed a required bridge-aware GetZoneID correction: structural
+cells without a matching record return DWORD `0xFFFFFFFF` at `0x0056D230`.
+The current 16-bit Rust lookup falls through to the ground label, which can
+incorrectly admit the new raw-equality gate. This value must remain distinct
+from raw row label `0xFFFF`. The prior original producer corpus includes
+`high_no_far` and rejected-start cases retaining structural cells but producing
+no record. The gate repair must include this state and original lookup evidence.
+Broader bridge-aware query cases and unexplained raw path-memory reads remain
+open; a bounded helper comparison cannot certify them.
 
 The original-process [startup capture](../../../tools/spatial_oracle/tube_startup_capture.json)
 now establishes floating control `0x0E7F` at the adjacent-constant initializers
