@@ -57,6 +57,10 @@ mod recalc_catalog;
 use recalc_catalog::BridgeRecalcCatalog;
 pub(crate) use recalc_catalog::BridgeRecalcCatalogError;
 
+#[cfg(test)]
+#[path = "terrain_pavement_catalog_tests.rs"]
+mod pavement_catalog_tests;
+
 pub const YR_CELL_LAND_TUNNEL: u8 = 10;
 
 /// Identifies whether map overlays still require the ordinary authored-map
@@ -1575,13 +1579,25 @@ pub fn tile_anim_pixel_offset_to_leptons(x_offset: i32, y_offset: i32) -> (i32, 
 }
 
 #[derive(Debug, Clone)]
+struct PristineTmpHeader {
+    subtiles: Vec<(i32, bool)>,
+    total_file_count: usize,
+}
+
+impl PristineTmpHeader {
+    fn damaged_data(&self, sub: u8) -> bool {
+        self.subtiles[usize::from(sub) % self.subtiles.len()].1
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ResolvedTerrainGrid {
     width: u16,
     height: u16,
     /// Pristine TMP dimensions used by Techno draw depth (0x547150/0x704350).
     /// Derived asset data, keyed by tile identity rather than mutable cell:
     /// never serialized or included in simulation hashes.
-    native_tmp_draw_heights: HashMap<u16, Vec<i32>>,
+    native_tmp_draw_heights: HashMap<u16, PristineTmpHeader>,
     #[cfg(test)]
     pub(crate) cells: Vec<ResolvedTerrainCell>,
     #[cfg(not(test))]
@@ -1778,13 +1794,29 @@ impl ResolvedTerrainGrid {
         };
         if let Some(heights) = self.native_tmp_draw_heights.get(&key.0) {
             // 0x547165..0x547174 divides by the complete template cell count.
-            return heights[usize::from(key.1) % heights.len()];
+            return heights.subtiles[usize::from(key.1) % heights.subtiles.len()].0;
         }
         // VERA fallback for synthetic/no-assets grids or a missing/invalid
         // registered header (diagnosed once at load). This is not a claim of
         // native behavior for unavailable data; valid production types use
         // their pristine header above, including future live replacements.
         30
+    }
+
+    /// Original5471F0 uses the registered pristine head and wraps unsigned11A
+    /// modulo its complete template size. No sentinel/ClearTile substitution:
+    /// the56E990 caller owns its two explicit sentinel checks. None diagnoses
+    /// missing resident input; it is not native's sparse-entry false result.
+    pub(crate) fn native_tmp_has_damaged_data(&self, tile: i32, sub: u8) -> Option<bool> {
+        let tile = u16::try_from(tile).ok()?;
+        self.native_tmp_draw_heights.get(&tile).map(|head| head.damaged_data(sub))
+    }
+
+    /// Tactical480350 pins the pristine file when the native file count is
+    /// below two. Keep this distinct from the pristine damaged-data predicate.
+    pub(crate) fn native_tmp_file_count(&self, tile: i32) -> Option<usize> {
+        let tile = u16::try_from(tile).ok()?;
+        self.native_tmp_draw_heights.get(&tile).map(|head| head.total_file_count)
     }
 
     pub(crate) fn concrete_bridge_set_base(&self) -> i32 {
@@ -4978,7 +5010,7 @@ fn auto_tube_direction_from_bases(final_tile_index: i32, bases: [i32; 4]) -> Opt
 fn load_native_tmp_draw_heights(
     theater: Option<&TheaterData>,
     assets: Option<&crate::assets::asset_manager::AssetManager>,
-) -> HashMap<u16, Vec<i32>> {
+) -> HashMap<u16, PristineTmpHeader> {
     let (Some(theater), Some(assets)) = (theater, assets) else {
         return HashMap::new();
     };
@@ -4995,9 +5027,12 @@ fn load_native_tmp_draw_heights(
             log::warn!("TMP draw dimensions unavailable: tile {id} asset {name} is missing");
             continue;
         };
-        match TmpFile::draw_heights_from_bytes(&bytes) {
+        match TmpFile::pristine_header_fields_from_bytes(&bytes) {
             Ok(rows) => {
-                heights.insert(id, rows);
+                heights.insert(id, PristineTmpHeader {
+                    subtiles: rows,
+                    total_file_count: theater.lookup.total_file_count(id) as usize,
+                });
             }
             Err(error) => log::warn!("TMP draw dimensions unavailable for {name}: {error}"),
         }
