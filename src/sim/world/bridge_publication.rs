@@ -81,11 +81,8 @@ pub(super) fn try_body(
         rules,
         registry,
         collapsed: false,
-        presentation: BTreeSet::new(),
     };
     let returned = publication::advance_body_at_anchor(&mut host, input, anchor);
-    host.sim
-        .mark_radar_terrain_dirty_cells(host.presentation.iter().copied());
     Some(BodyResult {
         returned,
         collapsed: host.collapsed,
@@ -97,7 +94,6 @@ struct LivePublication<'a> {
     rules: &'a RuleSet,
     registry: Option<&'a crate::map::overlay_types::OverlayTypeRegistry>,
     collapsed: bool,
-    presentation: BTreeSet<(u16, u16)>,
 }
 
 impl LivePublication<'_> {
@@ -135,7 +131,6 @@ impl LivePublication<'_> {
         self.sim
             .dynamic_terrain_cells
             .insert(coord, DynamicTerrainCellState::capture(resolved));
-        self.presentation.insert(coord);
     }
 
     fn legacy_tile_class(&self, cell: Cell) -> Option<BridgeheadAnchorClass> {
@@ -161,7 +156,10 @@ impl LivePublication<'_> {
             }
             _ => Vec::new(),
         };
-        self.presentation.extend(changed);
+        // Toggle56E990 marks in recursive preorder at this callback. Literal
+        // scalar stores have no implicit radar call and must not sort or add
+        // cells ahead of this ordered dirty sequence.
+        self.sim.mark_radar_terrain_dirty_cells(changed);
     }
 }
 

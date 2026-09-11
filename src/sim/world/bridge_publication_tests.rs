@@ -67,7 +67,6 @@ fn host<'a>(sim: &'a mut Simulation, rules: &'a RuleSet) -> LivePublication<'a> 
         rules,
         registry: None,
         collapsed: false,
-        presentation: BTreeSet::new(),
     }
 }
 
@@ -75,6 +74,17 @@ fn host<'a>(sim: &'a mut Simulation, rules: &'a RuleSet) -> LivePublication<'a> 
 fn bridge_publication_production_nonanchor_collapse_keeps_other_overlay_and_runs_c4() {
     let rules = rules();
     let mut sim = world(&rules, 15);
+    // The previous cache updater only set transition=true, so F2 can retain
+    // that value with native bit0x200 clear. Collapse must publish current bits
+    // to navigation even when that particular flag did not change this write.
+    let forward2 = sim
+        .resolved_terrain
+        .as_mut()
+        .unwrap()
+        .cell_mut(2, 4)
+        .unwrap();
+    assert_eq!(forward2.bridge_facts.raw_flags & 0x200, 0);
+    forward2.bridge_transition = true;
     // F3/extra may be ordinary ramp projections: their marker-only writes
     // must not erase walkability while the four structural slots collapse.
     for coord in [(1, 4), (6, 4)] {

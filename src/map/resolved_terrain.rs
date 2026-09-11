@@ -1781,7 +1781,9 @@ impl ResolvedTerrainGrid {
                 let structural_removed = previous & BRIDGE_FLAG_STRUCTURAL != 0
                     && flags & BRIDGE_FLAG_STRUCTURAL == 0;
                 refresh_runtime_bridge_projection(&mut self.cells[index], structural_removed);
-                if (previous ^ flags) & crate::map::bridge_facts::BRIDGE_FLAG_TRANSITION != 0 {
+                if structural_removed
+                    || (previous ^ flags) & crate::map::bridge_facts::BRIDGE_FLAG_TRANSITION != 0
+                {
                     self.cells[index].bridge_transition =
                         self.cells[index].bridge_facts.has_transition_flag();
                 }

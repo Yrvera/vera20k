@@ -4847,7 +4847,7 @@ fn test_bridge_dispatcher_state_machine_overlay_routes_to_high_sm_not_direct() {
 }
 
 /// Integration test: full apply_bridge_damage_events pipeline on a
-/// state-machine path. Anchor cell with overlay 0x6 + Damaged →
+/// state-machine path. Native self anchor with overlay25/state15 →
 /// body driver fires Damaged→Destroyed → endpoint deactivation cascade
 /// runs via `refresh_bridge_zones_if_dirty`. Independently exercises the
 /// HighSM path (Task 15 coverage focused on HighDirect).
@@ -4859,7 +4859,17 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
     let mut sim = Simulation::new();
     // Use the strip helper so resolved_terrain has a bridge group with
     // ground neighbors → endpoint records exist.
-    let (resolved, mut bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    let (mut resolved, _) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    // Native587180 requires structural self/+2C and canonical overlay18/19.
+    // This test's former overlay6/topology-only anchor was not a native body.
+    resolved.apply_runtime_bridge_mark_stamp(
+        crate::map::bridge_facts::BridgeFlagStamp::new((5, 5), 6, true),
+        crate::map::bridge_facts::BridgeStampFamily::Nesw,
+    );
+    let facts = &mut resolved.cell_mut(5, 5).unwrap().bridge_facts;
+    facts.overlay_id = Some(25);
+    facts.state_byte = 15;
+    let mut bridge_state = BridgeRuntimeState::from_resolved_terrain(&resolved, true, 15);
     // Override (5, 5) to the post-transition Damaged state-machine setup.
     bridge_state.test_seed_cell(
         5,
@@ -4873,7 +4883,7 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
             axis: Some(Axis::EW),
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
-            overlay_byte: 0x6,
+            overlay_byte: 25,
             damaged_variant: false,
             bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         },
@@ -4881,9 +4891,12 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
     bridge_state.test_seed_anchor_span(AnchorSpan {
         id: 1,
         anchor: (5, 5),
-        cells: [Some((5, 5)), None, None, None, None, None],
+        cells: [
+            Some((5, 5)), Some((4, 5)), Some((3, 5)),
+            Some((2, 5)), Some((6, 5)), None,
+        ],
         axis: Axis::EW,
-        direction: Direction::S,
+        direction: Direction::W,
         damage_state: DamageState::Damaged,
         bridge_group_id: 1,
     });
