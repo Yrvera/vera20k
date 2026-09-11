@@ -102,6 +102,10 @@ fn recalc_pristine_metadata_and_level_override_match_original_instructions() {
                 "{name}: final-tile AllowTiberium query"
             );
         }
+        if flag("invalid") || flag("sparse") {
+            assert!(!cell.accepts_smudge, "{name}: tile0 Morphable fallback");
+            assert!(cell.allows_tiberium, "{name}: invalid final-tile gate");
+        }
         for (field, actual) in [
             ("tile", i64::from(cell.final_tile_index)),
             ("subtile", i64::from(cell.final_sub_tile)),
@@ -113,5 +117,39 @@ fn recalc_pristine_metadata_and_level_override_match_original_instructions() {
         ] {
             assert_eq!(actual, number(field), "{name}: {field}");
         }
+    }
+}
+
+#[test]
+fn current_tile_permission_queries_match_original_instruction_blocks() {
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tools/spatial_oracle/terrain_tile_permissions.json"
+    ))
+    .unwrap();
+    for case in corpus["cases"].as_array().unwrap() {
+        let tile = case["tile"].as_i64().unwrap() as i32;
+        let tile0 = case["tile0_permission"].as_bool().unwrap();
+        let yes_no = |value| if value { "yes" } else { "no" };
+        let ini = format!(
+            "[TileSet0000]\nTilesInSet=1\nFileName=zero\n\
+             Morphable={}\nAllowTiberium={}\n\
+             [TileSet0001]\nTilesInSet=1\nFileName=one\n\
+             Morphable={}\nAllowTiberium={}\n",
+            yes_no(tile0),
+            yes_no(tile0),
+            yes_no(!tile0),
+            yes_no(!tile0),
+        );
+        let theater = synthetic_theater_from_ini(ini.as_bytes());
+        assert_eq!(theater.lookup.len(), 2);
+        let actual = current_tile_permissions(&theater.lookup, tile);
+        assert_eq!(
+            actual,
+            (
+                case["smudge"].as_bool().unwrap(),
+                case["tiberium"].as_bool().unwrap()
+            ),
+            "tile={tile}, tile0_permission={tile0}"
+        );
     }
 }

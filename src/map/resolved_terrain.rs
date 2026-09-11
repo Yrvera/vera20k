@@ -2010,11 +2010,9 @@ impl ResolvedTerrainGrid {
         // These are cached current-tile queries, unlike retained native Cell
         // attributes. CanPlaceTiberium4839C0 and smudge6B5F80 resolve live+38.
         if let Some(theater) = state.theater_data {
-            let tile = u16::try_from(self.cells[index].final_tile_index).ok();
-            self.cells[index].accepts_smudge =
-                tile.is_some_and(|tile| theater.lookup.is_morphable(tile));
-            self.cells[index].allows_tiberium =
-                tile.is_some_and(|tile| theater.lookup.allows_tiberium(tile));
+            let cell = &mut self.cells[index];
+            (cell.accepts_smudge, cell.allows_tiberium) =
+                current_tile_permissions(&theater.lookup, cell.final_tile_index);
         }
 
         if !early_overlay_branch {
@@ -4690,6 +4688,21 @@ fn restore_load_base_land(cell: &mut ResolvedTerrainCell) {
     );
     cell.is_rough = cell.base_land_type == LandType::Rough.as_index();
     cell.is_road = cell.base_land_type == LandType::Road.as_index();
+}
+
+/// Current Cell+38 queries, separate from Recalc's retained pristine metadata.
+/// Native smudge6B601A..6B603A falls back to tile0 for an invalid signed index;
+/// CanPlaceTiberium4839C0..4839E9 admits that index at its final tile gate.
+/// Other placement gates are outside this projection. Original-block witnesses:
+/// tools/spatial_oracle/terrain_tile_permissions.
+fn current_tile_permissions(lookup: &TilesetLookup, tile: i32) -> (bool, bool) {
+    if tile < 0 || tile as usize >= lookup.len() {
+        (lookup.is_morphable(0), true)
+    } else {
+        // The registry admits at most65535 slots; compare before narrowing.
+        let tile = tile as u16;
+        (lookup.is_morphable(tile), lookup.allows_tiberium(tile))
+    }
 }
 
 fn apply_pristine_load_metadata(
