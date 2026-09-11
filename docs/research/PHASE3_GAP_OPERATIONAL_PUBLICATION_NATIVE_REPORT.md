@@ -4,9 +4,9 @@ The original updates a GAGAP's deposited gap at its Building turn when its
 operational state changes. Rust at baseline `417dfe4d` instead reclassifies all
 generators after the object pass and again during House reconciliation. These
 orders can produce different shroud knowledge at the next 120-frame sweep.
-The candidate moves publication to that Building owner and retains admission
-across House reconciliation and restore. Production validation is in progress;
-this is not row50 closure.
+The implementation moves publication to that Building owner and retains admission
+across House reconciliation and restore. Bounded production validation and fresh
+independent review passed; this is not row50 closure.
 
 ## Evidence and active caller
 
