@@ -1544,6 +1544,8 @@ pub struct ResolvedTerrainGrid {
     tile_registry_len: Option<usize>,
     /// First flat tile id of the active theater's concrete high-bridge set.
     bridge_set_start: Option<u16>,
+    /// Immutable signed ReadTheater545150 identities for high-rim selection.
+    high_bridge_rim_tiles: Option<super::bridge_rim_tiles::HighBridgeRimTiles>,
     /// First flat tile id of the active theater's wooden high-bridge set.
     wood_bridge_set_start: Option<u16>,
     /// Terrain animations the load resolved, in the native anti-diagonal cell
@@ -1624,6 +1626,7 @@ impl ResolvedTerrainGrid {
             projectile_water_set_base: -1,
             tile_registry_len: None,
             bridge_set_start: None,
+            high_bridge_rim_tiles: None,
             wood_bridge_set_start: None,
             tile_animations: Vec::new(),
             destroyable_cliff_catalog: None,
@@ -1706,6 +1709,18 @@ impl ResolvedTerrainGrid {
 
     pub(crate) fn concrete_bridge_set_base(&self) -> i32 {
         self.bridge_set_start.map_or(-1, i32::from)
+    }
+
+    pub(crate) fn high_bridge_rim_tiles(&self) -> Option<super::bridge_rim_tiles::HighBridgeRimTiles> {
+        self.high_bridge_rim_tiles
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_high_bridge_rim_tiles(
+        &mut self,
+        tiles: super::bridge_rim_tiles::HighBridgeRimTiles,
+    ) {
+        self.high_bridge_rim_tiles = Some(tiles);
     }
 
     pub(crate) fn shared_cell_dummy(&self) -> SharedCellDummy {
@@ -3545,6 +3560,8 @@ impl ResolvedTerrainGrid {
                     .and_then(|td| td.rmg_tiles.water_set)
                     .map_or(-1, i32::from),
                 tile_registry_len: theater_data.map(|td| td.lookup.len()),
+                high_bridge_rim_tiles: theater_data
+                    .map(super::bridge_rim_tiles::HighBridgeRimTiles::from_theater),
                 bridge_set_start: theater_data.and_then(|td| {
                     td.bridge_set
                         .and_then(|set| td.lookup.bounds().get(set as usize))
@@ -4327,6 +4344,8 @@ impl ResolvedTerrainGrid {
                 .and_then(|td| td.rmg_tiles.water_set)
                 .map_or(-1, i32::from),
             tile_registry_len: theater_data.map(|td| td.lookup.len()),
+            high_bridge_rim_tiles: theater_data
+                .map(super::bridge_rim_tiles::HighBridgeRimTiles::from_theater),
             bridge_set_start: theater_data.and_then(|td| {
                 td.bridge_set
                     .and_then(|set| td.lookup.bounds().get(set as usize))

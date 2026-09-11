@@ -18,6 +18,7 @@ pub mod actions;
 pub(crate) mod authored_overlay;
 pub mod basic;
 pub mod bridge_facts;
+pub(crate) mod bridge_rim_tiles;
 pub mod cell_index;
 pub(crate) mod construction_trace;
 pub mod scenario_menu;
