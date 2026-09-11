@@ -224,6 +224,33 @@ pub struct CellLight {
 }
 
 impl CellLight {
+    /// Cell484680 (active-retail gamemd): ambient/profile refresh retains
+    /// Cell104 normalization and Cell108 source intensity. Unlike full483E30
+    /// sampling, it scales the signed-word top BEFORE the final 0..2000 clamp.
+    /// See tools/spatial_oracle/light_retained_scalar.py and its native records.
+    pub(crate) fn refresh_retained_scalars(&mut self, profile: LightingProfileUnits, level: u8) {
+        let ambient = (profile.ambient_percent.wrapping_mul(1000) / 100) as i16;
+        let base = ambient.wrapping_add(self.additive_intensity as i16);
+        let level_units = profile.level_units as i16;
+        let ground = profile.ground_units as i16;
+        let height = i16::from(level as i8);
+        let top = base.wrapping_add(level_units.wrapping_mul(height).wrapping_sub(ground));
+        let bottom = base.wrapping_add(
+            level_units
+                .wrapping_mul(height.wrapping_add(4))
+                .wrapping_sub(ground),
+        );
+        let scaled = |value: i16| {
+            // Native IMUL retains low32, then takes the signed high word.
+            (i32::from(value).wrapping_mul(self.scale16) >> 16) as i16
+        };
+        self.raw_top_scalar = i32::from(top);
+        self.raw_bottom_scalar = i32::from(bottom);
+        self.top_scalar = i32::from(top).clamp(LIGHT_CLAMP_MIN, LIGHT_CLAMP_MAX);
+        self.common_scalar = i32::from(scaled(top)).clamp(LIGHT_CLAMP_MIN, LIGHT_CLAMP_MAX);
+        self.bottom_scalar = i32::from(scaled(bottom)).clamp(LIGHT_CLAMP_MIN, LIGHT_CLAMP_MAX);
+    }
+
     pub fn new(
         profile_id: LightProfileId,
         rgb_key: LightRgbKey,
@@ -2254,5 +2281,71 @@ mod tests {
         assert!(pending.commit_into(&mut grid));
         assert_eq!(grid.cell_light_at((9, 9)), unaffected.as_ref());
         assert_ne!(grid.cell_light_at((1, 1)), unaffected.as_ref());
+    }
+
+    #[test]
+    fn retained_scalar_refresh_matches_original_cell_484680() {
+        let native: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/spatial_oracle/light_retained_scalar.json"
+        ))
+        .unwrap();
+        let cases = native["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 16);
+        for case in cases {
+            let record: Vec<i32> = serde_json::from_value(case["initial_record"].clone()).unwrap();
+            let mut light = CellLight::new(
+                LightProfileId(0),
+                [record[12], record[13], record[14]],
+                [record[0], record[1], record[2]],
+                record[7],
+                record[3],
+                record[8],
+                record[4],
+                record[5],
+                record[9],
+                record[10],
+                record[11],
+            );
+            let original = light.clone();
+            let ion = case["ion"].as_bool().unwrap();
+            let field = |name: &str| case[name].as_i64().unwrap() as i32;
+            light.refresh_retained_scalars(
+                LightingProfileUnits {
+                    ambient_percent: field("ambient_percent"),
+                    ground_units: field(if ion { "ion_ground" } else { "normal_ground" }),
+                    level_units: field(if ion { "ion_level" } else { "normal_level" }),
+                    red_percent: 100,
+                    green_percent: 100,
+                    blue_percent: 100,
+                },
+                field("level") as u8,
+            );
+            let expected: Vec<i32> = serde_json::from_value(case["fields"].clone()).unwrap();
+            assert_eq!(
+                [
+                    light.scale16,
+                    light.additive_intensity,
+                    light.top_scalar,
+                    light.common_scalar,
+                    light.bottom_scalar
+                ]
+                .as_slice(),
+                expected.as_slice(),
+                "native case {case}",
+            );
+            assert_eq!(light.rgb_key, original.rgb_key);
+            assert_eq!(light.raw_rgb, original.raw_rgb);
+            assert_eq!(
+                light.raw_additive_intensity,
+                original.raw_additive_intensity
+            );
+            if field("finalization_index") == 7 {
+                assert_eq!(original.common_scalar, 0);
+                assert!(
+                    light.common_scalar > 0,
+                    "retained near-black state differs from resampling"
+                );
+            }
+        }
     }
 }
