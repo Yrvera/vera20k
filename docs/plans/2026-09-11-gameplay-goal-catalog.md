@@ -153,6 +153,8 @@ history are optional coverage aids, not required session startup reading.
 
 | Selected work | Evidence entry |
 |---|---|
+| M1–M6, movement/locomotor work | [E13 Movement implementation evidence](2026-09-11-gameplay-boundary-evidence.md#e13-movement-implementation-evidence), then the relevant gameplay caller in E1/E5/E6. |
+| V1–V7, lighting/rendering work | [E14 Rendering implementation evidence](2026-09-11-gameplay-boundary-evidence.md#e14-rendering-implementation-evidence), then the changed gameplay source and production draw consumers. |
 | R1 | [E1 Resources and mining](2026-09-11-gameplay-boundary-evidence.md#e1-resources-and-mining) |
 | R2 | [E2 Slave economy](2026-09-11-gameplay-boundary-evidence.md#e2-slave-economy) |
 | B1–B4 | [E3 Purchases and base lifecycle](2026-09-11-gameplay-boundary-evidence.md#e3-purchases-and-base-lifecycle) |
@@ -335,6 +337,62 @@ key used by the live nuke is not evidence of another active strategic power.
 | F9 | **Record and replay a match.** | Identity/scenario/seed → scenario initialization → timed commands → completion/stop or actionable divergence. Shared deterministic commands do not make replay a save restore or LAN session. |
 | F10 | **Host, join, play, observe and leave LAN matches.** | Discovery/lobby/content/seed/options/transfer → launch → synchronized real peers → communications/alliances/observers → result/disconnect/recovery-or-abort. Select complete children such as host-to-finished-match or transferred-map-to-play. Staging/network internals alone do not establish playable LAN. |
 | F11 | **Use a chosen online service to enter and leave actual matches.** | Explicit service/support decision → session/account/chat/discovery → actual multiplayer handoff → return/disconnect. Reuse F10 match authority; settle service policy before a retail-equivalent online claim. |
+
+## Movement and locomotion implementation groups
+
+These references refine U1/U7/U8/U9/X14 and relevant cargo/combat consumers; they
+are not additional copies of those systems. Start with
+[E13 Movement evidence](2026-09-11-gameplay-boundary-evidence.md#e13-movement-implementation-evidence).
+Common order admission, destination replacement, locomotor install/restore and
+per-object scheduling remain integrated with whichever groups a change affects.
+Do not create a disconnected “movement infrastructure first” completion gate.
+
+| Ref | Implementation group | Shared work, boundary and production acceptance |
+|---|---|---|
+| M1 | Drive and Ship track movement | Shared track admission/transition and lepton advancement justify joint changes across land/water variants. Cover order → route/turn → cell transition/occupancy → arrival/replacement and blocked recovery. Preserve separate path/runtime fields and ship admission rules. |
+| M2 | Walking and infantry spatial movement | Shared ground path/crossing machinery with Walk-specific stepping and blocked behavior. Cover real orders, subcell occupancy, bridges, recovery, arrival and next action; include stance/prone consumers where affected. This does not automatically include every infantry weapon. |
+| M3 | Hover motion | Steering, throttle and vertical motion form a distinct focus using ground movement consumers. Cover permitted land/water transitions, acceleration/turning/height, stop/replacement and usable arrival. Check other locomotors when changing their shared ground infrastructure. |
+| M4 | Shared Fly/Jumpjet air motion and branch-specific transitions | Joint common air-motion/cell-list changes must exercise both; Fly and Jumpjet retain different speed/altitude/landing decisions. Airfield return/rearm (U7), Jumpjet deployment (U9) and cargo (U4) are explicit additional focuses required for their complete parent outcomes. Common flight work alone does not certify complete aircraft behavior. |
+| M5 | Teleport movement and locomotor recovery | Follow destination admission → relocation/occupancy/visual state → recovery/restored locomotor → next action. Include Chrono Miner return and ordinary player-movement consumers where changed. Active Teleport and temporary locomotor overrides remain distinct branches; Chronosphere's full two-click effect is not automatically completed by this movement work. |
+| M6 | Launcher-rocket flight and impact | Rocket phases/payload are separate from ordinary air ticking. Follow parent launch → movement phases → impact/damage → child cleanup → parent regeneration/next attack (U8). A completed trajectory flag is not a completed attack. |
+
+Installed-locomotor lifetime and order teardown can justify a cross-group goal
+when the same change affects several classes. Name the affected branches and
+validate their real transitions; do not infer every locomotor shares the same end
+gate. Active-YR reachability is required for fallback/dormant classes. Movement
+state also feeds visible facing, height, slope and shadows: use V2/V3/V4 for those
+handoffs when affected, without duplicating simulation authority in rendering.
+
+## Lighting and rendering implementation groups
+
+These groups make visual work selectable in its own right, while remaining part
+of any gameplay goal that changes the same output. Start with
+[E14 Rendering evidence](2026-09-11-gameplay-boundary-evidence.md#e14-rendering-implementation-evidence).
+They are shared-work proposals, not a claim that all remaining parity gaps are known.
+
+| Ref | Implementation group | Shared work, boundary and visible acceptance |
+|---|---|---|
+| V1 | Scenario/cell lighting and palette-lit world appearance | Follow authoritative lighting sources/profile → derived cell grid → per-drawer palette/brightness choice → actual terrain, building, infantry, vehicle and animation output. Shared grid or palette-conversion changes should cover affected consumers together. Grid lifetime and palette arithmetic can be separate increments; preserve cell/ColorScheme/animation differences. Compare the same scene before/after source/profile changes and affected restore paths. Aircraft altitude brightness remains a targeted investigation. |
+| V2 | Voxel bodies, parts and slope appearance | Common native preparation/raster, CPU/GPU paths, atlas keys and visible slope-transition cache. Group affected body/turret/barrel, facing and slope variants through their in-game composition. Preserve model/HVA/VPL responsibilities; previews are not production proof. A cache hit or one flat-facing image cannot establish moving/ramp appearance. |
+| V3 | Shadow shape, placement and destination darkening | Follow shadow producer → cached/masked geometry → projected position/depth admission → darkened scene. Common destination blending changes need affected SHP/VXL/terrain-shadow checks; their geometry producers are distinct. Ordinary Ground-band, uncloaked Drive units with flat single-section voxel shadows have a narrower established path than slopes, multiple sections or aircraft. Compare overlap, motion and applicable altitude/ramp cases; do not infer every shadow uses the same generator. |
+| V4 | Mixed terrain/SHP/VXL depth and draw order | Shared tactical draw plan, ground-parent ordering, lowering, native Z policies and final pass submission. Group terrain, bridge, building, infantry, vehicle and upper-layer consumers affected by an ordering change. Compare occlusion during motion and bridge crossings, with parts/effects attached to the correct parent. This does not require rewriting each asset decoder. |
+| V5 | Translucency, cloak and other modified-pixel composition | Select the actual native blitter/effect family and affected production consumers; follow admission/strength → source/destination pixel operation → depth/output → recovery. Current opaque palette conversion deliberately routes alpha/FX pixels elsewhere, so ordinary opaque palette parity cannot close these effects. Establish which effects share implementation before expanding to all cloaking, translucency or distortion. |
+| V6 | Combat-light screen composition | Shared combat-light preparation, scene snapshot and RGB565 mask editing through real effect sources, movement and expiry. Validate overlapping lights and the resulting scene, not only a generated mask. This screen-composition path is distinct from V1's cell-light grid. Source lifecycle changes remain integrated with their weapon/particle consumers. |
+| V7 | Searchlight/spotlight projection and visible beam | Follow the active source/child-light lifecycle into beam or mask generation and submitted output. Existing renderer support alone does not prove live delivery: the inspected instance builder supplies an empty spotlight vector. Trace registration/admission before implementation scope is fixed. Do not merge this with combat flashes solely because both are called lights. |
+
+Changes crossing these groups stay coherent: for example V2's body mask can affect
+V3, and V4's depth ordering can affect V3/V5. Include that handoff and affected
+output without silently absorbing every independent producer. Palette changes must
+respect indexed/remap data and destination color arithmetic; body geometry, cell
+illumination and shadow darkening are different responsibilities.
+
+Use saved retail comparisons and relevant native fixtures with their stated
+coverage. Validate the production GPU output through captures/readbacks where
+needed; CPU math and diagnostic asset renders alone do not establish the scene.
+For scale-sensitive changes, check the affected workload under ENGINE's scale
+contract. Extra zoom/filtering behavior needs an explicit VERA target and must not
+silently change the retail-size comparison bar. This catalogue pass ran no game,
+GPU experiment or performance benchmark.
 
 ## Shared work stays integrated
 

@@ -453,6 +453,105 @@ groupings are not newly certified by this pass. No runtime/native execution or
 installation was performed; exact semantics and current remaining gaps still need
 targeted validation when a goal is selected.
 
+## E13 Movement implementation evidence
+
+Read-only source audit at the same baseline as E11. Common order admission and
+`queue_megamission_with_teardown` live in
+[world commands](../../src/sim/world/world_commands.rs); destination/stop handling in
+[movement commands](../../src/sim/movement/movement_commands.rs); installation and
+restoration span [install](../../src/sim/movement/locomotion/install.rs),
+[slot](../../src/sim/movement/locomotion/slot.rs) and
+[piggyback](../../src/sim/movement/locomotion/piggyback.rs). Execution is owned by
+[object turns](../../src/sim/world/object_turn.rs), not a proposed global sweep.
+
+- **M1 Drive/Ship:** [movement step](../../src/sim/movement/movement_step.rs)
+  `shared_track_kind`, `accept_shared_track`, `configure_motion_after_transition`
+  and `advance_lepton_position` handle both, retaining separate fields/branches.
+- **M2 Walk:** [ground ticking](../../src/sim/movement/movement_tick.rs) shares
+  path/crossing infrastructure; movement step and
+  [blocked movement](../../src/sim/movement/movement_blocked.rs) retain Walk branches.
+- **M3 Hover:** movement step's `hover_steer` and
+  [Hover](../../src/sim/movement/hover.rs) `hover_tick_throttle`/`hover_vertical_tick`
+  own distinct steering/height work within ground movement.
+- **M4 Fly/Jumpjet:** [air movement](../../src/sim/movement/air_movement.rs)
+  `tick_air_movement` is called through
+  [lifecycle](../../src/sim/world/lifecycle.rs) `tick_air_movement_with_cell_lists_one`.
+  Its branches reach distinct Fly handling and Jumpjet altitude/acceleration.
+  E6 covers the separate airfield/pool/cargo outcomes; shared motion is not proof
+  of a cheap full-aircraft-family implementation.
+- **M5 Teleport:** movement commands' `set_destination_for_teleporter_entity`
+  and [teleport movement](../../src/sim/movement/teleport_movement.rs)
+  `issue_teleport_command`, `issue_active_teleport_head_to_coord`,
+  `tick_teleport_movement` connect destination and relocation.
+  [Movement owner](../../src/sim/movement/mod.rs) `tick_locomotor_piggyback_restore_one`
+  handles restoration. Ordinary installed Teleport and temporary override paths
+  must not be conflated; E1 identifies the miner caller.
+- **M6 Rockets:** [rocket movement](../../src/sim/movement/rocket_movement.rs)
+  `process_rocket_state`/`tick_rocket_movement` owns phases and payload and is
+  excluded from ordinary air ticking. Object turns collect completions;
+  [world](../../src/sim/world/mod.rs) hands them to SpawnManager detonation.
+
+The inspected `locomotor_end_gate_context` explicitly records non-Drive end gates
+as owner-path approximations with native equivalence unchecked. These groupings
+therefore establish code overlap, not correctness. Follow E5/E6's native leads,
+recheck consequential branches and validate real orders and continuation in the
+selected goal. No native execution or movement runtime test was run for this audit.
+
+## E14 Rendering implementation evidence
+
+Read directly at the E11 baseline; implementation overlap is an inference from
+these owners, not new proof of native semantics or whole-renderer completeness.
+
+- **Lighting and palette consumers (V1):**
+  [MatchLighting and drawer selectors](../../src/app/presentation/lighting.rs)
+  own grid replacement and body/building/animation light selection.
+  [PaletteLight](../../src/render/palette_light.rs) and its
+  [shared shader](../../src/render/palette_light.wgsl) carry the row/scalar/index
+  policy into [tactical shader assembly](../../src/render/tactical_shader.rs).
+  [Existing LightConvert research](../research/LIGHTCONVERT_ROW_RGB565_ORACLE_2026_09_09.md)
+  supplies native arithmetic/fixture context with explicit limits. Cell versus
+  house ColorScheme and animation palettes remain different selectors; aircraft
+  brightness is explicitly unresolved in the inspected presentation owner.
+- **Voxel body and cache (V2):** [raster preparation](../../src/render/vxl_raster.rs)
+  routes ordinary encoded VXLs through [native preparation](../../src/render/vxl_native.rs)
+  shared with GPU visibility writes. [Unit atlas](../../src/render/unit_atlas.rs)
+  keys facing/part/frame/slope, while the
+  [transition cache](../../src/render/unit_slope_transition_cache.rs) materializes
+  visible blended slopes. Magnified previews retain a distinct compatibility path.
+- **Shadows (V3):** [voxel geometry](../../src/render/vxl_shadow.rs) explicitly
+  supports flat, frame-zero, one-section ordinary input; other cases retain fallback.
+  Atlas and [unit-instance admission](../../src/app/presentation/instances/units.rs)
+  additionally restrict this route to ordinary Ground-band, uncloaked Drive
+  callers. The atlas owns masking/cache state. [Shadow research](../research/VEHICLE_SHADOW_VISIBLE_MATCH.md)
+  separates shape/mask fixtures from final destination-darkening limitations.
+  Joint destination work is conditional on actual consumers; this does not prove
+  SHP, aircraft and voxel shadow geometry are interchangeable.
+- **Ordering (V4):** [draw plan](../../src/render/tactical_draw_plan.rs) owns layer
+  and RenderZPolicy; [instance building](../../src/app/presentation/render/build_instances.rs),
+  [lowering](../../src/app/presentation/render/draw_plan_lowering.rs) and
+  [pass dispatch](../../src/app/presentation/render/draw_passes.rs) preserve ground
+  parents and upper-layer submissions. This is concrete cross-format overlap.
+- **Modified pixels (V5):** `opaque_palette` in the palette shader disables that
+  path for alpha/FX input, and `resolve_palette` retains compatibility branches.
+  [Batch shader](../../src/render/batch_shader.wgsl) supplies alpha and effect flags.
+  These observations establish a boundary requiring additional native blitter
+  investigation, not a proven universal translucency/cloak implementation group.
+- **Combat lights (V6):** [render orchestration](../../src/app/presentation/render/mod.rs)
+  prepares current combat lights and a composition target;
+  [combat-light renderer](../../src/render/combat_light.rs) and
+  [mask shader](../../src/render/combat_light.wgsl) operate on scene pixels. This
+  differs from per-cell lighting. The shader also distinguishes projected center
+  from its fixed surface footprint, so camera/zoom assumptions need caller checks.
+- **Searchlight (V7):** [BuildingLight rendering](../../src/render/building_light.rs)
+  and pass submission exist, but `build_instances` currently constructs an empty
+  `spotlight_type16` vector. That is a concrete missing input on this route, not
+  proof no other light implementation exists. Active source/registration and full
+  beam behavior require targeted research before claiming production completion.
+
+No new rendering APIs, dependencies or tools were installed. This inspection does
+not certify pixel parity; use the native evidence and production-output checks
+specified in the selected goal, and recheck this dated source state.
+
 ## Scope carried forward from the original catalogue
 
 This is a migration index, not a progress chart. Old identifiers refer to the
