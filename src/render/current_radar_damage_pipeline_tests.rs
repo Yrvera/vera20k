@@ -125,6 +125,19 @@ fn simulation_fixture() -> (Simulation, crate::map::terrain::TerrainGrid) {
         .flat_map(|ry| (0..SIDE).map(move |rx| cell(rx, ry)))
         .collect();
     let mut terrain = ResolvedTerrainGrid::from_cells(SIDE, SIDE, cells);
+    // Native572230 selects pavement from the raw tile independently of its
+    // overlay-state write. Give synthetic tile42 the retail relative identity
+    // BridgeBottomRight1=3 with BridgeSet base40; an overlay alone is not enough.
+    terrain.test_set_high_bridge_rim_tiles(
+        crate::map::bridge_rim_tiles::HighBridgeRimTiles::from_ini(
+            40,
+            b"[General]\nBridgeTopLeft1=1\nBridgeTopLeft2=2\n\
+              BridgeBottomRight1=3\nBridgeBottomRight2=3\n\
+              BridgeTopRight1=4\nBridgeTopRight2=5\n\
+              BridgeBottomLeft1=6\nBridgeBottomLeft2=6\n\
+              BridgeMiddle1=7\nBridgeMiddle2=12\n",
+        ),
+    );
     // 587180 admits an actual self-anchored overlay24 body, not the former
     // topology-only center with raw flags0/overlay0. Native NS setter is dir0.
     terrain.apply_runtime_bridge_mark_stamp(

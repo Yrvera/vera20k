@@ -10,10 +10,13 @@ use super::*;
 use crate::map::cell_index::NativeCellIdentity as Cell;
 use crate::map::resolved_terrain::DynamicTerrainCellState;
 use crate::sim::bridge_state::publication::{self, BridgePublicationHost, CellCoord};
-use crate::sim::bridge_state::{BridgeheadAnchorClass, Phase};
+use crate::sim::bridge_state::Phase;
 
 #[path = "bridge_rim_publication.rs"]
 mod rim_publication;
+
+#[path = "bridge_tile_publication.rs"]
+mod tile_publication;
 
 #[cfg(test)]
 #[path = "bridge_publication_tests.rs"]
@@ -137,20 +140,8 @@ impl LivePublication<'_> {
             .insert(coord, DynamicTerrainCellState::capture(resolved));
     }
 
-    fn legacy_tile_class(&self, cell: Cell) -> Option<BridgeheadAnchorClass> {
-        let (x, y) = self.real_coord(cell)?;
-        let runtime = self.sim.bridge_state.as_ref()?.cell(x, y)?;
-        matches!(
-            runtime.role,
-            BridgeCellRole::Anchor | BridgeCellRole::Bridgehead
-        )
-        .then_some(runtime.bridgehead_anchor_class)
-    }
-
-    fn legacy_pavement(&mut self, cell: Cell) {
-        let Some((x, y)) = self.real_coord(cell) else {
-            return;
-        };
+    fn legacy_pavement_at(&mut self, requested: CellCoord) {
+        let (x, y) = (requested.0 as u16, requested.1 as u16);
         let changed = match (
             self.sim.bridge_state.as_mut(),
             self.sim.resolved_terrain.as_ref(),
@@ -298,7 +289,6 @@ impl BridgePublicationHost for LivePublication<'_> {
             input.1.wrapping_add(dy as i16),
         );
         let target = self.lookup(target_coord);
-        let mut state_written = false;
         if self.flags(target) & BRIDGE_FLAG_ANCHOR_SELF != 0
             && let Some(next) =
                 crate::sim::bridge_specs::apply_ramp_transition(self.state(target), axis, phase)
@@ -317,32 +307,11 @@ impl BridgePublicationHost for LivePublication<'_> {
                 self.clear_overlay(target);
                 self.radar(target);
             }
-            state_written = true;
         }
-        // Retain the pre-existing tile projection as an explicit separate
-        // callback. Native56EB80/Recalc/level/three-cell footprint delivery is
-        // still open. Fresh reads preserve nested state/class changes.
-        if let Some(class) = self.legacy_tile_class(target) {
-            if matches!(phase, Phase::CollapseA | Phase::CollapseB)
-                && class == BridgeheadAnchorClass::AboutToFall
-            {
-                self.perpendicular(target_coord, axis, phase, direction);
-            }
-            if let Some(class) = self.legacy_tile_class(target) {
-                let next = crate::sim::bridge_specs::apply_anchor_class_transition(class, phase);
-                if let Some((x, y)) = self.real_coord(target)
-                    && let Some(runtime) = self
-                        .sim
-                        .bridge_state
-                        .as_mut()
-                        .and_then(|s| s.cell_mut(x, y))
-                {
-                    runtime.bridgehead_anchor_class = next;
-                }
-            }
-        }
-        if state_written {
-            self.legacy_pavement(target);
+        if let Err(error) = self.perpendicular_tile_tail(target_coord, target, axis, phase, direction) {
+            // An unavailable/unadmitted input is not a successful native
+            // sparse fallback. Preserve completed writes and report the gap.
+            log::error!("bridge tile update at {target_coord:?} failed: {error}");
         }
     }
     fn rim(&mut self, coord: CellCoord) {

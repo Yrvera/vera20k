@@ -8,11 +8,12 @@ pub(crate) type Coord = (i16, i16);
 
 pub(crate) trait IsoTileFloodHost {
     type Cell: Copy;
+    type Error;
 
     fn lookup(&mut self, requested: Coord) -> Self::Cell;
     fn tile(&self, cell: Self::Cell) -> i32;
-    fn write_tile(&mut self, cell: Self::Cell, tile: i32);
-    fn recalc(&mut self, cell: Self::Cell, level_override: i32);
+    fn write_tile(&mut self, cell: Self::Cell, tile: i32) -> Result<(), Self::Error>;
+    fn recalc(&mut self, cell: Self::Cell, level_override: i32) -> Result<(), Self::Error>;
     fn radar(&mut self, cell: Self::Cell);
     /// Native's initial tactical dirty rectangle precedes the equality guard.
     fn initial_screen(&mut self, requested: Coord, cell: Self::Cell);
@@ -32,12 +33,12 @@ enum Frame {
 
 /// Explicit depth-first frames preserve native recursion order without tying
 /// the connected terrain region's size to the Rust call-stack capacity.
-pub(crate) fn replace_connected(
-    host: &mut impl IsoTileFloodHost,
+pub(crate) fn replace_connected<H: IsoTileFloodHost>(
+    host: &mut H,
     requested: Coord,
     replacement: i32,
     level_override: i32,
-) {
+) -> Result<(), H::Error> {
     let mut frames = vec![Frame::Enter {
         requested,
         recursive_old: None,
@@ -56,8 +57,8 @@ pub(crate) fn replace_connected(
                 if host.tile(cell) == replacement {
                     continue;
                 }
-                host.write_tile(cell, replacement);
-                host.recalc(cell, level_override);
+                host.write_tile(cell, replacement)?;
+                host.recalc(cell, level_override)?;
                 host.radar(cell);
                 frames.push(Frame::Neighbor {
                     requested,
@@ -94,6 +95,7 @@ pub(crate) fn replace_connected(
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -122,6 +124,7 @@ mod tests {
 
     impl IsoTileFloodHost for ControlHost {
         type Cell = usize;
+        type Error = std::convert::Infallible;
 
         fn lookup(&mut self, requested: Coord) -> usize {
             let native_slot = i32::from(requested.1) * 512 + i32::from(requested.0);
@@ -141,13 +144,14 @@ mod tests {
             self.cell(cell).1
         }
 
-        fn write_tile(&mut self, cell: usize, tile: i32) {
+        fn write_tile(&mut self, cell: usize, tile: i32) -> Result<(), Self::Error> {
             self.trace
                 .push(json!({"kind":"tile", "coord":self.cell(cell).0, "tile":tile}));
             self.cell_mut(cell).1 = tile;
+            Ok(())
         }
 
-        fn recalc(&mut self, cell: usize, level_override: i32) {
+        fn recalc(&mut self, cell: usize, level_override: i32) -> Result<(), Self::Error> {
             self.trace
                 .push(json!({"kind":"recalc", "coord":self.cell(cell).0, "level":level_override}));
             if let Some((coord, tile)) = self.callback.take() {
@@ -155,6 +159,7 @@ mod tests {
                 self.trace
                     .push(json!({"kind":"callback_write", "coord":coord, "tile":tile}));
             }
+            Ok(())
         }
 
         fn radar(&mut self, cell: usize) {
@@ -193,7 +198,8 @@ mod tests {
                 coord(&case["start"]),
                 case["replacement"].as_i64().unwrap() as i32,
                 case["level"].as_i64().unwrap() as i32,
-            );
+            )
+            .unwrap();
             let name = case["name"].as_str().unwrap();
             assert_eq!(json!(host.trace), case["trace"], "{name}: ordered effects");
             let final_cells: Vec<_> = host
