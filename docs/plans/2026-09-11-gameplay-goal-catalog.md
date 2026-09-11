@@ -41,6 +41,30 @@ records the source paths and limits. Preserve existing working behavior.
 | Iron Curtain and Force Shield protection (S3–S4) | Shared invulnerability state/application and damage consumers make joint protection work a strong candidate. Keep their different recipient selection, infantry handling and Force Shield blackout/recovery explicit. Shared protection does not imply identical launch semantics. |
 | Stock MCV conversion variants (B2) | Shared replacement/transfer/removal flow supports working across stock variants. Include sale machinery where reverse conversion actually uses it; it does not imply a full purchase/repair/sale goal. |
 
+### Further cross-row groups and broad rows to subdivide
+
+The [second-pass evidence](2026-09-11-gameplay-boundary-evidence.md#e12-further-implementation-groups)
+adds the following implementation boundaries. “Together” means the named shared
+behavior through its real callers; it does not absorb every behavior of each row.
+
+| Implementation group | Coverage to combine and work to keep distinct |
+|---|---|
+| Cargo departure and failed-release recovery | U4/U5/S8 cross at cargo-head removal, recorded size and retry restoration. Handle affected vehicle, landed-aircraft, garrison and paradrop routes together, through successful release and retry. Keep route geometry, cadence, parachute attachment and weapon-reset differences explicit. This does not require all garrison combat or the entire strategic-power lifecycle. |
+| Passenger-dependent weapon behavior | Within U4, boarding/release feeds IFV host-weapon selection and OpenTopped registration. Shared membership changes require both consumers. Full IFV gunner behavior and passenger-owned firing are distinct implementation focuses; a cargo list alone proves neither. U5 occupied-building weapon substitution also needs checks when shared selection changes. |
+| Jumpjet movement across active users | Within U9, shared altitude/acceleration/landing decisions justify variant work together. Nighthawk cargo, Disc drain and Siege Chopper deployed combat add their own state and acceptance; treat them as explicit additional focuses instead of silently including them all in a locomotion fix. Whole-unit goals still include each required ability. |
+| Per-viewer reveal publication | W4/S10 meet at real Psychic Reveal → vision publication. Changes to viewer propagation or knowledge state should include this strategic source alongside affected ordinary sources. Temporary reveal, whole-map exploration, Gap and cloak detection retain different producers and lifetime rules; do not equate them. |
+| Options profile and its consumers across screens | Within F3, launcher and in-game options share the retail options profile and persistence. Group profile/consumer changes across both screens, with each apply/cancel/preview policy. Menu navigation/routing is a separate focus from settings behavior. |
+| Existing-context save restoration | Within F8, quickload and the in-game load panel converge on preparation and commit. Group failure isolation, world replacement and output rebuilding across those entries. Cold-start content preparation/loading is a distinct additional focus required for full F8. |
+| Fixed/generated-map launch handoff | F1/F2 share the accepted-map loading handoff. Group changes to that handoff with both map sources; generator algorithms/seed semantics and match outcome handling are separate work. A generated preview is not the gameplay map acceptance test. |
+| AI base decisions and Team execution | F4 contains separate production/deployment/placement decisions and Team script/effect execution. Select the changed owner and its real consumers; integrate both when completing a whole AI opponent. Do not assume either implementation will cheaply finish the other. |
+
+For example, “port passenger release and recovery across the live cargo routes”
+is a coherent cross-row goal; “port all transports, garrisons and paradrops” is a
+larger explicit scope. Similarly, a whole AI or save-system request can retain one
+goal while using the distinct implementation focuses above internally. These
+subdivisions are not a return to disconnected infrastructure phases: each selected
+focus must deliver its named behavior through the production path.
+
 ### Conditional combinations and useful separations
 
 - **Standard and Slave Miner:** combine resource extraction or payout changes
@@ -53,16 +77,16 @@ records the source paths and limits. Preserve existing working behavior.
   owners; S1/S5/S6/S9 need further effect-path investigation before claiming an
   efficient grouping. “All strategic powers” remains a valid explicitly requested
   goal, but is not the default inferred from shared sidebar machinery.
-- **Transport/garrison/bunker, and special abilities:** inspect the actual changed
-  admission, targeting, damage or release owner. Include the affected variants
-  and required handoffs; sharing Enter or an effect dispatcher is insufficient to
-  declare all complete lifecycles one efficient group.
+- **Tank Bunker and special abilities:** the cargo-departure group above does
+  not include NATBNK's reciprocal vehicle link. Inspect changed admission,
+  targeting, damage or release owners before combining additional full effects;
+  sharing Enter or an effect dispatcher is insufficient.
 - **Repair, sale, service and capture:** generic money/ownership services support
   different transactions. Combine a demonstrated shared defect and its consumer
   checks, not every complete transaction merely because it changes house state.
-- **Shell, AI, scenarios, save, replay and multiplayer:** the coverage rows remain
-  available, but this pass establishes no new efficiency-based grouping for their
-  full scopes. Select after tracing the specific current gap and shared work.
+- **Scenarios, campaigns, media, replay and multiplayer:** no new full-scope
+  efficiency grouping is established here. The more specific shell, save and AI
+  findings above do not imply these other backends are cheap additions.
 
 Before composing a goal, identify what shared research/change will be done once,
 which additional variants need mostly branch-specific work, and which would add
@@ -213,12 +237,12 @@ must be explicit; it cannot silently shrink an existing full goal.
 | U1 | **Units obey movement/replacement orders through arrival.** Walking, driving, ship and hover variants. | Command → mission/destination/installed locomotor → path/turn/traffic/occupancy/crush → arrival → actual next action. Include stop, blocked recovery, replacement and death. Select the affected locomotor set explicitly; sharing this contract does not make all locomotors identical. Ability-specific movement and sorties stay integrated with their parent actions. |
 | U2 | **An ordinary engagement resolves from order to aftermath.** Common infantry/vehicle/building/naval/air cases; direct, ballistic, homing and applicable anti-air/air-to-air/strafe/bombing attacks. | Approach/acquire → weapon/range/facing/fire gates → burst/projectile/impact → armor/damage/fear/prone/veterancy/death/attribution → next order/target. Include debris and affected terrain/resource consequences. Reuse shared combat authority; representative units are coverage cases, not duplicate implementations. |
 | U3 | **GI and Guardian GI fight through deployment and recovery.** Both sustained deployed-infantry variants. | Deploy input → stance/animation/movement gate → actual deployed targeting/firing → undeploy/reorder/damage/death. Integrate ordinary movement/combat and applicable host interactions. Desolator radiation and Yuri pulses remain with their effects; Siege Chopper with U9. |
-| U4 | **Mobile transports and passengers work through carrying, fighting and release.** Land/sea/air transports, IFV and Battle Fortress. | Admission → cargo membership/concealment → movement and applicable firing → unload placement/retry or host destruction → usable passengers. IFV selects the host's weapon; Battle Fortress passenger firing retains its own responsibility. Air-transport landing/exit is a required variant. |
+| U4 | **Mobile transports and passengers work through carrying, fighting and release.** Land/sea/air transports, IFV and Battle Fortress. | Admission → cargo membership/concealment → movement and applicable firing → unload placement/retry or host destruction → usable passengers. IFV selects the host's weapon; Battle Fortress passenger firing retains its own responsibility. Air-transport landing/exit is a required variant. Use the cargo-departure group across U5/S8 when changing that shared operation; keep host-weapon and passenger-firing work explicit. |
 | U5 | **Infantry occupy, fight from and leave buildings.** Civilian garrisons and Soviet Battle Bunker `NABNKR`. | Admission → occupant/ownership state → occupant firing/credit and occupied art → voluntary/forced evacuation, sale or destruction → released actors/building state. Keep presentation and firing with occupancy. |
 | U6 | **Yuri Tank Bunker `NATBNK` installs, supports and releases a vehicle.** | Approach/radio → reciprocal single-vehicle link/install → actual combat → release/sale/destruction → link cleared and vehicle usable. This differs from U5's infantry occupation model. |
 | U7 | **Harrier and Black Eagle complete repeatable airfield sorties.** Both aircraft and provider/pad variants. | Production/idle → takeoff/attack → return/reservation/landing → rearm → next sortie. Include provider loss/capture, contention, replacement orders and aircraft loss. Flight alone cannot complete this loop. |
 | U8 | **Launchers manage spawned aircraft or rockets through repeated attacks.** Carrier/Destroyer and V3/Dreadnought/Boomer. | Parent target → fixed spawn pool → child launch/attack → return/reload or missile regeneration → next attack. Include parent/child/target loss and owner changes. Returning aircraft and expendable missiles are variants of the same pool owner. Boris has a different designation/airstrike lifecycle. |
-| U9 | **Hovering airborne units move and fight through required transitions.** Rocketeer, Kirov, Nighthawk, Disc, Siege Chopper and active scenario variants. | Jumpjet/altitude behavior → actual attack/carry order → stop/landing where permitted → next action. Chopper landing/deployment/weapon change/resumed flight is a complete named outcome. Disc drain and Nighthawk passengers integrate their effect/cargo owners; locomotion alone cannot certify them. |
+| U9 | **Hovering airborne units move and fight through required transitions.** Rocketeer, Kirov, Nighthawk, Disc, Siege Chopper and active scenario variants. | Jumpjet/altitude behavior → actual attack/carry order → stop/landing where permitted → next action. Chopper landing/deployment/weapon change/resumed flight is a complete named outcome. Disc drain and Nighthawk passengers integrate their effect/cargo owners; locomotion alone cannot certify them. Split shared flight work from those additional effect/cargo/deployment focuses when selecting a bounded goal. |
 | U10 | **Reversible mind control maintains and releases victims.** Yuri Clone/Prime, Psychic Tower and Master Mind. | Acquisition → controller membership/owner transfer → actual order/house/production/visual consumers → capacity/overload and release/controller/victim loss → required restored state. Group controller variants; permanent Dominator effects and deployment pulses differ. Inspect acquisition and release callers, not only manager fields. |
 | U11 | **Parasites maintain and release their hosts.** Terror Drone infestation and Giant Squid grapple. | Admission → parasite-host relationship → continuing effects → service/escape/detach/death → cleanup. Group the relationship with explicit variant rules; do not merge Temporal or Magnetron merely because they share the special-weapon dispatcher. |
 
@@ -303,11 +327,11 @@ key used by the live nuke is not evidence of another active strategic power.
 | F1 | **Configure, launch, play and finish a skirmish.** | Shell choices → actual map/rules/mode/assets/starts → loading → playable match → outcome/surrender/scores/statistics/results/restart/exit → clean next session. Include launch failure/cancel paths. Faction/map/difficulty are variants. Exercise content precedence, theaters, ramps/cliffs/shores/bounds and mode/map overrides through actual world construction and play. |
 | F2 | **Generate a map and play that same map.** | Options/seed → generator/preview → matching launch → movement/construction and cleanup. Share F1's launch contract; generation has its own RNG/content identity. |
 | F3 | **Navigate the shell and retain settings.** | Menu/dialog → correct child route/settings operation → apply/cancel/back/focus → handoff or exit/persistence. Shell navigation is bounded; campaign/network mechanics are destination goals. “All destinations work” requires combined integration. Include controls, display/audio/gameplay options and restart. |
-| F4 | **An AI opponent builds, fights, defends and recovers.** | House decisions → ordinary production/deploy/place/attack consumers → resulting state → future decisions. Connected internal loops: base economy/placement/rebuilding and team selection/recruitment/script execution/replenishment. Faction/difficulty are variants. A loaded registry or advancing cursor cannot establish an actual attack/defense. |
+| F4 | **An AI opponent builds, fights, defends and recovers.** | House decisions → ordinary production/deploy/place/attack consumers → resulting state → future decisions. Connected internal loops: base economy/placement/rebuilding and team selection/recruitment/script execution/replenishment. Faction/difficulty are variants. A loaded registry or advancing cursor cannot establish an actual attack/defense. Base decisions and Team execution are distinct implementation focuses within this full outcome. |
 | F5 | **Authored scenario events produce their full consequences.** | Trigger/Tag/variables/latches → ordered action → real units/teams/reinforcements/camera/messages/objectives → next event/outcome and saved continuation. Share Team/command machinery with F4; scenario triggers have different conditions and persistent state. Include active convoy/special-mission cases when established. |
 | F6 | **Campaigns launch, advance and resume progress.** | Campaign/mission/difficulty/briefing → actual scenario → outcome → next mission/carryover → persisted progression. Integrate F5 scripts and F7 media. Campaign progression is not a skirmish setting variant. |
 | F7 | **Movies and briefing media play and return correctly.** | Start → synchronized video/speech/subtitles → skip/finish → correct screen/mission. Formats and destinations are variants; reusable media machinery stays shared. |
-| F8 | **Save a match and resume it through supported entry points.** | UI → content/version validation → prepared world/fixups → commit → rebuild presentation/reset pacing → continued play. Include shell startup/in-game paths, failure/cancel and active feature state. Restoring within an existing content context cannot by itself establish cold-start loading. |
+| F8 | **Save a match and resume it through supported entry points.** | UI → content/version validation → prepared world/fixups → commit → rebuild presentation/reset pacing → continued play. Include shell startup/in-game paths, failure/cancel and active feature state. Group quickload/panel restoration work; cold-start content preparation is an additional focus. Restoring within an existing content context cannot by itself establish cold-start loading. |
 | F9 | **Record and replay a match.** | Identity/scenario/seed → scenario initialization → timed commands → completion/stop or actionable divergence. Shared deterministic commands do not make replay a save restore or LAN session. |
 | F10 | **Host, join, play, observe and leave LAN matches.** | Discovery/lobby/content/seed/options/transfer → launch → synchronized real peers → communications/alliances/observers → result/disconnect/recovery-or-abort. Select complete children such as host-to-finished-match or transferred-map-to-play. Staging/network internals alone do not establish playable LAN. |
 | F11 | **Use a chosen online service to enter and leave actual matches.** | Explicit service/support decision → session/account/chat/discovery → actual multiplayer handoff → return/disconnect. Reuse F10 match authority; settle service policy before a retail-equivalent online claim. |

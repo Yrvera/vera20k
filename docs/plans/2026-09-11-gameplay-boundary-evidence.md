@@ -370,6 +370,89 @@ prompt scope. Existing implementation overlap can itself contain incorrect nativ
 assumptions; retail evidence still determines behavior, and no new runtime checks
 were performed for this documentation revision.
 
+## E12 Further implementation groups
+
+Second-pass inspection uses the same source baseline as E11. Findings below
+support implementation scope selection, not retail equivalence or measured effort.
+
+**Cargo crosses the previous rows.**
+[Passenger state](../../src/sim/passenger.rs) owns head-first membership and size;
+[departure](../../src/sim/passenger/departure.rs), `depart_cargo_head`, owns removal
+and failed-attempt restoration. Actual callers select `Garrison` in passenger.rs,
+`Vehicle`/`LandedAircraft` in
+[transport unloading](../../src/sim/transport_unload.rs), and `Paradrop` in
+[drop payload](../../src/sim/aircraft/drop_payload.rs). Route-specific rollback and
+weapon-reset policies remain explicit. This is concrete joint work across U4/U5/S8,
+not evidence their complete lifecycles are one state machine. Passenger boarding
+also branches on Gunner/OpenTopped; [weapon selection](../../src/sim/combat/combat_weapon.rs)
+selects host gunner slots separately from occupied-building substitution. Membership
+changes should check these consumers; a full passenger-fire implementation is more
+than changing the common cargo list. E5's NATBNK link remains outside this group.
+
+**U9 is broad implementation scope.**
+[Air movement](../../src/sim/movement/air_movement.rs) calls
+[Jumpjet altitude/acceleration/landing decisions](../../src/sim/movement/jumpjet_movement.rs).
+That supports joint active-locomotor variants, while cargo and weapon/deployment
+consumers remain additional work. For example, Disc
+[drain links](../../src/sim/credit_income.rs) have establishment, continuing effects
+and expiry outside flight. Do not use legacy helper comments to admit unreachable
+TS variants; the active-YR gate still applies.
+
+**Information has a concrete cross-row consumer, but not one universal effect.**
+[Psychic Reveal](../../src/sim/superweapon/psychic_reveal.rs) calls
+[vision](../../src/sim/vision/mod.rs), `reveal_radius_for_direct_allies`, which
+publishes knowledge for admitted viewers and invalidates the merged cache. W4/S10
+therefore overlap for changes to that propagation/publication. By contrast,
+[sensor lifecycle](../../src/sim/sensor_lifecycle.rs) deposits/removes detection
+counts and reevaluates residents; it is not the same knowledge-producing action.
+The native interpretation of each source remains a selected goal's evidence work.
+
+**Power is not permission to assume working effect admission.**
+[Power](../../src/sim/power_system.rs) consumes occupant counts for absorb-building
+output, and owns blackout countdown. Force Shield writes its blackout field, but
+`trigger_spy_blackout` has only a test caller in the inspected source search.
+Disc drain's current link helper records power integration as residual. Thus B5,
+X19/X20 and S4 have potential consumer overlap, but full Spy/Disc effects cannot be
+called cheap variants of an already-complete power path. Trace their admission and
+missing handoffs before expanding a power goal.
+
+**Options are shared across screens, navigation is additional work.**
+[Options persistence](../../src/app/persistence/options.rs),
+[launcher projection](../../src/app/persistence/options/launcher.rs) and
+[shell menu](../../src/app/shell_main_menu.rs) use `RetailOptionsProfile` and
+`persist_options_profile`. Profile/persistence and affected consumers belong
+together across those entries, with distinct preview/commit/close policies.
+This does not establish shared implementation of campaign/network destination flows.
+
+**Save entry points converge after their admission.**
+[Persistence commands](../../src/app/persistence/commands.rs) route quickload and
+panel loading through `load_save_file` into
+[load preparation](../../src/app/persistence/mod.rs), `PreparedLoad::from_repository`,
+and [restore commit](../../src/app/match_runtime/restore.rs), `commit_prepared_load`.
+`LoadPreparationView::from_runtime`
+requires existing rules/simulation/terrain. This supports joint same-context restore
+work and explains why cold-start loading is a separate required focus for full F8.
+
+**Fixed/generated map launch has a bounded overlap.**
+[Skirmish start](../../src/app/shell_skirmish.rs), `start_skirmish_session`, attaches
+accepted random-map artifacts to the common loading request.
+[Random-map state](../../src/app/shell_random_map.rs), `RandomMapGenerationRetention`
+and `AcceptedRandomMapLaunch`, distinguishes accepted staging from preview; gameplay
+regenerates from the seed path. Check both map sources when changing shared launch,
+without treating generator algorithms or match results as part of the same change.
+
+**AI contains distinct implementation owners.**
+[AI decisions](../../src/sim/ai.rs), `tick_ai`, emits production/deployment/placement
+commands. [World Team dispatch](../../src/sim/world/mod.rs), `run_team_script_pass`,
+invokes `TeamScriptVm::tick_effects` and applies those effects separately. F4 needs
+both for the whole opponent result; they are distinct implementation focuses,
+not evidence that one broad AI pass automatically finishes both.
+
+All coverage rows and their full-scope obligations remain available. Unchanged
+groupings are not newly certified by this pass. No runtime/native execution or
+installation was performed; exact semantics and current remaining gaps still need
+targeted validation when a goal is selected.
+
 ## Scope carried forward from the original catalogue
 
 This is a migration index, not a progress chart. Old identifiers refer to the
