@@ -18,6 +18,7 @@ pub(crate) mod authored_load_host;
 pub(crate) mod bridge_orchestrator;
 pub(crate) mod building_anim;
 pub mod edge_cell;
+mod gap_generator;
 mod hash_schema;
 mod infantry_terminal;
 #[cfg(test)]
@@ -50,6 +51,8 @@ mod world_spawn;
 mod damage_consequence_tests;
 #[cfg(test)]
 mod eva_dispatch_tests;
+#[cfg(test)]
+pub(crate) mod gap_generator_tests;
 #[cfg(test)]
 mod gsi_04_18_tests;
 #[cfg(test)]
@@ -146,7 +149,7 @@ const DEFAULT_SIM_SEED: u64 = 0x5EED_CAFE_D15E_A5E5;
 
 #[derive(Default)]
 struct ActiveVisionStructures {
-    gap_generators: Vec<vision::GapGeneratorSource>,
+    gap_generators: BTreeMap<InternedId, Vec<vision::GapGeneratorSource>>,
 }
 
 /// Result of one deterministic simulation tick.
@@ -4307,6 +4310,12 @@ impl Simulation {
         if old_owner == new_owner {
             return;
         }
+        if category == EntityCategory::Structure {
+            //448260: gap removal precedes ordinary sight release and owner
+            //swap. This order differs from Techno Limbo's sight-then-gap.
+            self.remove_building_gap_before_limbo(stable_id);
+            self.fog.release_entity_sight(stable_id);
+        }
         // FootClass::ChangeOwner @ 0x004DBED0 removes from the deposited old
         // owner and adds to the new owner before later readers observe it.
         if let Some(rules) = rules {
@@ -4373,6 +4382,10 @@ impl Simulation {
             self.change_owner_harvester_idle_arm(stable_id, rules);
         }
         self.refresh_waypoint_edge_from_committed_structure(stable_id);
+        self.reveal_building_sight_after_owner_change(stable_id, rules);
+        if let Some(rules) = rules {
+            self.reapply_building_gap_after_owner_change(stable_id, rules);
+        }
     }
 
     /// The mission half of `TechnoClass::ChangeOwner @ 0x007014A0` for a
@@ -5136,58 +5149,34 @@ impl Simulation {
         active
     }
 
-    /// Materialize vision effects from their final authorities: the persisted
-    /// per-house SpySat latch and freshly qualified powered Gap generators.
-    fn collect_active_vision_structures(&self, rules: &RuleSet) -> ActiveVisionStructures {
+    /// Read retained Building deposits; power classification belongs only to
+    /// the Building43FB20 operational edge, never a House/view refresh.
+    fn collect_active_vision_structures(&self, _rules: &RuleSet) -> ActiveVisionStructures {
         let mut effects = ActiveVisionStructures::default();
         for entity in self.substrate.entities.values() {
-            if entity.dying
-                || entity.lifecycle.in_limbo
-                || entity.category != EntityCategory::Structure
-            {
-                continue;
-            }
-            let Some(obj) = self.object_type(entity.type_ref(), rules) else {
-                continue;
-            };
-            if entity.building_up.is_some() {
-                continue;
-            }
-            if obj.gap_generator
-                && power_system::is_building_powered(
-                    &self.power_states,
-                    rules,
-                    entity,
-                    &self.interner,
-                )
-            {
-                effects.gap_generators.push(vision::GapGeneratorSource {
-                    stable_id: entity.stable_id(),
-                    owner: entity.owner(),
-                    rx: entity.position.rx,
-                    ry: entity.position.ry,
-                    radius: i32::from(obj.gap_radius_in_cells),
-                });
+            for (&viewer, deposit) in &entity.gap_generator.viewers {
+                if !deposit.active {
+                    continue;
+                }
+                effects.gap_generators.entry(viewer).or_default().push(
+                    vision::GapGeneratorSource {
+                        stable_id: entity.stable_id(),
+                        owner: entity.owner(),
+                        rx: entity.position.rx,
+                        ry: entity.position.ry,
+                        radius: deposit.radius,
+                    },
+                );
             }
         }
         effects
     }
 
     fn apply_active_vision_structures(&mut self, effects: &ActiveVisionStructures) {
-        // Phase 3 already clears these transient bits while rebuilding sight,
-        // but the later House rung must replace that earlier result after any
-        // combat/lifecycle changes before it reapplies the final effect set.
-        self.fog.clear_gap_flags();
-        let spy_sat_active_owners = self
-            .houses
-            .iter()
-            .filter_map(|(&owner, house)| house.spy_sat_active.then_some(owner))
-            .collect();
-        vision::apply_gap_generator_sources_with_spy_sat(
+        vision::materialize_gap_generator_sources(
             &mut self.fog,
             &effects.gap_generators,
             &self.interner,
-            &spy_sat_active_owners,
         );
     }
 
@@ -5235,8 +5224,28 @@ impl Simulation {
                     (own || allied_building).then_some(id)
                 })
                 .collect();
-            self.fog
-                .transition_whole_map_with_sources(owner, cells, !active, old_active, &sources);
+            //Map240's activation guard precedes all callbacks; explicit reset
+            //has no idempotence guard. Re-admission scans live candidates and
+            //rechecks current operational state independently for this viewer.
+            if self.fog.width != 0
+                && self.fog.height != 0
+                && (!active || !self.fog.whole_map_revealed_owners.contains(&owner))
+            {
+                let (gaps, admitted_gap) = self.prepare_spy_sat_gap_reentry(owner, rules);
+                self.fog.transition_whole_map_with_gap_reentry(
+                    owner,
+                    cells,
+                    !active,
+                    old_active,
+                    &sources,
+                    Some(&gaps),
+                );
+                //577D90 sets240 before callbacks; every successful6FB170
+                //re-admission clears it again, including a friendly generator.
+                if admitted_gap {
+                    self.fog.whole_map_revealed_owners.remove(&owner);
+                }
+            }
             if let Some(house) = self.houses.get_mut(&owner) {
                 house.map_is_clear = active;
                 house.spy_sat_active = active;

@@ -363,6 +363,11 @@ impl Simulation {
             return true;
         }
 
+        // Building43FB20 samples its operational edge before delayed Health0
+        // cleanup. A live dying-animation diversion must not skip that edge.
+        if let Some(rules) = rules {
+            self.visit_building_gap(id, rules);
+        }
         let Some(entity) = self.substrate.entities.get(id) else {
             return false;
         };
