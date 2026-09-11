@@ -255,9 +255,10 @@ Retail `ChronoWarp` explicitly has `PostClick=yes` and
 `PreDependent=ChronoSphere`; the
 [two-stage native handler](../research/CHRONOSPHERE_SUPERWEAPON_GHIDRA_REPORT.md)
 supports an inseparable complete teleport action. American/Tech Airport drops
-are provider/payload variants requiring both checks. Common charge/targeting
-machinery alone is insufficient to merge storms, mutation and protection into
-one task. Full current effect coverage was not audited in this revision.
+are provider/payload variants requiring both checks. Distinct storm, mutation and protection owners require separate effect evidence
+and comparisons, but do not establish separate goal-session boundaries. A retail
+strategic-powers goal can own shared lifecycle and all those effects through
+several increments. Full current effect coverage was not audited in this revision.
 
 ## E9 AI scenarios and session flows
 

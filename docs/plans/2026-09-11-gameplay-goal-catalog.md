@@ -1,9 +1,65 @@
-# Gameplay loops and proposed goal boundaries
+# Retail behavior porting goals and coverage
 
 Use this reference to compose a goal for the already-playable game. Rows describe
-related work; they do not report current completion, prescribe execution order,
-or authorize implementation by themselves. [ENGINE.md](../../ENGINE.md) governs
+behavior coverage; they do not prescribe separate goal sessions or execution
+order, report current completion, or authorize implementation by themselves. [ENGINE.md](../../ENGINE.md) governs
 evidence, architecture, validation and delivery, including the scale exception.
+
+## Choose a porting goal before selecting coverage
+
+The purpose is to port active retail behavior into VERA20k through research,
+implementation, integration and demonstrated comparison. Distinguish three levels:
+
+- **Porting goal:** the user-visible capability or family whose retail behavior
+  the owner must complete. It can span multiple PRs and resumptions.
+- **Coverage item:** a behavior, variant or interaction that the goal must account
+  for. The identifiers below name these items, not separate sessions.
+- **Implementation increment:** a coherent, reviewable change within the goal.
+  Finishing it does not close the remaining goal.
+
+Consolidate related coverage under a porting goal when one owner benefits from
+following the shared lifecycle and its variants through completion. Different
+native effect owners still require individual evidence and comparisons; they do
+not by themselves require separate goal prompts. Conversely, grouping work in one
+goal does not justify merging its distinct state machines or implementation owners.
+
+### Candidate porting families
+
+These are scope proposals, not a fixed task queue or mandatory session count.
+Select one from the user's intended result and current gaps. A broad family stays
+broad when explicitly requested; inspect its active census before claiming closure.
+References are starting coverage, not exhaustive boundaries around dependencies.
+
+| Candidate goal | Starting coverage and integration |
+|---|---|
+| Retail resource economy | R1–R2: resource supply, standard miners and slave economy through spendable income and continued harvesting. Keep their different worker/return lifecycles explicit. A standard-miner-only request can select R1. |
+| Retail production and base establishment | B1, B2, B4: purchase, delivery/placement, MCV conversion and sale through usable products/bases and released value/dependents. Include prerequisite, power and ownership handoffs required for those results. |
+| Retail base operation and services | B3, B5–B8, X20: repair, power/provider changes, capture/benefits, service visits, grinding and infiltration. These are selectable complete subloops; sharing a house does not require every one for a bounded repair request. |
+| Retail battlefield controls | C1, with actual U1/U2 and ability consumers: input, selection, navigation and orders through their real execution and replacement. |
+| Retail ordinary movement and combat | U1–U3 and applicable X1–X13, X18: choose the requested unit family or combat scope, including its normal and special behavior. “All infantry” requires a roster/interaction census; GI deployment alone cannot close it. |
+| Retail carrying and occupation | U4–U6: mobile cargo, infantry garrisons and vehicle bunkers through admission, applicable fighting and usable release. Preserve their distinct relationship models. |
+| Retail aircraft and launched attacks | U7–U9, X17: airfield sorties, spawn pools, hovering units and Boris strikes, including required cargo/effects. These can share a goal while retaining distinct lifecycle owners. |
+| Retail special relationships and movement | U10–U11, X14–X16, X19: select the requested control, parasite, teleport, temporal, lift or Disc behavior with its complete consumers. This is a coverage family, not a default single session for every special unit. |
+| Retail world interaction and information | W1–W7: select the requested world family, or explicitly own the broader scope. Resource-producing scenery also reaches R1; controls, detection and strategic reveals reach their actual consumers. |
+| Retail strategic powers | S1–S10 together: availability/charge/targeting through every active power's effect, recovery and repeated use. This is the default broad scope for “port the superweapons”; the rows below are its coverage checklist. |
+| Retail skirmish and shell flow | F1–F3: setup/settings, map selection or generation, launch, match outcome and return. Integrate existing gameplay; this does not automatically require all combat parity. |
+| Retail AI opponents | F4 through the actual economy, production and combat consumers needed for functioning opponents. |
+| Retail authored scenarios and campaigns | F5–F7: authored events, progression and required briefing/media through playable missions and continuation. Media can also serve the shell. |
+| Retail save and resume | F8 and affected gameplay state through supported loading paths and continued play. |
+| Replay and multiplayer flows | F9–F11 are selectable outcomes. A replay and a LAN match have different entry, completion and failure contracts; do not automatically merge them. Online service scope requires the stated support decision. |
+
+Some families above deliberately offer selectable outcomes rather than a proposed
+single session. Do not replace the old one-row/one-prompt rule with one-family/one-
+prompt. Prefer a consolidated goal where the intended result and shared lifecycle
+justify it; keep independent application flows separate unless the user requests
+both. No current gap/severity audit or session-speed benchmark establishes a fixed
+partition here.
+
+Split an authorized broad goal only with an explicit scope decision, or organize
+smaller increments beneath it while retaining its full completion obligation.
+Independent goals need independently meaningful results, clear shared-state
+ownership and acceptance that does not defer a required handoff to a later task.
+Do not split merely because effects have different names, source files or test cases.
 
 ## Start with the requested outcome
 
@@ -66,13 +122,13 @@ history are optional coverage aids, not required session startup reading.
 | S1–S10 | [E8 Strategic powers](2026-09-11-gameplay-boundary-evidence.md#e8-strategic-powers) |
 | F1–F6 | [E9 AI scenarios and session flows](2026-09-11-gameplay-boundary-evidence.md#e9-ai-scenarios-and-session-flows) |
 | F7–F11, shared output problems | [E10 Persistence networking and presentation](2026-09-11-gameplay-boundary-evidence.md#e10-persistence-networking-and-presentation) |
-| Other X goals | Their named effect and actual callers need a targeted lookup; the evidence file does not contain a full contract for each. Start with [weapon selection](../../src/sim/combat/combat_weapon.rs) / [effect dispatch](../../src/sim/combat/world_receiver.rs), then the active native owner. Use E4/E5/E7 for affected power, input or world consumers. |
+| Other X coverage | Their named effect and actual callers need a targeted lookup; the evidence file does not contain a full contract for each. Start with [weapon selection](../../src/sim/combat/combat_weapon.rs) / [effect dispatch](../../src/sim/combat/world_receiver.rs), then the active native owner. Use E4/E5/E7 for affected power, input or world consumers. |
 
 ## How relationships determine scope
 
 | Relationship found | Consequence for a goal |
 |---|---|
-| Same state machine or transaction, with different data/branches | Usually investigate together, with explicit variant checks. War/Chrono Miner, GI/Guardian GI deployment and different factory products are examples. |
+| Same state machine or transaction, with different data/branches | Usually include as coverage of one goal and investigate together, with explicit variant checks. War/Chrono Miner, GI/Guardian GI deployment and different factory products are examples. |
 | Direct producer and consumer | Include the integration needed for the named result. TIBTRE creates resource cells that growth and miners consume; a spawning-only test does not complete that resource loop. |
 | A relationship that persists during an action | Own establishment, operation and release together: passenger/transport, controller/victims, launcher/spawn pool, aircraft/airfield. |
 | Shared service, but different state and termination | Keep each complete action, and check affected consumers when changing the service. Sharing credits does not merge repair and sale; sharing ownership transfer does not merge engineers and mind control. |
@@ -80,7 +136,7 @@ history are optional coverage aids, not required session startup reading.
 
 **A goal can cross catalogue rows.** These entries identify coherent default
 scopes and important relationships; they are not walls around source directories.
-A family may contain several complete goals, and a large goal may take several
+A family can be requested whole or explicitly narrowed, and a large goal may take several
 PRs. Neither fact permits a required consumer to be deferred while claiming the
 named goal complete.
 
@@ -150,9 +206,11 @@ must be explicit; it cannot silently shrink an existing full goal.
 
 ### Distinct abilities that retain their own effect loops
 
-These are separate candidate goals, not one “finish special units” task. Each
-includes ordinary movement/combat and presentation consumers required to exercise
-the ability. Exact branch coverage remains work for the selected goal.
+These are effect coverage items. Include the relevant ones when porting a unit or
+family; a specifically requested ability can also be a bounded goal. Distinct
+effects do not mandate separate sessions. Each includes ordinary movement/combat
+and presentation consumers required to exercise it. Exact branch coverage remains
+work for the selected goal.
 
 | Ref | Ability | Complete outcome |
 |---|---|---|
@@ -179,7 +237,7 @@ the ability. Exact branch coverage remains work for the selected goal.
 
 ## World interaction and information
 
-| Ref | Connected goal | Boundary and variants |
+| Ref | Behavior coverage | Boundary and variants |
 |---|---|---|
 | W1 | **Bridges remain coherent through traversal, damage, collapse and repair.** | High/low/orientation variants share the world lifecycle. Include occupants/on-under passage, combat, engineer/hut admission, topology/zone/overlay/radar refresh and traversal after repair. Repair animation is insufficient without restored passage. |
 | W2 | **Scenery affects the world throughout its lifetime.** | Trees/rocks share terrain lifecycle with type/theater/immune/damage variants: load → occupation/appearance → applicable interaction → removal/spatial cleanup. TIBTRE integrates this terrain owner while spawning is R1. Do not assume every tree burns or can be crushed. |
@@ -191,11 +249,13 @@ the ability. Exact branch coverage remains work for the selected goal.
 
 ## Strategic powers
 
-Named powers share granting/revocation, charge, sidebar and targeting support.
-Each power goal includes that support through its actual effect and aftermath.
-A common charge timer does not make every power one task.
+For a request to port retail strategic powers, use one encompassing goal with
+S1–S10 as required effect coverage. Include shared granting/revocation, charge,
+sidebar and targeting through each effect and aftermath. The agent may deliver
+several increments without turning them into unrelated goal sessions. A user
+request for one named power can still select a narrower complete scope.
 
-| Ref | Power | Result the complete goal must reach |
+| Ref | Power coverage | Result to establish within the goal |
 |---|---|---|
 | S1 | Nuclear Missile (`MultiMissile`) | Launch/descent/impact → damage and world effects → cleanup. |
 | S2 | Lightning Storm | Activation → storm scheduling and actual strikes → termination and continued play. |
@@ -209,8 +269,9 @@ A common charge timer does not make every power one task.
 | S10 | Psychic Reveal | Targeting → actual per-viewer knowledge effect → required duration/termination. |
 
 Weather, protection, transformation and permanent ownership changes have different
-state and cleanup despite sharing sidebar code. S5's stages and S8's variants
-remain coupled scopes; row identifiers do not split their internals into tasks.
+state and cleanup. Keep their evidence and implementation responsibilities explicit
+inside the encompassing goal. S5's stages and S8's variants remain coupled
+coverage; neither effect differences nor row identifiers prescribe session boundaries.
 
 Provider loss/capture, relevant power changes, targeting cancellation, repeated
 use and save/restore belong to each selected power. Shared-framework changes
@@ -219,7 +280,7 @@ key used by the live nuke is not evidence of another active strategic power.
 
 ## Opponents and complete application flows
 
-| Ref | Goal and related variants | Boundary and integration |
+| Ref | Behavior and related variants | Boundary and integration |
 |---|---|---|
 | F1 | **Configure, launch, play and finish a skirmish.** | Shell choices → actual map/rules/mode/assets/starts → loading → playable match → outcome/surrender/scores/statistics/results/restart/exit → clean next session. Include launch failure/cancel paths. Faction/map/difficulty are variants. Exercise content precedence, theaters, ramps/cliffs/shores/bounds and mode/map overrides through actual world construction and play. |
 | F2 | **Generate a map and play that same map.** | Options/seed → generator/preview → matching launch → movement/construction and cleanup. Share F1's launch contract; generation has its own RNG/content identity. |
