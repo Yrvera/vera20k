@@ -1319,3 +1319,21 @@ fn native_shp_loader_atlas_palette_indices_reach_production_pixels() {
         }
     }
 }
+
+/// Offscreen consumer seam for app-layer tests of production lighting inputs.
+/// Uses the ordinary terrain WGSL and real TMP pixels; no CPU color substitute.
+pub(crate) fn render_terrain_lighting_probe(
+    tile: &crate::map::theater::TileImage,
+    instance: SpriteInstance,
+) -> Vec<[u8; 4]> {
+    let layer = Layer {
+        shader: Shader::Terrain,
+        instance,
+        rgba: tile.rgba.clone(),
+        z_bytes: tile.depth.clone(),
+        source_size: [tile.width, tile.height],
+        indices: Vec::new(),
+        palette_override: None,
+    };
+    Gpu::new().render_sized(&[layer], [tile.width, tile.height])
+}
