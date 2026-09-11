@@ -154,8 +154,13 @@ fn gap_operational_original_gate_and_native_order_corpus() {
     }
 }
 
-#[test]
-fn gap_operational_power_loss_preserves_object_order_and_snapshot_continuation() {
+/// Shared simulation fixture for the rendering boundary's consumer check.
+/// All event-order and snapshot assertions remain owned by the simulation.
+pub(crate) fn gap_operational_power_loss_views() -> Vec<(
+    crate::sim::vision::FogState,
+    crate::sim::intern::InternedId,
+    bool,
+)> {
     let (mut sim, rules, viewer, first, last) = fixture();
     insert(&mut sim, 40, first, "POWER", 2, 2);
     insert(&mut sim, 50, last, "POWER", 2, 25);
@@ -201,6 +206,7 @@ fn gap_operational_power_loss_preserves_object_order_and_snapshot_continuation()
         "../../../tools/spatial_oracle/gap_admission.json"
     ))
     .unwrap();
+    let mut views = Vec::new();
     for (case, order) in corpus["order"]
         .as_array()
         .unwrap()
@@ -245,20 +251,14 @@ fn gap_operational_power_loss_preserves_object_order_and_snapshot_continuation()
             case["name"]
         );
         live.fog.build_merged_for(viewer, &live.interner);
-        assert_eq!(
-            matches!(
-                crate::render::shroud_buffer::cell_fill(
-                    &live.fog,
-                    viewer,
-                    12,
-                    12,
-                    &crate::render::shroud_buffer::SHROUD_EDGE_LUT
-                ),
-                crate::render::shroud_buffer::CellFill::Dark
-            ),
-            shrouded
-        );
+        views.push((live.fog, viewer, shrouded));
     }
+    views
+}
+
+#[test]
+fn gap_operational_power_loss_preserves_object_order_and_snapshot_continuation() {
+    let _ = gap_operational_power_loss_views();
 }
 
 #[test]

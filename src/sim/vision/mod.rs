@@ -2268,7 +2268,13 @@ pub(crate) fn materialize_gap_generator_sources(
 ) {
     let width = usize::from(fog.width);
     let height = usize::from(fog.height);
+    if width == 0 || height == 0 {
+        return;
+    }
     for (&viewer, vis) in &mut fog.by_owner {
+        // Preserve the existing per-viewer receipt container, including empty
+        // sets. Materialization does not admit or remove any generator.
+        fog.gap_sources.entry(viewer).or_default();
         vis.ensure_cell_runtime();
         for cell in &mut vis.cells {
             *cell &= !FLAG_GAP_FOG;

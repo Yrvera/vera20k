@@ -553,6 +553,22 @@ mod tests {
     use crate::sim::intern;
     use crate::sim::vision::apply_gap_generators;
 
+    #[test]
+    fn gap_operational_native_order_reaches_shroud_fill_after_restore() {
+        for (fog, viewer, shrouded) in
+            crate::sim::world::gap_generator_tests::gap_operational_power_loss_views()
+        {
+            assert_eq!(
+                matches!(
+                    cell_fill(&fog, viewer, 12, 12, &SHROUD_EDGE_LUT),
+                    CellFill::Dark
+                ),
+                shrouded,
+                "native gap/source update order must reach the visible shroud consumer"
+            );
+        }
+    }
+
     /// A 5x5 explored block so the centre cell has all eight neighbours
     /// explored and therefore needs no edge frame of its own.
     fn explored_block(fog: &mut FogState, owner: InternedId) {

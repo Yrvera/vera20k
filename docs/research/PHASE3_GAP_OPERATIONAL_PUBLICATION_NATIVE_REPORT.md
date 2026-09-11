@@ -143,32 +143,26 @@ power system equivalence is claimed.
 
 ## Validation receipts
 
-- 2026-09-10: native `gap_admission --write`, actual exit0, 1.44s.
-- Native `gap_admission --check`, actual exit0, 1.44s; 18 predicate cases and
-  two ordered sequences matched; no files written.
-- Evidence checkpoint `e4cbf9e1` contained no Rust behavior change. A subsequent
-  native replay corrected the fixture's named Guard value to raw5; `--write`
-  and `--check` both exited0 (2.69s combined), with the same bounded cases.
-- Working candidate `cargo check -p vera20k`: exit0, 30.53s, 88 warnings;
-  `.local/gap-admission-check-v1.log`. This predates the final construction and
-  ownership-sight fixes and is not final validation.
-- Focused-v1 exited101 on one test-only private-method access error. The placement
-  fixture now drives public `advance_tick` without broadening production access.
-- Focused-v2 compiled in3m32s and exited101: four tests passed and two fixtures
-  failed before their intended observations. The snapshot fixture omitted the
-  production restore coordinator needed to reconstruct occupancy; the SpySat
-  fixture indexed an absent empty receipt set. Both were corrected without
-  changing their behavioral expectations. Logs are retained as
-  `.local/gap-admission-focused-v1.log` and `-v2.log`.
+- Original-byte comparison: `python -m tools.spatial_oracle.gap_admission --check`
+  passed all18 operational predicate cases and2 ordered shroud sequences, exit0.
+  A fresh independent critic repeated it on2026-09-11 with the same result.
+  The named Guard fixture uses original raw5; optional input cases do not prove
+  their production writers or retail reachability.
+- Focused delivery checks passed7/7; affected GSI checks17/17, vision69/69,
+  and owner-change4/4. The rendering boundary separately consumes the same
+  simulation/native-order fixture and checks the final shroud fill.
+- After integrating main `ed8f4837`, the full `cargo test -p vera20k --lib`
+  passed8650 tests, zero failures,120 ignored, exit0 (27.36s test execution).
+  Receipt: `.local/gap-admission-full-v2.log`.
+- The first full run caught a test layering violation and three replay hash
+  differences. The consumer assertion now lives in the rendering layer. Passive
+  projection retains the previous empty per-viewer receipt containers; all
+  original current and historical hash/RNG assertions pass without rebaselining.
+- Fresh independent reviews passed native semantics, production integration,
+  main/MCV overlap and the corrective delta.
+- `cargo clippy -p vera20k --lib` passed, exit0 (1m17s,1144 warnings).
+  Receipt: `.local/gap-admission-clippy-v1.log`.
 
-- Focused-v3 passed all seven cases (exit0), including actual placement,
-  power/object ordering, owner/death, SpySat and snapshot continuation.
-- The affected vision suite passed69/69 and owner-change checks passed4/4.
-  The initial GSI run passed20 and failed3: two fixtures supplied alliances only
-  to the fog projection instead of the House authority, and one asserted that
-  House240 remained set after successful gap readmission. The fixtures now use
-  the production alliance authority and native6FB43F latch expectation; all
-  existing cell-visibility and native ordered-comparison assertions remain.
-- 2026-09-11: a fresh independent critic confirmed those corrections, reviewed
-  the bounded production mechanism and independently replayed all18+2 native
-  cases successfully. Final main integration and full checks are still pending.
+Snapshot144 deliberately rejects older positional layouts, including main's
+MCV143 payload. The MCV fields, hash contribution and deployment implementation
+remain intact. This delivery does not close row50 or any other Phase3 row.
