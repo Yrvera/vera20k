@@ -17,49 +17,65 @@ implementation, integration and demonstrated comparison. Distinguish three level
 - **Implementation increment:** a coherent, reviewable change within the goal.
   Finishing it does not close the remaining goal.
 
-Consolidate related coverage under a porting goal when one owner benefits from
-following the shared lifecycle and its variants through completion. Different
-native effect owners still require individual evidence and comparisons; they do
-not by themselves require separate goal prompts. Conversely, grouping work in one
-goal does not justify merging its distinct state machines or implementation owners.
+Group work by implementation leverage: shared behavior research, state authority,
+production callers and validation fixtures that a single change can improve together.
+The player-visible result remains the acceptance bar, but a common gameplay theme
+alone does not establish an efficient implementation group. Neither does sharing
+one dispatcher, wallet or generic helper.
 
-### Candidate porting families
+### Implementation groups supported by the inspected source
 
-These are scope proposals, not a fixed task queue or mandatory session count.
-Select one from the user's intended result and current gaps. A broad family stays
-broad when explicitly requested; inspect its active census before claiming closure.
-References are starting coverage, not exhaustive boundaries around dependencies.
+These are starting proposals for selecting goals, not a task queue. They describe
+shared work at the inspected baseline, not how much remains or measured effort
+savings. The [implementation evidence](2026-09-11-gameplay-boundary-evidence.md#e11-implementation-grouping)
+records the source paths and limits. Preserve existing working behavior.
 
-| Candidate goal | Starting coverage and integration |
+| Work to consider together | Why it can save repeated work; where to stop |
 |---|---|
-| Retail resource economy | R1–R2: resource supply, standard miners and slave economy through spendable income and continued harvesting. Keep their different worker/return lifecycles explicit. A standard-miner-only request can select R1. |
-| Retail production and base establishment | B1, B2, B4: purchase, delivery/placement, MCV conversion and sale through usable products/bases and released value/dependents. Include prerequisite, power and ownership handoffs required for those results. |
-| Retail base operation and services | B3, B5–B8, X20: repair, power/provider changes, capture/benefits, service visits, grinding and infiltration. These are selectable complete subloops; sharing a house does not require every one for a bounded repair request. |
-| Retail battlefield controls | C1, with actual U1/U2 and ability consumers: input, selection, navigation and orders through their real execution and replacement. |
-| Retail ordinary movement and combat | U1–U3 and applicable X1–X13, X18: choose the requested unit family or combat scope, including its normal and special behavior. “All infantry” requires a roster/interaction census; GI deployment alone cannot close it. |
-| Retail carrying and occupation | U4–U6: mobile cargo, infantry garrisons and vehicle bunkers through admission, applicable fighting and usable release. Preserve their distinct relationship models. |
-| Retail aircraft and launched attacks | U7–U9, X17: airfield sorties, spawn pools, hovering units and Boris strikes, including required cargo/effects. These can share a goal while retaining distinct lifecycle owners. |
-| Retail special relationships and movement | U10–U11, X14–X16, X19: select the requested control, parasite, teleport, temporal, lift or Disc behavior with its complete consumers. This is a coverage family, not a default single session for every special unit. |
-| Retail world interaction and information | W1–W7: select the requested world family, or explicitly own the broader scope. Resource-producing scenery also reaches R1; controls, detection and strategic reveals reach their actual consumers. |
-| Retail strategic powers | S1–S10 together: availability/charge/targeting through every active power's effect, recovery and repeated use. This is the default broad scope for “port the superweapons”; the rows below are its coverage checklist. |
-| Retail skirmish and shell flow | F1–F3: setup/settings, map selection or generation, launch, match outcome and return. Integrate existing gameplay; this does not automatically require all combat parity. |
-| Retail AI opponents | F4 through the actual economy, production and combat consumers needed for functioning opponents. |
-| Retail authored scenarios and campaigns | F5–F7: authored events, progression and required briefing/media through playable missions and continuation. Media can also serve the shell. |
-| Retail save and resume | F8 and affected gameplay state through supported loading paths and continued play. |
-| Replay and multiplayer flows | F9–F11 are selectable outcomes. A replay and a LAN match have different entry, completion and failure contracts; do not automatically merge them. Online service scope requires the stated support decision. |
+| War and Chrono Miner harvesting, return and unloading (R1) | Both enter the same Harvest/state-machine and refinery sequence. Research/fix their common decisions once, cover drive/teleport differences and the next trip. Include resource supply changes needed for the selected result. |
+| TIBTRE placement, ore/gem cell mutation and growth (within R1) | Shared live resource authority joins producer and consumer. Combine when the change touches that authority; exercise real harvesting. A TIBTRE-only admission fix need not reopen every correct refinery branch. |
+| GI and Guardian GI deployed combat (U3) | Same sustained-stance predicate and mission/weapon consumers. Cover both variants through actual fire and recovery. Other deploy effects need affected-branch checks, not automatic full radiation/pulse implementation. |
+| Factory queue lifecycle across product categories (B1) | Enqueue/cancel/held identity/completion share an owner; mobile delivery and building/wall placement are terminal consumers. Include affected delivery variants. MCV conversion and sale do not become queue work merely because they involve buildings. |
+| Spawn-pool launchers (U8) | Carrier/Destroyer and V3/Dreadnought/Boomer use the same manager and child-slot lifecycle. Cover returning aircraft and expendable missile branches through repeated attacks. Child flight changes may require a narrower additional implementation focus; Boris uses another owner. |
+| American and Tech Airport paradrops (S8) | Both dispatch to one launch handler with payload/provider branches and the same carrier construction. Complete both variants through usable landed passengers. Spy Plane is not proven to be another variant of this handler. |
+| Iron Curtain and Force Shield protection (S3–S4) | Shared invulnerability state/application and damage consumers make joint protection work a strong candidate. Keep their different recipient selection, infantry handling and Force Shield blackout/recovery explicit. Shared protection does not imply identical launch semantics. |
+| Stock MCV conversion variants (B2) | Shared replacement/transfer/removal flow supports working across stock variants. Include sale machinery where reverse conversion actually uses it; it does not imply a full purchase/repair/sale goal. |
 
-Some families above deliberately offer selectable outcomes rather than a proposed
-single session. Do not replace the old one-row/one-prompt rule with one-family/one-
-prompt. Prefer a consolidated goal where the intended result and shared lifecycle
-justify it; keep independent application flows separate unless the user requests
-both. No current gap/severity audit or session-speed benchmark establishes a fixed
-partition here.
+### Conditional combinations and useful separations
 
-Split an authorized broad goal only with an explicit scope decision, or organize
-smaller increments beneath it while retaining its full completion obligation.
-Independent goals need independently meaningful results, clear shared-state
-ownership and acceptance that does not defer a required handoff to a later task.
-Do not split merely because effects have different names, source files or test cases.
+- **Standard and Slave Miner:** combine resource extraction or payout changes
+  where both use the changed contract; check both consumers. Slave assignment,
+  relocation, replacement and liberation have a separate worker lifecycle (R2).
+  Porting that entire lifecycle is not a cheap extra inferred from shared ore.
+- **Strategic powers:** work on common availability/charge/launch support once
+  when needed and validate affected real powers. S3–S4 and S8 have stronger effect
+  implementation overlap. Storm scheduling, mutation and reveal use distinct
+  owners; S1/S5/S6/S9 need further effect-path investigation before claiming an
+  efficient grouping. “All strategic powers” remains a valid explicitly requested
+  goal, but is not the default inferred from shared sidebar machinery.
+- **Transport/garrison/bunker, and special abilities:** inspect the actual changed
+  admission, targeting, damage or release owner. Include the affected variants
+  and required handoffs; sharing Enter or an effect dispatcher is insufficient to
+  declare all complete lifecycles one efficient group.
+- **Repair, sale, service and capture:** generic money/ownership services support
+  different transactions. Combine a demonstrated shared defect and its consumer
+  checks, not every complete transaction merely because it changes house state.
+- **Shell, AI, scenarios, save, replay and multiplayer:** the coverage rows remain
+  available, but this pass establishes no new efficiency-based grouping for their
+  full scopes. Select after tracing the specific current gap and shared work.
+
+Before composing a goal, identify what shared research/change will be done once,
+which additional variants need mostly branch-specific work, and which would add
+an independent lifecycle or substantial investigation. No numeric effort estimate
+is required; uncertainty stays explicit. Include an additional variant when the
+shared work provides a concrete reason, not just because its file is nearby.
+
+Do not stop at a shared helper: the selected goal must reach real retail behavior
+through its consumers and continuation/cleanup. Separate implementation increments
+are fine within that goal. A regression check of an adjacent consumer does not
+claim its full parity, and discovered required work cannot be relabeled adjacent.
+An explicit full-family request retains its entire completion obligation even when
+the implementation is best divided internally.
 
 ## Start with the requested outcome
 
@@ -83,6 +99,8 @@ PRs and resumptions without becoming multiple disconnected goals.
 Use the [goal-prompt skill](../../.agents/skills/goal-prompt/SKILL.md) when composing
 the final text. State the outcome/reason, scope/variants, starting evidence,
 comparison and production bar, dependency boundary and completion condition.
+For a proposed grouping, name the shared research or implementation that makes
+the included variants worth doing together.
 Use current branch/HEAD and reproduction when available; an unknown discrepancy
 can be investigated inside the goal without inventing a finding. This brief is
 the prompt itself, not an additional mandatory planning artifact.
@@ -134,8 +152,8 @@ history are optional coverage aids, not required session startup reading.
 | Shared service, but different state and termination | Keep each complete action, and check affected consumers when changing the service. Sharing credits does not merge repair and sale; sharing ownership transfer does not merge engineers and mind control. |
 | Same button, class name, visual effect or theme | Insufficient reason to group. MCV, GI, Desolator and Slave Miner all deploy, but their resulting lifecycles differ. |
 
-**A goal can cross catalogue rows.** These entries identify coherent default
-scopes and important relationships; they are not walls around source directories.
+**A goal can cross catalogue rows.** These entries identify behavior coverage
+and important relationships; they are not walls around source directories.
 A family can be requested whole or explicitly narrowed, and a large goal may take several
 PRs. Neither fact permits a required consumer to be deferred while claiming the
 named goal complete.
@@ -249,11 +267,11 @@ work for the selected goal.
 
 ## Strategic powers
 
-For a request to port retail strategic powers, use one encompassing goal with
-S1–S10 as required effect coverage. Include shared granting/revocation, charge,
-sidebar and targeting through each effect and aftermath. The agent may deliver
-several increments without turning them into unrelated goal sessions. A user
-request for one named power can still select a narrower complete scope.
+S1–S10 describe effect coverage, not a predetermined session grouping. Prefer
+shared implementation work where established above: notably S3–S4 protection and
+both S8 variants. Include granting/revocation, charge, targeting and recovery
+needed by the selected powers. If the user explicitly requests all strategic
+powers, keep all ten in scope across the necessary implementation increments.
 
 | Ref | Power coverage | Result to establish within the goal |
 |---|---|---|
@@ -270,7 +288,7 @@ request for one named power can still select a narrower complete scope.
 
 Weather, protection, transformation and permanent ownership changes have different
 state and cleanup. Keep their evidence and implementation responsibilities explicit
-inside the encompassing goal. S5's stages and S8's variants remain coupled
+inside the selected goal. S5's stages and S8's variants remain coupled
 coverage; neither effect differences nor row identifiers prescribe session boundaries.
 
 Provider loss/capture, relevant power changes, targeting cancellation, repeated

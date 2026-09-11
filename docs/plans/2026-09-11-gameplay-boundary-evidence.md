@@ -315,6 +315,61 @@ uncertainty. This supports per-goal presentation/cleanup obligations, not a late
 isolated “all rendering” phase. Shared cross-consumer defects and media playback
 can still be complete separately selected outcomes.
 
+## E11 Implementation grouping
+
+This additional source inspection used the same game-source baseline as E1–E10
+(main HEAD was still `ed8f4837910be9329505c3dfc2fc074d9c1f3106`; the documentation
+branch contained only catalogue revisions). These are implementation-leverage
+inferences, not new native-parity findings or measured productivity gains.
+
+- **Standard miners and resource supply:** re-read
+  [Harvest dispatch](../../src/sim/miner/harvest_mission.rs),
+  [miner state machine](../../src/sim/miner/miner_system.rs) and
+  [slave harvesting](../../src/sim/slave_miner.rs). War/Chrono decisions live in
+  the common owner, including distinct far-return paths; slave hosts are excluded
+  from that dispatcher. E1 traces resource production/consumption; E2 distinguishes
+  the worker lifecycle. This supports common miner work and conditional shared
+  resource fixes, not automatic full Slave Miner implementation in every R1 goal.
+- **Deployed infantry:** the
+  [mission handlers](../../src/sim/world/techno_ai/mission_handlers.rs) carry the
+  `infantry_deploy_fire_stance` predicate and shared stance consumers. The predicate
+  distinguishes GI/GGI sustained behavior from radiation/pulse variants. Together
+  with E5 this supports joint GI/GGI work, with consumer checks for shared changes.
+- **Factory products:** [factory lifecycle](../../src/sim/production/factory_lifecycle.rs)
+  owns enqueue/cancel, completion and held-object disposition, with separate mobile
+  release and placement terminal paths. E3's conversion and repair/sale owners
+  prevent turning that concrete reuse into an all-building-operations assignment.
+- **Spawn pools:** [SpawnManager](../../src/sim/spawn_manager.rs) owns common
+  parent/slot state and target handoff, with missile-family/return branches. Child
+  flight/firing remains delegated. The reuse is strongest for pool lifecycle;
+  a complete attack still requires the actual child to work. E6 covers Boris's
+  separate owner and other aircraft relationships.
+- **Protection:** [Iron Curtain](../../src/sim/superweapon/iron_curtain.rs) and
+  [Force Shield](../../src/sim/superweapon/force_shield.rs) both call
+  [apply_invulnerability](../../src/sim/superweapon/invulnerability.rs).
+  [Damage reception](../../src/sim/combat/receiver_health.rs) consumes the shared
+  timer state. Their launch bodies select recipients differently; Force Shield
+  also writes house blackout state. Joint protection research/change/validation
+  is therefore plausible, without assuming either selection algorithm is parity.
+- **Paradrops:** [command dispatch](../../src/sim/world/world_commands.rs) routes
+  `ParaDrop` and `AmerParaDrop` into the same
+  [launch handler](../../src/sim/superweapon/paradrop.rs). `ParaDropKind` selects
+  the payload list; carrier construction continues through `spawn_pdplane`.
+  This is stronger implementation overlap than simply sharing an aircraft theme.
+- **Other strategic effects:** that dispatch shares ready admission and successful
+  recharge but calls separate storm, mutation and reveal owners. At this baseline
+  remaining kinds reach its unimplemented fallback; that is a finding about this
+  command path, not proof no related code exists anywhere. No complete current
+  nuke/Chronosphere/Dominator/Spy Plane implementation trace was established here.
+  [Psychic Reveal](../../src/sim/superweapon/psychic_reveal.rs) reaches vision;
+  [mutation](../../src/sim/superweapon/genetic_converter.rs) reaches replacement
+  work. Their common launch surface alone does not establish cheap joint effects.
+
+Use these candidates to inspect the actual remaining gap before committing to a
+prompt scope. Existing implementation overlap can itself contain incorrect native
+assumptions; retail evidence still determines behavior, and no new runtime checks
+were performed for this documentation revision.
+
 ## Scope carried forward from the original catalogue
 
 This is a migration index, not a progress chart. Old identifiers refer to the
