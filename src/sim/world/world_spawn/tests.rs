@@ -53,6 +53,91 @@ fn install_american_house(sim: &mut Simulation) {
     );
 }
 
+#[test]
+fn building_light_allocates_only_after_authored_or_held_placement_succeeds() {
+    // Retail Building440DFD/446767 allocate a nullable614 only after successful
+    // placement. Exercise both actual Unlimbo paths, including failed marks.
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[BuildingTypes]\n0=GALITE\n[GALITE]\nStrength=100\n\
+         LightVisibility=5000\nLightIntensity=.2\n",
+    ))
+    .unwrap();
+    let mut authored = Simulation::with_seed(0x1a41);
+    install_constructor_test_playfield(&mut authored);
+    assert_eq!(
+        authored.spawn_from_map(
+            &[map_entity("GALITE", EntityCategory::Structure, (6, 5))],
+            Some(&rules),
+            &BTreeMap::new()
+        ),
+        1
+    );
+    let (&authored_id, source) = authored
+        .lighting_sources
+        .buildings
+        .first_key_value()
+        .unwrap();
+    assert!(source.active);
+    assert_eq!((source.rx, source.ry), (6, 5));
+    assert_eq!(authored.lighting_sources.pending.len(), 1);
+    authored.discard_lighting_events();
+    authored.set_building_light_active(authored_id, false);
+    authored.allocate_building_light(authored_id, &rules);
+    assert!(
+        !authored.lighting_sources.buildings[&authored_id].active,
+        "a repeated construction callback must not activate an existing614"
+    );
+    assert_eq!(authored.lighting_sources.pending.len(), 1);
+
+    let mut held = Simulation::with_seed(0x1a42);
+    install_constructor_test_playfield(&mut held);
+    let held_id = held
+        .construct_object_limbo_at_height("GALITE", "Americans", 0, 0, 0, 0, &rules)
+        .expect("construct held lamp");
+    assert!(held.lighting_sources.buildings.is_empty());
+    assert!(held.lighting_sources.pending.is_empty());
+    assert!(
+        held.reveal_constructed_object_at_height(
+            held_id,
+            6,
+            5,
+            0,
+            0,
+            PlacementEvidence::MarkFailed,
+            &rules
+        )
+        .is_none()
+    );
+    assert!(held.lighting_sources.buildings.is_empty());
+    assert!(held.lighting_sources.pending.is_empty());
+    let rng_after_constructor = held.scenario_rng.logical_state();
+    assert_eq!(
+        held.unlimbo_held_production_object(
+            held_id,
+            6,
+            5,
+            0,
+            0,
+            PlacementEvidence::EvaluateMark,
+            &rules
+        ),
+        Some(held_id)
+    );
+    assert_eq!(held.scenario_rng.logical_state(), rng_after_constructor);
+    assert!(held.lighting_sources.buildings[&held_id].active);
+    assert_eq!(held.lighting_sources.pending.len(), 1);
+
+    let mut failed_new = Simulation::with_seed(0x1a43);
+    install_constructor_test_playfield(&mut failed_new);
+    assert!(
+        failed_new
+            .spawn_object_at_height("GALITE", "Americans", 1, 1, 0, 0, &rules)
+            .is_none()
+    );
+    assert!(failed_new.lighting_sources.buildings.is_empty());
+    assert!(failed_new.lighting_sources.pending.is_empty());
+}
+
 fn install_constructor_test_playfield(sim: &mut Simulation) {
     sim.session.map_width = 10;
     sim.session.map_height = 10;

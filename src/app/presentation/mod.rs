@@ -22,3 +22,6 @@ pub(crate) mod target_lines;
 pub(crate) mod ui_overlays;
 
 pub(crate) mod lighting;
+
+#[cfg(test)]
+mod lighting_gpu_tests;

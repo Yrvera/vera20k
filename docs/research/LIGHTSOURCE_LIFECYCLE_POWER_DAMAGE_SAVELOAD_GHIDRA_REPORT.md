@@ -2,6 +2,13 @@
 
 Date: 2026-05-22
 
+2026-09-11 correction against active retail `gamemd.exe` SHA-256
+`1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c`:
+ordinary House low power does **not** establish a lamp-disable callback.
+The explicit online/offline entries are `0x00452260` / `0x00452360`;
+`0x00452250` is a return-zero stub and `0x00452380` is an interior address.
+The power-based implementation recommendation below has been corrected.
+
 Status: PARTIAL. Building LightSource allocation, enable/disable, death/sell teardown, destructor cleanup, and load zeroing are verified. The remaining bounded gap is the exact outer post-load caller that rehydrates `BuildingClass+0x614` after `BuildingClass__Load` zeroes it.
 
 ## Target question
@@ -51,11 +58,13 @@ How does the building `LightSourceClass*` at `BuildingClass+0x614` live across p
 - Active in YR: Yes. The construction-complete path immediately enables the newly stored pointer with `PUSH 0; CALL 0x00554A60`. Evidence: assembly `0x0044675F..0x00446767`.
 - Active in YR: Conditional. The entry gate is `if (ActuallyPlacedOnMap && !force_flag) return`; the normal one-shot construction-complete path is active for freshly completed buildings, and forced calls are the likely post-load rehydrate route, but this slot did not prove the outer force caller. Evidence: decompile `0x00445F80`; existing `BUILDINGCLASS_RESIDUAL_Q_R4.md` notes the force flag.
 
-### 4. Online/offline power transitions
+### 4. Explicit online/offline effects and ordinary power
 
-- Active in YR: Yes. `BuildingClass__GoOnline @ 0x00452250` checks `BuildingClass+0x614`; if non-null, it pushes `0` and calls `0x00554A60`. Evidence: assembly `0x004522B1..0x004522C3`.
+- Active in YR: Yes. `BuildingClass__GoOnline @ 0x00452260` checks `BuildingClass+0x614`; if non-null, it pushes `0` and calls `0x00554A60`. Evidence: assembly `0x004522B1..0x004522C3`; active Event caller `0x004C6D3D` and Trigger caller `0x006DE02E`.
 - Active in YR: Yes. `BuildingClass__RestoreOnlineEffects @ 0x00452410` also enables a non-null light source with mode `0`. Evidence: assembly `0x00452415..0x00452428`.
-- Active in YR: Yes. `BuildingClass__GoOffline @ 0x00452380` calls `BuildingClass__ApplyOfflineEffects`; that routine disables non-null `+0x614` with mode `0`. Evidence: decompile `0x00452380`, decompile `0x00452480`, assembly `0x00452485..0x00452498`.
+- Active in YR: Yes. `BuildingClass__GoOffline @ 0x00452360` calls `BuildingClass__ApplyOfflineEffects`; that routine disables non-null `+0x614` with mode `0`. Evidence: entry `0x00452360`, decompile `0x00452480`, assembly `0x00452485..0x00452498`; callers `0x0044FD23` (map INI), `0x004C6D9A` (Event), `0x006DDFB9` (Trigger).
+- Ordinary House power walk `0x00508C30 -> 0x00454CE0` reaches a return stub. Building power effects `0x0043FB20 -> 0x004549B0 -> 0x004545D0/0x004547C0` change animations, without disabling `+0x614`. Stock GALITE has `Power=0` and also falls outside the strict-positive type-power animation branch. Recomputing lamp activity from `is_building_powered` is therefore not an equivalent producer.
+- `0x00452410` is also reached by EMP expiry at `0x006FAF54`; this does not establish ordinary House power recovery as its caller. Explicit offline/EMP state must have its own admitted producers.
 
 ### 5. Owner change / capture
 
@@ -77,7 +86,7 @@ How does the building `LightSourceClass*` at `BuildingClass+0x614` live across p
 
 - Active in YR: Yes. `BuildingClass__Load @ 0x00453E20` performs normal pointer fixups for several fields including `+0x600`, then explicitly writes `0` to `+0x614`. Evidence: decompile `0x00453E20`; assembly `0x00454170..0x00454174`.
 - Active in YR: Yes. `+0x614` is therefore a runtime cache, not a stable save pointer. It must not be serialized/fixed up as the building's durable light identity. Evidence: `BuildingClass__Load` zero plus absence of `+0x614` in the surrounding fixup list; sibling save/load report corroborates this.
-- Active in YR: Conditional / not fully proven in this slot. Existing docs say runtime caches are lazily rebuilt on the first post-load tick, likely through a forced `OnConstructionComplete`/rehydrate path, but the exact outer caller was not drained here. The safe Rust handoff is to rebuild `+0x614`-equivalent state from stable building type, position, and online/power state after load rather than persist the runtime light handle.
+- The exact general native source-rehydration producer remains unproved; see [the later post-load census](BUILDING_LIGHTSOURCE_POST_LOAD_REHYDRATE_GHIDRA_REPORT.md). Rust's eager reconstruction from alive/on-map buildings and type parameters is existing compatibility behavior, not native save/load parity. Aggregate House power does not define retained source activity. Exact Cell/Convert restoration and explicit source-active restoration remain open.
 
 ## Implementation Handoff
 
@@ -89,10 +98,10 @@ How does the building `LightSourceClass*` at `BuildingClass+0x614` live across p
    Risk -> High screenshot visibility on maps with lamp posts.
 
 2. Verified behavior -> Online/offline/capture transitions call `0x00554A60`/`0x00554A80` with mode `0` for non-null `+0x614`.
-   Rust delta -> Track active/inactive state per building light and recompute affected cells when power state or capture changes.
+   Rust delta -> Retain the nullable source and its explicit active state. Publish affected cells from admitted online/offline and conditional capture callbacks; do not derive activity from aggregate House power.
    Affected surface -> `src/sim/power_system.rs`, `src/sim/world/mod.rs`, capture/owner-change command handling, render-facing lighting cache.
-   Acceptance scenario -> A powered light-emitting building goes dark when its owner enters low power and lights again when power is restored or ownership changes to a powered owner.
-   Proposed test name -> `test_power_transition_toggles_building_lightsource_immediately`.
+   Acceptance scenario -> Ordinary low power preserves an already active lamp. Explicit online/offline callbacks toggle it, and repeated allocation does not reactivate an existing inactive source.
+   Proposed test name -> `gsi_04_20_building_lamp_tracks_explicit_activity_and_detail`.
    Risk -> Medium/high; visible on lamp-heavy maps and any modded powered lamp building.
 
 3. Verified behavior -> Damage case 4 and sell disable the light before destruction/sell effects; destructor later deletes and zeros the handle.
@@ -103,7 +112,7 @@ How does the building `LightSourceClass*` at `BuildingClass+0x614` live across p
    Risk -> Medium; prevents one-frame stale lighting and stale cache entries.
 
 4. Verified behavior -> `BuildingClass__Load` zeroes `+0x614`; the runtime light handle is not a durable save pointer.
-   Rust delta -> Do not serialize a light handle/profile as authoritative state; after load, rebuild runtime light state from building type, coordinate, alive/on-map status, and power/active state.
+   Rust delta -> Discard outgoing source operations and handles when loading. Preserve the current eager reconstruction only as explicitly limited compatibility; prove exact native source-active and Cell/Convert restoration separately.
    Affected surface -> save/load snapshot code once implemented, `src/map/lighting.rs`, building rehydrate path.
    Acceptance scenario -> A saved game with a lamp building reloads with the same visible lighting, but no stale runtime light ID is required in the save data.
    Proposed test name -> `test_building_lightsource_rehydrated_after_load_without_serialized_handle`.
@@ -118,7 +127,10 @@ How does the building `LightSourceClass*` at `BuildingClass+0x614` live across p
 - Do not implement standard building light invalidation through queued mode; verified building callers pass mode `0`. Active in YR: Yes.
 - Do not leave a lamp visually active until final entity deletion on sell/death; damage case 4 and sell disable the source before later destruction/removal work. Active in YR: Yes.
 
-## Current Rust Delta
+## Historical Rust Delta (2026-05-22)
+
+The following scan predates the current source owner and ordered frame events.
+See the [2026-09-11 delivery addendum](LIGHTSOURCE_DIRTY_SCHEDULING_00554AF0_00554D50_GHIDRA_REPORT.md#2026-09-11-production-correction).
 
 - `src/map/lighting.rs` currently builds a startup `LightingGrid`, collects point lights from initial map entities, and accumulates them directly into a `HashMap<(u16,u16), [f32;3]>`.
 - `src/app_init.rs` constructs that lighting grid during app initialization and does not model building light lifecycle after startup.

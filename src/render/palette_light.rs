@@ -40,7 +40,7 @@ impl PaletteLight {
             )
         });
         Self::new(
-            rgb,
+            grid.palette_rgb(rgb),
             if rgb.iter().sum::<i32>() < 2000 {
                 27
             } else {

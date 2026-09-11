@@ -87,7 +87,7 @@ pub mod vxl_normals;
 pub mod vxl_raster;
 pub mod wave_geometry;
 #[cfg(test)]
-mod depth_gpu_tests;
+pub(crate) mod depth_gpu_tests;
 
 #[cfg(test)]
 mod sidebar_gpu_tests;

@@ -1254,16 +1254,19 @@ pub(crate) fn finalize_constructed_scenario(
     }
     // The caller submits one immutable initialization command; Simulation owns
     // every match-affecting write and Scenario RNG draw in the post-map tail.
-    sim.finalize_scenario_post_map(crate::sim::scenario_post_map::ScenarioPostMapInput {
-        map_width: map_data.header.width as u16,
-        map_height: map_data.header.height as u16,
-        basic: &map_data.basic,
-        special_flags: &map_data.special_flags,
-        normal_lighting: crate::map::lighting::parse_lighting_profiles(&map_data.ini).normal,
-        rules,
-        overlay_registry,
-        house_roster,
-        skirmish_session,
-        tiberium_queues_preinitialized,
-    })
+    let output =
+        sim.finalize_scenario_post_map(crate::sim::scenario_post_map::ScenarioPostMapInput {
+            map_width: map_data.header.width as u16,
+            map_height: map_data.header.height as u16,
+            basic: &map_data.basic,
+            special_flags: &map_data.special_flags,
+            normal_lighting: crate::map::lighting::parse_lighting_profiles(&map_data.ini).normal,
+            rules,
+            overlay_registry,
+            house_roster,
+            skirmish_session,
+            tiberium_queues_preinitialized,
+        });
+    sim.discard_lighting_events();
+    output
 }
