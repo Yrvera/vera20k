@@ -98,6 +98,12 @@ pub enum BridgeStampSlot {
     ExtraDir6,
 }
 
+impl BridgeStampSlot {
+    pub(crate) const fn writes_native_anchor(self) -> bool {
+        matches!(self, Self::Forward1 | Self::Forward2 | Self::Opposite | Self::ExtraDir6)
+    }
+}
+
 /// One native `CellClass::SetBridgeDirection_*` flag-word transaction.
 ///
 /// The anchor crosses the CellStruct seam as two signed 16-bit words. Each
@@ -233,6 +239,9 @@ pub struct BridgeCellFacts {
     pub family: BridgeStampFamily,
     pub direction: Option<u8>,
     pub anchor: Option<BridgeAnchorRelation>,
+    /// Literal CellClass+0x2C. Native47E040 preserves this on Anchor/Forward3;
+    /// the derived self relation above must not replace a retained pointer.
+    pub native_anchor: Option<crate::map::cell_index::NativeCellIdentity>,
     pub ramp_tile: Option<BridgeRampTile>,
 }
 
@@ -294,6 +303,13 @@ pub fn stamp_set_bridge_direction(
             direction,
         };
         apply_bridge_fact_slot(&mut cells[idx], slot, relation, set);
+        if slot.writes_native_anchor() {
+            cells[idx].native_anchor = set.then(|| {
+                crate::map::cell_index::NativeCellIdentity::Real(
+                    usize::from(anchor.1) * usize::from(width) + usize::from(anchor.0),
+                )
+            });
+        }
     }
 }
 

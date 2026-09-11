@@ -7,6 +7,15 @@
 //! ## Dependency rules
 //! - Part of map/; depends on nothing above std.
 
+/// Retained CellClass allocation identity after a fixed-stride lookup. A real
+/// index addresses the loaded terrain storage; Dummy always names the same
+/// process object even when a later failed lookup changes its coordinate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum NativeCellIdentity {
+    Real(usize),
+    Dummy,
+}
+
 /// Fixed cell-array stride — the engine indexes cells `y*0x200 + x` regardless of
 /// the loaded map's playfield width. The valid linear range is `[0, MAX_CELL_INDEX]`.
 /// This is NOT the loaded-map width index (that is `PathGrid`'s `y*width+x` cache).

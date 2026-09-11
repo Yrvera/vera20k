@@ -208,6 +208,24 @@ mod shared_dummy_bridge_hash_tests {
     }
 
     #[test]
+    fn bridge_publication_hashes_full_dummy_flags_and_retained_anchor_coordinate() {
+        use crate::map::cell_index::NativeCellIdentity;
+        let sim = Simulation::new();
+        let dummy = sim.effective_shared_cell_dummy();
+        let baseline = sim.state_hash();
+        dummy.write_raw_flags(0x10000);
+        let side_flag = sim.state_hash();
+        assert_ne!(baseline, side_flag);
+        dummy.write_native_anchor(Some(NativeCellIdentity::Dummy));
+        let retained = sim.state_hash();
+        assert_ne!(side_flag, retained);
+        dummy.stamp_coord(7, -3);
+        assert_ne!(retained, sim.state_hash(), "retained bridge pointer makes dummy coordinate future-affecting");
+        dummy.write_native_anchor(None);
+        assert_eq!(side_flag, sim.state_hash());
+    }
+
+    #[test]
     fn gsi_04_07_hashes_live_dummy_overlay_identity_and_state() {
         let sim = Simulation::new();
         let dummy = sim.effective_shared_cell_dummy();
@@ -625,6 +643,21 @@ impl Simulation {
             let shared_dummy_handle = self.effective_shared_cell_dummy();
             let shared_dummy = shared_dummy_handle.snapshot();
             let gap_flags = shared_dummy_handle.retained_bridge_flags() & 0xC00;
+            let bridge_keeps_dummy = schema.includes(HashFeature::BridgePublication)
+                && (shared_dummy_handle.native_anchor() == Some(crate::map::cell_index::NativeCellIdentity::Dummy)
+                    || self.resolved_terrain.as_ref().is_some_and(|terrain| terrain.iter().any(|cell| {
+                        cell.bridge_facts.native_anchor == Some(crate::map::cell_index::NativeCellIdentity::Dummy)
+                    })));
+            if schema.includes(HashFeature::BridgePublication) {
+                let extra_flags = shared_dummy_handle.raw_flags()
+                    & !crate::map::bridge_facts::RETAINED_CELLCLASS_BRIDGE_FLAG_MASK;
+                let anchor = shared_dummy_handle.native_anchor();
+                if extra_flags != 0 || anchor.is_some() {
+                    b"shared-cell-dummy-bridge-publication-v1".hash(&mut hasher);
+                    extra_flags.hash(&mut hasher);
+                    anchor.hash(&mut hasher);
+                }
+            }
             if gap_flags != 0 {
                 b"shared-cell-dummy-gap-v1".hash(&mut hasher);
                 gap_flags.hash(&mut hasher);
@@ -655,7 +688,7 @@ impl Simulation {
                 b"shared-cell-dummy-overlay-v1".hash(&mut hasher);
                 shared_dummy_overlay.hash(&mut hasher);
             }
-            if self.projectiles.iter().any(|(_, projectile)| {
+            if bridge_keeps_dummy || self.projectiles.iter().any(|(_, projectile)| {
                 projectile.target == crate::sim::projectile::ProjectileTarget::DummyCell
             }) {
                 // A retained Bullet pointer additionally makes coordinate
