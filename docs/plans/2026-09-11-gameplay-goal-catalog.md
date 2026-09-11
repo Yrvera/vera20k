@@ -1,14 +1,72 @@
 # Gameplay loops and proposed goal boundaries
 
-Revised 2026-09-11 after examining current production callers, state owners,
-downstream consumers and cleanup, alongside existing native research and local
-retail data. This replaces the earlier catalogue's default separation of object
-variants and implementation responsibilities into individual tasks.
+Use this reference to compose a goal for the already-playable game. Rows describe
+related work; they do not report current completion, prescribe execution order,
+or authorize implementation by themselves. [ENGINE.md](../../ENGINE.md) governs
+evidence, architecture, validation and delivery, including the scale exception.
 
-**VERA20k is already playable. These are ways to scope improvements to the
-existing game, not a list of missing features or an instruction to rebuild it.**
-The target remains active Yuri's Revenge behavior and the intentional
-20,000-unit/30-player scale exception in [ENGINE.md](../../ENGINE.md).
+## Start with the requested outcome
+
+**A row identifier alone is not a goal prompt.** R1, B1, B5, U1/U2, U9 and
+F1/F4/F10 in particular describe broad families. State the actual intended scope:
+
+| User's intended result | Preserve this completion bar |
+|---|---|
+| Complete an object or family like retail | Enumerate active behavior and variants, including required interactions found during the work. Sample scenarios start the investigation; they cannot close the full scope. |
+| Complete a named gameplay loop like retail | Cover that loop and its named variants through continuation/cleanup. Include broken required handoffs; do not absorb unrelated behavior merely because a shared helper reaches it. |
+| Fix a demonstrated regression or refactor existing code | State the trigger and intended behavior-preservation/fix bar. Do not silently turn this into exhaustive family parity or treat existing Rust output as retail evidence. |
+
+Preserve what the user requested. Do not downgrade a full-family goal to one
+convenient scenario, or expand a bounded fix into a full-family project. Resolve
+discoverable details from current source/evidence; ask only when a consequential
+scope or support decision cannot be inferred. A wide scope can take multiple
+PRs and resumptions without becoming multiple disconnected goals.
+
+### A concise goal brief
+
+Use the [goal-prompt skill](../../.agents/skills/goal-prompt/SKILL.md) when composing
+the final text. State the outcome/reason, scope/variants, starting evidence,
+comparison and production bar, dependency boundary and completion condition.
+Use current branch/HEAD and reproduction when available; an unknown discrepancy
+can be investigated inside the goal without inventing a finding. This brief is
+the prompt itself, not an additional mandatory planning artifact.
+
+> Follow ENGINE.md. Deliver **[outcome]** because **[problem or capability]**.
+> The scope is **[full object/family, named loop, or bounded fix]**, including
+> **[variants and necessary interactions]**. Start from **[relevant evidence and
+> known current context]**, verifying assumptions against current source.
+> Compare **[the same native operation/inputs, or the behavior-preservation bar]**
+> and validate **[real entry → result → continuation/release]**, including
+> **[important interruption/ownership cases and observable outputs]**.
+> Reuse working behavior, include coherent prerequisites and check affected
+> consumers. Complete the named scope; a helper, passing sample or merged PR
+> alone does not close it. Preserve any remaining in-scope work for continuation.
+
+Preserve granted publication authority, budgets and workflow settings; add none
+implicitly. Leave design/decomposition/tools open except for real constraints.
+If implementation is authorized, preparation alone does not complete the task.
+
+### Load the relevant evidence, not the whole catalogue
+
+Read the selected rows and the entry below, then follow source/native references
+as the action requires. Evidence is a dated starting point, not a fixed file list
+or permission to skip newly discovered consumers. The phase inventory and migration
+history are optional coverage aids, not required session startup reading.
+
+| Selected work | Evidence entry |
+|---|---|
+| R1 | [E1 Resources and mining](2026-09-11-gameplay-boundary-evidence.md#e1-resources-and-mining) |
+| R2 | [E2 Slave economy](2026-09-11-gameplay-boundary-evidence.md#e2-slave-economy) |
+| B1–B4 | [E3 Purchases and base lifecycle](2026-09-11-gameplay-boundary-evidence.md#e3-purchases-and-base-lifecycle) |
+| B5–B8 | [E4 Power capture and benefits](2026-09-11-gameplay-boundary-evidence.md#e4-power-capture-and-benefits) |
+| C1, U1–U6 | [E5 Movement stance and cargo](2026-09-11-gameplay-boundary-evidence.md#e5-movement-stance-and-cargo) |
+| U7–U11, X15–X17 | [E6 Sorties pools and attached effects](2026-09-11-gameplay-boundary-evidence.md#e6-sorties-pools-and-attached-effects) |
+| X14 | [E1](2026-09-11-gameplay-boundary-evidence.md#e1-resources-and-mining) for miner return and [E5](2026-09-11-gameplay-boundary-evidence.md#e5-movement-stance-and-cargo) for installed movement. General teleport/infantry recovery still needs a targeted native-owner lookup; neither entry is its full contract. |
+| W1–W7 | [E7 World and information](2026-09-11-gameplay-boundary-evidence.md#e7-world-and-information) |
+| S1–S10 | [E8 Strategic powers](2026-09-11-gameplay-boundary-evidence.md#e8-strategic-powers) |
+| F1–F6 | [E9 AI scenarios and session flows](2026-09-11-gameplay-boundary-evidence.md#e9-ai-scenarios-and-session-flows) |
+| F7–F11, shared output problems | [E10 Persistence networking and presentation](2026-09-11-gameplay-boundary-evidence.md#e10-persistence-networking-and-presentation) |
+| Other X goals | Their named effect and actual callers need a targeted lookup; the evidence file does not contain a full contract for each. Start with [weapon selection](../../src/sim/combat/combat_weapon.rs) / [effect dispatch](../../src/sim/combat/world_receiver.rs), then the active native owner. Use E4/E5/E7 for affected power, input or world consumers. |
 
 ## How relationships determine scope
 
@@ -32,27 +90,13 @@ consumer contract. For example, a purchase must yield a usable tank that can
 receive its first order; it need not reimplement every tank weapon. If that first
 order exposes a broken required handoff, include the repair in the purchase goal.
 
-## The important corrections
-
-| Earlier separation | Revised default |
-|---|---|
-| TIBTRE; ore/gems; War Miner; Chrono Miner; refinery docking; income | One connected resource-to-income workstream. Standard miner variants belong together. TIBTRE and natural growth supply the same resource authority. A narrower source or docking goal still exercises actual downstream harvesting/income. |
-| War Miner versus Chrono Miner | One standard harvesting/refinery goal, checking both variants and their different return, movement and combat interactions. Separate checks do not imply separate owners or sessions. |
-| Slave Miner alongside standard miners | A related resource-economy goal with its own workforce lifecycle. Shared resource removal and income rules do not erase its master/slave ownership, deployment and deposit behavior. |
-| GI versus Guardian GI deployment | One sustained deployed-infantry combat goal. Desolator radiation, Yuri pulses and Siege Chopper flight retain their own complete effect/flight loops. |
-| Transport loading; passenger combat; IFV; Battle Fortress | One mobile passenger lifecycle, including applicable movement, host/passenger firing, unload and destruction. Preserve IFV host firing versus Battle Fortress passenger firing. |
-| Spawned aircraft versus launched rockets | One launcher-owned spawn-pool family, with returning-wing and expendable-rocket variants. Boris designation uses a different owner. |
-| Special economic buildings grouped by theme | Ore Purifier belongs with resource payout; Industrial Plant and Cloning Vat with production; Bio Reactor with passenger-dependent power; tech-building benefits with capture/use/loss. Grinder intake is its own action. |
-| Main menu versus every destination backend | A bounded shell goal owns routes, input and handoffs. Complete skirmish/campaign/network flows own their backends. “Every menu destination works” remains a larger integration claim. |
-
-Detailed evidence and its limits are in
-[the boundary examination](2026-09-11-gameplay-boundary-evidence.md).
-
 ## Resources and the base
 
 References are identifiers, not an execution order. Each row includes the normal
 entry, actual gameplay result, feedback and continuation or cleanup. Variants
 named here are starting coverage; exhaustive goals require a full active census.
+Include reachable civilian, preplaced, reinforcement, elite, special-acquisition
+and mode/map/campaign variants where they affect the named scope.
 
 | Ref | Complete outcome and variants to examine together | Boundary and continuing result |
 |---|---|---|
@@ -89,27 +133,19 @@ must be explicit; it cannot silently shrink an existing full goal.
 
 ## Units, passengers and continuing combat relationships
 
-**Battlefield control is a complete selectable goal:** view/select → cursor and
-order admission → visible/audible feedback → actual execution → replacement or
-cancellation. Include scrolling/bookmarks, single/bandbox/type/control-group
-selection, hotkeys, queued/planned waypoint orders, radar navigation and permitted
-pause/resume/speed changes. The input owner must reach real U1/U2 or other action
-consumers; an admitted command or drawn marker alone does not complete the loop.
-Conversely, correct movement after a directly injected command does not establish
-the player-facing interaction.
-
 | Ref | Complete outcome and grouped variants | Boundary and continuing result |
 |---|---|---|
+| C1 | **Battlefield controls reach actual gameplay.** Scrolling/bookmarks, single/bandbox/type/control-group selection, hotkeys, queued/planned waypoints, radar navigation and permitted pause/resume/speed changes. | View/select → cursor/order admission → visible/audible feedback → actual execution → replacement/cancellation. Reach U1/U2 or the actual selected action. A marker or directly injected simulation command cannot certify the player interaction. |
 | U1 | **Units obey movement/replacement orders through arrival.** Walking, driving, ship and hover variants. | Command → mission/destination/installed locomotor → path/turn/traffic/occupancy/crush → arrival → actual next action. Include stop, blocked recovery, replacement and death. Select the affected locomotor set explicitly; sharing this contract does not make all locomotors identical. Ability-specific movement and sorties stay integrated with their parent actions. |
 | U2 | **An ordinary engagement resolves from order to aftermath.** Common infantry/vehicle/building/naval/air cases; direct, ballistic, homing and applicable anti-air/air-to-air/strafe/bombing attacks. | Approach/acquire → weapon/range/facing/fire gates → burst/projectile/impact → armor/damage/fear/prone/veterancy/death/attribution → next order/target. Include debris and affected terrain/resource consequences. Reuse shared combat authority; representative units are coverage cases, not duplicate implementations. |
 | U3 | **GI and Guardian GI fight through deployment and recovery.** Both sustained deployed-infantry variants. | Deploy input → stance/animation/movement gate → actual deployed targeting/firing → undeploy/reorder/damage/death. Integrate ordinary movement/combat and applicable host interactions. Desolator radiation and Yuri pulses remain with their effects; Siege Chopper with U9. |
 | U4 | **Mobile transports and passengers work through carrying, fighting and release.** Land/sea/air transports, IFV and Battle Fortress. | Admission → cargo membership/concealment → movement and applicable firing → unload placement/retry or host destruction → usable passengers. IFV selects the host's weapon; Battle Fortress passenger firing retains its own responsibility. Air-transport landing/exit is a required variant. |
 | U5 | **Infantry occupy, fight from and leave buildings.** Civilian garrisons and Soviet Battle Bunker `NABNKR`. | Admission → occupant/ownership state → occupant firing/credit and occupied art → voluntary/forced evacuation, sale or destruction → released actors/building state. Keep presentation and firing with occupancy. |
-| U6 | **Yuri Tank Bunker `NATBNK` installs, supports and releases a vehicle.** | Approach/radio → reciprocal single-vehicle link/install → actual combat → release/sale/destruction → link cleared and vehicle usable. This differs from U5's infantry occupation model; the previous catalogue omitted the distinction. |
+| U6 | **Yuri Tank Bunker `NATBNK` installs, supports and releases a vehicle.** | Approach/radio → reciprocal single-vehicle link/install → actual combat → release/sale/destruction → link cleared and vehicle usable. This differs from U5's infantry occupation model. |
 | U7 | **Harrier and Black Eagle complete repeatable airfield sorties.** Both aircraft and provider/pad variants. | Production/idle → takeoff/attack → return/reservation/landing → rearm → next sortie. Include provider loss/capture, contention, replacement orders and aircraft loss. Flight alone cannot complete this loop. |
 | U8 | **Launchers manage spawned aircraft or rockets through repeated attacks.** Carrier/Destroyer and V3/Dreadnought/Boomer. | Parent target → fixed spawn pool → child launch/attack → return/reload or missile regeneration → next attack. Include parent/child/target loss and owner changes. Returning aircraft and expendable missiles are variants of the same pool owner. Boris has a different designation/airstrike lifecycle. |
 | U9 | **Hovering airborne units move and fight through required transitions.** Rocketeer, Kirov, Nighthawk, Disc, Siege Chopper and active scenario variants. | Jumpjet/altitude behavior → actual attack/carry order → stop/landing where permitted → next action. Chopper landing/deployment/weapon change/resumed flight is a complete named outcome. Disc drain and Nighthawk passengers integrate their effect/cargo owners; locomotion alone cannot certify them. |
-| U10 | **Reversible mind control maintains and releases victims.** Yuri Clone/Prime, Psychic Tower and Master Mind. | Acquisition → controller membership/owner transfer → actual order/house/production/visual consumers → capacity/overload and release/controller/victim loss → required restored state. Group controller variants; permanent Dominator effects and deployment pulses differ. Current full Rust acquisition is incomplete, so native evidence must guide the missing owner path. |
+| U10 | **Reversible mind control maintains and releases victims.** Yuri Clone/Prime, Psychic Tower and Master Mind. | Acquisition → controller membership/owner transfer → actual order/house/production/visual consumers → capacity/overload and release/controller/victim loss → required restored state. Group controller variants; permanent Dominator effects and deployment pulses differ. Inspect acquisition and release callers, not only manager fields. |
 | U11 | **Parasites maintain and release their hosts.** Terror Drone infestation and Giant Squid grapple. | Admission → parasite-host relationship → continuing effects → service/escape/detach/death → cleanup. Group the relationship with explicit variant rules; do not merge Temporal or Magnetron merely because they share the special-weapon dispatcher. |
 
 ### Distinct abilities that retain their own effect loops
@@ -118,25 +154,28 @@ These are separate candidate goals, not one “finish special units” task. Eac
 includes ordinary movement/combat and presentation consumers required to exercise
 the ability. Exact branch coverage remains work for the selected goal.
 
-| Ability | Complete outcome |
-|---|---|
-| Gattling Tank/Cannon | Fire → stage progression and actual weapon/damage/feedback changes → interruption/retarget/cooldown → subsequent firing. Check unit/building consumers together. |
-| Prism support | Support membership/availability → supported shot/damage/beam → target/provider interruption and cleanup. Prism Tank is an attack consumer, not automatically part of the tower network. |
-| Tesla charging/attacks | Trooper/coil relationship → charging/overpower and power exceptions → actual shot/bolt → loss/release/recovery. Ordinary Tesla weapons reuse confirmed effect machinery. |
-| Sonic and ordinary laser attacks | Each active weapon's fire → wave/beam and real hit behavior → effect/source/target expiry. Shared rendering does not establish one state machine. |
-| C4 and bridge charges | Legal approach/action → explosion and actor/bridge consequences → cleanup. Include world and release consumers. |
-| Ivan bombs | Attachment/ownership → fuse/defusing → detonation or removal → cleanup/feedback. This is distinct from an immediate explosive attack. |
-| Suicide attacks | Firing/detonation and firer removal → collateral damage/credit/cleanup. Verify active unit variants. |
-| Desolator radiation | Deployment/firing → radiation-site/target damage → source changes/expiry → continuing world state. Deployment belongs with this effect. |
-| Virus, Chaos Drone and active fire/status effects | Each named effect follows creation → persistent damage or changed behavior → ownership/liveness interactions → expiration. These are selectable loops, not one particle-system task. |
-| Yuri/Prime deployment pulses | Deploy → area-damage weapon/target rules → stance recovery → next orders. Group pulse variants separately from reversible capture. |
-| Chrono movement | Teleport admission → movement/occupancy transition → recovery → usable next action, including affected infantry/miner variants. R1 includes the miner's complete return outcome. |
-| Temporal erasure | Attacker/target link → suspension/progress/competing attackers → interruption or erasure → cleanup. |
-| Magnetron | Source/victim locomotor handoff → lift/carry → drop/restoration and terrain/damage effects → cleanup. Jumpjet is a dependency, not proof this is an ordinary aircraft. |
-| Boris airstrike | Designation → called aircraft → actual attack/departure → source/target/cancellation cleanup and subsequent use. |
-| Dog leap | Legal attack → leap/impact → target loss or interruption → recovery/next order, with applicable disguise/detection interactions. |
-| Floating Disc | Flight/attack/drain admission → target-class money/power/defense effects → release/source/target loss → dependent capabilities recover. |
-| Spy infiltration | Disguise/approach/detection/admission → target-specific result → spy disposition → actual power/economy/information/production/research consumer. Shared Enter/ownership services do not make this engineer capture. |
+| Ref | Ability | Complete outcome |
+|---|---|---|
+| X1 | Gattling Tank/Cannon | Fire → stage progression and actual weapon/damage/feedback changes → interruption/retarget/cooldown → subsequent firing. Check unit/building consumers together. |
+| X2 | Prism support | Support membership/availability → supported shot/damage/beam → target/provider interruption and cleanup. Prism Tank is an attack consumer, not automatically part of the tower network. |
+| X3 | Tesla charging/attacks | Trooper/coil relationship → charging/overpower and power exceptions → actual shot/bolt → loss/release/recovery. Ordinary Tesla weapons reuse confirmed effect machinery. |
+| X4 | Sonic attacks | Fire → wave and actual hit behavior → effect/source/target expiry. Shared drawing code does not merge this with lasers. |
+| X5 | Ordinary laser attacks | Fire → beam and actual hit behavior → effect/source/target expiry. Disc-specific attack/drain is X19. |
+| X6 | C4 and bridge charges | Legal approach/action → explosion and actor/bridge consequences → cleanup. Include world and release consumers. |
+| X7 | Ivan bombs | Attachment/ownership → fuse/defusing → detonation or removal → cleanup/feedback. This is distinct from an immediate explosive attack. |
+| X8 | Suicide attacks | Firing/detonation and firer removal → collateral damage/credit/cleanup. Verify active unit variants. |
+| X9 | Desolator radiation | Deployment/firing → radiation-site/target damage → source changes/expiry → continuing world state. Deployment belongs with this effect. |
+| X10 | Virus effects | Source attack → persistent damage/effect lifecycle → affected actors/ownership → expiry/cleanup. Include actual damage and feedback. |
+| X11 | Chaos Drone | Effect admission → changed behavior → ownership/liveness interactions → expiration and resumed behavior. |
+| X12 | Other active fire/status effects | Select the named active effect and its consumers; follow creation → continuing damage/behavior → expiration. This is a coverage family, not a task to implement every particle system. |
+| X13 | Yuri/Prime deployment pulses | Deploy → area-damage weapon/target rules → stance recovery → next orders. Group pulse variants separately from reversible capture. |
+| X14 | Chrono movement | Teleport admission → movement/occupancy transition → recovery → usable next action, including affected infantry/miner variants. R1 includes the miner's complete return outcome. |
+| X15 | Temporal erasure | Attacker/target link → suspension/progress/competing attackers → interruption or erasure → cleanup. |
+| X16 | Magnetron | Source/victim locomotor handoff → lift/carry → drop/restoration and terrain/damage effects → cleanup. Jumpjet is a dependency, not proof this is an ordinary aircraft. |
+| X17 | Boris airstrike | Designation → called aircraft → actual attack/departure → source/target/cancellation cleanup and subsequent use. |
+| X18 | Dog leap | Legal attack → leap/impact → target loss or interruption → recovery/next order, with applicable disguise/detection interactions. |
+| X19 | Floating Disc | Flight/attack/drain admission → target-class money/power/defense effects → release/source/target loss → dependent capabilities recover. |
+| X20 | Spy infiltration | Disguise/approach/detection/admission → target-specific result → spy disposition → actual power/economy/information/production/research consumer. Shared Enter/ownership services do not make this engineer capture. |
 
 ## World interaction and information
 
@@ -156,15 +195,22 @@ Named powers share granting/revocation, charge, sidebar and targeting support.
 Each power goal includes that support through its actual effect and aftermath.
 A common charge timer does not make every power one task.
 
-**Keep coupled stages/variants together:** Chronosphere plus linked ChronoWarp;
-American plus Tech Airport paradrops. Neither the first Chronosphere click nor
-one drop payload/provider can certify the complete combined goal.
+| Ref | Power | Result the complete goal must reach |
+|---|---|---|
+| S1 | Nuclear Missile (`MultiMissile`) | Launch/descent/impact → damage and world effects → cleanup. |
+| S2 | Lightning Storm | Activation → storm scheduling and actual strikes → termination and continued play. |
+| S3 | Iron Curtain | Eligible target application → protection/damage interactions → expiry and subsequent use. |
+| S4 | Force Shield | Application → protection and applicable house/power consequences → recovery. |
+| S5 | Chronosphere plus ChronoWarp | Both linked clicks → destination admission → affected-object transfer and aftermath. The first click cannot close the action. |
+| S6 | Psychic Dominator | Effect sequence → actual damage/ownership result → continuing victim/world behavior. |
+| S7 | Genetic Mutator | Eligibility → transformation → usable resulting actors and source cleanup. |
+| S8 | American and Tech Airport paradrops | Provider/payload variants → aircraft/drop → actual landed passengers and aircraft cleanup. Check both variants. |
+| S9 | Spy Plane | Targeting → approach/overflight and actual information effect → departure/cleanup. |
+| S10 | Psychic Reveal | Targeting → actual per-viewer knowledge effect → required duration/termination. |
 
-Other candidate goals remain Nuclear Missile (`MultiMissile`), Lightning Storm,
-Iron Curtain, Force Shield, Psychic Dominator, Genetic Mutator, Spy Plane and
-Psychic Reveal. Each owns its effect sequence, targets, termination and actual
-world/house/unit consequences. Weather, protection, transformation and permanent
-ownership changes have different state and cleanup despite sharing sidebar code.
+Weather, protection, transformation and permanent ownership changes have different
+state and cleanup despite sharing sidebar code. S5's stages and S8's variants
+remain coupled scopes; row identifiers do not split their internals into tasks.
 
 Provider loss/capture, relevant power changes, targeting cancellation, repeated
 use and save/restore belong to each selected power. Shared-framework changes
@@ -182,7 +228,7 @@ key used by the live nuke is not evidence of another active strategic power.
 | F5 | **Authored scenario events produce their full consequences.** | Trigger/Tag/variables/latches → ordered action → real units/teams/reinforcements/camera/messages/objectives → next event/outcome and saved continuation. Share Team/command machinery with F4; scenario triggers have different conditions and persistent state. Include active convoy/special-mission cases when established. |
 | F6 | **Campaigns launch, advance and resume progress.** | Campaign/mission/difficulty/briefing → actual scenario → outcome → next mission/carryover → persisted progression. Integrate F5 scripts and F7 media. Campaign progression is not a skirmish setting variant. |
 | F7 | **Movies and briefing media play and return correctly.** | Start → synchronized video/speech/subtitles → skip/finish → correct screen/mission. Formats and destinations are variants; reusable media machinery stays shared. |
-| F8 | **Save a match and resume it through supported entry points.** | UI → content/version validation → prepared world/fixups → commit → rebuild presentation/reset pacing → continued play. Include shell startup/in-game paths, failure/cancel and active feature state. Current same-content restoration does not establish cold-start loading. |
+| F8 | **Save a match and resume it through supported entry points.** | UI → content/version validation → prepared world/fixups → commit → rebuild presentation/reset pacing → continued play. Include shell startup/in-game paths, failure/cancel and active feature state. Restoring within an existing content context cannot by itself establish cold-start loading. |
 | F9 | **Record and replay a match.** | Identity/scenario/seed → scenario initialization → timed commands → completion/stop or actionable divergence. Shared deterministic commands do not make replay a save restore or LAN session. |
 | F10 | **Host, join, play, observe and leave LAN matches.** | Discovery/lobby/content/seed/options/transfer → launch → synchronized real peers → communications/alliances/observers → result/disconnect/recovery-or-abort. Select complete children such as host-to-finished-match or transferred-map-to-play. Staging/network internals alone do not establish playable LAN. |
 | F11 | **Use a chosen online service to enter and leave actual matches.** | Explicit service/support decision → session/account/chat/discovery → actual multiplayer handoff → return/disconnect. Reuse F10 match authority; settle service policy before a retail-equivalent online claim. |
@@ -205,31 +251,52 @@ lifecycle cleanup and scale remain standing ENGINE obligations. Check them where
 the selected action depends on them. Preserve one owner per mechanism;
 overlapping acceptance does not authorize competing implementations.
 
-## From catalogue to goal prompt
+## Keep the goal intact while working
 
-Before dispatch, identify the selected complete result, current gaps and state
-owners/consumers that must change together. Use this shape:
+When investigation crosses a row or module, distinguish these cases:
 
-> Make **[action or object family]** behave like active retail YR across
-> **[explicit related variants]**. Follow **[entry → state/relationship → actual
-> result → continuation/release]**. Include **[required consumers and interruption
-> cases]**, reusing existing working behavior. Establish native semantics,
-> validate the production path and retain evidence. Complete the named scope;
-> uncovered required behavior keeps it open.
+| Finding | Action within the authorized goal |
+|---|---|
+| Required state, producer, handoff or cleanup is broken | Include the coherent prerequisite and its validation, even across rows. A TIBTRE result cannot close while its created ore is invisible or unharvestable. |
+| A changed shared owner has other consumers | Check the affected behavior in those consumers and fix regressions caused by the change. This does not automatically require full retail parity for each consumer. Preserve one owner and coordinate with any task already changing it. |
+| Existing adjacent defect does not prevent the requested result and is not a regression from this change | Record its concrete trigger/effect and continue the selected goal. If the user's full-family scope includes it, it is required work rather than an adjacent deferral. |
 
-GI/GGI deployment is a suitable joint goal, but it is not the complete life of
-either unit. “Make the GI work exactly like retail” also includes ordinary
-movement/combat/damage, relevant host and special-effect interactions, and
-lifecycle. Whole-object acceptance spans entries to verify the combination.
+Use current implementations and reusable native comparisons where their identity,
+inputs and coverage still apply. Focus new acceptance on the selected operation
+and the handoffs it can break: repeated trips/attacks, replacement orders,
+contention, provider/target loss or relevant saved-state continuation. These are
+case-selection aids, not a fixed test quota or a substitute for exhaustive scope.
+Keep the native comparison bar separate from Rust regressions and rendered/audio
+output checks, as ENGINE requires.
 
-One owner follows evidence, implementation, integration and independent review.
-PRs can be smaller while preserving a coherent production path. Promote broken
-required prerequisites; do not defer them because another row names them.
+One owner carries the result across PRs and resumptions. Follow the existing
+[checkpoint convention](../../.agents/skills/_shared/handoff.md) for sustained
+work; do not create another catalogue status tracker. On resume, recover the
+governing prompt/amendments, actual Git state, supported work, remaining scope,
+validation/review state and next safe action. A completed prerequisite, successful
+test or merged PR does not end a larger authorized goal. Missing required proof
+keeps the relevant scope open; it does not authorize weakening completion or
+ignoring an explicit stop/budget limit.
 
-Broad parity goals enumerate active types and mode/map/campaign variants,
-including reachable civilian, preplaced, reinforcement, elite and special-
-acquisition cases. Bounded goals state coverage instead of implying family
-parity. Tests based only on current Rust cannot establish retail equivalence.
+### Filled example: one loop, two unit variants
+
+> Follow ENGINE.md. Complete GI and Guardian GI sustained deployed combat like
+> retail (U3), preserving existing playable behavior. Scope includes both units'
+> normal deploy input, stance/animation and movement gates, actual deployed
+> targeting/firing, undeploy/replacement orders and relevant damage/death cleanup.
+> Start with E5 and verify its current command, stance, mission and weapon
+> consumers. Establish active native branches and compare the same states/inputs;
+> exercise the real control-to-combat path, visible transitions and resumed
+> movement/firing for both variants. Cover interruption and repeated use, with
+> saved-state checks where affected. Include broken required handoffs and check
+> other consumers of changed shared state. Complete this loop and retain its
+> evidence; this does not certify the entire infantry roster or either unit's
+> unrelated abilities. Preserve outstanding in-scope behavior for continuation.
+
+For “make the GI work exactly like retail,” that narrower example is insufficient:
+whole-object scope also covers ordinary movement/combat/damage, applicable host
+and special-effect interactions, and lifecycle. Use entries to find those
+relationships rather than substituting U3 for the user's larger objective.
 
 ## Coverage, priority and limits
 

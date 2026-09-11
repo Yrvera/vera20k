@@ -4,6 +4,12 @@ Companion to the [catalogue](2026-09-11-gameplay-goal-catalog.md), examined on
 2026-09-11 against main `ed8f4837910be9329505c3dfc2fc074d9c1f3106`.
 This records planning evidence, not a permanent progress ledger.
 
+**Read one relevant E-section as an entry point.** Its source paths and native
+reports are leads for the selected action, not a mandatory reading list. The
+2026-09-11 source-status statements below describe the inspected commit; check
+current source before carrying a missing/implemented claim into a new prompt.
+The catalogue's scope definitions are separate from these dated observations.
+
 Current Rust callers/state/consumers were read directly. Existing native reports
 and local retail data support intended relationships; their historical Rust
 status was not treated as current. No new binary execution, game test, downloads
@@ -11,7 +17,7 @@ or installations were performed. Exact timing/numeric/branch parity requires
 the selected goal's own evidence. Shared Rust code alone cannot prove the native
 engine uses the same boundary.
 
-## 1. Resource supply and standard mining: a strong consolidation
+## E1 Resources and mining
 
 **Current production path.** The Unit branch of
 [the object AI host](../../src/sim/world/techno_ai.rs) calls
@@ -58,7 +64,7 @@ live terrain lifecycle; that status is stale against current terrain ownership.
 Existing research also contains corrected harvest timing. No new exhaustive
 source/field/return/save/visual comparison was run for this catalogue.
 
-## 2. Slave economy: related consumers, different continuing owner
+## E2 Slave economy
 
 [Slave harvesting](../../src/sim/slave_miner.rs) owns master/worker state and
 `SearchOre → MoveToOre → Harvest → ReturnToMaster → Deposit`. It uses shared
@@ -72,7 +78,7 @@ copy of the standard miner task. Changes to shared resource or payout contracts
 require both R1/R2 consumer checks. Matching wallets and ore cells does not erase
 worker assignment, liberation, master loss or deployment responsibilities.
 
-## 3. Purchases and base lifecycle
+## E3 Purchases and base lifecycle
 
 [Factory lifecycle](../../src/sim/production/factory_lifecycle.rs) creates and owns
 the held object through enqueue, completion and release/consumption.
@@ -105,7 +111,7 @@ second-product and delivery trace is still required before its implementation
 scope is final. Placing it with production is a consumer-based proposal, not a
 claim of a completed current clone path.
 
-## 4. Power, capture and benefits
+## E4 Power capture and benefits
 
 [Power state](../../src/sim/power_system.rs) consumes provider/occupant state and
 feeds building/radar changes; [factory stepping](../../src/sim/production/factory.rs)
@@ -131,7 +137,7 @@ establish passive-benefit classification; their complete current consumer census
 was not established here. Grinder and remaining special-benefit exactness are
 explicitly targeted investigations, not proven equivalent admission paths.
 
-## 5. Movement, stance and cargo relationships
+## E5 Movement stance and cargo
 
 [Camera/input state](../../src/app/input/camera.rs) and
 [context-order admission](../../src/app/input/context_order.rs) include real
@@ -175,7 +181,7 @@ for `NATBNK`, explicitly distinct from cargo. The
 supports U6's separate full loop. Soviet `NABNKR` remains an infantry garrison
 variant. The original catalogue's generic “bunker” wording missed this scope.
 
-## 6. Sorties, spawned pools and attached effects
+## E6 Sorties pools and attached effects
 
 [Aircraft state](../../src/sim/aircraft/mod.rs) and
 [attack missions](../../src/sim/aircraft/attack_mission.rs) connect Harrier/Black
@@ -212,7 +218,7 @@ progress/termination. Older broad reports contain incorrect identifiers/offset
 tables; this revision uses their owner distinctions, not those details as new
 implementation specifications.
 
-## 7. Bridges, scenery and information
+## E7 World and information
 
 [Engineer/hut interaction](../../src/sim/world/world_orders.rs) reaches
 [the bridge walker](../../src/sim/bridge_state/walker.rs), low/high repair,
@@ -237,7 +243,7 @@ Psychic intent warnings require their own eligibility; they are not interchangea
 with cloak detection or map reveal. Whole information-building goals still
 include the shared viewer/targeting consumers.
 
-## 8. Strategic ability ownership
+## E8 Strategic powers
 
 [Superweapon instances](../../src/sim/superweapon/mod.rs) own grant/revoke/charge;
 [command dispatch](../../src/sim/world/world_commands.rs) hands off the selected
@@ -253,7 +259,7 @@ are provider/payload variants requiring both checks. Common charge/targeting
 machinery alone is insufficient to merge storms, mutation and protection into
 one task. Full current effect coverage was not audited in this revision.
 
-## 9. AI, scenarios and session flows
+## E9 AI scenarios and session flows
 
 [Current AI](../../src/sim/ai.rs) emits ordinary gameplay commands through the
 [production tick](../../src/sim/world/mod.rs); actual outcomes feed later
@@ -280,7 +286,7 @@ campaign selection lacks launch; Network/WOL routes report unimplemented.
 A shell-route task is therefore bounded separately from destination backend
 completion, while an “all destinations work” claim remains open.
 
-## 10. Save, replay, networking and presentation
+## E10 Persistence networking and presentation
 
 [Persistence commands](../../src/app/persistence/commands.rs),
 [prepared replacement](../../src/app/persistence/mod.rs) and
