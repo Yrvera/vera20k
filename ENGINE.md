@@ -66,8 +66,9 @@ and `advance_tick` phases describe the architecture. Name coordinate frames/unit
 consult the [coordinate reference](docs/research/coordinate-reference-frames.md).
 
 One owner follows a complete mechanism through evidence, implementation, production
-integration and review. Inspect the surrounding loop/consumers; validate the actual
-production path, using runtime reproduction when needed. Reassess worsening fixes.
+integration and review. Consider the surrounding architecture and affected consumers,
+and use integration evidence appropriate to the change, including runtime reproduction
+when needed. Reassess worsening fixes.
 Design/plan artifacts are optional; implementation authority includes design choices.
 
 Promote coherent prerequisites when a smaller patch creates broken behavior, duplicate
