@@ -1471,6 +1471,12 @@ impl Simulation {
             if schema.includes(HashFeature::SustainedGapSight) {
                 entity.sight_refresh_timers.hash(hasher);
             }
+            if schema.includes(HashFeature::GapOperational)
+                && entity.gap_generator != crate::sim::vision::GapGeneratorRuntime::default()
+            {
+                b"gap-operational-v144".hash(hasher);
+                entity.gap_generator.hash(hasher);
+            }
 
             if let Some(ref movement) = entity.movement_target {
                 1u8.hash(hasher);

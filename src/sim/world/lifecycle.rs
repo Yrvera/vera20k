@@ -2113,6 +2113,17 @@ impl Simulation {
         if !self.substrate.entities.contains(stable_id) {
             return ConcealOutcome::MissingOrDead;
         }
+        if self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|entity| !entity.lifecycle.in_limbo)
+        {
+            //6F6B16 ordinary sight release precedes TypeCD1 gap removal at
+            //6F6B6A; both precede Object Limbo. Repeated Limbo emits neither.
+            self.fog.release_entity_sight(stable_id);
+            self.remove_building_gap_before_limbo(stable_id);
+        }
         // BuildingClass owns this pass before the common TechnoClass Limbo can
         // clear committed type/cell facts or broadcast another expiry callback.
         self.invalidate_base_plan_from_building_limbo(stable_id);

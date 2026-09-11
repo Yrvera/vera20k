@@ -37,6 +37,25 @@ impl FogState {
         old_spy_sat_active: bool,
         source_ids: &std::collections::BTreeSet<u64>,
     ) {
+        self.transition_whole_map_with_gap_reentry(
+            owner,
+            cells,
+            reset,
+            old_spy_sat_active,
+            source_ids,
+            None,
+        );
+    }
+
+    pub(crate) fn transition_whole_map_with_gap_reentry(
+        &mut self,
+        owner: InternedId,
+        cells: Vec<(u16, u16)>,
+        reset: bool,
+        old_spy_sat_active: bool,
+        source_ids: &std::collections::BTreeSet<u64>,
+        gap_reentry: Option<&[super::GapGeneratorSource]>,
+    ) {
         if self.width == 0
             || self.height == 0
             || (!reset && self.whole_map_revealed_owners.contains(&owner))
@@ -55,10 +74,18 @@ impl FogState {
         for gap in gaps {
             gaps_by_id.entry(gap.stable_id).or_default().push(gap);
         }
+        let mut reentry_by_id = gaps_by_id.clone();
+        if let Some(reentry) = gap_reentry {
+            reentry_by_id.clear();
+            for &gap in reentry {
+                reentry_by_id.entry(gap.stable_id).or_default().push(gap);
+            }
+        }
         let ids: std::collections::BTreeSet<_> = sources
             .keys()
             .copied()
             .chain(gaps_by_id.keys().copied())
+            .chain(reentry_by_id.keys().copied())
             .collect();
         let width = usize::from(self.width);
         let height = usize::from(self.height);
@@ -103,13 +130,15 @@ impl FogState {
             if let Some(source) = sources.get(&id) {
                 self.reconcile_sight_admission(id, owner, source.clone(), false, source.fog_of_war);
             }
-            for &gap in gaps_by_id.get(&id).into_iter().flatten() {
+            for &gap in reentry_by_id.get(&id).into_iter().flatten() {
                 let vis = self.by_owner.get_mut(&owner).unwrap();
                 for index in gap_footprint(gap, width, height) {
                     vis.shroud_knowledge[index].add_gap();
                     vis.publish_knowledge(index);
                 }
                 self.gap_sources.entry(owner).or_default().insert(gap);
+                //Complete6FB170 clears local House240 after its cell loop.
+                self.whole_map_revealed_owners.remove(&owner);
             }
         }
         //577AB0 clears240 only after callback re-admission.
