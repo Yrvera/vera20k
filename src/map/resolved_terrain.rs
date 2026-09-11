@@ -52,6 +52,11 @@ use std::sync::{
 #[path = "resolved_terrain_mutation.rs"]
 mod mutation;
 
+#[path = "terrain_recalc_catalog.rs"]
+mod recalc_catalog;
+use recalc_catalog::BridgeRecalcCatalog;
+pub(crate) use recalc_catalog::BridgeRecalcCatalogError;
+
 pub const YR_CELL_LAND_TUNNEL: u8 = 10;
 
 /// Identifies whether map overlays still require the ordinary authored-map
@@ -423,8 +428,9 @@ pub struct TerrainTileAnimation {
     pub z_adjust: i32,
 }
 
-/// Non-Clone, map-owned state for the live `CellClass::RecalcAttributes`
-/// calls made while a fresh authored map is still loading.
+/// Non-Clone input adapter for `CellClass::RecalcAttributes`. Authored loading
+/// owns its lazy asset cache and animation latch; the admitted runtime bridge
+/// path borrows immutable resident inputs and supplies current playfield bounds.
 ///
 /// The metadata/cache inputs are retained across calls so every Mark write and
 /// both whole-cell sweeps observe the mutations made by earlier calls. The
@@ -433,6 +439,7 @@ pub struct TerrainTileAnimation {
 pub(crate) struct LoadCellRecalcState<'a> {
     theater_data: Option<&'a TheaterData>,
     asset_manager: Option<&'a crate::assets::asset_manager::AssetManager>,
+    resident_bridge: Option<&'a BridgeRecalcCatalog>,
     terrain_rules: Option<&'a TerrainRules>,
     overlay_types: &'a OverlayTypeRegistry,
     playfield: Option<Playfield>,
@@ -464,6 +471,7 @@ impl<'a> LoadCellRecalcState<'a> {
         Self {
             theater_data: Some(theater_data),
             asset_manager: Some(asset_manager),
+            resident_bridge: None,
             terrain_rules: Some(terrain_rules),
             overlay_types,
             playfield: Some(Playfield::from_header(&map.header)),
@@ -484,6 +492,7 @@ impl<'a> LoadCellRecalcState<'a> {
         Self {
             theater_data: None,
             asset_manager: None,
+            resident_bridge: None,
             terrain_rules: None,
             overlay_types,
             playfield: None,
@@ -511,6 +520,11 @@ impl<'a> LoadCellRecalcState<'a> {
     }
 
     fn terrain_anim_is_latched(&self, index: usize) -> bool {
+        if self.resident_bridge.is_some() {
+            // Resident admission rejects every declared source attachment.
+            // No per-call false latch is used to authorize an Anim constructor.
+            return false;
+        }
         *self
             .terrain_anim_latched
             .get(index)
@@ -524,21 +538,26 @@ impl<'a> LoadCellRecalcState<'a> {
             .expect("load Recalc latch shape must match the real terrain grid") = true;
     }
 
-    fn registered_tile_metadata(
+    fn registered_tile_metadata<E>(
         &mut self,
         tile_index: i32,
         sub_tile: u8,
         synthetic_cell: &ResolvedTerrainCell,
-    ) -> Option<TileMetadata> {
+    ) -> Result<Option<TileMetadata>, LoadCellRecalcError<E>> {
+        if let Some(catalog) = self.resident_bridge {
+            return catalog
+                .metadata(tile_index, sub_tile)
+                .map_err(LoadCellRecalcError::ResidentInput);
+        }
         if tile_index < 0 || tile_index == 0xFFFF {
-            return None;
+            return Ok(None);
         }
         if let Some(theater) = self.theater_data {
-            let tile_id = u16::try_from(tile_index).ok()?;
-            if usize::from(tile_id) >= theater.lookup.len() {
-                return None;
+            if tile_index as usize >= theater.lookup.len() {
+                return Ok(None);
             }
-            return Some(cached_tile_metadata(
+            let tile_id = tile_index as u16;
+            return Ok(Some(cached_tile_metadata(
                 &mut self.metadata_cache,
                 self.theater_data,
                 self.asset_manager,
@@ -549,18 +568,71 @@ impl<'a> LoadCellRecalcState<'a> {
                     variant: 0,
                 },
                 &mut self.warned_unknown_land_types,
-            ));
+            )));
         }
 
         #[cfg(test)]
         {
-            Some(TileMetadata::from_resolved_cell(synthetic_cell))
+            Ok(Some(TileMetadata::from_resolved_cell(synthetic_cell)))
         }
         #[cfg(not(test))]
         {
             let _ = synthetic_cell;
             unreachable!("production load Recalc requires theater/TMP authority")
         }
+    }
+
+    fn for_resident_bridge(
+        catalog: &'a BridgeRecalcCatalog,
+        overlay_types: &'a OverlayTypeRegistry,
+        bounds: Option<PlayfieldBounds>,
+    ) -> Self {
+        Self {
+            theater_data: None,
+            asset_manager: None,
+            resident_bridge: Some(catalog),
+            terrain_rules: Some(&catalog.terrain_rules),
+            overlay_types,
+            playfield: bounds.map(|bounds| {
+                Playfield::from_local_size(
+                    bounds.base,
+                    bounds.off_fc,
+                    bounds.off_100,
+                    bounds.off_104,
+                    bounds.off_108,
+                )
+            }),
+            lat_config: catalog.lat_config.clone(),
+            slope_config: catalog.slope_config,
+            cliff_back_impassability: catalog.cliff_back_impassability,
+            metadata_cache: HashMap::new(),
+            warned_unknown_land_types: HashSet::new(),
+            terrain_anim_latched: Vec::new(),
+        }
+    }
+
+    fn current_permissions(&self, tile: i32) -> Option<(bool, bool)> {
+        self.resident_bridge
+            .map(|catalog| catalog.current_permissions(tile))
+            .or_else(|| {
+                self.theater_data
+                    .map(|theater| current_tile_permissions(&theater.lookup, tile))
+            })
+    }
+
+    fn automatic_tube_direction(&self, tile: i32) -> Option<u8> {
+        if let Some(catalog) = self.resident_bridge {
+            catalog.automatic_tube_direction(tile)
+        } else {
+            auto_tube_direction_for_tile(tile, self.theater_data)
+        }
+    }
+
+    fn wood_bridge_repair_tile(&self, tile: i32) -> bool {
+        self.resident_bridge.map_or_else(
+            || is_wood_bridge_repair_tile(self.theater_data, tile),
+            |catalog| catalog.is_wood_bridge_repair_tile(tile),
+        )
     }
 
     fn clear_land_metadata(&self) -> TileMetadata {
@@ -624,6 +696,10 @@ pub(crate) trait LoadCellRecalcEffects {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LoadCellRecalcError<E> {
+    #[error("runtime Recalc has no resident bridge inputs")]
+    MissingResidentInputs,
+    #[error(transparent)]
+    ResidentInput(BridgeRecalcCatalogError),
     #[error("load Recalc received non-native overlay identity {identity}")]
     MalformedOverlayIdentity { identity: i32 },
     #[error("load Recalc could not resolve OverlayType index {overlay_id}")]
@@ -1554,6 +1630,9 @@ pub struct ResolvedTerrainGrid {
     /// Immutable active-theater sparse TMP authority used only by the two
     /// verified destroyable-cliff callers.
     destroyable_cliff_catalog: Option<DestroyableCliffCatalog>,
+    /// Immutable pristine/policy inputs, shared by derived clones and snapshot
+    /// templates. Mutable terrain, bounds and overlays remain separate owners.
+    bridge_recalc_catalog: Option<Arc<BridgeRecalcCatalog>>,
 }
 
 /// Type barrier for the pristine authored Fill product. It intentionally does
@@ -1630,6 +1709,7 @@ impl ResolvedTerrainGrid {
             wood_bridge_set_start: None,
             tile_animations: Vec::new(),
             destroyable_cliff_catalog: None,
+            bridge_recalc_catalog: None,
         }
     }
 
@@ -1910,7 +1990,7 @@ impl ResolvedTerrainGrid {
                     snapshot.final_tile_index,
                     snapshot.final_sub_tile,
                     &snapshot,
-                )
+                )?
                 .map_or(snapshot.slope_type, |metadata| metadata.slope_type);
             {
                 let cell = &mut self.cells[index];
@@ -1943,7 +2023,7 @@ impl ResolvedTerrainGrid {
             let current_tile = snapshot.final_tile_index;
             let current_sub_tile = snapshot.final_sub_tile;
             let registered =
-                state.registered_tile_metadata(current_tile, current_sub_tile, &snapshot);
+                state.registered_tile_metadata(current_tile, current_sub_tile, &snapshot)?;
             sparse_entry = registered
                 .as_ref()
                 .is_some_and(|metadata| metadata.subtile_entry_valid == Some(false));
@@ -1962,18 +2042,11 @@ impl ResolvedTerrainGrid {
                 animation_sub_tile = current_sub_tile;
                 retained_height_in_pixels = metadata.height_in_pixels;
             }
-            let accepts_smudge = valid_entry
-                && tile_id.is_some_and(|tile_id| {
-                    state
-                        .theater_data
-                        .is_some_and(|theater| theater.lookup.is_morphable(tile_id))
-                });
-            let allows_tiberium = valid_entry
-                && tile_id.is_some_and(|tile_id| {
-                    state
-                        .theater_data
-                        .is_some_and(|theater| theater.lookup.allows_tiberium(tile_id))
-                });
+            let permissions = state
+                .current_permissions(current_tile)
+                .unwrap_or((false, false));
+            let accepts_smudge = valid_entry && permissions.0;
+            let allows_tiberium = valid_entry && permissions.1;
             {
                 let cell = &mut self.cells[index];
                 if !valid_entry {
@@ -2009,10 +2082,9 @@ impl ResolvedTerrainGrid {
 
         // These are cached current-tile queries, unlike retained native Cell
         // attributes. CanPlaceTiberium4839C0 and smudge6B5F80 resolve live+38.
-        if let Some(theater) = state.theater_data {
+        if let Some(permissions) = state.current_permissions(self.cells[index].final_tile_index) {
             let cell = &mut self.cells[index];
-            (cell.accepts_smudge, cell.allows_tiberium) =
-                current_tile_permissions(&theater.lookup, cell.final_tile_index);
+            (cell.accepts_smudge, cell.allows_tiberium) = permissions;
         }
 
         if !early_overlay_branch {
@@ -2072,7 +2144,7 @@ impl ResolvedTerrainGrid {
                     && self.native_tube_indices[index]
                         .admits_automatic_construction(self.tube_facts.len())
                     && let Some(direction) =
-                        auto_tube_direction_for_tile(cell.final_tile_index, state.theater_data)
+                        state.automatic_tube_direction(cell.final_tile_index)
                 {
                     let request = AutomaticTubeRequest {
                         cell: (cell.rx, cell.ry),
@@ -2374,8 +2446,7 @@ impl ResolvedTerrainGrid {
         );
         cell.bridge_facts.overlay_id = overlay_id;
         cell.bridge_facts.state_byte = finalized.state();
-        cell.is_wood_bridge_repair_tile =
-            is_wood_bridge_repair_tile(state.theater_data, cell.final_tile_index);
+        cell.is_wood_bridge_repair_tile = state.wood_bridge_repair_tile(cell.final_tile_index);
     }
 
     /// Borrow the sparse native CellClass allocation plane used by fixed-grid
@@ -3584,6 +3655,7 @@ impl ResolvedTerrainGrid {
                 }),
                 tile_animations: Vec::new(),
                 destroyable_cliff_catalog: None,
+                bridge_recalc_catalog: None,
             };
         }
 
@@ -4372,6 +4444,18 @@ impl ResolvedTerrainGrid {
                 asset_manager,
                 terrain_rules,
             ),
+            bridge_recalc_catalog: match (theater_data, asset_manager, terrain_rules) {
+                (Some(theater), Some(assets), Some(rules)) => Some(Arc::new(
+                    BridgeRecalcCatalog::for_middle_bridges(
+                        theater,
+                        assets,
+                        rules,
+                        lat_enabled,
+                        cliff_back_impassability,
+                    ),
+                )),
+                _ => None,
+            },
         };
         if projection.is_eager()
             && let Some(theater) = theater_data
@@ -4870,7 +4954,11 @@ fn auto_tube_direction_for_tile(
     theater_data: Option<&TheaterData>,
 ) -> Option<u8> {
     let td = theater_data?;
-    for base in td.automatic_tube_bases {
+    auto_tube_direction_from_bases(final_tile_index, td.automatic_tube_bases)
+}
+
+fn auto_tube_direction_from_bases(final_tile_index: i32, bases: [i32; 4]) -> Option<u8> {
+    for base in bases {
         if final_tile_index >= base && final_tile_index <= base.wrapping_add(3) {
             let ordinal = final_tile_index.wrapping_sub(base);
             if ordinal != -1 {
