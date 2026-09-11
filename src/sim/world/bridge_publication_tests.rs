@@ -3,6 +3,9 @@ use crate::map::bridge_facts::{BridgeFlagStamp, BridgeStampFamily};
 use crate::rules::ini_parser::IniFile;
 use crate::sim::overlay_grid::OverlayGrid;
 
+#[path = "bridge_rim_publication_tests.rs"]
+mod rim;
+
 fn rules() -> RuleSet {
     RuleSet::from_ini(&IniFile::from_str(
         "[VehicleTypes]\n0=MTNK\n[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n\

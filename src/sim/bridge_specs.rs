@@ -852,8 +852,11 @@ fn update_ramp_perpendicular_recursive(
 /// - **DamageB**: progress Variant0 → Variant1 and Variant1 → Damaged;
 ///   no-op on Damaged and AboutToFall.
 /// - **CollapseA / CollapseB**: advance Variant0 / Variant1 / Damaged to
-///   Damaged; preserve AboutToFall (the recursive `+3 → +3` write in the
-///   reference is a no-op semantically).
+///   Damaged; preserve AboutToFall in this legacy projection. Native572440
+///   normalizes tile-base+1, so its absolute base+Middle+3 terminal write
+///   produces relative Middle+4, outside the four-class model. Full56EB80
+///   tile/level/subtile delivery remains open; this is not a native no-op.
+///   The former `+3 → +3` interpretation omitted that +1 normalization.
 pub(crate) fn apply_anchor_class_transition(
     current: crate::sim::bridge_state::BridgeheadAnchorClass,
     phase: Phase,
