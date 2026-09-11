@@ -135,7 +135,16 @@ fn stock_lamp_loaded_by_scenario_changes_actual_terrain_pixels() {
     .remove(0);
     let lit_pixels = crate::render::depth_gpu_tests::render_terrain_lighting_probe(&tile, instance);
 
-    scenario.runtime.simulation.uninit(id);
+    scenario.runtime.simulation.discard_lighting_events();
+    scenario.runtime.simulation.apply_fatal_lifecycle_stage(
+        rules,
+        crate::sim::combat::FatalLifecycleStage::BeforeDeathEffects,
+        id,
+        crate::map::entities::EntityCategory::Structure,
+        crate::sim::world::UninitContext::with_rules(rules),
+    );
+    let events = std::mem::take(&mut scenario.runtime.simulation.lighting_sources.pending);
+    lighting.apply_events(terrain, &events);
     lighting.refresh(terrain, &scenario.runtime.simulation, rules, 2);
     let dark_scalar = lighting
         .grid()

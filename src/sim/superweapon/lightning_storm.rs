@@ -61,7 +61,7 @@ pub struct LightningStormState {
 /// in gamemd they are two statements of one straight-line block, reached only
 /// once the deferment countdown is zero.
 fn begin(sim: &mut Simulation) {
-    sim.session.lighting.select_ion();
+    sim.select_lighting_profile(crate::sim::scenario_session::ScenarioLightingProfile::Ion);
     sim.sound_events.push(SimSoundEvent::LightningStormBegan);
 }
 
@@ -184,7 +184,7 @@ pub fn process(
     if duration == ENDING_DURATION_SENTINEL {
         log::info!("Lightning Storm ended");
         sim.lightning_storm = None;
-        sim.session.lighting.select_normal();
+        sim.select_lighting_profile(crate::sim::scenario_session::ScenarioLightingProfile::Normal);
         return;
     }
     if duration == 0 {

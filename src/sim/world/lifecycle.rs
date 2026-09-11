@@ -3117,6 +3117,7 @@ impl Simulation {
     }
 
     fn finalize_and_remove_common(&mut self, stable_id: u64) {
+        self.destroy_building_light(stable_id);
         if self.substrate.anims.contains_key(stable_id) {
             self.conceal_anim(stable_id);
             self.detach_anim_from_owner(stable_id);

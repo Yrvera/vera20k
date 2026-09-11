@@ -71,6 +71,9 @@ pub struct RadiationState {
     cells: BTreeMap<(u16, u16), f64>,
     /// One site per center cell.
     sites: BTreeMap<(u16, u16), RadSite>,
+    /// Ordered visual source outputs; not field/damage state or saved pointers.
+    #[serde(skip)]
+    pending_lighting: Vec<((u16, u16), Option<crate::map::lighting::PointLight>)>,
 }
 
 /// A weapon detonation that emits radiation, recorded by the combat tick and
@@ -171,6 +174,12 @@ impl RadiationState {
 
     pub fn sites(&self) -> impl Iterator<Item = &RadSite> {
         self.sites.values()
+    }
+
+    pub(crate) fn take_lighting_events(
+        &mut self,
+    ) -> Vec<((u16, u16), Option<crate::map::lighting::PointLight>)> {
+        std::mem::take(&mut self.pending_lighting)
     }
 
     /// Deterministic iteration over irradiated cells (sorted by coord), for
@@ -336,6 +345,13 @@ impl RadiationState {
         }
         self.activate_site(center, frame, rules);
         self.spread_site(center, terrain);
+        // RadSite activation65B7CA/65B7E8 publishes source changes in this
+        // interval, even if another change later returns to the same inputs.
+        let source = self
+            .sites
+            .get(&center)
+            .and_then(|site| crate::sim::radiation_light::radiation_site_light(site, rules));
+        self.pending_lighting.push((center, source));
     }
 
     /// Per-tick site evolution: lifetime countdown, the periodic per-cell
@@ -352,6 +368,10 @@ impl RadiationState {
         }
         let centers: Vec<(u16, u16)> = self.sites.keys().copied().collect();
         for center in centers {
+            let previous_light = self
+                .sites
+                .get(&center)
+                .and_then(|site| crate::sim::radiation_light::radiation_site_light(site, rules));
             // Lifetime ticks down every frame, independent of the decay timer.
             let (expired, dead) = {
                 let Some(site) = self.sites.get_mut(&center) else {
@@ -372,6 +392,13 @@ impl RadiationState {
             }
             if dead {
                 self.sites.remove(&center);
+            }
+            let current_light = self
+                .sites
+                .get(&center)
+                .and_then(|site| crate::sim::radiation_light::radiation_site_light(site, rules));
+            if previous_light != current_light {
+                self.pending_lighting.push((center, current_light));
             }
         }
     }

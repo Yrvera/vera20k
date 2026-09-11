@@ -1070,6 +1070,7 @@ impl Simulation {
         if !matches!(outcome, RevealOutcome::Revealed { .. }) {
             return None;
         }
+        self.allocate_building_light(stable_id, rules);
         self.initialize_cloak_after_unlimbo(stable_id, rules);
         self.add_unit_sensor_after_unlimbo(stable_id, rules);
         self.commit_spawn_harvest_mission(stable_id);
@@ -1237,6 +1238,11 @@ impl Simulation {
                 logic_eligible: true,
             },
         );
+        if matches!(outcome, RevealOutcome::Revealed { .. }) {
+            if let Some(rules) = rules {
+                self.allocate_building_light(stable_id, rules);
+            }
+        }
         (stable_id, outcome)
     }
 

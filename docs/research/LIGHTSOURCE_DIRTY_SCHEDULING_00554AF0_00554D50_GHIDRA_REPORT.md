@@ -1,5 +1,61 @@
 # LightSource Dirty Scheduling 00554AF0 / 00554D50 -- Ghidra Research Report
 
+## 2026-09-11 production correction
+
+The older implementation advice below describes the queue's mechanics; it does
+not establish a queued-mode producer for ordinary lamps. The active-retail
+comparison in [light_publication.py](../../tools/spatial_oracle/light_publication.py)
+executes the enable/disable wrappers, complete area traversal, actual cell lookup
+and distance helpers. Its [seven stateful events](../../tools/spatial_oracle/light_publication.json)
+produce 1,201 cell calls before each admitted stock-radius enable/disable returns,
+and no pending queue. Cell recomputation and redraw are explicitly substituted
+recording sinks; sampling colors or a whole gameplay scene is not emulated.
+The [metadata](../../tools/spatial_oracle/light_publication.meta.json) binds the
+retail executable and substitutions.
+
+Global updates are a different operation. `4AE4C0 -> 484680` preserves Cell104
+normalization and Cell108 additive intensity, then updates scalars using the
+current ambient and selected Ground/Level. It scales the uncapped signed-word
+top before the final clamp. Full `483E30` sampling caps top before normalization;
+near-black full sampling also differs from a later retained scalar update.
+[The complete native scalar comparison](../../tools/spatial_oracle/light_retained_scalar.py)
+contains 16 executions without substituted callees, seeded from hash-bound native
+palette finalizations. These samples establish the covered arithmetic, not every
+signed-byte/word overflow input or controller schedule.
+
+Full `484180` sampling uses normal Scenario RGB even during Ion. LightConvert
+`555DA0` installs vtable `7ED0A4`; slot+4 reaches `556090`. Stored normal RGB
+198/19C/1A0 and alternate RGB1A4/1A8/1AC remain distinct. The normal key selects
+row count and normalization; Ion changes visible palette RGB. Newly allocated
+Converts during Ion receive the same alternate RGB through their constructor.
+
+Rust now retains building-source activity at explicit successful placement,
+construction, fatal-before-effects, sell and destructor sites. Radiation's
+existing visual projection produces ordered events at its own mutations.
+The frame output carries source/global events to `MatchLighting`; source dirty
+areas commit before each global event, then remaining source changes commit
+before drawing. Net-zero source changes retain their dirty area. The old 8,192
+cell frame budget and whole-source-union refresh are removed from this path.
+Global events use retained scalar updates; Ion palette RGB stays independent
+from normal cell keys. Ordinary House power is not a source-active predicate;
+see the corrected [lifecycle report](LIGHTSOURCE_LIFECYCLE_POWER_DAMAGE_SAVELOAD_GHIDRA_REPORT.md).
+
+The tests cover a nine-lamp map exceeding the old budget, actual authored/held
+placement and rejection, source/global/radiation ordering, net-zero history,
+new Convert identity during Ion, and outgoing-event discard on eager restore.
+The fatal ordering test calls the real stage helper and transports its output
+through `SimRuntime`; caller inspection, rather than that fixture, establishes
+its placement before death effects. The ignored stock-lamp GPU probe loads
+retail rules/map/TMP data and exercises terrain instance generation and the GPU
+shader. It is a bounded production-output witness, not native screenshot parity.
+
+Row52 remains open: exact native lazy post-load Cell/Convert behavior, explicit
+offline/EMP/map-offline producers, unproven undeploy timing, numeric detail-option
+history, full radiation policy, and Nuke/Dominator/other palette history are not
+certified by this change. Eager restore and existing radiation detail admission
+remain explicitly limited compatibility behavior. No TerrainType emitter is
+introduced from inert TS-only light keys.
+
 **Address(es):** `0x00554AF0`, `0x00554D50`  
 **Investigation Mode:** exhaustive-slice  
 **Claimed Scope:** LightSource enable/disable/reposition affected-cell scheduling, queued record layout, per-tick drain behavior, and immediate-vs-queued commit semantics for these two functions.  

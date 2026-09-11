@@ -680,10 +680,124 @@ mod map_wall_owner_candidate_tests {
         assert_eq!(sim.scenario_rng.state(), rng_before);
     }
 
+    #[test]
+    fn stock_lamp_removal_publishes_before_next_draw_with_many_other_lamps() {
+        use crate::app::presentation::lighting::MatchLighting;
+        use crate::map::lighting::point_light_area_cells;
+        // Native 554A80 -> 554AF0(mode0): every affected Cell483E30 call occurs
+        // before return. The original-byte fixture binds the stock radius/area;
+        // this scene exceeds the old 8192-cell app budget using unchanged lamps.
+        let native: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tools/spatial_oracle/light_publication.json"
+        ))
+        .unwrap();
+        let terrain = flat_terrain(128, 128);
+        // Active rulesmd GALITE: Powered=yes, Power=0, radius5000, intensity.2.
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n0=GALITE\n[GALITE]\nStrength=100\nPowered=yes\nPower=0\nLightVisibility=5000\nLightIntensity=.2\n",
+        ))
+        .unwrap();
+        let mut sim = Simulation::with_seed(0x420);
+        sim.session.lighting.current_ambient = 30;
+        let owner = sim.interner.intern("Neutral");
+        let kind = sim.interner.intern("GALITE");
+        let mut id = 100;
+        for ry in [24, 64, 104] {
+            for rx in [24, 64, 104] {
+                let mut lamp = GameEntity::new_at_frame_zero_for_test(
+                    id,
+                    rx,
+                    ry,
+                    0,
+                    0,
+                    owner,
+                    Health {
+                        current: 100,
+                        max: 100,
+                    },
+                    kind,
+                    EntityCategory::Structure,
+                    0,
+                    0,
+                    false,
+                );
+                lamp.lifecycle.object_alive = true;
+                lamp.lifecycle.in_limbo = false;
+                lamp.lifecycle.cell_marked = true;
+                sim.entities_mut().insert(lamp);
+                sim.allocate_building_light(id, &rules);
+                id += 1;
+            }
+        }
+        let view = derive_lighting_view(&LightingConfig::default(), Some(&sim), Some(&rules), 2);
+        assert_eq!(view.point_lights.len(), 9);
+        let mut union = std::collections::BTreeSet::new();
+        for source in &view.point_lights {
+            let area = point_light_area_cells(source, 128, 128, |x, y| {
+                terrain.cell(x, y).map(|c| c.level)
+            });
+            if (source.rx, source.ry) == (24, 24) {
+                let actual: Vec<[u16; 2]> = area.iter().map(|((x, y), _)| [*x, *y]).collect();
+                let expected: Vec<[u16; 2]> =
+                    serde_json::from_value(native["area"].clone()).unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(native["events"][2]["name"], "disable");
+                assert_eq!(
+                    native["events"][2]["recomputes_before_return"],
+                    actual.len()
+                );
+                assert_eq!(native["events"][2]["queued"], 0);
+            }
+            union.extend(area.into_iter().map(|(cell, _)| cell));
+        }
+        assert!(
+            union.len() > 8192,
+            "regression must exceed the former frame budget"
+        );
+        let mut lighting = MatchLighting::default();
+        lighting.install(
+            CellLightGrid::new(),
+            LightingConfig::default(),
+            2,
+            Some((&terrain, &sim, &rules)),
+        );
+        let before =
+            crate::render::palette_light::PaletteLight::cell(lighting.grid(), (24, 24), false);
+        let unaffected = lighting.grid().cell_light_at((104, 104)).unwrap().clone();
+        assert!(
+            lighting
+                .grid()
+                .cell_light_at((24, 24))
+                .unwrap()
+                .raw_additive_intensity
+                > 0
+        );
+        sim.discard_lighting_events();
+        fatal_lamp_stage(&mut sim, &rules, 100);
+        apply_lighting_events(&mut lighting, &terrain, &mut sim);
+        lighting.refresh(&terrain, &sim, &rules, 2);
+        assert_eq!(
+            lighting
+                .grid()
+                .cell_light_at((24, 24))
+                .unwrap()
+                .raw_additive_intensity,
+            0,
+            "native mode-zero removal must publish in this refresh, before the draw consumer"
+        );
+        let after =
+            crate::render::palette_light::PaletteLight::cell(lighting.grid(), (24, 24), false);
+        assert!(after.brightness() < before.brightness());
+        assert_eq!(
+            lighting.grid().cell_light_at((104, 104)).unwrap(),
+            &unaffected
+        );
+    }
+
     // Exercise the exact owner called by handoff, restore and the frame driver.
     // Reuse the live-world fixtures below rather than testing forwarded fields.
     #[test]
-    fn match_lighting_interrupts_pending_refresh_without_partial_visibility() {
+    fn match_lighting_global_refresh_publishes_before_the_next_draw() {
         use crate::app::presentation::lighting::MatchLighting;
         let terrain = flat_terrain(128, 128);
         let rules = lighting_rules();
@@ -709,7 +823,10 @@ mod map_wall_owner_candidate_tests {
         );
         lights.refresh(&terrain, &sim, &rules, 2);
         for cell in [(1, 1), (127, 127)] {
-            assert_eq!(lights.grid().terrain_tile_tint_at(cell), tint_a);
+            assert_eq!(
+                lights.grid().terrain_tile_tint_at(cell),
+                grid_b.terrain_tile_tint_at(cell)
+            );
         }
         sim.session.lighting.current_ambient = 90;
         let grid_c = rebuild_lighting_grid_from_sim(
@@ -728,10 +845,10 @@ mod map_wall_owner_candidate_tests {
         for cell in [(1, 1), (127, 127)] {
             assert_eq!(
                 lights.grid().terrain_tile_tint_at(cell),
-                grid_b.terrain_tile_tint_at(cell)
+                grid_c.terrain_tile_tint_at(cell)
             );
         }
-        // Same fingerprint must continue gathering the newly queued C batch.
+        // An unchanged view must not replay an obsolete earlier global state.
         lights.refresh(&terrain, &sim, &rules, 2);
         for cell in [(1, 1), (127, 127)] {
             assert_eq!(
@@ -747,6 +864,7 @@ mod map_wall_owner_candidate_tests {
         let terrain = flat_terrain(128, 128);
         let rules = lighting_rules();
         let mut sim = Simulation::with_seed(0x1b);
+        seed_live_lamp(&mut sim, &rules);
         sim.session.lighting.current_ambient = 30;
         let mut lights = MatchLighting::default();
         lights.install(
@@ -758,7 +876,26 @@ mod map_wall_owner_candidate_tests {
         let restored_tint = lights.grid().terrain_tile_tint_at((1, 1));
         sim.session.lighting.current_ambient = 90;
         lights.refresh(&terrain, &sim, &rules, 2);
+        sim.set_building_light_active(41, false);
+        sim.publish_global_lighting();
+        assert!(!sim.lighting_sources.pending.is_empty());
+        sim.radiation.apply_detonation(
+            RadDetonation {
+                rx: 120,
+                ry: 120,
+                rad_level: 500,
+                spread: 1,
+            },
+            0,
+            &rules.radiation,
+            None,
+        );
+        assert_eq!(sim.radiation.clone().take_lighting_events().len(), 1);
         sim.session.lighting.current_ambient = 30;
+        sim.rebuild_lighting_sources_after_load(&rules);
+        assert!(sim.lighting_sources.pending.is_empty());
+        assert!(sim.radiation.take_lighting_events().is_empty());
+        assert!(sim.lighting_sources.buildings[&41].active);
         lights.restore(&terrain, &sim, &rules, 2);
         for _ in 0..3 {
             assert_eq!(lights.grid().terrain_tile_tint_at((1, 1)), restored_tint);
@@ -773,7 +910,7 @@ mod map_wall_owner_candidate_tests {
         let terrain = flat_terrain(32, 32);
         let rules = lighting_rules();
         let mut sim = Simulation::with_seed(0x1c);
-        seed_live_lamp(&mut sim);
+        seed_live_lamp(&mut sim, &rules);
         let mut lights = MatchLighting::default();
         lights.install(
             CellLightGrid::new(),
@@ -799,6 +936,7 @@ mod map_wall_owner_candidate_tests {
                 > 0
         );
         let distant = lights.grid().cell_light_at((31, 31)).unwrap().clone();
+        sim.destroy_building_light(41);
         sim.entities_mut().remove(41).expect("remove live lamp");
         lights.refresh(&terrain, &sim, &rules, 2);
         let rebuilt = rebuild_lighting_grid_from_sim(
@@ -818,6 +956,231 @@ mod map_wall_owner_candidate_tests {
             );
         }
         assert_eq!(lights.grid().cell_light_at((31, 31)).unwrap(), &distant);
+    }
+
+    #[test]
+    fn match_lighting_fatal_then_global_survives_production_frame_output() {
+        use crate::app::presentation::lighting::MatchLighting;
+        use crate::sim::light_sources::LightingEvent;
+        let rules = lighting_rules();
+        let terrain = flat_terrain(16, 16);
+        let mut sim = Simulation::with_seed(0x1d);
+        sim.session.lighting.normal.red_percent = 0;
+        sim.session.lighting.normal.green_percent = 0;
+        sim.session.lighting.normal.blue_percent = 0;
+        sim.session.lighting.normal.ground_units = 0;
+        sim.session.lighting.normal.level_units = 0;
+        seed_live_lamp(&mut sim, &rules);
+        let mut lights = MatchLighting::default();
+        lights.install(
+            CellLightGrid::new(),
+            LightingConfig::default(),
+            2,
+            Some((&terrain, &sim, &rules)),
+        );
+        sim.discard_lighting_events();
+
+        // Actual BeforeDeathEffects callback must publish disable before a
+        // later global operation; the frame transaction must retain both.
+        fatal_lamp_stage(&mut sim, &rules, 41);
+        sim.session.lighting.current_ambient = 30;
+        sim.session.lighting.target_ambient = 30;
+        sim.publish_global_lighting();
+        let mut rt = crate::sim::runtime::SimRuntime::from_simulation(sim);
+        rt.resources.rules = rules;
+        let frame = rt.advance_frame(&[], 16, crate::sim::world::TickLane::Ordinary);
+        assert!(matches!(frame.lighting_events.as_slice(),
+            [LightingEvent::Building { id: 41, source: Some(source) },
+             LightingEvent::Global(_)] if !source.active));
+        lights.apply_events(&terrain, &frame.lighting_events);
+        let cell = lights.grid().cell_light_at((4, 5)).unwrap();
+        assert_eq!(cell.raw_rgb, [0; 3]);
+        assert_eq!(cell.additive_intensity, 0);
+        // Near-black full sampling clears common, whereas native484680
+        // retains identity scale and publishes the new ambient (oracle case7).
+        assert_eq!(cell.common_scalar, 300);
+        let final_rebuild = rebuild_lighting_grid_from_sim(
+            &terrain,
+            &LightingConfig::default(),
+            Some(&rt.simulation),
+            Some(&rt.resources.rules),
+            2,
+        );
+        assert_eq!(
+            final_rebuild.cell_light_at((4, 5)).unwrap().common_scalar,
+            0
+        );
+        let next = rt.advance_frame(&[], 16, crate::sim::world::TickLane::Ordinary);
+        assert!(
+            next.lighting_events.is_empty(),
+            "outgoing history is consumed once"
+        );
+
+        // An on/off pair has the same final owner state but MUST resample its
+        // area, replacing the retained-global common with full-sampling zero.
+        rt.simulation.set_building_light_active(41, true);
+        rt.simulation.set_building_light_active(41, false);
+        apply_lighting_events(&mut lights, &terrain, &mut rt.simulation);
+        assert_eq!(
+            lights.grid().cell_light_at((4, 5)).unwrap().common_scalar,
+            0
+        );
+        assert_eq!(
+            lights.grid().cell_light_at((15, 15)).unwrap().common_scalar,
+            300,
+            "a source refresh must not rebuild distant retained cells"
+        );
+    }
+
+    #[test]
+    fn match_lighting_source_global_source_uses_the_new_sampling_ambient() {
+        use crate::app::presentation::lighting::MatchLighting;
+        use crate::sim::light_sources::LightingEvent;
+        let rules = lighting_rules();
+        let terrain = flat_terrain(16, 16);
+        let mut sim = Simulation::with_seed(0x1e);
+        sim.session.lighting.normal.red_percent = 20;
+        sim.session.lighting.normal.green_percent = 20;
+        sim.session.lighting.normal.blue_percent = 20;
+        seed_live_lamp(&mut sim, &rules);
+        sim.session.lighting.current_ambient = 30;
+        let mut lights = MatchLighting::default();
+        lights.install(
+            CellLightGrid::new(),
+            LightingConfig::default(),
+            2,
+            Some((&terrain, &sim, &rules)),
+        );
+        sim.discard_lighting_events();
+        sim.set_building_light_active(41, false);
+        let radiation = RadDetonation {
+            rx: 15,
+            ry: 15,
+            rad_level: 500,
+            spread: 1,
+        };
+        sim.radiation
+            .apply_detonation(radiation, 0, &rules.radiation, None);
+        sim.session.lighting.current_ambient = 250;
+        sim.publish_global_lighting();
+        sim.set_building_light_active(41, true);
+        sim.radiation
+            .apply_detonation(radiation, 0, &rules.radiation, None);
+        sim.flush_radiation_lighting();
+        assert!(matches!(
+            sim.lighting_sources.pending.as_slice(),
+            [
+                LightingEvent::Building { .. },
+                LightingEvent::Radiation { .. },
+                LightingEvent::Global(_),
+                LightingEvent::Building { .. },
+                LightingEvent::Radiation { .. }
+            ]
+        ));
+        apply_lighting_events(&mut lights, &terrain, &mut sim);
+        let expected = rebuild_lighting_grid_from_sim(
+            &terrain,
+            &LightingConfig::default(),
+            Some(&sim),
+            Some(&rules),
+            2,
+        );
+        let actual = lights.grid().cell_light_at((4, 5)).unwrap();
+        let expected = expected.cell_light_at((4, 5)).unwrap();
+        assert_eq!(actual.raw_rgb, expected.raw_rgb);
+        assert_eq!(actual.scale16, expected.scale16);
+        assert_eq!(actual.raw_rgb, [300, 400, 500]);
+        assert_eq!(actual.scale16, 32768);
+        assert_eq!(actual.common_scalar, expected.common_scalar);
+        assert_eq!(actual.common_scalar, 1000);
+        assert_eq!(actual.raw_top_scalar, expected.raw_top_scalar);
+        assert!(actual.raw_top_scalar > 2000);
+        let mut incorrectly_global_last = actual.clone();
+        incorrectly_global_last.refresh_retained_scalars(
+            derive_lighting_view(&LightingConfig::default(), Some(&sim), Some(&rules), 2).profile,
+            0,
+        );
+        assert_eq!(incorrectly_global_last.common_scalar, 1325);
+        assert_ne!(
+            actual.common_scalar, incorrectly_global_last.common_scalar,
+            "this fixture distinguishes full-sample cap-before-scale from retained refresh"
+        );
+    }
+
+    #[test]
+    fn match_lighting_ion_new_source_keeps_normal_profile_and_palette_rows() {
+        use crate::app::presentation::lighting::MatchLighting;
+        use crate::render::palette_light::PaletteLight;
+        use crate::sim::scenario_session::ScenarioLightingProfile;
+        let rules = lighting_rules();
+        let terrain = flat_terrain(16, 16);
+        let mut sim = Simulation::with_seed(0x1f);
+        sim.session.lighting.current_ambient = 30;
+        sim.session.lighting.ion.red_percent = 20;
+        sim.session.lighting.ion.green_percent = 90;
+        sim.session.lighting.ion.blue_percent = 40;
+        let mut lights = MatchLighting::default();
+        lights.install(
+            CellLightGrid::new(),
+            LightingConfig::default(),
+            2,
+            Some((&terrain, &sim, &rules)),
+        );
+        let original_key = lights.grid().cell_light_at((4, 5)).unwrap().rgb_key;
+        sim.select_lighting_profile(ScenarioLightingProfile::Ion);
+        seed_live_lamp(&mut sim, &rules);
+        apply_lighting_events(&mut lights, &terrain, &mut sim);
+        let normal_cell = lights.grid().cell_light_at((4, 5)).unwrap().clone();
+        assert_eq!(
+            normal_cell.raw_rgb,
+            [1100, 1200, 1300],
+            "full source sampling uses normal scenario RGB even during Ion"
+        );
+        assert_ne!(
+            normal_cell.rgb_key, original_key,
+            "new Convert identity is created during Ion"
+        );
+        let rows = if normal_cell.rgb_key.iter().sum::<i32>() < 2000 {
+            27
+        } else {
+            53
+        };
+        assert_eq!(
+            PaletteLight::cell(lights.grid(), (4, 5), false),
+            PaletteLight::new([200, 900, 400], rows, normal_cell.common_scalar, false)
+        );
+        let ion_tint = lights.grid().unit_tint_at((4, 5), 0);
+        sim.select_lighting_profile(ScenarioLightingProfile::Normal);
+        apply_lighting_events(&mut lights, &terrain, &mut sim);
+        let restored = lights.grid().cell_light_at((4, 5)).unwrap();
+        assert_eq!(restored.rgb_key, normal_cell.rgb_key);
+        assert_eq!(restored.profile_id, normal_cell.profile_id);
+        assert_eq!(restored.scale16, normal_cell.scale16);
+        assert_eq!(
+            PaletteLight::cell(lights.grid(), (4, 5), false),
+            PaletteLight::new(normal_cell.rgb_key, rows, restored.common_scalar, false)
+        );
+        assert_ne!(lights.grid().unit_tint_at((4, 5), 0), ion_tint);
+    }
+
+    fn fatal_lamp_stage(sim: &mut Simulation, rules: &RuleSet, id: u64) {
+        sim.apply_fatal_lifecycle_stage(
+            rules,
+            crate::sim::combat::FatalLifecycleStage::BeforeDeathEffects,
+            id,
+            EntityCategory::Structure,
+            crate::sim::world::UninitContext::with_rules(rules),
+        );
+    }
+
+    fn apply_lighting_events(
+        lighting: &mut crate::app::presentation::lighting::MatchLighting,
+        terrain: &ResolvedTerrainGrid,
+        sim: &mut Simulation,
+    ) {
+        sim.flush_radiation_lighting();
+        let events = std::mem::take(&mut sim.lighting_sources.pending);
+        lighting.apply_events(terrain, &events);
     }
 
     fn lighting_rules() -> RuleSet {
@@ -843,7 +1206,7 @@ mod map_wall_owner_candidate_tests {
         rules
     }
 
-    fn seed_live_lamp(sim: &mut Simulation) -> crate::sim::intern::InternedId {
+    fn seed_live_lamp(sim: &mut Simulation, rules: &RuleSet) -> crate::sim::intern::InternedId {
         let owner = sim.interner.intern("House");
         let type_ref = sim.interner.intern("LAMP");
         let mut lamp = GameEntity::new_at_frame_zero_for_test(
@@ -865,20 +1228,22 @@ mod map_wall_owner_candidate_tests {
         );
         lamp.lifecycle.object_alive = true;
         lamp.lifecycle.in_limbo = false;
-        lamp.lifecycle.cell_marked = true;
+        lamp.lifecycle.cell_marked = false;
         lamp.building_up = Some(BuildingUp {
             elapsed_ticks: 1,
             total_ticks: 10,
         });
         sim.entities_mut().insert(lamp);
+        sim.add_entity_occupancy(41);
+        sim.allocate_building_light(41, rules);
         owner
     }
 
     #[test]
-    fn gsi_04_20_building_lamp_fingerprint_tracks_lifecycle_power_and_detail() {
+    fn gsi_04_20_building_lamp_tracks_explicit_activity_and_detail() {
         let rules = lighting_rules();
         let mut sim = Simulation::with_seed(0x420);
-        let owner = seed_live_lamp(&mut sim);
+        let owner = seed_live_lamp(&mut sim, &rules);
         let config = LightingConfig::default();
 
         let lit = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
@@ -899,8 +1264,10 @@ mod map_wall_owner_candidate_tests {
             },
         );
         let offline = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
-        assert!(offline.point_lights.is_empty());
-        assert_ne!(lit.fingerprint, offline.fingerprint);
+        // House508C30->454CE0 RET and Building4549B0 animation-only
+        // effects do not call LightSource disable on ordinary power loss.
+        assert_eq!(offline.point_lights, lit.point_lights);
+        assert_eq!(lit.fingerprint, offline.fingerprint);
 
         sim.power_states
             .get_mut(&owner)
@@ -910,28 +1277,30 @@ mod map_wall_owner_candidate_tests {
         assert_eq!(restored.point_lights.len(), 1);
         assert_eq!(lit.fingerprint, restored.fingerprint);
 
-        sim.entities_mut()
-            .get_mut(41)
-            .expect("lamp")
-            .lifecycle
-            .in_limbo = true;
-        let limbo = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
-        assert!(limbo.point_lights.is_empty());
-        sim.entities_mut()
-            .get_mut(41)
-            .expect("lamp")
-            .lifecycle
-            .in_limbo = false;
-        sim.entities_mut().get_mut(41).expect("lamp").dying = true;
-        let dying = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
-        assert!(dying.point_lights.is_empty());
+        sim.set_building_light_active(41, false);
+        let disabled = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
+        assert!(disabled.point_lights.is_empty());
+        // Repeated allocation/construction must not reactivate an existing614.
+        sim.allocate_building_light(41, &rules);
+        assert!(
+            derive_lighting_view(&config, Some(&sim), Some(&rules), 2)
+                .point_lights
+                .is_empty()
+        );
+        sim.set_building_light_active(41, true);
+        fatal_lamp_stage(&mut sim, &rules, 41);
+        assert!(
+            derive_lighting_view(&config, Some(&sim), Some(&rules), 2)
+                .point_lights
+                .is_empty()
+        );
     }
 
     #[test]
     fn gsi_04_20_building_lamp_tracks_capture_power_and_sale_lifecycle() {
         let rules = lighting_rules();
         let mut sim = Simulation::with_seed(0x4201);
-        let _original_owner = seed_live_lamp(&mut sim);
+        let _original_owner = seed_live_lamp(&mut sim, &rules);
         let captured_owner = sim.interner.intern("Captured");
         let config = LightingConfig::default();
 
@@ -947,8 +1316,8 @@ mod map_wall_owner_candidate_tests {
         );
         sim.change_owner(41, captured_owner);
         let captured_offline = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
-        assert!(captured_offline.point_lights.is_empty());
-        assert_ne!(before_capture.fingerprint, captured_offline.fingerprint);
+        assert_eq!(captured_offline.point_lights, before_capture.point_lights);
+        assert_eq!(before_capture.fingerprint, captured_offline.fingerprint);
 
         sim.power_states
             .get_mut(&captured_owner)
@@ -968,7 +1337,7 @@ mod map_wall_owner_candidate_tests {
     fn gsi_04_20_composed_scenario_lamp_and_radiation_reach_world_tint_consumer() {
         let rules = lighting_rules();
         let mut sim = Simulation::with_seed(0x4202);
-        seed_live_lamp(&mut sim);
+        seed_live_lamp(&mut sim, &rules);
         sim.session.lighting.current_ambient = 80;
         sim.session.lighting.target_ambient = sim.session.lighting.ion.ambient_percent;
         sim.session.lighting.selected_profile =

@@ -246,6 +246,7 @@ impl PreparedLoad {
             simulation.restore_map_authority_after_snapshot_load(rules, overlay_registry)?;
         simulation.resolve_type_handles(rules);
         simulation.restore_move_sound_handles_after_load(rules)?;
+        simulation.rebuild_lighting_sources_after_load(rules);
 
         Ok((simulation, map_restore))
     }

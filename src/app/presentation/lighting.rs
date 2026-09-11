@@ -1,6 +1,6 @@
-//! Per-match lighting lifetime and atomic visible-grid replacement.
-//! Simulation supplies authoritative sources; this owner controls the derived
-//! grid, identity, and deferred work across install, restore and live refresh.
+//! Per-match lighting lifetime and ordered publication before drawing.
+//! Simulation supplies source/global events; this owner retains cell sampling
+//! history and publishes each affected area across install, restore and refresh.
 use crate::map::lighting::{self, CellLightGrid, LightingConfig, LightingProfileUnits, PointLight};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::ruleset::RuleSet;
@@ -103,16 +103,18 @@ pub(crate) fn color_scheme_rgb(
     }
 }
 
-const CELL_LIGHT_GATHER_BUDGET: usize = 8_192;
+use crate::sim::light_sources::LightingEvent;
+use crate::sim::scenario_session::ScenarioLightingState;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) struct MatchLighting {
     grid: CellLightGrid,
     config: LightingConfig,
-    sources: Vec<PointLight>,
-    profile: Option<LightingProfileUnits>,
+    buildings: BTreeMap<u64, PointLight>,
+    radiation: BTreeMap<(u16, u16), PointLight>,
+    profile: LightingProfileUnits,
+    scenario: Option<ScenarioLightingState>,
     detail_level: u32,
-    pending: Option<lighting::DeferredCellLightRefresh>,
-    fingerprint: Option<u64>,
 }
 
 impl Default for MatchLighting {
@@ -120,11 +122,11 @@ impl Default for MatchLighting {
         Self {
             grid: CellLightGrid::new(),
             config: LightingConfig::default(),
-            sources: Vec::new(),
-            profile: None,
+            buildings: BTreeMap::new(),
+            radiation: BTreeMap::new(),
+            profile: lighting::normal_profile_units(&LightingConfig::default()),
+            scenario: None,
             detail_level: 2,
-            pending: None,
-            fingerprint: None,
         }
     }
 }
@@ -134,8 +136,6 @@ impl MatchLighting {
         &self.grid
     }
 
-    /// Handoff replaces the complete old lighting lifetime. The live detail
-    /// option supersedes the loader's default before the first tactical frame.
     pub(crate) fn install(
         &mut self,
         grid: CellLightGrid,
@@ -149,19 +149,18 @@ impl MatchLighting {
             detail_level: detail_level.min(2),
             ..Self::default()
         };
+        self.profile = lighting::normal_profile_units(&self.config);
         if let Some((terrain, sim, rules)) = live {
             let view = derive_lighting_view(&self.config, Some(sim), Some(rules), detail_level);
             self.grid = build_lighting_grid_from_view(terrain, &view);
-            self.fingerprint = Some(view.fingerprint);
-            self.profile = Some(view.profile);
-            self.detail_level = view.detail_level;
-            self.sources = view.point_lights;
+            self.profile = view.profile;
+            self.scenario = Some(sim.session.lighting);
+            (self.buildings, self.radiation) = source_maps(sim, rules);
         }
     }
 
-    /// Same-content restore immediately replaces visible lighting and cancels
-    /// old pending work. Preserve the existing stale-identity policy: the next
-    /// live refresh resamples the restored world through the deferred path.
+    /// Preserve the existing eager restore compatibility, discarding every
+    /// outgoing derived input. Native lazy Cell34 reinitialization is separate.
     pub(crate) fn restore(
         &mut self,
         terrain: &ResolvedTerrainGrid,
@@ -169,22 +168,84 @@ impl MatchLighting {
         rules: &RuleSet,
         detail_level: u32,
     ) {
-        self.grid = rebuild_lighting_grid_from_sim(
-            terrain,
-            &self.config,
-            Some(sim),
-            Some(rules),
+        self.install(
+            CellLightGrid::new(),
+            self.config.clone(),
             detail_level,
+            Some((terrain, sim, rules)),
         );
-        self.pending = None;
-        self.sources.clear();
-        self.profile = None;
-        self.detail_level = detail_level.min(2);
-        self.fingerprint = None;
     }
 
-    /// YR LightSourceClass-style gather/commit boundary: the visible grid stays
-    /// stable until every replacement cell has been sampled.
+    /// Replay native source/global ordering before a draw. Source changes can
+    /// coalesce only between global operations; their entire dirty-area union
+    /// survives even if the source registry returns to identical final values.
+    pub(crate) fn apply_events(&mut self, terrain: &ResolvedTerrainGrid, events: &[LightingEvent]) {
+        let mut dirty = BTreeSet::new();
+        for event in events {
+            match event {
+                LightingEvent::Building { id, source } => {
+                    let old = match source {
+                        Some(source) => self.buildings.insert(*id, source.clone()),
+                        None => self.buildings.remove(id),
+                    };
+                    queue_area(old.as_ref(), terrain, self.detail_level, &mut dirty);
+                    queue_area(source.as_ref(), terrain, self.detail_level, &mut dirty);
+                }
+                LightingEvent::Radiation { center, source } => {
+                    let old = match source {
+                        Some(source) => self.radiation.insert(*center, source.clone()),
+                        None => self.radiation.remove(center),
+                    };
+                    queue_area(old.as_ref(), terrain, 2, &mut dirty);
+                    queue_area(source.as_ref(), terrain, 2, &mut dirty);
+                }
+                LightingEvent::Global(state) => {
+                    self.commit_source_cells(terrain, &mut dirty);
+                    self.profile = scenario_profile(state);
+                    self.grid.refresh_retained_scalars(
+                        terrain.iter().map(|cell| ((cell.rx, cell.ry), cell.level)),
+                        self.profile,
+                    );
+                    self.grid.set_alternate_rgb(alternate_rgb(state));
+                    self.scenario = Some(*state);
+                }
+            }
+        }
+        self.commit_source_cells(terrain, &mut dirty);
+    }
+
+    fn commit_source_cells(
+        &mut self,
+        terrain: &ResolvedTerrainGrid,
+        dirty: &mut BTreeSet<(u16, u16)>,
+    ) {
+        if dirty.is_empty() {
+            return;
+        }
+        let heights = std::mem::take(dirty)
+            .into_iter()
+            .filter_map(|cell| terrain.cell(cell.0, cell.1).map(|data| (cell, data.level)));
+        let sources = self
+            .buildings
+            .values()
+            .filter(|_| self.detail_level >= 2)
+            .chain(self.radiation.values())
+            .cloned()
+            .collect();
+        // Active retail wrappers pass mode0 to554AF0. Reuse the sampling
+        // primitive, but finish every affected cell now: no app-frame budget.
+        let mut update = lighting::DeferredCellLightRefresh::new_with_profile(
+            heights,
+            self.profile,
+            self.detail_level,
+            sources,
+        );
+        update.gather_all();
+        assert!(update.commit_into(&mut self.grid));
+    }
+
+    /// Reconcile explicit tool/fixture mutations and the detail option. Normal
+    /// production frames first replay their ordered events via apply_events.
     pub(crate) fn refresh(
         &mut self,
         terrain: &ResolvedTerrainGrid,
@@ -192,82 +253,120 @@ impl MatchLighting {
         rules: &RuleSet,
         detail_level: u32,
     ) {
-        let changed_view = {
-            let view = derive_lighting_view(&self.config, Some(sim), Some(rules), detail_level);
-            if self.fingerprint == Some(view.fingerprint) {
-                None
-            } else {
-                let profile_changed =
-                    self.profile != Some(view.profile) || self.detail_level != view.detail_level;
-                let affected_cells = if profile_changed {
-                    terrain
-                        .iter()
-                        .map(|cell| ((cell.rx, cell.ry), cell.level))
-                        .collect()
-                } else {
-                    // Source identity is not projected into PointLight. Enumerate
-                    // the union of old and new source areas so identical colocated
-                    // sources and multiplicity changes cannot disappear in a set diff.
-                    let mut seen = std::collections::BTreeSet::new();
-                    let mut cells = Vec::new();
-                    for source in self.sources.iter().chain(view.point_lights.iter()) {
-                        for record in crate::map::lighting::point_light_area_cells(
-                            source,
-                            terrain.width(),
-                            terrain.height(),
-                            |rx, ry| terrain.cell(rx, ry).map(|cell| cell.level),
-                        ) {
-                            if seen.insert(record.0) {
-                                cells.push(record);
-                            }
-                        }
-                    }
-                    cells
-                };
-                Some((view, affected_cells))
-            }
-        };
-
-        if let Some((view, affected_cells)) = changed_view {
-            // After enumerating the replacement area, finish the old batch before installing the new one.
-            if let Some(mut pending) = self.pending.take() {
-                pending.gather_all();
-                let committed = pending.commit_into(&mut self.grid);
-                debug_assert!(committed);
-            }
-            self.fingerprint = Some(view.fingerprint);
-            self.profile = Some(view.profile);
-            self.detail_level = view.detail_level;
-            self.sources = view.point_lights.clone();
-            self.pending = (!affected_cells.is_empty()).then(|| {
-                crate::map::lighting::DeferredCellLightRefresh::new_with_profile(
-                    affected_cells,
-                    view.profile,
-                    view.detail_level,
-                    view.point_lights,
-                )
-            });
+        if self.detail_level != detail_level.min(2) {
+            // Existing detail-change full reconstruction is retained as a
+            // compatibility boundary; no claim to native option-history parity.
+            self.install(
+                CellLightGrid::new(),
+                self.config.clone(),
+                detail_level,
+                Some((terrain, sim, rules)),
+            );
+            return;
         }
-
-        let completed = self
-            .pending
-            .as_mut()
-            .is_some_and(|pending| pending.gather(CELL_LIGHT_GATHER_BUDGET));
-        if completed {
-            let pending = self
-                .pending
-                .take()
-                .expect("completed lighting refresh remains installed");
-            let committed = pending.commit_into(&mut self.grid);
-            debug_assert!(committed, "completed lighting refresh commits atomically");
+        let (buildings, radiation) = source_maps(sim, rules);
+        let mut events = Vec::new();
+        for id in self
+            .buildings
+            .keys()
+            .chain(buildings.keys())
+            .copied()
+            .collect::<BTreeSet<_>>()
+        {
+            if self.buildings.get(&id) != buildings.get(&id) {
+                events.push(LightingEvent::Building {
+                    id,
+                    source: buildings.get(&id).cloned(),
+                });
+            }
         }
+        for center in self
+            .radiation
+            .keys()
+            .chain(radiation.keys())
+            .copied()
+            .collect::<BTreeSet<_>>()
+        {
+            if self.radiation.get(&center) != radiation.get(&center) {
+                events.push(LightingEvent::Radiation {
+                    center,
+                    source: radiation.get(&center).cloned(),
+                });
+            }
+        }
+        if self.scenario != Some(sim.session.lighting) {
+            events.push(LightingEvent::Global(sim.session.lighting));
+        }
+        self.apply_events(terrain, &events);
     }
+}
+
+fn queue_area(
+    source: Option<&PointLight>,
+    terrain: &ResolvedTerrainGrid,
+    detail: u32,
+    dirty: &mut BTreeSet<(u16, u16)>,
+) {
+    let Some(source) = source.filter(|source| source.active && source.detail && detail >= 2) else {
+        return;
+    };
+    dirty.extend(
+        lighting::point_light_area_cells(source, terrain.width(), terrain.height(), |x, y| {
+            terrain.cell(x, y).map(|cell| cell.level)
+        })
+        .into_iter()
+        .map(|(cell, _)| cell),
+    );
+}
+
+fn source_maps(
+    sim: &Simulation,
+    rules: &RuleSet,
+) -> (BTreeMap<u64, PointLight>, BTreeMap<(u16, u16), PointLight>) {
+    (
+        sim.lighting_sources.buildings.clone(),
+        sim.radiation
+            .sites()
+            .filter_map(|site| {
+                crate::sim::radiation_light::radiation_site_light(site, &rules.radiation)
+                    .map(|source| (site.center, source))
+            })
+            .collect(),
+    )
+}
+
+fn scenario_profile(state: &ScenarioLightingState) -> LightingProfileUnits {
+    let selected = state.selected();
+    LightingProfileUnits {
+        ambient_percent: state.current_ambient,
+        red_percent: state.normal.red_percent,
+        green_percent: state.normal.green_percent,
+        blue_percent: state.normal.blue_percent,
+        ground_units: selected.ground_units,
+        level_units: selected.level_units,
+    }
+}
+
+fn alternate_rgb(state: &ScenarioLightingState) -> Option<[i32; 3]> {
+    matches!(
+        state.selected_profile,
+        crate::sim::scenario_session::ScenarioLightingProfile::Ion
+    )
+    .then(|| {
+        [
+            state.ion.red_percent,
+            state.ion.green_percent,
+            state.ion.blue_percent,
+        ]
+        .map(|v| v.wrapping_mul(10))
+    })
 }
 
 /// Fully-derived render-facing lighting view. The simulation owns only the
 /// scenario controller and source inputs; the per-cell grid remains app state.
 pub(crate) struct DerivedLightingView {
     pub(crate) profile: LightingProfileUnits,
+    pub(crate) alternate_rgb: Option<[i32; 3]>,
     pub(crate) point_lights: Vec<PointLight>,
     pub(crate) detail_level: u32,
     pub(crate) fingerprint: u64,
@@ -298,9 +397,9 @@ pub(crate) fn derive_lighting_view(
             fingerprint.mix_i32(state.transition_timer.duration());
             LightingProfileUnits {
                 ambient_percent: state.current_ambient,
-                red_percent: selected.red_percent,
-                green_percent: selected.green_percent,
-                blue_percent: selected.blue_percent,
+                red_percent: state.normal.red_percent,
+                green_percent: state.normal.green_percent,
+                blue_percent: state.normal.blue_percent,
                 ground_units: selected.ground_units,
                 level_units: selected.level_units,
             }
@@ -308,6 +407,12 @@ pub(crate) fn derive_lighting_view(
     );
     fingerprint.mix_profile(profile);
     fingerprint.mix_u64(u64::from(detail_level));
+    let alternate_rgb = simulation.and_then(|sim| alternate_rgb(&sim.session.lighting));
+    if let Some(rgb) = alternate_rgb {
+        for channel in rgb {
+            fingerprint.mix_i32(channel);
+        }
+    }
 
     let building_lights = collect_live_building_lights(simulation, rules, detail_level);
     let radiation_lights = match (simulation, rules) {
@@ -331,6 +436,7 @@ pub(crate) fn derive_lighting_view(
     }
 
     DerivedLightingView {
+        alternate_rgb,
         profile,
         point_lights,
         detail_level: detail_level.min(2),
@@ -351,6 +457,7 @@ pub(crate) fn build_lighting_grid_from_view(
         view.detail_level,
     );
     lighting::accumulate_point_lights(&mut grid, &view.point_lights);
+    grid.set_alternate_rgb(view.alternate_rgb);
     grid
 }
 
@@ -369,47 +476,17 @@ pub(crate) fn rebuild_lighting_grid_from_sim(
 
 fn collect_live_building_lights(
     simulation: Option<&Simulation>,
-    rules: Option<&RuleSet>,
+    _rules: Option<&RuleSet>,
     detail_level: u32,
 ) -> Vec<(u64, PointLight)> {
-    let (Some(sim), Some(rules)) = (simulation, rules) else {
+    let Some(sim) = simulation else {
         return Vec::new();
     };
-    if detail_level < 2 {
-        return Vec::new();
-    }
-    sim.entities()
-        .values()
-        .filter(|entity| {
-            entity.category == crate::map::entities::EntityCategory::Structure
-                && entity.lifecycle.object_alive
-                && !entity.lifecycle.in_limbo
-                && entity.lifecycle.cell_marked
-                && !entity.dying
-                && entity.health.current > 0
-                && crate::sim::power_system::is_building_powered(
-                    &sim.power_states,
-                    rules,
-                    entity,
-                    &sim.interner,
-                )
-        })
-        .filter_map(|entity| {
-            let type_id = sim.interner.resolve(entity.type_ref());
-            let obj = rules.object(type_id)?;
-            let light = lighting::point_light_from_object(
-                entity.position.rx,
-                entity.position.ry,
-                obj.light_visibility,
-                obj.light_intensity,
-                [
-                    obj.light_red_tint,
-                    obj.light_green_tint,
-                    obj.light_blue_tint,
-                ],
-            )?;
-            Some((entity.stable_id(), light))
-        })
+    sim.lighting_sources
+        .buildings
+        .iter()
+        .filter(|(_, source)| source.active && source.detail && detail_level >= 2)
+        .map(|(&id, source)| (id, source.clone()))
         .collect()
 }
 

@@ -723,8 +723,8 @@ fn advance_in_game_runtime_mode(
         crate::app::presentation::chute_anim::tick_parachute_anims(state);
     }
 
-    // Refresh changed point-light producers after the sim step. The queued
-    // Cell refresh itself remains all-gathered-before-commit.
+    // Ordered native source/global operations were applied with the frame
+    // output. Reconcile the detail option and any explicit tool mutations.
     refresh_cell_lighting(state);
 
     crate::app::presentation::building_anim::update_radar_state(state);
@@ -836,8 +836,16 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 sound_events: frame_sound_events,
                 fire_events: frame_fire_events,
                 invulnerability_impacts,
+                lighting_events,
             } = rt.advance_frame(&due_commands, SIM_TICK_MS, tick_lane);
             let resources = &rt.resources;
+            if let Some(terrain) = resources.terrain_template.as_ref() {
+                state
+                    .match_state
+                    .match_presentation
+                    .lighting
+                    .apply_events(terrain, &lighting_events);
+            }
             let sim = &mut rt.simulation;
             trigger_effects = frame_trigger_effects;
             frame_overlay_updates = overlay_updates;

@@ -307,6 +307,7 @@ pub struct CellLightGrid {
     cells: HashMap<(u16, u16), CellLight>,
     profiles: LightProfileCache,
     detail_level: u32,
+    alternate_rgb: Option<LightRgbKey>,
 }
 
 impl CellLightGrid {
@@ -315,6 +316,7 @@ impl CellLightGrid {
             cells: HashMap::new(),
             profiles: LightProfileCache::new(),
             detail_level: 2,
+            alternate_rgb: None,
         }
     }
 
@@ -323,6 +325,7 @@ impl CellLightGrid {
             cells: HashMap::with_capacity(capacity),
             profiles: LightProfileCache::new(),
             detail_level: 2,
+            alternate_rgb: None,
         }
     }
 
@@ -331,11 +334,33 @@ impl CellLightGrid {
             cells: HashMap::new(),
             profiles: LightProfileCache::new(),
             detail_level: detail_level.min(2),
+            alternate_rgb: None,
         }
     }
 
     pub fn profiles(&self) -> &LightProfileCache {
         &self.profiles
+    }
+
+    /// LightConvert556090 retains normal RGB/row identity while selecting
+    /// Ion alternate table RGB; neither normalization nor Cell104 changes.
+    pub(crate) fn set_alternate_rgb(&mut self, rgb: Option<LightRgbKey>) {
+        self.alternate_rgb = rgb;
+    }
+
+    pub(crate) fn palette_rgb(&self, normal: LightRgbKey) -> LightRgbKey {
+        self.alternate_rgb.unwrap_or(normal)
+    }
+
+    pub(crate) fn refresh_retained_scalars<I>(&mut self, heights: I, profile: LightingProfileUnits)
+    where
+        I: IntoIterator<Item = ((u16, u16), u8)>,
+    {
+        for (cell, height) in heights {
+            if let Some(light) = self.cells.get_mut(&cell) {
+                light.refresh_retained_scalars(profile, height);
+            }
+        }
     }
 
     pub fn insert_light(&mut self, cell: (u16, u16), light: CellLight) {
@@ -475,10 +500,7 @@ impl CellLightGrid {
                 extra_light_scalar(LIGHT_UNIT, extra_light),
             );
         };
-        self.tint_for_profile_scalar(
-            light.profile_id,
-            extra_light_scalar(light.top_scalar, extra_light),
-        )
+        self.tint_for_light_scalar(light, extra_light_scalar(light.top_scalar, extra_light))
     }
 
     fn tint_for_common_scalar_or_default(&self, cell: (u16, u16)) -> [f32; 3] {
@@ -489,6 +511,11 @@ impl CellLightGrid {
     }
 
     fn tint_for_light_scalar(&self, light: &CellLight, scalar: i32) -> [f32; 3] {
+        if let Some(rgb) = self.alternate_rgb {
+            return rgb.map(|channel| {
+                channel as f32 / LIGHT_UNIT as f32 * scalar as f32 / LIGHT_UNIT as f32
+            });
+        }
         self.tint_for_profile_scalar(light.profile_id, scalar)
     }
 

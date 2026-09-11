@@ -195,6 +195,7 @@ pub(crate) struct SimFrameOutput {
     pub sound_events: Vec<SimSoundEvent>,
     pub fire_events: Vec<SimFireEvent>,
     pub invulnerability_impacts: Vec<crate::sim::combat::InvulnerabilityImpactEffect>,
+    pub(crate) lighting_events: Vec<crate::sim::light_sources::LightingEvent>,
 }
 
 /// Front-end admission lane for one Main_Tick call.
@@ -904,6 +905,8 @@ pub struct Simulation {
     /// app-frame output batch.
     #[serde(skip)]
     pub sound_events: Vec<SimSoundEvent>,
+    #[serde(skip)]
+    pub(crate) lighting_sources: crate::sim::light_sources::LightingSources,
     /// Fire events produced during combat and moved into the app-frame output
     /// for muzzle flash rendering and future projectile origin computation.
     #[serde(skip)]
@@ -1600,6 +1603,10 @@ impl Simulation {
                     );
                 } else {
                     self.purge_carried_passengers_for_fatal(stable_id, uninit_context);
+                }
+                if category == EntityCategory::Structure {
+                    //44264C precedes the recursive destruction effects.
+                    self.set_building_light_active(stable_id, false);
                 }
             }
             crate::sim::combat::FatalLifecycleStage::AfterDeathEffects => {
@@ -2797,6 +2804,7 @@ impl Simulation {
             #[cfg(test)]
             house_update_append_after_test: None,
             sound_events: Vec::new(),
+            lighting_sources: crate::sim::light_sources::LightingSources::default(),
             fire_events: Vec::new(),
             invulnerability_impact_effects: Vec::new(),
             projectiles: crate::sim::projectile::ProjectileStore::new(),
@@ -3276,12 +3284,14 @@ impl Simulation {
     /// Advance the global ambient scalar before ore and active superweapons.
     /// A storm selecting Ion later in this frame can first move it next frame.
     fn tick_scenario_lighting_transition(&mut self, rules: &RuleSet) {
-        self.session.lighting.advance_transition_if_due(
+        if self.session.lighting.advance_transition_if_due(
             self.session.binary_frame,
             rules.general.ambient_change_rate_nonzero,
             rules.general.ambient_change_interval_frames,
             rules.general.ambient_change_step,
-        );
+        ) {
+            self.publish_global_lighting();
+        }
     }
 
     fn tick_ore_growth_rungs(
@@ -5600,6 +5610,7 @@ impl Simulation {
         let completed_buildings = self.tick_building_up();
         if let Some(rules) = rules {
             for &stable_id in &completed_buildings {
+                self.allocate_building_light(stable_id, rules);
                 self.add_building_sensor_array_if_powered(stable_id, rules);
                 self.announce_super_weapon_building_complete(stable_id, rules);
             }
@@ -5857,6 +5868,8 @@ impl Simulation {
     }
 
     fn collect_frame_output(&mut self, tick: TickResult) -> SimFrameOutput {
+        self.flush_radiation_lighting();
+        let lighting_events = std::mem::take(&mut self.lighting_sources.pending);
         let trigger_effects = std::mem::take(&mut self.trigger_effects);
         // Preserve the established terminal-frame gate: these are committed
         // light-vector facts and the next admitted frame clears the producer
@@ -5880,6 +5893,7 @@ impl Simulation {
             sound_events,
             fire_events,
             invulnerability_impacts,
+            lighting_events,
         }
     }
 

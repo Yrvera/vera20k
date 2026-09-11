@@ -768,6 +768,7 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
     {
         crate::sim::docking::bunker_link::release_sell_destroy(sim, stable_id);
     }
+    sim.set_building_light_active(stable_id, false);
     sim.uninit_with_context(stable_id, UninitContext::with_rules(rules));
     let owner_id = sim.interner.intern(&owner_name);
     // Refresh superweapon grants — sold building may have been providing a SW.
