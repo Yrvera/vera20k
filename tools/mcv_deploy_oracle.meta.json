@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "13 continuation interior branch cases, 322 complete native turn/current samples, and four turn-completion latch cases",
+  "assumptions": [
+    "Unit and FacingClass layouts from live Ghidra disassembly; fresh emulator per case",
+    "mission fixtures start after substituted Deploy return, or after state0 radio call",
+    "no mission timing, RNG, placement, successful conversion or visual parity claim",
+    "FacingClass timer padding ignored; global frame is explicitly initialized",
+    "same-target duplicate Do_Turn at frame101 must preserve entire FacingClass state",
+    "turn completion executes original rotation predicate/latch branch, stopping before PerCellProcess call"
+  ],
+  "substitutions": [
+    "mission blocks supply Deploy return and resulting unit alive/flag/NavCom inputs; stop before further calls"
+  ],
+  "entry_points": {
+    "state0": "0x0073DD8E",
+    "initial_result": "0x0073DDCB",
+    "retry_result": "0x0073DD62",
+    "Drive_Do_Turn": "0x004B0EF0",
+    "Facing_Current": "0x004C93D0",
+    "Drive_turn_completion": "0x004B0775"
+  },
+  "payload_sha256": "02c49897ab9441bc3721a664d46e969e98d1e82fe1dec8bb4842d58c173e8794"
+}

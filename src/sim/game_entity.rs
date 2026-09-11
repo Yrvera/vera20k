@@ -631,10 +631,9 @@ pub struct GameEntity {
     pub building_down: Option<BuildingDown>,
     /// Active one-shot building animation overlays (e.g., ConYard crane).
     pub building_anim_overlays: Option<BuildingAnimOverlays>,
-    /// Scoped native-like damaged-state gate for building visuals.
-    ///
-    /// Models only the proven zero/nonzero damage gate, not the full native
-    /// BuildingClass BState table.
+    /// Health-derived damaged variant selection for building animation overlays.
+    /// This is not native BuildingClass+0x534 (the construction/idle animation
+    /// state), and must not gate occupied building body frames.
     #[serde(default)]
     pub building_damage_state_active: bool,
     /// Persisted type fact needed to recreate the owned light on later Unlimbo.
@@ -882,6 +881,14 @@ pub struct GameEntity {
     /// read it (weapon pick is target-driven).
     #[serde(default)]
     pub deploy_state: Option<DeployPhase>,
+    /// Unit+0x68C: runtime Deploy continuation, not the type's DeployToFire.
+    /// Writers/readers are owned by sim::mcv_deploy (gamemd 0x007393C0).
+    #[serde(default)]
+    pub(crate) mcv_deploy_pending: bool,
+    /// Drive Process +0x5E rotation-edge latch, currently consumed by MCV
+    /// PerCellProcess(0). Retained across replacement orders and save/load.
+    #[serde(default)]
+    pub(crate) mcv_drive_was_rotating: bool,
     /// Infantry fear/prone runtime. `None` for non-infantry entities.
     #[serde(default)]
     pub infantry: Option<InfantryRuntime>,
@@ -1320,6 +1327,8 @@ impl GameEntity {
             building_gate: None,
             bunker_runtime: None,
             deploy_state: None,
+            mcv_deploy_pending: false,
+            mcv_drive_was_rotating: false,
             infantry: if category == EntityCategory::Infantry {
                 Some(InfantryRuntime::new())
             } else {

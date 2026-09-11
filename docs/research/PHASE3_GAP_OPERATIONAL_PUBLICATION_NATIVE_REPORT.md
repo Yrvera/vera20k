@@ -93,7 +93,7 @@ per-viewer admission/radius, independently of those cell receipts.
 Building save `454190` reaches AbstractSave `410320`; virtual size leaf
 `459E70` returns `0x720`. Load `453E20` reaches `410380` for the same body.
 Restore constructors `43B680 → 6F4300 → 65A7E0 → 5F3B50 → 4101C0` neither
-reset these fields nor replay the gap. Snapshot schema143 preserves and hashes
+reset these fields nor replay the gap. Snapshot schema144 preserves and hashes
 the retained Rust state. House and cache reconciliation only project it.
 
 Techno Limbo `6F6AC0` releases ordinary sight at `6F6B16`, removes the gap at

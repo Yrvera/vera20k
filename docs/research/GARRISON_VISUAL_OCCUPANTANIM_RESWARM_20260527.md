@@ -7,6 +7,13 @@ date: 2026-05-27
 
 # Garrison Visual OccupantAnim Reswarm 20260527 - Ghidra Research Report
 
+> **Correction (2026-09-10):** The healthy-occupied-frame-zero conclusion and
+> interpretation of +0x534 as a damage flag are superseded. Completed buildings
+> use animation state 1 and healthy occupied body frame 2. See
+> [the native caller evidence and executable comparison](../../tools/garrison_oracle/body_frame.py).
+> Do not implement the health-based body-frame gate described below.
+
+
 **Addresses:** `BuildingClass::GetCurrentFrame @ 0x0043EF90`, `TechnoClass::Fire_At @ 0x006FDD50`, `AnimClass::Constructor @ 0x00421EA0`, `AnimTypeClass::ReadINI @ 0x00427D00`, `AnimClass::AI @ 0x00423AC0`, `AnimClass::DrawIt @ 0x00422CA0`
 **Investigation Mode:** exhaustive-slice
 **Claimed Scope:** occupied `CanBeOccupied` civilian building body-frame/BState gate plus ordinary shot-triggered `WeaponType.OccupantAnim` render spawn, timing, and depth semantics.

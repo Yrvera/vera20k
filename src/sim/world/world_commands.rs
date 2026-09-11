@@ -17,9 +17,9 @@ use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::cell_rect::canonical_cell_coord;
 use crate::sim::combat;
-use crate::sim::combat::combat_aoe::expire_cell_target_references;
 #[cfg(test)]
 use crate::sim::combat::combat_aoe::CellTargetDetach;
+use crate::sim::combat::combat_aoe::expire_cell_target_references;
 use crate::sim::command::{
     COMMAND_RECORD_LEN, Command, CommandEnvelope, CommandRecord, ExitRecord, MegaMissionMoveRecord,
     SellWallAtCellRecord,
@@ -525,7 +525,13 @@ impl Simulation {
         }
         self.mark_radar_terrain_dirty_cells([(rx, ry)]);
 
-        expire_cell_target_references(&mut self.substrate.entities, rx, ry, #[cfg(test)] &mut detach_trace);
+        expire_cell_target_references(
+            &mut self.substrate.entities,
+            rx,
+            ry,
+            #[cfg(test)]
+            &mut detach_trace,
+        );
 
         if let Some(tail_grid) = tail_grid {
             if self.zone_grid.is_some() {
@@ -820,66 +826,25 @@ impl Simulation {
                 // only the depot reservation left an aircraft that was told to
                 // stop while inbound to a helipad holding that pad for the rest
                 // of the match — a permanent leak that compounds.
-                self.queue_mission_with_teardown(*entity_id, MissionType::Stop, DockTeardown::All);
+                let mcv = rules.is_some_and(|rules| {
+                    self.substrate
+                        .entities
+                        .get(*entity_id)
+                        .is_some_and(|e| crate::sim::mcv_deploy::is_mcv(self, e, rules))
+                });
+                // Event6 retains an ordinary MCV's mission and runtime +0x68C.
+                // Its null-destination operation still runs below.
+                if mcv {
+                    self.run_dock_teardown(*entity_id, DockTeardown::All);
+                } else {
+                    self.queue_mission_with_teardown(
+                        *entity_id,
+                        MissionType::Stop,
+                        DockTeardown::All,
+                    );
+                }
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
-                    let current_cell = (e.position.rx, e.position.ry);
-                    let current_layer = e.movement_layer_or_ground();
-                    let committed_head = e
-                        .drive_track
-                        .as_ref()
-                        .and_then(|_| {
-                            e.drive_locomotion
-                                .as_ref()
-                                .and_then(|drive| drive.occupation_head_to)
-                        })
-                        .map(|head| ((head.rx, head.ry), head.layer))
-                        .or_else(|| {
-                            let head = e
-                                .drive_track
-                                .as_ref()
-                                .and_then(|_| e.ship_locomotion.as_ref()?.head_to)?;
-                            let head_cell = (
-                                u16::try_from(head.x.div_euclid(256)).ok()?,
-                                u16::try_from(head.y.div_euclid(256)).ok()?,
-                            );
-                            let target = e.movement_target.as_ref()?;
-                            let head_index =
-                                target.path.iter().position(|&cell| cell == head_cell)?;
-                            Some((head_cell, target.layer_at(head_index)))
-                        });
-                    movement::clear_navigation_for_entity(e);
-                    // Stop clears the owner destination immediately, but an
-                    // already committed Drive/Ship curve keeps only the
-                    // current-to-head step. Removing every trailing A* entry
-                    // prevents chaining or segment repath toward the abandoned
-                    // owner goal.
-                    if let (Some((head_cell, head_layer)), Some(target)) =
-                        (committed_head, e.movement_target.as_mut())
-                    {
-                        if current_cell == head_cell {
-                            target.path = vec![head_cell];
-                            target.path_layers = vec![head_layer];
-                            target.next_index = 1;
-                            target.move_dir_x = SIM_ZERO;
-                            target.move_dir_y = SIM_ZERO;
-                            target.move_dir_len = SIM_ZERO;
-                        } else {
-                            target.path = vec![current_cell, head_cell];
-                            target.path_layers = vec![current_layer, head_layer];
-                            target.next_index = 1;
-                            let (dir_x, dir_y, dir_len) =
-                                crate::util::lepton::cell_delta_to_lepton_dir(
-                                    i32::from(head_cell.0) - i32::from(current_cell.0),
-                                    i32::from(head_cell.1) - i32::from(current_cell.1),
-                                );
-                            target.move_dir_x = dir_x;
-                            target.move_dir_y = dir_y;
-                            target.move_dir_len = dir_len;
-                        }
-                        target.final_goal = Some(head_cell);
-                    } else {
-                        e.movement_target = None;
-                    }
+                    movement::stop_navigation_at_committed_head(e);
                     e.attack_target = None;
                     e.passively_acquired_target = false;
                     e.order_intent = None;
@@ -1212,7 +1177,7 @@ impl Simulation {
                     )
                     .is_some();
                 }
-                self.deploy_mcv(*entity_id, rules, height_map)
+                crate::sim::mcv_deploy::issue_order(self, *entity_id, rules)
             }
             Command::UndeployBuilding { entity_id } => {
                 let Some(rules) = rules else { return false };
@@ -1224,9 +1189,10 @@ impl Simulation {
                     .entities
                     .get(*entity_id)
                     .is_some_and(|entity| {
-                        self.object_type(entity.type_ref(), rules).is_some_and(|obj| {
-                            obj.enslaves.is_some() && obj.undeploys_into.is_some()
-                        })
+                        self.object_type(entity.type_ref(), rules)
+                            .is_some_and(|obj| {
+                                obj.enslaves.is_some() && obj.undeploys_into.is_some()
+                            })
                     })
                 {
                     return crate::sim::slave_miner::undeploy_slave_miner_with_overlay_context(

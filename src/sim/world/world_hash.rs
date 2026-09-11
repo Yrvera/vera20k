@@ -1474,7 +1474,7 @@ impl Simulation {
             if schema.includes(HashFeature::GapOperational)
                 && entity.gap_generator != crate::sim::vision::GapGeneratorRuntime::default()
             {
-                b"gap-operational-v143".hash(hasher);
+                b"gap-operational-v144".hash(hasher);
                 entity.gap_generator.hash(hasher);
             }
 
@@ -1692,6 +1692,13 @@ impl Simulation {
                 0u8.hash(hasher);
             }
 
+            // Preserve the established hash for entities outside this new
+            // runtime state; the tagged extension distinguishes pending turns.
+            if entity.mcv_deploy_pending || entity.mcv_drive_was_rotating {
+                0x4d435644u32.hash(hasher);
+                entity.mcv_deploy_pending.hash(hasher);
+                entity.mcv_drive_was_rotating.hash(hasher);
+            }
             match entity.deploy_state {
                 None => 0u8.hash(hasher),
                 Some(crate::sim::deploy::DeployPhase::Deploying { ticks_remaining }) => {

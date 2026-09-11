@@ -296,7 +296,15 @@ fn hull_turn_finished(entity: &GameEntity, now: u32) -> bool {
 /// movement target, so the idle hull turn armed by [`start_hull_turn`] is
 /// advanced here from the same frame-anchored `FacingClass` gamemd reads.
 /// VERA-internal representation of a native pure-function read.
-pub(crate) fn refresh_idle_hull_turn(sim: &mut Simulation, id: u64) {
+pub(crate) fn refresh_idle_hull_turn(sim: &mut Simulation, id: u64, rules: &RuleSet) {
+    if !sim
+        .substrate
+        .entities
+        .get(id)
+        .is_some_and(|e| is_vehicle_transport_type(sim, e, rules))
+    {
+        return;
+    }
     let now = sim.session.binary_frame;
     let Some(entity) = sim.substrate.entities.get_mut(id) else {
         return;

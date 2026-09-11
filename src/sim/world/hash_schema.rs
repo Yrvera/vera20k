@@ -42,7 +42,7 @@ pub(super) enum HashFeature {
     CreditIncome = 135,
     InfantryTerminal = 136,
     SustainedGapSight = 142,
-    GapOperational = 143,
+    GapOperational = 144,
 }
 
 impl HashSchema {

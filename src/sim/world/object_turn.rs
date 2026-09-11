@@ -118,6 +118,30 @@ impl Simulation {
             return outcome;
         }
 
+        if !tube_active_at_entry
+            && sim
+                .substrate
+                .entities
+                .get(stable_id)
+                .is_some_and(|e| e.low_bridge_tube_state.is_none())
+            && let Some(rules) = rules
+        {
+            crate::sim::mcv_deploy::drive_process_prelude(sim, stable_id, rules);
+            if sim
+                .substrate
+                .entities
+                .get(stable_id)
+                .is_none_or(|e| e.dying)
+            {
+                return outcome;
+            }
+        }
+        // Drive endpoint PerCellProcess(2) precedes FootStop's NavCom clear.
+        // A non-null pre-Process NavCom makes Deploy return without mutation;
+        // preserve that ordering when the movement adapter clears it internally.
+        let mcv_retry_after_track = sim.substrate.entities.get(stable_id).is_some_and(|e| {
+            e.mcv_deploy_pending && e.navigation.nav_com.is_none() && e.drive_track.is_some()
+        });
         if !tube_active_at_entry {
             sim.refresh_high_flying_sight_before_process(stable_id, rules, path_grid);
         }
@@ -306,6 +330,16 @@ impl Simulation {
         debug_assert!(lifecycle_requests.is_empty());
         sim.pending_lifecycle_requests = lifecycle_requests;
 
+        if mcv_retry_after_track
+            && sim
+                .substrate
+                .entities
+                .get(stable_id)
+                .is_some_and(|e| e.drive_track.is_none())
+            && let Some(rules) = rules
+        {
+            crate::sim::mcv_deploy::per_cell_process(sim, stable_id, rules);
+        }
         sim.tick_move_sound_after_process(stable_id, before_movement, rules);
         sim.object_ai_post_movement_promote_one(stable_id, rules);
         outcome
