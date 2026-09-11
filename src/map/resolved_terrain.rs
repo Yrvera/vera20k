@@ -1842,6 +1842,20 @@ impl ResolvedTerrainGrid {
         overlay: FinalizedOverlayCell,
         effects: &mut E,
     ) -> Result<LoadCellRecalcOutcome, LoadCellRecalcError<E::Error>> {
+        self.recalc_cell_attributes(state, index, overlay, -1, effects)
+    }
+
+    /// Shared47D2B0 entry: only the valid normal-TMP branch consumes the
+    /// level override, after Tube construction and before dimensions/Anim.
+    /// Evidence: tools/spatial_oracle/terrain_recalc.
+    pub(crate) fn recalc_cell_attributes<E: LoadCellRecalcEffects>(
+        &mut self,
+        state: &mut LoadCellRecalcState<'_>,
+        index: usize,
+        overlay: FinalizedOverlayCell,
+        level_override: i32,
+        effects: &mut E,
+    ) -> Result<LoadCellRecalcOutcome, LoadCellRecalcError<E::Error>> {
         let Some(snapshot) = self.cells.get(index).cloned() else {
             return Err(LoadCellRecalcError::CellIndexOutOfBounds { index });
         };
@@ -1872,6 +1886,9 @@ impl ResolvedTerrainGrid {
         let mut anim_request = None;
         let mut animation_tile_id = None;
         let mut animation_sub_tile = 0;
+        let mut valid_entry = false;
+        let mut sparse_entry = false;
+        let mut retained_height_in_pixels = snapshot.height_in_pixels;
 
         if early_overlay_branch {
             let flags = source_flags.expect("early branch has OverlayType flags");
@@ -1927,10 +1944,10 @@ impl ResolvedTerrainGrid {
             let current_sub_tile = snapshot.final_sub_tile;
             let registered =
                 state.registered_tile_metadata(current_tile, current_sub_tile, &snapshot);
-            let sparse_entry = registered
+            sparse_entry = registered
                 .as_ref()
                 .is_some_and(|metadata| metadata.subtile_entry_valid == Some(false));
-            let valid_entry = registered.is_some() && !sparse_entry;
+            valid_entry = registered.is_some() && !sparse_entry;
             let metadata = if valid_entry {
                 registered.expect("valid registered tile metadata")
             } else {
@@ -1943,6 +1960,7 @@ impl ResolvedTerrainGrid {
                 // checks even though LAT may replace Cell+0x38 in between.
                 animation_tile_id = tile_id;
                 animation_sub_tile = current_sub_tile;
+                retained_height_in_pixels = metadata.height_in_pixels;
             }
             let accepts_smudge = valid_entry
                 && tile_id.is_some_and(|tile_id| {
@@ -1960,9 +1978,14 @@ impl ResolvedTerrainGrid {
                 let cell = &mut self.cells[index];
                 if !valid_entry {
                     cell.final_tile_index = 0xFFFF;
-                    cell.final_sub_tile = 0;
+                    if sparse_entry {
+                        cell.final_sub_tile = 0;
+                    }
                 }
                 apply_pristine_load_metadata(cell, &metadata, accepts_smudge, allows_tiberium);
+                // Invalid/sparse paths preserve11D; the valid path updates it
+                // only after its possible automatic Tube constructor.
+                cell.height_in_pixels = snapshot.height_in_pixels;
                 restore_load_base_land(cell);
             }
             base_cliff_eligible = if sparse_entry {
@@ -1984,50 +2007,24 @@ impl ResolvedTerrainGrid {
             self.apply_authored_load_lat_slope(state, index);
         }
 
-        if !early_overlay_branch {
-            // LAT/slope fixup mutates the cell's tile before the automatic Tube
-            // region. Re-resolve the selected final TMP for land/Tube; the
-            // later terrain-Anim predicate deliberately retains the pristine
-            // receiver cached above, as native Recalc does.
-            let post_lat_snapshot = self.cells[index].clone();
-            let final_tile = post_lat_snapshot.final_tile_index;
-            let final_sub_tile = post_lat_snapshot.final_sub_tile;
-            let registered =
-                state.registered_tile_metadata(final_tile, final_sub_tile, &post_lat_snapshot);
-            let sparse_entry = registered
-                .as_ref()
-                .is_some_and(|metadata| metadata.subtile_entry_valid == Some(false));
-            let valid_entry = registered.is_some() && !sparse_entry;
-            let metadata = if valid_entry {
-                registered.expect("valid final registered tile metadata")
-            } else {
-                state.clear_land_metadata()
-            };
-            let final_tile_id = u16::try_from(final_tile).ok();
-            let accepts_smudge = valid_entry
-                && final_tile_id.is_some_and(|tile_id| {
-                    state
-                        .theater_data
-                        .is_some_and(|theater| theater.lookup.is_morphable(tile_id))
-                });
-            let allows_tiberium = valid_entry
-                && final_tile_id.is_some_and(|tile_id| {
-                    state
-                        .theater_data
-                        .is_some_and(|theater| theater.lookup.allows_tiberium(tile_id))
-                });
-            {
-                let cell = &mut self.cells[index];
-                if !valid_entry {
-                    cell.final_tile_index = 0xFFFF;
-                    cell.final_sub_tile = 0;
-                }
-                apply_pristine_load_metadata(cell, &metadata, accepts_smudge, allows_tiberium);
-                restore_load_base_land(cell);
-            }
+        // These are cached current-tile queries, unlike retained native Cell
+        // attributes. CanPlaceTiberium4839C0 and smudge6B5F80 resolve live+38.
+        if let Some(theater) = state.theater_data {
+            let tile = u16::try_from(self.cells[index].final_tile_index).ok();
+            self.cells[index].accepts_smudge =
+                tile.is_some_and(|tile| theater.lookup.is_morphable(tile));
+            self.cells[index].allows_tiberium =
+                tile.is_some_and(|tile| theater.lookup.allows_tiberium(tile));
+        }
 
+        if !early_overlay_branch {
+            // 47D83C/47D8A3 and47D967 use retained EBP after47CA80.
+            // LAT changes+38 and ensures final TMP residency; it does not
+            // replace the pristine land/slope/dimensions receiver. The Tube
+            // predicate separately reads the current tile identity.
             let refreshed_slope = self.cells[index].slope_type;
-            if let Some(flags) = source_flags
+            if valid_entry
+                && let Some(flags) = source_flags
                 && clears_tiberium_on_slope(flags, refreshed_slope)
             {
                 finalized = FinalizedOverlayCell::default();
@@ -2035,9 +2032,19 @@ impl ResolvedTerrainGrid {
             let live_flags = finalized
                 .overlay_id()
                 .and_then(|overlay_id| state.overlay_types.flags(overlay_id));
-            if let Some(flags) = live_flags
-                && let Some(land) = retained_overlay_land(flags, refreshed_slope)
-            {
+            let retained_land = live_flags.and_then(|flags| {
+                if valid_entry {
+                    retained_overlay_land(flags, refreshed_slope)
+                } else if sparse_entry {
+                    // 47D5EF goes directly to the Clear fallback tail.
+                    None
+                } else {
+                    // 47DB22 preserves an ordinary overlay's Land on the
+                    // invalid/sentinel path. Early overlays exited above.
+                    Some(flags.land)
+                }
+            });
+            if let (Some(flags), Some(land)) = (live_flags, retained_land) {
                 apply_load_land_to_cell(
                     &mut self.cells[index],
                     land,
@@ -2105,6 +2112,11 @@ impl ResolvedTerrainGrid {
                         }
                     }
                 }
+
+                if level_override != -1 {
+                    self.cells[index].level = level_override as u8;
+                }
+                self.cells[index].height_in_pixels = retained_height_in_pixels;
 
                 if !state.terrain_anim_is_latched(index)
                     && live_flags.is_none_or(|flags| !uses_early_recalc_land_branch(flags))
@@ -9539,6 +9551,8 @@ NoUseTileLandType=no
             "the first qualifying probe short-circuits the mode-2 scan"
         );
     }
+
+    include!("terrain_recalc_native_tests.rs");
 
     #[test]
     fn authored_load_early_overlay_refreshes_tmp_slope_before_resource_clear() {

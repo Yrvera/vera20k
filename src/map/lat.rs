@@ -341,7 +341,9 @@ pub(crate) fn slope_fixed_tile_live(
         };
         config.ramp_smooth + i32::from(block_offset)
     } else {
-        config.ramp_base + i32::from(slope.wrapping_sub(1))
+        // 47D1C0..47D1C8 zero-extends11C before DWORD LEA arithmetic.
+        // The subtraction does not wrap in a byte: slope0 selects base-1.
+        config.ramp_base.wrapping_add(i32::from(slope)).wrapping_sub(1)
     }
 }
 
@@ -720,7 +722,7 @@ RoughConnectTo=14
     }
 
     #[test]
-    fn gsi_04_03a_zero_and_unsigned_high_slopes_use_wrapping_fallback() {
+    fn gsi_04_03a_zero_and_unsigned_high_slopes_use_dword_fallback() {
         let config = SlopeFixupConfig {
             ramp_base: 100,
             ramp_smooth: 500,
@@ -728,7 +730,7 @@ RoughConnectTo=14
         for slope in [0, 5, 16, 127, 128, 255] {
             assert_eq!(
                 slope_fixed_tile(100, slope, [0; 4], config),
-                100 + i32::from(slope.wrapping_sub(1)),
+                100 + i32::from(slope) - 1,
                 "slope {slope}",
             );
         }
@@ -742,12 +744,12 @@ RoughConnectTo=14
         };
         for (tile, expected) in [
             (99, 99),
-            (100, 355),
-            (119, 355),
+            (100, 99),
+            (119, 99),
             (120, 120),
             (499, 499),
-            (500, 355),
-            (511, 355),
+            (500, 99),
+            (511, 99),
             (512, 512),
         ] {
             assert_eq!(slope_fixed_tile(tile, 0, [9; 4], config), expected);
@@ -766,7 +768,7 @@ RoughConnectTo=14
                     ramp_smooth: 500,
                 },
             ),
-            254,
+            -2,
             "missing RampBase still owns fallback arithmetic",
         );
         assert_eq!(
