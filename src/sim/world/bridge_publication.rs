@@ -1,15 +1,19 @@
 //! Live high-body publication (576BA0/47E040). Authorities stay in Simulation
 //! through synchronous fallout, including recursive DeathWeapon damage.
 //!
-//! Tile-class/pavement and rim callbacks retain their existing Rust projection.
-//! Literal tile replacement, complete56EB80/47D2B0 and rim parity remain open;
-//! do not select raw tile IDs while those callbacks update effective classes.
+//! Rim576770/576200 runs against live scalar cells and uses this same publisher.
+//! Literal tile replacement and complete56EB80/47D2B0 remain open: stock body
+//! sequences in bridge_rim_body prove the tile-untouched production slice only.
+//! In particular terminal middle-tile collapse must eventually publish M+4.
 
 use super::*;
 use crate::map::cell_index::NativeCellIdentity as Cell;
 use crate::map::resolved_terrain::DynamicTerrainCellState;
 use crate::sim::bridge_state::publication::{self, BridgePublicationHost, CellCoord};
 use crate::sim::bridge_state::{BridgeheadAnchorClass, Phase};
+
+#[path = "bridge_rim_publication.rs"]
+mod rim_publication;
 
 #[cfg(test)]
 #[path = "bridge_publication_tests.rs"]
@@ -342,11 +346,7 @@ impl BridgePublicationHost for LivePublication<'_> {
         }
     }
     fn rim(&mut self, coord: CellCoord) {
-        update_adjacent_bridges(
-            self.sim,
-            &BTreeSet::from([(coord.0 as u16, coord.1 as u16)]),
-        );
-        project_pending_low_bridge_overlay_writes(self.sim, self.registry);
+        rim_publication::update(self, coord);
     }
     fn zones(&mut self, _anchor: Cell) {
         refresh_bridge_zones_if_dirty(self.sim, self.rules, true);
