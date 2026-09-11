@@ -100,11 +100,7 @@ impl FinalizedOverlayPayload {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NativeOverlayCellTarget {
-    Real(usize),
-    Dummy,
-}
+pub(crate) use crate::map::cell_index::NativeCellIdentity as NativeOverlayCellTarget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AuthoredOverlayCellRef {
@@ -720,7 +716,7 @@ impl<'load, 'resources, H: AuthoredOverlayLoadHost>
         for (slot, requested) in stamp.slots().expect("verified high direction") {
             let target = self
                 .terrain
-                .apply_authored_bridge_flag_slot(stamp, family, slot, requested)
+                .apply_authored_bridge_flag_slot(anchor.target, stamp, family, slot, requested)
                 .map_or(NativeOverlayCellTarget::Dummy, NativeOverlayCellTarget::Real);
             if matches!(
                 slot,

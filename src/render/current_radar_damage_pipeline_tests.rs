@@ -7,9 +7,7 @@ use crate::map::bridge_facts::{
 };
 use crate::map::entities::EntityCategory;
 use crate::map::playfield::PlayfieldBounds;
-use crate::map::resolved_terrain::{
-    RadarColorMetadata, ResolvedTerrainCell, ResolvedTerrainGrid,
-};
+use crate::map::resolved_terrain::{RadarColorMetadata, ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::map::terrain::build_terrain_grid_from_resolved;
 use crate::render::minimap_projection::MinimapPlayfieldProjection;
 use crate::render::radar_terrain_updates::{
@@ -27,8 +25,8 @@ use crate::sim::command::Command;
 use crate::sim::components::Health;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::runtime::SimRuntime;
-use crate::sim::world::TickLane;
 use crate::sim::world::Simulation;
+use crate::sim::world::TickLane;
 
 const SIDE: u16 = 64;
 const CENTER: (u16, u16) = (25, 25);
@@ -127,6 +125,17 @@ fn simulation_fixture() -> (Simulation, crate::map::terrain::TerrainGrid) {
         .flat_map(|ry| (0..SIDE).map(move |rx| cell(rx, ry)))
         .collect();
     let mut terrain = ResolvedTerrainGrid::from_cells(SIDE, SIDE, cells);
+    // 587180 admits an actual self-anchored overlay24 body, not the former
+    // topology-only center with raw flags0/overlay0. Native NS setter is dir0.
+    terrain.apply_runtime_bridge_mark_stamp(
+        crate::map::bridge_facts::BridgeFlagStamp::new(CENTER, 0, true),
+        crate::map::bridge_facts::BridgeStampFamily::Nesw,
+    );
+    terrain
+        .cell_mut(CENTER.0, CENTER.1)
+        .unwrap()
+        .bridge_facts
+        .overlay_id = Some(24);
     terrain
         .cell_mut(FLOOD[0].0, FLOOD[0].1)
         .expect("perpendicular anchor terrain cell")
@@ -148,15 +157,11 @@ fn simulation_fixture() -> (Simulation, crate::map::terrain::TerrainGrid) {
     bridge_state.test_seed_cell(
         CENTER.0,
         CENTER.1,
-        bridge_cell(BridgeCellRole::Anchor, Some(1), 0),
+        bridge_cell(BridgeCellRole::Anchor, Some(1), 24),
     );
     for &(rx, ry) in &FLOOD {
         let overlay = if (rx, ry) == FLOOD[0] { 0xD1 } else { 0 };
-        bridge_state.test_seed_cell(
-            rx,
-            ry,
-            bridge_cell(BridgeCellRole::Anchor, None, overlay),
-        );
+        bridge_state.test_seed_cell(rx, ry, bridge_cell(BridgeCellRole::Anchor, None, overlay));
     }
     bridge_state.test_seed_cell(
         REPAIR_START.0,
@@ -166,9 +171,16 @@ fn simulation_fixture() -> (Simulation, crate::map::terrain::TerrainGrid) {
     bridge_state.test_seed_anchor_span(AnchorSpan {
         id: 1,
         anchor: CENTER,
-        cells: [Some(CENTER), None, None, None, None, None],
+        cells: [
+            Some(CENTER),
+            Some((25, 24)),
+            Some((25, 23)),
+            Some((25, 22)),
+            Some((25, 26)),
+            None,
+        ],
         axis: Axis::NS,
-        direction: Direction::E,
+        direction: Direction::N,
         damage_state: DamageState::Healthy { variant: 0 },
         bridge_group_id: 1,
     });
@@ -179,7 +191,10 @@ fn simulation_fixture() -> (Simulation, crate::map::terrain::TerrainGrid) {
     (sim, grid)
 }
 
-fn projection(sim: &Simulation, grid: &crate::map::terrain::TerrainGrid) -> MinimapPlayfieldProjection {
+fn projection(
+    sim: &Simulation,
+    grid: &crate::map::terrain::TerrainGrid,
+) -> MinimapPlayfieldProjection {
     MinimapPlayfieldProjection::derive(
         grid,
         sim.resolved_terrain.as_ref(),
@@ -447,7 +462,14 @@ fn gsi_04_01_production_tick_presents_damage_then_rearms_through_engineer_repair
     ));
     let _ = runtime.advance_frame(&[], 67, TickLane::Ordinary);
 
-    assert!(runtime.simulation.substrate.entities.get(engineer).is_none());
+    assert!(
+        runtime
+            .simulation
+            .substrate
+            .entities
+            .get(engineer)
+            .is_none()
+    );
     assert_eq!(runtime.simulation.radar_terrain_dirty_generation, 2);
     for cell in FLOOD {
         assert!(runtime.simulation.radar_terrain_dirty_cells.contains(&cell));
@@ -470,10 +492,10 @@ fn gsi_04_01_production_tick_presents_damage_then_rearms_through_engineer_repair
 }
 
 #[test]
-fn gsi_04_01_bridge_collapse_batches_variant_preorder_before_existing_dirty_cells() {
+fn gsi_04_01_bridge_collapse_publishes_variant_preorder_before_setter_radar() {
     let (mut sim, _grid) = simulation_fixture();
-    let rules = RuleSet::from_ini(&IniFile::from_str("[General]\n"))
-        .expect("minimal bridge damage rules");
+    let rules =
+        RuleSet::from_ini(&IniFile::from_str("[General]\n")).expect("minimal bridge damage rules");
     sim.resolve_type_handles(&rules);
 
     let collapsed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
@@ -490,9 +512,13 @@ fn gsi_04_01_bridge_collapse_batches_variant_preorder_before_existing_dirty_cell
     );
 
     assert!(collapsed, "Ion retries the state machine through collapse");
-    assert_eq!(sim.radar_terrain_dirty_generation, 1);
-    assert_eq!(&sim.radar_terrain_dirty_cells[..FLOOD.len()], &FLOOD);
-    assert!(sim.radar_terrain_dirty_cells.contains(&CENTER));
+    // One Toggle callback then four setter radar callbacks each publish new
+    // cells. Scalar state/flag stores do not create extra radar generations.
+    assert_eq!(sim.radar_terrain_dirty_generation, 5);
+    assert_eq!(
+        sim.radar_terrain_dirty_cells,
+        [FLOOD.as_slice(), &[CENTER, (25, 24), (25, 23), (25, 26)]].concat(),
+    );
     let mut unique = sim.radar_terrain_dirty_cells.clone();
     unique.sort_unstable();
     unique.dedup();

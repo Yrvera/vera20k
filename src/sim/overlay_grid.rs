@@ -670,6 +670,22 @@ impl OverlayGrid {
         ry: u16,
         overlay_data: u8,
     ) -> bool {
+        if !self.write_literal_bridge_state(resolved_terrain, rx, ry, overlay_data) {
+            return false;
+        }
+        self.dirty_cells.push((rx, ry));
+        true
+    }
+
+    /// Literal47E040 +11E store, including cells without an overlay. Its
+    /// caller owns the later fallout/radar sequence; no Recalc receipt here.
+    pub(crate) fn write_literal_bridge_state(
+        &mut self,
+        resolved_terrain: &mut ResolvedTerrainGrid,
+        rx: u16,
+        ry: u16,
+        overlay_data: u8,
+    ) -> bool {
         let Some(idx) = index_of(self.width, self.height, rx, ry) else {
             return false;
         };
@@ -677,7 +693,18 @@ impl OverlayGrid {
             return false;
         }
         self.cells[idx].overlay_data = overlay_data;
-        self.dirty_cells.push((rx, ry));
+        true
+    }
+
+    /// Literal576BA0 +44=-1 after the separately published +11E store. Keep
+    /// the state, wall owner and retained attributes; only presentation drops
+    /// the removed identity. This must not enqueue a frame-tail Recalc.
+    pub(crate) fn clear_literal_bridge_identity(&mut self, rx: u16, ry: u16) -> bool {
+        let Some(idx) = index_of(self.width, self.height, rx, ry) else {
+            return false;
+        };
+        self.cells[idx].overlay_id = None;
+        self.removed_render_cells.push((rx, ry));
         true
     }
 
@@ -2154,6 +2181,26 @@ mod tests {
         grid.set_overlay_data(1, 1, 9);
         assert_eq!(grid.cell(1, 1).overlay_id, None);
         assert_eq!(grid.cell(1, 1).overlay_data, 0);
+    }
+
+    #[test]
+    fn bridge_publication_literal_fields_do_not_schedule_attribute_recalc() {
+        let mut terrain = single_cell_terrain(0, Default::default(), false, false);
+        let mut grid = OverlayGrid::new(1, 1);
+        assert!(grid.write_literal_bridge_state(&mut terrain, 0, 0, 15));
+        assert_eq!(grid.cell(0, 0).overlay_id, None);
+        assert_eq!(grid.cell(0, 0).overlay_data, 15);
+        assert_eq!(terrain.cell(0, 0).unwrap().bridge_facts.state_byte, 15);
+        assert!(grid.pending_dirty_cells().is_empty());
+        grid.cells[0].overlay_id = Some(24);
+        grid.cells[0].wall_owner = Some(crate::sim::intern::test_intern("RetainedOwner"));
+        let owner = grid.cells[0].wall_owner;
+        assert!(grid.clear_literal_bridge_identity(0, 0));
+        assert_eq!(grid.cell(0, 0).overlay_id, None);
+        assert_eq!(grid.cell(0, 0).overlay_data, 15, "identity and state are independent stores");
+        assert_eq!(grid.cell(0, 0).wall_owner, owner);
+        assert!(grid.pending_dirty_cells().is_empty());
+        assert_eq!(grid.take_removed_render_cells(), vec![(0, 0)]);
     }
 
     #[test]

@@ -18,6 +18,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[path = "bridge_ground.rs"]
 mod ground_fallout;
 
+#[path = "bridge_publication.rs"]
+mod live_publication;
+
 use crate::map::bridge_facts::{
     BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_DIRECTION_ZERO,
     BRIDGE_FLAG_STRUCTURAL,
@@ -74,9 +77,23 @@ pub(crate) fn apply_bridge_damage_events_with_overlay_registry(
     events: &[BridgeDamageEvent],
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> bool {
-    if events.is_empty() {
-        return false;
+    let mut collapsed = false;
+    // Finish each event's existing callbacks before another event can enter
+    // the live body driver. Otherwise its immediate fallout would overtake an
+    // earlier event's still-pending direct/head fallout.
+    for event in events {
+        collapsed |= apply_one_bridge_damage_event(sim, rules, event, overlay_registry);
     }
+    collapsed
+}
+
+fn apply_one_bridge_damage_event(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    event: &BridgeDamageEvent,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) -> bool {
+    let events = std::slice::from_ref(event);
 
     // Outer gate + read bridge_strength up front (immutable borrow scope).
     let bridge_strength = match sim.bridge_state.as_ref() {
@@ -84,9 +101,14 @@ pub(crate) fn apply_bridge_damage_events_with_overlay_registry(
         _ => return false,
     };
 
-    // Run dispatch loop with split borrows: bridge_state &mut, terrain &,
-    // rng &mut. Outcomes are collected for the cascade phase below.
-    let outcomes: Vec<StateOutcome> = run_dispatch_loop(sim, events, bridge_strength);
+    // The structural body publishes synchronously. Other drivers still return
+    // outcomes for their existing cascade below.
+    let (outcomes, published_collapse) = run_dispatch_loop(
+        sim,
+        events,
+        bridge_strength,
+        Some((rules, overlay_registry)),
+    );
     // `ToggleBridgePavement @ 0x0056E990` marks each changed cell before its
     // direction-0..7 recursion. Outcomes retain that pre-order per event.
     // Keep this sequence until the collapse dirty set is known so the Rust
@@ -176,7 +198,7 @@ pub(crate) fn apply_bridge_damage_events_with_overlay_registry(
     // state_changed = "at least one cell collapsed this batch". The destroyed_set
     // is built from StateOutcome::Collapsed outcomes earlier in this function;
     // if it's non-empty, real work happened.
-    !destroyed_set.is_empty()
+    published_collapse || !destroyed_set.is_empty()
 }
 
 /// Bridge-collapse dispatch from a `BridgeRepairHut` death event (C4 timer
@@ -1734,14 +1756,19 @@ fn run_dispatch_loop(
     sim: &mut Simulation,
     events: &[BridgeDamageEvent],
     bridge_strength: u16,
-) -> Vec<StateOutcome> {
+    publication: Option<(
+        &RuleSet,
+        Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    )>,
+) -> (Vec<StateOutcome>, bool) {
     let mut outcomes = Vec::with_capacity(events.len());
+    let mut published_collapse = false;
 
     if sim.resolved_terrain.is_none() {
-        return outcomes;
+        return (outcomes, false);
     }
     if sim.bridge_state.is_none() {
-        return outcomes;
+        return (outcomes, false);
     }
 
     for event in events {
@@ -1797,6 +1824,21 @@ fn run_dispatch_loop(
                 1
             };
             for _attempt in 0..max_attempts {
+                if matches!(path, DispatchPath::HighStateMachine)
+                    && let Some((rules, registry)) = publication
+                    && let Some(result) = live_publication::try_body(
+                        sim,
+                        rules,
+                        registry,
+                        (event.rx as i16, event.ry as i16),
+                    )
+                {
+                    published_collapse |= result.collapsed;
+                    if result.returned {
+                        break;
+                    }
+                    continue;
+                }
                 let outcome = {
                     let terrain = sim
                         .resolved_terrain
@@ -1849,7 +1891,7 @@ fn run_dispatch_loop(
         }
     }
 
-    outcomes
+    (outcomes, published_collapse)
 }
 
 fn apply_runtime_bridge_flag_transcript_from_outcome(sim: &mut Simulation, outcome: &StateOutcome) {
@@ -2668,7 +2710,7 @@ mod tests {
             is_ion_cannon: false,
             impact_z: 0,
         };
-        let _ = run_dispatch_loop(&mut sim, &[event], bridge_strength);
+        let _ = run_dispatch_loop(&mut sim, &[event], bridge_strength, None);
 
         assert_eq!(
             sim.scenario_rng.state(),
@@ -2724,7 +2766,7 @@ mod tests {
             is_ion_cannon: true,
             impact_z: 0,
         };
-        let outcomes = run_dispatch_loop(&mut sim, &[event], 1500);
+        let (outcomes, _) = run_dispatch_loop(&mut sim, &[event], 1500, None);
         assert_eq!(outcomes.len(), 1);
         assert!(matches!(outcomes[0], StateOutcome::Collapsed { .. }));
         assert_eq!(

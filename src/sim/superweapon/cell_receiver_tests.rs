@@ -934,8 +934,17 @@ fn iron_curtain_command_observes_native_deck_order_after_nested_bridge_drop_in()
     let (mut sim, rules) = fixture_with_extra("[DeathWH]\nWall=yes\n[DeathBoom]\nDamage=2000\n");
     assert!(rules.warhead("DeathWH").unwrap().wall);
     // The selected damaged anchor takes one hit to collapse. Seed the existing
-    // runtime map/record boundary; launch, nested death and fallout are real.
-    let span = [(5, 5), (6, 5), (7, 5), (8, 5), (4, 5)];
+    // runtime map/record boundary with native NS/dir0 Mark and overlay24;
+    // launch, nested death and fallout are real. The former overlay0 was not
+    // admitted by native587180's structural body branch.
+    let span = [(5, 5), (5, 4), (5, 3), (5, 2), (5, 6)];
+    sim.resolved_terrain
+        .as_mut()
+        .unwrap()
+        .apply_runtime_bridge_mark_stamp(
+            crate::map::bridge_facts::BridgeFlagStamp::new((5, 5), 0, true),
+            crate::map::bridge_facts::BridgeStampFamily::Nesw,
+        );
     for &(x, y) in &span {
         let cell = sim
             .resolved_terrain
@@ -943,21 +952,22 @@ fn iron_curtain_command_observes_native_deck_order_after_nested_bridge_drop_in()
             .unwrap()
             .cell_mut(x, y)
             .unwrap();
-        cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
         // Current bridge dispatcher admits impacts within one terrain level.
         // Deck Z=4 and ground Z=3 exercise its actual collapse/DropIn path.
         cell.level = 3;
-        cell.has_bridge_deck = true;
-        cell.bridge_walkable = true;
-        cell.bridge_deck_level = 4;
+        cell.has_bridge_deck = cell.bridge_facts.has_structural_bridge();
+        cell.bridge_walkable = cell.has_bridge_deck;
+        cell.bridge_deck_level = if cell.has_bridge_deck { 4 } else { 3 };
     }
-    sim.resolved_terrain
+    let facts = &mut sim
+        .resolved_terrain
         .as_mut()
         .unwrap()
         .cell_mut(5, 5)
         .unwrap()
-        .bridge_facts
-        .raw_flags |= crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
+        .bridge_facts;
+    facts.overlay_id = Some(24);
+    facts.state_byte = 6;
     let mut state =
         BridgeRuntimeState::from_resolved_terrain(sim.resolved_terrain.as_ref().unwrap(), true, 1);
     state.test_seed_cell(
@@ -972,7 +982,7 @@ fn iron_curtain_command_observes_native_deck_order_after_nested_bridge_drop_in()
             axis: Some(Axis::NS),
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
-            overlay_byte: 0,
+            overlay_byte: 24,
             damaged_variant: true,
             bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
         },
@@ -989,7 +999,7 @@ fn iron_curtain_command_observes_native_deck_order_after_nested_bridge_drop_in()
             None,
         ],
         axis: Axis::NS,
-        direction: Direction::E,
+        direction: Direction::N,
         damage_state: DamageState::Damaged,
         bridge_group_id: 1,
     });

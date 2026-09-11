@@ -1,5 +1,79 @@
 # High Bridge Rim Refresh Algorithm - Ghidra Research Report
 
+## 2026-09-11 live high-body publication evidence
+
+The production adapter covers the `576BA0` high-body branch, its perpendicular
+state frames, and full `47E040` publication. A fresh read-only critic
+independently decompressed active-retail `xbayopigs.map`: `(112,140)` and
+`(112,144)` have overlay25/state9; `(111,140)`, `(110,140)`, `(113,140)` have
+overlay255/state9. The retained production-loader export gives anchor flags
+`0x11380` and nonanchor `(111,140)` flags `0x11300`, pointing to `(112,140)`.
+Native `587180` excludes these from direct overlay bands `4A..63`/`CD..E6`, then
+resolves structural/self-or-`+2C` and dispatches anchor overlay18/19 to `576BA0`.
+Thus stock anchor and nonanchor damage reach this body branch. Its first
+effective invocation moves state9 to15; its next invocation collapses it.
+
+The [body publication corpus](../../tools/spatial_oracle/bridge_body_publication.py)
+executes the original high-body branch and complete setter for seven cases,
+using [preserved stock inputs](../../tools/spatial_oracle/bridge_rim_stock_inputs.json).
+Perpendicular, fallout, radar, rim and zone bodies are explicit synchronous
+sinks. Executable coverage is **states9/15, direction6/set0 only**. It records
+17 native writes per ordinary collapse, including only one overlay clear at
+the canonical anchor. Nonanchor damage requests rim cleanup at `(111,140)` but
+zone work at `(112,140)`. Synthetic callbacks prove that changing the anchor's
+state after branch selection does not cancel collapse, that later slot flags
+are freshly read, and that moving F1's retained coordinate changes the next
+receiver allocation from `(110,140)` to `(109,140)`. These injected writes are
+control tests, not claims of stock callback reachability.
+
+Fresh instruction evidence supplements that corpus: state/axis is captured at
+`005776E4..005776FA`; the selected branch dispatches at `00577704/0057770A`.
+NS reloads the retained anchor coordinate at `0057776D/0057777B` before B;
+EW does so at `00577849/00577857`. NS setter/canonical stores/rim are
+`00577790/00577795/0057779F/005777A6`; EW uses
+`005778AC/005778B1/005778BB/005778C2`. Zone invalidation is `005778CE`, with
+conditional connectivity rebuild at `005778D9`. The current executable
+coordinate mutation covers setter F1, not this body anchor reload.
+
+The full setter resolves each next cell after the prior fallout/radar, using
+the retained cell's current coordinate. Reachable perpendicular collapse frames
+also need live continuation: `572440` executes recursion, setter, canonical
+clear and radar before freshly reading tile at `5724F7`; its independent final
+tile arm recurses again, rereads subtile at `572550`, then runs three immediate
+fallouts before flood-fill. An outcome replay after pre-mutation cannot preserve
+these observations. Existing `DynamicTerrainCellState` already captures full
+facts and restores before retained flags; reuse it, preserving literal `+2C`
+separately from derived self relations. Canonical overlay stores must not use
+the convenience writer that automatically queues an extra Recalc.
+
+All seven cases and the recovered rim corpus independently regenerated exactly;
+the fresh evidence review found no harness defect in the disclosed slice.
+The Rust core compares callback boundaries and final cell fields against those
+seven original executions. NS/intact/partial/dummy setter execution and the
+actual perpendicular/fallout/rim/zone bodies are not certified by this corpus.
+
+`world/bridge_publication.rs` now runs the core from the ordinary damage entry.
+Each literal scalar write publishes full retained fields and serialized terrain
+state before synchronous fallout. A recursive explosion therefore sees current
+flags, state and literal `+2C` allocation identity. An already-cleared structural
+input rejects instead of falling back through old topology. Existing high/head
+writers still publish encoded state and overlay identity through
+`BridgeRuntimeState`; the adapter reads that current authority before map-derived
+fallbacks, including the cleared-overlay sentinel. Removing structural flags
+also removes the derived deck navigation fields on nonanchor cells that have
+no overlay identity, while marker-only F3/extra writes preserve unrelated ramps.
+
+Production regression cases exercise ground C4, canonical-only overlay removal,
+the rebuilt navigation map, a reentrant event through a cleared slot, an anchor
+erased by a legacy writer, and repeated effective tile-class transitions. The
+reentrant callback injection is a control test, not a stock DeathWeapon witness.
+Focused/full validation and independent production review are tracked with the
+delivery commit. The adapter retains existing effective tile-class/pavement,
+rim and zone projections as synchronous callbacks. Literal tile replacement,
+complete `56EB80`/`47D2B0`, perpendicular three-cell tile fallout, full rim
+migration, head/hut/direct-overlay drivers and the phase-wide audit remain open.
+This increment does not close the bridge row.
+
 ## 2026-09-11 ground receiver production increment
 
 This increment replaces the bridge ground pass's sorted-ID, anchor-coordinate

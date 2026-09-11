@@ -455,7 +455,9 @@ use crate::sim::world::Simulation;
 // Bincode positional entity layout changes; reject older payloads.
 // v144 retains Building6C8/Techno269/26C gap operational/deposit authority.
 // Restoring cannot reclassify power or replay a fresh gap event.
-const SNAPSHOT_VERSION: u32 = 144;
+// v145 adds literal CellClass+2C allocation identities to dynamic terrain facts.
+// The self relation cannot reconstruct pointers preserved by overlapping stamps.
+const SNAPSHOT_VERSION: u32 = 145;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3280,7 +3282,8 @@ mod tests {
         // 141 -> 142: sustained sight and pending 120-frame gap conceal.
         // 142 -> 143: MCV pending and Drive previous-rotation latches.
         // 143 -> 144: per-Building operational edge and retained gap deposit.
-        assert_eq!(super::SNAPSHOT_VERSION, 144);
+        // 144 -> 145: literal native bridge anchor pointers in dynamic terrain.
+        assert_eq!(super::SNAPSHOT_VERSION, 145);
     }
 
     #[test]
