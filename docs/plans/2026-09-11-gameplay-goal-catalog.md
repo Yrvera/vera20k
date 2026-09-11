@@ -5,6 +5,10 @@ behavior coverage; they do not prescribe separate goal sessions or execution
 order, report current completion, or authorize implementation by themselves. [ENGINE.md](../../ENGINE.md) governs
 evidence, architecture, validation and delivery, including the scale exception.
 
+For what to work on next, use the [suggested implementation order](2026-09-11-gameplay-implementation-order.md).
+It covers this whole catalogue and preserves the distinction between shared
+implementation groups, coverage items and complete goal scope.
+
 ## Choose a porting goal before selecting coverage
 
 The purpose is to port active retail behavior into VERA20k through research,
@@ -475,8 +479,9 @@ and cheat behavior is not silently part of these goals.
 
 Select work from demonstrated current-match problems and the benefit of finishing
 a connected action. Reuse working behavior; merged fixes are not automatically
-open again. Reassess after a completed goal and actual match feedback. There is
-no “finish all resources, then all units” gate or fixed ranking of every detail.
+open again. Reassess after a completed goal and actual match feedback. The
+[suggested order](2026-09-11-gameplay-implementation-order.md) is an adaptable
+selection guide, not a “finish all resources, then all units” gate.
 
 **Evidence limit:** this examination used main
 `ed8f4837910be9329505c3dfc2fc074d9c1f3106`. No game run or fresh native execution
