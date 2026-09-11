@@ -484,6 +484,8 @@ pub struct GameEntity {
     /// Foot65C/664 high-flying sight refresh timer, virtualized per viewer.
     /// Independent of the retained sight-admission latch and stored footprint.
     pub(crate) sight_refresh_timers: crate::sim::vision::SightRefreshTimers,
+    /// Building43FB20 operational edge and Techno6FB170/6FB470 deposit latch.
+    pub(crate) gap_generator: crate::sim::vision::GapGeneratorRuntime,
 
     // --- Render model (mutually exclusive) ---
     /// True = VXL/HVA model, false = SHP sprite; effective art metadata is authoritative.
@@ -1223,6 +1225,7 @@ impl GameEntity {
             sight_refresh_timers: crate::sim::vision::SightRefreshTimers::at_construction(
                 construction_frame,
             ),
+            gap_generator: crate::sim::vision::GapGeneratorRuntime::default(),
             is_voxel,
             selected: false,
             repairing: false,

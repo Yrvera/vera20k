@@ -453,7 +453,9 @@ use crate::sim::world::Simulation;
 // and stable generator admission receipts. New positional fields require rejection.
 // v143 adds MCV pending deployment and the Drive rotation-edge latch.
 // Bincode positional entity layout changes; reject older payloads.
-const SNAPSHOT_VERSION: u32 = 143;
+// v144 retains Building6C8/Techno269/26C gap operational/deposit authority.
+// Restoring cannot reclassify power or replay a fresh gap event.
+const SNAPSHOT_VERSION: u32 = 144;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3266,7 +3268,7 @@ mod tests {
     /// 132 -> 133 persists the `HouseClass+0x57D4` funds-nag timer and the
     /// `[0xA8F040]` low-power guard.
     #[test]
-    fn current_snapshot_version_includes_mcv_deploy_continuation() {
+    fn current_snapshot_version_includes_gap_operational_state() {
         // 133 -> 134: repair-depot docking layout (see the constant's comment).
         // 134 -> 135: GameEntity ProduceCash timer + drain link pair (GSI-09.01).
         // 135 -> 136: explicit retained Infantry terminal lifetime policy.
@@ -3277,7 +3279,8 @@ mod tests {
         // 140 -> 141: retained real CellClass gap flags400/800.
         // 141 -> 142: sustained sight and pending 120-frame gap conceal.
         // 142 -> 143: MCV pending and Drive previous-rotation latches.
-        assert_eq!(super::SNAPSHOT_VERSION, 143);
+        // 143 -> 144: per-Building operational edge and retained gap deposit.
+        assert_eq!(super::SNAPSHOT_VERSION, 144);
     }
 
     #[test]

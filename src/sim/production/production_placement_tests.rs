@@ -140,6 +140,77 @@ fn set_ticks_until_completion(sim: &mut Simulation, stable_id: u64, ticks: u16) 
     building_up.elapsed_ticks = building_up.total_ticks - ticks;
 }
 
+#[test]
+fn gap_operational_actual_placement_waits_for_build_up_and_next_building_turn() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+         [BuildingTypes]\n0=GACNST\n1=GAGAP\n\
+         [GACNST]\nFactory=BuildingType\nBaseNormal=yes\nPower=500\nStrength=1000\nFoundation=1x1\n\
+         [GAGAP]\nGapGenerator=yes\nGapRadiusInCells=10\nPowered=yes\nPower=-100\nStrength=600\nCost=1000\nFoundation=1x1\n",
+    )).unwrap();
+    let mut sim = Simulation::new();
+    sim.fog.width = 64;
+    sim.fog.height = 64;
+    let owner = sim.interner.intern("Americans");
+    let viewer = sim.interner.intern("Soviet");
+    for house in [owner, viewer] {
+        sim.houses.insert(
+            house,
+            crate::sim::house_state::HouseState::new(house, 0, None, true, 10_000, 10),
+        );
+        sim.session.house_order.push(house);
+    }
+    sim.fog.reveal_all_for_owner(owner);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+    let grid = PathGrid::new(64, 64);
+    let heights = BTreeMap::new();
+    let id = ready_and_place(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAGAP",
+        12,
+        10,
+        &grid,
+        &heights,
+    );
+    assert!(
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .building_up
+            .is_some()
+    );
+    sim.set_logic_order_for_test(vec![1, id]);
+    sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 67);
+    assert!(
+        !sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .gap_generator
+            .last_operational
+    );
+    assert!(!sim.fog.is_cell_gap_covered(viewer, 12, 10));
+    set_ticks_until_completion(&mut sim, id, 1);
+    sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 67);
+    assert!(
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .building_up
+            .is_none()
+    );
+    assert!(
+        !sim.fog.is_cell_gap_covered(viewer, 12, 10),
+        "late completion is not a gap writer"
+    );
+    sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 67);
+    assert!(sim.fog.is_cell_gap_covered(viewer, 12, 10));
+}
+
 fn block_building_foundation(
     path_grid: &mut PathGrid,
     rules: &RuleSet,
