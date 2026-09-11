@@ -1,6 +1,6 @@
 # Evidence for the revised gameplay goal boundaries
 
-Companion to the [catalogue](2026-09-11-gameplay-goal-catalog.md), examined on
+Companion to the [unified gameplay guide](2026-09-11-gameplay-goal-catalog.md), examined on
 2026-09-11 against main `ed8f4837910be9329505c3dfc2fc074d9c1f3106`.
 This records planning evidence, not a permanent progress ledger.
 
