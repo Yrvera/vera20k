@@ -2,8 +2,8 @@
 
 ## 2026-09-11 live high-body publication evidence
 
-The next production boundary is the `576BA0` high-body branch, its reachable
-perpendicular frames, and full `47E040` publication. A fresh read-only critic
+The production adapter covers the `576BA0` high-body branch, its perpendicular
+state frames, and full `47E040` publication. A fresh read-only critic
 independently decompressed active-retail `xbayopigs.map`: `(112,140)` and
 `(112,144)` have overlay25/state9; `(111,140)`, `(110,140)`, `(113,140)` have
 overlay255/state9. The retained production-loader export gives anchor flags
@@ -48,10 +48,31 @@ the convenience writer that automatically queues an extra Recalc.
 
 All seven cases and the recovered rim corpus independently regenerated exactly;
 the fresh evidence review found no harness defect in the disclosed slice.
-**Rust production integration remains open.** NS/intact/partial/dummy setter
-coverage, actual perpendicular/fallout/rim/zone bodies and full body delivery
-are not certified by this oracle increment. Broader bridgehead/hut/direct-overlay
-migration and the rim algorithm remain separately unfinished.
+The Rust core compares callback boundaries and final cell fields against those
+seven original executions. NS/intact/partial/dummy setter execution and the
+actual perpendicular/fallout/rim/zone bodies are not certified by this corpus.
+
+`world/bridge_publication.rs` now runs the core from the ordinary damage entry.
+Each literal scalar write publishes full retained fields and serialized terrain
+state before synchronous fallout. A recursive explosion therefore sees current
+flags, state and literal `+2C` allocation identity. An already-cleared structural
+input rejects instead of falling back through old topology. Existing high/head
+writers still publish encoded state and overlay identity through
+`BridgeRuntimeState`; the adapter reads that current authority before map-derived
+fallbacks, including the cleared-overlay sentinel. Removing structural flags
+also removes the derived deck navigation fields on nonanchor cells that have
+no overlay identity, while marker-only F3/extra writes preserve unrelated ramps.
+
+Production regression cases exercise ground C4, canonical-only overlay removal,
+the rebuilt navigation map, a reentrant event through a cleared slot, an anchor
+erased by a legacy writer, and repeated effective tile-class transitions. The
+reentrant callback injection is a control test, not a stock DeathWeapon witness.
+Focused/full validation and independent production review are tracked with the
+delivery commit. The adapter retains existing effective tile-class/pavement,
+rim and zone projections as synchronous callbacks. Literal tile replacement,
+complete `56EB80`/`47D2B0`, perpendicular three-cell tile fallout, full rim
+migration, head/hut/direct-overlay drivers and the phase-wide audit remain open.
+This increment does not close the bridge row.
 
 ## 2026-09-11 ground receiver production increment
 

@@ -1455,7 +1455,7 @@ fn apply_planned_bridge_flag_stamp_to_real_parts(
     real_cell_updates
 }
 
-fn refresh_runtime_bridge_projection(cell: &mut ResolvedTerrainCell) {
+fn refresh_runtime_bridge_projection(cell: &mut ResolvedTerrainCell, structural_removed: bool) {
     let facts = cell.bridge_facts;
     if facts.has_structural_bridge() {
         cell.has_bridge_deck = true;
@@ -1465,11 +1465,12 @@ fn refresh_runtime_bridge_projection(cell: &mut ResolvedTerrainCell) {
             || cell.terrain_object_blocks
             || cell.overlay_blocks
             || cell.bridge_walkable;
-    } else if facts.family != BridgeStampFamily::None
-        && cell
-            .bridge_layer
-            .as_ref()
-            .is_some_and(|layer| layer.direction != BridgeDirection::Low)
+    } else if structural_removed
+        || (facts.family != BridgeStampFamily::None
+            && cell
+                .bridge_layer
+                .as_ref()
+                .is_some_and(|layer| layer.direction != BridgeDirection::Low))
     {
         cell.has_bridge_deck = false;
         cell.bridge_walkable = false;
@@ -1772,8 +1773,18 @@ impl ResolvedTerrainGrid {
     pub(crate) fn write_native_cell_flags(&mut self, cell: NativeCellIdentity, flags: u32) {
         match cell {
             NativeCellIdentity::Real(index) => {
+                let previous = self.cells[index].bridge_facts.raw_flags;
                 self.cells[index].bridge_facts.raw_flags = flags;
-                refresh_runtime_bridge_projection(&mut self.cells[index]);
+                // 47E040 removes the deck from stamped non-anchor cells too;
+                // those cells need not carry an overlay/bridge_layer. Preserve
+                // unrelated ramp projections when F3/extra only change markers.
+                let structural_removed = previous & BRIDGE_FLAG_STRUCTURAL != 0
+                    && flags & BRIDGE_FLAG_STRUCTURAL == 0;
+                refresh_runtime_bridge_projection(&mut self.cells[index], structural_removed);
+                if (previous ^ flags) & crate::map::bridge_facts::BRIDGE_FLAG_TRANSITION != 0 {
+                    self.cells[index].bridge_transition =
+                        self.cells[index].bridge_facts.has_transition_flag();
+                }
             }
             NativeCellIdentity::Dummy => self.shared_cell_dummy.write_raw_flags(flags),
         }
@@ -2435,7 +2446,7 @@ impl ResolvedTerrainGrid {
         );
         for &(index, _) in &updates {
             if let Some(cell) = self.cells.get_mut(index) {
-                refresh_runtime_bridge_projection(cell);
+                refresh_runtime_bridge_projection(cell, false);
             }
         }
         updates

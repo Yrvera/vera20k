@@ -854,7 +854,7 @@ fn update_ramp_perpendicular_recursive(
 /// - **CollapseA / CollapseB**: advance Variant0 / Variant1 / Damaged to
 ///   Damaged; preserve AboutToFall (the recursive `+3 → +3` write in the
 ///   reference is a no-op semantically).
-fn apply_anchor_class_transition(
+pub(crate) fn apply_anchor_class_transition(
     current: crate::sim::bridge_state::BridgeheadAnchorClass,
     phase: Phase,
 ) -> crate::sim::bridge_state::BridgeheadAnchorClass {

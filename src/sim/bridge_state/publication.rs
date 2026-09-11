@@ -4,7 +4,8 @@
 //! HIGH_BRIDGE_RIM_REFRESH_ALGORITHM_GHIDRA_REPORT.md. Scalar writes must not
 //! dispatch extra callbacks. The host keeps world authorities resident while
 //! fallout, perpendicular helpers, rim and zone work execute synchronously.
-//! Production host integration is still pending; this is a local prerequisite.
+//! The production host is world/bridge_publication.rs; its existing tile/rim
+//! callback projections remain explicitly outside this core's parity claim.
 
 use super::{Axis, Phase};
 
