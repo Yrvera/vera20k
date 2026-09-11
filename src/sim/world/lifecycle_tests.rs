@@ -6450,10 +6450,19 @@ fn wave_tail_consumes_wall_roll_before_mandatory_cliff_chance_roll() {
 
 #[test]
 fn wave_fatal_death_weapon_starts_crater_with_live_smudge_authority() {
+    assert_direct_fatal_death_weapon_starts_crater(false);
+}
+
+#[test]
+fn bridge_ground_fatal_death_weapon_starts_crater_before_receiver_returns() {
+    assert_direct_fatal_death_weapon_starts_crater(true);
+}
+
+fn assert_direct_fatal_death_weapon_starts_crater(bridge: bool) {
     use crate::rules::ini_parser::IniFile;
 
     let ini = IniFile::from_str(
-        "[InfantryTypes]\n[VehicleTypes]\n0=VICTIM\n1=FIRER\n\
+        "[CombatDamage]\nC4Warhead=KILLWH\n[InfantryTypes]\n[VehicleTypes]\n0=VICTIM\n1=FIRER\n\
          [AircraftTypes]\n[BuildingTypes]\n[OverlayTypes]\n\
          [Warheads]\n0=KILLWH\n1=CRATERWH\n[SmudgeTypes]\n0=CR1\n\
          [VICTIM]\nStrength=1\nArmor=light\nExplodes=yes\nDeathWeapon=DeathBoom\n\
@@ -6495,44 +6504,50 @@ fn wave_fatal_death_weapon_starts_crater_with_live_smudge_authority() {
         sim.try_reveal_entity(victim_id, common_raw_request(4, 5, 0, 128, 128)),
         RevealOutcome::Revealed { .. }
     ));
-    let firer_id = sim.allocate_stable_id();
-    insert_entity(&mut sim, firer_id, EntityCategory::Unit);
-    let firer = sim.substrate.entities.get_mut(firer_id).unwrap();
-    firer.type_ref = sim.interner.intern("FIRER");
-    firer.attack_target = Some(AttackTarget::new(victim_id));
-    let wave_id = sim.allocate_stable_id();
-    let mut wave = Wave::new_owned(
-        0,
-        firer_id,
-        TargetKind::Entity(victim_id),
-        ProjectileCoord::new(4 * 256, 5 * 256, 0),
-        ProjectileCoord::new(5 * 256, 5 * 256, 0),
-    );
-    wave.active_geometry = false;
-    wave.decaying = true;
-    wave.fade_in = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
-    wave.fade_out = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
-    wave.replace_recorded_cells(vec![WaveRecordedCell::real(4, 5)]);
-    sim.admit_wave(wave_id, wave);
+    if bridge {
+        super::bridge_orchestrator::kill_ground_occupants_at(
+            &mut sim, &rules, 4, 5, Some(&registry),
+        );
+    } else {
+        let firer_id = sim.allocate_stable_id();
+        insert_entity(&mut sim, firer_id, EntityCategory::Unit);
+        let firer = sim.substrate.entities.get_mut(firer_id).unwrap();
+        firer.type_ref = sim.interner.intern("FIRER");
+        firer.attack_target = Some(AttackTarget::new(victim_id));
+        let wave_id = sim.allocate_stable_id();
+        let mut wave = Wave::new_owned(
+            0,
+            firer_id,
+            TargetKind::Entity(victim_id),
+            ProjectileCoord::new(4 * 256, 5 * 256, 0),
+            ProjectileCoord::new(5 * 256, 5 * 256, 0),
+        );
+        wave.active_geometry = false;
+        wave.decaying = true;
+        wave.fade_in = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+        wave.fade_out = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+        wave.replace_recorded_cells(vec![WaveRecordedCell::real(4, 5)]);
+        sim.admit_wave(wave_id, wave);
 
-    // Wave vslot call 0x0075F42C -> DeathWeapon Detonate 0x0070D782 ->
-    // zero-delay Anim constructor 0x00469C93 -> 0x00422702/0x00424D5A.
-    // Default Start=0 crater work is synchronous, including Reduce_Tiberium
-    // at 0x004250E7. Evidence: active gamemd.exe bodies/call instructions.
-    assert!(sim.object_ai_visit_one(
-        wave_id,
-        Some(&rules),
-        ObjectAiCtx {
-            overlay_registry: Some(&registry),
-            ..ObjectAiCtx::default()
-        },
-    ));
+        // Wave vslot call 0x0075F42C -> DeathWeapon Detonate 0x0070D782 ->
+        // zero-delay Anim constructor 0x00469C93 -> 0x00422702/0x00424D5A.
+        // Default Start=0 crater work is synchronous, including Reduce_Tiberium
+        // at 0x004250E7. Evidence: active gamemd.exe bodies/call instructions.
+        assert!(sim.object_ai_visit_one(
+            wave_id,
+            Some(&rules),
+            ObjectAiCtx {
+                overlay_registry: Some(&registry),
+                ..ObjectAiCtx::default()
+            },
+        ));
+    }
     assert!(!sim.substrate.entities.get(victim_id).unwrap().is_alive());
     let crater = rules.smudge_types.find_by_name("CR1").unwrap();
     assert_eq!(
         sim.smudge_grid.as_ref().unwrap().cell(4, 5).type_id,
         Some(crater),
-        "nested DeathWeapon starts its crater before Wave AI returns, without a later effects drain",
+        "nested DeathWeapon starts its crater before direct caller returns, without a later effects drain",
     );
 }
 
