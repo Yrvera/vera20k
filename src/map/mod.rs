@@ -28,6 +28,7 @@ pub mod cell_tags;
 pub mod entities;
 pub mod events;
 pub mod houses;
+pub(crate) mod iso_tile_flood;
 pub mod lat;
 pub mod lighting;
 pub mod map_file;
