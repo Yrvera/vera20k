@@ -12,6 +12,11 @@ August 30–September 6, 2026 pattern: clear outcome, production evidence, indep
 correction loop, integrated increments, and persistence through whole-goal acceptance.
 These are experience-backed defaults, not a guarantee of success or a fixed procedure.
 
+The user's first priority is free independent criticism after every coherent
+implementation increment, with correction and re-review. The second is a clear
+vision and an inspectable acceptance bar, established before implementation.
+Make both explicit in every implementation goal; brevity must not erase them.
+
 Keep the prompt concise, usually a few connected paragraphs. Reference
 [ENGINE.md](../../../ENGINE.md) for shared rules. Preserve explicit scope, exclusions,
 publication authority (including established user preferences), model/effort, time/token
@@ -32,8 +37,8 @@ behavior; disconnected or unit-test-only work does not complete the mechanism.
 For refactors, require demonstrated maintenance benefits and preserved production
 behavior; for tooling, a concrete user workflow. Adapt evidence to that domain.
 
-For substantial autonomous goals, carry this loop into the prompt: one builder owns
-a coherent mechanism or increment; a fresh read-only critic who did not build it
+For every implementation goal, carry this loop into the prompt: one builder owns
+a coherent mechanism or increment; after each increment, a fresh read-only critic who did not build it
 gets the requirement, original evidence, complete diff and actual validation output.
 The critic independently checks the evidence and may challenge priorities, design,
 exclusions, production reachability and tests. The requirement and builder's account
