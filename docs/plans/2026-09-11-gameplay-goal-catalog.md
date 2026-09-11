@@ -141,11 +141,20 @@ the prompt itself, not an additional mandatory planning artifact.
 > and validate **[real entry → result → continuation/release]**, including
 > **[important interruption/ownership cases and observable outputs]**.
 > Reuse working behavior, include coherent prerequisites and check affected
-> consumers. Complete the named scope; a helper, passing sample or merged PR
+> consumers. After each coherent increment, obtain fresh independent criticism
+> of requirements, original evidence, the complete diff and validation; correct
+> confirmed findings and repeat review until passed. Maintain affected evidence
+> and documentation after independent confirmation, respecting annotation authority.
+> Complete the named scope with a final audit for omissions and cross-mechanism
+> gaps; a helper, passing sample or merged PR
 > alone does not close it. Preserve any remaining in-scope work for continuation.
 
-Preserve granted publication authority, budgets and workflow settings; add none
-implicitly. Leave design/decomposition/tools open except for real constraints.
+Carry the current goal-prompt skill's standing PR-creation preference into final
+implementation prompts unless narrowed by the user; merge needs its own authority.
+Preserve established publication authority, budgets and workflow settings. Leave
+design/decomposition/tools open except for real constraints. The shorter scope
+examples below also require that skill's independent correction loop and final
+whole-scope acceptance when expanded into implementation prompts.
 If implementation is authorized, preparation alone does not complete the task.
 
 ### Load the relevant evidence, not the whole catalogue
@@ -455,8 +464,13 @@ ignoring an explicit stop/budget limit.
 > movement/firing for both variants. Cover interruption and repeated use, with
 > saved-state checks where affected. Include broken required handoffs and check
 > other consumers of changed shared state. Complete this loop and retain its
-> evidence; this does not certify the entire infantry roster or either unit's
-> unrelated abilities. Preserve outstanding in-scope behavior for continuation.
+> evidence. After each coherent increment, obtain fresh independent review of
+> original evidence, the complete diff and validation; correct findings and repeat
+> review until passed. Update affected evidence after confirmation and finish with
+> a whole-scope omission/regression audit. This does not certify the entire infantry
+> roster or either unit's unrelated abilities. Preserve outstanding in-scope behavior
+> for continuation. Apply the goal-prompt skill's standing PR-creation preference,
+> preserving any narrower instructions and separate merge authority.
 
 For “make the GI work exactly like retail,” that narrower example is insufficient:
 whole-object scope also covers ordinary movement/combat/damage, applicable host
