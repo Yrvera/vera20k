@@ -15,6 +15,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "bridge_ground.rs"]
+mod ground_fallout;
+
 use crate::map::bridge_facts::{
     BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_DIRECTION_ZERO,
     BRIDGE_FLAG_STRUCTURAL,
@@ -123,9 +126,8 @@ pub(crate) fn apply_bridge_damage_events_with_overlay_registry(
     // C4Warhead semantics, bridge-deck occupants DropIn, then that cell emits
     // debris. Keeping the effects inside this helper preserves the binary's
     // per-cell fallout order instead of batching kills, drops, and debris.
-    let c4_inf_death = c4_inf_death(rules, sim);
     for &(rx, ry) in &blow_up_cells {
-        blow_up_bridge_cell_fallout(sim, rules, rx, ry, c4_inf_death);
+        blow_up_bridge_cell_fallout(sim, rules, rx, ry, overlay_registry);
     }
 
     // Aggregate rim cells + zones-dirty flag from the dispatcher's
@@ -545,9 +547,8 @@ fn apply_hut_bridge_execution(
     any_zones_dirty |= extra_zones_dirty;
 
     project_pending_low_bridge_overlay_writes(sim, overlay_registry);
-    let c4_inf_death = c4_inf_death(rules, sim);
     for &(rx, ry) in &blow_up_cells {
-        blow_up_bridge_cell_fallout(sim, rules, rx, ry, c4_inf_death);
+        blow_up_bridge_cell_fallout(sim, rules, rx, ry, overlay_registry);
     }
     update_adjacent_bridges(sim, &rim_cells);
     project_pending_low_bridge_overlay_writes(sim, overlay_registry);
@@ -1272,35 +1273,15 @@ fn hut_cell_is_low_bridge(
         })
 }
 
-/// Kill ground-layer entities at `(rx, ry)`. Mirrors the binary's
-/// `BlowUpBridge` ground-occupant pass: walk every entity at the cell
-/// that is NOT on the bridge layer and force-kill via C4Warhead semantics
-/// (`damage = 0, force_kill = 1` in the binary; we set health = 0 and
-/// flag `dying` for the next combat tick to handle death effects).
-///
-/// Bridge-deck entities go through `drop_in_bridge_deck_entities`
-/// (Task 11) and survive — vanilla never drowns or kills them on
-/// collapse (HIGH §12.7, §12.9).
-///
-/// `c4_inf_death` is the C4Warhead's `InfDeath=` byte; for entities with
-/// an animation, the kill loop switches the death sequence to match (so
-/// infantry play the C4-selected explosive death anim rather than the
-/// default Die1). Mirrors the combat-side path in
-/// `compute_dying_entities_combat_effects`.
-fn c4_inf_death(rules: &RuleSet, sim: &Simulation) -> u8 {
-    let c4_id = sim.rule_handles().c4;
-    let name = sim.interner.resolve(c4_id);
-    rules.warhead(name).map(|wh| wh.inf_death).unwrap_or(1)
-}
-
+/// Complete ground receivers before the deck pass and debris RNG.
 fn blow_up_bridge_cell_fallout(
     sim: &mut Simulation,
     rules: &RuleSet,
     rx: u16,
     ry: u16,
-    c4_inf_death: u8,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
-    kill_ground_occupants_at(sim, rules, rx, ry, c4_inf_death);
+    kill_ground_occupants_at(sim, rules, rx, ry, overlay_registry);
     drop_in_bridge_deck_entities(sim, rx, ry);
     let mut one_cell = BTreeSet::new();
     one_cell.insert((rx, ry));
@@ -1310,53 +1291,14 @@ fn blow_up_bridge_cell_fallout(
 /// `CellClass::BlowUpBridge @ 0x0047DDAE`: every ground occupant takes
 /// `ReceiveDamage` (`+0x16C`) with its own HP and `C4Warhead=`, so the kill
 /// runs the normal death branch including `Death_Announcement` (`+0x3B8`).
-fn kill_ground_occupants_at(
+pub(super) fn kill_ground_occupants_at(
     sim: &mut Simulation,
     rules: &RuleSet,
     rx: u16,
     ry: u16,
-    c4_inf_death: u8,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
-    use crate::sim::animation::death_sequence_for_inf_death;
-    let death_seq = death_sequence_for_inf_death(c4_inf_death);
-    let victims: Vec<u64> = sim
-        .substrate
-        .entities
-        .iter_sorted()
-        .filter(|(_, e)| {
-            e.position.rx == rx
-                && e.position.ry == ry
-                && !e.is_on_bridge_layer()
-                // BlowUpBridge force-kills only the cell's GROUND object-list
-                // occupants. Air units (and TS-legacy underground) are never on
-                // that list, so an aircraft overflying the collapse cell must
-                // survive — `occupancy_list_layer()` is `None` for those layers.
-                && e.occupancy_list_layer().is_some()
-                && e.health.current > 0
-        })
-        .map(|(id, _)| id)
-        .collect();
-    for id in victims {
-        let infantry_terminal = sim.begin_raw_infantry_death(id, Some(c4_inf_death));
-        if let Some(entity) = sim.substrate.entities.get_mut(id) {
-            if !infantry_terminal {
-                entity.health.current = 0;
-                entity.dying = true;
-            }
-            entity.attack_target = None;
-            entity.movement_target = None;
-            entity.selected = false;
-            // `death_seq` is `None` whenever the warhead's `InfDeath=` picks
-            // an animation arm instead of a sequence — see the jump table at
-            // 0x00518D58.
-            if let (false, Some(seq), Some(anim)) =
-                (infantry_terminal, death_seq, entity.animation.as_mut())
-            {
-                anim.switch_to(seq);
-            }
-        }
-        sim.announce_unit_lost_at_death_site(rules, id);
-    }
+    ground_fallout::apply(sim, rules, overlay_registry, rx, ry);
 }
 
 /// Rim refresh. For each just-collapsed rim cell, walk along the bridge
@@ -3554,21 +3496,50 @@ mod tests {
         // deferred drain. The legacy coordinate scan must not restart their
         // Infantry terminal lifetime when it visits this stored identity.
         let retired = GameEntity::new_at_frame_zero_for_test(
-            3, 5, 5, 0, 0, sim.interner.intern("Americans"),
-            Health { current: 100, max: 100 }, sim.interner.intern("E1"),
-            crate::map::entities::EntityCategory::Infantry, 0, 5, false,
+            3,
+            5,
+            5,
+            0,
+            0,
+            sim.interner.intern("Americans"),
+            Health {
+                current: 100,
+                max: 100,
+            },
+            sim.interner.intern("E1"),
+            crate::map::entities::EntityCategory::Infantry,
+            0,
+            5,
+            false,
         );
         sim.substrate.entities.insert(retired);
         sim.uninit(3);
         assert!(sim.substrate.entities.get(3).unwrap().health.current > 0);
 
-        kill_ground_occupants_at(&mut sim, &rules_with_voxel_max(0), 5, 5, 1);
+        let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[VehicleTypes]\n0=MTNK\n[MTNK]\nStrength=256\nArmor=heavy\n[Warheads]\n0=Super\n[Super]\nInfDeath=1\n",
+        )).unwrap();
+        let ground = sim.substrate.entities.get_mut(1).unwrap();
+        ground.lifecycle.in_limbo = false;
+        ground.lifecycle.cell_marked = true;
+        sim.substrate.occupancy.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            crate::sim::occupancy::CellListInsertion::PrependNonBuilding,
+        );
+        kill_ground_occupants_at(&mut sim, &rules, 5, 5, None);
 
         let retired = sim.substrate.entities.get(3).unwrap();
-        assert_eq!(retired.health.current, 0, "raw HP write is preserved");
+        assert_eq!(
+            retired.health.current, 100,
+            "unlinked retired object is not a ground receiver"
+        );
         assert!(!retired.lifecycle.object_alive);
         assert!(retired.infantry_terminal.is_none());
-        assert_eq!(sim.substrate.pending_delete, vec![3]);
+        assert_eq!(sim.substrate.pending_delete, vec![3, 1]);
 
         let g = sim.substrate.entities.get(1).expect("ground unit present");
         assert_eq!(g.health.current, 0, "ground occupant is force-killed");
@@ -3592,7 +3563,7 @@ mod tests {
         use crate::sim::world::SimSoundEvent;
 
         let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
-            "[VehicleTypes]\n0=MTNK\n[MTNK]\nStrength=300\nArmor=heavy\n",
+            "[VehicleTypes]\n0=MTNK\n[MTNK]\nStrength=300\nArmor=heavy\n[Warheads]\n0=Super\n[Super]\nInfDeath=1\n",
         ))
         .expect("rules parse");
         let mut sim = Simulation::new();
@@ -3629,7 +3600,20 @@ mod tests {
             sim.substrate.entities.insert(unit);
         }
 
-        kill_ground_occupants_at(&mut sim, &rules, 5, 5, 1);
+        for id in 1..=3 {
+            let unit = sim.substrate.entities.get_mut(id).unwrap();
+            unit.lifecycle.in_limbo = false;
+            unit.lifecycle.cell_marked = true;
+            sim.substrate.occupancy.add(
+                5,
+                5,
+                id,
+                MovementLayer::Ground,
+                None,
+                crate::sim::occupancy::CellListInsertion::PrependNonBuilding,
+            );
+        }
+        kill_ground_occupants_at(&mut sim, &rules, 5, 5, None);
 
         let lost: Vec<_> = sim
             .sound_events

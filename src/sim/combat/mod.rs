@@ -2316,6 +2316,12 @@ fn resolve_receive_damage(
     let distance_leptons = event.distance_leptons?;
     let receiver_flags = event.receiver_flags?;
     let target = entities.get(event.target_id)?;
+    // Building442230 returns before Techno for Health0, after its wrapper
+    // response (already executed by commit_entities). Infantry/Unit instead
+    // delegate and can re-enter Techno's fatal tail at zero Health.
+    if target.category == EntityCategory::Structure && target.health.current == 0 {
+        return None;
+    }
     let warhead = rules.warhead(interner.resolve(event.warhead_ref))?;
     let target_type = rules.object(interner.resolve(target.type_ref()));
     let source = (event.attacker_id != RAD_NO_ATTACKER)
@@ -2366,13 +2372,16 @@ fn resolve_receive_damage(
         && source.is_some_and(|source| {
             source.type_ref() == target.type_ref() && source.owner() == target.owner()
         });
-    let bunker_blocked = if target_is_building && target.bunker_occupant.is_some() {
-        // Linked Building branch is intentionally the inverse of the installed
-        // non-Building branch in TechnoClass::ReceiveDamage.
-        warhead.penetrates_bunker
-    } else {
-        target.bunker_link.installed_in().is_some() && !warhead.penetrates_bunker
-    };
+    // 701900 jumps to701BF6 when ignoreDefenses is set, before either linked
+    // bunker branch. BlowUpBridge's forced C4 receiver must bypass both arms.
+    let bunker_blocked = !receiver_flags.ignore_defenses
+        && if target_is_building && target.bunker_occupant.is_some() {
+            // Linked Building branch is intentionally the inverse of the installed
+            // non-Building branch in TechnoClass::ReceiveDamage.
+            warhead.penetrates_bunker
+        } else {
+            target.bunker_link.installed_in().is_some() && !warhead.penetrates_bunker
+        };
     let active_invulnerability = target.invulnerability.as_ref().filter(|_| {
         crate::sim::superweapon::invulnerability::is_invulnerable(
             target.invulnerability.as_ref(),

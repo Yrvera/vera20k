@@ -260,7 +260,7 @@ fn infantry_terminal_raw_mutation_retires_on_next_visit_with_or_without_animatio
 }
 
 #[test]
-fn infantry_terminal_no_art_cleanup_preserves_parent_before_recursive_deaths() {
+fn infantry_terminal_no_art_cleanup_follows_recursive_deaths() {
     use crate::sim::world::LifecycleTestEvent;
     let (mut sim, rules) = fixture_with_extra("[DeathWH]\nCellSpread=2\n");
     let parent = sim
@@ -285,7 +285,9 @@ fn infantry_terminal_no_art_cleanup_preserves_parent_before_recursive_deaths() {
             _ => None,
         })
         .collect();
-    assert_eq!(uninit_order, [parent, child]);
+    // Infantry517FA0 resumes its concrete cleanup only after the shared
+    // Techno701900 receiver's recursive DeathWeapon has completed.
+    assert_eq!(uninit_order, [child, parent]);
     for id in [parent, child] {
         let entity = sim.substrate.entities.get(id).unwrap();
         assert!(entity.lifecycle.in_limbo && !entity.in_logic_vector);

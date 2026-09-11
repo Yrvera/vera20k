@@ -1834,11 +1834,7 @@ impl Simulation {
             return;
         }
 
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum CellObject {
-            Entity(u64),
-            Terrain(u64),
-        }
+        use crate::sim::occupancy::CellObjectMember as CellObject;
 
         fn current_order(
             occupancy: &crate::sim::occupancy::OccupancyGrid,
@@ -1847,24 +1843,7 @@ impl Simulation {
             ry: u16,
             layer: MovementLayer,
         ) -> Vec<CellObject> {
-            let terrain_id = (layer == MovementLayer::Ground)
-                .then(|| terrain_cells.get(&(rx, ry)).copied())
-                .flatten();
-            let mut order = Vec::new();
-            let mut terrain_inserted = terrain_id.is_none();
-            if let Some(occupancy) = occupancy.get(rx, ry) {
-                for occupant in occupancy.iter_layer(layer) {
-                    if !terrain_inserted && occupant.is_building {
-                        order.push(CellObject::Terrain(terrain_id.expect("present")));
-                        terrain_inserted = true;
-                    }
-                    order.push(CellObject::Entity(occupant.entity_id));
-                }
-            }
-            if !terrain_inserted {
-                order.push(CellObject::Terrain(terrain_id.expect("present")));
-            }
-            order
+            occupancy.cell_objects(rx, ry, layer, terrain_cells.get(&(rx, ry)).copied()).collect()
         }
 
         let mut run = crate::sim::combat::world_receiver::ReceiverRun::default();
@@ -2235,6 +2214,24 @@ impl Simulation {
         let mut run = crate::sim::combat::world_receiver::ReceiverRun::default();
         let (effects, under_attack_events) = crate::sim::combat::world_receiver::commit_entities(
             self, &mut run, std::slice::from_ref(&event), Some(false), rules, overlay_registry,
+        );
+        let terrain_navigation_changed_cells = run.finish(self);
+        self.absorb_noncombat_damage_effects(
+            rules, overlay_registry, effects, under_attack_events, terrain_navigation_changed_cells,
+        );
+    }
+
+    /// Terrain counterpart of a direct object receiver. Native bridge fallout
+    /// forces Object damage, while Terrain's Wood/Immune gate still applies.
+    pub(crate) fn commit_direct_terrain_damage_receiver(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        event: crate::sim::combat::TerrainDamageEvent,
+    ) {
+        let mut run = crate::sim::combat::world_receiver::ReceiverRun::default();
+        let (effects, under_attack_events) = crate::sim::combat::world_receiver::commit_terrain(
+            self, &mut run, event, true, rules, overlay_registry,
         );
         let terrain_navigation_changed_cells = run.finish(self);
         self.absorb_noncombat_damage_effects(

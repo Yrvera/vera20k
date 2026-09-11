@@ -233,7 +233,7 @@ impl TerrainAreaState {
         rules: &RuleSet,
         interner: &StringInterner,
     ) -> TerrainAreaReceiveResult {
-        receive_terrain_area_damage_with_scenario(
+        receive_terrain_damage_with_scenario(
             &mut self.terrain_objects,
             &self.terrain_object_cells,
             &mut self.finalizing_terrain,
@@ -244,6 +244,7 @@ impl TerrainAreaState {
             warhead,
             rules,
             interner,
+            false,
             false,
         )
     }
@@ -519,6 +520,103 @@ mod tests {
             max_damage, warhead_section
         ));
         RuleSet::from_ini(&ini).expect("kernel rules")
+    }
+
+    #[test]
+    fn bridge_direct_terrain_damage_bypasses_kernel_and_finishes_removal() {
+        let rules = terrain_kernel_rules(
+            "Verses=0%,0%,0%,0%,0%,0%,0%,0%,0%,0%,0%\nCellSpread=1\nPercentAtMax=0",
+            1,
+        );
+        let mut sim = Simulation::new();
+        sim.session.no_damage = true;
+        seed_one_at(&mut sim, &rules, "TREE01", (0, 0));
+        let stable_id = sim.production.terrain_object_cells[&(0, 0)];
+        let health = sim.production.terrain_objects[&stable_id].health;
+        let warhead_ref = sim.interner.intern("WH");
+        sim.commit_direct_terrain_damage_receiver(
+            &rules,
+            None,
+            crate::sim::combat::TerrainDamageEvent {
+                stable_id,
+                rx: 0,
+                ry: 0,
+                damage: health,
+                distance_leptons: 512,
+                warhead_ref,
+                near_center_ic_isolation_eligible: false,
+            },
+        );
+        let terrain = &sim.production.terrain_objects[&stable_id];
+        assert_eq!(terrain.health, 0);
+        assert_eq!(terrain.lifecycle, TerrainObjectLifecycle::Destroyed);
+        assert!(
+            !terrain.in_logic_vector,
+            "direct receiver finishes retirement before returning"
+        );
+        assert!(!sim.production.terrain_object_cells.contains_key(&(0, 0)));
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(0, 0), 0);
+    }
+
+    #[test]
+    fn bridge_direct_terrain_damage_keeps_wood_and_immune_gates() {
+        for (wood, section) in [(false, ""), (true, "Immune=yes\n")] {
+            let rules = terrain_rules("TREE01", wood, section);
+            let mut sim = Simulation::new();
+            seed_one_at(&mut sim, &rules, "TREE01", (0, 0));
+            let stable_id = sim.production.terrain_object_cells[&(0, 0)];
+            let health = sim.production.terrain_objects[&stable_id].health;
+            let warhead_ref = sim.interner.intern("WH");
+            sim.commit_direct_terrain_damage_receiver(
+                &rules,
+                None,
+                crate::sim::combat::TerrainDamageEvent {
+                    stable_id,
+                    rx: 0,
+                    ry: 0,
+                    damage: health,
+                    distance_leptons: 0,
+                    warhead_ref,
+                    near_center_ic_isolation_eligible: false,
+                },
+            );
+            assert_eq!(sim.production.terrain_objects[&stable_id].health, health);
+            assert!(sim.production.terrain_objects[&stable_id].is_live());
+            assert_eq!(sim.production.terrain_object_cells[&(0, 0)], stable_id);
+        }
+    }
+
+    #[test]
+    fn bridge_direct_terrain_receiver_rejects_zero_health_during_nested_death() {
+        let rules = terrain_rules("TREE01", true, "");
+        let mut sim = Simulation::new();
+        seed_one_at(&mut sim, &rules, "TREE01", (0, 0));
+        let stable_id = sim.production.terrain_object_cells[&(0, 0)];
+        // During a nested death callback, Health is zero before outer Limbo.
+        sim.production
+            .terrain_objects
+            .get_mut(&stable_id)
+            .unwrap()
+            .health = 0;
+        let warhead_ref = sim.interner.intern("WH");
+        sim.commit_direct_terrain_damage_receiver(
+            &rules,
+            None,
+            crate::sim::combat::TerrainDamageEvent {
+                stable_id,
+                rx: 0,
+                ry: 0,
+                damage: -10,
+                distance_leptons: 0,
+                warhead_ref,
+                near_center_ic_isolation_eligible: false,
+            },
+        );
+        assert_eq!(sim.production.terrain_objects[&stable_id].health, 0);
+        assert!(
+            sim.production.terrain_objects[&stable_id].is_live(),
+            "outer receiver still owns finalization"
+        );
     }
 
     fn rules(tib_section: &str) -> RuleSet {
@@ -1183,7 +1281,7 @@ mod tests {
 /// Receive against live Terrain maps. The recursion guard belongs to the
 /// outer damage operation; no persisted authority leaves ProductionState.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn receive_terrain_area_damage_with_scenario(
+pub(crate) fn receive_terrain_damage_with_scenario(
     terrain_objects: &mut BTreeMap<u64, TerrainObjectState>,
     terrain_object_cells: &BTreeMap<(u16, u16), u64>,
     finalizing_terrain: &mut BTreeSet<u64>,
@@ -1195,6 +1293,7 @@ pub(crate) fn receive_terrain_area_damage_with_scenario(
     rules: &RuleSet,
     interner: &StringInterner,
     scenario_no_damage: bool,
+    ignore_defenses: bool,
 ) -> TerrainAreaReceiveResult {
     if finalizing_terrain.contains(&stable_id)
         || terrain_object_cells.get(&cell) != Some(&stable_id)
@@ -1205,7 +1304,9 @@ pub(crate) fn receive_terrain_area_damage_with_scenario(
     let Some(snapshot) = terrain_objects.get(&stable_id) else {
         return TerrainAreaReceiveResult::Ignored;
     };
-    if !snapshot.is_live() || snapshot.cell() != cell {
+    // ObjectClass::ReceiveDamage 005F53A1..005F53B7 rejects these before
+    // either ordinary armor calculation or the forced direct-damage path.
+    if !snapshot.is_live() || snapshot.cell() != cell || snapshot.health <= 0 || raw_damage == 0 {
         return TerrainAreaReceiveResult::Ignored;
     }
     let Some(terrain_type) =
@@ -1217,16 +1318,23 @@ pub(crate) fn receive_terrain_area_damage_with_scenario(
         return TerrainAreaReceiveResult::Ignored;
     }
 
-    let resolved_damage = damage::kernel::apply_warhead_damage(
-        raw_damage,
-        warhead.cell_spread_f64,
-        warhead.percent_at_max_f64,
-        &warhead.verses_f64,
-        damage::ArmorClass(armor_index(&terrain_type.armor) as u8),
-        distance_leptons,
-        scenario_no_damage,
-        rules.combat_damage.max_damage,
-    );
+    // TerrainClass 0071B920 always checks Wood/Immune above, then forwards
+    // ignore_defenses to ObjectClass 005F5390. BlowUpBridge 0047DD70 passes
+    // true: current Health bypasses verses, falloff, NoDamage and MaxDamage.
+    let resolved_damage = if ignore_defenses {
+        raw_damage
+    } else {
+        damage::kernel::apply_warhead_damage(
+            raw_damage,
+            warhead.cell_spread_f64,
+            warhead.percent_at_max_f64,
+            &warhead.verses_f64,
+            damage::ArmorClass(armor_index(&terrain_type.armor) as u8),
+            distance_leptons,
+            scenario_no_damage,
+            rules.combat_damage.max_damage,
+        )
+    };
     if resolved_damage == 0 {
         return TerrainAreaReceiveResult::Ignored;
     }

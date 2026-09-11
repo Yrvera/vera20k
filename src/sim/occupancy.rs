@@ -25,6 +25,15 @@ pub(crate) const VEHICLE_OCCUPATION_BIT: u8 = 0x20;
 pub(crate) const OBJECT_OCCUPATION_BIT: u8 = 0x40;
 pub(crate) const BUILDING_OCCUPATION_BIT: u8 = 0x80;
 
+/// Object identities on a CellClass ground/deck list. Terrain remains owned
+/// by ProductionState; this view inserts its member between mobile objects
+/// and the building tail, as the native AddContent registration paths do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CellObjectMember {
+    Entity(u64),
+    Terrain(u64),
+}
+
 /// Side length of gamemd's global airborne-object spatial bucket grid.
 /// `FUN_00412870` constructs exactly 400 vectors as a 20 x 20 grid.
 pub(crate) const AIR_SPATIAL_BUCKET_SIDE: u16 = 20;
@@ -280,12 +289,7 @@ impl RawCellOccupationGrid {
 
     /// Infantry owner identity paired with the selected native occupation byte.
     /// Ground (`+0x124`) and deck (`+0x128`) are independent planes.
-    pub(crate) fn infantry_owner(
-        &self,
-        rx: u16,
-        ry: u16,
-        layer: MovementLayer,
-    ) -> Option<u64> {
+    pub(crate) fn infantry_owner(&self, rx: u16, ry: u16, layer: MovementLayer) -> Option<u64> {
         self.cells.get(&(rx, ry)).and_then(|cell| match layer {
             MovementLayer::Ground => cell.ground_infantry_owner,
             MovementLayer::Bridge => cell.deck_infantry_owner,
@@ -1436,6 +1440,35 @@ impl OccupancyGrid {
     /// Get occupancy for a cell (all layers).
     pub fn get(&self, rx: u16, ry: u16) -> Option<&CellOccupancy> {
         self.cells.get(&(rx, ry))
+    }
+
+    /// Borrow the live mixed list without allocating a replacement member
+    /// vector. Callers decide whether to capture the next member before or
+    /// after a receiver callback; those two native traversals are different.
+    /// Terrain precedes buildings and follows mobile objects for the current
+    /// terrain-first scenario registration. Generic native AddContent prepends
+    /// every nonbuilding; this projection does not model later Terrain insertion.
+    pub(crate) fn cell_objects(
+        &self,
+        rx: u16,
+        ry: u16,
+        layer: MovementLayer,
+        terrain_id: Option<u64>,
+    ) -> impl Iterator<Item = CellObjectMember> + '_ {
+        let mut terrain = terrain_id.filter(|_| layer == MovementLayer::Ground);
+        let mut entities = self
+            .get(rx, ry)
+            .into_iter()
+            .flat_map(move |cell| cell.iter_layer(layer))
+            .peekable();
+        std::iter::from_fn(move || {
+            if terrain.is_some() && entities.peek().is_none_or(|member| member.is_building) {
+                return terrain.take().map(CellObjectMember::Terrain);
+            }
+            entities
+                .next()
+                .map(|member| CellObjectMember::Entity(member.entity_id))
+        })
     }
 
     /// First BuildingClass identity on a selected native list, preserving

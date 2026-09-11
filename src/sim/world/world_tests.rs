@@ -4627,6 +4627,11 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
 /// covers the parallel ground-layer path.
 #[test]
 fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=MTNK\n[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n\
+         [Warheads]\n0=Super\n[Super]\nInfDeath=2\nPenetratesBunker=yes\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    )).unwrap();
     let mut sim = Simulation::new();
     let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     install_rectangular_test_playfield(&mut sim, resolved.width(), resolved.height());
@@ -4654,7 +4659,7 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
             recruitable_b: true,
             structure_upgrades: [None, None, None],
         }],
-        Some(&combat_test_rules()),
+        Some(&rules),
         &BTreeMap::new(),
         Some(&resolved),
     );
@@ -4666,14 +4671,17 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
         .map(|(id, _)| id)
         .expect("ground unit spawned");
     sim.remove_entity_occupancy(id);
-    sim.substrate.entities.get_mut(id).unwrap().on_bridge = false;
+    let unit = sim.substrate.entities.get_mut(id).unwrap();
+    unit.on_bridge = false;
+    if let Some(locomotor) = unit.locomotor.as_mut() {
+        locomotor.layer = MovementLayer::Ground;
+    }
     sim.add_entity_occupancy(id);
     assert!(
         !sim.substrate.entities.get(id).unwrap().on_bridge,
         "ground layer"
     );
 
-    let mut rules = combat_test_rules();
     sim.resolve_type_handles(&rules);
     let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
@@ -4692,9 +4700,9 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
         .substrate
         .entities
         .get(id)
-        .expect("ground unit still in EntityStore (kill is via dying flag)");
+        .expect("ground unit retained until pending deletion drains");
     assert_eq!(e.health.current, 0, "kill_ground_occupants_at zeroed HP");
-    assert!(e.dying, "dying flag set for next combat-tick death effects");
+    assert!(e.dying, "direct receiver completed death before returning");
     assert!(e.attack_target.is_none());
     assert!(e.movement_target.is_none());
 }

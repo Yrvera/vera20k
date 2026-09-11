@@ -8,6 +8,7 @@ use super::*;
 
 pub(super) struct ReceiverHealthCommit {
     pub(super) became_fatal: bool,
+    pub(super) entered_techno_death: bool,
     pub(super) reached_exact_zero: bool,
     pub(super) postmortem_candidate: Option<i32>,
     pub(super) fatal_category: EntityCategory,
@@ -41,6 +42,7 @@ pub(super) fn commit_receiver_health(
         postmortem_duration_for_event(event, target, rules, interner, resolved.outcome)
     });
     let mut became_fatal = false;
+    let mut entered_techno_death = false;
     let mut reached_exact_zero = false;
     let mut postmortem_candidate = None;
     let mut fatal_category = EntityCategory::Unit;
@@ -228,6 +230,16 @@ pub(super) fn commit_receiver_health(
             }
         }
 
+        // 70202E..702035 selects Techno's fatal branch on post-Object Health0,
+        // including a captured successor killed by a prior nested receiver.
+        // This does not repeat Object's fresh exact-zero kill/score callbacks.
+        // Native comparison: tools/spatial_oracle/bridge_zero_health_receiver.
+        entered_techno_death =
+            became_fatal || (reached_survivor_postlude && target.health.current == 0);
+        if entered_techno_death {
+            fatal_category = target.category;
+        }
+
         // gamemd-derived: `BuildingClass::ReceiveDamage @ 0x00442230`'s
         // damage-state dispatch, latched here and emitted below so it
         // lands after the shared Techno receiver's own consequences —
@@ -316,6 +328,7 @@ pub(super) fn commit_receiver_health(
 
     Some(ReceiverHealthCommit {
         became_fatal,
+        entered_techno_death,
         reached_exact_zero,
         postmortem_candidate,
         fatal_category,

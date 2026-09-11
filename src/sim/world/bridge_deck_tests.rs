@@ -13,7 +13,7 @@ use crate::sim::{
 #[test]
 fn infantry_terminal_hut_collapse_retires_effect_only_ground_victim() {
     use crate::sim::house_state::HouseState;
-    use crate::sim::world::{InfantryTerminal, LifecycleTestEvent, SimSoundEvent};
+    use crate::sim::world::{LifecycleTestEvent, SimSoundEvent};
     use std::collections::BTreeMap;
     let rules = RuleSet::from_ini(&IniFile::from_str(
         "[InfantryTypes]\n0=E1\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
@@ -46,11 +46,11 @@ fn infantry_terminal_hut_collapse_retires_effect_only_ground_victim() {
         None
     ));
     let object = sim.substrate.entities.get(victim).unwrap();
-    assert_eq!(
-        object.infantry_terminal,
-        Some(InfantryTerminal::RetireNextVisit)
-    );
+    assert!(object.infantry_terminal.is_none());
+    assert!(!object.lifecycle.object_alive);
     assert!(object.dying && !object.selected);
+    assert!(!sim.substrate.occupancy.contains_entity(4, 4, victim));
+    assert!(!sim.live_object_order_snapshot().contains(&victim));
     assert_eq!(
         sim.sound_events
             .iter()

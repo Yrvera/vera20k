@@ -186,7 +186,6 @@ pub(crate) fn commit_area(
     overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> (DeathEffects, Vec<UnderAttackEvent>) {
     let current_tick = receiver_tick(world);
-    let scenario_no_damage = world.session.no_damage;
 
     let isolation_armed =
         area_near_center_ic_isolation_armed(receivers, &mut world.substrate.entities, current_tick);
@@ -211,80 +210,100 @@ pub(crate) fn commit_area(
                 if isolation_armed && event.near_center_ic_isolation_eligible {
                     continue;
                 }
-                let Some(warhead) = rules
-                    .warhead(world.interner.resolve(event.warhead_ref))
-                    .cloned()
-                else {
-                    continue;
-                };
-                let receive = crate::sim::terrain_object::receive_terrain_area_damage_with_scenario(
-                    &mut world.production.terrain_objects,
-                    &world.production.terrain_object_cells,
-                    &mut run.finalizing_terrain,
-                    event.stable_id,
-                    (event.rx, event.ry),
-                    event.damage,
-                    event.distance_leptons,
-                    &warhead,
-                    rules,
-                    &mut world.interner,
-                    scenario_no_damage,
-                );
-                let TerrainAreaReceiveResult::Lethal(lethal) = receive else {
-                    continue;
-                };
-
-                if lethal.spawns_tiberium
-                    && let Some(c4_warhead) = rules.warhead(&rules.bridge_warheads.c4_name).cloned()
-                {
-                    let c4_id = world.interner.intern(&c4_warhead.id);
-                    let impact_z = world
-                        .resolved_terrain
-                        .as_ref()
-                        .and_then(|grid| grid.cell(lethal.cell.0, lethal.cell.1))
-                        .map_or(0, |cell| i32::from(cell.level));
-                    let aoe = {
-                        let collected = collect_area(
-                            world,
-                            rules,
-                            overlay_registry,
-                            lethal.cell,
-                            100,
-                            &c4_warhead,
-                            (RAD_NO_ATTACKER, None, c4_id),
-                            None,
-                            impact_z,
-                        );
-                        append_fixture_tiberium(world, &mut effects.tiberium_reduction_requests);
-                        collected
-                    };
-                    #[cfg(test)]
-                    effects.wall_mutations.extend(aoe.wall_mutations);
-
-                    #[cfg(test)]
-                    effects
-                        .cell_target_detaches
-                        .extend(aoe.cell_target_detaches);
-                    let (nested, mut pings) =
-                        commit_area(world, run, &aoe.receivers, rules, overlay_registry);
-                    effects.append(nested);
-                    under_attack_events.append(&mut pings);
-                }
-
-                let _ = crate::sim::terrain_object::finalize_terrain_lethal(
-                    crate::sim::terrain_object::production_authority_parts(
-                        &mut world.production,
-                        &mut world.substrate.raw_cell_occupation,
-                    ),
-                    &mut run.finalizing_terrain,
-                    &mut run.navigation_changed_cells,
-                    lethal,
-                    world.resolved_terrain.as_mut(),
-                );
+                let (nested, mut pings) =
+                    commit_terrain(world, run, event, false, rules, overlay_registry);
+                effects.append(nested);
+                under_attack_events.append(&mut pings);
             }
         }
     }
 
+    (effects, under_attack_events)
+}
+
+/// Complete one TerrainClass receiver, including its nested C4 and removal.
+/// Direct bridge calls use ignore_defenses=true; ordinary area calls retain
+/// their damage kernel and perform the area-wide IC gate before entering here.
+pub(crate) fn commit_terrain(
+    world: &mut Simulation,
+    run: &mut ReceiverRun,
+    event: TerrainDamageEvent,
+    ignore_defenses: bool,
+    rules: &RuleSet,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+) -> (DeathEffects, Vec<UnderAttackEvent>) {
+    let mut effects = DeathEffects::default();
+    let mut under_attack_events = Vec::new();
+    let Some(warhead) = rules
+        .warhead(world.interner.resolve(event.warhead_ref))
+        .cloned()
+    else {
+        return (effects, under_attack_events);
+    };
+    let receive = crate::sim::terrain_object::receive_terrain_damage_with_scenario(
+        &mut world.production.terrain_objects,
+        &world.production.terrain_object_cells,
+        &mut run.finalizing_terrain,
+        event.stable_id,
+        (event.rx, event.ry),
+        event.damage,
+        event.distance_leptons,
+        &warhead,
+        rules,
+        &mut world.interner,
+        world.session.no_damage,
+        ignore_defenses,
+    );
+    let TerrainAreaReceiveResult::Lethal(lethal) = receive else {
+        return (effects, under_attack_events);
+    };
+
+    if lethal.spawns_tiberium
+        && let Some(c4_warhead) = rules.warhead(&rules.bridge_warheads.c4_name).cloned()
+    {
+        let c4_id = world.interner.intern(&c4_warhead.id);
+        let impact_z = world
+            .resolved_terrain
+            .as_ref()
+            .and_then(|grid| grid.cell(lethal.cell.0, lethal.cell.1))
+            .map_or(0, |cell| i32::from(cell.level));
+        let aoe = {
+            let collected = collect_area(
+                world,
+                rules,
+                overlay_registry,
+                lethal.cell,
+                100,
+                &c4_warhead,
+                (RAD_NO_ATTACKER, None, c4_id),
+                None,
+                impact_z,
+            );
+            append_fixture_tiberium(world, &mut effects.tiberium_reduction_requests);
+            collected
+        };
+        #[cfg(test)]
+        effects.wall_mutations.extend(aoe.wall_mutations);
+
+        #[cfg(test)]
+        effects
+            .cell_target_detaches
+            .extend(aoe.cell_target_detaches);
+        let (nested, mut pings) = commit_area(world, run, &aoe.receivers, rules, overlay_registry);
+        effects.append(nested);
+        under_attack_events.append(&mut pings);
+    }
+
+    let _ = crate::sim::terrain_object::finalize_terrain_lethal(
+        crate::sim::terrain_object::production_authority_parts(
+            &mut world.production,
+            &mut world.substrate.raw_cell_occupation,
+        ),
+        &mut run.finalizing_terrain,
+        &mut run.navigation_changed_cells,
+        lethal,
+        world.resolved_terrain.as_mut(),
+    );
     (effects, under_attack_events)
 }
 
@@ -418,6 +437,7 @@ pub(crate) fn commit_entities(
         }
         let Some(receiver_health::ReceiverHealthCommit {
             became_fatal,
+            entered_techno_death,
             reached_exact_zero,
             postmortem_candidate,
             fatal_category,
@@ -801,7 +821,7 @@ pub(crate) fn commit_entities(
             }
         }
 
-        if became_fatal {
+        if entered_techno_death {
             {
                 if callbacks_enabled(world) {
                     world.apply_fatal_lifecycle_stage(
@@ -898,19 +918,16 @@ pub(crate) fn handle_death(
     #[cfg(test)]
     let mut cell_target_detaches: Vec<combat_aoe::CellTargetDetach> = Vec::new();
     let mut smudge_spawn_requests: Vec<SmudgeSpawnRequest> = Vec::new();
-    let mut concrete_smudge_plans: Vec<ConcreteDeathSmudgePlan> = Vec::new();
     let mut rad_detonations: Vec<crate::sim::radiation::RadDetonation> = Vec::new();
     let mut under_attack_events: Vec<UnderAttackEvent> = Vec::new();
     let mut unit_lost_events: Vec<UnitLostEvent> = Vec::new();
     let mut structure_destroyed: bool = false;
     for &dead_id in dead_entities {
-        // ReceiveDamage enters the death helper exactly once at the fatal
-        // transition. Non-animated objects remain in the store until the
-        // world-owned UnInit handoff, so keep this tick-local guard explicit.
-        if run.handled_deaths.contains(&dead_id) {
-            continue;
+        // Native702035 re-enters this branch for an already-zero receiver.
+        // Keep unique diagnostic IDs, without suppressing receiver effects.
+        if !run.handled_deaths.contains(&dead_id) {
+            run.handled_deaths.push(dead_id);
         }
-        run.handled_deaths.push(dead_id);
         let dead_info = world.substrate.entities.get(dead_id).map(|e| {
             if e.category == EntityCategory::Structure {
                 structure_destroyed = true;
@@ -927,7 +944,6 @@ pub(crate) fn handle_death(
                 world_z_leptons,
                 air_impact,
                 e.owner(),
-                e.animation.is_some(),
                 e.category,
                 e.veterancy,
                 e.current_weapon_index,
@@ -945,7 +961,6 @@ pub(crate) fn handle_death(
             world_z_leptons,
             air_impact,
             owner,
-            has_animation,
             category,
             veterancy,
             current_weapon_index,
@@ -965,15 +980,6 @@ pub(crate) fn handle_death(
                     ry,
                     &mut death_sounds,
                 );
-                // `TechnoClass::Death_Announcement @ 0x004D98C0` runs at the
-                // Aircraft/Infantry/Unit `ReceiveDamage` kill sites (vtable
-                // `+0x3B8`; `BuildingClass` has none) and skips `Spawned=`
-                // types at `0x004D98DD`. Its owner gate (`0x0050B6F0`) and
-                // the `CreateRadarEvent(7)` dedupe (`0x004D98FE`) need the
-                // house table and radar queue, which the world owns.
-                if let Some(event) = death_announcement_event(obj, category, rx, ry, owner) {
-                    unit_lost_events.push(event);
-                }
                 // gamemd-derived: the debris block of
                 // `TechnoClass::ReceiveDamage @ 0x00701900`
                 // (`0x00702281`..`0x0070256C`). It sits BELOW the two death
@@ -1020,133 +1026,11 @@ pub(crate) fn handle_death(
                         owner,
                     ));
                 }
-                // Crewed structures eject infantry survivors on destruction.
-                if obj.crewed && category == EntityCategory::Structure {
-                    destroyed_crewed_buildings.push(DestroyedCrewedBuilding {
-                        type_id: type_id,
-                        owner: owner,
-                        rx,
-                        ry,
-                        z,
-                    });
-                }
             }
 
             // The world fatal prelude already owns garrison ejection before
             // the nested death weapon. Generic cargo remains attached only in
             // callback-disabled receiver fixtures, for their UnInit assertions.
-
-            // Look up the warhead that dealt the killing blow for InfDeath
-            // selection below. The AnimList anim + smudge are emitted at
-            // the per-shot fire site (and at the death-AoE loop), not here.
-            let killing_warhead = damage_events
-                .iter()
-                .rfind(|event| event.target_id == dead_id)
-                .and_then(|event| {
-                    rules
-                        .warhead(world.interner.resolve(event.warhead_ref))
-                        .map(|wh| (wh, event.damage))
-                });
-
-            // BuildingClass runs DestructionEffects/SpawnSurvivors only after
-            // TechnoClass's synchronous death weapon has returned. Capture the
-            // immutable plan now; placement and all RNG stay at that postlude.
-            if category == EntityCategory::Structure {
-                let foundation = rules
-                    .object(world.interner.resolve(type_id))
-                    .map(|obj| obj.foundation.as_str())
-                    .unwrap_or("1x1");
-                concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Building {
-                    rx,
-                    ry,
-                    z: i32::from(z),
-                    foundation: foundation.to_owned(),
-                });
-            }
-
-            // `UnitClass::Death_Explosion @ 0x00738680` for vehicles and
-            // `AircraftClass::ReceiveDamage @ 0x0041661F` for aircraft: after
-            // the killing warhead's own `AnimList=` anim, the dying object plays
-            // ONE anim drawn from its type's `Explosion=` list and then one from
-            // `DestroyAnim=`, both at its own coordinate, one `Random__Next()`
-            // draw each. Without this a Grizzly and an Apocalypse died with the
-            // same warhead-derived puff.
-            //
-            // INFANTRY are excluded deliberately: `get_xrefs_to 0x00738680`
-            // returns four callers, all `UnitClass`, and an operand scan for the
-            // `Explosion=` count (`type+0x73C`) finds readers only in
-            // `AircraftClass::ReceiveDamage` and
-            // `BuildingClass::DestructionEffects @ 0x0044194D`. Infantry death
-            // spawns from the `InfDeath`/`DeathAnims` table alone. No stock
-            // `[InfantryTypes]` section authors `Explosion=` either, so this is
-            // a contract correction rather than a visible one.
-            //
-            // RESIDUAL (GSI-08.11) — the BUILDING arm is not modelled. Native
-            // runs `BuildingClass::DestructionEffects @ 0x004415F0`, which plays
-            // the `Explosion=` list once PER FOUNDATION CELL at cell centre with
-            // a scatter helper and a `RandomRanged(0, 3)` anim delay, then one
-            // `DestroyAnim=` at the building coordinate; the sub-order of the
-            // scatter, delay and index draws is UNCHECKED, and getting it wrong
-            // would misroute the stream for every structure death. `Explodes=`
-            // (forcing the last `Explosion=` entry for a loaded miner) is
-            // likewise unread. Trigger: every building death, and every loaded
-            // miner death. Frequency: continuous.
-            //
-            // Landing that arm also un-latents a second gap: four of the
-            // buildings it would newly reach — the base power plant of every
-            // faction (`GAPOWR`, `NAPOWR`, `YAPOWR`) plus `YAROCK` — author an
-            // `Explosion=` list whose sixth entry (`gtpowexp`/`tstlexp`) has no
-            // art section, so one draw in six per foundation cell resolves to
-            // nothing VERA can construct. That is correct against gamemd, which
-            // also draws nothing there, but VERA skips the object entirely
-            // where native still constructs and discards one. Read the residual
-            // on `ArtRegistry::bind_combat_explosion_anim_assets` before
-            // treating a missing power-plant explosion as a bug.
-            if matches!(category, EntityCategory::Unit | EntityCategory::Aircraft)
-                && let Some(obj) = rules.object(world.interner.resolve(type_id))
-            {
-                for list in [&obj.explosion_anims, &obj.destroy_anims] {
-                    if list.is_empty() {
-                        continue;
-                    }
-                    let index = (world.main_rng.next_u32() % list.len() as u32) as usize;
-                    let shp_name = world.interner.intern(&list[index]);
-                    explosion_effects.push(ExplosionEffect {
-                        shp_name,
-                        rx,
-                        ry,
-                        sub_x,
-                        sub_y,
-                        z,
-                    });
-                }
-            }
-
-            let inf_death = killing_warhead.as_ref().map_or(1, |(wh, _)| wh.inf_death);
-            if category == EntityCategory::Infantry {
-                let postlude = world.begin_infantry_receiver_death(
-                    dead_id,
-                    inf_death,
-                    &mut immediate_uninit_ids,
-                );
-                concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Infantry(postlude));
-                despawned_ids.push(dead_id);
-            } else if has_animation {
-                // Non-Infantry SHP lifetime remains on its existing path.
-                if let Some(entity) = world.substrate.entities.get_mut(dead_id) {
-                    entity.dying = true;
-                    if let (Some(sequence), Some(anim)) = (
-                        crate::sim::animation::death_sequence_for_inf_death(inf_death),
-                        entity.animation.as_mut(),
-                    ) {
-                        anim.switch_to(sequence);
-                    }
-                }
-                despawned_ids.push(dead_id);
-            } else {
-                immediate_uninit_ids.push(dead_id);
-                despawned_ids.push(dead_id);
-            }
         }
     }
 
@@ -1287,15 +1171,197 @@ pub(crate) fn handle_death(
         receiver_stage_trace,
     };
 
+    // Concrete receivers resume after Techno's nested DeathWeapon. Read the
+    // retained entity's current state at that boundary.
+    for &dead_id in dead_entities {
+        finish_concrete_death(
+            world,
+            dead_id,
+            damage_events,
+            rules,
+            overlay_registry,
+            &mut effects,
+        );
+    }
+
+    effects
+}
+
+/// Concrete receiver work after shared Techno death effects return.
+/// Evidence: Infantry517FA0, Unit737C90 and Building442230 base-call order.
+fn finish_concrete_death(
+    world: &mut Simulation,
+    dead_id: u64,
+    damage_events: &[EntityDamageEvent],
+    rules: &RuleSet,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    effects: &mut DeathEffects,
+) {
+    let Some(entity) = world.substrate.entities.get(dead_id) else {
+        return;
+    };
+    let category = entity.category;
+    // Building442230 returns before its result dispatch when Alive is clear.
+    if category == EntityCategory::Structure && !entity.lifecycle.object_alive {
+        return;
+    }
+    let (type_id, owner, rx, ry, sub_x, sub_y, z, has_animation) = (
+        entity.type_ref(),
+        entity.owner(),
+        entity.position.rx,
+        entity.position.ry,
+        entity.position.sub_x,
+        entity.position.sub_y,
+        entity.position.z,
+        entity.animation.is_some(),
+    );
+    let mut concrete_smudge_plans = Vec::new();
+    if let Some(obj) = rules.object(world.interner.resolve(type_id)) {
+        // `TechnoClass::Death_Announcement @ 0x004D98C0` runs at the
+        // Aircraft/Infantry/Unit `ReceiveDamage` kill sites (vtable
+        // `+0x3B8`; `BuildingClass` has none) and skips `Spawned=`
+        // types at `0x004D98DD`. Its owner gate (`0x0050B6F0`) and
+        // the `CreateRadarEvent(7)` dedupe (`0x004D98FE`) need the
+        // house table and radar queue, which the world owns.
+        if let Some(event) = death_announcement_event(obj, category, rx, ry, owner) {
+            effects.unit_lost_events.push(event);
+        }
+        // Crewed structures eject infantry survivors on destruction.
+        if obj.crewed && category == EntityCategory::Structure {
+            effects
+                .destroyed_crewed_buildings
+                .push(DestroyedCrewedBuilding {
+                    type_id: type_id,
+                    owner: owner,
+                    rx,
+                    ry,
+                    z,
+                });
+        }
+    }
+    // Look up the warhead that dealt the killing blow for InfDeath
+    // selection below. The AnimList anim + smudge are emitted at
+    // the per-shot fire site (and at the death-AoE loop), not here.
+    let killing_warhead = damage_events
+        .iter()
+        .rfind(|event| event.target_id == dead_id)
+        .and_then(|event| {
+            rules
+                .warhead(world.interner.resolve(event.warhead_ref))
+                .map(|wh| (wh, event.damage))
+        });
+
+    // BuildingClass runs DestructionEffects/SpawnSurvivors only after
+    // TechnoClass's synchronous death weapon has returned. Capture the
+    // immutable plan now; placement and all RNG stay at that postlude.
+    if category == EntityCategory::Structure {
+        let foundation = rules
+            .object(world.interner.resolve(type_id))
+            .map(|obj| obj.foundation.as_str())
+            .unwrap_or("1x1");
+        concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Building {
+            rx,
+            ry,
+            z: i32::from(z),
+            foundation: foundation.to_owned(),
+        });
+    }
+
+    // `UnitClass::Death_Explosion @ 0x00738680` for vehicles and
+    // `AircraftClass::ReceiveDamage @ 0x0041661F` for aircraft: after
+    // the killing warhead's own `AnimList=` anim, the dying object plays
+    // ONE anim drawn from its type's `Explosion=` list and then one from
+    // `DestroyAnim=`, both at its own coordinate, one `Random__Next()`
+    // draw each. Without this a Grizzly and an Apocalypse died with the
+    // same warhead-derived puff.
+    //
+    // INFANTRY are excluded deliberately: `get_xrefs_to 0x00738680`
+    // returns four callers, all `UnitClass`, and an operand scan for the
+    // `Explosion=` count (`type+0x73C`) finds readers only in
+    // `AircraftClass::ReceiveDamage` and
+    // `BuildingClass::DestructionEffects @ 0x0044194D`. Infantry death
+    // spawns from the `InfDeath`/`DeathAnims` table alone. No stock
+    // `[InfantryTypes]` section authors `Explosion=` either, so this is
+    // a contract correction rather than a visible one.
+    //
+    // RESIDUAL (GSI-08.11) — the BUILDING arm is not modelled. Native
+    // runs `BuildingClass::DestructionEffects @ 0x004415F0`, which plays
+    // the `Explosion=` list once PER FOUNDATION CELL at cell centre with
+    // a scatter helper and a `RandomRanged(0, 3)` anim delay, then one
+    // `DestroyAnim=` at the building coordinate; the sub-order of the
+    // scatter, delay and index draws is UNCHECKED, and getting it wrong
+    // would misroute the stream for every structure death. `Explodes=`
+    // (forcing the last `Explosion=` entry for a loaded miner) is
+    // likewise unread. Trigger: every building death, and every loaded
+    // miner death. Frequency: continuous.
+    //
+    // Landing that arm also un-latents a second gap: four of the
+    // buildings it would newly reach — the base power plant of every
+    // faction (`GAPOWR`, `NAPOWR`, `YAPOWR`) plus `YAROCK` — author an
+    // `Explosion=` list whose sixth entry (`gtpowexp`/`tstlexp`) has no
+    // art section, so one draw in six per foundation cell resolves to
+    // nothing VERA can construct. That is correct against gamemd, which
+    // also draws nothing there, but VERA skips the object entirely
+    // where native still constructs and discards one. Read the residual
+    // on `ArtRegistry::bind_combat_explosion_anim_assets` before
+    // treating a missing power-plant explosion as a bug.
+    if matches!(category, EntityCategory::Unit | EntityCategory::Aircraft)
+        && let Some(obj) = rules.object(world.interner.resolve(type_id))
+    {
+        for list in [&obj.explosion_anims, &obj.destroy_anims] {
+            if list.is_empty() {
+                continue;
+            }
+            let index = (world.main_rng.next_u32() % list.len() as u32) as usize;
+            let shp_name = world.interner.intern(&list[index]);
+            effects.explosion_effects.push(ExplosionEffect {
+                shp_name,
+                rx,
+                ry,
+                sub_x,
+                sub_y,
+                z,
+            });
+        }
+    }
+
+    let inf_death = killing_warhead.as_ref().map_or(1, |(wh, _)| wh.inf_death);
+    if category == EntityCategory::Infantry {
+        let postlude = world.begin_infantry_receiver_death(
+            dead_id,
+            inf_death,
+            &mut effects.immediate_uninit_ids,
+        );
+        concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Infantry(postlude));
+        effects.despawned_ids.push(dead_id);
+    } else if has_animation {
+        // Non-Infantry SHP lifetime remains on its existing path.
+        if let Some(entity) = world.substrate.entities.get_mut(dead_id) {
+            entity.dying = true;
+            if let (Some(sequence), Some(anim)) = (
+                crate::sim::animation::death_sequence_for_inf_death(inf_death),
+                entity.animation.as_mut(),
+            ) {
+                anim.switch_to(sequence);
+            }
+        }
+        effects.despawned_ids.push(dead_id);
+    } else {
+        effects.immediate_uninit_ids.push(dead_id);
+        effects.despawned_ids.push(dead_id);
+    }
     // The receiver owns the recursion boundary; each concrete owner consumes
     // its captured postlude here without moving constructor/smudge RNG earlier.
     for plan in concrete_smudge_plans {
         match plan {
             ConcreteDeathSmudgePlan::Infantry(postlude) => {
-                postlude.commit(world, rules, overlay_registry, &mut effects);
+                postlude.commit(world, rules, overlay_registry, effects);
             }
             ConcreteDeathSmudgePlan::Building {
-                rx, ry, z, foundation,
+                rx,
+                ry,
+                z,
+                foundation,
             } => {
                 let mut requests = Vec::new();
                 append_building_smudge_requests(&mut requests, rx, ry, z, &foundation);
@@ -1309,7 +1375,6 @@ pub(crate) fn handle_death(
             }
         }
     }
-    effects
 }
 
 fn emit_one_projectile_detonation(

@@ -1,5 +1,116 @@
 # High Bridge Rim Refresh Algorithm - Ghidra Research Report
 
+## 2026-09-11 ground receiver production increment
+
+This increment replaces the bridge ground pass's sorted-ID, anchor-coordinate
+HP writes with synchronous direct receivers over live cell membership. It also
+visits nonanchor building foundation cells. Native `CellClass::BlowUpBridge`
+`47DD70` supplies current Health, distance0, C4, null source/house and
+`ignore_defenses=true,arg6=true`. It captures `NextObject` at `47DD96` before
+calling the receiver at `47DDAE`. A removed captured successor is still visited;
+its cleared next pointer ends the walk. Ground receivers finish before that
+cell's deck-drop pass and debris. The surrounding bridge batch/field/rim
+sequencing is unchanged and remains open.
+
+The shared forced receiver bypasses both bunker protection arms, matching
+`701900`'s branch to `701BF6`. This corrects collapse damage to an occupied stock
+Tank Bunker with `Super.PenetratesBunker=yes`. The direct Terrain adapter retains
+`71B920`'s Wood/Immune gate before Object `5F5390`; forced Object damage bypasses
+verses, falloff, NoDamage and MaxDamage, but not the earlier Health<=0 or
+requested-damage0 rejection. Nested effects and Terrain removal use the existing
+world transaction and finish before the direct receiver returns.
+
+### Repeated zero-Health receivers
+
+An earlier ground object's DeathWeapon can kill and unlink the captured next
+object. `Object5F5390` returns0 at Health0 without repeating its kill callbacks,
+but Techno's `70202E..702035` join still selects its fatal tail. Rust now keeps
+that receiver entry separate from a fresh HP-to-zero transition. Repeatable
+death sounds and DeathWeapon work execute again without granting fresh kill
+credit. Concrete class work follows the nested DeathWeapon and reads the
+retained object's current state. Building `442230` returns before Techno when
+already at Health0; its concrete death helper also skips an object whose Alive
+flag was cleared. Infantry Do_Action `51D6F0` preserves progress for the same
+action; changing a retired object's action does not restore Logic membership
+or cancel pending deletion.
+
+The [receiver corpus](../../tools/spatial_oracle/bridge_zero_health_receiver.py)
+executes original Infantry `517FA0`, Foot `4D7330`, Techno `701900` and Object
+`5F5390` with stock-Super InfDeath2/forced/null-source arguments. Alive0 and
+Alive1 cases reach original Death_Announcement `4D98C0`. One-entry DieSound
+cases execute original `Random__Next65C780` and reach sound request `7509E0`:
+main-RNG indices change from `[0,103]` to `[1,104]` with one draw and the supplied
+sound ID. Original `65C6D0` seeds the fixture with1. Sound playback,
+announcement owner/UI effects and the remaining class postlude are excluded.
+The [companion corpus](../../tools/spatial_oracle/bridge_zero_health_deathweapon.py)
+executes Infantry `517FA0`, Unit `737C90` and Aircraft `4165C0`, both Alive values,
+through their zero-Health joins to death-weapon producer `70D690`. It stops at producer entry;
+it does not execute its detonation body. Both metadata files disclose supplied
+state and substituted virtual results. The ten cases were independently
+regenerated without differences against active retail gamemd SHA-256
+`1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c`.
+
+Rust production regressions in `world/bridge_ground.rs` exercise a stock
+TERROR-to-E1 cascade: TerrorBomb kills the captured GI, whose later direct
+Super receiver repeats GIDie while its loss/kill credit remains single. A second
+cascade requires the captured Terrorist's repeated TerrorBomb to kill an MTNK.
+These use retail damage definitions in minimal fixtures, not a complete native
+explosion comparison. Additional checks cover live registration order, unlinked
+objects, nonanchor foundations, occupied Tank Bunkers, Terrain gates, retired
+Infantry action state and a nested DeathWeapon crater before the caller returns.
+The extracted candidate passes `cargo test -p vera20k --lib`: 8,668 passed,
+0 failed, 121 ignored. `cargo clippy -p vera20k --lib` exits0 with warnings
+(1,147 reported); this is not a zero-warning claim. The fresh independent critic
+reviewed the scoped production changes and the corrected recursive-cleanup test
+expectations, and independently regenerated all sixteen native cases. These
+results do not constitute a phase-wide pass.
+
+### Health input scope and remaining coverage
+
+Native `47DDA8..47DDAE` passes **&object.Health**. The
+[Health-input corpus](../../tools/spatial_oracle/bridge_health_alias.py) executes
+the original ground loop/Techno receiver for three synthetic immunity cases,
+with copied-packet controls. Radiation, PsychicDamage and Poison write zero
+through the packet at `701C1C`, `701C4F`, `701C82`: aliased Health becomes0 while
+a copied packet leaves Health100, without Object death callbacks. Type/predicate
+virtuals are supplied and concrete class wrappers are excluded.
+
+The helper currently copies Health. A fresh independent scope review found no
+stock bridge witness requiring a global signed-Health migration: RULESMD selects
+C4Warhead=Super (line818), whose section (27093) has InfDeath2, 100% Verses and
+none of those immunity flags or Psychedelic. The 184 extracted named retail
+maps have no C4Warhead/Super/Psychedelic overrides; three unidentified map entries
+and mode coverage are not certified. In the ordinary forced-Super fatal path,
+Object writes initial HP through the packet at `5F54C2`, then Health0 at
+`5F550D` before callbacks. Techno's later anger read requires the absent source;
+its `702016` timer read excludes fatal result4. Forced Infantry skips prone
+writes and InfDeath2 skips `518010`; after Foot the pointer register is replaced
+at `5180E8`/`518BB2`. Foot, Unit and Building do not consume that packet after
+their shared receiver returns. This is bounded ordinary-retail equivalence.
+
+The following remain open for the phase-wide audit:
+
+- Accepted custom C4 immunity/InfDeath9/Psychedelic inputs require receiver-owned
+  writes through a Value/TargetHealth input; negative Psychedelic additionally
+  needs coherent signed Health and persistence. The saved alias corpus proves
+  the current custom-input difference. Unusual callback-driven survival and
+  every FirstObject category are not certified by the ordinary-stock argument.
+- Mixed membership preserves terrain-first scenario registration. Late Terrain
+  insertion has no unified native AddContent order in the existing substrate.
+- Wood-capable C4 with destructible SpawnsTiberium Terrain reaches an explosion
+  animation at `71BA7B..71BA85` before nested damage at `71BABF`; that animation
+  is still absent. Stock Super omits Wood, so ordinary stock trees survive.
+- Building BeforeDeathEffects/AfterDeathEffects hooks are still outside the
+  newly placed concrete Alive guard. No stock bridge witness clearing an
+  initially live Building's Alive during that nested interval was established;
+  complete Building postlude coverage is not claimed.
+- Ordered bridge setter publication, body/head/hut caller sequencing, rim
+  integration and phase-wide reverse audit remain separate unfinished work.
+
+The larger rim-core work is preserved on
+`feature/phase3-bridge-rim-publication-20260911`; it is excluded from this ground
+receiver PR. None of these changes closes a Phase 3 row.
+
 **Address(es):** `0x00576770` (`MapClass__UpdateAdjacentBridges_High`), `0x00576200` (`MapClass__UpdateBridgeEdgeTiles_High`), `0x0047E040` (`CellClass__SetBridgeDirection_NESW`)
 **Investigation Mode:** exhaustive-slice, downgraded to PARTIAL only for runtime-populated tile-table values
 **Claimed Scope:** HIGH rim refresh chain after bridge damage/collapse: entry, edge-tile scan, direct per-cell writes, `0x1E` walk cap, and group clear side effects

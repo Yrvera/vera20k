@@ -2109,8 +2109,12 @@ mod tests {
         );
         assert_eq!(
             fatal.immediate_uninit_ids,
-            vec![40, 30, 5, 20, 10],
-            "center-air DeathWeapon recursively reaches the second air record before the perimeter record"
+            vec![30, 40, 30, 5, 20, 10],
+            // Aircraft4165C0 calls Foot at4165EC before its concrete cleanup.
+            // Nested30 therefore finishes before40, then the captured outer30
+            // record repeats its zero-HP receiver (no Aircraft Alive guard).
+            // Native producer-entry proof: bridge_zero_health_deathweapon.json.
+            "nested aircraft cleanup precedes its parent; the captured outer record still repeats"
         );
         let direct_cells: Vec<_> = fatal
             .wall_mutations

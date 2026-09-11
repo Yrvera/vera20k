@@ -46,7 +46,8 @@ enum ReceiverDeathRecipe {
     Cleanup,
 }
 
-/// Captured pre-recursion inputs; consuming this postlude cannot forget the
+/// Captured concrete-receiver inputs after recursive DeathWeapon damage;
+/// consuming this postlude cannot forget the
 /// matching lifetime decision or split effect/smudge selection between callers.
 #[must_use]
 pub(crate) struct InfantryDeathPostlude {
@@ -95,10 +96,9 @@ impl InfantryDeathPostlude {
 }
 
 impl Simulation {
-    /// Select the represented recipe before recursive DeathWeapon damage, in
-    /// the same slot as the old sequence switch. Effects remain in the later
-    /// consuming postlude. Animation presence gates legacy effects, never an
-    /// indefinite lifetime wait.
+    /// Select the represented concrete recipe after recursive DeathWeapon
+    /// damage. Effects remain in the consuming postlude. Animation presence
+    /// gates legacy effects, never an indefinite lifetime wait.
     pub(crate) fn begin_infantry_receiver_death(
         &mut self,
         id: u64,
@@ -115,8 +115,8 @@ impl Simulation {
         let world_z_leptons =
             crate::sim::combat::object_world_z_leptons(entity, self.resolved_terrain.as_ref());
         let recipe = if entity.animation.is_none() {
-            // Preserve the established no-art cleanup position before nested
-            // DeathWeapon receivers append their own cleanup IDs.
+            // The no-art cleanup belongs to this concrete receiver's postlude,
+            // after any nested DeathWeapon receivers have finished.
             immediate_uninit_ids.push(id);
             ReceiverDeathRecipe::Cleanup
         } else if let Some(sequence) = InfantryDeathSequence::for_inf_death(inf_death) {
@@ -187,8 +187,9 @@ impl Simulation {
         true
     }
 
-    /// Admit a selected death action atomically, including fresh progress even
-    /// if an earlier ordinary animation happened to use the same sequence.
+    /// Native Do_Action51D6F0 retains progress for an unchanged action. A
+    /// captured receiver can write a different action after UnInit, without
+    /// restoring Logic membership or canceling its pending deletion.
     pub(crate) fn begin_infantry_death_sequence(
         &mut self,
         id: u64,
@@ -198,10 +199,17 @@ impl Simulation {
             return;
         };
         debug_assert_eq!(entity.category, EntityCategory::Infantry);
-        debug_assert!(entity.lifecycle.object_alive);
         entity.dying = true;
-        entity.infantry_terminal = Some(InfantryTerminal::Sequence(sequence));
-        entity.animation = Some(Animation::new(sequence.animation()));
+        if entity.lifecycle.object_alive {
+            entity.infantry_terminal = Some(InfantryTerminal::Sequence(sequence));
+        }
+        if entity
+            .animation
+            .as_ref()
+            .is_none_or(|animation| animation.sequence != sequence.animation())
+        {
+            entity.animation = Some(Animation::new(sequence.animation()));
+        }
     }
 
     /// Consume this object's terminal Logic visit, including eventual UnInit.
