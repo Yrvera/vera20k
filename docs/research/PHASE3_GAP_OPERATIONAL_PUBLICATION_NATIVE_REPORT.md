@@ -4,8 +4,9 @@ The original updates a GAGAP's deposited gap at its Building turn when its
 operational state changes. Rust at baseline `417dfe4d` instead reclassifies all
 generators after the object pass and again during House reconciliation. These
 orders can produce different shroud knowledge at the next 120-frame sweep.
-The implementation and production regression are pending in this evidence
-checkpoint; this is not row50 closure.
+The candidate moves publication to that Building owner and retains admission
+across House reconciliation and restore. Production validation is in progress;
+this is not row50 closure.
 
 ## Evidence and active caller
 
@@ -71,27 +72,103 @@ it. A due release/admit is admitted at frame239. Then:
 | Gap removal, then source release/admit | -1 / 0 | 0 |
 
 The native witness composes supplied object order, not a full Logic/power-system
-execution. The proposed production witness damages the generator owner's power
-plant before House assessment at frame238. Rust's current House collector removes
+execution. The production regression damages the generator owner's power
+plant before House assessment at frame238. The baseline House collector removes
 the gap then; the original retains it until the Building turn at239. Source-first
 registration consequently chooses different rows. Both registration orders and
-snapshot continuation must be exercised by the production regression.
+snapshot continuation are exercised by the regression, including the actual
+high-flight refresh producer and the CPU shroud-fill consumer.
+
+## Retained lifecycle and integration
+
+Techno constructor `6F2B40` initializes admission+269 and cached radius+26C to
+zero; Building constructor initializes previous operational sample+6C8 to zero
+and HasPower+660 to one. Add `6FB170` checks admission, rechecks `4555D0`, caches
+the signed Type radius when needed, and sets admission before the cell loop.
+Remove `6FB470` clears admission before its loop, retains radius and does not
+check current power. Admission exists even for a friendly viewer with no hostile
+cell receipts. The Rust entity therefore retains a shared operational sample and
+per-viewer admission/radius, independently of those cell receipts.
+
+Building save `454190` reaches AbstractSave `410320`; virtual size leaf
+`459E70` returns `0x720`. Load `453E20` reaches `410380` for the same body.
+Restore constructors `43B680 → 6F4300 → 65A7E0 → 5F3B50 → 4101C0` neither
+reset these fields nor replay the gap. Snapshot schema143 preserves and hashes
+the retained Rust state. House and cache reconciliation only project it.
+
+Techno Limbo `6F6AC0` releases ordinary sight at `6F6B16`, removes the gap at
+`6F6B6A`, then reaches Object Limbo. Ownership `448260` instead removes the
+gap before releasing sight and changing owner; ordinary new-owner reveal
+`701875` precedes the new gap admission. These existing Rust lifecycle
+chokepoints now publish in that order. SpySat's selected viewer bracket uses
+live gap candidates and rechecks current operational state, including candidates
+with no old receipt; other viewers and the Building operational sample remain
+unchanged. Repeated House materialization is not an admission event.
+
+Complete add/remove leaves also clear local House+240 (`6FB43F` / `6FB71C`),
+including friendly admissions with no hostile receipt. This is distinct from
+House+577A's SpySat latch. The selected event owner invalidates the mapping
+latch; successful post-bulk re-admissions clear it again after `577D90` sets it.
+Rejected re-admissions leave the new mapping latch set. The production regression
+uses the launch shroud option, a hostile gap, power loss and a new SpySat to
+exercise this existing consumer, plus friendly re-admission.
+
+Fresh Unlimbo is not an unconditional gap add: the discovery path reaches
+`445F80 → 446AA3` behind its caller gates. Construction `449A50` invokes that
+path before queuing Guard, so the operational recheck still rejects it. Current
+Rust placement represents construction with `BuildingUp` without necessarily
+publishing Mission12; the selected gate respects that existing owner until the
+build completes, then the next Building visit admits the gap.
+
+The ordinary death path is synchronous: raw Building+4EC resolves `4415F0`,
+and ReceiveDamage's postlude `44266B..4426A7` calls UnInit when its ordinary
+non-Selling, `Explodes=no` timer has positive remaining time. Stock GAGAP uses
+that path. No eight-frame delayed-death behavior was introduced. Selling or
+`Explodes=yes` deferred destruction remains outside this comparison.
 
 ## Delivery boundary and limits
 
 The existing shroud counter and per-viewer gap receipt owner remain applicable;
 see [the current-sight report](PHASE3_SHROUD_CURRENT_SIGHT_NATIVE_REPORT.md).
-Required work is operational-edge publication, actual lifecycle entry/removal,
-and persistence of the selected Building admission state. House/cache refresh
-must not substitute a new power classification for a Building event.
+The selected delivery covers operational edges, ownership and Limbo ordering,
+SpySat rechecks, and persistence. House/cache refresh must not substitute a new
+power classification for a Building event.
 
 General EMP/NeedsEngineer/PoweredSpecial/+67C producers, mobile gap geometry,
 campaign/discovery gates and optional fog records remain separate unproved
-domains. No entire Building policy or power system equivalence is claimed.
+domains. The stock static geometry comparison does not prove current-coordinate
+removal for moving/warped gaps. Friendly fog's existing boolean projection does
+not establish native Cell+13C counter equivalence. No entire Building policy or
+power system equivalence is claimed.
 
 ## Validation receipts
 
 - 2026-09-10: native `gap_admission --write`, actual exit0, 1.44s.
 - Native `gap_admission --check`, actual exit0, 1.44s; 18 predicate cases and
   two ordered sequences matched; no files written.
-- No Rust behavior was changed or Cargo run for this evidence checkpoint.
+- Evidence checkpoint `e4cbf9e1` contained no Rust behavior change. A subsequent
+  native replay corrected the fixture's named Guard value to raw5; `--write`
+  and `--check` both exited0 (2.69s combined), with the same bounded cases.
+- Working candidate `cargo check -p vera20k`: exit0, 30.53s, 88 warnings;
+  `.local/gap-admission-check-v1.log`. This predates the final construction and
+  ownership-sight fixes and is not final validation.
+- Focused-v1 exited101 on one test-only private-method access error. The placement
+  fixture now drives public `advance_tick` without broadening production access.
+- Focused-v2 compiled in3m32s and exited101: four tests passed and two fixtures
+  failed before their intended observations. The snapshot fixture omitted the
+  production restore coordinator needed to reconstruct occupancy; the SpySat
+  fixture indexed an absent empty receipt set. Both were corrected without
+  changing their behavioral expectations. Logs are retained as
+  `.local/gap-admission-focused-v1.log` and `-v2.log`.
+
+- Focused-v3 passed all seven cases (exit0), including actual placement,
+  power/object ordering, owner/death, SpySat and snapshot continuation.
+- The affected vision suite passed69/69 and owner-change checks passed4/4.
+  The initial GSI run passed20 and failed3: two fixtures supplied alliances only
+  to the fog projection instead of the House authority, and one asserted that
+  House240 remained set after successful gap readmission. The fixtures now use
+  the production alliance authority and native6FB43F latch expectation; all
+  existing cell-visibility and native ordered-comparison assertions remain.
+- 2026-09-11: a fresh independent critic confirmed those corrections, reviewed
+  the bounded production mechanism and independently replayed all18+2 native
+  cases successfully. Final main integration and full checks are still pending.

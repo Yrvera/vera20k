@@ -8,8 +8,10 @@
 //! Direct source-aware writes publish viewer knowledge. Queries use a cached
 //! visibility grid so each cell lookup is O(1) instead of iterating all owners.
 
+mod gap_source;
 mod map_reveal;
 mod shroud_knowledge;
+pub(crate) use gap_source::GapGeneratorRuntime;
 pub(crate) use shroud_knowledge::SightRefreshTimers;
 use shroud_knowledge::{ShroudKnowledge, SightAdmission};
 
@@ -630,6 +632,21 @@ pub struct FogState {
 }
 
 impl FogState {
+    /// Techno6F6AC0's ordinary release precedes its gap removal and Object
+    /// Conceal. Only actual retained admissions emit the native leave event.
+    pub(crate) fn release_entity_sight(&mut self, stable_id: u64) {
+        let keys: Vec<_> = self
+            .sight_admissions
+            .range(
+                (stable_id, InternedId::default())..=(stable_id, InternedId::from_index(u32::MAX)),
+            )
+            .map(|(&key, _)| key)
+            .collect();
+        for key in keys {
+            self.release_sight_for_viewer(key);
+        }
+    }
+
     fn release_sight_for_viewer(&mut self, key: (u64, InternedId)) {
         let Some(admission) = self.sight_admissions.remove(&key) else {
             return;
@@ -2107,6 +2124,7 @@ pub(crate) fn apply_gap_generator_sources(
     );
 }
 
+#[cfg(test)]
 pub(crate) fn apply_gap_generator_sources_with_spy_sat(
     fog: &mut FogState,
     gap_generators: &[GapGeneratorSource],
@@ -2180,6 +2198,97 @@ fn gap_footprint(generator: GapGeneratorSource, width: usize, height: usize) -> 
         }
     }
     cells
+}
+
+/// One admitted6FB170/6FB470 event. The Building caller owns its269 latch;
+/// this ledger owns which viewer cell writes that deposit contributed.
+pub(crate) fn publish_gap_generator_event(
+    fog: &mut FogState,
+    viewer: InternedId,
+    source: GapGeneratorSource,
+    active: bool,
+    interner: &StringInterner,
+    spy_sat_active_owners: &std::collections::BTreeSet<InternedId>,
+) {
+    // Both complete6FB170/6FB470 leaves clear local House240 after an
+    // admitted269 transition, including friendly events with no hostile cells.
+    fog.whole_map_revealed_owners.remove(&viewer);
+    let width = usize::from(fog.width);
+    let height = usize::from(fog.height);
+    if let Some(vis) = fog.by_owner.get_mut(&viewer) {
+        vis.ensure_cell_runtime();
+        let receipts = fog.gap_sources.entry(viewer).or_default();
+        if active {
+            if !are_houses_friendly(
+                &fog.alliances,
+                interner.resolve(source.owner),
+                interner.resolve(viewer),
+            ) && receipts.insert(source)
+            {
+                for index in gap_footprint(source, width, height) {
+                    vis.shroud_knowledge[index].add_gap();
+                    vis.publish_knowledge(index);
+                }
+            }
+        } else {
+            // Source-prefix lookup avoids scanning every generator on every
+            // Building event. Static GAGAP keeps its admitted cell geometry;
+            // mobile/warp/owner-transfer callback policy is outside this owner.
+            let lower = GapGeneratorSource {
+                stable_id: source.stable_id,
+                owner: InternedId::default(),
+                rx: 0,
+                ry: 0,
+                radius: i32::MIN,
+            };
+            let removed: Vec<_> = receipts
+                .range(lower..)
+                .take_while(|old| old.stable_id == source.stable_id)
+                .copied()
+                .collect();
+            for old in removed {
+                receipts.remove(&old);
+                for index in gap_footprint(old, width, height) {
+                    vis.shroud_knowledge[index].remove_gap(spy_sat_active_owners.contains(&viewer));
+                    vis.publish_knowledge(index);
+                }
+            }
+        }
+    }
+    fog.view_cache.merged = None;
+}
+
+/// Passive projection of retained deposits. It must never reclassify power or
+/// emit add/remove events during House, restore, or ordinary view rebuilding.
+/// Friendly Cell13C remains the existing boolean fog projection.
+pub(crate) fn materialize_gap_generator_sources(
+    fog: &mut FogState,
+    sources: &BTreeMap<InternedId, Vec<GapGeneratorSource>>,
+    interner: &StringInterner,
+) {
+    let width = usize::from(fog.width);
+    let height = usize::from(fog.height);
+    for (&viewer, vis) in &mut fog.by_owner {
+        vis.ensure_cell_runtime();
+        for cell in &mut vis.cells {
+            *cell &= !FLAG_GAP_FOG;
+        }
+        for &source in sources.get(&viewer).into_iter().flatten() {
+            if are_houses_friendly(
+                &fog.alliances,
+                interner.resolve(source.owner),
+                interner.resolve(viewer),
+            ) {
+                for index in gap_footprint(source, width, height) {
+                    vis.cells[index] |= FLAG_GAP_FOG;
+                }
+            }
+        }
+        for index in 0..vis.cells.len() {
+            vis.publish_knowledge(index);
+        }
+    }
+    fog.view_cache.merged = None;
 }
 
 #[cfg(test)]

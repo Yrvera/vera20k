@@ -19,7 +19,7 @@ BUILDING, TYPE, HOUSE = 0xB00000, 0xB10000, 0xB20000
 
 def operational_case(name, **changes):
     values = dict(has_power=1, special_state=0, disabled_count=0, health=600,
-                  powered=1, drain=100, output=200, current_mission=1,
+                  powered=1, drain=100, output=200, current_mission=5,
                   queued_mission=-1, powered_special=0, needs_engineer=0,
                   engineer=0, house_timer_start=-1, house_timer_duration=0,
                   house_special=0, frame=0)
@@ -70,7 +70,7 @@ def vectors():
         ('selling', dict(current_mission=0x13)),
         ('queued_selling_while_guard', dict(queued_mission=0x13)),
         ('fallback_selling', dict(current_mission=-1, queued_mission=0x13)),
-        ('fallback_guard', dict(current_mission=-1, queued_mission=1)),
+        ('fallback_guard', dict(current_mission=-1, queued_mission=5)),
         ('unpowered_type', dict(powered=0, output=0)),
         ('engineer_required', dict(needs_engineer=1)),
         ('engineer_present', dict(needs_engineer=1, engineer=1)),

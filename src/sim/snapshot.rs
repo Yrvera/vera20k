@@ -451,7 +451,9 @@ use crate::sim::world::Simulation;
 // Old saves lack authoritative post-load gap state; do not invent it on restore.
 // v142 retains viewer-owned knowledge, local/effective sight, pending conceal
 // and stable generator admission receipts. New positional fields require rejection.
-const SNAPSHOT_VERSION: u32 = 142;
+// v143 retains Building6C8/Techno269/26C gap operational/deposit authority.
+// Restoring cannot reclassify power or replay a fresh gap event.
+const SNAPSHOT_VERSION: u32 = 143;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3273,8 +3275,8 @@ mod tests {
         // 138 -> 139: map-owned ScenarioSession FreeRadar authority.
         // 139 -> 140: retained bridge record source Size for native zone lookup.
         // 140 -> 141: retained real CellClass gap flags400/800.
-        // 141 -> 142: sustained sight and pending 120-frame gap conceal.
-        assert_eq!(super::SNAPSHOT_VERSION, 142);
+        // 142 -> 143: per-Building operational edge and retained gap deposit.
+        assert_eq!(super::SNAPSHOT_VERSION, 143);
     }
 
     #[test]

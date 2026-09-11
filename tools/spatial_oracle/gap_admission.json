@@ -3,7 +3,7 @@
     {
       "admitted": 1,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 0,
         "drain": 100,
         "engineer": 0,
@@ -25,7 +25,7 @@
     {
       "admitted": 0,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 0,
         "drain": 100,
         "engineer": 0,
@@ -47,7 +47,7 @@
     {
       "admitted": 1,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 0,
         "drain": 100,
         "engineer": 0,
@@ -69,7 +69,7 @@
     {
       "admitted": 0,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 0,
         "drain": 100,
         "engineer": 0,
@@ -91,7 +91,7 @@
     {
       "admitted": 0,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 0,
         "drain": 100,
         "engineer": 0,
@@ -113,7 +113,7 @@
     {
       "admitted": 1,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 0,
         "drain": 100,
         "engineer": 0,
@@ -135,7 +135,7 @@
     {
       "admitted": 0,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 1,
         "drain": 100,
         "engineer": 0,
@@ -157,7 +157,7 @@
     {
       "admitted": 1,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": -1,
         "drain": 100,
         "engineer": 0,
@@ -179,7 +179,7 @@
     {
       "admitted": 0,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 0,
         "drain": 100,
         "engineer": 0,
@@ -201,7 +201,7 @@
     {
       "admitted": 1,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 0,
         "drain": 100,
         "engineer": 0,
@@ -267,7 +267,7 @@
     {
       "admitted": 1,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 0,
         "drain": 100,
         "engineer": 0,
@@ -325,7 +325,7 @@
         "output": 200,
         "powered": 1,
         "powered_special": 0,
-        "queued_mission": 1,
+        "queued_mission": 5,
         "special_state": 0
       },
       "name": "fallback_guard"
@@ -333,7 +333,7 @@
     {
       "admitted": 1,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 0,
         "drain": 100,
         "engineer": 0,
@@ -355,7 +355,7 @@
     {
       "admitted": 0,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 0,
         "drain": 100,
         "engineer": 0,
@@ -377,7 +377,7 @@
     {
       "admitted": 1,
       "inputs": {
-        "current_mission": 1,
+        "current_mission": 5,
         "disabled_count": 0,
         "drain": 100,
         "engineer": 1,
