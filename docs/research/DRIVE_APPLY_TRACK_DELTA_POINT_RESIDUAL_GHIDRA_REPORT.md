@@ -1,5 +1,17 @@
 # Drive Apply_Track_Delta Point Residual - Ghidra Research Report
 
+**2026-09-12 original-execution correction:** the former residual "trust window"
+description below was wrong. Original Drive `4B2452..4B24AD` and Ship
+`6A1AA3..6A1AFE` choose interpolation when its Cell identity matches the current
+or full-step Cell; otherwise residual `>3` chooses the full step and residual
+`<=3` retains current XYZ. Scalar helpers also store/reload a chopped f32 factor
+before multiplying deltas; integer `delta * residual / 7` is not equivalent.
+[Saved executable cases](../../tools/spatial_oracle/locomotor_track_residual.json)
+and their [reproducer](../../tools/spatial_oracle/locomotor_track_residual.py)
+cover 84 scalar and 32 supplied-identity cases across both families. They exclude
+Cell lookup and complete movement callbacks. Older Rust-status statements in
+this report are historical; production migration remains open.
+
 **Address(es):** `0x004B0AD0` primary; callers/context `0x004B0C40`, `0x004B0F20`
 **Investigation Mode:** exhaustive-slice
 **Claimed Scope:** `DriveLocomotionClass::Apply_Track_Delta` endpoint/jump marking behavior, its `Force_Track` and `Process_Drive_Track` callers, and what this proves about point-index and residual ownership.
@@ -182,8 +194,7 @@ Current Rust is close on "7-budget residual per active track" but the ownership 
 
 - `docs/research/DRIVE_LOCOMOTION_HELPERS_GHIDRA_REPORT.md` lines near the object layout say `+0x4C` is `current_speed` and later say the stepping residual is "likely within Process_Drive_Track's locals." Replacement wording:
   - **Replacement:** "Normalize offsets before reading this table: `Process_Drive_Track` and `Apply_Track_Delta` use the Drive object base, where `+0x4C` is the integer residual movement budget and `+0x50` is the double current speed. `Force_Track` is dispatched through the ILocomotion pointer (`object_base + 4`), so its `param+0x4C/+0x50` writes are object-base `+0x50/+0x54` halves of the double speed. The residual is not a local-only value; it is read/written in `Process_Drive_Track @ 0x004B0F20`."
-- `docs/research/PROCESS_DRIVE_TRACK_DECOMPILATION.md` says the residual gate comment "`budget > 3` use full step coords instead"; the decompile shows the condition selects interpolated coords when `interp_cell` is current/full OR `budget > 3`, otherwise falls back to full. Replacement wording:
-  - **Replacement:** "`budget > 3` is a trust window for using the interpolated coordinate even when cell classification is neither saved nor full; fallback to full-step coords happens when the interpolated cell is neither current nor full and `budget <= 3`."
+- The earlier proposed correction to `PROCESS_DRIVE_TRACK_DECOMPILATION.md` was itself incorrect. Original execution now establishes three outcomes: matching current/full Cell identity uses interpolation; otherwise `budget > 3` uses full XYZ and `budget <= 3` retains current XYZ. See the saved 2026-09-12 witnesses above; do not restore the former two-way "trust window" wording.
 
 ## Sources
 
