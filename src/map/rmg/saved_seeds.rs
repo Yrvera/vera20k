@@ -158,6 +158,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn disk_load_uses_native_description_results_without_changing_numeric_defaults() {
+        let path = std::env::temp_dir().join(format!(
+            "vera20k-seed-description-{}-{}.sed",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let current = RmgOptions {
+            seed: 23,
+            width: 2,
+            description: "Prior map".into(),
+            ..RmgOptions::default()
+        };
+        for (encoded, expected) in [
+            (None, "Zufallskarte"),
+            (Some(""), "Zufallskarte"),
+            (Some("   "), "Zufallskarte"),
+            (Some(",,,"), ""),
+            (Some("z"), "\u{b573}"),
+            (Some("41,z,42,"), "AAB"),
+            (Some("41,0,42,"), "A"),
+            (Some("0x41,+42,"), "AB"),
+        ] {
+            let mut ini = "[RandomMap]\nSeed=42\n".to_owned();
+            if let Some(encoded) = encoded {
+                ini.push_str(&format!("Description={encoded}\n"));
+            }
+            std::fs::write(&path, &ini).unwrap();
+            let loaded = load_saved_seed(&path, &current, "Zufallskarte").unwrap();
+            assert_eq!(loaded.description, expected, "{encoded:?}");
+            assert_eq!(loaded.seed, 42);
+            assert_eq!(loaded.width, current.width);
+            // The other production consumer, loading/init.rs, parses a seed
+            // and applies it to constructor defaults directly. Its current
+            // empty Description fallback is preserved by this increment.
+            let mut direct = RmgOptions::default();
+            direct.apply_sed(&crate::rules::ini_parser::IniFile::from_str(&ini));
+            direct.normalize();
+            let direct_expected = if expected == "Zufallskarte" {
+                ""
+            } else {
+                expected
+            };
+            assert_eq!(direct.description, direct_expected, "direct {encoded:?}");
+            assert_eq!(direct.seed, 42);
+        }
+        assert_eq!(current.description, "Prior map");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn partial_seed_preserves_current_integers_and_uses_localized_description_default() {
         let path = std::env::temp_dir().join(format!(
             "vera20k-partial-seed-{}-{}.sed",

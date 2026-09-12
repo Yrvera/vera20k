@@ -7,6 +7,7 @@
 //! There is no `IniFile::get(section, key)` and no `IniFile::parse`; construct
 //! with `IniFile::from_bytes` or `IniFile::from_str`.
 
+use super::description::read_description;
 use crate::rules::ini_parser::IniFile;
 use crate::util::ini_writer::set_ini_values;
 
@@ -74,21 +75,6 @@ fn encode_description(text: &str) -> String {
     out
 }
 
-/// Decode the comma-separated hex UTF-16 form. Unparsable tokens are skipped,
-/// matching the original's tolerant tokenizer.
-fn decode_description(raw: &str) -> String {
-    let units: Vec<u16> = raw
-        .split(',')
-        .filter_map(|token| {
-            let token = token.trim();
-            (!token.is_empty())
-                .then(|| u16::from_str_radix(token, 16).ok())
-                .flatten()
-        })
-        .collect();
-    String::from_utf16_lossy(&units)
-}
-
 impl RmgOptions {
     /// Clamp every field to its accepted range.
     ///
@@ -129,7 +115,7 @@ impl RmgOptions {
             return;
         };
         if let Some(raw) = section.get("Description") {
-            self.description = decode_description(raw);
+            self.description = read_description(Some(raw), &self.description);
         }
         let read = |key: &str, field: &mut i32| {
             if let Some(value) = section.get_i32(key) {
@@ -344,7 +330,7 @@ mod tests {
     #[test]
     fn description_decodes_the_native_form() {
         assert_eq!(
-            decode_description("52,61,6e,64,6f,6d,20,4d,61,70,"),
+            read_description(Some("52,61,6e,64,6f,6d,20,4d,61,70,"), ""),
             "Random Map"
         );
     }
@@ -380,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_description_tokens_are_skipped() {
-        assert_eq!(decode_description("52,zz,61,"), "Ra");
+    fn malformed_description_tokens_repeat_the_previous_conversion() {
+        assert_eq!(read_description(Some("52,zz,61,"), ""), "RRa");
     }
 }
