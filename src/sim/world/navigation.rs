@@ -17,6 +17,51 @@ use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::{TerrainCostGrid, build_canonical_terrain_cost_grids};
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 
+/// Cell marking owns structure presence; shared by full and touched-cell views.
+fn visit_structure_movement_cells(
+    entities: &EntityStore,
+    interner: &StringInterner,
+    rules: &RuleSet,
+    mut visit: impl FnMut((u16, u16)),
+) {
+    // Native: Techno enter/exit (0x005683C0 / 0x005687F0) call CellClass
+    // AddContent/RemoveContent (0x0047E8A0 / 0x0047EA90), which mark/clear
+    // occupation; see docs/research/bridges/02-cell-state-layering-zones/
+    // BRIDGE_OCCUPANCY_OBJECT_LISTS_GHIDRA_REPORT.md. Held factory objects
+    // and retained attached upgrades have no independent marked footprint.
+    // A dying structure still blocks until the lifecycle owner unmarks it.
+    let mut structures: Vec<(u16, u16, String)> = entities
+        .values()
+        .filter_map(|entity| {
+            (entity.category == EntityCategory::Structure && entity.lifecycle.cell_marked)
+                .then_some((
+                    entity.position.rx,
+                    entity.position.ry,
+                    interner.resolve(entity.type_ref()).to_string(),
+                ))
+        })
+        .collect();
+    structures.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    for (rx, ry, type_id) in structures {
+        let object_type = rules.object(&type_id);
+        let foundation = object_type
+            .map(|object| object.foundation.as_str())
+            .unwrap_or("1x1");
+        let has_bib = object_type.is_some_and(|object| object.bib);
+        let foundation_cells =
+            crate::sim::production::building_base_foundation_cells(rx, ry, foundation);
+        for cell in
+            crate::sim::production::building_movement_blocking_cells(&foundation_cells, has_bib)
+        {
+            visit(cell);
+        }
+    }
+}
+
 pub(super) struct NavigationCaches<'a> {
     pub(super) terrain_costs: &'a mut BTreeMap<SpeedType, TerrainCostGrid>,
     pub(super) zones: &'a mut Option<ZoneGrid>,
@@ -35,39 +80,55 @@ impl NavigationCaches<'_> {
         let mut grid = PathGrid::from_resolved_terrain_with_bridges(terrain, bridges);
         *self.terrain_costs = build_canonical_terrain_cost_grids(terrain);
 
-        // Cell membership owns footprint presence, not EntityStore residency.
-        // Native: Techno enter/exit (0x005683C0 / 0x005687F0) call CellClass
-        // AddContent/RemoveContent (0x0047E8A0 / 0x0047EA90), which mark/clear
-        // occupation; see docs/research/bridges/02-cell-state-layering-zones/
-        // BRIDGE_OCCUPANCY_OBJECT_LISTS_GHIDRA_REPORT.md. Held factory objects
-        // and retained attached upgrades have no independent marked footprint.
-        // A dying structure still blocks until the lifecycle owner unmarks it.
-        let mut structures: Vec<(u16, u16, String)> = entities
-            .values()
-            .filter_map(|entity| {
-                (entity.category == EntityCategory::Structure && entity.lifecycle.cell_marked)
-                    .then_some((
-                        entity.position.rx,
-                        entity.position.ry,
-                        interner.resolve(entity.type_ref()).to_string(),
-                    ))
-            })
-            .collect();
-        structures.sort_by(|a, b| {
-            a.0.cmp(&b.0)
-                .then_with(|| a.1.cmp(&b.1))
-                .then_with(|| a.2.cmp(&b.2))
+        visit_structure_movement_cells(entities, interner, rules, |(x, y)| {
+            grid.block_structure_cell(x, y);
         });
-        for (rx, ry, type_id) in structures {
-            let object_type = rules.object(&type_id);
-            let foundation = object_type
-                .map(|object| object.foundation.as_str())
-                .unwrap_or("1x1");
-            let has_bib = object_type.is_some_and(|object| object.bib);
-            grid.block_building_movement_cells(rx, ry, foundation, has_bib);
-        }
 
         self.rebuild_zones(&grid, terrain, bridges);
+    }
+
+    /// Publish the path/cost views of one completed47D2B0 Recalc before another
+    /// bridge callback reads them. Zone IDs and hierarchy remain owned by the
+    /// separate56C510/586990 callbacks. Height/slope changes require publication
+    /// even when the narrower overlay passability receipt reports no change.
+    pub(super) fn publish_recalculated_cell(
+        &mut self,
+        terrain: &ResolvedTerrainGrid,
+        bridges: Option<&BridgeRuntimeState>,
+        entities: &EntityStore,
+        interner: &StringInterner,
+        rules: &RuleSet,
+        coord: (u16, u16),
+    ) -> Result<(), String> {
+        let cell = terrain
+            .cell(coord.0, coord.1)
+            .ok_or("Recalc cell is outside terrain")?;
+        if let Some(zones) = self.zones.as_mut() {
+            zones.refresh_base_cell_attributes_at(terrain, coord.0, coord.1);
+        }
+        // Cache owners are optional during loading/headless execution. Refresh
+        // installed views without inventing a zone rebuild or eager map load.
+        if let Some(path) = self.path.as_mut() {
+            if path.width() != terrain.width() || path.height() != terrain.height() {
+                return Err("Recalc path dimensions differ from terrain".into());
+            }
+            let mut structure_blocked = false;
+            visit_structure_movement_cells(entities, interner, rules, |marked| {
+                structure_blocked |= marked == coord;
+            });
+            if !Arc::make_mut(path).refresh_resolved_cell(cell, bridges, structure_blocked) {
+                return Err("Recalc path cell could not be published".into());
+            }
+        }
+        for (&speed_type, costs) in self.terrain_costs.iter_mut() {
+            if costs.width() != terrain.width()
+                || costs.height() != terrain.height()
+                || !costs.refresh_resolved_cell(cell, speed_type)
+            {
+                return Err("Recalc terrain cost cell could not be published".into());
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn rebuild_zones(

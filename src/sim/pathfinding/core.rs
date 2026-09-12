@@ -1912,6 +1912,100 @@ pub struct LayeredPathStep {
     pub layer: MovementLayer,
 }
 
+/// Shared scalar projection used during map construction and synchronous Recalc.
+/// Derived path state is separate from structure occupancy and zone history.
+fn project_terrain_path_cell(
+    cell: &crate::map::resolved_terrain::ResolvedTerrainCell,
+    bridge_state: Option<&BridgeRuntimeState>,
+) -> (PathCell, u8, bool) {
+    let bridge_structural = cell.bridge_facts.has_structural_bridge()
+        || (cell.has_bridge_deck
+            && !cell.bridge_layer.as_ref().is_some_and(|layer| {
+                layer.direction == crate::map::resolved_terrain::BridgeDirection::Low
+            })
+            && cell.bridge_facts.family == crate::map::bridge_facts::BridgeStampFamily::None);
+    let bridge_intact = !bridge_structural
+        || bridge_state.map_or(true, |state| state.is_bridge_walkable(cell.rx, cell.ry));
+    let path_cell = PathCell {
+        // Walkability rules (matching old PathGrid::from_resolved_terrain):
+        // - Overlay blocks / terrain object blocks → blocked
+        // - Intact bridge deck → walkable (overrides underlying terrain)
+        // - Destroyed bridge deck → revert to underlying terrain
+        // - Cliff → blocked
+        // - Water → walkable (SpeedType cost=0 blocks ground in A*)
+        // - Everything else → use ground_walk_blocked
+        ground_walkable: if cell.overlay_blocks || cell.terrain_object_blocks {
+            false
+        } else if bridge_structural {
+            if bridge_intact {
+                true
+            } else {
+                // Destroyed bridge: revert to underlying terrain walkability.
+                !cell.is_cliff_like && !cell.ground_walk_blocked
+            }
+        } else if cell.bridge_walkable && cell.bridge_transition {
+            // Bridgehead ramp: walkable on the ground layer regardless
+            // of the TMP ramp tile's ground_walk_blocked flag. gamemd
+            // gates ground entry through the SpeedType/LandType matrix
+            // (land_type=Clear/Road → passable for vehicles/infantry);
+            // we don't yet route non-water movers through that matrix,
+            // so the boolean would otherwise reject a same-height
+            // plateau→bridgehead step and trap the unit on the wrong
+            // side. The bridge-layer gate at A* expansion still
+            // enforces "enter bridge via bridgehead" via the
+            // bridge_transition flag on the next deck cell.
+            true
+        } else if cell.is_cliff_like {
+            false
+        } else {
+            !cell.ground_walk_blocked || cell.is_water
+        },
+        bridge_walkable: if bridge_structural {
+            cell.bridge_walkable && bridge_intact
+        } else {
+            cell.bridge_walkable
+        },
+        bridge_structural,
+        bridge_marker_0x80: cell.bridge_facts.has_flag(BRIDGE_FLAG_ANCHOR_SELF),
+        transition: if bridge_structural {
+            cell.bridge_transition && bridge_intact
+        } else {
+            cell.bridge_transition
+        },
+        ground_level: cell.level,
+        bridge_deck_level: bridge_state
+            .and_then(|state| state.cell(cell.rx, cell.ry))
+            .map(|runtime| runtime.deck_level)
+            .unwrap_or(cell.bridge_deck_level),
+        slope_type: cell.slope_type,
+        tube_index: cell.tube_index,
+        low_bridge_tube_cell: cell.is_low_bridge_tube_cell(),
+    };
+    // Infantry overlay: recompute the same walkability decision with the
+    // terrain object removed, so only the sub-cell mask decides.
+    let walkable_without_terrain_object = if cell.overlay_blocks {
+        false
+    } else if bridge_structural {
+        if bridge_intact {
+            true
+        } else {
+            !cell.is_cliff_like && !(cell.base_ground_walk_blocked || cell.overlay_blocks)
+        }
+    } else if cell.bridge_walkable && cell.bridge_transition {
+        true
+    } else if cell.is_cliff_like {
+        false
+    } else {
+        !(cell.base_ground_walk_blocked || cell.overlay_blocks) || cell.is_water
+    };
+    (
+        path_cell,
+        cell.terrain_object_occupation
+            .map_or(0, terrain_object_cell_bits_from_ini),
+        walkable_without_terrain_object,
+    )
+}
+
 impl PathGrid {
     /// Create a new grid where all cells are ground-walkable with no bridges.
     pub fn new(width: u16, height: u16) -> Self {
@@ -2272,95 +2366,14 @@ impl PathGrid {
         let mut terrain_object_cell_bits = vec![0u8; size];
         let mut ground_walkable_without_terrain_object = vec![false; size];
         for cell in terrain.iter() {
-            let bridge_structural = cell.bridge_facts.has_structural_bridge()
-                || (cell.has_bridge_deck
-                    && !cell.bridge_layer.as_ref().is_some_and(|layer| {
-                        layer.direction == crate::map::resolved_terrain::BridgeDirection::Low
-                    })
-                    && cell.bridge_facts.family
-                        == crate::map::bridge_facts::BridgeStampFamily::None);
-            let bridge_intact = !bridge_structural
-                || bridge_state.map_or(true, |state| state.is_bridge_walkable(cell.rx, cell.ry));
-            let path_cell = PathCell {
-                // Walkability rules (matching old PathGrid::from_resolved_terrain):
-                // - Overlay blocks / terrain object blocks → blocked
-                // - Intact bridge deck → walkable (overrides underlying terrain)
-                // - Destroyed bridge deck → revert to underlying terrain
-                // - Cliff → blocked
-                // - Water → walkable (SpeedType cost=0 blocks ground in A*)
-                // - Everything else → use ground_walk_blocked
-                ground_walkable: if cell.overlay_blocks || cell.terrain_object_blocks {
-                    false
-                } else if bridge_structural {
-                    if bridge_intact {
-                        true
-                    } else {
-                        // Destroyed bridge: revert to underlying terrain walkability.
-                        !cell.is_cliff_like && !cell.ground_walk_blocked
-                    }
-                } else if cell.bridge_walkable && cell.bridge_transition {
-                    // Bridgehead ramp: walkable on the ground layer regardless
-                    // of the TMP ramp tile's ground_walk_blocked flag. gamemd
-                    // gates ground entry through the SpeedType/LandType matrix
-                    // (land_type=Clear/Road → passable for vehicles/infantry);
-                    // we don't yet route non-water movers through that matrix,
-                    // so the boolean would otherwise reject a same-height
-                    // plateau→bridgehead step and trap the unit on the wrong
-                    // side. The bridge-layer gate at A* expansion still
-                    // enforces "enter bridge via bridgehead" via the
-                    // bridge_transition flag on the next deck cell.
-                    true
-                } else if cell.is_cliff_like {
-                    false
-                } else {
-                    !cell.ground_walk_blocked || cell.is_water
-                },
-                bridge_walkable: if bridge_structural {
-                    cell.bridge_walkable && bridge_intact
-                } else {
-                    cell.bridge_walkable
-                },
-                bridge_structural,
-                bridge_marker_0x80: cell.bridge_facts.has_flag(BRIDGE_FLAG_ANCHOR_SELF),
-                transition: if bridge_structural {
-                    cell.bridge_transition && bridge_intact
-                } else {
-                    cell.bridge_transition
-                },
-                ground_level: cell.level,
-                bridge_deck_level: bridge_state
-                    .and_then(|state| state.cell(cell.rx, cell.ry))
-                    .map(|runtime| runtime.deck_level)
-                    .unwrap_or(cell.bridge_deck_level),
-                slope_type: cell.slope_type,
-                tube_index: cell.tube_index,
-                low_bridge_tube_cell: cell.is_low_bridge_tube_cell(),
-            };
-            // Infantry overlay: recompute the same walkability decision with the
-            // terrain object removed, so only the sub-cell mask decides.
-            let walkable_without_terrain_object = if cell.overlay_blocks {
-                false
-            } else if bridge_structural {
-                if bridge_intact {
-                    true
-                } else {
-                    !cell.is_cliff_like && !(cell.base_ground_walk_blocked || cell.overlay_blocks)
-                }
-            } else if cell.bridge_walkable && cell.bridge_transition {
-                true
-            } else if cell.is_cliff_like {
-                false
-            } else {
-                !(cell.base_ground_walk_blocked || cell.overlay_blocks) || cell.is_water
-            };
+            let (path_cell, bits, walkable_without_terrain_object) =
+                project_terrain_path_cell(cell, bridge_state);
             let index = cell.ry as usize * terrain.width() as usize + cell.rx as usize;
             if let Some(slot) = cells.get_mut(index) {
                 *slot = path_cell;
             }
             if let Some(slot) = terrain_object_cell_bits.get_mut(index) {
-                *slot = cell
-                    .terrain_object_occupation
-                    .map_or(0, terrain_object_cell_bits_from_ini);
+                *slot = bits;
             }
             if let Some(slot) = ground_walkable_without_terrain_object.get_mut(index) {
                 *slot = walkable_without_terrain_object;
@@ -2372,6 +2385,46 @@ impl PathGrid {
             height: terrain.height(),
             terrain_object_cell_bits,
             ground_walkable_without_terrain_object,
+        }
+    }
+
+    /// Publish just one recalculated terrain cell. Existing structure presence
+    /// is supplied by the world owner; unrelated cells and zone graphs stay intact.
+    /// Tableless headless grids retain their documented PathCell-only fallback.
+    pub(crate) fn refresh_resolved_cell(
+        &mut self,
+        cell: &crate::map::resolved_terrain::ResolvedTerrainCell,
+        bridge_state: Option<&BridgeRuntimeState>,
+        structure_blocked: bool,
+    ) -> bool {
+        if cell.rx >= self.width || cell.ry >= self.height {
+            return false;
+        }
+        let index = usize::from(cell.ry) * usize::from(self.width) + usize::from(cell.rx);
+        let (path_cell, bits, without_terrain) = project_terrain_path_cell(cell, bridge_state);
+        self.cells[index] = path_cell;
+        if let Some(slot) = self.terrain_object_cell_bits.get_mut(index) {
+            *slot = bits;
+        }
+        if let Some(slot) = self.ground_walkable_without_terrain_object.get_mut(index) {
+            *slot = without_terrain;
+        }
+        if structure_blocked {
+            self.block_structure_cell(cell.rx, cell.ry);
+        }
+        true
+    }
+
+    /// A marked structure closes ground movement even where terrain occupation
+    /// leaves an infantry sub-cell free. Deck movement above it is independent.
+    pub(crate) fn block_structure_cell(&mut self, x: u16, y: u16) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let index = usize::from(y) * usize::from(self.width) + usize::from(x);
+        self.cells[index].ground_walkable = false;
+        if let Some(slot) = self.ground_walkable_without_terrain_object.get_mut(index) {
+            *slot = false;
         }
     }
 
@@ -2425,7 +2478,7 @@ impl PathGrid {
         let blocking =
             crate::sim::production::building_movement_blocking_cells(&foundation_cells, has_bib);
         for (rx, ry) in blocking {
-            self.set_blocked(rx, ry, true);
+            self.block_structure_cell(rx, ry);
         }
     }
 

@@ -198,9 +198,6 @@ impl IsoTileFloodHost for LiveTileFlood<'_, '_> {
         // Original47D2B0 publishes Map+68 class/height and Map+70 height
         // before returning to the next ordered repair callback. Publication
         // must survive a later presentation failure and must not rebuild IDs.
-        if let Some(zones) = sim.zone_grid.as_mut() {
-            zones.refresh_base_cell_attributes_at(terrain, coord.0, coord.1);
-        }
         let deck_level = terrain.cells()[index].bridge_deck_level;
         if let Some(runtime) = sim
             .bridge_state
@@ -216,6 +213,19 @@ impl IsoTileFloodHost for LiveTileFlood<'_, '_> {
             coord.1,
             outcome.finalized,
         );
+        crate::sim::world::navigation::NavigationCaches {
+            terrain_costs: &mut sim.terrain_costs,
+            zones: &mut sim.zone_grid,
+            path: &mut sim.path_grid,
+        }
+        .publish_recalculated_cell(
+            terrain,
+            sim.bridge_state.as_ref(),
+            &sim.substrate.entities,
+            &sim.interner,
+            self.publication.rules,
+            coord,
+        )?;
         self.publication.retain_real_write(cell);
         self.publication
             .sim

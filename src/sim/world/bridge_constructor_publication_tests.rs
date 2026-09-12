@@ -59,6 +59,13 @@ fn live_bridge_recalc_publishes_retained_attributes_before_connectivity() {
     let (mut sim, rules, registry) = fixture();
     let terrain = sim.resolved_terrain.as_ref().unwrap();
     let path = PathGrid::from_resolved_terrain(terrain);
+    let mut prior_terrain = terrain.clone();
+    prior_terrain.cell_mut(16, 16).unwrap().overlay_blocks = true;
+    prior_terrain.cell_mut(17, 16).unwrap().overlay_blocks = true;
+    sim.terrain_costs =
+        crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids(&prior_terrain);
+    let prior_path = std::sync::Arc::new(PathGrid::from_resolved_terrain(&prior_terrain));
+    sim.path_grid = Some(prior_path.clone());
     sim.zone_grid = Some(ZoneGrid::build_with_terrain(
         &path,
         &BTreeMap::new(),
@@ -91,6 +98,23 @@ fn live_bridge_recalc_publishes_retained_attributes_before_connectivity() {
     assert_eq!(base.levels, expected_levels);
     assert_eq!(base.zone_ids, ids_before);
     assert_eq!(base.raw_zone_ids_by_row, rows_before);
+    let current = sim.path_grid().unwrap();
+    assert_eq!(current.cell(16, 16).unwrap().ground_level, 4);
+    assert!(current.is_walkable(16, 16));
+    assert_eq!(current.cell(17, 16), prior_path.cell(17, 16));
+    assert_eq!(prior_path.cell(16, 16).unwrap().ground_level, 6);
+    for speed in crate::rules::locomotor_type::SpeedType::ALL_WITH_COSTS {
+        let costs = &sim.terrain_costs[speed];
+        assert_eq!(costs.cost_at(17, 16), 0, "unrelated cached cost changed");
+        assert_eq!(
+            costs.cost_at(16, 16),
+            crate::sim::pathfinding::terrain_cost::TerrainCostGrid::from_resolved_terrain(
+                sim.resolved_terrain.as_ref().unwrap(),
+                *speed
+            )
+            .cost_at(16, 16)
+        );
+    }
 }
 
 #[test]

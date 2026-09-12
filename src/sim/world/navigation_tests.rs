@@ -142,6 +142,68 @@ fn rules_and_overlays() -> (RuleSet, OverlayTypeRegistry) {
     )
 }
 
+#[test]
+fn recalc_keeps_marked_structure_over_partial_terrain_occupation_and_bridge_deck() {
+    use crate::sim::movement::locomotor::MovementLayer;
+    let (rules, _) = rules_and_overlays();
+    let mut sim = Simulation::with_seed(47);
+    let mut terrain = gsi_04_10_clear_terrain(16, 16);
+    let tree_cell = terrain.cell_mut(6, 6).unwrap();
+    tree_cell.terrain_object_occupation = Some(1);
+    tree_cell.terrain_object_blocks = true;
+    let ground = crate::sim::pathfinding::PathGrid::from_resolved_terrain(&terrain);
+    assert!(
+        ground.is_walkable_for_infantry(6, 6),
+        "partial tree leaves infantry room"
+    );
+    sim.install_resolved_terrain_for_new_map(terrain);
+    let mut structure =
+        crate::sim::game_entity::GameEntity::test_default(47, "YARD", "Americans", 6, 6);
+    structure.category = EntityCategory::Structure;
+    structure.type_ref = sim.interner.intern("YARD");
+    structure.lifecycle.cell_marked = true;
+    structure.dying = true; // Dying still owns its marked footprint.
+    sim.substrate.entities.insert(structure);
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    assert!(!sim.path_grid().unwrap().is_walkable_for_infantry(6, 6));
+    assert!(
+        sim.path_grid().unwrap().is_walkable(7, 6),
+        "bib remains open"
+    );
+    let before = sim.path_grid_snapshot().unwrap();
+    let terrain = sim.resolved_terrain.as_mut().unwrap();
+    let cell = terrain.cell_mut(6, 6).unwrap();
+    cell.level = 4;
+    cell.slope_type = 1;
+    cell.bridge_deck_level = 8;
+    cell.has_bridge_deck = true;
+    cell.bridge_walkable = true;
+    cell.bridge_transition = true;
+    crate::sim::world::navigation::NavigationCaches {
+        terrain_costs: &mut sim.terrain_costs,
+        zones: &mut sim.zone_grid,
+        path: &mut sim.path_grid,
+    }
+    .publish_recalculated_cell(
+        terrain,
+        None,
+        &sim.substrate.entities,
+        &sim.interner,
+        &rules,
+        (6, 6),
+    )
+    .unwrap();
+    let after = sim.path_grid().unwrap();
+    assert!(!after.is_walkable(6, 6));
+    assert!(!after.is_walkable_for_infantry(6, 6));
+    assert!(after.is_walkable_on_layer(6, 6, MovementLayer::Bridge));
+    assert_eq!(after.cell(6, 6).unwrap().ground_level, 4);
+    assert_eq!(after.cell(6, 6).unwrap().slope_type, 1);
+    assert_eq!(after.cell(6, 6).unwrap().bridge_deck_level, 8);
+    assert_eq!(after.cell(7, 6), before.cell(7, 6));
+    assert_eq!(before.cell(6, 6).unwrap().ground_level, 0);
+}
+
 fn assert_only_marked_foundation(sim: &Simulation) {
     let path = sim.path_grid_snapshot().unwrap();
     for ry in 0..3 {
