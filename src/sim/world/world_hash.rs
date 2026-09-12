@@ -2887,7 +2887,7 @@ mod rally_hash_tests {
         let mut drive = DriveLocomotionRuntime::default();
         drive.destination = Some(DriveCoord::cell(45, 40, 0));
         drive.path.directions = vec![2, 2, 2, 2, 2];
-        drive.residual_budget = 3;
+        drive.track.residual = 3;
         entity_b.drive_locomotion = Some(drive);
         sim_a.substrate.entities.insert(entity_a);
         sim_b.substrate.entities.insert(entity_b);

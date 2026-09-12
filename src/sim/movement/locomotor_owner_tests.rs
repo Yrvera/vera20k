@@ -73,9 +73,12 @@ fn supply_drive_state(entity: &mut GameEntity) {
         // Is_Moving compares exact XY only. Retained Z deliberately differs
         // from the owner's height, so retirement cannot depend on full XYZ.
         head_to: Some(DriveCoord::cell(8, 8, 731)),
-        track_index: 1,
-        point_index: 3,
-        residual_budget: 971,
+        track: crate::sim::components::TrackProgress {
+            turn_index: 1,
+            cursor: 3,
+            residual: 971,
+            ..Default::default()
+        },
         current_speed_fraction: SimFixed::lit("0.5"),
         owner_current_speed: 11,
         ..Default::default()
@@ -209,7 +212,7 @@ fn building_destination_installs_fresh_drive_without_previous_instance_state() {
     assert!(entity.movement_target.is_some());
     assert!(entity.forced_drive_track.is_none());
     let drive = entity.drive_locomotion.as_ref().unwrap();
-    assert_eq!(drive.residual_budget, 0);
+    assert_eq!(drive.track.residual, 0);
     assert_eq!(drive.current_speed_fraction, SIM_ZERO);
     assert_eq!(drive.owner_current_speed, 0);
     if let Some(track) = &entity.drive_track {

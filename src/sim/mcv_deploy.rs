@@ -195,7 +195,7 @@ pub(crate) fn drive_process_prelude(sim: &mut Simulation, id: u64, rules: &RuleS
             // the previous-rotation latch alone until the track is finished.
             && e.drive_track.is_none()
             && e.forced_drive_track.is_none()
-            && !e.drive_locomotion.as_ref().is_some_and(|d| d.track_valid && d.track_index != -1)
+            && !e.drive_locomotion.as_ref().is_some_and(|d| d.track_valid && d.track.turn_index != -1)
             // 0x4B066C..0x4B06C3: same-cell NavCom is handled by the
             // destination/waypoint owner before the rotation branch.
             && !matches!(e.navigation.nav_com, Some(crate::sim::components::NavTargetRef::Cell { rx, ry })

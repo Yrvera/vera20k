@@ -73,7 +73,9 @@ fn accept_shared_track(
     endpoint: (i16, i16),
     endpoint_coord: DriveCoord,
     consumed_directions: usize,
+    turn_index: usize,
 ) {
+    super::track_head::accept_fresh_progress(kind, drive_locomotion, ship_locomotion, turn_index);
     match kind {
         LocomotorKind::Drive => {
             if let Some(drive) = drive_locomotion.as_mut() {
@@ -248,6 +250,7 @@ pub(super) fn configure_motion_after_transition(
                     endpoint,
                     head,
                     plan.nodes,
+                    plan.selection.turn_track_index,
                 );
             }
         } else {
@@ -463,6 +466,9 @@ pub(super) enum AdvanceResult {
     /// select new track if OK). If chaining fails, the current track continues
     /// on the next tick.
     DriveTrackChainReady,
+    /// The completed approach retired its selector; the next path step is
+    /// an explicit tube. The host must enter it before ordinary selection.
+    DriveTrackTubeReady(crate::map::tube_facts::TubeId),
     /// A fresh curve was refused by the cell occupation mask. No curve was
     /// installed, no head reservation was stamped, and the mover has not moved.
     /// The refusal carries its own answer — see [`DriveSelectionRefusal`] — so
@@ -501,11 +507,18 @@ mod tests {
             let mut curve = Some(curve);
             let mut drive = (kind == LocomotorKind::Drive).then(|| DriveLocomotionRuntime {
                 head_to: Some(head),
-                residual_budget: 8,
+                track: crate::sim::components::TrackProgress {
+                    residual: 8,
+                    ..Default::default()
+                },
                 ..Default::default()
             });
             let mut ship = (kind == LocomotorKind::Ship).then(|| ShipLocomotionRuntime {
                 head_to: Some(head),
+                track: crate::sim::components::TrackProgress {
+                    residual: 8,
+                    ..Default::default()
+                },
                 ..Default::default()
             });
             let mut target = MovementTarget {
@@ -513,7 +526,7 @@ mod tests {
                 path_layers: vec![MovementLayer::Ground],
                 ..Default::default()
             };
-            let result = advance_drive_track_retry_after_selection(
+            let result = advance_shared_track(
                 &mut target,
                 &mut position,
                 &mut 0,
@@ -527,6 +540,7 @@ mod tests {
                 MovementLayer::Ground,
                 None,
                 None,
+                0,
             );
             assert!(
                 matches!(result, AdvanceResult::ReadyForCrossings),
@@ -680,7 +694,8 @@ mod tests {
             drive_locomotion
                 .as_ref()
                 .expect("drive runtime")
-                .residual_budget,
+                .track
+                .residual,
             13
         );
 
@@ -711,10 +726,10 @@ mod tests {
 
         assert!(matches!(result, AdvanceResult::DriveTrackActive));
         let drive = drive_locomotion.as_ref().expect("drive runtime");
-        assert_eq!(drive.residual_budget, 6);
+        assert_eq!(drive.track.residual, 6);
         let track = drive_track_state.as_ref().expect("new track installed");
         assert_eq!(track.residual, 6);
-        assert_eq!(drive.point_index, track.point_index);
+        assert_eq!(drive.track.cursor, i32::from(track.point_index));
     }
 
     #[test]
@@ -774,7 +789,7 @@ mod tests {
         let drive = drive_locomotion.as_ref().unwrap();
         let track = drive_track_state.as_ref().unwrap();
         assert_eq!(track.point_index, start_index + 1);
-        assert_eq!(drive.residual_budget, 4);
+        assert_eq!(drive.track.residual, 4);
         assert_eq!(track.residual, 4);
     }
 
@@ -1379,6 +1394,7 @@ fn select_fresh_drive_track_at_current_cell(
         endpoint,
         head,
         plan.nodes,
+        plan.selection.turn_track_index,
     );
     let next_occupation = (endpoint_layer == MovementLayer::Ground)
         .then(|| {
@@ -1519,11 +1535,15 @@ fn finish_shared_track(
         LocomotorKind::Drive => {
             if let Some(drive) = drive_locomotion {
                 drive.head_to = None;
+                // Original terminal retirement4B210E precedes the next path
+                // selector/tube admission and preserves residual/short state.
+                drive.track.clear_selector();
             }
         }
         LocomotorKind::Ship => {
             if let Some(ship) = ship_locomotion {
                 ship.head_to = None;
+                ship.track.clear_selector(); // Ship6A1751 counterpart.
             }
         }
         _ => {}
@@ -1532,7 +1552,7 @@ fn finish_shared_track(
     None
 }
 
-fn advance_drive_track_retry_after_selection(
+fn advance_shared_track(
     target: &mut MovementTarget,
     position: &mut Position,
     facing: &mut u8,
@@ -1546,22 +1566,35 @@ fn advance_drive_track_retry_after_selection(
     current_occupation_layer: MovementLayer,
     terrain: Option<&ResolvedTerrainGrid>,
     path_grid: Option<&PathGrid>,
+    fresh_budget: i32,
 ) -> AdvanceResult {
     let Some(track_state) = drive_track_state else {
         return AdvanceResult::ReadyForCrossings;
     };
     let prior_point_index = track_state.point_index;
-    let advance = if let Some(drive) = drive_locomotion.as_mut() {
-        let advance = drive_track::advance_drive_track_with_budget(
-            track_state,
-            0,
-            &mut drive.residual_budget,
-        );
-        drive.point_index = track_state.point_index;
-        drive.track_valid = !advance.finished;
-        advance
-    } else {
-        drive_track::advance_drive_track(track_state, SIM_ZERO, SIM_ONE)
+    let advance = match kind {
+        LocomotorKind::Drive => {
+            let drive = drive_locomotion.get_or_insert_with(Default::default);
+            let advance = drive_track::advance_drive_track_with_budget(
+                track_state,
+                fresh_budget,
+                &mut drive.track.residual,
+            );
+            drive.track.cursor = i32::from(track_state.point_index);
+            drive.track_valid = !advance.finished;
+            advance
+        }
+        LocomotorKind::Ship => {
+            let ship = ship_locomotion.get_or_insert_with(Default::default);
+            let advance = drive_track::advance_drive_track_with_budget(
+                track_state,
+                fresh_budget,
+                &mut ship.track.residual,
+            );
+            ship.track.cursor = i32::from(track_state.point_index);
+            advance
+        }
+        _ => return AdvanceResult::ReadyForCrossings,
     };
     if track_state.point_index != prior_point_index {
         // Real forward progress clears the owner's impatience flag. gamemd does
@@ -1668,99 +1701,47 @@ pub(super) fn advance_lepton_position(
         .as_ref()
         .filter(|loco| loco.kind == LocomotorKind::Walk)
         .map(|_| super::ground_pose::position_world_xy(position));
-    if let Some(track_state) = drive_track_state {
-        // Drive track advancement: step through pre-computed curve points.
-        // The track handles position AND facing, producing smooth turns.
-        let prior_point_index = track_state.point_index;
-        let advance = if let Some(drive) = drive_locomotion.as_mut() {
-            let fresh_budget = movement_frame_budget_from_current_speed(effective_speed);
-            let advance = drive_track::advance_drive_track_with_budget(
-                track_state,
-                fresh_budget,
-                &mut drive.residual_budget,
-            );
-            drive.point_index = track_state.point_index;
-            drive.track_valid = !advance.finished;
-            advance
+    if drive_track_state.is_some() {
+        let kind = shared_track_kind(locomotor).unwrap_or(LocomotorKind::Drive);
+        let fresh_budget = if kind == LocomotorKind::Drive {
+            movement_frame_budget_from_current_speed(effective_speed)
         } else {
-            drive_track::advance_drive_track(track_state, effective_speed, dt)
+            (effective_speed * dt).to_num::<i32>()
         };
-        if track_state.point_index != prior_point_index {
-            // Same forward-progress clear as the retry path above: gamemd's
-            // paid-track-point block resets the owner's impatience flag, so a
-            // vehicle that actually moved a cell earns a fresh grace window on
-            // its next block instead of inheriting a stale timer.
-            target.path_blocked = false;
-            if let (Some(drive), Some(occupation)) =
-                (drive_locomotion.as_mut(), cell_occupation.as_deref_mut())
-            {
-                crate::sim::occupancy::clear_current_drive_occupation_for_paid_point(
-                    drive,
-                    occupation,
-                    entity_id,
-                    (position.rx, position.ry),
-                    current_occupation_layer,
-                );
-            }
+        let advance = advance_shared_track(
+            target,
+            position,
+            facing,
+            facing_target,
+            drive_track_state,
+            drive_locomotion,
+            ship_locomotion,
+            kind,
+            &mut cell_occupation,
+            entity_id,
+            current_occupation_layer,
+            terrain,
+            path_grid,
+            fresh_budget,
+        );
+        if !matches!(advance, AdvanceResult::ReadyForCrossings) {
+            return advance;
         }
-        *facing = advance.facing;
-        *facing_target = None; // track handles facing
-
-        if track_state.point_index != prior_point_index || advance.finished {
-            // Consume the old current cell before a paid point can leave it.
-            consume_previously_reached_track_node(target, position);
+        // Drive Process4B0647/4B0665/4B0AAA retries after terminal retirement
+        // in this same call. Process_Movement4B3298/4B3A4D leaves direction8
+        // for Process_Track's tube gate4B1297/4B12AE, before the paid loop;
+        // it must not become an ordinary octant.
+        // The host owns list/raw-mark removal, so expose that boundary before
+        // selecting another curve without re-running the movement prefix.
+        if let Some(tube_id) = super::tube_movement::pending_path_tube_id(
+            target,
+            position,
+            current_occupation_layer,
+            terrain,
+        ) {
+            return AdvanceResult::DriveTrackTubeReady(tube_id);
         }
-
-        if advance.cell_jump {
-            // Coordinate-based cell crossing detected — the transformed track
-            // point position landed in a different cell. The cell_offset was
-            // already adjusted inside advance_drive_track. Update visual position.
-            position.sub_x = advance.sub_x;
-            position.sub_y = advance.sub_y;
-            // Signal the caller to handle the actual cell transition
-            // (move rx/ry by the applied delta, reserve destination, bridge
-            // state, etc.).
-            return AdvanceResult::DriveTrackCellJump {
-                cell_dx: advance.cell_jump_dx,
-                cell_dy: advance.cell_jump_dy,
-            };
-        }
-
-        if track_state.point_index != prior_point_index || advance.finished {
-            commit_paid_track_height(
-                position,
-                &advance,
-                current_occupation_layer == MovementLayer::Bridge,
-                terrain,
-                path_grid,
-            );
-        }
-
-        if advance.chain_ready && target.next_index < target.path.len() {
-            // Track reached chain_index — signal caller to attempt chaining.
-            // The caller will check Can_Enter_Cell on the next-next cell and
-            // either replace the track state or let the current track continue.
-            position.sub_x = advance.sub_x;
-            position.sub_y = advance.sub_y;
-            return AdvanceResult::DriveTrackChainReady;
-        }
-
-        if advance.finished {
-            if let Some(kind) = shared_track_kind(locomotor) {
-                if let Some((cell_dx, cell_dy)) = finish_shared_track(
-                    position,
-                    track_state,
-                    kind,
-                    drive_locomotion,
-                    ship_locomotion,
-                    current_occupation_layer == MovementLayer::Bridge,
-                    terrain,
-                    path_grid,
-                ) {
-                    return AdvanceResult::DriveTrackCellJump { cell_dx, cell_dy };
-                }
-            }
-            *drive_track_state = None;
+        {
             let shared_kind = shared_track_kind(locomotor);
             let uses_drive_tracks = shared_kind.is_some();
             let is_ship = shared_kind == Some(LocomotorKind::Ship);
@@ -1783,7 +1764,7 @@ pub(super) fn advance_lepton_position(
                     kind,
                 ) {
                     FreshTrackOutcome::Installed => {
-                        return advance_drive_track_retry_after_selection(
+                        return advance_shared_track(
                             target,
                             position,
                             facing,
@@ -1797,6 +1778,7 @@ pub(super) fn advance_lepton_position(
                             current_occupation_layer,
                             terrain,
                             path_grid,
+                            0,
                         );
                     }
                     FreshTrackOutcome::TurnFirst(desired_facing) => {
@@ -1816,13 +1798,6 @@ pub(super) fn advance_lepton_position(
                 }
             }
             // Fall through to ReadyForCrossings — normal movement takes over.
-        } else {
-            // Mid-track, no events — apply discrete-step pos, then layer
-            // sub-step interp on top using the residual budget. The interp
-            // helper enforces the L4 cell-validity safety gate. Residual cell
-            // crossings return a separate list/OnBridge transaction without
-            // consuming a path node or calling SetHeight.
-            return apply_track_residual(position, track_state, &advance);
         }
     } else {
         let needs_drive_native_step = drive_locomotion
@@ -1837,7 +1812,7 @@ pub(super) fn advance_lepton_position(
         if needs_drive_native_step || needs_ship_native_step {
             if target.next_index >= target.path.len() {
                 if let Some(drive) = drive_locomotion.as_mut() {
-                    drive.residual_budget = 0;
+                    drive.track.residual = 0;
                     drive.path.cursor = drive.path.directions.len().min(u16::MAX as usize) as u16;
                     drive.path.directions.clear();
                 }
@@ -1863,7 +1838,7 @@ pub(super) fn advance_lepton_position(
                     kind,
                 ) {
                     FreshTrackOutcome::Installed => {
-                        return advance_drive_track_retry_after_selection(
+                        return advance_shared_track(
                             target,
                             position,
                             facing,
@@ -1877,6 +1852,7 @@ pub(super) fn advance_lepton_position(
                             current_occupation_layer,
                             terrain,
                             path_grid,
+                            0,
                         );
                     }
                     FreshTrackOutcome::TurnFirst(desired_facing) => {

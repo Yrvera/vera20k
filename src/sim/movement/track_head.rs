@@ -5,7 +5,8 @@
 //! Original executable cases: tools/spatial_oracle/locomotor_head_coordinates.json.
 
 use super::drive_track::{self, DriveTrackPlan, DriveTrackState};
-use crate::sim::components::{DriveCoord, Position};
+use crate::rules::locomotor_type::LocomotorKind;
+use crate::sim::components::{DriveCoord, DriveLocomotionRuntime, Position, ShipLocomotionRuntime};
 use crate::util::direction_tables::lepton::LEPTON_DELTAS;
 
 /// One original direction-table addition; no terrain or cell-center sampling.
@@ -16,6 +17,30 @@ pub(super) fn offset_head(base: DriveCoord, direction: u8) -> DriveCoord {
         y: base.y.wrapping_add(dy),
         z: base.z,
     }
+}
+
+/// Publish the selected descriptor and cursor on the active locomotor,
+/// preserving its residual. Geometry is only the coordinate projection.
+pub(super) fn accept_fresh_progress(
+    kind: LocomotorKind,
+    drive: &mut Option<DriveLocomotionRuntime>,
+    ship: &mut Option<ShipLocomotionRuntime>,
+    turn_index: usize,
+) {
+    use super::track_process::TrackFamily;
+    let (progress, family) = match kind {
+        LocomotorKind::Drive => (
+            &mut drive.get_or_insert_with(Default::default).track,
+            TrackFamily::Drive,
+        ),
+        LocomotorKind::Ship => (
+            &mut ship.get_or_insert_with(Default::default).track,
+            TrackFamily::Ship,
+        ),
+        _ => return,
+    };
+    assert!(progress.select_fresh(family, (turn_index / 8) as u8, (turn_index % 8) as u8));
+    progress.accept_fresh();
 }
 
 /// Build the stored coordinate and executable curve together, before either is

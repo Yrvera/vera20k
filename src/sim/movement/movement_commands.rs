@@ -800,6 +800,12 @@ pub(crate) fn issue_move_command_with_layered(
                         if let Some((head, curve)) =
                             super::track_head::begin_fresh(&plan, &entity_mut.position)
                         {
+                            super::track_head::accept_fresh_progress(
+                                locomotor_kind.expect("shared track kind"),
+                                &mut entity_mut.drive_locomotion,
+                                &mut entity_mut.ship_locomotion,
+                                plan.selection.turn_track_index,
+                            );
                             entity_mut.drive_track = Some(curve);
                             accepted_head = Some(head);
                             drive_track_started = true;

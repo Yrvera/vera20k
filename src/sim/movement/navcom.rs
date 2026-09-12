@@ -174,8 +174,8 @@ fn reset_drive_track_runtime(entity: &mut GameEntity) {
     if let Some(drive) = entity.drive_locomotion.as_mut() {
         drive.head_to = None;
         drive.track_valid = false;
-        drive.track_index = -1;
-        drive.point_index = 0;
+        drive.track.turn_index = -1;
+        drive.track.cursor = 0;
     }
 }
 
@@ -425,6 +425,7 @@ mod tests {
             target_speed_fraction: SIM_ONE,
             current_speed_fraction: SIM_HALF,
             owner_current_speed: 10,
+            track: Default::default(),
         });
 
         set_destination_internal_null(&mut entity);
@@ -467,6 +468,7 @@ mod tests {
             target_speed_fraction: SIM_ONE,
             current_speed_fraction: SIM_HALF,
             owner_current_speed: 10,
+            track: Default::default(),
         });
 
         finish_drive_navigation(&mut entity, None);

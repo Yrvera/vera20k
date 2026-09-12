@@ -166,7 +166,8 @@ pub(super) fn accept_path_replay(
     consume_path_replay(queue, consumed_directions);
 }
 
-/// Accepted chain4B1DF7/6A143A pops the queue without rewriting Foot+558.
+/// Accepted chain4B1DF7/6A143A and Drive tube4B1362..136E pop the queue
+/// without rewriting Foot+558.
 pub(super) fn consume_path_replay(queue: &mut DrivePathQueue, consumed_directions: usize) {
     let cursor = usize::from(queue.cursor)
         .saturating_add(consumed_directions)
@@ -230,7 +231,7 @@ fn is_at_coord_cells(
                 let (track_cell, head_cell) = super::drive_track::is_at_coord_track_cells(
                     track,
                     (entity.position.rx, entity.position.ry),
-                    !drive.is_some_and(|drive| drive.is_reversed),
+                    !drive.is_some_and(|drive| drive.track.reversed),
                 );
                 return (track_cell, head_cell, None);
             }
@@ -777,8 +778,8 @@ mod tests {
         let mut drive = crate::sim::components::DriveLocomotionRuntime::default();
         drive.head_to = Some(crate::sim::components::DriveCoord::cell(9, 9, 4));
         drive.track_valid = true;
-        drive.track_index = 3;
-        drive.point_index = 12;
+        drive.track.turn_index = 3;
+        drive.track.cursor = 12;
         drive.path.reference_cell = Some((5, 4));
         drive.path.directions = vec![2, 2];
         peer.drive_locomotion = Some(drive);

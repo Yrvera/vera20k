@@ -98,7 +98,7 @@ fn tick_forced_drive_tracks(
                 super::drive_track::advance_forced_drive_track(
                     forced,
                     dt,
-                    &mut drive.residual_budget,
+                    &mut drive.track.residual,
                 )
             } else {
                 // Defensive compatibility for old/test snapshots without the
@@ -108,7 +108,7 @@ fn tick_forced_drive_tracks(
             };
             let residual = drive_locomotion
                 .as_ref()
-                .map_or(forced.track.residual, |drive| drive.residual_budget);
+                .map_or(forced.track.residual, |drive| drive.track.residual);
             (
                 advance,
                 residual,
@@ -136,7 +136,7 @@ fn tick_forced_drive_tracks(
             }
         }
         if let Some(drive) = entity.drive_locomotion.as_mut() {
-            drive.point_index = point_index;
+            drive.track.cursor = i32::from(point_index);
             drive.track_valid = true;
         }
         entity.facing = advance.facing;
@@ -238,8 +238,8 @@ fn tick_forced_drive_tracks(
                         );
                         drive.head_to = None;
                         drive.track_valid = false;
-                        drive.track_index = -1;
-                        drive.point_index = 0;
+                        drive.track.turn_index = -1;
+                        drive.track.cursor = 0;
                     }
                 } else {
                     log::warn!(
@@ -819,6 +819,12 @@ fn process_pending_drive_arrivals(
                     if let Some((head, curve)) =
                         super::track_head::begin_fresh(&plan, &entity.position)
                     {
+                        super::track_head::accept_fresh_progress(
+                            crate::rules::locomotor_type::LocomotorKind::Drive,
+                            &mut entity.drive_locomotion,
+                            &mut entity.ship_locomotion,
+                            plan.selection.turn_track_index,
+                        );
                         entity.drive_track = Some(curve);
                         if let Some(drive) = entity.drive_locomotion.as_mut() {
                             drive.head_to = Some(head);
@@ -1369,6 +1375,10 @@ fn handle_deferred_drive_track_chain(
         .occupancy_list_layer()
         .unwrap_or(MovementLayer::Ground);
     if let Some(drive) = entity.drive_locomotion.as_mut() {
+        drive.track.accept_chain(
+            super::track_process::TrackFamily::Drive,
+            sel.turn_track_index as i32,
+        );
         drive.head_to = Some(chain.head);
         super::path_markers::consume_path_replay(&mut drive.path, 1);
         let next = (chain.layers.occupancy_bits_layer == MovementLayer::Ground).then_some(
@@ -1405,6 +1415,10 @@ fn handle_deferred_drive_track_chain(
         );
     }
     if let Some(ship) = entity.ship_locomotion.as_mut() {
+        ship.track.accept_chain(
+            super::track_process::TrackFamily::Ship,
+            sel.turn_track_index as i32,
+        );
         ship.head_to = Some(chain.head);
         super::path_markers::consume_path_replay(&mut ship.path, 1);
     }
@@ -1905,7 +1919,6 @@ fn tick_movement_with_grids_scoped(
                 active_layer,
                 resolved_terrain,
             ) {
-                let exit = target.path.get(target.next_index).copied();
                 let terrain = resolved_terrain.expect("tube admission resolved terrain");
                 if tube_movement::begin_path_tube_step(
                     entity_id,
@@ -1923,15 +1936,6 @@ fn tick_movement_with_grids_scoped(
                 )
                 .is_ok()
                 {
-                    if let Some(exit) = exit
-                        && let Some(drive) = entity.drive_locomotion.as_mut()
-                    {
-                        super::path_markers::accept_path_replay(
-                            &mut drive.path,
-                            (exit.0 as i16, exit.1 as i16),
-                            1,
-                        );
-                    }
                     tube_processed.insert(entity_id);
                     continue;
                 }
@@ -2278,6 +2282,31 @@ fn tick_movement_with_grids_scoped(
             }
             match advance_result {
                 movement_step::AdvanceResult::DriveTrackActive => continue,
+                movement_step::AdvanceResult::DriveTrackTubeReady(tube_id) => {
+                    let terrain =
+                        resolved_terrain.expect("terminal tube admission resolved terrain");
+                    if tube_movement::begin_path_tube_step(
+                        entity_id,
+                        entity.category,
+                        &mut entity.position,
+                        &mut entity.drive_locomotion,
+                        &mut entity.low_bridge_tube_state,
+                        target,
+                        &mut entity.lifecycle.cell_marked,
+                        tube_id,
+                        terrain,
+                        occupancy,
+                        cell_occupation,
+                        raw_cell_occupation,
+                    )
+                    .is_ok()
+                    {
+                        tube_processed.insert(entity_id);
+                    }
+                    // Direction8 never falls through into ground movement,
+                    // including when its entry receiver refuses the transfer.
+                    continue;
+                }
                 movement_step::AdvanceResult::DriveTrackResidualCellJump { cell_dx, cell_dy } => {
                     // Drive 0x4B253F..0x4B25C3: residual movement has its own
                     // remove/coords/OnBridge/put order. This branch models the
@@ -2351,12 +2380,10 @@ fn tick_movement_with_grids_scoped(
                         // derives its cell from that coordinate, so the cell and
                         // the sub-cell offset always move by the same delta and
                         // the rendered position stays continuous. Taking the
-                        // cell from the path node instead lets the two disagree:
-                        // the straight NE/SW curves pass exactly through a cell
-                        // corner and cross one axis per point, which under the
-                        // old code moved the mover a whole cell (256 leptons)
-                        // sideways in a single frame and consumed two path nodes
-                        // for one diagonal step.
+                        // cell from the path node instead lets the two disagree
+                        // whenever a curve crosses an intermediate cell. Retail
+                        // Raw2 skips the exact corner; the former split NE/SW
+                        // example depended on an incorrect Rust midpoint value.
                         let old_rx = entity.position.rx;
                         let old_ry = entity.position.ry;
                         let nx = old_rx.saturating_add_signed(cell_dx as i16);

@@ -394,7 +394,7 @@ fn active_track_and_same_cell_destination_preserve_the_rotation_latch() {
     e.mcv_deploy_pending = true;
     e.mcv_drive_was_rotating = true;
     let drive = e.drive_locomotion.get_or_insert_with(Default::default);
-    drive.track_index = 3;
+    drive.track.turn_index = 3;
     drive.track_valid = true;
     drive_process_prelude(&mut sim, id, &rules);
     assert!(

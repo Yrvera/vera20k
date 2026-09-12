@@ -70,6 +70,7 @@ mod path_markers;
 pub(crate) mod ready_producer;
 pub(crate) mod slope_transition;
 mod track_head;
+pub(crate) mod track_process;
 
 // --- Movement-related modules (public API) ---
 pub mod air_movement;
@@ -167,11 +168,10 @@ pub(crate) fn install_forced_drive_track(
         .get_or_insert_with(crate::sim::components::DriveLocomotionRuntime::default);
     // Force_Track preserves DriveLocomotion's integer movement residual. The
     // detached forced cursor mirrors that canonical owner field for snapshots.
-    forced.track.residual = drive.residual_budget;
+    forced.track.residual = drive.track.residual;
     drive.destination = Some(head);
     drive.head_to = Some(head);
-    drive.track_index = i16::from(forced.turn_track_index);
-    drive.point_index = forced.track.point_index;
+    drive.track.select_forced(i32::from(forced.turn_track_index));
     drive.track_valid = true;
     drive.target_speed_fraction = SIM_ONE;
     drive.current_speed_fraction = SIM_ONE;

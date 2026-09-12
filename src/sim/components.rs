@@ -393,6 +393,8 @@ pub struct ShipLocomotionRuntime {
     #[serde(default)]
     pub path: DrivePathQueue,
     #[serde(default)]
+    pub track: TrackProgress,
+    #[serde(default)]
     pub target_speed_fraction: SimFixed,
     #[serde(default)]
     pub current_speed_fraction: SimFixed,
@@ -416,8 +418,30 @@ pub struct DriveTurnState {
     pub first_movement_allowed: bool,
 }
 
-fn default_drive_track_index() -> i16 {
-    -1
+/// One active Drive/Ship locomotor's retained track selector, signed cursor,
+/// short-track choice and residual (+58/+5C/+60/+4C). Curve geometry and a
+/// temporary Process_Track call must not own serialized copies of this state.
+/// Native evidence: tools/spatial_oracle/locomotor_track_cursor.json.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct TrackProgress {
+    pub turn_index: i32,
+    /// Next-to-consume cursor. Drive constructor4AF5A6/4AF5A9 and Ship
+    /// constructor69ECB6/69ECB9 initialize selector/cursor to -1;
+    /// fresh/forced acceptance and completion retirement instead store zero.
+    pub cursor: i32,
+    pub reversed: bool,
+    pub residual: i32,
+}
+
+impl Default for TrackProgress {
+    fn default() -> Self {
+        Self {
+            turn_index: -1,
+            cursor: -1,
+            reversed: false,
+            residual: 0,
+        }
+    }
 }
 
 /// Drive-owned occupation mark installed ahead of the live object-list cell.
@@ -446,14 +470,10 @@ pub struct DriveLocomotionRuntime {
     pub path: DrivePathQueue,
     #[serde(default)]
     pub turn: DriveTurnState,
-    #[serde(default = "default_drive_track_index")]
-    pub track_index: i16,
     #[serde(default)]
-    pub point_index: u16,
+    pub track: TrackProgress,
     #[serde(default)]
     pub track_valid: bool,
-    #[serde(default)]
-    pub is_reversed: bool,
     #[serde(default)]
     pub target_speed_fraction: SimFixed,
     #[serde(default)]
@@ -461,8 +481,6 @@ pub struct DriveLocomotionRuntime {
     /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
     #[serde(default)]
     pub owner_current_speed: i32,
-    #[serde(default)]
-    pub residual_budget: i32,
     /// Head-to vehicle-occupation mark, independent from CellClass object-list
     /// membership. Ordinary flat Drive installs one mark for its accepted next
     /// cell before any paid track point is consumed.
@@ -489,14 +507,11 @@ impl Default for DriveLocomotionRuntime {
             head_to: None,
             path: DrivePathQueue::default(),
             turn: DriveTurnState::default(),
-            track_index: -1,
-            point_index: 0,
+            track: TrackProgress::default(),
             track_valid: false,
-            is_reversed: false,
             target_speed_fraction: SIM_ZERO,
             current_speed_fraction: SIM_ZERO,
             owner_current_speed: 0,
-            residual_budget: 0,
             occupation_head_to: None,
             occupation_handoff: None,
             current_occupation_cleared: false,
@@ -1233,14 +1248,14 @@ mod tests {
         assert!(drive.path.directions.is_empty());
         assert_eq!(drive.path.cursor, 0);
         assert_eq!(drive.turn.target_direction, None);
-        assert_eq!(drive.track_index, -1);
-        assert_eq!(drive.point_index, 0);
+        assert_eq!(drive.track.turn_index, -1);
+        assert_eq!(drive.track.cursor, -1);
         assert!(!drive.track_valid);
-        assert!(!drive.is_reversed);
+        assert!(!drive.track.reversed);
         assert_eq!(drive.target_speed_fraction, SIM_ZERO);
         assert_eq!(drive.current_speed_fraction, SIM_ZERO);
         assert_eq!(drive.owner_current_speed, 0);
-        assert_eq!(drive.residual_budget, 0);
+        assert_eq!(drive.track.residual, 0);
     }
 
     #[test]
@@ -1264,7 +1279,7 @@ mod tests {
         drive_b.destination = Some(DriveCoord::cell(45, 40, 0));
         drive_b.path.directions = vec![2, 2, 2];
         drive_b.turn.target_facing_16 = Some(0x4000);
-        drive_b.residual_budget = 6;
+        drive_b.track.residual = 6;
 
         assert_ne!(hash_drive(&drive_a), hash_drive(&drive_b));
     }
