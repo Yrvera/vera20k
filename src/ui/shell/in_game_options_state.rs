@@ -5,7 +5,8 @@
 //! 0..6 with 0 = fastest (the dialog slider position is `6 - value`); DetailLevel
 //! is 0..2 direct. Defaults match gamemd OptionsClass::SetDefaults.
 
-use crate::ui::skirmish_shell::{RectPx, trackbar_active_width};
+use crate::ui::main_menu_dialogs::options::trackbar_position_from_x;
+use crate::ui::skirmish_shell::RectPx;
 
 /// GameSpeed/ScrollRate internal range (0 = fastest .. 6 = slowest).
 pub const OPTIONS_SPEED_MIN: u32 = 0;
@@ -28,8 +29,9 @@ pub struct InGameOptionsState {
     pub pressed_button: Option<u16>,
     /// Transient: control id of the slider currently being dragged, if any.
     pub dragging_slider: Option<u16>,
-    /// Transient per-slider "dragged since this open" — gates the label swap from
-    /// the template default ("Faster") to the position CSF text (gamemd quirk).
+    /// Transient per-slider "changed since this open" — gates the label swap from
+    /// the template default to the position CSF text. Native 4E2278 admits only
+    /// a changed-position HSCROLL notification; thumb-down alone leaves it intact.
     pub game_speed_label_dragged: bool,
     pub scroll_rate_label_dragged: bool,
 }
@@ -75,15 +77,24 @@ pub fn speed_from_slider_pos(pos: u32) -> u32 {
     OPTIONS_SPEED_MAX - pos.min(OPTIONS_SPEED_MAX)
 }
 
-/// Quantized slider POSITION (0..max) for a mouse x over a laid trackbar `rect`.
-/// Inverse of `trackbar_pixel_offset` (which maps value -> pixel as
-/// `(value-min)*active_width/span`, thumb drawn at `rect.x + 1 + offset`).
+/// Control-local thumb left for BBB's plain rail. Active 4E1FE0 sends 4AC=0
+/// at 4E207F..2089 / 4E2128..2132, disabling the default 50px plaque.
+/// Native 61DA52..61DA79 and 61E486..61E4A8 project using range, not range+1.
+pub fn plain_trackbar_thumb_left(position: u32, rect: RectPx) -> i32 {
+    1 + position.min(OPTIONS_SPEED_MAX) as i32 * (rect.w - 13).max(1) / OPTIONS_SPEED_MAX as i32
+}
+
+/// Quantized position for BBB's plain rail. Native 61DC00..61DC58 uses
+/// range+1 mouse partitions, unlike the range-based thumb projection above.
+/// The shared implementation has original-instruction goldens in
+/// tools/storage_oracle/launcher_trackbar.py; BBB supplies reserve=0 and range=6.
 pub fn trackbar_pos_from_mouse_x(mouse_x: i32, min: i32, max: i32, rect: RectPx) -> i32 {
-    let active_width = trackbar_active_width(rect).max(1);
-    let span = (max - min).max(1);
-    let rel = (mouse_x - (rect.x + 1)).clamp(0, active_width);
-    // round to nearest stop
-    min + ((rel * span * 2 + active_width) / (active_width * 2)).clamp(0, span)
+    min + i32::from(trackbar_position_from_x(
+        mouse_x - rect.x,
+        rect.w,
+        0,
+        (max - min).clamp(0, u8::MAX as i32) as u8,
+    ))
 }
 
 #[cfg(test)]
@@ -121,19 +132,54 @@ mod tests {
 
     #[test]
     fn mouse_x_maps_back_to_slider_stop() {
-        use crate::ui::skirmish_shell::{RectPx, trackbar_pixel_offset};
         let rect = RectPx::new(216, 163, 192, 21); // GameSpeed laid rect @ 800x600
         for pos in 0..=6 {
-            let px = trackbar_pixel_offset(pos, 0, 6, 1, rect);
-            let thumb_center_x = rect.x + 1 + px;
+            let thumb_center_x = rect.x + plain_trackbar_thumb_left(pos, rect) + 6;
             assert_eq!(
                 trackbar_pos_from_mouse_x(thumb_center_x, 0, 6, rect),
-                pos,
+                pos as i32,
                 "pos {pos}"
             );
         }
         // Clamps past the ends.
         assert_eq!(trackbar_pos_from_mouse_x(rect.x - 50, 0, 6, rect), 0);
         assert_eq!(trackbar_pos_from_mouse_x(rect.x + 9999, 0, 6, rect), 6);
+    }
+
+    #[test]
+    fn plain_192_rail_matches_original_thumb_and_partition_boundaries() {
+        // Original-instruction fixture includes the ordinary BBB width192,
+        // reserve0, range6 path, preserving D5 comparisons in the same oracle.
+        let golden: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tools/storage_oracle/launcher_trackbar.json"
+        ))
+        .unwrap();
+        let geometry = golden["geometries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["width"] == 192 && g["reserve"] == 0 && g["maximum"] == 6)
+            .expect("ordinary BBB plain rail fixture");
+        let rect = RectPx::new(216, 163, 192, 21);
+        let positions = geometry["positions"].as_array().unwrap();
+        let pointers = geometry["pointers"].as_array().unwrap();
+        assert_eq!((positions.len(), pointers.len()), (7, 209));
+        for sample in positions {
+            let position = sample["position"].as_u64().unwrap() as u32;
+            let left = plain_trackbar_thumb_left(position, rect);
+            assert_eq!(left, sample["thumb_left"].as_i64().unwrap() as i32);
+            assert_eq!(left + 12, sample["thumb_right"].as_i64().unwrap() as i32);
+        }
+        for sample in pointers {
+            let x = sample["x"].as_i64().unwrap() as i32;
+            let position = trackbar_pos_from_mouse_x(rect.x + x, 0, 6, rect);
+            assert_eq!(
+                position,
+                sample["position"].as_i64().unwrap() as i32,
+                "x={x}"
+            );
+            let left = plain_trackbar_thumb_left(position as u32, rect);
+            assert_eq!(left, sample["thumb_left"].as_i64().unwrap() as i32, "x={x}");
+        }
     }
 }

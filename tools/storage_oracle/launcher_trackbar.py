@@ -1,4 +1,4 @@
-"""Bounded original launcher trackbar projection and pointer arithmetic.
+"""Bounded original shell trackbar projection and pointer arithmetic.
 
 Active owner 55FC80 supplies D5/proc 55FDB0 at 55FCB3..55FCC1. That proc
 sends ranges 1/2/6/10 (message 406) and positions (405) at 560139..560463.
@@ -8,6 +8,9 @@ Common control initialization selects 61D950 for the original ASCII class
 msctls_trackbar32 (835848) at 60FC76..60FCB9; the selected handler is retained
 at 60FF70 behind subclass dispatcher 610CA0. The first three launcher controls
 disable the 50px plaque with 4AC; the three audio controls retain it.
+Active in-game BBB owner 4E1FE0 sends 4AC=0 at 4E207F..4E2089 and
+4E2128..4E2132 for GameSpeed/ScrollRate, then sets range0..6. Their resource
+128x13 DLU gives the additional ordinary 192x21 plain-rail geometry.
 
 These fixtures execute original interior blocks, not a Windows dialog. Supplied
 client RECTs start at (0, 0), range minimum is zero, step is one and maximum is
@@ -107,48 +110,53 @@ class TrackbarFixture:
 def generate():
     fixture = TrackbarFixture()
     geometries = []
-    for width in (128, 180):
-        for reserve in (0, 50):
-            for maximum in (1, 2, 6, 10):
-                positions = []
-                for position in range(maximum + 1):
-                    bounds = fixture.position(width, reserve, maximum, position,
-                                              "set_position")
-                    for path in ("set_range", "initial"):
-                        other = fixture.position(width, reserve, maximum,
-                                                 position, path)
-                        if other != bounds:
-                            raise RuntimeError(f"Native {path} disagrees: "
-                                               f"{width, reserve, maximum, position}")
-                    positions.append({"position": position,
-                                      "thumb_left": bounds[0],
-                                      "thumb_right": bounds[1]})
-                pointers = []
-                for x in range(-8, width + 9):
-                    value, left, right = fixture.pointer(width, reserve, maximum,
-                                                        x, "drag")
-                    if 0 <= x < width:
-                        click = fixture.pointer(width, reserve, maximum,
-                                                x, "rail_click")
-                        if click != (value, left, right):
-                            raise RuntimeError(f"Native click/drag disagree: "
-                                               f"{width, reserve, maximum, x}")
-                    pointers.append({"x": x, "position": value,
-                                     "thumb_left": left, "thumb_right": right})
-                geometries.append({"width": width, "reserve": reserve,
-                                   "maximum": maximum, "positions": positions,
-                                   "pointers": pointers})
+    # Preserve the original sixteen launcher arithmetic fixtures verbatim and
+    # append only the ordinary in-game plain192/range6 control.
+    inputs = [(width, reserve, maximum)
+              for width in (128, 180) for reserve in (0, 50)
+              for maximum in (1, 2, 6, 10)]
+    inputs.append((192, 0, 6))
+    for width, reserve, maximum in inputs:
+        positions = []
+        for position in range(maximum + 1):
+            bounds = fixture.position(width, reserve, maximum, position,
+                                      "set_position")
+            for path in ("set_range", "initial"):
+                other = fixture.position(width, reserve, maximum,
+                                         position, path)
+                if other != bounds:
+                    raise RuntimeError(f"Native {path} disagrees: "
+                                       f"{width, reserve, maximum, position}")
+            positions.append({"position": position,
+                              "thumb_left": bounds[0],
+                              "thumb_right": bounds[1]})
+        pointers = []
+        for x in range(-8, width + 9):
+            value, left, right = fixture.pointer(width, reserve, maximum,
+                                                x, "drag")
+            if 0 <= x < width:
+                click = fixture.pointer(width, reserve, maximum,
+                                        x, "rail_click")
+                if click != (value, left, right):
+                    raise RuntimeError(f"Native click/drag disagree: "
+                                       f"{width, reserve, maximum, x}")
+            pointers.append({"x": x, "position": value,
+                             "thumb_left": left, "thumb_right": right})
+        geometries.append({"width": width, "reserve": reserve,
+                           "maximum": maximum, "positions": positions,
+                           "pointers": pointers})
     return {"source": "unicorn/gamemd.exe", "geometries": geometries}
 
 
 if __name__ == "__main__":
     finish_vectors(generate, Path(__file__).with_suffix(".json"),
                    provenance=lambda: provenance(
-        scope=("16 supplied geometries; 92 valid positions compared across "
-               "initialization/405/406; 2736 drag pointer samples, including "
-               "2464 in-client samples compared with the admitted rail-click block"),
+        scope=("17 supplied geometries; 99 valid positions compared across "
+               "initialization/405/406; 2945 drag pointer samples, including "
+               "2656 in-client samples compared with the admitted rail-click block"),
         assumptions=[
             "Client RECT left/top zero; widths 128 and 180, plaque reserve 0 or 50; these cross combinations are arithmetic fixtures, not observed layouts",
+            "Additional BBB fixture is width192/reserve0/maximum6, from 128x13 DLU and the active 4E1FE0 configuration; height21 does not enter these arithmetic blocks",
             "Range minimum zero, maximum 1/2/6/10, step one, every valid position; no invalid setter or zero-range claims",
             "Client x is every integer from -8 through width+8; negative/overshoot samples model capture drag, not admitted rail clicks",
             "The admitted rail-click block is compared for x in [0,width); y/old-thumb admission, HWND state lookup, Windows pointer retrieval and notifications are outside the fixture",

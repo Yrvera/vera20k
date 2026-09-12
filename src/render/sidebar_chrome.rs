@@ -19,6 +19,10 @@ use crate::render::gpu::GpuContext;
 mod command_bar;
 pub use command_bar::CommandBarArt;
 
+#[path = "sidebar_chrome_in_game_shell.rs"]
+mod in_game_shell;
+pub use in_game_shell::InGameShellArt;
+
 #[cfg(test)]
 pub(crate) fn packed_command_bar_fixture(assets: &AssetManager, theme: SidebarTheme) -> (CommandBarArt<SidebarChromeEntry>, Vec<u8>, [u32; 2]) {
     let route = SidebarSideRoute::for_theme(assets, theme);
@@ -53,6 +57,8 @@ const SIDE_TWO_ARCHIVE_ORDER: &[&str] = &["sidec02md.mix", "sidec02.mix", "siden
 const GENERIC_SIDEBAR_SHP_NAMES: &[&str] = &[
     "side1.shp",
     "side2.shp",
+    "side2b.shp",
+    "sidebttn.shp",
     "side3.shp",
     "addon.shp",
     "top.shp",
@@ -88,6 +94,7 @@ pub struct SidebarChromeAtlasIdentity {
     pub radar: SidebarChromeAssetIdentity,
     pub theme_palette: SidebarChromeAssetIdentity,
     pub generic_palette: SidebarChromeAssetIdentity,
+    pub background_palette: Option<SidebarChromeAssetIdentity>,
     pub backgrounds: Option<[SidebarChromeAssetIdentity; 3]>,
 }
 
@@ -200,6 +207,7 @@ pub struct SidebarChromeAtlas {
     source_identity: SidebarChromeAtlasIdentity,
     pub texture: BatchTexture,
     pub command_bar: CommandBarArt<SidebarChromeEntry>,
+    pub in_game_shell: InGameShellArt<SidebarChromeEntry>,
     pub top_strip_left: Option<SidebarChromeEntry>,
     pub top_strip_sidebar: Option<SidebarChromeEntry>,
     pub top_strip_thin: Option<SidebarChromeEntry>,
@@ -533,6 +541,7 @@ fn build_theme_atlas(
     let generic_palette_source = side_route.resolve(generic_palette_name)?;
     let generic_palette = decode_sidebar_palette(generic_palette_source.bytes).ok()?;
     let command_bar_art = command_bar::load(side_route, &generic_palette);
+    let in_game_shell_art = in_game_shell::load(side_route, &generic_palette);
     log::debug!(
         "{theme:?} generic sidebar palette resolved from {}",
         generic_palette_source.archive_name
@@ -641,16 +650,11 @@ fn build_theme_atlas(
     let top_strip_thin = render_side_entry(side_route, "credits.shp", &generic_palette, 0);
     let unknown_top_housing = render_side_entry(side_route, "addon.shp", &generic_palette, 0);
     let unknown_mid_panel = render_entry_by_id(&mix, UNKNOWN_MID_PANEL_ID, &theme_palette, 0);
-    let (background_large, background_medium, background_small) =
-        if let Some((large, medium, small)) = background_names {
-            (
-                render_entry(asset_manager, &mix, large, &tabs_palette, 0),
-                render_entry(asset_manager, &mix, medium, &tabs_palette, 0),
-                render_entry(asset_manager, &mix, small, &tabs_palette, 0),
-            )
-        } else {
-            (None, None, None)
-        };
+    let ([background_large, background_medium, background_small], background_palette) =
+        background_names
+            .and_then(|names| in_game_shell::load_backgrounds(asset_manager, &mix, mix_name, theme, names))
+            .map(|(entries, identity)| (entries, Some(identity)))
+            .unwrap_or(([None, None, None], None));
     let background_identities = background_names.map(|(large, medium, small)| {
         [
             theme_asset_identity(asset_manager, &mix, mix_name, large),
@@ -671,6 +675,7 @@ fn build_theme_atlas(
             source_archive: Some(generic_palette_source.archive_name.to_string()),
         },
         backgrounds: background_identities,
+        background_palette,
     };
     let excluded_extra_ids = known_loose_piece_ids(radar_name);
     let extra_rendered = collect_extra_entries(
@@ -697,6 +702,7 @@ fn build_theme_atlas(
     // Collect all pieces to pack into the atlas.
     let mut all_entries: Vec<&RenderedChromeEntry> = vec![&radar, &side1, &side2, &side3];
     all_entries.extend(command_bar_art.entries());
+    all_entries.extend(in_game_shell_art.entries());
     if let Some(ref top) = top_strip_left {
         all_entries.push(top);
     }
@@ -768,6 +774,11 @@ fn build_theme_atlas(
     let mut rgba = vec![0u8; (atlas_width * atlas_height * 4) as usize];
     let mut y = 0u32;
     let command_bar = command_bar_art.map(|entry| {
+        let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
+        y += entry.height + CHROME_PADDING;
+        uv
+    });
+    let in_game_shell = in_game_shell_art.map(|entry| {
         let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
         y += entry.height + CHROME_PADDING;
         uv
@@ -940,6 +951,7 @@ fn build_theme_atlas(
         source_identity,
         texture,
         command_bar,
+        in_game_shell,
         top_strip_left: top_strip_left_uv,
         top_strip_sidebar: top_strip_sidebar_uv,
         top_strip_thin: top_strip_thin_uv,

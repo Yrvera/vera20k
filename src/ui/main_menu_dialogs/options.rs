@@ -1974,7 +1974,9 @@ mod tests {
             "../../../tools/storage_oracle/launcher_trackbar.json"
         ))
         .unwrap();
-        let geometries = golden["geometries"].as_array().unwrap();
+        // BBB adds a192px geometry to this shared oracle; retain D5 coverage here.
+        let geometries: Vec<_> = golden["geometries"].as_array().unwrap().iter()
+            .filter(|geometry| geometry["width"].as_i64() != Some(192)).collect();
         assert_eq!(geometries.len(), 16);
         let integer = |value: &serde_json::Value, key: &str| value[key].as_i64().unwrap() as i32;
         let mut position_count = 0;

@@ -4,7 +4,7 @@
 //! BEFORE the gadget/tactical dispatch and this consumes the click so it never
 //! reaches the tactical viewport (no unit orders behind the overlay). Interaction
 //! changes only the visual/stored state — slider thumb + stored value, checkbox
-//! check, pressed button frame, and the drag-gated value-label flag. The downstream
+//! check, pressed button frame, and the changed-position value-label flag. The downstream
 //! EFFECTS (sim cadence, target-line gate, INI persist) apply on close only, in
 //! `app::persistence::options::in_game_options_close` (KD-8).
 //!
@@ -19,10 +19,11 @@ use crate::app::AppState;
 use crate::ui::shell::descriptor::ControlKind;
 use crate::ui::shell::in_game_options::{build_in_game_options_descriptor, control};
 use crate::ui::shell::in_game_options_state::{
-    InGameOptionsState, OPTIONS_SPEED_MAX, OPTIONS_SPEED_MIN, speed_from_slider_pos,
-    trackbar_pos_from_mouse_x,
+    InGameOptionsState, OPTIONS_SPEED_MAX, OPTIONS_SPEED_MIN, plain_trackbar_thumb_left,
+    speed_from_slider_pos, speed_slider_pos, trackbar_pos_from_mouse_x,
 };
 use crate::ui::shell::layout::{LaidOutControl, layout_pass_in_game_options};
+use crate::ui::skirmish_shell::{RectPx, trackbar_mouse_allowed_y};
 
 /// Which visible `0xBBB` control (if any) is under the cursor. For a trackbar the
 /// quantized slider position (0..6) the cursor x maps to is carried alongside.
@@ -49,6 +50,10 @@ pub(crate) fn in_game_options_hit(laid: &[LaidOutControl], cursor: (i32, i32)) -
         match c.kind {
             ControlKind::Button => return OptionsHit::Button(c.id),
             ControlKind::Trackbar => {
+                // 61E505..61E512: only y > client bottom - 18 is admitted.
+                if !trackbar_mouse_allowed_y(l.rect, cy) {
+                    continue;
+                }
                 let pos = trackbar_pos_from_mouse_x(
                     cx,
                     OPTIONS_SPEED_MIN as i32,
@@ -57,7 +62,12 @@ pub(crate) fn in_game_options_hit(laid: &[LaidOutControl], cursor: (i32, i32)) -
                 );
                 return OptionsHit::Slider(c.id, pos);
             }
-            ControlKind::Checkbox => return OptionsHit::Checkbox(c.id),
+            ControlKind::Checkbox => {
+                // Owner6163A0, 6166EE..616708: caption is not a click target.
+                if RectPx::new(l.rect.x, l.rect.y, 18, 18).contains(cx, cy) {
+                    return OptionsHit::Checkbox(c.id);
+                }
+            }
             // Statics are not interactive; keep scanning the remaining controls.
             _ => continue,
         }
@@ -75,32 +85,81 @@ pub(crate) fn in_game_options_mouse(state: &mut AppState, button: MouseButton, p
     let Some(anchor) = state.match_state.match_presentation.in_game_options_anchor else {
         return; // overlay not rendered yet -> nothing to hit-test
     };
-    let screen_w = state.render_width() as i32;
-    let screen_h = state.render_height() as i32;
+    let screen_w = state.renderer.gpu.config.width as i32;
+    let screen_h = state.renderer.gpu.config.height as i32;
     let desc = build_in_game_options_descriptor();
     let laid = layout_pass_in_game_options(&desc, screen_w, screen_h, anchor);
-    let cx = state.match_state.input.cursor_x.round() as i32;
-    let cy = state.match_state.input.cursor_y.round() as i32;
+    let (cx, cy) = state.window_cursor_position();
+    let (cx, cy) = (cx.round() as i32, cy.round() as i32);
 
     if pressed {
+        if state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .dragging_slider
+            .is_some()
+        {
+            return;
+        }
         match in_game_options_hit(&laid, (cx, cy)) {
             OptionsHit::Button(id) => {
                 // Buttons (Back/Keyboard/Sound) paint pressed on hold; the action
                 // fires on release over the same rect (Back) or no-ops (KD-7 stubs).
-                state.match_state.match_presentation.in_game_options.pressed_button = Some(id);
+                state
+                    .match_state
+                    .match_presentation
+                    .in_game_options
+                    .pressed_button = Some(id);
+                // Shared type-2 procedure612B70,61374B..613771: ordinary
+                // button-down plays Rules+188's generic click before dispatch.
+                crate::app::App::play_skirmish_shell_generic_click_sound(state);
             }
-            OptionsHit::Slider(id, pos) => begin_slider_press(state, id, pos),
+            OptionsHit::Slider(id, _) => {
+                let rect = laid.iter().find(|l| l.id == id).expect("hit control").rect;
+                if begin_slider_press(
+                    &mut state.match_state.match_presentation.in_game_options,
+                    id,
+                    rect,
+                    cx,
+                ) {
+                    crate::app::App::play_skirmish_shell_generic_click_sound(state);
+                }
+            }
             // Checkbox toggles on press (BS_AUTOCHECKBOX) — visual/stored only (KD-8).
-            OptionsHit::Checkbox(id) => toggle_checkbox(&mut state.match_state.match_presentation.in_game_options, id),
+            OptionsHit::Checkbox(id) => {
+                toggle_checkbox(
+                    &mut state.match_state.match_presentation.in_game_options,
+                    id,
+                );
+                // Native 616736..61674E emits GUICheckboxSound after toggle.
+                let sound = state
+                    .rules()
+                    .and_then(|rules| rules.general.gui_checkbox_sound.clone());
+                crate::app::App::play_shell_ui_sound_by_id(state, sound.as_deref());
+            }
             OptionsHit::None => {}
         }
     } else {
         // Release: a Back press that ends still over the Back rect closes + applies
         // + persists. Keyboard/Sound release: clear pressed, no action (KD-7).
-        let over_back = state.match_state.match_presentation.in_game_options.pressed_button == Some(control::BACK)
+        let over_back = state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .pressed_button
+            == Some(control::BACK)
             && back_rect_contains(&laid, cx, cy);
-        state.match_state.match_presentation.in_game_options.pressed_button = None;
-        state.match_state.match_presentation.in_game_options.dragging_slider = None;
+        state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .pressed_button = None;
+        state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .dragging_slider = None;
         if over_back {
             crate::app::persistence::options::in_game_options_close(state);
         }
@@ -112,47 +171,70 @@ pub(crate) fn in_game_options_mouse(state: &mut AppState, button: MouseButton, p
 /// cadence and other effects are deferred to close (KD-8). No-op when no slider is
 /// being dragged (so a paused move with no active drag is simply swallowed upstream).
 pub(crate) fn in_game_options_drag(state: &mut AppState) {
-    let Some(id) = state.match_state.match_presentation.in_game_options.dragging_slider else {
+    let Some(id) = state
+        .match_state
+        .match_presentation
+        .in_game_options
+        .dragging_slider
+    else {
         return;
     };
     let Some(anchor) = state.match_state.match_presentation.in_game_options_anchor else {
         return;
     };
-    let screen_w = state.render_width() as i32;
-    let screen_h = state.render_height() as i32;
+    let screen_w = state.renderer.gpu.config.width as i32;
+    let screen_h = state.renderer.gpu.config.height as i32;
     let desc = build_in_game_options_descriptor();
     let laid = layout_pass_in_game_options(&desc, screen_w, screen_h, anchor);
     let Some(rect) = laid.iter().find(|l| l.id == id).map(|l| l.rect) else {
         return;
     };
-    let cx = state.match_state.input.cursor_x.round() as i32;
+    let cx = state.window_cursor_position().0.round() as i32;
     let pos =
         trackbar_pos_from_mouse_x(cx, OPTIONS_SPEED_MIN as i32, OPTIONS_SPEED_MAX as i32, rect);
-    store_slider_value(&mut state.match_state.match_presentation.in_game_options, id, pos);
+    if store_slider_value(
+        &mut state.match_state.match_presentation.in_game_options,
+        id,
+        pos,
+    ) {
+        // 61E609..61E6DD: changed position notifies the parent, then plays the cue.
+        crate::app::App::play_skirmish_shell_generic_click_sound(state);
+    }
 }
 
-/// Begin a slider drag on press: mark it dragging, set the per-slider drag flag (so
-/// the value label swaps from the template "Faster" to the position word), and
-/// store the pressed-at value. Visual/stored only (KD-8).
-fn begin_slider_press(state: &mut AppState, id: u16, pos: i32) {
-    state.match_state.match_presentation.in_game_options.dragging_slider = Some(id);
-    match id {
-        control::GAME_SPEED => state.match_state.match_presentation.in_game_options.game_speed_label_dragged = true,
-        control::SCROLL_RATE => state.match_state.match_presentation.in_game_options.scroll_rate_label_dragged = true,
-        _ => {}
+/// Native 61E518..61E594: thumb press starts drag without changing the position;
+/// a rail press jumps once without enabling drag. Returns a changed notification.
+fn begin_slider_press(opts: &mut InGameOptionsState, id: u16, rect: RectPx, cx: i32) -> bool {
+    let internal = match id {
+        control::GAME_SPEED => opts.game_speed,
+        control::SCROLL_RATE => opts.scroll_rate,
+        _ => return false,
+    };
+    let left = rect.x + plain_trackbar_thumb_left(speed_slider_pos(internal), rect);
+    if (left..left + 12).contains(&cx) {
+        opts.dragging_slider = Some(id);
+        return false;
     }
-    store_slider_value(&mut state.match_state.match_presentation.in_game_options, id, pos);
+    let pos = trackbar_pos_from_mouse_x(cx, 0, OPTIONS_SPEED_MAX as i32, rect);
+    store_slider_value(opts, id, pos)
 }
 
 /// Store a slider's new internal value from a slider position (`6 - pos`). Render
 /// reads the stored value to draw the thumb + value label; no effect applies here.
-fn store_slider_value(opts: &mut InGameOptionsState, id: u16, pos: i32) {
+fn store_slider_value(opts: &mut InGameOptionsState, id: u16, pos: i32) -> bool {
     let value = speed_from_slider_pos(pos.max(0) as u32);
-    match id {
-        control::GAME_SPEED => opts.game_speed = value,
-        control::SCROLL_RATE => opts.scroll_rate = value,
-        _ => {}
+    let (stored, notified) = match id {
+        control::GAME_SPEED => (&mut opts.game_speed, &mut opts.game_speed_label_dragged),
+        control::SCROLL_RATE => (&mut opts.scroll_rate, &mut opts.scroll_rate_label_dragged),
+        _ => return false,
+    };
+    if *stored == value {
+        return false;
     }
+    *stored = value;
+    // 4E2278..4E232B updates the caption only after HSCROLL code5.
+    *notified = true;
+    true
 }
 
 /// Toggle a checkbox's stored bool (the rendered check state only — the downstream
@@ -207,11 +289,15 @@ mod tests {
             OptionsHit::Slider(control::GAME_SPEED, 6)
         );
 
-        // TargetLines checkbox center -> Checkbox(TARGET_LINES).
+        // TargetLines icon center -> Checkbox(TARGET_LINES).
         let tl = rect_of(control::TARGET_LINES);
         assert_eq!(
-            in_game_options_hit(&laid, (tl.x + tl.w / 2, tl.y + tl.h / 2)),
+            in_game_options_hit(&laid, (tl.x + 9, tl.y + 9)),
             OptionsHit::Checkbox(control::TARGET_LINES)
+        );
+        assert_eq!(
+            in_game_options_hit(&laid, (tl.x + 26, tl.y + 9)),
+            OptionsHit::None
         );
 
         // Empty corner -> None.
@@ -243,6 +329,60 @@ mod tests {
         // Far-left position 0 -> slowest internal 6.
         store_slider_value(&mut opts, control::SCROLL_RATE, 0);
         assert_eq!(opts.scroll_rate, 6);
+    }
+
+    #[test]
+    fn thumb_press_preserves_value_and_caption_until_a_changed_notification() {
+        let mut opts = InGameOptionsState::default();
+        let rect = test_laid()
+            .into_iter()
+            .find(|l| l.id == control::GAME_SPEED)
+            .unwrap()
+            .rect;
+        let thumb = rect.x + plain_trackbar_thumb_left(3, rect);
+        assert!(!begin_slider_press(
+            &mut opts,
+            control::GAME_SPEED,
+            rect,
+            thumb + 5
+        ));
+        assert_eq!(opts.dragging_slider, Some(control::GAME_SPEED));
+        assert_eq!(opts.game_speed, 3);
+        assert!(!opts.game_speed_label_dragged);
+        assert!(!store_slider_value(&mut opts, control::GAME_SPEED, 3));
+        assert!(!opts.game_speed_label_dragged);
+        assert!(store_slider_value(&mut opts, control::GAME_SPEED, 6));
+        assert_eq!(opts.game_speed, 0);
+        assert!(opts.game_speed_label_dragged);
+        assert!(!opts.scroll_rate_label_dragged);
+    }
+
+    #[test]
+    fn rail_press_changes_once_without_drag_and_top_rows_are_not_admitted() {
+        let laid = test_laid();
+        let rect = laid
+            .iter()
+            .find(|l| l.id == control::SCROLL_RATE)
+            .unwrap()
+            .rect;
+        let mut opts = InGameOptionsState::default();
+        assert!(begin_slider_press(
+            &mut opts,
+            control::SCROLL_RATE,
+            rect,
+            rect.x
+        ));
+        assert_eq!(opts.scroll_rate, 6);
+        assert!(opts.scroll_rate_label_dragged);
+        assert_eq!(opts.dragging_slider, None);
+        assert_eq!(
+            in_game_options_hit(&laid, (rect.x, rect.y + rect.h - 18)),
+            OptionsHit::None
+        );
+        assert_eq!(
+            in_game_options_hit(&laid, (rect.x, rect.y + rect.h - 17)),
+            OptionsHit::Slider(control::SCROLL_RATE, 0)
+        );
     }
 
     #[test]

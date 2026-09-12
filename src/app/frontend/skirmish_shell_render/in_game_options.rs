@@ -1,58 +1,27 @@
-//! Active in-game Options (`0xBBB`) overlay sprite construction.
-//!
-//! Part of the app layer: turns the render-agnostic `0xBBB` descriptor +
-//! natively-anchored layout into the owner-draw control draw list, composited as
-//! an overlay over the frozen battlefield. 5a-ii is render-only — it paints the
-//! released SIDEBTTN buttons, the two visible trackbars, and the three checkboxes
-//! at the populate defaults; input (drag/toggle/Back) and the persisted values
-//! land in 5a-iii.
-//!
-//! The visible text statics (title `0x694`, captions `0x714`/`0x715`, value
-//! labels `0x671`/`0x672`, footer `0x695`) are emitted as BitFont glyphs from
-//! their CSF caption keys (see `build_in_game_options_text_instances`); their
-//! rects + keys are transcribed verbatim from the `0xBBB` DLGTEMPLATE. The
-//! hidden VisualDetails caption/label (`0x716`/`0x673`) carry `visible: false`
-//! and are skipped. The value labels paint their template default (`GUI:Faster`);
-//! the slider-position-driven label swap (TXT_SLOWEST..TXT_FASTEST) is 5a-iii.
+//! Active Game Controls (BBB) generic controls and clipped GAME.FNT text.
+//! Side-specific SIDEBTTN and parent chrome use the sidebar atlas in a separate
+//! batch. Layout and values are supplied by their retained UI authorities.
 
 use crate::assets::csf_file::CsfFile;
 use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
-use crate::render::shell_text::{self, ShellAlign, TextRect};
-use crate::render::skirmish_shell_chrome::{ControlChrome, SkirmishShellChromeAtlas};
-use crate::sidebar::SidebarView;
+use crate::render::shell_text::{self, ShellAlign, ShellTextDraw, TextRect};
+use crate::render::skirmish_shell_chrome::ControlChrome;
 use crate::ui::shell::descriptor::ControlKind;
 use crate::ui::shell::geom;
 use crate::ui::shell::in_game_options::{
     build_in_game_options_descriptor, control, speed_value_label_key,
 };
-use crate::ui::shell::in_game_options_state::{InGameOptionsState, speed_slider_pos};
+use crate::ui::shell::in_game_options_state::{
+    InGameOptionsState, plain_trackbar_thumb_left, speed_slider_pos,
+};
 use crate::ui::shell::layout::{InGameOptionsAnchor, layout_pass_in_game_options};
-use crate::ui::skirmish_shell::trackbar_pixel_offset;
 
 use super::{SHELL_CONTROL_TEXT_DEPTH, SHELL_LABEL_TEXT_RGB};
 
-use super::controls::{ControlPaint, options_button_sidebttn_frame_index, paint_control};
+use super::controls::{ControlPaint, paint_control};
 
-/// SIDEBTTN SHP canvas fallback (header dims), used only if the atlas entry is
-/// missing. The retail SIDEBTTN.SHP is 125x25, 3 frames.
-const SIDEBTTN_CANVAS_W: i32 = 125;
-const SIDEBTTN_CANVAS_H: i32 = 25;
-
-/// The `0xBBB` GameSpeed/ScrollRate trackbars are range 0..6 (the value is
-/// inverted `6 - pos` at apply time; for the rendered thumb only the slider
-/// position matters).
-const OPTIONS_TRACKBAR_MIN: i32 = 0;
-const OPTIONS_TRACKBAR_MAX: i32 = 6;
-const OPTIONS_TRACKBAR_STEP: i32 = 1;
-/// Populate-default slider position (middle) for both sliders until 5a-iii wires
-/// the persisted value.
-const OPTIONS_TRACKBAR_DEFAULT_POSITION: i32 = 3;
-
-/// Build the owner-draw control draw list for the active in-game Options overlay
-/// at the current screen size, using the app-supplied `anchor` (SIDEBTTN canvas +
-/// sidebar-bound button column Y). Hidden controls (the VisualDetails triplet)
-/// are skipped; only buttons/trackbars/checkboxes are emitted (statics deferred).
+/// Generic controls only: the caller paints buttons from the side-specific atlas.
 pub(crate) fn build_in_game_options_instances(
     chrome: &ControlChrome,
     screen_w: i32,
@@ -69,29 +38,18 @@ pub(crate) fn build_in_game_options_instances(
         }
         let rect = l.rect;
         match c.kind {
-            ControlKind::Button => {
-                // The held button paints its pressed frame; the rest are released.
-                let pressed = state.pressed_button == Some(c.id);
-                let frame = options_button_sidebttn_frame_index(pressed);
-                paint_control(&mut out, chrome, ControlPaint::Button { rect, frame });
-            }
             ControlKind::Trackbar => {
-                // Thumb position from the live internal value (slider pos = 6 - value).
-                // VisualDetails is hidden (skipped above), so only GameSpeed/ScrollRate
-                // reach here; an unknown id falls back to the populate-middle position.
                 let pos = match c.id {
-                    control::GAME_SPEED => speed_slider_pos(state.game_speed) as i32,
-                    control::SCROLL_RATE => speed_slider_pos(state.scroll_rate) as i32,
-                    _ => OPTIONS_TRACKBAR_DEFAULT_POSITION,
+                    control::GAME_SPEED => speed_slider_pos(state.game_speed),
+                    control::SCROLL_RATE => speed_slider_pos(state.scroll_rate),
+                    _ => continue,
                 };
-                let thumb_px = trackbar_pixel_offset(
-                    pos,
-                    OPTIONS_TRACKBAR_MIN,
-                    OPTIONS_TRACKBAR_MAX,
-                    OPTIONS_TRACKBAR_STEP,
-                    rect,
+                let thumb_px = plain_trackbar_thumb_left(pos, rect) - 1;
+                paint_control(
+                    &mut out,
+                    chrome,
+                    ControlPaint::PlainTrackbar { rect, thumb_px },
                 );
-                paint_control(&mut out, chrome, ControlPaint::Trackbar { rect, thumb_px });
             }
             ControlKind::Checkbox => {
                 let checked = match c.id {
@@ -109,17 +67,7 @@ pub(crate) fn build_in_game_options_instances(
     out
 }
 
-/// Build the BitFont glyph instances for the active in-game Options overlay's
-/// visible text statics (title/captions/value-labels/footer), resolved from their
-/// CSF caption keys. Hidden statics (the VisualDetails caption/label) carry
-/// `visible: false` and are skipped; `GUI:Blank` (the footer) resolves to empty
-/// and emits nothing. These glyphs sample the BitFont atlas — a different texture
-/// from the owner-draw chrome atlas — so they are returned as their own instance
-/// list and the caller draws them in a separate pass-through call.
-///
-/// Camera offset is NOT applied here: the caller pre-offsets every overlay
-/// instance (chrome + text + cursor) by the rounded camera scroll uniformly, the
-/// same convention as `build_in_game_options_instances`.
+/// Preserve each text rectangle's scissor for the caller's font batch.
 pub(crate) fn build_in_game_options_text_instances(
     font: &BitFont,
     csf: Option<&CsfFile>,
@@ -127,7 +75,7 @@ pub(crate) fn build_in_game_options_text_instances(
     screen_h: i32,
     anchor: InGameOptionsAnchor,
     state: &InGameOptionsState,
-) -> Vec<SpriteInstance> {
+) -> Vec<ShellTextDraw> {
     let mut out = Vec::new();
     for draw in in_game_options_static_draws(csf, screen_w, screen_h, anchor, state) {
         let rect = TextRect {
@@ -142,21 +90,16 @@ pub(crate) fn build_in_game_options_text_instances(
             rect,
             SHELL_LABEL_TEXT_RGB,
             draw.align,
-            // Caller applies the camera pre-offset uniformly (see doc comment).
             [0.0, 0.0],
             SHELL_CONTROL_TEXT_DEPTH,
             None,
         );
-        out.extend(text_draw.instances);
+        out.push(text_draw);
     }
     out
 }
 
-/// One resolved static text draw: its laid screen rect, alignment, and display
-/// text. Produced for every VISIBLE static-class control with non-empty resolved
-/// text (so the hidden VisualDetails statics and the empty `GUI:Blank` footer
-/// drop out here). Split from the glyph emission so the selection/rect/align/text
-/// logic is unit-testable without a GPU font.
+/// Resolved visible control text, kept separate from font emission for testing.
 struct OptionsStaticDraw {
     #[cfg_attr(not(test), allow(dead_code))]
     id: u16,
@@ -176,7 +119,12 @@ fn in_game_options_static_draws(
     let laid = layout_pass_in_game_options(&desc, screen_w, screen_h, anchor);
     let mut out = Vec::new();
     for (c, l) in desc.controls.iter().zip(laid.iter()) {
-        if !c.visible || c.kind != ControlKind::Static {
+        if !c.visible
+            || !matches!(
+                c.kind,
+                ControlKind::Static | ControlKind::Checkbox | ControlKind::Button
+            )
+        {
             continue;
         }
         // The two value labels (0x671/0x672) swap to the slider-position CSF key
@@ -200,10 +148,34 @@ fn in_game_options_static_draws(
         if text.is_empty() {
             continue;
         }
+        let (rect, align) = match c.kind {
+            // 61663A..616674 shifts the RECT's left edge by26; right stays put.
+            ControlKind::Checkbox => (
+                geom::RectPx::new(l.rect.x + 26, l.rect.y, l.rect.w - 26, l.rect.h),
+                ShellAlign::V_CENTER,
+            ),
+            // 61358D..6135EE uses a slightly inset RECT and adds (2,4) to
+            // its left/top when pressed. Its right/bottom edges do not move.
+            ControlKind::Button => {
+                let pressed = state.pressed_button == Some(c.id);
+                let dx = if pressed { 2 } else { 0 };
+                let dy = if pressed { 4 } else { 0 };
+                (
+                    geom::RectPx::new(
+                        l.rect.x + dx,
+                        l.rect.y + 1 + dy,
+                        l.rect.w - 2 - dx,
+                        l.rect.h - 1 - dy,
+                    ),
+                    ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+                )
+            }
+            _ => (l.rect, options_static_align(c.id)),
+        };
         out.push(OptionsStaticDraw {
             id: c.id,
-            rect: l.rect,
-            align: options_static_align(c.id),
+            rect,
+            align,
             text,
         });
     }
@@ -225,6 +197,12 @@ fn options_static_fallback(key: &str) -> &'static str {
         "GUI:GameOptions" => "Game Options",
         "GUI:GameSpeed" => "Game Speed",
         "GUI:ScrollRate" => "Scroll Rate",
+        "GUI:Back" => "Back",
+        "GUI:Keyboard" => "Keyboard",
+        "GUI:Sound" => "Sound",
+        "GUI:TargetLines" => "Target Lines",
+        "GUI:ShowHidden" => "Show Hidden Objects",
+        "GUI:Tooltips" => "Tooltips",
         "GUI:Faster" => "Faster",
         // Slider value labels (after first drag) when the CSF table is absent.
         "TXT_SLOWEST" => "Slowest",
@@ -239,71 +217,13 @@ fn options_static_fallback(key: &str) -> &'static str {
     }
 }
 
-/// Per-static text alignment, derived from the `0xBBB` template `SS_*` style bits:
-/// the title `0x694` is SS_CENTER (and is the same control id/rect as the skirmish
-/// right-panel title `0x694`, which renders H-centered + top-anchored, no
-/// V_CENTER); the GameSpeed/ScrollRate captions are SS_RIGHT; the value labels and
-/// footer are SS_LEFT. Captions/labels are vertically centered against their
-/// slider row (the trackbar value-label convention); the title is top-anchored.
-/// Vertical placement is a manual-visual-gate item (confirm vs gamemd side-by-side).
+/// Original 615A81..615AE8 inspects only the two horizontal style bits.
+/// SS_CENTERIMAGE does not introduce vertical centering in this owner-draw path.
 fn options_static_align(id: u16) -> ShellAlign {
     match id {
         control::TITLE => ShellAlign::H_CENTER,
-        control::GAME_SPEED_CAPTION | control::SCROLL_RATE_CAPTION => {
-            ShellAlign::H_RIGHT | ShellAlign::V_CENTER
-        }
-        // Value labels (0x671/0x672) + footer (0x695): SS_LEFT, vertically centered.
-        _ => ShellAlign::V_CENTER,
-    }
-}
-
-/// Resolve the app-supplied anchoring inputs for the overlay: the SIDEBTTN canvas
-/// (from the loaded atlas entry) and the owner-draw button column Y.
-///
-/// FLAGGED (KD-4): the button column Y is bound to the in-game sidebar panel —
-/// Sound/Keyboard stack one row below the sidebar top, Back one row up from its
-/// bottom. The exact gamemd sidebar-global Y is unverified; the manual visual
-/// gate (Task 9) confirms/tunes this against gamemd side-by-side. When the
-/// sidebar geometry is unavailable (headless/edge frames) it falls back to the
-/// dialog's own DLU button tops (a flagged DLU-Y fallback, not the final bind).
-pub(crate) fn in_game_options_anchor(
-    atlas: &SkirmishShellChromeAtlas,
-    sidebar_view: Option<&SidebarView>,
-) -> InGameOptionsAnchor {
-    let (button_canvas_w, button_canvas_h) = atlas
-        .options_button_sidebttn_frame0
-        .map(|e| {
-            (
-                e.pixel_size[0].round() as i32,
-                e.pixel_size[1].round() as i32,
-            )
-        })
-        .unwrap_or((SIDEBTTN_CANVAS_W, SIDEBTTN_CANVAS_H));
-    let (button_stack_top_y, back_button_y) = match sidebar_view {
-        Some(sv) => {
-            let top = sv.panel_rect.y.round() as i32;
-            let bottom = (sv.panel_rect.y + sv.panel_rect.h).round() as i32;
-            (top + button_canvas_h, bottom - button_canvas_h)
-        }
-        None => {
-            let desc = build_in_game_options_descriptor();
-            let dlu_top = |id: u16| {
-                desc.controls
-                    .iter()
-                    .find(|c| c.id == id)
-                    .map(|c| {
-                        geom::dlu_rect(c.dlu_rect.x, c.dlu_rect.y, c.dlu_rect.w, c.dlu_rect.h).y
-                    })
-                    .unwrap_or(0)
-            };
-            (dlu_top(control::SOUND), dlu_top(control::BACK))
-        }
-    };
-    InGameOptionsAnchor {
-        button_canvas_w,
-        button_canvas_h,
-        button_stack_top_y,
-        back_button_y,
+        control::GAME_SPEED_CAPTION | control::SCROLL_RATE_CAPTION => ShellAlign::H_RIGHT,
+        _ => ShellAlign::NONE,
     }
 }
 
@@ -339,27 +259,6 @@ mod tests {
 
     #[test]
     fn ingame_options_emitter_emits_visible_controls_skips_visualdetails() {
-        // Buttons-only chrome: exactly the 3 visible owner-draw buttons
-        // (Back/Keyboard/Sound) emit one SIDEBTTN glyph each, all right-edge
-        // anchored at screen_w - 147 at the native 125x25 canvas. The hidden
-        // VisualDetails control contributes nothing.
-        let buttons_only = ControlChrome {
-            options_button_sidebttn_frame0: Some(entry(125.0, 25.0)),
-            ..Default::default()
-        };
-        let out = build_in_game_options_instances(
-            &buttons_only,
-            800,
-            600,
-            test_anchor(),
-            &InGameOptionsState::default(),
-        );
-        assert_eq!(out.len(), 3, "3 owner-draw buttons");
-        for inst in &out {
-            assert_eq!(inst.position[0], (800 - 147) as f32);
-            assert_eq!(inst.size, [125.0, 25.0]);
-        }
-
         // Checkbox-icon-only chrome: the 3 visible checkboxes emit one icon each.
         let checks_only = ControlChrome {
             checkbox_checked_cce_i: Some(entry(18.0, 18.0)),
@@ -379,7 +278,7 @@ mod tests {
         // (GameSpeed/ScrollRate) emit the shared two-frame composition; the
         // hidden VisualDetails trackbar is skipped.
         let frame_only = ControlChrome {
-            trackbar_rail: Some(entry(132.0, 25.0)),
+            trackbar_plain_192: Some(entry(196.0, 25.0)),
             ..Default::default()
         };
         let out = build_in_game_options_instances(
@@ -404,9 +303,8 @@ mod tests {
 
     #[test]
     fn static_draws_select_visible_statics_resolve_text_and_align() {
-        // csf=None -> English fallbacks. The footer (GUI:Blank) falls back to
-        // empty and drops out; the two hidden VisualDetails statics (visible:false)
-        // drop out. Leaves title + 2 captions + 2 value labels = 5.
+        // Empty/hidden text drops out; every visible button and checkbox caption
+        // joins the five nonempty statics.
         let draws = in_game_options_static_draws(
             None,
             800,
@@ -415,13 +313,23 @@ mod tests {
             &InGameOptionsState::default(),
         );
         let ids: Vec<u16> = draws.iter().map(|d| d.id).collect();
-        assert_eq!(draws.len(), 5, "title + 2 captions + 2 value labels");
+        assert_eq!(
+            draws.len(),
+            11,
+            "five statics plus six interactive captions"
+        );
         for id in [
             control::TITLE,
             control::GAME_SPEED_CAPTION,
             control::SCROLL_RATE_CAPTION,
             control::GAME_SPEED_VALUE,
             control::SCROLL_RATE_VALUE,
+            control::BACK,
+            control::KEYBOARD,
+            control::SOUND,
+            control::TARGET_LINES,
+            control::SHOW_HIDDEN,
+            control::TOOLTIPS,
         ] {
             assert!(ids.contains(&id), "missing static {id:#06x}");
         }
@@ -433,13 +341,13 @@ mod tests {
         let find = |id: u16| draws.iter().find(|d| d.id == id).unwrap();
         // Alignment from the template SS_* bits.
         assert_eq!(find(control::TITLE).align, ShellAlign::H_CENTER);
-        assert_eq!(
-            find(control::GAME_SPEED_CAPTION).align,
-            ShellAlign::H_RIGHT | ShellAlign::V_CENTER
-        );
-        assert_eq!(find(control::GAME_SPEED_VALUE).align, ShellAlign::V_CENTER);
+        assert_eq!(find(control::GAME_SPEED_CAPTION).align, ShellAlign::H_RIGHT);
+        assert_eq!(find(control::GAME_SPEED_VALUE).align, ShellAlign::NONE);
         // Laid rect == projected DLU rect (centered offset is 0 at the 800x600 base).
-        assert_eq!(find(control::TITLE).rect, geom::dlu_rect(425, 1, 108, 10));
+        assert_eq!(
+            find(control::TITLE).rect,
+            geom::RectPx::new(635, 2, 162, 16)
+        );
         assert_eq!(
             find(control::GAME_SPEED_CAPTION).rect,
             geom::dlu_rect(61, 99, 78, 15)
@@ -457,6 +365,31 @@ mod tests {
             "MISSING:'GUI:GameOptions'"
         );
         assert_eq!(resolve_static_text(None, "GUI:GameOptions"), "Game Options");
+    }
+
+    #[test]
+    fn interactive_captions_keep_native_insets_and_pressed_clip_edges() {
+        let mut state = InGameOptionsState::default();
+        let released = in_game_options_static_draws(None, 800, 600, test_anchor(), &state);
+        let check = released
+            .iter()
+            .find(|d| d.id == control::TARGET_LINES)
+            .unwrap();
+        let raw = geom::dlu_rect(89, 206, 119, 10);
+        assert_eq!(
+            check.rect,
+            geom::RectPx::new(raw.x + 26, raw.y, raw.w - 26, raw.h)
+        );
+        assert_eq!(check.align, ShellAlign::V_CENTER);
+        let button = released.iter().find(|d| d.id == control::BACK).unwrap();
+        assert_eq!(button.align, ShellAlign::H_CENTER | ShellAlign::V_CENTER);
+        state.pressed_button = Some(control::BACK);
+        let pressed = in_game_options_static_draws(None, 800, 600, test_anchor(), &state);
+        let held = pressed.iter().find(|d| d.id == control::BACK).unwrap();
+        assert_eq!(held.rect.x, button.rect.x + 2);
+        assert_eq!(held.rect.y, button.rect.y + 4);
+        assert_eq!(held.rect.x + held.rect.w, button.rect.x + button.rect.w);
+        assert_eq!(held.rect.y + held.rect.h, button.rect.y + button.rect.h);
     }
 
     #[test]
@@ -502,9 +435,10 @@ mod tests {
             test_anchor(),
             &InGameOptionsState::default(),
         );
+        assert!(out.iter().any(|draw| !draw.instances.is_empty()));
         assert!(
-            !out.is_empty(),
-            "value labels emit glyphs from the font atlas"
+            out.iter()
+                .all(|draw| draw.scissor.w > 0 && draw.scissor.h > 0)
         );
     }
 }

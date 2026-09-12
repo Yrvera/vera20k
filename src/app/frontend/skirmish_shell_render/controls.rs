@@ -269,14 +269,6 @@ pub(super) enum ControlPaint {
         thumb: RectPx,
         pressed_part: Option<DropdownScrollbarPart>,
     },
-    /// Active in-game Options (0xBBB) owner-draw button — SIDEBTTN type 2, drawn at
-    /// the SHP native 125x25 size. `rect` is the already-anchored top-left from the
-    /// layout pass; `frame` is the resolved SIDEBTTN frame (0 released / 1 pressed /
-    /// 2 flash).
-    Button {
-        rect: RectPx,
-        frame: u8,
-    },
 }
 
 /// Slice 4 paint seam: emit one control, selecting the emitter by `ControlPaint`
@@ -314,7 +306,11 @@ pub(super) fn paint_control(
                 push_entry(out, thumb, thumb_rect, SHELL_CONTROL_DEPTH - 0.00002);
             }
             if let Some(frame) = if plain {
-                chrome.trackbar_plain_180
+                if rect.w == 192 {
+                    chrome.trackbar_plain_192
+                } else {
+                    chrome.trackbar_plain_180
+                }
             } else {
                 chrome.trackbar_rail
             } {
@@ -418,27 +414,7 @@ pub(super) fn paint_control(
                 SHELL_DROPDOWN_DEPTH - 0.00007,
             );
         }
-        ControlPaint::Button { rect, frame } => {
-            // Active 0xBBB owner-draw button: one SIDEBTTN glyph at its native
-            // 125x25 size, at the anchored top-left. `entry` is `Copy` and
-            // push_entry_native takes it by value (match the other arms).
-            let entry = match frame {
-                1 => chrome.options_button_sidebttn_frame1,
-                2 => chrome.options_button_sidebttn_frame2,
-                _ => chrome.options_button_sidebttn_frame0,
-            };
-            if let Some(entry) = entry {
-                push_entry_native(out, entry, rect.x, rect.y, SHELL_CONTROL_DEPTH);
-            }
-        }
     }
-}
-
-/// SIDEBTTN type-2 button frame: released 0, pressed 1. Frame 2 is the
-/// timer-driven flash/checked state (record `0xC5`), deferred until the
-/// button-flash timer is modeled — 5a-ii renders released/pressed only.
-pub(super) fn options_button_sidebttn_frame_index(pressed: bool) -> u8 {
-    if pressed { 1 } else { 0 }
 }
 
 pub(super) fn push_checkbox_instances(
@@ -804,56 +780,6 @@ mod tests {
                 checked: true,
                 rect,
             },
-        );
-        assert!(empty.is_empty());
-    }
-
-    #[test]
-    fn options_button_frame_index_released_pressed() {
-        assert_eq!(options_button_sidebttn_frame_index(false), 0);
-        assert_eq!(options_button_sidebttn_frame_index(true), 1);
-    }
-
-    #[test]
-    fn options_button_paint_seam_emits_sidebttn_frame_at_rect() {
-        // Draw-list assertion: the 0xBBB owner-draw button arm emits exactly one
-        // SIDEBTTN glyph at its native size, at the anchored top-left, at
-        // SHELL_CONTROL_DEPTH. Frame selects by the resolved index (0/1/2).
-        let entry = SkirmishShellChromeEntry {
-            uv_origin: [0.10, 0.20],
-            uv_size: [0.30, 0.40],
-            pixel_size: [125.0, 25.0],
-        };
-        let chrome = ControlChrome {
-            options_button_sidebttn_frame0: Some(entry),
-            ..Default::default()
-        };
-        let rect = RectPx::new(653, 198, 125, 25);
-
-        let mut out = Vec::new();
-        paint_control(&mut out, &chrome, ControlPaint::Button { rect, frame: 0 });
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].position, [653.0, 198.0]);
-        assert_eq!(out[0].size, entry.pixel_size);
-        assert_eq!(out[0].uv_origin, entry.uv_origin);
-        assert_eq!(out[0].uv_size, entry.uv_size);
-        assert_eq!(out[0].depth, SHELL_CONTROL_DEPTH);
-
-        // A frame whose entry isn't loaded → no instance (only frame 0 is set here).
-        let mut missing = Vec::new();
-        paint_control(
-            &mut missing,
-            &chrome,
-            ControlPaint::Button { rect, frame: 1 },
-        );
-        assert!(missing.is_empty());
-
-        // Empty chrome → no instance.
-        let mut empty = Vec::new();
-        paint_control(
-            &mut empty,
-            &ControlChrome::default(),
-            ControlPaint::Button { rect, frame: 0 },
         );
         assert!(empty.is_empty());
     }
