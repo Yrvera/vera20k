@@ -145,8 +145,8 @@ fn retail_middle_perpendicular_live_tiles_match_original_sequences() {
                     DynamicTerrainCellState::capture(live.terrain().cell(p.0, p.1).unwrap())
                 );
                 assert_eq!(
-                    restored.current_tile_radar_metadata(p.0, p.1, false),
-                    live.terrain().current_tile_radar_metadata(p.0, p.1, false)
+                    restored.current_tile_radar_metadata(p.0, p.1),
+                    live.terrain().current_tile_radar_metadata(p.0, p.1)
                 );
             }
         }

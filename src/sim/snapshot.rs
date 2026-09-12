@@ -457,7 +457,9 @@ use crate::sim::world::Simulation;
 // Restoring cannot reclassify power or replay a fresh gap event.
 // v145 adds literal CellClass+2C allocation identities to dynamic terrain facts.
 // The self relation cannot reconstruct pointers preserved by overlapping stamps.
-const SNAPSHOT_VERSION: u32 = 145;
+// v146 removes the duplicate BridgeRuntimeCell pavement Boolean. CellClass
+// raw flags in dynamic terrain retain bit0x2000 for every allocated cell.
+const SNAPSHOT_VERSION: u32 = 146;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3282,8 +3284,8 @@ mod tests {
         // 141 -> 142: sustained sight and pending 120-frame gap conceal.
         // 142 -> 143: MCV pending and Drive previous-rotation latches.
         // 143 -> 144: per-Building operational edge and retained gap deposit.
-        // 144 -> 145: literal native bridge anchor pointers in dynamic terrain.
-        assert_eq!(super::SNAPSHOT_VERSION, 145);
+        // 145 -> 146: pavement is owned by raw terrain flags, not bridge cells.
+        assert_eq!(super::SNAPSHOT_VERSION, 146);
     }
 
     #[test]

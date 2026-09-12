@@ -72,10 +72,10 @@ class OriginalPavement(OriginalRim):
         if address == cell + 0x140:
             self.trace.append(dict(kind='flags', coord=self.coord(cell), flags=value))
 
-    def step(self, coord, state):
+    def step(self, coord, state, entry=0x56E990, direction=6):
         self.trace.clear()
         self.uc.mem_write(COORD, packed(*coord))
-        self.call(0x56E990, args=(COORD, state, 0))
+        self.call(entry, args=(COORD, state, 0) if entry == 0x56E990 else (COORD, direction))
         final = [[*coord, struct.unpack('<i', self.uc.mem_read(p + 0x38, 4))[0],
                   struct.unpack('<I', self.uc.mem_read(p + 0x140, 4))[0]]
                  for coord, p in self.ptrs.items()]
@@ -139,16 +139,18 @@ def stock_case():
     data = asset.read_bytes()
     native = OriginalPavement(case, {278: data})
     start = (66, 102)  # A road receiver with no BridgeRuntimeCell membership.
+    perpendicular = OriginalPavement(case, {278: data}).step((67, 102), 1, entry=0x572330)
     return dict(source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                 asset_sha256=hashlib.sha256(data).hexdigest(), start=start,
                 gate_sweep=native.gate_sweep(278),
+                perpendicular=dict(entry=0x572330, input=[67, 102], direction=6, result=perpendicular),
                 steps=[native.step(start, state) for state in (1, 1, 0)])
 
 
 if __name__ == '__main__':
     finish_vectors(lambda: dict(control=control_cases(), stock=stock_case()),
         Path(__file__).with_suffix('.json'), provenance=lambda: provenance(
-            scope='Original56E990 control plus one stock Ovrps02.urb footprint damage/repeat/clear sequence',
+            scope='Original56E990 control and stock Ovrps02.urb damage/repeat/clear; actual572330 stock perpendicular entry',
             assumptions=[
                 'Actual5471F0 and pristine getter vtable execute over relocated TMP headers; synthetic controls supply four entries true,false,absent,true',
                 'Active callers supply Boolean states0/1; nonboolean low bytes are excluded',
@@ -159,4 +161,4 @@ if __name__ == '__main__':
             ], substitutions=[
                 '6551C0 records coordinate and returns; radar queue/color excluded',
                 '6D2140 supplies screen0,0 and6D2790 records screen callback; no projection/display',
-            ], entry_points={'pavement':0x56E990,'damaged_gate':0x5471F0,'directions':0x49F2F0}))
+            ], entry_points={'pavement':0x56E990,'damaged_gate':0x5471F0,'directions':0x49F2F0,'stock_perpendicular':0x572330}))

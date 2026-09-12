@@ -18,6 +18,13 @@ mod rim_publication;
 #[path = "bridge_tile_publication.rs"]
 mod tile_publication;
 
+#[path = "bridge_pavement_publication.rs"]
+mod pavement_publication;
+
+#[cfg(test)]
+#[path = "bridge_pavement_publication_tests.rs"]
+mod pavement_tests;
+
 #[cfg(test)]
 #[path = "bridge_publication_tests.rs"]
 mod tests;
@@ -140,22 +147,6 @@ impl LivePublication<'_> {
             .insert(coord, DynamicTerrainCellState::capture(resolved));
     }
 
-    fn legacy_pavement_at(&mut self, requested: CellCoord) {
-        let (x, y) = (requested.0 as u16, requested.1 as u16);
-        let changed = match (
-            self.sim.bridge_state.as_mut(),
-            self.sim.resolved_terrain.as_ref(),
-        ) {
-            (Some(state), Some(terrain)) => {
-                state.apply_damaged_variant_flood_fill(x, y, true, terrain)
-            }
-            _ => Vec::new(),
-        };
-        // Toggle56E990 marks in recursive preorder at this callback. Literal
-        // scalar stores have no implicit radar call and must not sort or add
-        // cells ahead of this ordered dirty sequence.
-        self.sim.mark_radar_terrain_dirty_cells(changed);
-    }
 }
 
 impl BridgePublicationHost for LivePublication<'_> {

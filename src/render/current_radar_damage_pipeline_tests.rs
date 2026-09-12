@@ -115,7 +115,6 @@ fn bridge_cell(role: BridgeCellRole, span: Option<u16>, overlay_byte: u8) -> Bri
         role,
         anchor_span_id: span,
         overlay_byte,
-        damaged_variant: false,
         bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
     }
 }
@@ -345,7 +344,7 @@ fn spawn(
 }
 
 #[test]
-fn gsi_04_01_production_tick_presents_damage_then_rearms_through_engineer_repair() {
+fn gsi_04_01_production_tick_keeps_pavement_damage_through_ordinary_overlay_repair() {
     let (mut sim, grid) = simulation_fixture();
     let rules = production_rules();
     sim.resolve_type_handles(&rules);
@@ -413,7 +412,7 @@ fn gsi_04_01_production_tick_presents_damage_then_rearms_through_engineer_repair
             .is_cell_visible(owner, CENTER.0, CENTER.1),
         runtime.simulation.tactical_registration_order(),
     );
-    assert_eq!(runtime.simulation.radar_terrain_dirty_generation, 1);
+    assert_eq!(runtime.simulation.radar_terrain_dirty_generation, 3);
     let mut uploaded_rgba = Vec::new();
     let failed = present_runtime_projection(
         &mut radar,
@@ -435,7 +434,7 @@ fn gsi_04_01_production_tick_presents_damage_then_rearms_through_engineer_repair
         false,
     )
     .expect("damage frame composition and upload retry completes");
-    assert_eq!(completed.consumed_generation, Some(1));
+    assert_eq!(completed.consumed_generation, Some(3));
     assert!(completed.acknowledged);
     assert_eq!(uploaded_rgba, radar.base_rgba);
     for cell in FLOOD {
@@ -483,10 +482,10 @@ fn gsi_04_01_production_tick_presents_damage_then_rearms_through_engineer_repair
             .get(engineer)
             .is_none()
     );
-    assert_eq!(runtime.simulation.radar_terrain_dirty_generation, 2);
-    for cell in FLOOD {
-        assert!(runtime.simulation.radar_terrain_dirty_cells.contains(&cell));
-    }
+    // Original ordinary strip repair has no56E990 clear/radar callback.
+    // Its overlay change must not publish pristine pavement or a fake batch.
+    assert_eq!(runtime.simulation.radar_terrain_dirty_generation, 3);
+    assert!(runtime.simulation.radar_terrain_dirty_cells.is_empty());
     let completed = present_runtime_projection(
         &mut radar,
         &mut runtime,
@@ -494,14 +493,19 @@ fn gsi_04_01_production_tick_presents_damage_then_rearms_through_engineer_repair
         &mut uploaded_rgba,
         false,
     )
-    .expect("repair frame composition and upload completes");
-    assert_eq!(completed.consumed_generation, Some(2));
-    assert!(completed.acknowledged);
-    assert_eq!(uploaded_rgba, radar.base_rgba);
+    .expect("presentation remains coherent after ordinary overlay repair");
+    assert_eq!(completed.consumed_generation, None);
+    assert!(!completed.acknowledged);
     for cell in FLOOD {
-        assert_eq!(raw_pair(&radar, cell), [PRISTINE; 2]);
+        assert!(
+            runtime
+                .view()
+                .resolved_terrain()
+                .unwrap()
+                .pavement_damaged_at(cell.0, cell.1)
+        );
+        assert_eq!(raw_pair(&radar, cell), [DAMAGED; 2]);
     }
-    assert!(runtime.simulation.radar_terrain_dirty_cells.is_empty());
 }
 
 #[test]
@@ -525,9 +529,9 @@ fn gsi_04_01_bridge_collapse_publishes_variant_preorder_before_setter_radar() {
     );
 
     assert!(collapsed, "Ion retries the state machine through collapse");
-    // One Toggle callback then four setter radar callbacks each publish new
-    // cells. Scalar state/flag stores do not create extra radar generations.
-    assert_eq!(sim.radar_terrain_dirty_generation, 5);
+    // Native56E990 publishes three per-cell radar callbacks before four
+    // setter callbacks; each newly dirty coordinate advances the generation.
+    assert_eq!(sim.radar_terrain_dirty_generation, 7);
     assert_eq!(
         sim.radar_terrain_dirty_cells,
         [FLOOD.as_slice(), &[CENTER, (25, 24), (25, 23), (25, 26)]].concat(),

@@ -968,6 +968,7 @@ fn iron_curtain_command_observes_native_deck_order_after_nested_bridge_drop_in()
         .bridge_facts;
     facts.overlay_id = Some(24);
     facts.state_byte = 6;
+    facts.raw_flags |= 0x2000;
     let mut state =
         BridgeRuntimeState::from_resolved_terrain(sim.resolved_terrain.as_ref().unwrap(), true, 1);
     state.test_seed_cell(
@@ -983,7 +984,6 @@ fn iron_curtain_command_observes_native_deck_order_after_nested_bridge_drop_in()
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 24,
-            damaged_variant: true,
             bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
         },
     );

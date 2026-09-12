@@ -66,7 +66,7 @@ impl LivePublication<'_> {
             (Axis::EW, false) => keys.top_right,
         };
         if pavement.contains(&relative) {
-            self.legacy_pavement_at(requested);
+            self.pavement_at(requested, true);
             return Ok(());
         }
         let middle = keys.middle[usize::from(axis == Axis::EW)];

@@ -61,6 +61,9 @@ pub(crate) use recalc_catalog::BridgeRecalcCatalogError;
 #[path = "terrain_pavement_catalog_tests.rs"]
 mod pavement_catalog_tests;
 
+#[path = "terrain_pavement.rs"]
+mod pavement;
+
 pub const YR_CELL_LAND_TUNNEL: u8 = 10;
 
 /// Identifies whether map overlays still require the ordinary authored-map
@@ -1751,15 +1754,14 @@ impl ResolvedTerrainGrid {
         &self,
         rx: u16,
         ry: u16,
-        damaged_variant: bool,
     ) -> Option<RadarColorMetadata> {
         let index = self.index(rx, ry)?;
-        if damaged_variant
+        let cell = self.cells.get(index)?;
+        if cell.bridge_facts.raw_flags & super::bridge_pavement::DAMAGED_PAVEMENT != 0
             && let Some(metadata) = self.damaged_radar_metadata.get(index).copied().flatten()
         {
             return Some(metadata);
         }
-        let cell = self.cells.get(index)?;
         Some(RadarColorMetadata {
             left: cell.radar_left,
             right: cell.radar_right,
@@ -1821,6 +1823,10 @@ impl ResolvedTerrainGrid {
 
     pub(crate) fn concrete_bridge_set_base(&self) -> i32 {
         self.bridge_set_start.map_or(-1, i32::from)
+    }
+
+    pub(crate) fn wood_bridge_set_base(&self) -> i32 {
+        self.wood_bridge_set_start.map_or(-1, i32::from)
     }
 
     pub(crate) fn high_bridge_rim_tiles(&self) -> Option<super::bridge_rim_tiles::HighBridgeRimTiles> {
@@ -2930,9 +2936,18 @@ impl ResolvedTerrainGrid {
         let Some(index) = self.index(rx, ry) else {
             return false;
         };
+        // Scalar-only updates (including56E990 pavement) keep the exact
+        // resident TMP entry and its sparse/valid damaged sibling metadata.
+        // Replacement mechanisms currently admit valid single-file templates;
+        // those keep their existing replacement metadata path below.
+        let same_entry = self.cells[index].final_tile_index == state.final_tile_index
+            && self.cells[index].final_sub_tile == state.final_sub_tile
+            && self.cells[index].variant == state.variant;
         state.apply(&mut self.cells[index]);
-        self.radar_color_valid[index] = true;
-        self.damaged_radar_metadata[index] = None;
+        if !same_entry {
+            self.radar_color_valid[index] = true;
+            self.damaged_radar_metadata[index] = None;
+        }
         true
     }
 

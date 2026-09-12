@@ -536,11 +536,6 @@ pub struct BridgeRuntimeCell {
     /// overlay-write branch. Renderer queries this to pick the visible tile.
     pub overlay_byte: u8,
 
-    /// Selects damaged-vs-undamaged sub-tile art for the deck TMP at draw time.
-    /// Written only by the `ToggleBridgePavement`-equivalent path (deferred
-    /// follow-up); defaults to `false` at map load.
-    pub damaged_variant: bool,
-
     /// Anchor tile-class mirror written by the bridgehead state machine when
     /// damage lands on a bridgehead-class cell. Carries the visual variant
     /// of the anchor (or neighbor bridgehead progressed via `DamageB`).
@@ -701,7 +696,6 @@ impl BridgeRuntimeState {
                         .overlay_id
                         .or_else(|| resolved.bridge_layer.as_ref().map(|bl| bl.overlay_id))
                         .unwrap_or(0),
-                    damaged_variant: false,
                     bridgehead_anchor_class: resolved
                         .bridgehead_anchor_class_at_load
                         .unwrap_or(BridgeheadAnchorClass::Variant0),
@@ -842,7 +836,6 @@ impl BridgeRuntimeState {
                 role: BridgeCellRole::Bridgehead,
                 anchor_span_id: None,
                 overlay_byte: 0,
-                damaged_variant: false,
                 bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             });
         }
@@ -1055,7 +1048,7 @@ impl BridgeRuntimeState {
         rx: u16,
         ry: u16,
         is_high: bool,
-        terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+        terrain: &mut crate::map::resolved_terrain::ResolvedTerrainGrid,
     ) -> StateOutcome {
         let overlay = self.cell(rx, ry).map(|c| c.overlay_byte);
         match overlay {
@@ -1183,7 +1176,7 @@ impl BridgeRuntimeState {
         rx: u16,
         ry: u16,
         is_high_bridge: bool,
-        terrain: &ResolvedTerrainGrid,
+        terrain: &mut ResolvedTerrainGrid,
     ) -> StateOutcome {
         let mut live_flags = terrain.bridge_flag_execution_state();
         self.body_cell_advance_state_with_flags(rx, ry, is_high_bridge, terrain, &mut live_flags)
@@ -1197,7 +1190,7 @@ impl BridgeRuntimeState {
         rx: u16,
         ry: u16,
         is_high_bridge: bool,
-        terrain: &ResolvedTerrainGrid,
+        terrain: &mut ResolvedTerrainGrid,
         live_flags: &mut crate::map::resolved_terrain::CellClassBridgeFlagState,
     ) -> StateOutcome {
         // 1. Resolve input cell.
@@ -1457,7 +1450,7 @@ impl BridgeRuntimeState {
         &mut self,
         scan_cells: &[(u16, u16)],
         rng: &mut crate::sim::rng::SimRng,
-        terrain: &ResolvedTerrainGrid,
+        _terrain: &ResolvedTerrainGrid,
     ) -> RepairOutcome {
         let mut outcome = RepairOutcome::default();
 
@@ -1517,13 +1510,8 @@ impl BridgeRuntimeState {
                 if let Some(cell) = self.cell_mut(cell_pos.0, cell_pos.1) {
                     cell.damage_state = new_state;
                 }
-                let damaged_variant_cells = self.apply_damaged_variant_flood_fill(
-                    cell_pos.0,
-                    cell_pos.1,
-                    false,
-                    terrain,
-                );
-                extend_unique_cells(&mut outcome.radar_cells, damaged_variant_cells);
+                // This legacy state-only helper has no production caller.
+                // Ordinary native strip repair does not clear pavement here.
                 outcome.repaired_cells += 1;
 
                 let is_main_deck = matches!(
@@ -1589,7 +1577,7 @@ impl BridgeRuntimeState {
         rx: u16,
         ry: u16,
         is_high_bridge: bool,
-        terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+        terrain: &mut crate::map::resolved_terrain::ResolvedTerrainGrid,
     ) -> StateOutcome {
         let mut live_flags = terrain.bridge_flag_execution_state();
         self.bridgehead_advance_state_with_flags(rx, ry, is_high_bridge, terrain, &mut live_flags)
@@ -1602,7 +1590,7 @@ impl BridgeRuntimeState {
         rx: u16,
         ry: u16,
         is_high_bridge: bool,
-        terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+        terrain: &mut crate::map::resolved_terrain::ResolvedTerrainGrid,
         live_flags: &mut crate::map::resolved_terrain::CellClassBridgeFlagState,
     ) -> StateOutcome {
         // 1. Resolve input cell.

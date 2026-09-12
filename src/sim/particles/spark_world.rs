@@ -613,7 +613,6 @@ pub(super) mod tests {
                 role: BridgeCellRole::Body,
                 anchor_span_id: Some(1),
                 overlay_byte: 0x18,
-                damaged_variant: false,
                 bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
@@ -1014,7 +1013,6 @@ pub(super) mod tests {
                 role: BridgeCellRole::Body,
                 anchor_span_id: Some(1),
                 overlay_byte: 0x18,
-                damaged_variant: false,
                 bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
