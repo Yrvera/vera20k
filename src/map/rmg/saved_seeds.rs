@@ -122,12 +122,20 @@ pub fn seed_path_for_name(dir: &Path, typed_name: &str) -> Option<PathBuf> {
 
 /// Read a saved seed's options.
 ///
-/// Missing keys keep their defaults, matching how the engine leaves its record
-/// alone for anything the file does not mention. The result is normalised, so a
-/// hand-edited file cannot push the dialog outside its own ranges.
-pub fn load_saved_seed(path: &Path) -> std::io::Result<RmgOptions> {
+/// MapSeedClass load slot 0x00597A30 overlays the current record: missing keys
+/// retain the player's working values. The setup caller at 0x005969B1 then
+/// synchronizes controls through 0x00596E50, which normalizes the record.
+/// See RANDOM_MAP_SAVED_SEED_SLOTS_GHIDRA_REPORT.md sections 3.5 and 3.6.
+pub fn load_saved_seed(
+    path: &Path,
+    current: &RmgOptions,
+    default_description: &str,
+) -> std::io::Result<RmgOptions> {
     let bytes = std::fs::read(path)?;
-    let mut options = RmgOptions::default();
+    let mut options = current.clone();
+    // Unlike the integer keys, Description uses the localized default passed
+    // at 0x00597AFD to INIClass__ReadCommaHexUTF16, not the current description.
+    options.description = default_description.to_owned();
     if let Ok(ini) = crate::rules::ini_parser::IniFile::from_bytes(&bytes) {
         options.apply_sed(&ini);
     }
@@ -148,6 +156,65 @@ pub fn delete_saved_seed(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_seed_preserves_current_integers_and_uses_localized_description_default() {
+        let path = std::env::temp_dir().join(format!(
+            "vera20k-partial-seed-{}-{}.sed",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            b"[RandomMap]\nSeed=4660\nWaterAmount=73\nNumPlayers=99\n",
+        )
+        .unwrap();
+        let current = RmgOptions {
+            theater: 1,
+            map_type: 3,
+            resources: 2,
+            ruggedness: 67,
+            time: 3,
+            water_amount: 31,
+            num_players: 6,
+            tiberium: 47,
+            tiberium_layout: 19,
+            vegetation: 29,
+            urban_presence: 13,
+            width: 2,
+            height: 1,
+            accessibility: 89,
+            region_size: 83,
+            seed: 42,
+            description: "Prior map".into(),
+        };
+        let loaded = load_saved_seed(&path, &current, "Localized random map").unwrap();
+        let expected = RmgOptions {
+            seed: 4660,
+            water_amount: 73,
+            num_players: 8,
+            description: "Localized random map".into(),
+            ..current.clone()
+        };
+        assert_eq!(loaded, expected);
+        // Description has its own comma-hex reader/default contract.
+        std::fs::write(&path, b"[RandomMap]\nDescription=53,61,76,65,64,\n").unwrap();
+        assert_eq!(
+            load_saved_seed(&path, &current, "fallback")
+                .unwrap()
+                .description,
+            "Saved"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(load_saved_seed(&path, &current, "fallback").is_err());
+        assert_eq!(
+            current.seed, 42,
+            "loading never mutates the supplied record"
+        );
+    }
 
     #[test]
     fn reserved_names_are_matched_regardless_of_case() {
@@ -230,7 +297,7 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].display_name, "Desert Duel");
 
-        let loaded = load_saved_seed(&path).expect("load");
+        let loaded = load_saved_seed(&path, &RmgOptions::default(), "Random Map").expect("load");
         assert_eq!(loaded.seed, 4242);
         assert_eq!(loaded.num_players, 6);
         assert_eq!(loaded.map_type, 3);

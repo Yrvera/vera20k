@@ -342,6 +342,14 @@ impl RandomMapSetupModalState {
         self.dragging_players_thumb = false;
     }
 
+    /// Release a failed worker without presenting an old/partial map as a
+    /// successful result. Only finish_generate may enable Save and Accept.
+    pub fn fail_generate(&mut self) {
+        self.generating = false;
+        self.generated = false;
+        self.generated_preview = None;
+    }
+
     /// Show the map as it stands part-way through the generate block.
     ///
     /// The original draws its preview repeatedly while generating, so the player
@@ -578,6 +586,32 @@ mod tests {
         state.finish_generate(None);
         assert!(state.is_enabled(RandomMapSetupControl::Ok0x6c5));
         assert!(state.is_enabled(RandomMapSetupControl::Cancel0x5c0));
+    }
+
+    #[test]
+    fn failed_generation_cannot_accept_or_save_old_or_partial_results() {
+        for had_prior_result in [false, true] {
+            let mut state = opened();
+            if had_prior_result {
+                state.finish_generate(Some(one_pixel_preview()));
+            }
+            state.begin_generate();
+            state.show_progress_preview(one_pixel_preview());
+            state.fail_generate();
+            assert!(!state.generating);
+            assert!(!state.generated);
+            assert!(state.generated_preview.is_none());
+            assert!(!state.is_enabled(RandomMapSetupControl::Ok0x6c5));
+            assert!(!state.is_enabled(RandomMapSetupControl::Save0x6c3));
+            assert!(state.is_enabled(RandomMapSetupControl::Generate0x620));
+            assert!(state.is_enabled(RandomMapSetupControl::Cancel0x5c0));
+            assert_eq!(state.accept(), AcceptOutcome::NeedsGenerate);
+            // Retrying and succeeding is the only path back to acceptance.
+            state.begin_generate();
+            state.finish_generate(Some(one_pixel_preview()));
+            assert!(state.is_enabled(RandomMapSetupControl::Ok0x6c5));
+            assert!(state.is_enabled(RandomMapSetupControl::Save0x6c3));
+        }
     }
 
     #[test]
