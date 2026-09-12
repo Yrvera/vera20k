@@ -103,6 +103,7 @@ impl AppState {
     pub(crate) fn main_menu_dialog_open(&self) -> bool {
         self.frontend.exit_confirm_modal.is_some()
             || self.frontend.options_dialog.is_some()
+            || self.frontend.keyboard_dialog.is_some()
             || self.frontend.movies_credits_dialog.is_some()
             || self.frontend.campaign_select.is_some()
     }

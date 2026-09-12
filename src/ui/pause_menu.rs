@@ -56,7 +56,7 @@ use crate::ui::client_theme;
 ///
 /// States deliberately absent: the surrender-and-be-scored state (gated on a
 /// WOL-only mode), the replay state, the campaign mission-restate state, the
-/// multiplayer objectives state, and the Keyboard sub-dialog of Options.
+/// multiplayer objectives state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InGameMenuState {
     /// No modal is open — the mission runs. (gamemd: 0)
@@ -70,6 +70,8 @@ pub enum InGameMenuState {
     Options,
     /// Sound options, active B8 (native state6).
     Sound,
+    /// Shared Keyboard A3, child of Game Controls (native state4).
+    Keyboard,
     /// Native558DD0 browser nested beneath B5. Its mode has no independent
     /// scenario-state number: native keeps the parent hidden during this call.
     SavedGame(crate::ui::skirmish_shell::SavedSeedMode),
@@ -101,6 +103,7 @@ impl InGameMenuState {
             // Options is a child of the menu.
             Self::Options => Self::Menu,
             Self::SavedGame(_) | Self::Sound => self,
+            Self::Keyboard => Self::Options,
         }
     }
 }

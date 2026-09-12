@@ -49,6 +49,7 @@ pub(super) fn combo_face_entry(
     rect: RectPx,
 ) -> Option<SkirmishShellChromeEntry> {
     match rect.w {
+        207 => chrome.combo_face_207,
         180 => chrome.combo_face_180,
         150 => chrome.combo_face_150,
         117 => chrome.combo_face_117,
@@ -913,6 +914,34 @@ mod tests {
             assert_eq!(out[0].size, expected.pixel_size);
             assert_eq!(out[0].uv_origin, expected.uv_origin);
         }
+    }
+
+    #[test]
+    fn keyboard_category_uses_its_wide_native_face() {
+        let face = SkirmishShellChromeEntry {
+            uv_origin: [0.4, 0.2],
+            uv_size: [0.3, 0.1],
+            pixel_size: [207.0, 24.0],
+        };
+        let chrome = ControlChrome {
+            combo_face_207: Some(face),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        paint_control(
+            &mut out,
+            &chrome,
+            ControlPaint::Combo {
+                rect: RectPx::new(95, 135, 207, 24),
+                swatch: None,
+                open: false,
+                disabled: false,
+            },
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].position, [95.0, 135.0]);
+        assert_eq!(out[0].size, [207.0, 24.0]);
+        assert_eq!(out[0].uv_origin, face.uv_origin);
     }
 
     #[test]

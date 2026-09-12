@@ -217,13 +217,15 @@ impl crate::app::persistence::options::launcher::LauncherParentOperations
     }
 
     fn route_keyboard(&mut self) {
-        log::info!(
-            "Launcher Options Keyboard child boundary reached; RT_DIALOG 0xA3 is not implemented"
-        );
+        crate::app::input::keyboard::open(self.state, crate::ui::shell::keyboard::KeyboardParent::Launcher);
     }
 
     fn reopen_parent(&mut self) {
-        App::open_launcher_options_dialog(self.state);
+        // Native caller blocks in A3. Our asynchronous child resumes this
+        // continuation on close, after Back/save or Escape/current-file reload.
+        if self.state.frontend.keyboard_dialog.is_none() {
+            App::open_launcher_options_dialog(self.state);
+        }
     }
 }
 
@@ -505,7 +507,7 @@ impl App {
     /// Construct a fresh launcher Options primary from the current retained
     /// profile, current-monitor dimension pairs, live CSF table, and frozen
     /// process-start common audio gate. No display mode is applied here.
-    fn open_launcher_options_dialog(state: &mut AppState) {
+    pub(crate) fn open_launcher_options_dialog(state: &mut AppState) {
         Self::ensure_skirmish_shell_chrome(state);
         state.frontend.launcher_options_presentation = Default::default();
         use crate::app::persistence::options::launcher::launcher_dialog_from_profile;

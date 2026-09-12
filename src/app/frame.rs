@@ -216,6 +216,9 @@ impl App {
         }
         Self::update_saved_game_browser(state, false);
         match &state.frontend.screen {
+            _ if state.frontend.keyboard_dialog.is_some() => {
+                crate::app::frontend::skirmish_shell_render::render_keyboard_shell(state, &mut encoder, &output.texture)?;
+            }
             GameScreen::MainMenu => {
                 if let crate::app::frontend::shell_transition::ShellFirstPaintRenderResult::Rendered {
                     main_menu_entry_token,
@@ -607,6 +610,11 @@ impl App {
                     .record_presented(receipt),
                 "main-menu title receipt was stale at present commit"
             );
+        }
+        if let Some(dialog) = state.frontend.keyboard_dialog.as_mut() {
+            if let Some(receipt) = dialog.title_receipt.take() {
+                anyhow::ensure!(dialog.title.record_presented(receipt), "keyboard title receipt was stale at present commit");
+            }
         }
         if let Some(receipt) = pending_launcher_title_receipt {
             anyhow::ensure!(state.frontend.launcher_options_presentation.record_presented(receipt),

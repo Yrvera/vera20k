@@ -59,6 +59,9 @@ mod tests {
 /// deterministic simulation.
 pub(crate) struct PlatformState {
     pub(crate) window: Arc<Window>,
+    /// Live message-pump modifiers for focused shell controls. Gameplay keeps
+    /// its separate paused-input admission snapshot.
+    pub(crate) live_modifiers: winit::keyboard::ModifiersState,
     /// Whether this application currently owns the foreground.
     ///
     /// gamemd tracks the same edge-triggered byte from `WM_ACTIVATEAPP` and
@@ -101,6 +104,7 @@ impl PlatformState {
     ) -> Self {
         Self {
             window,
+            live_modifiers: winit::keyboard::ModifiersState::empty(),
             window_active: true,
             window_hidden: false,
             frame_pacer_epoch: Instant::now(),

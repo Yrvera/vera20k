@@ -67,8 +67,19 @@ pub(crate) fn now_ms(state: &AppState) -> u64 {
 /// CursorMoved feed (all screens).
 pub(crate) fn on_mouse_move(state: &mut AppState) {
     let now = now_ms(state);
+    if state.match_state.paused || state.frontend.keyboard_dialog.is_some() {
+        state.match_state.match_presentation.tooltips.on_button(now);
+        return;
+    }
     let (x, y) = (state.match_state.input.cursor_x.round() as i32, state.match_state.input.cursor_y.round() as i32);
-    state.match_state.match_presentation.tooltips.on_mouse_move(x, y, now);
+    if state.frontend.screen == GameScreen::InGame && state.match_state.input.cursor_coordinates {
+        // Native724200 resolves the current region/text at the mouse move,
+        // including ordinary sidebar tips while the coordinate toggle is on.
+        sync_in_game_regions(state);
+        state.match_state.match_presentation.tooltips.on_mouse_move_immediate(x, y, now);
+    } else {
+        state.match_state.match_presentation.tooltips.on_mouse_move(x, y, now);
+    }
 }
 
 /// MouseInput feed — ANY button, press or release, kills tip + timer.
@@ -81,7 +92,9 @@ pub(crate) fn on_button_event(state: &mut AppState) {
 /// the delayed-tooltip timer.
 pub(crate) fn update(state: &mut AppState) {
     let now = now_ms(state);
-    if state.frontend.screen == GameScreen::InGame {
+    if state.frontend.screen == GameScreen::InGame
+        && !state.match_state.paused && state.frontend.keyboard_dialog.is_none()
+    {
         sync_in_game_regions(state);
     } else {
         state.match_state.match_presentation.tooltips.sync_regions(&[]);
@@ -151,6 +164,23 @@ fn sync_in_game_regions(state: &mut AppState) {
         return;
     };
     let mut regions: Vec<TipRegion> = Vec::with_capacity(9 + view.items.len());
+    // Set_View_Dimensions4A8B50 registers the complete tactical viewport as
+    // dynamic region500. CursorCheat537EF0 toggles its coordinate text at
+    // 4AE580, before the ordinary object/shroud tooltip lookup.
+    let (x, y, width, height) = crate::app::input::camera::tactical_viewport_px(state);
+    let coordinate_text = if state.match_state.input.cursor_coordinates {
+        let (rx, ry) = crate::app::match_runtime::sim_tick::screen_point_to_world_cell(
+            state, state.match_state.input.cursor_x, state.match_state.input.cursor_y,
+        );
+        format!("({rx},{ry})")
+    } else {
+        String::new()
+    };
+    regions.push(TipRegion {
+        id: 500,
+        rect: TipRect::new(x as i32, y as i32, width as i32, height as i32),
+        text: coordinate_text,
+    });
     // Power meter first: gamemd asks the power bar for a tip before the
     // sidebar gadget ids, and registration order decides the hit here.
     let power_rect = crate::sidebar::power_bar_rect(&view.layout, state.match_state.match_presentation.sidebar_layout_spec);

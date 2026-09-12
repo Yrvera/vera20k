@@ -83,6 +83,7 @@ impl App {
         state.platform.window_active = active;
         state.match_state.input.keys_held.clear();
         state.match_state.input.hotkey_modifiers = ModifiersState::empty();
+        state.platform.live_modifiers = ModifiersState::empty();
         state.match_state.input.type_select.clear_held();
         // gamemd-derived: the `WM_ACTIVATEAPP` changed edge at 0x007778AC
         // stops/restores the primary DirectSound output through 0x00407020 /
@@ -268,7 +269,7 @@ impl App {
             }
             // Options is the native `0xBBB` overlay, drawn earlier in the frame
             // and reconciled by `sync_in_game_menu_with_options_overlay`.
-            InGameMenuState::Options | InGameMenuState::Sound | InGameMenuState::SavedGame(_) => ModalOutcome::Stay,
+            InGameMenuState::Options | InGameMenuState::Sound | InGameMenuState::Keyboard | InGameMenuState::SavedGame(_) => ModalOutcome::Stay,
         };
 
         Self::apply_in_game_modal_outcome(state, outcome);

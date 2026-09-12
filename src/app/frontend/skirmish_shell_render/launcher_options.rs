@@ -264,6 +264,28 @@ fn build_text(
     out
 }
 
+/// Shared mode1 launcher frame,60CF00 default background and621E90 composition.
+/// Resource-specific children (such as D5 warning71C) remain with their owner.
+pub(super) fn launcher_background_instances(
+    atlas: &SkirmishShellChromeAtlas,
+    width: u32,
+    height: u32,
+) -> Vec<SpriteInstance> {
+    let common = compute_layout(width, height);
+    let mut out = Vec::new();
+    let background = if width == 640 {
+        atlas.generic_background_640_mnscrns_shell
+    } else {
+        atlas.generic_background_large_mnscrnl_shell
+    };
+    if let Some(background) = background {
+        push_entry_native(&mut out, background, 0, 0, SHELL_PARENT_BACKGROUND_DEPTH);
+    }
+    push_right_panel_base_instances(&mut out, atlas, &common, 0, false);
+    push_lower_strip_instance(&mut out, atlas, &common);
+    out
+}
+
 pub(crate) fn render_launcher_options(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
@@ -293,15 +315,8 @@ pub(crate) fn render_launcher_options(
         .prepare(now, atlas.launcher_warning_frames.len());
     let layout =
         LauncherOptionsLayout::new(state.render_width() as i32, state.render_height() as i32);
-    // Existing common-shell geometry is shared with Skirmish; only the parent
-    // art binding differs (60CF00's generic MNSCRNL/SHELL.PAL path).
-    let common = compute_layout(state.render_width(), state.render_height());
-    let mut instances = Vec::new();
-    if let Some(bg) = atlas.generic_background_large_mnscrnl_shell {
-        push_entry_native(&mut instances, bg, 0, 0, SHELL_PARENT_BACKGROUND_DEPTH);
-    }
-    push_right_panel_base_instances(&mut instances, atlas, &common, 0, false);
-    push_lower_strip_instance(&mut instances, atlas, &common);
+    let mut instances =
+        launcher_background_instances(atlas, state.render_width(), state.render_height());
     if let Some(frame) = warning.and_then(|i| atlas.launcher_warning_frames.get(i)) {
         push_flag_entry_native_clipped_centered(
             &mut instances,

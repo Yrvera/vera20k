@@ -110,6 +110,26 @@ fn add_type_select_feedback(
     )
 }
 
+/// HealthNav uses the same silent, house-colored 0xF0-bucket message add as
+/// TypeSelect, after formatting MSG:UnitsWorth/NoUnitsSel/NavEmpty (733569).
+pub(crate) fn post_selection_navigation_text(state: &mut AppState, text: &str) {
+    sync_view(state);
+    let now = message_now_ms(state);
+    let rgb = type_select_message_rgb(
+        crate::app::input::commands::preferred_local_owner_name(state).as_deref(),
+        &state.match_state.match_presentation.house_color_map,
+        state.rules().map(|rules| &rules.house_color_ramps),
+    );
+    let font = &state.renderer.bit_font;
+    state.match_state.match_presentation.message_list.add_message(
+        &crate::ui::messages::MessagePost {
+            prefix: None, text, rgb,
+            timeout_ms: Some(TYPE_SELECT_MESSAGE_TIMEOUT_MS), silent: true,
+        },
+        now, &|s| font.text_width(s) as i32,
+    );
+}
+
 fn type_select_message_rgb(
     local_owner: Option<&str>,
     house_colors: &crate::map::houses::HouseColorMap,

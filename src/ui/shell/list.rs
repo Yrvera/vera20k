@@ -2,6 +2,7 @@
 //! Native list rows use GAME.FNT height 17 + 2; inner rectangles exclude borders.
 
 use super::geom::RectPx;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListScrollPart {
@@ -12,6 +13,83 @@ pub enum ListScrollPart {
 }
 
 pub const ROW_HEIGHT: i32 = 19;
+
+/// Scrollbar capture and repeat from original gamemd61C690: button down arms
+/// 500 ms at61D383..61D3B2; each timer callback rearms25 ms at61D215..61D2C8,
+/// including callbacks outside the arrows. Release61D2D3..61D310 kills capture.
+/// Geometry remains the shared owner of pointer admission and thumb projection.
+#[derive(Debug, Clone, Default)]
+pub struct ListScrollInteraction {
+    captured: Option<ListScrollPart>,
+    hovered: Option<ListScrollPart>,
+    repeat_at: Option<Instant>,
+}
+impl ListScrollInteraction {
+    pub fn press(
+        &mut self,
+        part: ListScrollPart,
+        geometry: ShellListGeometry,
+        top: &mut usize,
+        y: i32,
+        now: Instant,
+    ) {
+        self.captured = Some(part);
+        self.hovered = Some(part);
+        self.repeat_at = Some(now + Duration::from_millis(500));
+        match part {
+            ListScrollPart::Up | ListScrollPart::Down => Self::step(part, geometry.max_top, top),
+            ListScrollPart::Track => *top = geometry.top_at_pointer(y),
+            // 61D4AD..61D4C2 captures the thumb without recentering it on down.
+            ListScrollPart::Thumb => {}
+        }
+    }
+    pub fn pointer_moved(&mut self, geometry: ShellListGeometry, top: &mut usize, x: i32, y: i32) {
+        self.hovered = geometry.scroll_part_at(x, y);
+        if self.captured == Some(ListScrollPart::Thumb) {
+            *top = geometry.top_at_pointer(y);
+        }
+    }
+    /// One admitted timer callback, never a catch-up burst. Direction follows
+    /// the current arrow, even when capture began on the track or other arrow.
+    pub fn poll(
+        &mut self,
+        geometry: ShellListGeometry,
+        top: &mut usize,
+        x: i32,
+        y: i32,
+        now: Instant,
+    ) -> bool {
+        let before = (*top, self.pressed_part());
+        self.hovered = geometry.scroll_part_at(x, y);
+        if self.repeat_at.is_some_and(|deadline| now >= deadline) {
+            if let Some(part) = self.hovered {
+                Self::step(part, geometry.max_top, top);
+            }
+            self.repeat_at = Some(now + Duration::from_millis(25));
+        }
+        before != (*top, self.pressed_part())
+    }
+    fn step(part: ListScrollPart, max_top: usize, top: &mut usize) {
+        match part {
+            ListScrollPart::Up => *top = top.saturating_sub(1),
+            ListScrollPart::Down => *top = top.saturating_add(1).min(max_top),
+            _ => {}
+        }
+    }
+    pub fn pressed_part(&self) -> Option<ListScrollPart> {
+        match (self.captured, self.hovered) {
+            (Some(ListScrollPart::Thumb) | None, _) => None,
+            (_, Some(part @ (ListScrollPart::Up | ListScrollPart::Down))) => Some(part),
+            _ => None,
+        }
+    }
+    pub fn repeat_at(&self) -> Option<Instant> {
+        self.repeat_at
+    }
+    pub fn cancel(&mut self) {
+        *self = Self::default();
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct ShellListGeometry {
@@ -114,6 +192,124 @@ pub fn thumb_height(height: i32, range: usize) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Timer expectations are from the61C690 instructions cited above; geometry
+    // separately replays the saved native scrollbar fixture below.
+    #[test]
+    fn held_arrow_waits_500ms_then_steps_each_25ms_without_catch_up() {
+        let geometry = ShellListGeometry::new(RectPx::new(10, 20, 400, 255), 60, 10);
+        let bar = geometry.scrollbar.unwrap();
+        let (x, y) = (bar.x + 10, bar.y + bar.h - 10);
+        let now = Instant::now();
+        let mut interaction = ListScrollInteraction::default();
+        let mut top = 10;
+        interaction.press(ListScrollPart::Down, geometry, &mut top, y, now);
+        assert_eq!(top, 11);
+        assert_eq!(interaction.pressed_part(), Some(ListScrollPart::Down));
+        for (elapsed, expected) in [(499, 11), (500, 12), (524, 12), (525, 13), (900, 14)] {
+            interaction.poll(
+                geometry,
+                &mut top,
+                x,
+                y,
+                now + Duration::from_millis(elapsed),
+            );
+            assert_eq!(top, expected, "at {elapsed}ms");
+        }
+        assert_eq!(
+            interaction.repeat_at(),
+            Some(now + Duration::from_millis(925))
+        );
+    }
+    #[test]
+    fn leaving_arrow_keeps_timer_cadence_and_capture_until_release_or_focus_loss() {
+        let geometry = ShellListGeometry::new(RectPx::new(10, 20, 400, 255), 60, 10);
+        let bar = geometry.scrollbar.unwrap();
+        let (x, y) = (bar.x + 10, bar.y + bar.h - 10);
+        let now = Instant::now();
+        let mut interaction = ListScrollInteraction::default();
+        let mut top = 10;
+        interaction.press(ListScrollPart::Down, geometry, &mut top, y, now);
+        interaction.pointer_moved(geometry, &mut top, 0, 0);
+        assert_eq!(interaction.pressed_part(), None);
+        interaction.poll(geometry, &mut top, 0, 0, now + Duration::from_millis(500));
+        assert_eq!(top, 11);
+        assert_eq!(
+            interaction.repeat_at(),
+            Some(now + Duration::from_millis(525))
+        );
+        interaction.pointer_moved(geometry, &mut top, x, y);
+        assert_eq!(interaction.pressed_part(), Some(ListScrollPart::Down));
+        interaction.poll(geometry, &mut top, x, y, now + Duration::from_millis(510));
+        assert_eq!(top, 11);
+        interaction.poll(geometry, &mut top, x, y, now + Duration::from_millis(525));
+        assert_eq!(top, 12);
+        // Both button release and shell focus loss call this same cleanup.
+        interaction.cancel();
+        assert_eq!(interaction.repeat_at(), None);
+        interaction.poll(geometry, &mut top, x, y, now + Duration::from_secs(2));
+        assert_eq!(top, 12);
+        assert_eq!(interaction.pressed_part(), None);
+    }
+    #[test]
+    fn repeat_follows_current_arrow_and_clamps_at_each_end() {
+        let geometry = ShellListGeometry::new(RectPx::new(10, 20, 400, 255), 60, 0);
+        let bar = geometry.scrollbar.unwrap();
+        let x = bar.x + 10;
+        let now = Instant::now();
+        let mut interaction = ListScrollInteraction::default();
+        let mut top = 0;
+        interaction.press(ListScrollPart::Up, geometry, &mut top, bar.y + 10, now);
+        assert_eq!(top, 0);
+        interaction.poll(
+            geometry,
+            &mut top,
+            x,
+            bar.y + bar.h - 10,
+            now + Duration::from_millis(500),
+        );
+        assert_eq!(top, 1);
+        assert_eq!(interaction.pressed_part(), Some(ListScrollPart::Down));
+        top = geometry.max_top;
+        interaction.poll(
+            geometry,
+            &mut top,
+            x,
+            bar.y + bar.h - 10,
+            now + Duration::from_millis(525),
+        );
+        assert_eq!(top, geometry.max_top);
+    }
+    #[test]
+    fn thumb_does_not_jump_on_press_and_track_capture_can_reach_an_arrow() {
+        let geometry = ShellListGeometry::new(RectPx::new(10, 20, 400, 255), 60, 10);
+        let bar = geometry.scrollbar.unwrap();
+        let now = Instant::now();
+        let mut interaction = ListScrollInteraction::default();
+        let mut top = 10;
+        interaction.press(
+            ListScrollPart::Thumb,
+            geometry,
+            &mut top,
+            geometry.thumb.unwrap().y + 1,
+            now,
+        );
+        assert_eq!(top, 10);
+        interaction.pointer_moved(geometry, &mut top, bar.x + 10, 1000);
+        assert_eq!(top, geometry.max_top);
+        interaction.cancel();
+        interaction.press(ListScrollPart::Track, geometry, &mut top, bar.y + 40, now);
+        let track_top = top;
+        interaction.pointer_moved(geometry, &mut top, 0, 0);
+        assert_eq!(top, track_top);
+        interaction.poll(
+            geometry,
+            &mut top,
+            bar.x + 10,
+            bar.y + bar.h - 10,
+            now + Duration::from_millis(500),
+        );
+        assert_eq!(top, (track_top + 1).min(geometry.max_top));
+    }
     #[test]
     fn thumb_height_matches_native_sampled_geometry() {
         let vectors: serde_json::Value = serde_json::from_str(include_str!(

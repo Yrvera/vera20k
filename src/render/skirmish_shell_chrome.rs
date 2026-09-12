@@ -99,6 +99,8 @@ pub struct SkirmishShellChromeAtlas {
     pub trackbar_plain_180: Option<SkirmishShellChromeEntry>,
     /// Active BBB plain 192x21 rail, 4E1FE0 disables its plaque.
     pub trackbar_plain_192: Option<SkirmishShellChromeEntry>,
+    /// Keyboard A3 category face, original resource138 DLU.
+    pub combo_face_207: Option<SkirmishShellChromeEntry>,
     pub combo_face_180: Option<SkirmishShellChromeEntry>,
     pub combo_face_150: Option<SkirmishShellChromeEntry>,
     pub combo_face_117: Option<SkirmishShellChromeEntry>,
@@ -128,6 +130,8 @@ pub struct ControlChrome {
     pub trackbar_plain_180: Option<SkirmishShellChromeEntry>,
     /// Active BBB plain 192x21 rail, 4E1FE0 disables its plaque.
     pub trackbar_plain_192: Option<SkirmishShellChromeEntry>,
+    /// Keyboard A3 category face, original resource138 DLU.
+    pub combo_face_207: Option<SkirmishShellChromeEntry>,
     pub combo_face_180: Option<SkirmishShellChromeEntry>,
     pub trackbar_plaque_left_trofl: Option<SkirmishShellChromeEntry>,
     pub trackbar_plaque_mid_trofm: Option<SkirmishShellChromeEntry>,
@@ -163,6 +167,7 @@ impl SkirmishShellChromeAtlas {
             trackbar_numeric_225: self.trackbar_numeric_225,
             trackbar_plain_180: self.trackbar_plain_180,
             trackbar_plain_192: self.trackbar_plain_192,
+            combo_face_207: self.combo_face_207,
             combo_face_180: self.combo_face_180,
             trackbar_plaque_left_trofl: self.trackbar_plaque_left_trofl,
             trackbar_plaque_mid_trofm: self.trackbar_plaque_mid_trofm,
@@ -449,6 +454,7 @@ pub fn build_skirmish_shell_chrome_atlas(
     for (label, width) in [
         ("skirmish_combo_face_150", 150),
         ("launcher_combo_face_180", 180),
+        ("keyboard_combo_face_207", 207),
         ("skirmish_combo_face_117", 117),
         ("skirmish_combo_face_44", 44),
         ("skirmish_combo_face_38", 38),
@@ -546,6 +552,7 @@ pub fn build_skirmish_shell_chrome_atlas(
         trackbar_numeric_225: by_label.get("rmg_trackbar_numeric_225").copied(),
         trackbar_plain_180: by_label.get("launcher_trackbar_plain_180").copied(),
         trackbar_plain_192: by_label.get("in_game_trackbar_plain_192").copied(),
+        combo_face_207: by_label.get("keyboard_combo_face_207").copied(),
         combo_face_180: by_label.get("launcher_combo_face_180").copied(),
         combo_face_150: by_label.get("skirmish_combo_face_150").copied(),
         combo_face_117: by_label.get("skirmish_combo_face_117").copied(),

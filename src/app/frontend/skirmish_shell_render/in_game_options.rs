@@ -162,7 +162,7 @@ fn in_game_options_static_draws(
             // 61358D..6135EE uses a slightly inset RECT and adds (2,4) to
             // its left/top when pressed. Its right/bottom edges do not move.
             ControlKind::Button => {
-                let pressed = state.pressed_button == Some(c.id);
+                let pressed = state.buttons.is_pressed(c.id);
                 let dx = if pressed { 2 } else { 0 };
                 let dy = if pressed { 4 } else { 0 };
                 (
@@ -388,7 +388,7 @@ mod tests {
         assert_eq!(check.align, ShellAlign::V_CENTER);
         let button = released.iter().find(|d| d.id == control::BACK).unwrap();
         assert_eq!(button.align, ShellAlign::H_CENTER | ShellAlign::V_CENTER);
-        state.pressed_button = Some(control::BACK);
+        state.buttons.press(Some(control::BACK));
         let pressed = in_game_options_static_draws(None, 800, 600, test_anchor(), &state);
         let held = pressed.iter().find(|d| d.id == control::BACK).unwrap();
         assert_eq!(held.rect.x, button.rect.x + 2);

@@ -468,6 +468,7 @@ impl ApplicationHandler for App {
                 // Active YR treats a terminated launcher Options pump as an
                 // always-apply final result: Apply -> destroy -> one write.
                 // Complete that transaction before unrelated shell teardown.
+                crate::app::input::keyboard::prepare_terminal_exit(state);
                 Self::close_launcher_options_terminal(state);
                 if Self::native_skirmish_shell_active(state) {
                     // Pump/quit exits write the last durable snapshot after
@@ -504,7 +505,7 @@ impl ApplicationHandler for App {
                     state.match_state.input.selection_state.cancel_drag();
                     state.match_state.input.minimap_dragging = false;
                     state.match_state.match_presentation.in_game_options.dragging_slider = None;
-                    state.match_state.match_presentation.in_game_options.pressed_button = None;
+                    state.match_state.match_presentation.in_game_options.buttons = Default::default();
                     state.match_state.match_presentation.pause_menu_interaction = Default::default();
         state.match_state.match_presentation.abort_buttons = Default::default();
         if let Some(dialog)=state.match_state.match_presentation.sound_dialog.as_mut() {dialog.reset_interaction();}
@@ -518,6 +519,7 @@ impl ApplicationHandler for App {
                         browser.scroll_repeat_at = None;
                         browser.last_list_press = None;
                     }
+                    if let Some(dialog) = state.frontend.keyboard_dialog.as_mut() { dialog.reset_interaction(); }
                     if let Some(dialog) = state.frontend.options_dialog.as_mut() {
                         dialog.shell_cancel_pointer_gesture();
                     }
@@ -532,11 +534,17 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(modifiers) => {
                 // Native's paused input capture admits Escape only and does not
                 // mutate the recorded keyboard state for other input.
-                if !state.match_state.paused {
-                    state.match_state.input.hotkey_modifiers = modifiers.state();
-                }
+                crate::app::input::hotkeys::record_modifier_event(
+                    &mut state.platform.live_modifiers,
+                    &mut state.match_state.input.hotkey_modifiers,
+                    modifiers.state(), state.match_state.paused,
+                );
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                if state.frontend.keyboard_dialog.is_some() {
+                    crate::app::input::keyboard::key(state, &event);
+                    return;
+                }
                 if Self::native_skirmish_shell_active(state)
                     && state.frontend.skirmish_shell_state.saved_seed_browser.is_some()
                 {
@@ -747,6 +755,10 @@ impl ApplicationHandler for App {
                 if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                     return;
                 }
+                if state.frontend.keyboard_dialog.is_some() {
+                    crate::app::input::keyboard::cursor_moved(state);
+                    return;
+                }
                 if Self::native_launcher_options_active(state) {
                     Self::handle_launcher_options_mouse(state, None);
                     return;
@@ -798,6 +810,10 @@ impl ApplicationHandler for App {
                 // SHP quit-confirm modal's OK/Cancel hit-test on the normal shell
                 // path; the egui fallback and the other egui dialogs (options/movies/
                 // campaign) were already handled by egui above.
+                if state.frontend.keyboard_dialog.is_some() {
+                    crate::app::input::keyboard::mouse(state, button, btn_state.is_pressed());
+                    return;
+                }
                 if Self::main_menu_dialog_open(state) {
                     if Self::native_launcher_options_active(state) && button == MouseButton::Left {
                         Self::handle_launcher_options_mouse(state, Some(btn_state.is_pressed()));
@@ -867,6 +883,11 @@ impl ApplicationHandler for App {
                 if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                     return;
                 }
+                if state.frontend.keyboard_dialog.is_some() {
+                    crate::app::input::keyboard::wheel(state, lines);
+                    state.platform.window.request_redraw();
+                    return;
+                }
                 if !egui_consumed
                     && state.frontend.screen == GameScreen::MainMenu
                     && Self::native_skirmish_shell_active(state)
@@ -896,9 +917,12 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(state) = self.state.as_mut() {
+        let shell_scroll_wake = if let Some(state) = self.state.as_mut() {
             Self::update_saved_seed_browser_scroll(state, false);
-        }
+            [crate::app::input::keyboard::poll_scroll_repeat(state),
+             crate::app::input::sound::poll_scroll_repeat(state)]
+                .into_iter().flatten().min()
+        } else { None };
         if let (Some(state), Some(session)) = (self.state.as_mut(), self.tactical_capture.as_mut())
         {
             if let Err(err) = Self::render_frame(state, event_loop, None, Some(&mut *session)) {
@@ -940,6 +964,7 @@ impl ApplicationHandler for App {
             } else if let Some(deadline) =
                 crate::app::frontend::shell_transition::main_menu_presented_wake_deadline(state)
             {
+                let deadline = shell_scroll_wake.map_or(deadline, |scroll| deadline.min(scroll));
                 if Instant::now() >= deadline {
                     state.platform.window.request_redraw();
                 } else {
@@ -951,6 +976,9 @@ impl ApplicationHandler for App {
                 // than rendering frames no one can see.
                 event_loop.set_control_flow(ControlFlow::Wait);
             } else {
+                if let Some(deadline) = shell_scroll_wake {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+                }
                 state.platform.window.request_redraw();
             }
         }
