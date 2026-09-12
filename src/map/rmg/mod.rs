@@ -5,6 +5,7 @@
 //! Pre-play map construction only — nothing in `sim/` depends on this module.
 
 pub mod build;
+mod description;
 pub mod emit;
 pub mod grid;
 pub mod options;

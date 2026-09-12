@@ -112,6 +112,14 @@ Active in YR: Conditional. `Description` is not plain text. Fresh decompile of `
 
 Fresh decompile of `FUN_00528F00` shows the reader locates the INI entry, copies/trims the ASCII value, tokenizes it by `","`, parses each token using `"%x"` at `DAT_00825BD4`, writes each parsed value as a 16-bit code unit to the output buffer, and appends a UTF-16 zero terminator.
 
+**2026-09-12 reader refinement:** the scanner result is ignored, so malformed
+tokens repeat the prior conversion rather than being skipped. On the fresh-file
+MapSeed callers, a first failure retains the section CRC and emits `0xB573`.
+Missing/trimmed-empty and comma-only values differ. The count-128 caller buffers
+also lack space for the additional terminator. See the independently checked
+[reader supplement](2026-09-12-seed-description-reader.md) for original-executable
+comparisons, the cold-cache boundary, and unpaired-surrogate/storage limitations.
+
 Example native-compatible value for `Random Map` is `52,61,6e,64,6f,6d,20,4d,61,70,`. Active in YR: Conditional.
 
 ### 3.6 Input Value Sources Before Write
