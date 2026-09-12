@@ -111,6 +111,10 @@ pub(crate) fn fallback_map_load_result() -> init::MapLoadResult {
 }
 
 pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadResult) {
+    // Start_Scenario 00683D21 completes Read_Scenario before switching video
+    // mode at 00683DF3. Loading artwork stays at shell size; successful tactical
+    // installation must size its camera/shroud against the applied game mode.
+    crate::app::App::enter_game_window_mode(state);
     crate::app::reset_scenario_exit_runtime(state);
     let startup = result.scenario.startup;
     let returns_scenario_rng_to_offline_shell = startup.launch_session().is_some();

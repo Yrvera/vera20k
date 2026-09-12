@@ -7,6 +7,51 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use crate::app::match_runtime::frame_pacer::LocalFramePacer;
+use crate::ui::game_screen::GameScreen;
+
+/// Loading uses tactical dimensions only for pending match-resource setup;
+/// its own artwork uses the window directly. Frontend layout and hit testing
+/// must never inherit a gameplay upscaler's source size.
+pub(super) fn render_dimensions(
+    screen: &GameScreen,
+    window: (u32, u32),
+    tactical_source: Option<(u32, u32)>,
+) -> (u32, u32) {
+    match screen {
+        GameScreen::MainMenu | GameScreen::MissionResult { .. } => window,
+        GameScreen::Loading | GameScreen::SpawnPick | GameScreen::InGame => {
+            tactical_source.unwrap_or(window)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gameplay_upscaling_never_changes_frontend_projection() {
+        let window = (800, 600);
+        let source = (640, 480);
+        for screen in [
+            GameScreen::MainMenu,
+            GameScreen::MissionResult {
+                title: String::new(),
+                detail: String::new(),
+            },
+        ] {
+            assert_eq!(render_dimensions(&screen, window, Some(source)), window);
+        }
+        for screen in [
+            GameScreen::Loading,
+            GameScreen::SpawnPick,
+            GameScreen::InGame,
+        ] {
+            assert_eq!(render_dimensions(&screen, window, Some(source)), source);
+            assert_eq!(render_dimensions(&screen, window, None), window);
+        }
+    }
+}
 
 /// Window lifecycle and wall-clock pacing owned by the platform layer.
 ///
@@ -40,9 +85,11 @@ pub(crate) struct PlatformState {
     /// mutated afterwards.
     pub(crate) game_config: Option<crate::util::config::GameConfig>,
     /// Effective shell client size for this process. Interactive launches use
-    /// the resolved retail profile pair; sealed captures retain their explicit
+    /// the independent retail frontend pair; sealed captures retain their explicit
     /// dimensions as the higher-priority automation projection.
     pub(crate) shell_client_size: PhysicalSize<u32>,
+    /// Sealed captures keep their requested surface through match launch too.
+    pub(crate) capture_client_size: Option<PhysicalSize<u32>>,
 }
 
 impl PlatformState {
@@ -50,6 +97,7 @@ impl PlatformState {
         window: Arc<Window>,
         game_config: Option<crate::util::config::GameConfig>,
         shell_client_size: PhysicalSize<u32>,
+        capture_client_size: Option<PhysicalSize<u32>>,
     ) -> Self {
         Self {
             window,
@@ -59,6 +107,7 @@ impl PlatformState {
             frame_pacer: LocalFramePacer::new(),
             game_config,
             shell_client_size,
+            capture_client_size,
         }
     }
 }

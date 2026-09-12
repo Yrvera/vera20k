@@ -217,7 +217,6 @@ impl App {
             state.frontend.skirmish_settings.clone(),
         );
         crate::app::loading::pump::begin_loading(state, request);
-        Self::enter_game_window_mode(state);
         state.match_state.input.zoom_level = 1.0;
         state.match_state.input.zoom_target = 1.0;
     }
@@ -271,7 +270,6 @@ impl App {
         state.frontend.shell_first_paint_slide = None;
         state.frontend.skirmish_preview_texture = None;
         crate::app::loading::pump::begin_loading(state, request);
-        Self::enter_game_window_mode(state);
         state.match_state.input.zoom_level = 1.0;
         state.match_state.input.zoom_target = 1.0;
     }

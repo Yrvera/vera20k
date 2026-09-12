@@ -50,12 +50,26 @@ impl ShellWindowModeOperations for PlatformShellWindowModeOperations<'_> {
 }
 
 fn enter_shell_window_mode_with_operations(operations: &mut impl ShellWindowModeOperations) {
-    operations.set_resizable(false);
     let target = operations.shell_client_size();
+    apply_window_mode(operations, target, false);
+}
+
+fn apply_window_mode(
+    operations: &mut impl ShellWindowModeOperations,
+    target: PhysicalSize<u32>,
+    resizable: bool,
+) {
+    operations.set_resizable(resizable);
     if operations.inner_size() == target {
         return;
     }
-    if let Some(applied_size) = operations.request_inner_size(target) {
+    // winit 0.30.12 Windows calls SetWindowPos but returns None. Read the
+    // actual client size before installing size-dependent tactical resources;
+    // waiting solely for its queued Resized event would use the old shell size.
+    let applied_size = operations
+        .request_inner_size(target)
+        .unwrap_or_else(|| operations.inner_size());
+    if applied_size.width != 0 && applied_size.height != 0 {
         operations.resize_surface_for_window_size(applied_size);
     }
     operations.request_redraw();
@@ -72,7 +86,10 @@ impl App {
     fn resize_surface_for_window_size(state: &mut AppState, size: PhysicalSize<u32>) {
         state.renderer.gpu.resize(size.width, size.height);
         state.renderer.depth_view = state.renderer.gpu.create_depth_texture();
-        state.renderer.shell_surface_presenter.resize(&state.renderer.gpu);
+        state
+            .renderer
+            .shell_surface_presenter
+            .resize(&state.renderer.gpu);
         // The frame-index wave is driven by wall-clock ticks and repaints every
         // frame, so a mid-flight resize simply lets it finish; no snap/cancel.
         Self::invalidate_main_menu_movie_if_base_changed(state);
@@ -82,10 +99,35 @@ impl App {
     pub(crate) fn enter_shell_window_mode(state: &mut AppState) {
         let mut operations = PlatformShellWindowModeOperations { state };
         enter_shell_window_mode_with_operations(&mut operations);
+        log::info!(
+            "Frontend surface {}x{}",
+            state.renderer.gpu.config.width, state.renderer.gpu.config.height,
+        );
     }
 
-    pub(super) fn enter_game_window_mode(state: &AppState) {
-        state.platform.window.set_resizable(true);
+    pub(crate) fn enter_game_window_mode(state: &mut AppState) {
+        // Scenario start 00683DBB..00683DF3 applies the game pair; shell return
+        // 006857AE restores the independent frontend pair. Profile stays sole
+        // authority, so launcher resolution edits take effect on the next match.
+        let size = state.persistence.options_profile.game_screen_size();
+        let target = state
+            .platform
+            .capture_client_size
+            .unwrap_or_else(|| PhysicalSize::new(size.width, size.height));
+        // Explicit low-mode startup is not a permanent return preference:
+        // 006857AE restores Options' independent frontend pair after a match.
+        let shell = crate::app::persistence::options_profile::RETAIL_SHELL_SIZE;
+        state.platform.shell_client_size = state
+            .platform
+            .capture_client_size
+            .unwrap_or_else(|| PhysicalSize::new(shell.width, shell.height));
+        let mut operations = PlatformShellWindowModeOperations { state };
+        apply_window_mode(&mut operations, target, true);
+        log::info!(
+            "Match surface {}x{} (requested {}x{})",
+            state.renderer.gpu.config.width, state.renderer.gpu.config.height,
+            target.width, target.height,
+        );
     }
 }
 
@@ -132,6 +174,9 @@ mod tests {
 
         fn request_inner_size(&mut self, size: PhysicalSize<u32>) -> Option<PhysicalSize<u32>> {
             self.requested_sizes.push(size);
+            if self.applied_size.is_none() {
+                self.current_size = size;
+            }
             self.applied_size
         }
 
@@ -165,6 +210,33 @@ mod tests {
         assert!(equal.requested_sizes.is_empty());
         assert!(equal.resized_surfaces.is_empty());
         assert_eq!(equal.redraw_requests, 0);
+    }
+
+    #[test]
+    fn windows_none_resize_result_reads_back_the_applied_client_size() {
+        let shell = PhysicalSize::new(800, 600);
+        let game = PhysicalSize::new(640, 480);
+        let mut operations = RecordingShellWindowModeOperations::new(shell, shell);
+        operations.applied_size = None;
+        apply_window_mode(&mut operations, game, true);
+        assert_eq!(operations.resized_surfaces, [game]);
+        enter_shell_window_mode_with_operations(&mut operations);
+        assert_eq!(operations.requested_sizes, [game, shell]);
+        assert_eq!(operations.resized_surfaces, [game, shell]);
+    }
+
+    #[test]
+    fn game_mode_applies_the_returned_physical_size_before_resource_installation() {
+        let shell = PhysicalSize::new(800, 600);
+        let game = PhysicalSize::new(1024, 768);
+        let applied = PhysicalSize::new(1000, 740);
+        let mut operations = RecordingShellWindowModeOperations::new(shell, shell);
+        operations.applied_size = Some(applied);
+        apply_window_mode(&mut operations, game, true);
+        assert_eq!(operations.resizable_values, [true]);
+        assert_eq!(operations.requested_sizes, [game]);
+        assert_eq!(operations.resized_surfaces, [applied]);
+        assert_eq!(operations.redraw_requests, 1);
     }
 
     #[test]
