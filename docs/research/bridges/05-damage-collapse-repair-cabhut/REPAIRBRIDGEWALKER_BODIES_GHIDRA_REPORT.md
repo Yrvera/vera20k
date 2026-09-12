@@ -261,6 +261,63 @@ These are Rust regression ratchets, not native whole-movement goldens. The
 fresh independent critic separately checked all twenty projections, the nine
 leaves and both traces before passing this rebaseline's causal attribution.
 
+### Retained cursor and paid terminal evidence (2026-09-12)
+
+`tools/spatial_oracle/locomotor_track_cursor.{py,json,meta.json}` preserves
+3,540 original point-read/budget probes, 128 fresh selections, 128 admitted
+chain/tail cases and 45 terminal-expression cases. The saved original tables
+contain all 72 Drive and 64 ordinary Ship descriptors, and every point through
+the first noninitial XY-zero sentinel of their 15/10 referenced raw tracks.
+Point probes use one representative descriptor/normal-or-short selection per
+raw track; they do not exhaust every descriptor/selector combination.
+
+Fresh selection clears the short/reversed byte and stores the selected descriptor
+at `0x004B4016..0x004B4034` / `0x006A3642..0x006A3660`, falling back to the
+straight descriptor when its normal track is zero. The later accepted-head
+tail resets the cursor at `0x004B4659` / `0x006A3C88`. These are separate
+executed blocks with their intervening admission/occupation callbacks excluded.
+
+The process admits a paid sample only with budget **greater than seven**. It
+subtracts seven, reads the point at the retained cursor, then its common tail
+increments the cursor and tests that strict budget gate again. For raw1, an
+initial budget of eight consumes `(0,245)`, retains cursor1 and leaves budget1.
+The last real `(0,3)` is followed by a separate `(0,0)` terminal sample. Rust's
+current cursor starts at zero but increments before reading, and its extracted
+arrays omit the terminal sample. Consequently its first paid point and terminal
+timing are both different. Original admitted chain stores entry-minus-one;
+the common tail produces entry as the next point to consume and can immediately
+continue within the same pass. That tail is conditional on surviving the
+intervening callbacks: owner death, limbo or off-map exits at
+`0x004B1D12/20/2E` / `0x006A1355/63/71` can preserve entry-minus-one and
+the prior object residual without reaching it (see section6.2 of the
+[metadata reconciliation report](../../DRIVE_RAWTRACK_METADATA_INITIALIZER_RECONCILIATION_GHIDRA_REPORT.md)).
+The body/selector offsets here are object-base
+`+0x58/+0x5C/+0x60`, four bytes beyond the ILocomotion-relative query offsets.
+
+The terminal expression `0x004B1F97..0x004B2006` /
+`0x006A15DA..0x006A1649` also adjusts the local remaining budget. Original
+instructions form the wrapping signed Manhattan XY distance from current Foot
+coordinates to the retained head, multiply by the original binary64 `1/11`
+constant, subtract from one, multiply by seven, then run x87 `ftol` before
+adding the result. The operation order and binary64 constants are part of the
+evidence. With
+supplied budget1, distances0/3/16 produce budgets8/6/-2. This is an adjustment,
+not an unconditional seven-unit refund or a clamped result. The witnesses use
+supplied `0xE7F` x87/ftol state, consistent with the separately saved startup
+capture; they do not prove runtime control-word immutability. Terminal poses
+include the last real point of every referenced raw track, including distances
+9, 20 and 21 from short/special curves, plus separate scalar boundary cases.
+Later selector
+clear blocks set descriptor=-1 and cursor=0 while retaining the reversed byte.
+
+The harness executes original blocks without instruction patches or substituted
+call results, including original `ftol`. It deliberately composes across the
+unexecuted movement, occupation, chain-admission, coordinate-commit and arrival
+callbacks. It therefore establishes these scalar/table/state transitions, not a
+complete process pass. Residual interpolation, callback order, selector lifecycle
+outside these blocks, and Rust production delivery of the corrected stepping
+remain open prerequisites for the live repair/query host.
+
 ## 0. TL;DR
 
 The four `RepairBridgeWalker_{NS,EW}_{Low,High}` functions are the per-cell
