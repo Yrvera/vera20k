@@ -138,9 +138,14 @@ it does not execute startup, movement producers, object admission or repair
 lifecycle. Scalar boundary states are branch witnesses, not stock-map reachability
 claims. Mech's separate query `0x005B1AA0` is dormant TS behavior (its retail
 RULESMD locomotor GUID appears only in comments) and is excluded, as are dormant
-Tunnel/DropPod behaviors. This is native query evidence only: the shared Rust
-query, exact producer state, save/hash/piggyback handling and live repair/marker
-consumers remain required integration work.
+Tunnel/DropPod behaviors. The prepared shared Rust projection in
+`src/sim/movement/at_coord.rs` now matches all 4,172 recorded query answers and
+the original head/track candidates; its regression also compares all 136 saved
+TurnTrack records and referenced handoff points against Rust's shared catalog.
+It consumes raw retained/current coordinates and independent native selectors,
+without deriving them from a path or terrain. Exact producer state,
+save/hash/piggyback handling and live repair/marker consumers remain required
+integration work; this prepared projection does not establish gameplay delivery.
 
 ## 0. TL;DR
 

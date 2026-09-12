@@ -52,6 +52,7 @@ use crate::util::fixed_math::{SIM_ONE, SimFixed, facing_from_delta_int};
 use crate::util::fixed_math::SIM_ZERO;
 
 // --- Internal submodules ---
+pub(crate) mod at_coord;
 mod cell_arrival;
 mod drive_locomotion;
 pub(crate) mod ground_pose;

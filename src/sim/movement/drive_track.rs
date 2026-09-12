@@ -48,7 +48,7 @@ const TRACK_STEP_COST: i32 = 7;
 /// These are the lower 3 bits of the TurnTrack flags field. Applied in order:
 /// first swap, then negate-x, then negate-y. Facing is adjusted to match.
 /// Matches the original Transform_Track_Coords algorithm.
-fn transform_track_point(x: i16, y: i16, facing: u8, flags: u8) -> (i16, i16, u8) {
+pub(super) fn transform_track_point(x: i16, y: i16, facing: u8, flags: u8) -> (i16, i16, u8) {
     let mut tx = x;
     let mut ty = y;
     let mut tf = facing;
