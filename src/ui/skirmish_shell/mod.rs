@@ -6,6 +6,7 @@
 
 mod layout;
 mod scroll;
+pub(crate) use scroll::ScrollModel;
 mod state;
 pub mod static_reveal;
 

@@ -196,6 +196,7 @@ impl App {
                 });
         let mut pending_main_menu_entry_token = None;
         let mut pending_main_menu_title_receipt = None;
+        let mut pending_launcher_title_receipt = None;
         use crate::app::diagnostics::shell_capture::PresentedShell;
         let mut presented_shell = PresentedShell::Other;
 
@@ -220,6 +221,11 @@ impl App {
                     &output.texture,
                 )? {
                     pending_main_menu_entry_token = main_menu_entry_token;
+                } else if Self::native_launcher_options_active(state) {
+                    pending_launcher_title_receipt = Some(
+                        crate::app::frontend::skirmish_shell_render::render_launcher_options(
+                            state, &mut encoder, &output.texture,
+                        )?);
                 } else if Self::native_skirmish_shell_active(state) {
                     crate::app::frontend::skirmish_shell_render::render_skirmish_shell(
                         state,
@@ -592,6 +598,10 @@ impl App {
                     .record_presented(receipt),
                 "main-menu title receipt was stale at present commit"
             );
+        }
+        if let Some(receipt) = pending_launcher_title_receipt {
+            anyhow::ensure!(state.frontend.launcher_options_presentation.record_presented(receipt),
+                "launcher title receipt was stale at present commit");
         }
         if let Some(session) = shell_capture.as_deref_mut() {
             session.after_present(state, presented_shell)?;

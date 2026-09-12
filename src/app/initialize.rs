@@ -654,6 +654,7 @@ impl App {
                 startup_splash,
                 exit_confirm_modal: None,
                 options_dialog: None,
+                launcher_options_presentation: Default::default(),
                 movies_credits_dialog: None,
                 campaign_select: None,
                 score_screen: None,

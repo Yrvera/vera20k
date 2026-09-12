@@ -551,6 +551,8 @@ impl App {
     /// profile, current-monitor dimension pairs, live CSF table, and frozen
     /// process-start common audio gate. No display mode is applied here.
     fn open_launcher_options_dialog(state: &mut AppState) {
+        Self::ensure_skirmish_shell_chrome(state);
+        state.frontend.launcher_options_presentation = Default::default();
         use crate::app::persistence::options::launcher::launcher_dialog_from_profile;
         use crate::ui::main_menu_dialogs::options::LauncherOptionsLabels;
 
@@ -596,6 +598,7 @@ impl App {
             LauncherCue::GenericClick => rules.general.generic_click_sound.as_deref(),
             LauncherCue::Checkbox => rules.general.gui_checkbox_sound.as_deref(),
             LauncherCue::ComboOpen => rules.general.gui_combo_open_sound.as_deref(),
+            LauncherCue::ComboClose => rules.general.gui_combo_close_sound.as_deref(),
         });
         let sound_id = sound_id.map(str::to_owned);
         Self::play_shell_ui_sound_by_id(state, sound_id.as_deref());
@@ -622,6 +625,51 @@ impl App {
             assets,
             &state.audio.audio_indices,
         );
+    }
+
+    pub(crate) fn native_launcher_options_active(state: &AppState) -> bool {
+        state.frontend.screen == GameScreen::MainMenu
+            && state.frontend.options_dialog.is_some()
+            && state.frontend.skirmish_shell_chrome.is_some()
+    }
+
+    /// Both physical shell input and the assetless fallback drain the same
+    /// semantic transaction; profile and audio authority remain in their owners.
+    fn dispatch_launcher_options_output(
+        state: &mut AppState,
+        dialog: crate::ui::main_menu_dialogs::OptionsDialogState,
+        output: crate::ui::main_menu_dialogs::options::LauncherOptionsFrameOutput,
+    ) {
+        {
+            let mut operations = AppStateLauncherPreviewOperations { state };
+            for event in output.events {
+                crate::app::persistence::options::launcher::dispatch_launcher_preview_event(
+                    &mut operations, event,
+                );
+            }
+        }
+        if let Some(result) = output.result {
+            let mut operations = AppStateLauncherParentOperations { state };
+            crate::app::persistence::options::launcher::dispatch_launcher_parent_result(
+                &mut operations, dialog, result,
+            );
+        } else {
+            state.frontend.options_dialog = Some(dialog);
+        }
+    }
+
+    pub(crate) fn handle_launcher_options_mouse(state: &mut AppState, down: Option<bool>) {
+        let Some(mut dialog) = state.frontend.options_dialog.take() else { return; };
+        let (x, y) = (state.match_state.input.cursor_x as i32, state.match_state.input.cursor_y as i32);
+        let (w, h) = (state.render_width() as i32, state.render_height() as i32);
+        match down {
+            Some(true) => dialog.shell_mouse_down(x, y, w, h),
+            Some(false) => dialog.shell_mouse_up(x, y, w, h),
+            None => dialog.shell_mouse_move(x, y, w, h),
+        }
+        let output = dialog.drain_output();
+        Self::dispatch_launcher_options_output(state, dialog, output);
+        state.platform.window.request_redraw();
     }
 
     /// Pump-terminal completion enters the same always-apply parent transaction
@@ -1131,25 +1179,7 @@ impl App {
                 &state.renderer.egui.ctx,
                 &mut dialog,
             );
-            {
-                let mut operations = AppStateLauncherPreviewOperations { state };
-                for event in output.events {
-                    crate::app::persistence::options::launcher::dispatch_launcher_preview_event(
-                        &mut operations,
-                        event,
-                    );
-                }
-            }
-            if let Some(result) = output.result {
-                let mut operations = AppStateLauncherParentOperations { state };
-                crate::app::persistence::options::launcher::dispatch_launcher_parent_result(
-                    &mut operations,
-                    dialog,
-                    result,
-                );
-            } else {
-                state.frontend.options_dialog = Some(dialog);
-            }
+            Self::dispatch_launcher_options_output(state, dialog, output);
             return false;
         }
 

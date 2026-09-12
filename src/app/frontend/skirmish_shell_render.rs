@@ -17,6 +17,8 @@ use draw_order::{
     validation_modal_semantic_draw_order,
 };
 mod in_game_options;
+mod launcher_options;
+pub(crate) use launcher_options::{LauncherOptionsPresentation, render_launcher_options};
 mod modals;
 mod preview;
 mod text;
