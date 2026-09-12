@@ -41,6 +41,7 @@ mod damaged_variant;
 mod record_scan;
 pub(crate) mod gap_restamp;
 pub(crate) mod publication;
+pub(crate) mod ramp_repair;
 pub(crate) mod rim;
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
