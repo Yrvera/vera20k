@@ -36,6 +36,7 @@ impl App {
             crate::ui::pause_menu::InGameMenuState::Closed;
         state.match_state.match_presentation.in_game_options_anchor = None;
         state.match_state.match_presentation.pause_menu_interaction = Default::default();
+        state.match_state.match_presentation.abort_buttons = Default::default();
         state.match_state.match_presentation.saved_game_browser = None;
         // Persist the deterministic diagnostic log before leaving the scenario.
         // Runtime and presentation resources remain retained in the shell.
@@ -119,10 +120,9 @@ impl App {
 
     /// Does the in-scenario modal machine own this Escape press?
     ///
-    /// gamemd reaches the in-game menu from the sidebar menu control; this port
-    /// has no such control yet, so Escape stands in for it. Both the binding and
-    /// this precedence are VERA-internal — gamemd's keyboard route into the menu
-    /// is UNCHECKED. Escape keeps its in-world cancel duties: while no modal is
+    /// Native Escape reaches Options through5372D0→647040→4C7939. B5 and B6
+    /// ignore IDCANCEL, while Game Controls returns to B5. Escape keeps its
+    /// in-world cancel duties: while no modal is
     /// open and a placement/targeting or repair/sell mode is armed, Escape
     /// cancels that instead and the machine stays out of it.
     pub(super) fn in_game_menu_owns_escape(state: &AppState) -> bool {
@@ -197,6 +197,7 @@ impl App {
         }
         state.match_state.match_presentation.in_game_menu = next;
         state.match_state.match_presentation.pause_menu_interaction = Default::default();
+        state.match_state.match_presentation.abort_buttons = Default::default();
         if next == InGameMenuState::Menu {
             state.match_state.match_presentation.pause_menu_has_saves = !state.persistence.repository.browser_entries().is_empty();
         }
@@ -267,6 +268,12 @@ impl App {
             InGameMenuState::Options | InGameMenuState::SavedGame(_) => ModalOutcome::Stay,
         };
 
+        Self::apply_in_game_modal_outcome(state, outcome);
+    }
+
+    /// Every physical or fallback modal commits through the same state/exit owner.
+    pub(crate) fn apply_in_game_modal_outcome(state: &mut AppState, outcome: crate::ui::pause_menu::ModalOutcome) {
+        use crate::ui::pause_menu::ModalOutcome;
         match outcome {
             ModalOutcome::Stay => {}
             ModalOutcome::Enter(next) => Self::enter_in_game_menu_state(state, next),

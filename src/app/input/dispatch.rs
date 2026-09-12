@@ -69,6 +69,10 @@ pub(crate) fn handle_mouse_input(
             state.match_state.input.tactical_mouse.right_held = false;
             state.match_state.input.tactical_mouse.release();
         }
+        if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::AbortConfirm {
+            crate::app::input::abort::mouse(state, button, pressed);
+            return;
+        }
         if matches!(state.match_state.match_presentation.in_game_menu, crate::ui::pause_menu::InGameMenuState::SavedGame(_)) {
             if button == MouseButton::Left { crate::app::App::saved_game_mouse(state, pressed); }
         } else if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Menu {
@@ -659,6 +663,10 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
     // cadence applies on close, KD-8) and swallow the move so it can't begin a
     // selection drag or camera pan behind the overlay.
     if state.match_state.paused {
+        if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::AbortConfirm {
+            crate::app::input::abort::cursor_moved(state);
+            return;
+        }
         if matches!(state.match_state.match_presentation.in_game_menu, crate::ui::pause_menu::InGameMenuState::SavedGame(_)) {
             crate::app::App::update_saved_game_browser(state, true);
         } else if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Menu {

@@ -1712,3 +1712,5 @@ mod tests {
         );
     }
 }
+mod abort;
+pub(crate) use abort::render_abort_shell;

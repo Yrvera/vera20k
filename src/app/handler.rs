@@ -506,6 +506,7 @@ impl ApplicationHandler for App {
                     state.match_state.match_presentation.in_game_options.dragging_slider = None;
                     state.match_state.match_presentation.in_game_options.pressed_button = None;
                     state.match_state.match_presentation.pause_menu_interaction = Default::default();
+        state.match_state.match_presentation.abort_buttons = Default::default();
                     if let Some(browser) = state.match_state.match_presentation.saved_game_browser.as_mut() {
                         browser.pressed_control = None;
                         browser.scroll_repeat_at = None;
@@ -628,6 +629,17 @@ impl ApplicationHandler for App {
                         state.platform.window.request_redraw();
                         return;
                     }
+                    if in_game && state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::AbortConfirm {
+                        // B6 accepts default IDOK1 as Resume (4F1A59..4F1A65).
+                        // Owner buttons reject focus through610CA0:6118BF..DE;
+                        // their resource has no WS_TABSTOP. Do not invent a
+                        // focused-button Return/Space route. IDCANCEL is ignored.
+                        if event.state.is_pressed() && !event.repeat && matches!(code, KeyCode::Enter | KeyCode::NumpadEnter) {
+                            crate::app::input::abort::activate(state, crate::ui::shell::abort::AbortButton::Resume);
+                        }
+                        state.platform.window.request_redraw();
+                        return;
+                    }
                     if !crate::app::input::hotkeys::input_admitted_while_paused(
                         paused_at_event,
                         &event.logical_key,
@@ -645,7 +657,7 @@ impl ApplicationHandler for App {
 
                     // The in-scenario modal machine owns Escape: it opens the
                     // in-game menu, backs Options out to its parent menu, and
-                    // dismisses the abort confirmation. Escape's in-world
+                    // leaves B5/B6 open. Escape's in-world
                     // cancel duties (placement/targeting, repair/sell) still
                     // run first — see `in_game_menu_owns_escape`.
                     if in_game && is_escape && Self::in_game_menu_owns_escape(state) {

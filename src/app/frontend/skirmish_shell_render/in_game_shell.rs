@@ -44,11 +44,12 @@ pub(crate) fn native_in_game_shell_active(state: &AppState) -> bool {
         && matches!(
             state.match_state.match_presentation.in_game_menu,
             crate::ui::pause_menu::InGameMenuState::Menu
+                | crate::ui::pause_menu::InGameMenuState::AbortConfirm
                 | crate::ui::pause_menu::InGameMenuState::Options
                 | crate::ui::pause_menu::InGameMenuState::SavedGame(_)
         )
-        && (state.match_state.match_presentation.in_game_menu
-            == crate::ui::pause_menu::InGameMenuState::Menu
+        && (matches!(state.match_state.match_presentation.in_game_menu,
+            crate::ui::pause_menu::InGameMenuState::Menu | crate::ui::pause_menu::InGameMenuState::AbortConfirm)
             || state.frontend.skirmish_shell_chrome.is_some())
         && crate::app::presentation::sidebar_render::current_sidebar_chrome(state).is_some_and(
             |atlas| {
