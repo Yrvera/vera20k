@@ -85,7 +85,6 @@ fn direct_repair_edges_match_original_all_theater_offsets_and_boundaries() {
             &mut graph,
             &bridge,
             HIGH_BRIDGE_HIERARCHY_DIRECTIONS[offset] as u8,
-            16,
             Some((8, 8)),
         )
         .unwrap();

@@ -17,7 +17,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use super::passability;
 use super::zone_map::{ZONE_INVALID, ZoneAdjacency, ZoneId};
@@ -119,6 +119,11 @@ pub(crate) struct ZoneLevelGraph {
     records: Vec<Option<ZoneRecord>>,
     edges: Vec<Vec<ZoneEdgeRecord>>,
     cell_zone_ids: Vec<ZoneId>,
+    /// Native Map+70 also has addressable slots beyond our terrain rectangle.
+    /// Original5824A0 can fill these and walk through them into represented
+    /// cells. Store only their nonzero IDs; represented cells have one owner.
+    /// Evidence: spatial_oracle/bridge_hierarchy padding/full/local witnesses.
+    native_padding_zone_ids: BTreeMap<usize, ZoneId>,
     width: u16,
     height: u16,
 }
@@ -130,6 +135,7 @@ impl ZoneLevelGraph {
             records: vec![None; zone_count as usize + 1],
             edges: vec![Vec::new(); zone_count as usize + 1],
             cell_zone_ids: Vec::new(),
+            native_padding_zone_ids: BTreeMap::new(),
             width: 0,
             height: 0,
         }
@@ -244,8 +250,49 @@ impl ZoneLevelGraph {
         &self.cell_zone_ids
     }
 
+    /// Original56D3F0 packed linear lookup, used by5851B0 and42C900's
+    /// projected hierarchy endpoints. Padding can hold live IDs after5824A0;
+    /// the base-cluster helper's constant padding0 does not apply here.
+    pub(crate) fn native_zone_at(
+        &self,
+        coord: (u16, u16),
+        source_size: Option<(i32, i32)>,
+    ) -> Option<ZoneId> {
+        let Some(size) = source_size else {
+            return super::zone_build::bridge_endpoint_base_zone(
+                &self.cell_zone_ids,
+                self.width,
+                None,
+                coord,
+            );
+        };
+        let (x, y) =
+            super::zone_build::native_zone_grid_position(size, (coord.0 as i16, coord.1 as i16))?;
+        if x < i32::from(self.width) && y < i32::from(self.height) {
+            Some(self.zone_at(x as u16, y as u16))
+        } else {
+            let side = size.0.wrapping_add(size.1).wrapping_add(1);
+            Some(self.native_padding_zone((y * side + x) as usize))
+        }
+    }
+
     pub(crate) fn cell_zone_ids_mut(&mut self) -> &mut [ZoneId] {
         &mut self.cell_zone_ids
+    }
+
+    pub(crate) fn native_padding_zone(&self, index: usize) -> ZoneId {
+        self.native_padding_zone_ids
+            .get(&index)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn set_native_padding_zone(&mut self, index: usize, zone: ZoneId) {
+        if zone == 0 {
+            self.native_padding_zone_ids.remove(&index);
+        } else {
+            self.native_padding_zone_ids.insert(index, zone);
+        }
     }
 }
 

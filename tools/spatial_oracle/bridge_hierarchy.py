@@ -224,7 +224,9 @@ def execute(case):
                 records.append(dict(parent=parent, zone_type=u32(uc, node + 28), edges=edges))
             ids = [struct.unpack_from('<H', plane, (y * side + x) * 10 + level * 2)[0]
                    for y in range(width) for x in range(width)]
-            graphs.append(dict(ids=ids, records=records))
+            padding_ids = [struct.unpack_from('<H', plane, (y * side + x) * 10 + level * 2)[0]
+                           for y in range(side) for x in range(side) if x >= width or y >= width]
+            graphs.append(dict(ids=ids, padding_ids=padding_ids, records=records))
         retained = bytes(uc.mem_read(BASE, side * side * 4))
         assert plane[8::10] == retained[1::4]
         for row, (pointer, data) in enumerate(zip(raw_pointers, raw_rows)):
@@ -335,6 +337,28 @@ def inputs():
                base_ids=[1 if value != 7 else 0 for value in alias_classes],
                actions=[dict(coord=[16, 10])])
 
+    # Coherent initial attributes, normalized bounds and actual Resize allocation.
+    # A raw +4 write followed by586990 can admit class0 while retaining baseID0.
+    # The hierarchy then crosses native padding and aliases32 represented cells.
+    heights = {(16, 8):4, (17, 8):3, (18, 8):1, (16, 9):5, (17, 9):6,
+               (18, 9):2, (16, 10):5, (17, 10):7, (16, 11):8}
+    padding_levels = [heights.get((x, y), 0) for y in range(width) for x in range(width)]
+    padding_classes = [0 if (x, y) in ((11, 5), (10, 6), (11, 6), (9, 7), (10, 7),
+        (8, 8), (9, 8), (7, 9), (8, 9), (6, 10), (7, 10), (5, 11), (6, 11)) else 7
+        for y in range(width) for x in range(width)]
+    padding_base = [1 if value != 7 else 0 for value in padding_classes]
+    yield dict(name='allocated_nonnegative_height_batch_padding', size=[11, 8], bounds=[2, 2, 7, 0],
+        allocation='size_diamond', classes=padding_classes, levels=padding_levels, base_ids=padding_base,
+        actions=[dict(cells=[[16, 10]], changes=[dict(cell=[16, 10], cell_level=9)])])
+    # Full load-time reconstruction from that retained cache; also re-patch it.
+    retained_classes, retained_levels = list(padding_classes), list(padding_levels)
+    retained_classes[10 * width + 16] = 0
+    retained_levels[10 * width + 16] = 9
+    for name, actions in (('retained_base0_padding_full', []),
+                          ('retained_base0_padding_local', [dict(coord=[16, 10])])):
+        yield dict(name=name, size=[11, 8], bounds=[2, 2, 7, 0], allocation='size_diamond',
+            classes=retained_classes, levels=retained_levels, base_ids=padding_base, actions=actions)
+
 
 def flood_inputs():
     for name, spec in (
@@ -355,7 +379,7 @@ def cases():
         return result
     result = dict(cases=collect(inputs()), floods=collect(flood_inputs()))
     rows = {row['input']['name']: row for row in result['cases']}
-    assert len(rows) == 13 and len(result['floods']) == 3
+    assert len(rows) == 16 and len(result['floods']) == 3
     slope = rows['batch_recalc_slope_changes_second_pass_admission']['states'][0]
     assert slope['recalcs'] == [[10, 10], [5, 4]] and slope['patch_calls'] == [[10, 10]]
     assert slope['recalculated_cells'][1]['slope'] == 1 and slope['classes'][4 * 16 + 5] == 7
@@ -364,6 +388,13 @@ def cases():
     alias = rows['allocated_signed_height_partial_block_alias']
     assert alias['initial']['graphs'][2]['ids'][9 * 19 + 3] != 0
     assert alias['states'][0]['graphs'][2]['ids'][9 * 19 + 3] == 0
+    for name, source in (('allocated_nonnegative_height_batch_padding', 'states'),
+                         ('retained_base0_padding_full', 'initial')):
+        row = rows[name]
+        state = row['states'][0] if source == 'states' else row['initial']
+        assert any(state['graphs'][2]['padding_ids'])
+        assert sum(state['graphs'][2]['ids'][y * 19 + x] != 0
+                   for y in range(9, 17) for x in range(4)) == 32
     high = rows['active_high_records_local_reinsertion']
     assert [call[1] for call in high['initial']['high_pair_calls']] == [[5, 5], [6, 5]] * 3
     for state, fine_endpoint in zip(high['states'], ([5, 5], [6, 5])):
@@ -384,6 +415,7 @@ if __name__ == '__main__':
                      'All13 input raw rows contain supplied sentinel/ordinary labels and remain byte-identical; all base-ID words remain unchanged through local/batch actions',
                      'One full/local case supplies two active and one inactive high record with raw high tile103; full forward and local reverse582D70 reinsertion execute, no Tube/TS claims',
                      'Three direct flood witnesses supply a2x1 seed run, surrounding neighbor2 and optional preexisting flag1 pair; compare low flag byte only',
+                     'Three normalized11,8/Resize/nonnegative-height cases retain baseID0 after a supplied raw +4 height change; actual batch, full reconstruction and local re-patch preserve mutable padding and32 aliased represented cells',
                      'Not a complete native map-load or gameplay execution'],
         substitutions=['Successful bounded operator_new7C8E17 and no-op operator_delete7C8B3D'],
         entry_points={'build':0x581F90, 'local':0x584550, 'flood':0x5824A0, 'batch':0x586990, 'recalc':0x47D2B0,

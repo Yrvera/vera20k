@@ -9,9 +9,7 @@ use crate::sim::bridge_state::BridgeEndpointRecord;
 use crate::sim::cell_rect::{
     CellRef, PlayfieldBounds, cell_is_in_playfield_height_aware, get_cellclass_fallback,
 };
-use crate::sim::pathfinding::zone_build::{
-    HIGH_BRIDGE_HIERARCHY_DIRECTIONS, bridge_endpoint_base_zone,
-};
+use crate::sim::pathfinding::zone_build::HIGH_BRIDGE_HIERARCHY_DIRECTIONS;
 use crate::sim::pathfinding::zone_hierarchy::{ZoneEdgeRecord, ZoneHierarchy};
 
 /// Original5851B0 directly appends six directed edges per level. Preserve
@@ -21,7 +19,6 @@ pub(crate) fn append_repaired_bridge_edges(
     hierarchy: &mut ZoneHierarchy,
     record: &BridgeEndpointRecord,
     direction: u8,
-    width: u16,
     source_size: Option<(i32, i32)>,
 ) -> Result<(), String> {
     let step = |coord: (u16, u16), direction: u8| {
@@ -42,9 +39,11 @@ pub(crate) fn append_repaired_bridge_edges(
     ];
     for graph in hierarchy.levels_mut() {
         for (from, to) in pairs {
-            let from = bridge_endpoint_base_zone(graph.cell_zone_ids(), width, source_size, from)
+            let from = graph
+                .native_zone_at(from, source_size)
                 .ok_or("repair bridge source has no native hierarchy projection")?;
-            let to = bridge_endpoint_base_zone(graph.cell_zone_ids(), width, source_size, to)
+            let to = graph
+                .native_zone_at(to, source_size)
                 .ok_or("repair bridge destination has no native hierarchy projection")?;
             for (from, to) in [(from, to), (to, from)] {
                 // Native sign-extends this word into an unchecked node pointer.
@@ -88,7 +87,6 @@ impl ZoneGrid {
                 .ok_or("repair bridge has no hierarchy")?,
             record,
             HIGH_BRIDGE_HIERARCHY_DIRECTIONS[offset] as u8,
-            self.width,
             Some(size),
         )?;
         //56D100 mode1 A lookup, optional A-fringe shortcut, then mode1 B

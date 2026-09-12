@@ -550,6 +550,21 @@ impl ZoneGrid {
         self.adjacency.get(&mz)
     }
 
+    /// The native projected endpoint can address padding or a linear alias.
+    /// Ordinary A* expansion keeps its represented-cell lookup on the graph.
+    pub(crate) fn hierarchy_zone_at_native(
+        &self,
+        level: usize,
+        coord: (u16, u16),
+    ) -> Option<ZoneId> {
+        let graph = self.hierarchy.as_ref()?.level(level)?;
+        if self.native_bridge_source_size.is_some() {
+            graph.native_zone_at(coord, self.native_bridge_source_size)
+        } else {
+            Some(graph.zone_at(coord.0, coord.1))
+        }
+    }
+
     /// Get the shared route-selection hierarchy when this movement row exists.
     pub(crate) fn hierarchy_for(&self, mz: MovementZone) -> Option<&ZoneHierarchy> {
         if !self.maps.contains_key(&mz) {
