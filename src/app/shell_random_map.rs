@@ -5,8 +5,8 @@ use super::*;
 const RANDMAP_SED_FILE: &str = "RandMap.Sed";
 /// Description the setup dialog stamps onto a randomized configuration; it also
 /// becomes the sentinel row's displayed name.
-const RANDOM_MAP_DESCRIPTION_KEY: &str = "TXT_RANDOM_MAP_DESCRIPTION";
-const RANDOM_MAP_DESCRIPTION_FALLBACK: &str = "Random Map";
+pub(super) const RANDOM_MAP_DESCRIPTION_KEY: &str = "TXT_RANDOM_MAP_DESCRIPTION";
+pub(super) const RANDOM_MAP_DESCRIPTION_FALLBACK: &str = "Random Map";
 /// The players slider is the last of the setup dialog's six option rows, and the
 /// dialog gives it a range of 2..8 with a step of one.
 const SETUP_PLAYERS_ROW: usize = 5;
@@ -543,11 +543,19 @@ impl App {
     ///
     /// Everything that needs the asset manager is done here, up front; only
     /// plain data crosses to the worker.
-    fn start_random_map_generation(
+    pub(super) fn start_random_map_generation(
         state: &mut AppState,
         options: &crate::map::rmg::RmgOptions,
         accept_on_finish: bool,
     ) -> bool {
+        // The ordinary Generate path also stamps the localized working label
+        // immediately before generator construction (0x00595BC0).
+        let mut generation_options = options.clone();
+        generation_options.description = Self::csf_label(state, RANDOM_MAP_DESCRIPTION_KEY, RANDOM_MAP_DESCRIPTION_FALLBACK).into();
+        if let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() {
+            modal.options.description = generation_options.description.clone();
+        }
+        let options = &generation_options;
         // A second Generate makes the previous dialog result stale immediately,
         // even when setup cannot progress far enough to spawn the worker.
         begin_random_map_generation_owners(
@@ -868,194 +876,6 @@ impl App {
         crate::map::rmg::preview::render_preview(&cells, &waypoints)
     }
 
-    /// Where saved seeds live: the game directory, the same place the dialog's
-    /// own working file is written.
-    fn saved_seed_dir(state: &AppState) -> Option<std::path::PathBuf> {
-        state
-            .platform
-            .game_config
-            .as_ref()
-            .map(|config| config.paths.ra2_dir.clone())
-    }
-
-    fn skirmish_saved_seed_layout(
-        state: &AppState,
-        mode: SavedSeedMode,
-    ) -> crate::ui::skirmish_shell::SavedSeedLayout {
-        crate::ui::skirmish_shell::compute_saved_seed_layout(
-            mode,
-            state.render_width(),
-            state.render_height(),
-        )
-    }
-
-    pub(super) fn handle_saved_seed_browser_mouse_down(state: &mut AppState) -> bool {
-        let Some(mode) = state
-            .frontend
-            .skirmish_shell_state
-            .saved_seed_browser
-            .as_ref()
-            .map(|browser| browser.mode)
-        else {
-            return false;
-        };
-        let layout = Self::skirmish_saved_seed_layout(state, mode);
-        let x = state.match_state.input.cursor_x.round() as i32;
-        let y = state.match_state.input.cursor_y.round() as i32;
-        let mut play_sound = false;
-        if let Some(browser) = state
-            .frontend
-            .skirmish_shell_state
-            .saved_seed_browser
-            .as_mut()
-        {
-            match crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y) {
-                Some(crate::ui::skirmish_shell::SavedSeedControl::List) => {
-                    if let Some(row) = crate::ui::skirmish_shell::saved_seed_list_row_at(
-                        &layout,
-                        browser.entries.len(),
-                        browser.top_index,
-                        x,
-                        y,
-                    ) {
-                        browser.select(row);
-                    }
-                }
-                // The list selects on press; the buttons arm instead, so
-                // dragging off one cancels it.
-                Some(crate::ui::skirmish_shell::SavedSeedControl::Action)
-                | Some(crate::ui::skirmish_shell::SavedSeedControl::Back0x686) => {
-                    browser.pressed_control =
-                        crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y);
-                    play_sound = true;
-                }
-                _ => {}
-            }
-        }
-        if play_sound {
-            Self::play_main_menu_button_sound(state);
-        }
-        true
-    }
-
-    pub(super) fn handle_saved_seed_browser_mouse_up(state: &mut AppState) -> bool {
-        let Some(mode) = state
-            .frontend
-            .skirmish_shell_state
-            .saved_seed_browser
-            .as_ref()
-            .map(|browser| browser.mode)
-        else {
-            return false;
-        };
-        let layout = Self::skirmish_saved_seed_layout(state, mode);
-        let dir = Self::saved_seed_dir(state);
-        let x = state.match_state.input.cursor_x.round() as i32;
-        let y = state.match_state.input.cursor_y.round() as i32;
-
-        use crate::ui::skirmish_shell::SavedSeedControl as SeedControl;
-        use crate::ui::skirmish_shell::SavedSeedOutcome as Outcome;
-
-        let outcome = {
-            let Some(browser) = state
-                .frontend
-                .skirmish_shell_state
-                .saved_seed_browser
-                .as_mut()
-            else {
-                return false;
-            };
-            let pressed = browser.pressed_control.take();
-            let released = crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y);
-            if pressed.is_none() || pressed != released {
-                return true;
-            }
-            match released {
-                Some(SeedControl::Back0x686) => Some(Outcome::Close),
-                Some(SeedControl::Action) => browser.action_outcome(),
-                _ => None,
-            }
-        };
-        let Some(outcome) = outcome else {
-            return true;
-        };
-        let Some(dir) = dir else {
-            state.frontend.skirmish_shell_state.saved_seed_browser = None;
-            return true;
-        };
-
-        match outcome {
-            Outcome::Close => state.frontend.skirmish_shell_state.saved_seed_browser = None,
-            Outcome::Load(file_name) => {
-                let description = Self::csf_label(
-                    state,
-                    RANDOM_MAP_DESCRIPTION_KEY,
-                    RANDOM_MAP_DESCRIPTION_FALLBACK,
-                );
-                let Some(modal) = state
-                    .frontend
-                    .skirmish_shell_state
-                    .random_map_setup_modal
-                    .as_mut()
-                else {
-                    return true;
-                };
-                match crate::map::rmg::saved_seeds::load_saved_seed(
-                    &dir.join(&file_name),
-                    &modal.options,
-                    &description,
-                ) {
-                    Ok(options) => {
-                        modal.options = options;
-                        modal.generated = false;
-                        modal.generated_preview = None;
-                        state.frontend.skirmish_shell_state.saved_seed_browser = None;
-                    }
-                    Err(err) => log::warn!("saved seed: could not read {file_name}: {err}"),
-                }
-            }
-            Outcome::Save(name) => {
-                let options = state
-                    .frontend
-                    .skirmish_shell_state
-                    .random_map_setup_modal
-                    .as_ref()
-                    .map(|modal| modal.options.clone());
-                let path = crate::map::rmg::saved_seeds::seed_path_for_name(&dir, &name);
-                match (options, path) {
-                    (Some(options), Some(path)) => {
-                        if let Err(err) =
-                            crate::map::rmg::saved_seeds::save_saved_seed(&path, &options)
-                        {
-                            log::warn!("saved seed: could not write {name}: {err}");
-                        }
-                        state.frontend.skirmish_shell_state.saved_seed_browser = None;
-                    }
-                    // A refused name leaves the browser open so the player can
-                    // retype rather than silently losing the save.
-                    _ => log::warn!("saved seed: {name} is not a usable save name"),
-                }
-            }
-            Outcome::Delete(file_name) => {
-                if let Err(err) =
-                    crate::map::rmg::saved_seeds::delete_saved_seed(&dir.join(&file_name))
-                {
-                    log::warn!("saved seed: could not delete {file_name}: {err}");
-                }
-                // Delete stays open so several can be removed in one visit.
-                if let Some(browser) = state
-                    .frontend
-                    .skirmish_shell_state
-                    .saved_seed_browser
-                    .as_mut()
-                {
-                    browser.remove_entry(&file_name);
-                }
-            }
-        }
-        true
-    }
-
     /// Persist accepted random-map setup, refresh the sentinel record, and
     /// select it so launch generates from it.
     ///
@@ -1074,10 +894,11 @@ impl App {
             .ok_or_else(|| anyhow::anyhow!("no game config; cannot locate the RA2 directory"))?;
         std::fs::write(ra2_dir.join(RANDMAP_SED_FILE), options.to_sed_bytes())?;
 
+        let description_text = options.description.display_text();
         let display = if options.description.is_empty() {
             RANDOM_MAP_DESCRIPTION_FALLBACK
         } else {
-            options.description.as_str()
+            &description_text
         };
         // Reuse the modal helper: it upserts the single sentinel, honours the
         // mode's random-map admission, and refreshes the filtered record list.
@@ -1349,11 +1170,7 @@ impl App {
         }
 
         if let Some(mode) = open_browser {
-            let entries = Self::saved_seed_dir(state)
-                .map(|dir| crate::map::rmg::saved_seeds::list_saved_seeds(&dir))
-                .unwrap_or_default();
-            state.frontend.skirmish_shell_state.saved_seed_browser =
-                Some(SavedSeedBrowserState::open(mode, entries));
+            Self::open_saved_seed_browser(state, mode);
             return true;
         }
         if generate_requested {

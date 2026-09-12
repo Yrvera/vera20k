@@ -101,6 +101,10 @@ pub(crate) struct FrontendState {
     /// seed comes from shell Scenario instead. Accepted matches reseed their
     /// own Main stream rather than inheriting either shell cursor.
     pub(crate) frontend_main_rng: crate::sim::rng::SimRng,
+    /// UI-thread CRT state shared by storage dialogs, preserved across routes.
+    /// Native tactical sparkle/network consumption is still an integration gap;
+    /// do not infer exact post-game filenames from this initial state.
+    pub(crate) legacy_crt_rng: crate::util::legacy_crt_rng::LegacyCrtRng,
     /// Process-lifetime monotonic identity source; zero is permanently reserved.
     pub(crate) next_match_correlation: u64,
     /// Generation running on a worker, if any. Generating a map takes long

@@ -218,7 +218,10 @@ fn build_skirmish_shell_instances(
                 choose_map_layout.screen.w as u32,
                 choose_map_layout.screen.h as u32,
             );
-            push_saved_seed_modal_instances(&mut instances, atlas, &seed_layout, browser);
+            push_right_panel_base_instances(&mut instances, atlas, layout, 0, false);
+            push_lower_strip_instance(&mut instances, atlas, layout);
+            let interior = push_choose_map_background_instances(&mut instances, atlas, layout, choose_map_layout);
+            push_saved_seed_modal_instances(&mut instances, atlas, font, &seed_layout, browser, interior);
         } else if let Some(modal) = shell.random_map_setup_modal.as_ref() {
             let setup_layout = compute_random_map_setup_layout(
                 choose_map_layout.screen.w as u32,

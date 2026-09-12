@@ -443,6 +443,18 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                if Self::native_skirmish_shell_active(state)
+                    && state.frontend.skirmish_shell_state.saved_seed_browser.is_some()
+                {
+                    if !crate::app::frontend::shell_transition::blocks_shell_input(state)
+                        && event.state.is_pressed()
+                    {
+                        let code = match event.physical_key { PhysicalKey::Code(code) => Some(code), _ => None };
+                        Self::handle_saved_seed_browser_key(state, code, event.text.as_deref());
+                        state.platform.window.request_redraw();
+                    }
+                    return;
+                }
                 if let PhysicalKey::Code(code) = event.physical_key {
                     // ESC always reaches the handler when in-game (even when paused)
                     // so the player can toggle pause regardless of egui focus.
@@ -760,6 +772,9 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(state) = self.state.as_mut() {
+            Self::update_saved_seed_browser_scroll(state, false);
+        }
         if let (Some(state), Some(session)) = (self.state.as_mut(), self.tactical_capture.as_mut())
         {
             if let Err(err) = Self::render_frame(state, event_loop, None, Some(&mut *session)) {

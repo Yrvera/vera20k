@@ -16,7 +16,7 @@ use crate::ui::skirmish_shell::{
     SavedSeedLayout, SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboId, SkirmishComboItem,
     SkirmishCountryChoice, SkirmishShellLayout, SkirmishShellOpponent, SkirmishShellState,
     SkirmishTrackbarId, ValidationModalLayout, checkbox_text_rect, choose_map_listbox_content_rect,
-    choose_map_listbox_row_rect, choose_map_listbox_row_rect as seed_row_rect,
+    choose_map_listbox_row_rect,
     choose_map_listbox_visible_row_count, combo_dropdown_content_rect, combo_dropdown_rect,
     combo_dropdown_visible_row_count, combo_enabled, combo_items, combo_text_rect,
     player_name_edit_text_rect, player_row_visible, random_map_setup_dropdown_rect,
@@ -1342,48 +1342,48 @@ pub(super) fn push_saved_seed_modal_text_draws(
         ShellAlign::H_CENTER | ShellAlign::V_CENTER,
         SHELL_DROPDOWN_TEXT_DEPTH - 0.00008,
     );
-    let (prompt_key, prompt_fallback) = browser.mode.prompt_label();
-    push_text_draw(
-        out,
-        state,
-        &localized_label(state, prompt_key, prompt_fallback),
-        rect_to_text_rect(layout.prompt),
-        SHELL_LABEL_TEXT_RGB,
-        ShellAlign::V_CENTER,
-        SHELL_DROPDOWN_TEXT_DEPTH - 0.00008,
-    );
-
-    let content = choose_map_listbox_content_rect(browser.entries.len(), layout.list);
-    let visible = choose_map_listbox_visible_row_count(layout.list);
+    // 0x00558F8A hides resource static 0x40C while session+0x30D8 is zero.
+    // Ordinary pre-match skirmish has no in-game suspension state.
+    let geometry = crate::ui::skirmish_shell::seed_list::SeedListGeometry::new(layout.list, browser.entries.len(), browser.top_index);
+    let visible = geometry.visible_rows;
     for row in 0..visible {
         let Some(entry) = browser.entries.get(browser.top_index + row) else {
             break;
         };
-        let rect = seed_row_rect(content, row);
+        let rect = geometry.row(row);
         if rect.h <= 0 {
             continue;
         }
-        push_text_draw(
-            out,
-            state,
-            &entry.display_name,
-            rect_to_text_rect(RectPx::new(
-                rect.x + COMBODROPWIN_TEXT_INSET_X,
-                rect.y,
-                rect.w - COMBODROPWIN_TEXT_INSET_X,
-                rect.h,
-            )),
-            SHELL_LABEL_TEXT_RGB,
-            ShellAlign::V_CENTER,
-            SHELL_DROPDOWN_TEXT_DEPTH - 0.00011,
-        );
+        let (date, time) = crate::util::native_file_time::format_file_time_parts(entry.last_write_time).unwrap_or_default();
+        for (text, offset, width) in [
+            (entry.description.display_text(), 2, 249), (date, 255, 56), (time, 315, 0),
+        ] {
+            let left = rect.x + offset;
+            let available = (rect.x + rect.w - left).max(0);
+            let width = if width == 0 { available } else { width.min(available) };
+            if width <= 0 { continue; }
+            // 0x00619969 trims by wide units and appends the literal three dots.
+            let mut units: Vec<u16> = text.encode_utf16().collect();
+            let mut label = text;
+            if state.renderer.bit_font.text_width(&label) > width as u32 {
+                while !units.is_empty() {
+                    units.pop();
+                    label = format!("{}...", String::from_utf16_lossy(&units));
+                    if state.renderer.bit_font.text_width(&label) <= width as u32 { break; }
+                }
+            }
+            push_text_draw(out, state, &label,
+                rect_to_text_rect(RectPx::new(left, rect.y, width, rect.h)),
+                SHELL_LABEL_TEXT_RGB, ShellAlign::NONE,
+                SHELL_DROPDOWN_TEXT_DEPTH - 0.00011);
+        }
     }
 
     if let Some(edit) = layout.name_edit {
         push_text_draw(
             out,
             state,
-            &browser.typed_name,
+            &String::from_utf16_lossy(&browser.description_edit.units[browser.description_edit.first_visible_unit.min(browser.description_edit.units.len())..]),
             rect_to_text_rect(player_name_edit_text_rect(edit)),
             SHELL_LABEL_TEXT_RGB,
             ShellAlign::V_CENTER,
@@ -1406,4 +1406,52 @@ pub(super) fn push_saved_seed_modal_text_draws(
             SHELL_DROPDOWN_TEXT_DEPTH - 0.00012,
         );
     }
+    if let Some(prompt) = browser.prompt.as_ref() {
+        let (dialog, body_rect, yes, no) = prompt.layout(state.render_width(), state.render_height());
+        // Chrome is drawn before text in this renderer. Exclude the prompt's
+        // rectangle from underlying text so it cannot paint through its panel.
+        let underlying = std::mem::take(out);
+        for draw in underlying {
+            let clip = draw.scissor;
+            let x0 = clip.x as i32;
+            let y0 = clip.y as i32;
+            let x1 = x0 + clip.w as i32;
+            let y1 = y0 + clip.h as i32;
+            let cut_x0 = dialog.x.clamp(x0, x1);
+            let cut_x1 = (dialog.x + dialog.w).clamp(x0, x1);
+            let cut_y0 = dialog.y.clamp(y0, y1);
+            let cut_y1 = (dialog.y + dialog.h).clamp(y0, y1);
+            for (left, top, right, bottom) in [
+                (x0, y0, x1, cut_y0), (x0, cut_y1, x1, y1),
+                (x0, cut_y0, cut_x0, cut_y1), (cut_x1, cut_y0, x1, cut_y1),
+            ] {
+                if right > left && bottom > top {
+                    out.push(ShellTextDraw {
+                        instances: draw.instances.clone(),
+                        scissor: crate::render::shell_text::ScissorRect {
+                            x: left as u32, y: top as u32,
+                            w: (right - left) as u32, h: (bottom - top) as u32,
+                        },
+                    });
+                }
+            }
+        }
+        let mut labels = vec![PaintLabel {
+            text: prompt.body.as_str().into(), rect: body_rect, rgb: SHELL_LABEL_TEXT_RGB,
+            align: validation_modal_body_text_align(), path_a_reveal: None,
+        }];
+        labels.push(PaintLabel {
+            text: prompt.affirmative.as_str().into(), rect: button_label_rect_px(yes, browser.pressed_control == Some(crate::ui::skirmish_shell::SavedSeedControl::Action)), rgb: SHELL_LABEL_TEXT_RGB,
+            align: ShellAlign::H_CENTER | ShellAlign::V_CENTER, path_a_reveal: None,
+        });
+        if let Some((rect, caption)) = no.zip(prompt.negative.as_ref()) {
+            labels.push(PaintLabel {
+                text: caption.as_str().into(), rect: button_label_rect_px(rect, browser.pressed_control == Some(crate::ui::skirmish_shell::SavedSeedControl::Back0x686)), rgb: SHELL_LABEL_TEXT_RGB,
+                align: ShellAlign::H_CENTER | ShellAlign::V_CENTER, path_a_reveal: None,
+            });
+        }
+        out.extend(shell_paint::paint_labels_at_depth(&state.renderer.bit_font, &labels,
+            SHELL_DROPDOWN_TEXT_DEPTH - 0.00013));
+    }
+
 }

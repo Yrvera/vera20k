@@ -138,6 +138,17 @@ These test runner behavior, not retail behavior. The tests cover limits, faults,
 premature stops, alternate exits, missing paths, fresh state, FSTP completion,
 executable identity, reference preservation, provenance mismatches, and diagnostics.
 
+## Saved-map browser comparisons
+
+The [browser evidence](../docs/research/skirmish-ui/2026-09-12-saved-seed-browser.md)
+links three additional bounded comparisons: `tools.storage_oracle.seed_order`
+(original qsort and timestamp comparator, 36 cases), `tools.storage_oracle.crt_random`
+(supplied TLS seeds, 224 draws), and `tools.storage_oracle.saved_scrollbar`
+(original x87 thumb arithmetic, 450 supplied geometries). Each supports `--check`
+and explicit `--write` through the common runner and records provenance beside
+its JSON payload. None establishes native full-window visual parity or a live
+first-save RNG state.
+
 ## Upstream references
 
 * [Official Unicorn tutorial](https://www.unicorn-engine.org/docs/tutorial.html):
