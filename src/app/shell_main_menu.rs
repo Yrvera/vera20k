@@ -751,7 +751,7 @@ impl App {
 
     pub(super) fn handle_main_menu_shell_mouse_up(
         state: &mut AppState,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
     ) {
         let layout = crate::ui::main_menu_shell::compute_layout(
             state.renderer.gpu.config.width,
@@ -770,7 +770,7 @@ impl App {
             .and_then(crate::ui::main_menu_shell::MainMenuControlId::from_resource_id)
             .map(crate::ui::main_menu_shell::action_for_control)
         {
-            Self::handle_main_menu_shell_action(state, action, event_loop);
+            Self::handle_main_menu_shell_action(state, action);
         }
     }
 
@@ -958,7 +958,7 @@ impl App {
         );
     }
 
-    fn handle_single_player_shell_action(
+    pub(super) fn handle_single_player_shell_action(
         state: &mut AppState,
         action: crate::ui::single_player_shell::SinglePlayerShellAction,
     ) {
@@ -992,14 +992,12 @@ impl App {
         }
     }
 
-    fn handle_main_menu_shell_action(
+    pub(super) fn handle_main_menu_shell_action(
         state: &mut AppState,
         action: crate::ui::main_menu_shell::MainMenuShellAction,
-        event_loop: &ActiveEventLoop,
     ) {
         use crate::ui::main_menu_shell::MainMenuShellAction;
 
-        let _ = event_loop;
         match action {
             MainMenuShellAction::None => {}
             // The original pops a confirm message box here; it does NOT quit on
