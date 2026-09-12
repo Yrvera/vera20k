@@ -20,15 +20,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::PathGrid;
 use super::terrain_cost::TerrainCostGrid;
 use super::zone_build::{
-    BridgeRecordFilter, LocalHierarchyPatchResult, build_bridge_redirect, build_zone_hierarchy,
-    compute_zone_info, extract_adjacency, flood_fill,
-    incremental_rebuild_zone_hierarchy_around_cell, inject_bridge_adjacency, is_passable,
+    BridgeRecordFilter, LocalHierarchyPatchResult, build_bridge_redirect,
+    build_zone_hierarchy_with_query, compute_zone_info, extract_adjacency, flood_fill,
+    inject_bridge_adjacency, is_passable, patch_zone_hierarchy_with_query,
+    projected_zone_record_index,
 };
 use super::zone_hierarchy::SuperZoneMap;
 use super::zone_map::{ZONE_INVALID, ZoneGrid, ZoneId};
 use crate::map::resolved_terrain::{ResolvedTerrainGrid, zone_class};
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::movement::locomotor::MovementLayer;
+
+#[cfg(test)]
+mod native_repair_tests {
+    include!("base_zone_repair_native_tests.rs");
+}
 
 /// Maximum changed cells before falling back to full rebuild.
 pub(crate) const INCREMENTAL_THRESHOLD: usize = 200;
@@ -76,6 +82,7 @@ pub(crate) enum ZoneRepairOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BaseRepairDecision {
+    OutsideNoOp,
     SentinelNoOp,
     Adopt(ZoneId),
     FullRebuild,
@@ -84,9 +91,9 @@ enum BaseRepairDecision {
 /// Apply one verified base-cluster repair and then the shared local hierarchy
 /// updater, `MapClass::IncrementalRebuildZoneGraphAroundCell` @ `0x00584550`.
 ///
-/// The ordering is verified exhaustively by callers: all nine native callers of
-/// `AssignOrphanedCellZone`/`MergeAdjacentCellZone` call `0x00584550`
-/// unconditionally 11-15 bytes later, and every xref is an unconditional call.
+/// Ten call sites in nine enclosing native functions invoke
+/// `AssignOrphanedCellZone`/`MergeAdjacentCellZone` and then `0x00584550`
+/// unconditionally 11-15 bytes later.
 /// They are `AnimClass::Middle`, the area-damage helper,
 /// `CellClass::DestroyOverlay`, the post-destruction wall cleanup,
 /// sell-building-at-cell, `TerrainClass::Limbo`,
@@ -95,39 +102,50 @@ enum BaseRepairDecision {
 ///
 /// Current mutation owners wire the explicit provenance in their own Phase-3
 /// items; callers without it must keep using a full rebuild.
+/// Executable selector/adoption evidence: tools/spatial_oracle/base_zone_repair.py;
+/// hierarchy evidence: tools/spatial_oracle/bridge_hierarchy.py.
 pub(crate) fn repair_zone_cell(
     zone_grid: &mut ZoneGrid,
     packed_coord: PackedZoneCoord,
     kind: ZoneRepairKind,
     path_grid: &PathGrid,
-    _terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
+    bounds: Option<crate::map::playfield::PlayfieldBounds>,
     resolved_terrain: &ResolvedTerrainGrid,
     bridge_records: &[crate::sim::bridge_state::BridgeEndpointRecord],
 ) -> ZoneRepairOutcome {
     let coord = packed_coord.unpack();
-    let (x, y) = (i32::from(coord.0), i32::from(coord.1));
     let width = zone_grid.width;
     let height = zone_grid.height;
-    if x < 0
-        || y < 0
-        || x >= i32::from(width)
-        || y >= i32::from(height)
-        || resolved_terrain
-            .cell(x as u16, y as u16)
-            .is_none_or(|cell| cell.outside_playfield)
-    {
-        return ZoneRepairOutcome::OutsideNoOp;
-    }
-    let index = y as usize * width as usize + x as usize;
-    zone_grid.refresh_base_cell_attributes_at(resolved_terrain, x as u16, y as u16);
-    let decision = zone_grid
-        .base_topology_mut()
-        .map(|base| decide_base_zone_repair(base, index, x, y, width, height, kind))
-        .unwrap_or(BaseRepairDecision::FullRebuild);
+    //56D460/56D5A0 read retained attributes only. Publication belongs to the
+    //preceding Recalc, not to repair; raw Cell changes may intentionally differ.
+    let (index, decision) = if let Some(base) = zone_grid.base_topology_mut() {
+        let index =
+            projected_zone_record_index(width, height, base.native_bridge_source_size, coord);
+        let decision = if let Some(index) = index {
+            decide_base_zone_repair(
+                base,
+                index,
+                (index % usize::from(width)) as i32,
+                (index / usize::from(width)) as i32,
+                width,
+                height,
+                kind,
+            )
+        } else if base.native_bridge_source_size.is_some() {
+            BaseRepairDecision::SentinelNoOp // Native padding has cached class7.
+        } else {
+            BaseRepairDecision::OutsideNoOp // No native storage in compatibility fixtures.
+        };
+        (index, decision)
+    } else {
+        (None, BaseRepairDecision::FullRebuild)
+    };
 
     let outcome = match decision {
+        BaseRepairDecision::OutsideNoOp => ZoneRepairOutcome::OutsideNoOp,
         BaseRepairDecision::SentinelNoOp => ZoneRepairOutcome::SentinelNoOp,
         BaseRepairDecision::Adopt(cluster) => {
+            let index = index.expect("only a represented retained cell can adopt");
             if let Some(base) = zone_grid.base_topology_mut() {
                 base.zone_ids[index] = cluster;
             }
@@ -147,7 +165,8 @@ pub(crate) fn repair_zone_cell(
     let patch_result = zone_grid
         .base_and_hierarchy_mut()
         .map(|(base, hierarchy)| {
-            incremental_rebuild_zone_hierarchy_around_cell(
+            // Every native caller invokes584550 independently of base eligibility.
+            patch_zone_hierarchy_with_query(
                 hierarchy,
                 base,
                 resolved_terrain,
@@ -155,18 +174,32 @@ pub(crate) fn repair_zone_cell(
                 coord,
                 width,
                 height,
+                &mut |x, y| {
+                    crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+                        (x, y),
+                        bounds,
+                        Some(resolved_terrain),
+                    )
+                },
             )
         })
         .unwrap_or(LocalHierarchyPatchResult::NeedsFullRebuild);
     if patch_result == LocalHierarchyPatchResult::NeedsFullRebuild
         && let Some(base) = zone_grid.base_topology_mut().map(|base| base.clone())
     {
-        zone_grid.replace_hierarchy(build_zone_hierarchy(
+        zone_grid.replace_hierarchy(build_zone_hierarchy_with_query(
             &base,
             Some(resolved_terrain),
             bridge_records,
             width,
             height,
+            &mut |x, y| {
+                crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+                    (x, y),
+                    bounds,
+                    Some(resolved_terrain),
+                )
+            },
         ));
     }
 
@@ -189,8 +222,28 @@ fn decide_base_zone_repair(
 
     let neighbors: [(u8, ZoneId); 8] = std::array::from_fn(|neighbor_index| {
         let (dx, dy, _) = super::zone_build::NEIGHBORS[neighbor_index];
-        let nx = x + dx;
-        let ny = y + dy;
+        let (nx, ny) = if let Some(size) = base.native_bridge_source_size {
+            // The target was clamped once. Neighbors use raw pointer offsets
+            // around that canonical native record, not separately clamped coords.
+            let side = size.0.wrapping_add(size.1).wrapping_add(1);
+            let Some(count) = side
+                .checked_mul(side)
+                .filter(|&count| side > 0 && count > 0)
+            else {
+                return (zone_class::OUTSIDE, ZONE_INVALID);
+            };
+            let native = y
+                .wrapping_mul(side)
+                .wrapping_add(x)
+                .wrapping_add(dy.wrapping_mul(side))
+                .wrapping_add(dx);
+            if !(0..count).contains(&native) {
+                return (zone_class::OUTSIDE, ZONE_INVALID);
+            }
+            (native % side, native / side)
+        } else {
+            (x + dx, y + dy)
+        };
         if nx < 0 || ny < 0 || nx >= i32::from(width) || ny >= i32::from(height) {
             return (zone_class::OUTSIDE, ZONE_INVALID);
         }
@@ -210,13 +263,9 @@ fn decide_base_zone_repair(
     };
 
     let row0 = &base.raw_zone_ids_by_row[0];
-    let mapped = |cluster: ZoneId| {
-        if cluster == ZONE_INVALID {
-            u16::MAX
-        } else {
-            row0.get(cluster as usize).copied().unwrap_or(u16::MAX)
-        }
-    };
+    // Native reads the retained row even for cluster0.56CAF4 normally stores
+    // FFFF there, but the selectors themselves do not substitute the sentinel.
+    let mapped = |cluster: ZoneId| row0.get(cluster as usize).copied().unwrap_or(u16::MAX);
     let mut previous_cluster = ZONE_INVALID;
     let mut transitions = 0u8;
     for &(neighbor_type, cluster) in &neighbors {

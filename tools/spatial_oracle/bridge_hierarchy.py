@@ -359,6 +359,20 @@ def inputs():
         yield dict(name=name, size=[11, 8], bounds=[2, 2, 7, 0], allocation='size_diamond',
             classes=retained_classes, levels=retained_levels, base_ids=padding_base, actions=actions)
 
+    # A preceding56D460/56D5A0 returns for retained class7; its caller still runs
+    # the independent584550 below with the original coordinate and live Cell.
+    yield dict(name='sentinel_base_still_updates_live_hierarchy', size=[8, 8],
+        classes=classes, levels=[0] * 256,
+        base_ids=[1 if value != 7 else 0 for value in classes],
+        actions=[dict(coord=[10, 10], changes=[dict(cell=[10, 10], **{'class':7})])])
+
+    # Keep the retained plane from the wider bounds while581F90 reads the
+    # narrower current bounds. This distinguishes live full-world construction
+    # from replacing mode1 membership with cached-class admission.
+    yield dict(name='full_live_bounds_narrower_than_cached_classes', size=[8, 8],
+        bounds=[0, 0, 8, 4], classes=classes, levels=[0] * 256,
+        base_ids=[1 if value != 7 else 0 for value in classes], actions=[])
+
 
 def flood_inputs():
     for name, spec in (
@@ -379,7 +393,12 @@ def cases():
         return result
     result = dict(cases=collect(inputs()), floods=collect(flood_inputs()))
     rows = {row['input']['name']: row for row in result['cases']}
-    assert len(rows) == 16 and len(result['floods']) == 3
+    assert len(rows) == 18 and len(result['floods']) == 3
+    # Cached classes still seed the same IDs; live bounds change graph edges.
+    narrow = rows['full_live_bounds_narrower_than_cached_classes']['initial']
+    clear = rows['clear_local']['initial']
+    assert narrow['graphs'][0]['ids'] == clear['graphs'][0]['ids']
+    assert narrow['graphs'][0]['records'] != clear['graphs'][0]['records']
     slope = rows['batch_recalc_slope_changes_second_pass_admission']['states'][0]
     assert slope['recalcs'] == [[10, 10], [5, 4]] and slope['patch_calls'] == [[10, 10]]
     assert slope['recalculated_cells'][1]['slope'] == 1 and slope['classes'][4 * 16 + 5] == 7
@@ -416,6 +435,7 @@ if __name__ == '__main__':
                      'One full/local case supplies two active and one inactive high record with raw high tile103; full forward and local reverse582D70 reinsertion execute, no Tube/TS claims',
                      'Three direct flood witnesses supply a2x1 seed run, surrounding neighbor2 and optional preexisting flag1 pair; compare low flag byte only',
                      'Three normalized11,8/Resize/nonnegative-height cases retain baseID0 after a supplied raw +4 height change; actual batch, full reconstruction and local re-patch preserve mutable padding and32 aliased represented cells',
+                     'One local target retains class7 while the live query admits it; one full build retains wider cached classes with narrower supplied current bounds, preserving IDs while changing ordered edges',
                      'Not a complete native map-load or gameplay execution'],
         substitutions=['Successful bounded operator_new7C8E17 and no-op operator_delete7C8B3D'],
         entry_points={'build':0x581F90, 'local':0x584550, 'flood':0x5824A0, 'batch':0x586990, 'recalc':0x47D2B0,

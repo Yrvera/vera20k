@@ -183,6 +183,7 @@ fn recalc_keeps_marked_structure_over_partial_terrain_occupation_and_bridge_deck
         terrain_costs: &mut sim.terrain_costs,
         zones: &mut sim.zone_grid,
         path: &mut sim.path_grid,
+        playfield_bounds: sim.playfield_bounds,
     }
     .publish_recalculated_cell(
         terrain,

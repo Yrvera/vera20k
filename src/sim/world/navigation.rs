@@ -66,6 +66,8 @@ pub(super) struct NavigationCaches<'a> {
     pub(super) terrain_costs: &'a mut BTreeMap<SpeedType, TerrainCostGrid>,
     pub(super) zones: &'a mut Option<ZoneGrid>,
     pub(super) path: &'a mut Option<Arc<PathGrid>>,
+    /// Current operation's world bounds; this borrowed view is never retained.
+    pub(super) playfield_bounds: Option<crate::map::playfield::PlayfieldBounds>,
 }
 
 impl NavigationCaches<'_> {
@@ -186,16 +188,15 @@ impl NavigationCaches<'_> {
         terrain: &ResolvedTerrainGrid,
         bridges: Option<&BridgeRuntimeState>,
     ) {
-        *self.zones = Some(ZoneGrid::build_with_native_bridge_geometry(
+        *self.zones = Some(ZoneGrid::build_with_native_map_context(
             path_grid,
             self.terrain_costs,
-            Some(terrain),
+            terrain,
             bridges
                 .map(BridgeRuntimeState::endpoint_records)
                 .unwrap_or(&[]),
-            terrain.width(),
-            terrain.height(),
             bridges.and_then(BridgeRuntimeState::native_zone_source_size),
+            self.playfield_bounds,
         ));
         *self.path = Some(Arc::new(path_grid.clone()));
     }

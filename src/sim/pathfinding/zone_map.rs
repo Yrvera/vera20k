@@ -255,6 +255,53 @@ impl ZoneGrid {
         height: u16,
         native_bridge_source_size: Option<(i32, i32)>,
     ) -> Self {
+        Self::build_with_hierarchy_query(
+            path_grid,
+            terrain_costs,
+            resolved_terrain,
+            bridge_records,
+            (width, height),
+            native_bridge_source_size,
+            None,
+        )
+    }
+
+    /// Live581F90 construction. Bounds are borrowed from the current world
+    /// operation, never inferred from Size or retained in the navigation cache.
+    pub(crate) fn build_with_native_map_context(
+        path_grid: &PathGrid,
+        terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
+        terrain: &ResolvedTerrainGrid,
+        bridge_records: &[crate::sim::bridge_state::BridgeEndpointRecord],
+        native_bridge_source_size: Option<(i32, i32)>,
+        bounds: Option<crate::map::playfield::PlayfieldBounds>,
+    ) -> Self {
+        Self::build_with_hierarchy_query(
+            path_grid,
+            terrain_costs,
+            Some(terrain),
+            bridge_records,
+            (terrain.width(), terrain.height()),
+            native_bridge_source_size,
+            Some(&mut |x, y| {
+                crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+                    (x, y),
+                    bounds,
+                    Some(terrain),
+                )
+            }),
+        )
+    }
+
+    fn build_with_hierarchy_query(
+        path_grid: &PathGrid,
+        terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        bridge_records: &[crate::sim::bridge_state::BridgeEndpointRecord],
+        (width, height): (u16, u16),
+        native_bridge_source_size: Option<(i32, i32)>,
+        query: Option<&mut dyn FnMut(i32, i32) -> bool>,
+    ) -> Self {
         let mut maps = BTreeMap::new();
         let mut adjacency = BTreeMap::new();
         let mut super_zones = BTreeMap::new();
@@ -269,7 +316,24 @@ impl ZoneGrid {
             )
         });
         let hierarchy = base_topology.as_ref().map(|base| {
-            zone_build::build_zone_hierarchy(base, resolved_terrain, bridge_records, width, height)
+            if let Some(query) = query {
+                zone_build::build_zone_hierarchy_with_query(
+                    base,
+                    resolved_terrain,
+                    bridge_records,
+                    width,
+                    height,
+                    &mut |x, y| query(x, y),
+                )
+            } else {
+                zone_build::build_zone_hierarchy(
+                    base,
+                    resolved_terrain,
+                    bridge_records,
+                    width,
+                    height,
+                )
+            }
         });
 
         for &mz in MovementZone::all_ground() {

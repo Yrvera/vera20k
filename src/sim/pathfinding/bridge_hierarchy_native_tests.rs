@@ -137,10 +137,9 @@ fn hierarchy_native_sequence(actual: serde_json::Value, expected: &serde_json::V
     assert_eq!(actual.len(), expected.len(), "{label} length");
 }
 
-fn assert_native_hierarchy_state(
+fn assert_native_hierarchy_graphs(
     hierarchy: &ZoneHierarchy,
     terrain: &ResolvedTerrainGrid,
-    trace: &HierarchyQueryTrace,
     expected: &serde_json::Value,
     label: &str,
 ) {
@@ -213,6 +212,16 @@ fn assert_native_hierarchy_state(
             &format!("{label} level{level} records"),
         );
     }
+}
+
+fn assert_native_hierarchy_state(
+    hierarchy: &ZoneHierarchy,
+    terrain: &ResolvedTerrainGrid,
+    trace: &HierarchyQueryTrace,
+    expected: &serde_json::Value,
+    label: &str,
+) {
+    assert_native_hierarchy_graphs(hierarchy, terrain, expected, label);
     hierarchy_native_sequence(
         serde_json::json!(trace.queries),
         &expected["queries"],
@@ -327,8 +336,8 @@ fn bridge_hierarchy_native_full_and_local_graphs_queries_and_padding() {
             local_count += 1;
         }
     }
-    assert_eq!(corpus["cases"].as_array().unwrap().len(), 16);
-    assert_eq!(local_count, 9);
+    assert_eq!(corpus["cases"].as_array().unwrap().len(), 18);
+    assert_eq!(local_count, 10);
 }
 
 #[test]
@@ -480,4 +489,95 @@ fn bridge_hierarchy_native_world_endpoint_lookup_retains_boundary_zone() {
         );
     }
     assert!(zones.hierarchy_zone_at_native(2, (19, 8)).unwrap() != 0);
+}
+
+// Exercise the actual world construction and one-cell repair wrappers against
+// native graphs. Query ordering itself remains covered by the traced core test.
+#[test]
+fn live_world_navigation_and_sentinel_repair_match_native_hierarchy_graphs() {
+    use crate::sim::pathfinding::zone_incremental::{
+        PackedZoneCoord, ZoneRepairKind, ZoneRepairOutcome, repair_zone_cell,
+    };
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/bridge_hierarchy.json"
+    ))
+    .unwrap();
+    for name in [
+        "clear_local",
+        "sentinel_base_still_updates_live_hierarchy",
+        "full_live_bounds_narrower_than_cached_classes",
+    ] {
+        let case = corpus["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["input"]["name"] == name)
+            .unwrap();
+        let input = &case["input"];
+        let (_, terrain, records) = hierarchy_native_fixture(input);
+        let bounds = hierarchy_native_bounds(input);
+        let path = PathGrid::from_resolved_terrain(&terrain);
+        let mut sim = crate::sim::world::Simulation::with_seed(0x584550);
+        sim.playfield_bounds = Some(bounds);
+        sim.bridge_state = Some(
+            crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain_with_map_size(
+                &terrain,
+                true,
+                300,
+                (8, 8),
+            ),
+        );
+        sim.install_resolved_terrain_for_new_map(terrain);
+        sim.rebuild_zone_grid(&path);
+        let terrain = sim.resolved_terrain.as_mut().unwrap();
+        let zones = sim.zone_grid.as_mut().unwrap();
+        assert_native_hierarchy_graphs(
+            zones.hierarchy_for(MovementZone::Normal).unwrap(),
+            terrain,
+            &case["initial"],
+            name,
+        );
+        assert_eq!(
+            serde_json::json!(terrain.shared_cell_dummy().snapshot().coord),
+            case["initial"]["dummy"],
+            "{name}: full-construction dummy"
+        );
+        if input["actions"].as_array().unwrap().is_empty() {
+            continue;
+        }
+        if name.starts_with("sentinel") {
+            zones.base_topology_mut().unwrap().movement_classes[10 * 16 + 10] = zone_class::OUTSIDE;
+            // This stale projection must not preempt the actual mode-one query.
+            terrain.cell_mut(10, 10).unwrap().outside_playfield = true;
+        }
+        let outcome = repair_zone_cell(
+            zones,
+            PackedZoneCoord::new(10, 10),
+            ZoneRepairKind::AssignOrphaned,
+            &path,
+            Some(bounds),
+            terrain,
+            &records,
+        );
+        assert_eq!(
+            outcome,
+            if name.starts_with("sentinel") {
+                ZoneRepairOutcome::SentinelNoOp
+            } else {
+                ZoneRepairOutcome::Adopted { cluster: 1 }
+            },
+            "{name}"
+        );
+        assert_native_hierarchy_graphs(
+            zones.hierarchy_for(MovementZone::Normal).unwrap(),
+            terrain,
+            &case["states"][0],
+            name,
+        );
+        assert_eq!(
+            serde_json::json!(terrain.shared_cell_dummy().snapshot().coord),
+            case["states"][0]["dummy"],
+            "{name}: local-repair dummy"
+        );
+    }
 }

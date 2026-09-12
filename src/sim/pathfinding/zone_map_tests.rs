@@ -467,15 +467,7 @@ fn base_defense_reachability_fixture() -> ZoneGrid {
 #[test]
 fn gsi_04_05_base_defense_reachability_preserves_bypass_fringe_and_raw_equality() {
     let zones = base_defense_reachability_fixture();
-    assert!(zones.can_reach_base_defense_response(
-        None,
-        (0, 0),
-        (3, 3),
-        false,
-        true,
-        4,
-        4,
-    ));
+    assert!(zones.can_reach_base_defense_response(None, (0, 0), (3, 3), false, true, 4, 4,));
 
     assert!(zones.can_reach_base_defense_response(
         Some(MovementZone::Normal),
@@ -496,15 +488,18 @@ fn gsi_04_05_base_defense_reachability_preserves_bypass_fringe_and_raw_equality(
         4,
     ));
 
-    assert!(zones.can_reach_base_defense_response(
-        Some(MovementZone::Normal),
-        (4, 0),
-        (0, 4),
-        false,
-        true,
-        4,
-        4,
-    ), "two raw padded-cluster-zero labels compare equal");
+    assert!(
+        zones.can_reach_base_defense_response(
+            Some(MovementZone::Normal),
+            (4, 0),
+            (0, 4),
+            false,
+            true,
+            4,
+            4,
+        ),
+        "two raw padded-cluster-zero labels compare equal"
+    );
 }
 
 #[test]
@@ -779,6 +774,18 @@ fn gsi_04_06_simulation_detects_class_only_change_with_identical_pathgrid() {
     );
 }
 
+// Deliberately broad final MapClass fields for the tiny rectangular fixtures.
+// These are supplied branch-test bounds, not normalized retail-map dimensions.
+fn repair_test_bounds() -> crate::map::playfield::PlayfieldBounds {
+    crate::map::playfield::PlayfieldBounds {
+        base: 0,
+        off_fc: -1_000,
+        off_100: -1_000,
+        off_104: 2_000,
+        off_108: 2_000,
+    }
+}
+
 fn base_repair_fixture(
     classes: [u8; 9],
     clusters: [ZoneId; 9],
@@ -858,7 +865,7 @@ fn gsi_04_06_base_repair_uses_transition_count_first_candidate_and_preserves_tab
         PackedZoneCoord::new(1, 1),
         ZoneRepairKind::AssignOrphaned,
         &path_grid,
-        &BTreeMap::new(),
+        None,
         &terrain,
         &[],
     );
@@ -909,7 +916,7 @@ fn gsi_04_06_base_repair_fallbacks_and_explicit_merge_provenance() {
             PackedZoneCoord::new(1, 1),
             ZoneRepairKind::AssignOrphaned,
             &path_grid,
-            &BTreeMap::new(),
+            None,
             &terrain,
             &[],
         ),
@@ -927,7 +934,7 @@ fn gsi_04_06_base_repair_fallbacks_and_explicit_merge_provenance() {
             PackedZoneCoord::new(1, 1),
             ZoneRepairKind::AssignOrphaned,
             &path_grid,
-            &BTreeMap::new(),
+            None,
             &terrain,
             &[],
         ),
@@ -944,7 +951,7 @@ fn gsi_04_06_base_repair_fallbacks_and_explicit_merge_provenance() {
             PackedZoneCoord::new(1, 1),
             ZoneRepairKind::MergeAdjacent,
             &path_grid,
-            &BTreeMap::new(),
+            None,
             &terrain,
             &[],
         ),
@@ -963,7 +970,7 @@ fn gsi_04_06_base_repair_fallbacks_and_explicit_merge_provenance() {
             PackedZoneCoord::new(0, 0),
             ZoneRepairKind::MergeAdjacent,
             &sentinel_path,
-            &BTreeMap::new(),
+            None,
             &sentinel,
             &[],
         ),
@@ -975,7 +982,7 @@ fn gsi_04_06_base_repair_fallbacks_and_explicit_merge_provenance() {
             PackedZoneCoord::new(-1, 0),
             ZoneRepairKind::MergeAdjacent,
             &sentinel_path,
-            &BTreeMap::new(),
+            None,
             &sentinel,
             &[],
         ),
@@ -1141,11 +1148,15 @@ fn gsi_04_06_fallback_rebuilds_base_without_resetting_hierarchy_high_water() {
     // Original56C510 rebuilds IDs globally from retained classes/heights,
     // not from current Cell attributes. No Recalc refreshes the distant cell.
     let retained = zones.base_topology_mut().unwrap();
-    let cached_terrain = terrain_from_zone_classes(
-        width, height, &retained.movement_classes, &retained.levels,
-    );
+    let cached_terrain =
+        terrain_from_zone_classes(width, height, &retained.movement_classes, &retained.levels);
     let mut expected = ZoneGrid::build_with_terrain(
-        &path_grid, &BTreeMap::new(), Some(&cached_terrain), &[], width, height,
+        &path_grid,
+        &BTreeMap::new(),
+        Some(&cached_terrain),
+        &[],
+        width,
+        height,
     );
     let expected_base = expected.base_topology_mut().unwrap().clone();
     let expected_rows: Vec<(MovementZone, Vec<ZoneId>, Vec<Vec<ZoneId>>)> =
@@ -1174,7 +1185,7 @@ fn gsi_04_06_fallback_rebuilds_base_without_resetting_hierarchy_high_water() {
             PackedZoneCoord::new(2, 2),
             ZoneRepairKind::AssignOrphaned,
             &path_grid,
-            &BTreeMap::new(),
+            Some(repair_test_bounds()),
             &terrain,
             &[],
         ),
@@ -1243,7 +1254,7 @@ fn gsi_04_06_local_hierarchy_patch_keeps_stale_holes_and_appends_edges_stably() 
             PackedZoneCoord::new(-1, 0),
             ZoneRepairKind::MergeAdjacent,
             &path_grid,
-            &BTreeMap::new(),
+            None,
             &terrain,
             &[],
         ),
@@ -1264,7 +1275,7 @@ fn gsi_04_06_local_hierarchy_patch_keeps_stale_holes_and_appends_edges_stably() 
             PackedZoneCoord::new(0, 0),
             ZoneRepairKind::MergeAdjacent,
             &path_grid,
-            &BTreeMap::new(),
+            Some(repair_test_bounds()),
             &terrain,
             &[],
         ),

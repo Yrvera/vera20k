@@ -18,6 +18,7 @@
     "One full/local case supplies two active and one inactive high record with raw high tile103; full forward and local reverse582D70 reinsertion execute, no Tube/TS claims",
     "Three direct flood witnesses supply a2x1 seed run, surrounding neighbor2 and optional preexisting flag1 pair; compare low flag byte only",
     "Three normalized11,8/Resize/nonnegative-height cases retain baseID0 after a supplied raw +4 height change; actual batch, full reconstruction and local re-patch preserve mutable padding and32 aliased represented cells",
+    "One local target retains class7 while the live query admits it; one full build retains wider cached classes with narrower supplied current bounds, preserving IDs while changing ordered edges",
     "Not a complete native map-load or gameplay execution"
   ],
   "substitutions": [
@@ -33,5 +34,5 @@
     "scratch": "0x0042C1C0",
     "high_pairs": "0x00582D70"
   },
-  "payload_sha256": "15cb518a17a65290c0c6c35e8b39ff6ab786af9e0c96b0920235592b0d3f0f2f"
+  "payload_sha256": "a69fb5197f36cb939360f6b7f122fda84c7751996fe9afb02cc02164751b2743"
 }

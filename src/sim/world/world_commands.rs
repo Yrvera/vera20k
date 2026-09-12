@@ -348,7 +348,7 @@ impl Simulation {
             PackedZoneCoord::new(repair_cell.0 as i16, repair_cell.1 as i16),
             repair,
             tail_grid,
-            &self.terrain_costs,
+            self.playfield_bounds,
             terrain,
             bridge_records,
         );
@@ -456,6 +456,7 @@ impl Simulation {
                     zone_grid: &mut self.zone_grid,
                     path_grid: &mut self.path_grid,
                     bridge_state: self.bridge_state.as_ref(),
+                    playfield_bounds: self.playfield_bounds,
                 };
                 self.overlay_grid.as_mut().and_then(|grid| {
                     runtime_wall_cleanup_visit_at(

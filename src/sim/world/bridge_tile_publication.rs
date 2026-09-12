@@ -217,6 +217,7 @@ impl IsoTileFloodHost for LiveTileFlood<'_, '_> {
             terrain_costs: &mut sim.terrain_costs,
             zones: &mut sim.zone_grid,
             path: &mut sim.path_grid,
+            playfield_bounds: sim.playfield_bounds,
         }
         .publish_recalculated_cell(
             terrain,
