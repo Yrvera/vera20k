@@ -107,6 +107,14 @@ impl Host {
                 .push(json!({"kind":"callback_write","change":change}));
         }
     }
+
+    fn callback_result(&self, kind: &str) -> Result<(), String> {
+        if self.input["failure"] == kind {
+            Err(format!("failed {kind}"))
+        } else {
+            Ok(())
+        }
+    }
 }
 impl RepairHost for Host {
     type Cell = usize;
@@ -147,9 +155,10 @@ impl RepairHost for Host {
     fn level(&self, c: usize) -> u8 {
         self.cells[c].level
     }
-    fn write_level(&mut self, c: usize, level: u8) {
+    fn write_level(&mut self, c: usize, level: u8) -> Result<(), String> {
         self.cells[c].level = level;
         self.event(json!({"kind":"level","coord":self.cells[c].coord,"level":level}));
+        self.callback_result("level")
     }
     fn anchor(&self, c: usize) -> Result<usize, String> {
         self.cells[c]
@@ -193,20 +202,22 @@ impl RepairHost for Host {
         self.event(json!({"kind":"replace","coord":p,"tile":tile,"level":-1,"recursive":0}));
         iso_tile_flood::replace_connected(&mut Flood(self), p, tile, -1)
     }
-    fn validate(&mut self, p: CellCoord) -> bool {
+    fn validate(&mut self, p: CellCoord) -> Result<bool, String> {
         let result = self.input["validate_returns"][self.validates]
             .as_bool()
             .unwrap_or(false);
         self.validates += 1;
         self.event(json!({"kind":"validate","coord":p,"result":result}));
-        result
+        self.callback_result("validate")?;
+        Ok(result)
     }
     fn construct(&mut self, p: CellCoord, overlay: u8, frame: i32) -> Result<(), String> {
         self.event(json!({"kind":"construct","coord":p,"overlay":overlay,"frame":frame}));
         Ok(())
     }
-    fn connectivity(&mut self) {
+    fn connectivity(&mut self) -> Result<(), String> {
         self.event(json!({"kind":"connectivity"}));
+        self.callback_result("connectivity")
     }
     fn rebuild(&mut self, cells: &[CellCoord]) -> Result<(), String> {
         self.event(json!({"kind":"rebuild","cells":cells}));
@@ -217,6 +228,59 @@ impl RepairHost for Host {
     }
     fn dirty_screen(&mut self, _: Option<Rect>) {
         self.event(json!({"kind":"screen"}));
+    }
+}
+
+#[test]
+fn ramp_host_errors_retain_native_prefix_and_stop_later_callbacks() {
+    let corpus: Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/bridge_repair.json"
+    ))
+    .unwrap();
+    for (name, failure) in [
+        ("high_2_middle_4", "level"),
+        ("high_2_distance_1", "validate"),
+        ("high_2_middle_4", "connectivity"),
+    ] {
+        let case = corpus["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["input"]["name"] == name)
+            .unwrap();
+        let mut input = case["input"].clone();
+        input["failure"] = json!(failure);
+        let mut host = Host::new(&input);
+        let start = host.get(point(&input["start"]));
+        assert_eq!(
+            restore_span(&mut host, Family::High, start, 2, false),
+            Err(format!("failed {failure}"))
+        );
+        let native: Vec<_> = case["output"]["trace"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["kind"] != "span_entry" && event["kind"] != "repair_entry")
+            .cloned()
+            .collect();
+        let stop = native
+            .iter()
+            .position(|event| event["kind"] == failure)
+            .unwrap()
+            + 1;
+        assert_eq!(
+            host.trace.as_slice(),
+            &native[..stop],
+            "{failure}: completed native prefix retained"
+        );
+        if failure == "level" {
+            let last = host.trace.last().unwrap();
+            assert_eq!(
+                host.cells[host.allocated_index(point(&last["coord"])).unwrap()].level,
+                last["level"].as_u64().unwrap() as u8,
+                "raw store survives its publication error"
+            );
+        }
     }
 }
 struct Flood<'a>(&'a mut Host);

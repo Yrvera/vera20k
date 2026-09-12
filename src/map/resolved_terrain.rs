@@ -342,6 +342,27 @@ pub struct ResolvedTerrainCell {
 }
 
 impl ResolvedTerrainCell {
+    /// Refresh byte-encoded height views of the current Cell, independently of
+    /// its Recalc-owned class, flags and cached topology. Preserve the encoded
+    /// signed-level +4 result: raw252 (-4) has a structural deck at level0.
+    /// Native47B3A0/5F5FA0: tools/ramp_height_{oracle.py,vectors.json}; this
+    /// byte projection does not establish signed world-coordinate consumers.
+    fn refresh_current_height_projection(&mut self) {
+        if let Some(layer) = self.bridge_layer.as_mut() {
+            layer.deck_level = match layer.direction {
+                BridgeDirection::Low => self.level,
+                _ => self.level.wrapping_add(4),
+            };
+        }
+        self.bridge_deck_level = if self.bridge_facts.has_structural_bridge()
+            || self.bridge_layer.as_ref().is_some_and(|layer| layer.direction != BridgeDirection::Low)
+        {
+            self.level.wrapping_add(4)
+        } else {
+            self.level
+        };
+    }
+
     pub fn is_walkable(&self) -> bool {
         !self.ground_walk_blocked
     }
@@ -1412,10 +1433,15 @@ impl SharedCellDummy {
             });
     }
 
-    #[cfg(test)]
     pub(crate) fn set_level(&self, level: i8) {
-        let slope = self.snapshot().slope_type;
-        self.set_level_slope(level, slope);
+        const LEVEL_MASK: u64 = 0xff << 32;
+        let value = u64::from(level as u8) << 32;
+        let _ = self
+            .state
+            .cell
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some((current & !LEVEL_MASK) | value)
+            });
     }
 }
 
@@ -1942,6 +1968,19 @@ impl ResolvedTerrainGrid {
         }
     }
 
+    /// Native568E40/569760 raw Cell+11B write, without47D2B0 Recalc.
+    /// Evidence: tools/spatial_oracle/bridge_repair.{py,json}. The world owns
+    /// subsequent publication to current readers; retained zone inputs stay intact.
+    pub(crate) fn write_native_cell_level(&mut self, cell: NativeCellIdentity, level: u8) {
+        match cell {
+            NativeCellIdentity::Real(index) => {
+                self.cells[index].level = level;
+                self.cells[index].refresh_current_height_projection();
+            }
+            NativeCellIdentity::Dummy => self.shared_cell_dummy.set_level(level as i8),
+        }
+    }
+
     pub(crate) fn write_native_cell_anchor(&mut self, cell: NativeCellIdentity, anchor: Option<NativeCellIdentity>) {
         match cell {
             NativeCellIdentity::Real(index) => self.cells[index].bridge_facts.native_anchor = anchor,
@@ -2463,16 +2502,7 @@ impl ResolvedTerrainGrid {
         let identity_bridge = cell.bridge_layer.is_some();
         let structural_bridge = cell.bridge_facts.has_structural_bridge();
         cell.has_bridge_deck = identity_bridge || structural_bridge;
-        cell.bridge_deck_level = if structural_bridge
-            || cell
-                .bridge_layer
-                .as_ref()
-                .is_some_and(|layer| layer.direction != BridgeDirection::Low)
-        {
-            cell.level.saturating_add(4)
-        } else {
-            cell.level
-        };
+        cell.refresh_current_height_projection();
         cell.bridge_walkable =
             structural_bridge && !cell.terrain_object_blocks && !cell.overlay_blocks;
         cell.bridge_transition = cell.bridge_facts.has_transition_flag();

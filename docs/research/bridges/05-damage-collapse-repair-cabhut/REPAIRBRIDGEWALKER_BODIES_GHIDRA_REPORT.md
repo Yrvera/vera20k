@@ -1,8 +1,50 @@
 # RepairBridgeWalker_*_* Bodies — Per-Cell State Writes
 
-**Status:** Verified from binary (Ghidra MCP, read-only). All four walker
-addresses, byte-level write maps, jump-table contents, and caller chains
-re-read from gamemd.exe in this session.
+**Status:** Historical body decode, corrected by current active-retail body and
+caller reads on 2026-09-12. The scalar overlay transitions do not establish
+complete repair delivery; the occupant callback below is required gameplay work.
+
+## 2026-09-12 correction: synchronous occupant checks are required
+
+Original `0x00487A10` is a gameplay admission/damage callback, not a drawing or
+flag-only helper. For each changed strip the four ordinary repair walkers retain
+center and perpendicular neighbor Cell identities, write all three overlay fields,
+call Recalc on those identities, then invoke `0x00487A10(0)` three times. The call
+sites are Low NS `0x0057FB28/31/3A`, Low EW `0x0058003C/45/4E`, High NS
+`0x00580564/6D/76`, and High EW `0x00580A88/91/9A`.
+
+The callback first walks the Cell's ground-content list (`+0xE4`). It captures
+each member's successor before calling its `+0x1AC` admission slot with
+`(cell,-1,-1,null,1)`. Admission result 7 or abstract kind 2 (Aircraft, original
+leaf `0x0041C180`) triggers synchronous `+0x16C` damage with a local copy of current
+health, distance 0, Rules C4Warhead (`+0xFA8`), null attacker, both force flags set,
+and null source house. The nonzero-argument extra branch is bypassed by these
+repair callers.
+
+It then builds a probe at the current Cell center and original ground height
+`0x0047B3A0(128,128)`, including signed level and slope. The neighboring 5x5 scan
+is X-major, re-reads the retained Cell coordinate for each lookup, and excludes
+the selected Cell identity. For ground-list Foot members (`AbstractFlags & 4`),
+it calls locomotor `Is_At_Coord` (`+0xA0`) with that probe, then the same admission
+and damage sequence if the probe matches and admission returns 7. This pass
+reads the successor after callbacks, unlike the first pass. Missing-cell dummy
+aliasing and callback reentrancy therefore affect traversal.
+
+Current stock locomotor slot owners are Drive `0x004B4920`, Ship `0x006A3F50`,
+Hover `0x00517210`, Walk `0x0075CA80`; Fly/Teleport/Jumpjet/Rocket use false stub
+`0x004B6630`. Live receiver plumbing in `src/sim/world/bridge_ground.rs` can be
+reused, but unconditional collapse damage and snapshot path markers do not
+implement this selection/lifecycle behavior. Its Rust delivery remains open.
+
+Active reachability is ordinary engineer arrival in `InfantryClass::PerCellProcess`
+`0x00519630`, then `0x00573540/0x00570050`, then `0x0057F440/0x0057F200` and the
+four walkers. The engineer's outer family scan always visits all 25 Y-major cells,
+with two fresh coordinate getters/lookups per cell and no early exit after finding
+Low. It checks signed `wood_base <= tile < wood_base + 16` or overlay 74..101.
+The chosen family entry independently scans X-major and returns on its first
+matching overlay. The existing runtime-only/deferred Rust repair path does not
+deliver these callbacks, and missing runtime entries can conceal live map cells.
+No TS-only behavior is required for these findings.
 
 ## 0. TL;DR
 
@@ -24,7 +66,7 @@ The walker's per-cell logic for each input overlay is dispatched via a
 
 After all cells are written, the walker conditionally calls
 `MapClass__UpdateBridgeZonesHelper` (only if any case-0 repair happened) and
-`FUN_005868a0` (rect-region helper, probably bridge-rebuild relayer).
+`FUN_005868a0` (X-major rectangle enumeration into two-pass batch `0x00586990`).
 
 ## 1. Walker inventory (address + dispatcher + role)
 
@@ -158,15 +200,15 @@ After the writes the walker calls, for each of the 3 modified cells:
   AND the new overlay type has flag at `OverlayTypeClass+0x2a9 != 0` (the
   bridge-overlay-clears-overlay-on-slope branch). This is the indirect path
   by which damage-state `+0x11E` is reset to 0 on repair.
-- `FUN_00487a10(0)` — flag-setter on cell (does not touch `+0x11E`; appears
-  to be a draw-state helper; out of scope to fully decompile).
+- `FUN_00487a10(0)` — synchronous occupant admission and damage; see the dated
+  correction above. It is required simulation behavior.
 
 After all iterations:
 - If `bVar1` (any case-0 repair fired) → call `MapClass__UpdateBridgeZonesHelper @ 0x0056C510`.
 - If the damaged-cell rect accumulator (`local_ec`, `local_e8`) is non-empty
-  → call `FUN_005868a0` with the rect (a region-iterator that walks all
-  cells in the rect and calls a member function — likely re-layers objects
-  on the now-repaired span).
+  → call `FUN_005868a0` with the rect. It enumerates X outer/Y inner, then calls
+  `0x00586990` even for an empty vector; the batch preserves reverse query/Recalc
+  and local hierarchy-patch order. It does not itself replace base connectivity.
 
 ## 3. Neighbor-step pattern
 
@@ -222,7 +264,7 @@ The only callees (verified by inspecting the disassembly) are:
 - `FUN_00598030` (RNG-bounded; 0x00598030 in NS_Low / 0x00598030 in NS_High
   etc.) at the case-0 site
 - `CellClass__RecalcAttributes @ 0x0047D2B0` ×3 (post-write)
-- `FUN_00487a10` ×3 (draw/redraw helper)
+- `FUN_00487a10` ×3 (live occupant admission/damage; see dated correction above)
 - `MapClass__UpdateBridgeZonesHelper @ 0x0056C510` (conditional; post-loop)
 - `FUN_005868a0` (conditional; post-loop)
 - `FUN_00580B20` (NS_Low/EW_Low) / `FUN_00580B70` (NS_High/EW_High) — loop
@@ -285,16 +327,15 @@ reachable from YR-live overlay states during a normal damaged-bridge state.
    `g_OverlayTypeClass_Array[0x4A].+0x2a9` (and a few neighbours) in a
    separate investigation.
 
-2. **`FUN_005868a0` semantics.** Called after the walk if a damaged-rect
-   accumulator is non-empty. Appears to be a region-iterator that invokes a
-   member function (vtable slot at PTR_FUN_007e3890) on each cell in the
-   rect. Likely a per-object relayer for things sitting on the now-repaired
-   span (so they re-attach to the OnBridge layer). Not decompiled in detail
-   here.
+2. **`FUN_005868a0` delivery.** The original body collects the rectangle's
+   cells in X-major order and calls `0x00586990` even for an empty collection.
+   Its zone-batch semantics are now captured in
+   `tools/spatial_oracle/bridge_hierarchy.{py,json}`. Wiring the rectangle
+   callers into the prepared live Rust batch owner remains open.
 
-3. **`FUN_00487a10(0)` semantics.** Called 3× per iteration on the modified
-   cells. Probably a draw/dirty helper, not a state-write. Not decompiled
-   in detail.
+3. **`FUN_00487a10(0)` delivery.** The dated correction above establishes
+   live occupant admission and direct damage. This remains a required Rust
+   ordinary-repair integration prerequisite.
 
 4. **NS/EW span-axis naming.** The walker iterates **across** the bridge,
    not along it (NS walker iterates X; EW walker iterates Y), with the

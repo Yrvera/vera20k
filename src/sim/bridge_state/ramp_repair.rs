@@ -24,7 +24,7 @@ pub(crate) trait RepairHost {
     fn tile(&self, cell: Self::Cell) -> i32;
     fn subtile(&self, cell: Self::Cell) -> u8;
     fn level(&self, cell: Self::Cell) -> u8;
-    fn write_level(&mut self, cell: Self::Cell, level: u8);
+    fn write_level(&mut self, cell: Self::Cell, level: u8) -> Result<(), Self::Error>;
     fn anchor(&self, cell: Self::Cell) -> Result<Self::Cell, Self::Error>;
     fn overlay(&self, cell: Self::Cell) -> i32;
     fn search_in_bounds(&self, requested: CellCoord, family: Family) -> bool;
@@ -35,7 +35,7 @@ pub(crate) trait RepairHost {
     fn replace(&mut self, requested: CellCoord, tile: i32) -> Result<(), Self::Error>;
     /// Original56DB70's return is the connectivity result after its record
     /// activation/edge additions, not a generic terrain-changed flag.
-    fn validate(&mut self, requested: CellCoord) -> bool;
+    fn validate(&mut self, requested: CellCoord) -> Result<bool, Self::Error>;
     /// Complete constructor5FC380, including admission, Mark and lifecycle.
     /// Last argument is native frame=-1, not house/owner.
     fn construct(
@@ -44,7 +44,7 @@ pub(crate) trait RepairHost {
         overlay: u8,
         frame: i32,
     ) -> Result<(), Self::Error>;
-    fn connectivity(&mut self);
+    fn connectivity(&mut self) -> Result<(), Self::Error>;
     fn rebuild(&mut self, cells: &[CellCoord]) -> Result<(), Self::Error>;
     fn project(&mut self, requested: CellCoord, level: i8) -> [i32; 2];
     fn dirty_screen(&mut self, rect: Option<Rect>);
@@ -59,12 +59,17 @@ fn relative<H: RepairHost>(host: &H, cell: H::Cell, keys: HighBridgeRimTiles) ->
     host.tile(cell).wrapping_sub(keys.base).wrapping_add(1)
 }
 
-fn raise_three<H: RepairHost>(host: &mut H, center: CellCoord, direction: u8) {
+fn raise_three<H: RepairHost>(
+    host: &mut H,
+    center: CellCoord,
+    direction: u8,
+) -> Result<(), H::Error> {
     let sides = if direction == 2 { [0, 4] } else { [2, 6] };
     for point in [center, step(center, sides[0]), step(center, sides[1])] {
         let cell = host.lookup(point);
-        host.write_level(cell, host.level(cell).wrapping_add(4));
+        host.write_level(cell, host.level(cell).wrapping_add(4))?;
     }
+    Ok(())
 }
 
 fn append_footprint(cells: &mut Vec<CellCoord>, center: CellCoord, direction: u8) {
@@ -109,7 +114,7 @@ pub(crate) fn restore_span<H: RepairHost>(
         if matches!(direction, 2 | 4) && sub == target_sub {
             if end.contains(&old) {
                 host.pavement_clear(requested);
-                connectivity |= host.validate(step(requested, direction.wrapping_add(4)));
+                connectivity |= host.validate(step(requested, direction.wrapping_add(4)))?;
                 break;
             }
             if (0..5).any(|v| old == keys.middle[axis].wrapping_add(v)) {
@@ -117,9 +122,9 @@ pub(crate) fn restore_span<H: RepairHost>(
                     requested,
                     keys.base.wrapping_add(keys.middle[axis]).wrapping_sub(1),
                 )?;
-                connectivity |= host.validate(requested);
+                connectivity |= host.validate(requested)?;
                 if old == keys.middle[axis].wrapping_add(4) {
-                    raise_three(host, requested, direction);
+                    raise_three(host, requested, direction)?;
                     append_footprint(&mut rebuild, requested, direction);
                 }
             }
@@ -167,7 +172,7 @@ pub(crate) fn restore_span<H: RepairHost>(
         None
     };
     if connectivity {
-        host.connectivity();
+        host.connectivity()?;
     }
     if !rebuild.is_empty() {
         host.rebuild(&rebuild)?;
@@ -278,8 +283,8 @@ pub(crate) fn repair<H: RepairHost>(
                         keys.base.wrapping_add(keys.middle[axis]).wrapping_sub(1),
                     )?;
                     let center = step(requested, direction + 4);
-                    raise_three(host, center, direction);
-                    connectivity = host.validate(center);
+                    raise_three(host, center, direction)?;
+                    connectivity = host.validate(center)?;
                     append_footprint(&mut rebuild, center, direction);
                 }
                 repair(
@@ -291,7 +296,7 @@ pub(crate) fn repair<H: RepairHost>(
                 let rect = restore_span(host, family, start, direction, true)?;
                 host.dirty_screen(rect);
                 if connectivity {
-                    host.connectivity();
+                    host.connectivity()?;
                 }
                 if !rebuild.is_empty() {
                     host.rebuild(&rebuild)?;

@@ -108,26 +108,45 @@ impl NavigationCaches<'_> {
         if let Some(zones) = self.zones.as_mut() {
             zones.refresh_base_cell_attributes_at(terrain, coord.0, coord.1);
         }
-        // Cache owners are optional during loading/headless execution. Refresh
-        // installed views without inventing a zone rebuild or eager map load.
-        if let Some(path) = self.path.as_mut() {
-            if path.width() != terrain.width() || path.height() != terrain.height() {
-                return Err("Recalc path dimensions differ from terrain".into());
-            }
-            let mut structure_blocked = false;
-            visit_structure_movement_cells(entities, interner, rules, |marked| {
-                structure_blocked |= marked == coord;
-            });
-            if !Arc::make_mut(path).refresh_resolved_cell(cell, bridges, structure_blocked) {
-                return Err("Recalc path cell could not be published".into());
-            }
-        }
+        self.publish_current_path_cell(terrain, bridges, entities, interner, rules, coord)?;
         for (&speed_type, costs) in self.terrain_costs.iter_mut() {
             if costs.width() != terrain.width()
                 || costs.height() != terrain.height()
                 || !costs.refresh_resolved_cell(cell, speed_type)
             {
                 return Err("Recalc terrain cost cell could not be published".into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Current Cell/path view only. Native ramp repair's raw +11B writes can
+    /// precede a count30 abort, with no Recalc or cached class/height publication.
+    /// Keep the same path projection as Recalc without changing costs or zones.
+    pub(super) fn publish_current_path_cell(
+        &mut self,
+        terrain: &ResolvedTerrainGrid,
+        bridges: Option<&BridgeRuntimeState>,
+        entities: &EntityStore,
+        interner: &StringInterner,
+        rules: &RuleSet,
+        coord: (u16, u16),
+    ) -> Result<(), String> {
+        let cell = terrain
+            .cell(coord.0, coord.1)
+            .ok_or("path cell is outside terrain")?;
+        // Cache owners are optional during loading/headless execution. Refresh
+        // installed views without inventing a zone rebuild or eager map load.
+        if let Some(path) = self.path.as_mut() {
+            if path.width() != terrain.width() || path.height() != terrain.height() {
+                return Err("path dimensions differ from terrain".into());
+            }
+            let mut structure_blocked = false;
+            visit_structure_movement_cells(entities, interner, rules, |marked| {
+                structure_blocked |= marked == coord;
+            });
+            if !Arc::make_mut(path).refresh_resolved_cell(cell, bridges, structure_blocked) {
+                return Err("current path cell could not be published".into());
             }
         }
         Ok(())

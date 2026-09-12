@@ -167,10 +167,18 @@ fn live_bridge_batch_matches_original_order_recalc_cache_and_hierarchy() {
             for change in action["changes"].as_array().into_iter().flatten() {
                 let coord = batch_coord(&change["cell"]);
                 let i = coord.1 as usize * usize::from(width) + coord.0 as usize;
-                let terrain = sim.resolved_terrain.as_mut().unwrap();
                 if let Some(value) = change.get("cell_level") {
-                    terrain.cells[i].level = value.as_u64().unwrap() as u8;
+                    let mut live = LivePublication {
+                        sim: &mut sim,
+                        rules: &rules,
+                        registry: Some(&registry),
+                        collapsed: false,
+                    };
+                    let cell = live.lookup(coord);
+                    live.write_raw_bridge_level(cell, value.as_u64().unwrap() as u8)
+                        .unwrap();
                 }
+                let terrain = sim.resolved_terrain.as_mut().unwrap();
                 if let Some(value) = change.get("tile") {
                     terrain.cells[i].final_tile_index = value.as_i64().unwrap() as i32;
                 }
@@ -306,6 +314,169 @@ fn live_bridge_batch_matches_original_order_recalc_cache_and_hierarchy() {
         }
     }
     assert_eq!(checked, 8);
+}
+
+#[test]
+fn live_raw_bridge_height_keeps_retained_cache_until_native_batch_publication() {
+    use crate::rules::locomotor_type::SpeedType;
+    use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/bridge_hierarchy.json"
+    ))
+    .unwrap();
+    let case = corpus["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["input"]["name"] == "batch_refreshes_retained_height")
+        .unwrap();
+    let mut sim = bridge_batch_simulation(case);
+    let before_path = sim.path_grid_snapshot().unwrap();
+    let mut cost_input = sim.resolved_terrain.as_ref().unwrap().clone();
+    cost_input.cell_mut(12, 10).unwrap().speed_costs.foot = Some(37);
+    sim.terrain_costs.insert(
+        SpeedType::Foot,
+        TerrainCostGrid::from_resolved_terrain(&cost_input, SpeedType::Foot),
+    );
+    let before = sim
+        .zone_grid
+        .as_mut()
+        .unwrap()
+        .base_topology_mut()
+        .unwrap()
+        .clone();
+    let rules = RuleSet::from_ini(&IniFile::from_str("")).unwrap();
+    let registry =
+        crate::map::overlay_types::OverlayTypeRegistry::from_ini(&IniFile::from_str(""), None);
+    let mut live = LivePublication {
+        sim: &mut sim,
+        rules: &rules,
+        registry: Some(&registry),
+        collapsed: false,
+    };
+    let cell = live.lookup((12, 10));
+    live.write_raw_bridge_level(cell, 4).unwrap();
+    let terrain = sim.resolved_terrain.as_ref().unwrap();
+    assert_eq!(terrain.cell(12, 10).unwrap().level, 4);
+    assert_eq!(sim.dynamic_terrain_cells[&(12, 10)].level, 4);
+    assert_eq!(
+        sim.path_grid().unwrap().cell(12, 10).unwrap().ground_level,
+        4
+    );
+    assert_eq!(
+        before_path.cell(12, 10).unwrap().ground_level,
+        0,
+        "pinned reader retains prior view"
+    );
+    assert_eq!(
+        sim.path_grid().unwrap().cell(11, 10),
+        before_path.cell(11, 10)
+    );
+    assert_eq!(
+        sim.terrain_costs[&SpeedType::Foot].cost_at(12, 10),
+        37,
+        "raw store must not publish cost rows"
+    );
+    let zones = sim.zone_grid.as_mut().unwrap();
+    assert_native_hierarchy_graphs(
+        zones.hierarchy_for(MovementZone::Normal).unwrap(),
+        terrain,
+        &case["initial"],
+        "raw height before batch",
+    );
+    let base = zones.base_topology_mut().unwrap();
+    assert_eq!(base.levels, before.levels);
+    assert_eq!(base.movement_classes, before.movement_classes);
+    assert_eq!(base.zone_ids, before.zone_ids);
+    assert_eq!(base.raw_zone_ids_by_row, before.raw_zone_ids_by_row);
+    let mut live = LivePublication {
+        sim: &mut sim,
+        rules: &rules,
+        registry: Some(&registry),
+        collapsed: false,
+    };
+    live.recalculate_bridge_zones(&[(10, 10), (12, 10)])
+        .unwrap();
+    let terrain = sim.resolved_terrain.as_ref().unwrap();
+    let zones = sim.zone_grid.as_mut().unwrap();
+    let expected = &case["states"][0];
+    assert_native_hierarchy_graphs(
+        zones.hierarchy_for(MovementZone::Normal).unwrap(),
+        terrain,
+        expected,
+        "raw height after native batch",
+    );
+    assert_eq!(
+        serde_json::json!(zones.base_topology_mut().unwrap().levels),
+        expected["levels"]
+    );
+}
+
+#[test]
+fn live_raw_bridge_height_preserves_native_signed_deck_byte_and_dummy_identity() {
+    let heights: serde_json::Value =
+        serde_json::from_str(include_str!("../../../tools/ramp_height_vectors.json")).unwrap();
+    let hierarchy: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/bridge_hierarchy.json"
+    ))
+    .unwrap();
+    let case = hierarchy["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["input"]["name"] == "clear_local")
+        .unwrap();
+    let mut sim = bridge_batch_simulation(case);
+    let rules = RuleSet::from_ini(&IniFile::from_str("")).unwrap();
+    let mut live = LivePublication {
+        sim: &mut sim,
+        rules: &rules,
+        registry: None,
+        collapsed: false,
+    };
+    let cell = live.lookup((12, 10));
+    let mut checked = 0;
+    for case in heights["cases"].as_array().unwrap().iter().filter(|case| {
+        case["name"].as_str().unwrap().starts_with("signed_level_") && case["on_bridge"] == true
+    }) {
+        let level = case["level"].as_i64().unwrap();
+        live.write_flags(cell, BRIDGE_FLAG_STRUCTURAL);
+        live.write_raw_bridge_level(cell, level as u8).unwrap();
+        // Normalize the original unmarked Object SetHeight result by removing
+        // the separately captured slope contribution, then compare byte encoding.
+        // Signed world-coordinate consumers remain a separate integration audit.
+        let unit = heights["fixture_constants"]["ground_level_leptons"]
+            .as_i64()
+            .unwrap();
+        let slope = case["native"]["ground_z"].as_i64().unwrap() - level * unit;
+        let native_deck = (case["native"]["set_height_raw_z"].as_i64().unwrap() - slope) / unit;
+        let resolved = live.terrain().cell(12, 10).unwrap();
+        assert_eq!(
+            resolved.bridge_deck_level, native_deck as u8,
+            "{}",
+            case["name"]
+        );
+        assert_eq!(
+            live.sim
+                .path_grid()
+                .unwrap()
+                .cell(12, 10)
+                .unwrap()
+                .bridge_deck_level,
+            native_deck as u8
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 6);
+    let dummy = live.lookup((-300, 0));
+    live.terrain().shared_cell_dummy().set_level_slope(5, 9);
+    let before = live.terrain().shared_cell_dummy().snapshot();
+    live.write_raw_bridge_level(dummy, 252).unwrap();
+    let after = live.terrain().shared_cell_dummy().snapshot();
+    assert_eq!(after.coord, before.coord);
+    assert_eq!(after.level, -4);
+    assert_eq!(after.slope_type, before.slope_type);
 }
 
 #[test]
