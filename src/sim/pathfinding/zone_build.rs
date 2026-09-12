@@ -39,6 +39,10 @@ pub(crate) struct BaseZoneTopology {
     /// Derived record source Size, shared by full and incremental hierarchy use.
     pub(crate) native_bridge_source_size: Option<(i32, i32)>,
     pub(crate) movement_classes: Vec<u8>,
+    /// Unsigned cached heights: Map+68 byte1 and Map+70 byte8. Original
+    /// 47D2B0 publishes both with the class on every non-dummy Recalc exit;
+    /// 56CB90 and hierarchy flood consume these, not current PathGrid heights.
+    pub(crate) levels: Vec<u8>,
     pub(crate) zone_ids: Vec<ZoneId>,
     // Retained as exact base-topology state for incremental-repair parity
     // fixtures; current production projections consume the derived rows.
@@ -278,8 +282,35 @@ pub(crate) fn build_base_zone_topology(
         .flat_map(|ry| (0..width).map(move |rx| movement_class_for_cell(resolved_terrain, rx, ry)))
         .collect();
 
+    rebuild_base_zone_topology(
+        movement_classes,
+        retained_levels_from_path(path_grid, width, height),
+        bridge_records,
+        width,
+        height,
+        native_bridge_source_size,
+    )
+}
+
+/// Original56C510 consumes retained Map+68 class/height bytes. Recalc owns those
+/// bytes; connectivity clears/rebuilds only the base IDs and derived rows.
+/// Evidence: tools/spatial_oracle/bridge_connectivity.{py,json,meta.json}.
+pub(crate) fn rebuild_base_zone_topology(
+    movement_classes: Vec<u8>,
+    levels: Vec<u8>,
+    bridge_records: &[BridgeEndpointRecord],
+    width: u16,
+    height: u16,
+    native_bridge_source_size: Option<(i32, i32)>,
+) -> BaseZoneTopology {
+    assert_eq!(
+        movement_classes.len(),
+        usize::from(width) * usize::from(height)
+    );
+
+    assert_eq!(levels.len(), movement_classes.len());
     let (zone_ids, zone_count, mut edge_buckets) =
-        rebuild_node_indices(&movement_classes, path_grid, width, height);
+        rebuild_node_indices(&movement_classes, &levels, width, height);
     register_bridge_base_edges(
         &mut edge_buckets,
         &zone_ids,
@@ -302,6 +333,7 @@ pub(crate) fn build_base_zone_topology(
     BaseZoneTopology {
         native_bridge_source_size,
         movement_classes,
+        levels,
         zone_ids,
         zone_count,
         adjacency,
@@ -318,7 +350,6 @@ pub(crate) fn build_base_zone_topology(
 /// temporary-edge ordering differ.
 pub(crate) fn build_zone_hierarchy(
     base: &BaseZoneTopology,
-    path_grid: &PathGrid,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     bridge_records: &[BridgeEndpointRecord],
     width: u16,
@@ -326,7 +357,6 @@ pub(crate) fn build_zone_hierarchy(
 ) -> ZoneHierarchy {
     let level2 = build_hierarchy_level(
         base,
-        path_grid,
         resolved_terrain,
         bridge_records,
         width,
@@ -336,7 +366,6 @@ pub(crate) fn build_zone_hierarchy(
     );
     let level1 = build_hierarchy_level(
         base,
-        path_grid,
         resolved_terrain,
         bridge_records,
         width,
@@ -346,7 +375,6 @@ pub(crate) fn build_zone_hierarchy(
     );
     let level0 = build_hierarchy_level(
         base,
-        path_grid,
         resolved_terrain,
         bridge_records,
         width,
@@ -370,7 +398,6 @@ pub(crate) enum LocalHierarchyPatchResult {
 pub(crate) fn incremental_rebuild_zone_hierarchy_around_cell(
     hierarchy: &mut ZoneHierarchy,
     base: &BaseZoneTopology,
-    path_grid: &PathGrid,
     resolved_terrain: &ResolvedTerrainGrid,
     bridge_records: &[BridgeEndpointRecord],
     coord: (i16, i16),
@@ -402,7 +429,6 @@ pub(crate) fn incremental_rebuild_zone_hierarchy_around_cell(
                 &mut hierarchy.levels_mut()[2],
                 None,
                 base,
-                path_grid,
                 resolved_terrain,
                 bridge_records,
                 width,
@@ -415,7 +441,6 @@ pub(crate) fn incremental_rebuild_zone_hierarchy_around_cell(
                     &mut lower[1],
                     Some(&upper[0]),
                     base,
-                    path_grid,
                     resolved_terrain,
                     bridge_records,
                     width,
@@ -429,7 +454,6 @@ pub(crate) fn incremental_rebuild_zone_hierarchy_around_cell(
                     &mut lower[0],
                     Some(&upper[0]),
                     base,
-                    path_grid,
                     resolved_terrain,
                     bridge_records,
                     width,
@@ -453,7 +477,6 @@ fn patch_hierarchy_level(
     graph: &mut ZoneLevelGraph,
     parent_level: Option<&ZoneLevelGraph>,
     base: &BaseZoneTopology,
-    path_grid: &PathGrid,
     resolved_terrain: &ResolvedTerrainGrid,
     bridge_records: &[BridgeEndpointRecord],
     width: u16,
@@ -518,7 +541,6 @@ fn patch_hierarchy_level(
                 base.zone_ids[index],
                 base,
                 graph.cell_zone_ids_mut(),
-                path_grid,
                 width,
                 height,
                 block,
@@ -583,7 +605,6 @@ fn refresh_local_hierarchy_parents(
 
 fn build_hierarchy_level(
     base: &BaseZoneTopology,
-    path_grid: &PathGrid,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     bridge_records: &[BridgeEndpointRecord],
     width: u16,
@@ -637,7 +658,6 @@ fn build_hierarchy_level(
                 base.zone_ids[idx],
                 base,
                 &mut zone_ids,
-                path_grid,
                 width,
                 height,
                 block,
@@ -699,7 +719,6 @@ fn flood_fill_hierarchy_scanline(
     captured_base_id: ZoneId,
     base: &BaseZoneTopology,
     zone_ids: &mut [ZoneId],
-    path_grid: &PathGrid,
     width: u16,
     height: u16,
     block: HierarchyBlock,
@@ -707,7 +726,7 @@ fn flood_fill_hierarchy_scanline(
 ) -> i32 {
     let seed_x = i32::from(start_x);
     let seed_y = i32::from(start_y);
-    let Some(seed_height) = base_level_at(path_grid, seed_x, seed_y, width, height) else {
+    let Some(seed_height) = base_level_at(&base.levels, seed_x, seed_y, width, height) else {
         return 0;
     };
 
@@ -725,7 +744,7 @@ fn flood_fill_hierarchy_scanline(
         if base.zone_ids[index] != captured_base_id {
             break;
         }
-        let Some(height_at_cell) = base_level_at(path_grid, stopped_left, seed_y, width, height)
+        let Some(height_at_cell) = base_level_at(&base.levels, stopped_left, seed_y, width, height)
         else {
             break;
         };
@@ -746,7 +765,6 @@ fn flood_fill_hierarchy_scanline(
         0,
         base,
         zone_ids,
-        path_grid,
         width,
         height,
         edge_buckets,
@@ -765,7 +783,8 @@ fn flood_fill_hierarchy_scanline(
         if base.zone_ids[index] != captured_base_id {
             break;
         }
-        let Some(height_at_cell) = base_level_at(path_grid, stopped_right, seed_y, width, height)
+        let Some(height_at_cell) =
+            base_level_at(&base.levels, stopped_right, seed_y, width, height)
         else {
             break;
         };
@@ -786,7 +805,6 @@ fn flood_fill_hierarchy_scanline(
         0,
         base,
         zone_ids,
-        path_grid,
         width,
         height,
         edge_buckets,
@@ -801,7 +819,6 @@ fn flood_fill_hierarchy_scanline(
         captured_base_id,
         base,
         zone_ids,
-        path_grid,
         width,
         height,
         block,
@@ -816,7 +833,6 @@ fn flood_fill_hierarchy_scanline(
         captured_base_id,
         base,
         zone_ids,
-        path_grid,
         width,
         height,
         block,
@@ -836,7 +852,6 @@ fn scan_hierarchy_adjacent_row(
     captured_base_id: ZoneId,
     base: &BaseZoneTopology,
     zone_ids: &mut [ZoneId],
-    path_grid: &PathGrid,
     width: u16,
     height: u16,
     block: HierarchyBlock,
@@ -851,7 +866,7 @@ fn scan_hierarchy_adjacent_row(
             continue;
         };
         let height_allowed = hierarchy_height_allowed(
-            path_grid,
+            base,
             candidate_x,
             candidate_y,
             reference_x,
@@ -874,7 +889,6 @@ fn scan_hierarchy_adjacent_row(
                 captured_base_id,
                 base,
                 zone_ids,
-                path_grid,
                 width,
                 height,
                 block,
@@ -914,7 +928,6 @@ fn register_hierarchy_boundary_edge(
     flag: u8,
     base: &BaseZoneTopology,
     zone_ids: &[ZoneId],
-    path_grid: &PathGrid,
     width: u16,
     height: u16,
     edge_buckets: &mut HierarchyEdgeBuckets,
@@ -927,7 +940,7 @@ fn register_hierarchy_boundary_edge(
         return;
     }
     if !hierarchy_height_allowed(
-        path_grid,
+        base,
         candidate_x,
         candidate_y,
         reference_x,
@@ -950,7 +963,7 @@ fn register_hierarchy_boundary_edge(
 
 #[allow(clippy::too_many_arguments)]
 fn hierarchy_height_allowed(
-    path_grid: &PathGrid,
+    base: &BaseZoneTopology,
     candidate_x: i32,
     candidate_y: i32,
     reference_x: i32,
@@ -959,8 +972,8 @@ fn hierarchy_height_allowed(
     height: u16,
 ) -> bool {
     match (
-        base_level_at(path_grid, candidate_x, candidate_y, width, height),
-        base_level_at(path_grid, reference_x, reference_y, width, height),
+        base_level_at(&base.levels, candidate_x, candidate_y, width, height),
+        base_level_at(&base.levels, reference_x, reference_y, width, height),
     ) {
         (Some(candidate_height), Some(reference_height)) => {
             candidate_height.abs_diff(reference_height) < 2
@@ -1037,9 +1050,19 @@ pub(crate) fn movement_class_for_cell(
         .map_or(zone_class::OUTSIDE, |cell| cell.zone_type)
 }
 
+/// Initial navigation construction snapshots already projected cell levels.
+/// Subsequent Recalc publication updates only the affected retained cell.
+fn retained_levels_from_path(path_grid: &PathGrid, width: u16, height: u16) -> Vec<u8> {
+    (0..height)
+        .flat_map(|y| {
+            (0..width).map(move |x| path_grid.cell(x, y).map_or(0, |cell| cell.ground_level))
+        })
+        .collect()
+}
+
 fn rebuild_node_indices(
     movement_classes: &[u8],
-    path_grid: &PathGrid,
+    levels: &[u8],
     width: u16,
     height: u16,
 ) -> (Vec<u16>, u16, BaseEdgeBuckets) {
@@ -1065,7 +1088,7 @@ fn rebuild_node_indices(
                 next_node,
                 movement_classes,
                 &mut node_indices,
-                path_grid,
+                levels,
                 width,
                 height,
                 &mut edge_buckets,
@@ -1086,7 +1109,7 @@ fn flood_fill_node_index(
     node_id: u16,
     movement_classes: &[u8],
     node_indices: &mut [u16],
-    path_grid: &PathGrid,
+    levels: &[u8],
     width: u16,
     height: u16,
     edge_buckets: &mut BaseEdgeBuckets,
@@ -1095,7 +1118,7 @@ fn flood_fill_node_index(
     let movement_class = movement_classes[start_idx];
     let seed_x = i32::from(start_x);
     let seed_y = i32::from(start_y);
-    let Some(mut carried_level) = base_level_at(path_grid, seed_x, seed_y, width, height) else {
+    let Some(mut carried_level) = base_level_at(levels, seed_x, seed_y, width, height) else {
         return 0;
     };
 
@@ -1110,7 +1133,7 @@ fn flood_fill_node_index(
         if movement_classes[index] != movement_class {
             break;
         }
-        let Some(level) = base_level_at(path_grid, left, seed_y, width, height) else {
+        let Some(level) = base_level_at(levels, left, seed_y, width, height) else {
             break;
         };
         if (i16::from(level) - i16::from(carried_level)).abs() >= 2 {
@@ -1129,7 +1152,7 @@ fn flood_fill_node_index(
         node_id,
         movement_class,
         node_indices,
-        path_grid,
+        levels,
         width,
         height,
     );
@@ -1144,7 +1167,7 @@ fn flood_fill_node_index(
         if movement_classes[index] != movement_class {
             break;
         }
-        let Some(level) = base_level_at(path_grid, right, seed_y, width, height) else {
+        let Some(level) = base_level_at(levels, right, seed_y, width, height) else {
             break;
         };
         if (i16::from(level) - i16::from(carried_level)).abs() >= 4 {
@@ -1163,7 +1186,7 @@ fn flood_fill_node_index(
         node_id,
         movement_class,
         node_indices,
-        path_grid,
+        levels,
         width,
         height,
     );
@@ -1177,8 +1200,8 @@ fn flood_fill_node_index(
         let reference_x = (scan_x + 1).min(run_right);
         if let (Some(candidate), Some(candidate_level), Some(reference_level)) = (
             base_record_index(scan_x, candidate_y, width, height),
-            base_level_at(path_grid, scan_x, candidate_y, width, height),
-            base_level_at(path_grid, reference_x, seed_y, width, height),
+            base_level_at(levels, scan_x, candidate_y, width, height),
+            base_level_at(levels, reference_x, seed_y, width, height),
         ) {
             let neighbor = node_indices[candidate];
             let height_allowed =
@@ -1190,7 +1213,7 @@ fn flood_fill_node_index(
                     node_id,
                     movement_classes,
                     node_indices,
-                    path_grid,
+                    levels,
                     width,
                     height,
                     edge_buckets,
@@ -1216,8 +1239,8 @@ fn flood_fill_node_index(
         let reference_x = (scan_x + 1).min(run_right);
         if let (Some(candidate), Some(candidate_level), Some(reference_level)) = (
             base_record_index(scan_x, candidate_y, width, height),
-            base_level_at(path_grid, scan_x, candidate_y, width, height),
-            base_level_at(path_grid, reference_x, seed_y, width, height),
+            base_level_at(levels, scan_x, candidate_y, width, height),
+            base_level_at(levels, reference_x, seed_y, width, height),
         ) {
             let neighbor = node_indices[candidate];
             let height_allowed =
@@ -1229,7 +1252,7 @@ fn flood_fill_node_index(
                     node_id,
                     movement_classes,
                     node_indices,
-                    path_grid,
+                    levels,
                     width,
                     height,
                     edge_buckets,
@@ -1256,11 +1279,8 @@ fn base_record_index(x: i32, y: i32, width: u16, height: u16) -> Option<usize> {
     Some(y as usize * width as usize + x as usize)
 }
 
-fn base_level_at(path_grid: &PathGrid, x: i32, y: i32, width: u16, height: u16) -> Option<u8> {
-    base_record_index(x, y, width, height)?;
-    path_grid
-        .cell(x as u16, y as u16)
-        .map(|cell| cell.ground_level)
+fn base_level_at(levels: &[u8], x: i32, y: i32, width: u16, height: u16) -> Option<u8> {
+    levels.get(base_record_index(x, y, width, height)?).copied()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1273,7 +1293,7 @@ fn register_scanline_edge(
     current_zone: ZoneId,
     captured_class: u8,
     node_indices: &[u16],
-    path_grid: &PathGrid,
+    levels: &[u8],
     width: u16,
     height: u16,
 ) {
@@ -1285,8 +1305,8 @@ fn register_scanline_edge(
         return;
     }
     let height_allowed = match (
-        base_level_at(path_grid, candidate_x, candidate_y, width, height),
-        base_level_at(path_grid, reference_x, reference_y, width, height),
+        base_level_at(levels, candidate_x, candidate_y, width, height),
+        base_level_at(levels, reference_x, reference_y, width, height),
     ) {
         (Some(candidate_level), Some(reference_level)) => {
             (i16::from(candidate_level) - i16::from(reference_level)).abs() < 2
@@ -1688,26 +1708,31 @@ pub(crate) fn find_high_bridge_record_index(
     query: (u16, u16),
     tolerance: u16,
 ) -> Option<usize> {
-    bridge_records.iter().enumerate().skip(start_index).find(|(_, record)| {
-        if !record.is_high() {
-            return false;
-        }
-        //56DA10 compares signed endpoint words and widens before distance.
-        let (ax, ay) = (
-            i32::from(record.endpoint_a.0 as i16),
-            i32::from(record.endpoint_a.1 as i16),
-        );
-        let (bx, by) = (
-            i32::from(record.endpoint_b.0 as i16),
-            i32::from(record.endpoint_b.1 as i16),
-        );
-        let (qx, qy) = (i32::from(query.0 as i16), i32::from(query.1 as i16));
-        if ax == bx {
-            qy >= ay && qy <= by && (qx - ax).abs() <= i32::from(tolerance)
-        } else {
-            qx >= ax && qx <= bx && (qy - ay).abs() <= i32::from(tolerance)
-        }
-    }).map(|(index, _)| index)
+    bridge_records
+        .iter()
+        .enumerate()
+        .skip(start_index)
+        .find(|(_, record)| {
+            if !record.is_high() {
+                return false;
+            }
+            //56DA10 compares signed endpoint words and widens before distance.
+            let (ax, ay) = (
+                i32::from(record.endpoint_a.0 as i16),
+                i32::from(record.endpoint_a.1 as i16),
+            );
+            let (bx, by) = (
+                i32::from(record.endpoint_b.0 as i16),
+                i32::from(record.endpoint_b.1 as i16),
+            );
+            let (qx, qy) = (i32::from(query.0 as i16), i32::from(query.1 as i16));
+            if ax == bx {
+                qy >= ay && qy <= by && (qx - ax).abs() <= i32::from(tolerance)
+            } else {
+                qx >= ax && qx <= bx && (qy - ay).abs() <= i32::from(tolerance)
+            }
+        })
+        .map(|(index, _)| index)
 }
 
 ///583180/5835D0 subtract packed words before floating distance and retain
@@ -1943,6 +1968,7 @@ mod tests {
         });
         BaseZoneTopology {
             native_bridge_source_size: None,
+            levels: vec![0; movement_classes.len()],
             movement_classes,
             zone_ids,
             zone_count,
@@ -2344,7 +2370,6 @@ mod tests {
         }];
         let hierarchy = build_zone_hierarchy(
             &unique_hierarchy_base(width, height),
-            &PathGrid::new(width, height),
             Some(&terrain),
             &records,
             width,
@@ -2369,9 +2394,7 @@ mod tests {
             }
         });
         let base = unique_hierarchy_base(width, height);
-        let path_grid = PathGrid::new(width, height);
-        let mut hierarchy =
-            build_zone_hierarchy(&base, &path_grid, Some(&terrain), &[], width, height);
+        let mut hierarchy = build_zone_hierarchy(&base, Some(&terrain), &[], width, height);
         let records = [
             BridgeEndpointRecord {
                 endpoint_a: (2, 2),
@@ -2400,7 +2423,6 @@ mod tests {
             incremental_rebuild_zone_hierarchy_around_cell(
                 &mut hierarchy,
                 &base,
-                &path_grid,
                 &terrain,
                 &records,
                 (2, 2),
@@ -2452,7 +2474,6 @@ mod tests {
         }];
         let hierarchy = build_zone_hierarchy(
             &unique_hierarchy_base(width, height),
-            &PathGrid::new(width, height),
             Some(&terrain),
             &records,
             width,
@@ -2584,14 +2605,7 @@ mod tests {
         let width = 9;
         let height = 1;
         let base = hierarchy_base(vec![zone_class::GROUND; 9], vec![1; 9]);
-        let hierarchy = build_zone_hierarchy(
-            &base,
-            &PathGrid::new(width, height),
-            None,
-            &[],
-            width,
-            height,
-        );
+        let hierarchy = build_zone_hierarchy(&base, None, &[], width, height);
 
         let level2 = hierarchy.level(2).unwrap();
         assert_eq!(level2.zone_count(), 2);
@@ -2676,14 +2690,7 @@ mod tests {
             ],
             vec![1, 0, 2, 2, 1, 1, 2, 2],
         );
-        let hierarchy = build_zone_hierarchy(
-            &base,
-            &PathGrid::new(width, height),
-            None,
-            &[],
-            width,
-            height,
-        );
+        let hierarchy = build_zone_hierarchy(&base, None, &[], width, height);
 
         let level0 = hierarchy.level(0).unwrap();
         assert_eq!(level0.zone_count(), 2);
@@ -2724,14 +2731,7 @@ mod tests {
         let cell_count = usize::from(width) * usize::from(height);
         let base = hierarchy_base(vec![zone_class::GROUND; cell_count], vec![1; cell_count]);
 
-        let _ = build_zone_hierarchy(
-            &base,
-            &PathGrid::new(width, height),
-            None,
-            &[],
-            width,
-            height,
-        );
+        let _ = build_zone_hierarchy(&base, None, &[], width, height);
     }
 
     #[test]
@@ -2769,11 +2769,16 @@ mod tests {
         grid.set_cell_for_test(1, 1, 0, false, false);
 
         let movement_classes = vec![0; 4];
-        let (zone_ids, zone_count, edge_buckets) =
-            rebuild_node_indices(&movement_classes, &grid, 2, 2);
+        let (zone_ids, zone_count, edge_buckets) = rebuild_node_indices(
+            &movement_classes,
+            &retained_levels_from_path(&grid, 2, 2),
+            2,
+            2,
+        );
         let base = BaseZoneTopology {
             native_bridge_source_size: None,
             adjacency: edge_buckets.into_adjacency(zone_count),
+            levels: retained_levels_from_path(&grid, 2, 2),
             movement_classes,
             zone_ids,
             zone_count,
@@ -2792,7 +2797,8 @@ mod tests {
             grid.set_cell_for_test((index % 2) as u16, (index / 2) as u16, level, false, false);
         }
 
-        let (zone_ids, zone_count, edge_buckets) = rebuild_node_indices(&[0; 4], &grid, 2, 2);
+        let (zone_ids, zone_count, edge_buckets) =
+            rebuild_node_indices(&[0; 4], &retained_levels_from_path(&grid, 2, 2), 2, 2);
         let adjacency = edge_buckets.into_adjacency(zone_count);
 
         assert_eq!(zone_ids, vec![1, 1, 2, 2]);
@@ -2809,8 +2815,12 @@ mod tests {
             }
         }
 
-        let (zone_ids, zone_count, _) =
-            rebuild_node_indices(&[zone_class::GROUND, 7, 7, zone_class::GROUND], &grid, 2, 2);
+        let (zone_ids, zone_count, _) = rebuild_node_indices(
+            &[zone_class::GROUND, 7, 7, zone_class::GROUND],
+            &retained_levels_from_path(&grid, 2, 2),
+            2,
+            2,
+        );
 
         assert_eq!(zone_ids, vec![1, 0, 0, 1]);
         assert_eq!(zone_count, 1);
@@ -2822,7 +2832,8 @@ mod tests {
         grid.set_cell_for_test(0, 0, 0, false, false);
         grid.set_cell_for_test(1, 0, 4, false, false);
 
-        let (zone_ids, zone_count, _) = rebuild_node_indices(&[0; 2], &grid, 2, 1);
+        let (zone_ids, zone_count, _) =
+            rebuild_node_indices(&[0; 2], &retained_levels_from_path(&grid, 2, 1), 2, 1);
 
         assert_eq!(zone_ids, vec![1, 2]);
         assert_eq!(zone_count, 2);

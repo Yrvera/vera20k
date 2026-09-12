@@ -3,6 +3,39 @@
 use super::*;
 
 impl LivePublication<'_> {
+    /// Original56C510, after the ramp walker has completed its synchronous
+    /// terrain/constructor writes and requested connectivity. Recalc must
+    /// already have projected each touched class and cached height. No hierarchy
+    /// rebuild or group-derived activation is part of this callback.
+    pub(super) fn rebuild_bridge_connectivity(&mut self) -> Result<(), String> {
+        let sim = &mut self.sim;
+        let terrain = sim
+            .resolved_terrain
+            .as_ref()
+            .ok_or("repair has no live terrain")?;
+        let bridges = sim
+            .bridge_state
+            .as_ref()
+            .ok_or("repair has no bridge record owner")?;
+        let path = sim
+            .path_grid
+            .as_deref()
+            .ok_or("repair has no live path owner")?;
+        let zones = sim
+            .zone_grid
+            .as_mut()
+            .ok_or("repair has no live zone owner")?;
+        if zones.base_topology_mut().is_none() {
+            return Err("repair connectivity has no retained native node attributes".into());
+        }
+        zones.rebuild_base_connectivity_preserving_hierarchy(
+            path,
+            terrain,
+            bridges.endpoint_records(),
+        );
+        Ok(())
+    }
+
     pub(super) fn validate_bridge_zones(&mut self, query: CellCoord) -> Result<bool, String> {
         let sim = &mut self.sim;
         let terrain = sim
@@ -139,6 +172,19 @@ mod tests {
             edge_state(&sim),
             after,
             "navigation reuse erased native repair edge history"
+        );
+        assert_eq!(sim.path_grid().unwrap().cell(7, 7), path.cell(7, 7));
+        let mut host = LivePublication {
+            sim: &mut sim,
+            rules: &rules,
+            registry: None,
+            collapsed: false,
+        };
+        host.rebuild_bridge_connectivity().unwrap();
+        assert_eq!(
+            edge_state(&sim),
+            after,
+            "base connectivity replaced repair hierarchy edges"
         );
         assert_eq!(sim.path_grid().unwrap().cell(7, 7), path.cell(7, 7));
     }

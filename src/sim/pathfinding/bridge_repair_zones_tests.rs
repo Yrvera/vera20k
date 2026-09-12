@@ -226,3 +226,104 @@ fn record_activation_matches_original_and_keeps_raw_connectivity_rows() {
     }
     assert_eq!(count, 9);
 }
+
+#[test]
+fn connectivity_consumes_retained_classes_and_matches_original_thirteen_rows() {
+    let corpus: Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/bridge_connectivity.json"
+    ))
+    .unwrap();
+    let originals = corpus["cases"].as_array().unwrap();
+    assert_eq!(originals.len(), 9);
+    for original in originals {
+        let input = &original["input"];
+        let classes: Vec<u8> = serde_json::from_value(input["classes"].clone()).unwrap();
+        let levels: Vec<u8> = serde_json::from_value(input["levels"].clone()).unwrap();
+        let cell_levels: Vec<u8> = input
+            .get("cell_levels")
+            .map(|v| serde_json::from_value(v.clone()).unwrap())
+            .unwrap_or_else(|| levels.clone());
+        // Current terrain deliberately differs from the retained native class
+        // plane. Connectivity must not silently perform another whole-map
+        // Recalc before consuming that plane. The ninth case independently
+        // changes current cell heights; connectivity still consumes cached ones.
+        let terrain = crate::sim::pathfinding::zone_map_tests::terrain_from_zone_classes(
+            16,
+            16,
+            &[0; 256],
+            &cell_levels,
+        );
+        let path = PathGrid::from_resolved_terrain(&terrain);
+        let records: Vec<_> = input["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(record)
+            .collect();
+        let mut zones = ZoneGrid::build_with_native_bridge_geometry(
+            &path,
+            &BTreeMap::new(),
+            Some(&terrain),
+            &records,
+            16,
+            16,
+            Some((8, 8)),
+        );
+        let base = zones.base_topology.as_mut().unwrap();
+        base.movement_classes = classes.clone();
+        base.levels = levels.clone();
+        base.zone_ids.fill(0xabcd);
+        let before_hierarchy = format!("{:?}", zones.hierarchy);
+        zones.rebuild_base_connectivity_preserving_hierarchy(&path, &terrain, &records);
+        let base = zones.base_topology.as_ref().unwrap();
+        assert_eq!(base.movement_classes, classes, "{}", input["name"]);
+        assert_eq!(base.levels, levels, "{}", input["name"]);
+        assert_eq!(
+            json!(base.zone_ids),
+            original["base_ids"],
+            "{}",
+            input["name"]
+        );
+        assert_eq!(
+            json!(base.zone_count),
+            original["zone_count"],
+            "{}",
+            input["name"]
+        );
+        assert_eq!(
+            json!(base.raw_zone_ids_by_row),
+            original["raw_rows"],
+            "{}",
+            input["name"]
+        );
+        assert_eq!(format!("{:?}", zones.hierarchy), before_hierarchy);
+    }
+}
+
+#[test]
+fn recalc_publication_updates_only_touched_class_and_unsigned_height() {
+    let mut terrain = crate::sim::pathfinding::zone_map_tests::terrain_from_zone_classes(
+        4, 4, &[0; 16], &[0; 16],
+    );
+    let path = PathGrid::from_resolved_terrain(&terrain);
+    let mut zones =
+        ZoneGrid::build_with_terrain(&path, &BTreeMap::new(), Some(&terrain), &[], 4, 4);
+    let before_hierarchy = format!("{:?}", zones.hierarchy);
+    let before_base = zones.base_topology.as_ref().unwrap().clone();
+    for (x, level, class) in [(1, 255, 3), (2, 4, 2)] {
+        let cell = terrain.cell_mut(x, 1).unwrap();
+        cell.level = level;
+        cell.zone_type = class;
+    }
+    assert!(zones.refresh_base_cell_attributes_at(&terrain, 1, 1));
+    let base = zones.base_topology.as_ref().unwrap();
+    let mut expected_classes = before_base.movement_classes.clone();
+    let mut expected_levels = before_base.levels.clone();
+    expected_classes[5] = 3;
+    expected_levels[5] = 255;
+    assert_eq!(base.movement_classes, expected_classes);
+    assert_eq!(base.levels, expected_levels);
+    assert_eq!(base.zone_ids, before_base.zone_ids);
+    assert_eq!(base.raw_zone_ids_by_row, before_base.raw_zone_ids_by_row);
+    assert_eq!(format!("{:?}", zones.hierarchy), before_hierarchy);
+}

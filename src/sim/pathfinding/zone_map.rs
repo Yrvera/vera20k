@@ -269,14 +269,7 @@ impl ZoneGrid {
             )
         });
         let hierarchy = base_topology.as_ref().map(|base| {
-            zone_build::build_zone_hierarchy(
-                base,
-                path_grid,
-                resolved_terrain,
-                bridge_records,
-                width,
-                height,
-            )
+            zone_build::build_zone_hierarchy(base, resolved_terrain, bridge_records, width, height)
         });
 
         for &mz in MovementZone::all_ground() {
@@ -585,9 +578,9 @@ impl ZoneGrid {
 
     /// Project one RecalcAttributes cell into the retained base topology
     /// without assigning a zone or rebuilding hierarchy. Mutation owners that
-    /// have a later native repair callback use this to make the new class
+    /// have a later native repair callback use this to make the new class/height
     /// visible to earlier ordered neighbor repairs.
-    pub(crate) fn refresh_base_movement_class_at(
+    pub(crate) fn refresh_base_cell_attributes_at(
         &mut self,
         terrain: &ResolvedTerrainGrid,
         x: u16,
@@ -604,6 +597,7 @@ impl ZoneGrid {
             return false;
         };
         *slot = zone_build::movement_class_for_cell(terrain, x, y);
+        base.levels[index] = terrain.cell(x, y).map_or(0, |cell| cell.level);
         true
     }
 
@@ -673,14 +667,26 @@ impl ZoneGrid {
         resolved_terrain: &ResolvedTerrainGrid,
         bridge_records: &[crate::sim::bridge_state::BridgeEndpointRecord],
     ) {
-        let base_topology = zone_build::build_base_zone_topology(
-            path_grid,
-            resolved_terrain,
-            bridge_records,
-            self.width,
-            self.height,
-            self.native_bridge_source_size,
-        );
+        let base_topology = if let Some(base) = &self.base_topology {
+            zone_build::rebuild_base_zone_topology(
+                base.movement_classes.clone(),
+                base.levels.clone(),
+                bridge_records,
+                self.width,
+                self.height,
+                self.native_bridge_source_size,
+            )
+        } else {
+            // Compatibility bootstrap has no retained native node plane yet.
+            zone_build::build_base_zone_topology(
+                path_grid,
+                resolved_terrain,
+                bridge_records,
+                self.width,
+                self.height,
+                self.native_bridge_source_size,
+            )
+        };
         let mut maps = BTreeMap::new();
         let mut adjacency = BTreeMap::new();
         let mut super_zones = BTreeMap::new();

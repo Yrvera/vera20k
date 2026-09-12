@@ -1045,7 +1045,7 @@ fn gsi_04_06_fallback_rebuilds_base_without_resetting_hierarchy_high_water() {
         width,
         height,
     );
-    let mut expected = ZoneGrid::build_with_terrain(
+    let expected = ZoneGrid::build_with_terrain(
         &path_grid,
         &BTreeMap::new(),
         Some(&terrain),
@@ -1069,7 +1069,6 @@ fn gsi_04_06_fallback_rebuilds_base_without_resetting_hierarchy_high_water() {
             incremental_rebuild_zone_hierarchy_around_cell(
                 hierarchy,
                 base,
-                &path_grid,
                 &terrain,
                 &[],
                 (10, 2),
@@ -1100,27 +1099,6 @@ fn gsi_04_06_fallback_rebuilds_base_without_resetting_hierarchy_high_water() {
             .any(|level| { level.records.iter().any(|(_, _, edges)| !edges.is_empty()) })
     );
 
-    let expected_base = expected.base_topology_mut().unwrap().clone();
-    let expected_rows: Vec<(MovementZone, Vec<ZoneId>, Vec<Vec<ZoneId>>)> =
-        MovementZone::all_ground()
-            .iter()
-            .map(|&movement_zone| {
-                (
-                    movement_zone,
-                    expected
-                        .map_for(movement_zone)
-                        .unwrap()
-                        .zone_ids_slice()
-                        .to_vec(),
-                    expected
-                        .adjacency_for(movement_zone)
-                        .unwrap()
-                        .neighbors
-                        .clone(),
-                )
-            })
-            .collect();
-
     let index = |x: usize, y: usize| y * width as usize + x;
     {
         let base = zones.base_topology_mut().unwrap();
@@ -1143,8 +1121,8 @@ fn gsi_04_06_fallback_rebuilds_base_without_resetting_hierarchy_high_water() {
         base.raw_zone_ids_by_row[0][1] = 2;
         base.raw_zone_ids_by_row[0][2] = 3;
 
-        // A distant, deliberately stale base/projection entry proves the
-        // fallback refresh is global even though the hierarchy patch is local.
+        // A distant, deliberately stale base ID/projection proves the
+        // connectivity refresh is global while cached attributes are retained.
         base.movement_classes[index(14, 2)] = zone_class::GROUND;
         base.zone_ids[index(14, 2)] = 1;
     }
@@ -1159,6 +1137,36 @@ fn gsi_04_06_fallback_rebuilds_base_without_resetting_hierarchy_high_water() {
             .unwrap()
             .zone_at(14, 2, MovementLayer::Ground)
     );
+
+    // Original56C510 rebuilds IDs globally from retained classes/heights,
+    // not from current Cell attributes. No Recalc refreshes the distant cell.
+    let retained = zones.base_topology_mut().unwrap();
+    let cached_terrain = terrain_from_zone_classes(
+        width, height, &retained.movement_classes, &retained.levels,
+    );
+    let mut expected = ZoneGrid::build_with_terrain(
+        &path_grid, &BTreeMap::new(), Some(&cached_terrain), &[], width, height,
+    );
+    let expected_base = expected.base_topology_mut().unwrap().clone();
+    let expected_rows: Vec<(MovementZone, Vec<ZoneId>, Vec<Vec<ZoneId>>)> =
+        MovementZone::all_ground()
+            .iter()
+            .map(|&movement_zone| {
+                (
+                    movement_zone,
+                    expected
+                        .map_for(movement_zone)
+                        .unwrap()
+                        .zone_ids_slice()
+                        .to_vec(),
+                    expected
+                        .adjacency_for(movement_zone)
+                        .unwrap()
+                        .neighbors
+                        .clone(),
+                )
+            })
+            .collect();
 
     assert_eq!(
         repair_zone_cell(

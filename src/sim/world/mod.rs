@@ -1346,7 +1346,7 @@ pub(crate) fn repair_wall_damage_navigation_authorities(
         *zone_grid = None;
     }
     if let Some(zone_grid) = zone_grid.as_mut() {
-        let _ = zone_grid.refresh_base_movement_class_at(terrain, cell.0, cell.1);
+        let _ = zone_grid.refresh_base_cell_attributes_at(terrain, cell.0, cell.1);
         let bridge_records = bridge_state
             .map(BridgeRuntimeState::endpoint_records)
             .unwrap_or(&[]);

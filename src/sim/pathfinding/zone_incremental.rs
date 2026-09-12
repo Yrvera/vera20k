@@ -119,16 +119,10 @@ pub(crate) fn repair_zone_cell(
         return ZoneRepairOutcome::OutsideNoOp;
     }
     let index = y as usize * width as usize + x as usize;
-    let current_type = resolved_terrain
-        .cell(x as u16, y as u16)
-        .map_or(zone_class::OUTSIDE, |cell| cell.zone_type);
-
+    zone_grid.refresh_base_cell_attributes_at(resolved_terrain, x as u16, y as u16);
     let decision = zone_grid
         .base_topology_mut()
-        .map(|base| {
-            base.movement_classes[index] = current_type;
-            decide_base_zone_repair(base, index, x, y, width, height, kind)
-        })
+        .map(|base| decide_base_zone_repair(base, index, x, y, width, height, kind))
         .unwrap_or(BaseRepairDecision::FullRebuild);
 
     let outcome = match decision {
@@ -156,7 +150,6 @@ pub(crate) fn repair_zone_cell(
             incremental_rebuild_zone_hierarchy_around_cell(
                 hierarchy,
                 base,
-                path_grid,
                 resolved_terrain,
                 bridge_records,
                 coord,
@@ -170,7 +163,6 @@ pub(crate) fn repair_zone_cell(
     {
         zone_grid.replace_hierarchy(build_zone_hierarchy(
             &base,
-            path_grid,
             Some(resolved_terrain),
             bridge_records,
             width,

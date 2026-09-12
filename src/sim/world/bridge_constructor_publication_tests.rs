@@ -54,6 +54,46 @@ fn dummy(sim: &Simulation) -> Value {
 }
 
 #[test]
+fn live_bridge_recalc_publishes_retained_attributes_before_connectivity() {
+    use crate::sim::pathfinding::{PathGrid, zone_map::ZoneGrid};
+    let (mut sim, rules, registry) = fixture();
+    let terrain = sim.resolved_terrain.as_ref().unwrap();
+    let path = PathGrid::from_resolved_terrain(terrain);
+    sim.zone_grid = Some(ZoneGrid::build_with_terrain(
+        &path,
+        &BTreeMap::new(),
+        Some(terrain),
+        &[],
+        33,
+        33,
+    ));
+    let base = sim.zone_grid.as_mut().unwrap().base_topology_mut().unwrap();
+    base.levels.fill(200);
+    base.movement_classes.fill(6);
+    let ids_before = base.zone_ids.clone();
+    let rows_before = base.raw_zone_ids_by_row.clone();
+    let mut host = LivePublication {
+        sim: &mut sim,
+        rules: &rules,
+        registry: Some(&registry),
+        collapsed: false,
+    };
+    let cell = host.lookup((16, 16));
+    host.recalc_cell(cell, 4).unwrap();
+    let terrain_cell = sim.resolved_terrain.as_ref().unwrap().cell(16, 16).unwrap();
+    assert_eq!(terrain_cell.level, 4);
+    let mut expected_classes = vec![6; 33 * 33];
+    let mut expected_levels = vec![200; 33 * 33];
+    expected_classes[16 * 33 + 16] = terrain_cell.zone_type;
+    expected_levels[16 * 33 + 16] = terrain_cell.level;
+    let base = sim.zone_grid.as_mut().unwrap().base_topology_mut().unwrap();
+    assert_eq!(base.movement_classes, expected_classes);
+    assert_eq!(base.levels, expected_levels);
+    assert_eq!(base.zone_ids, ids_before);
+    assert_eq!(base.raw_zone_ids_by_row, rows_before);
+}
+
+#[test]
 fn live_bridge_constructor_matches_original_and_drains_at_admitted_tick() {
     let corpus: Value = serde_json::from_str(include_str!(
         "../../../tools/spatial_oracle/bridge_constructor.json"

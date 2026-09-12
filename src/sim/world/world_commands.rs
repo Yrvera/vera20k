@@ -314,7 +314,7 @@ impl Simulation {
         }
 
         if let Some(zone_grid) = self.zone_grid.as_mut() {
-            let _ = zone_grid.refresh_base_movement_class_at(terrain, rx, ry);
+            let _ = zone_grid.refresh_base_cell_attributes_at(terrain, rx, ry);
         }
     }
 
