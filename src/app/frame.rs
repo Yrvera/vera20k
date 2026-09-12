@@ -211,6 +211,9 @@ impl App {
         };
         let mut game_render_output: Option<crate::app::presentation::render::GameRenderOutput> = None;
 
+        if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Options {
+            Self::ensure_skirmish_shell_chrome(state);
+        }
         match &state.frontend.screen {
             GameScreen::MainMenu => {
                 if let crate::app::frontend::shell_transition::ShellFirstPaintRenderResult::Rendered {
@@ -357,6 +360,13 @@ impl App {
                     }
                 }
             }
+            GameScreen::InGame if crate::app::frontend::skirmish_shell_render::native_in_game_options_active(state) => {
+                // 621FCE -> 72F540 clears and paints a complete active-game shell.
+                // No battlefield commands share this encoder/camera upload.
+                crate::app::frontend::skirmish_shell_render::render_in_game_options_shell(
+                    state, &mut encoder, &output.texture,
+                )?;
+            }
             GameScreen::InGame => {
                 let game_output = if state.renderer.upscale_pass.is_some() {
                     // Render game to intermediate texture, then upscale to swapchain.
@@ -383,21 +393,6 @@ impl App {
                         .copy_to(&mut encoder, &output.texture);
                     render_output
                 };
-                let sidebar_view = game_output.sidebar_view.as_ref();
-                // Options (the in-scenario state the menu's Game Controls button
-                // opens) draws the native `0xBBB` overlay over the frozen
-                // battlefield, before egui. The in-game menu and the abort
-                // confirmation are egui cards drawn in the pass below.
-                if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Options {
-                    if Self::ensure_skirmish_shell_chrome(state) {
-                        crate::app::frontend::skirmish_shell_render::render_in_game_options_overlay(
-                            state,
-                            &mut encoder,
-                            &view,
-                            sidebar_view,
-                        )?;
-                    }
-                }
                 // All sidebar text (credits, Ready labels, queue counts) is now
                 // GAME.FNT sprite geometry built in presentation::render; egui in-game
                 // carries only the dev/debug overlays.

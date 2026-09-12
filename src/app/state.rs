@@ -69,11 +69,23 @@ impl AppState {
         self.render_dimensions().1
     }
 
+    /// Modal shells use physical window pixels, while the retained tactical
+    /// cursor stays in battlefield source pixels even during an upscaled match.
+    pub(crate) fn window_cursor_position(&self) -> (f32, f32) {
+        (
+            self.match_state.input.cursor_x * self.renderer.gpu.config.width as f32
+                / self.render_width().max(1) as f32,
+            self.match_state.input.cursor_y * self.renderer.gpu.config.height as f32
+                / self.render_height().max(1) as f32,
+        )
+    }
+
     /// Whether the software cursor (mouse.shp) should be active this frame.
     /// Returns false when an egui interactive panel is open so the OS cursor shows.
     pub(crate) fn use_software_cursor(&self) -> bool {
         self.match_state.match_presentation.software_cursor.is_some()
-            && !self.match_state.paused
+            && (!self.match_state.paused
+                || crate::app::frontend::skirmish_shell_render::native_in_game_options_active(self))
             && !self.match_state.match_presentation.show_save_load_panel
             && !self.main_menu_dialog_open()
     }

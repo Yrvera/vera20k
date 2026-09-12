@@ -125,6 +125,12 @@ impl EguiIntegration {
         self.state.on_window_event(window, event)
     }
 
+    /// A native shell owns these inputs. Keep egui-winit's platform state
+    /// current, but do not replay its accumulated events into a later dialog.
+    pub(crate) fn discard_pending_input(&mut self, window: &Window) {
+        let _ = self.state.take_egui_input(window);
+    }
+
     /// Begin an egui frame. Call once per frame before running UI code.
     ///
     /// Collects accumulated input from on_window_event() calls and

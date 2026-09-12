@@ -12,6 +12,7 @@ pub mod descriptor;
 pub mod geom;
 pub mod in_game_options;
 pub mod in_game_options_state;
+pub mod in_game_shell;
 pub mod layout;
 pub mod modal;
 pub mod slide;

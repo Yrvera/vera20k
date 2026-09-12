@@ -448,6 +448,9 @@ impl ApplicationHandler for App {
         // Always let egui see the event first for input handling.
         let egui_response: egui_winit::EventResponse =
             state.renderer.egui.on_window_event(&state.platform.window, &event);
+        if crate::app::frontend::skirmish_shell_render::native_in_game_options_active(state) {
+            state.renderer.egui.discard_pending_input(&state.platform.window);
+        }
 
         // In InGame mode, egui only renders non-interactive overlays
         // (mission banner). The custom sidebar handles its own hit-testing.
@@ -456,6 +459,7 @@ impl ApplicationHandler for App {
         // Exception: when paused or save/load panel is open, egui renders
         // interactive content.
         let egui_consumed: bool = egui_response.consumed
+            && !crate::app::frontend::skirmish_shell_render::native_in_game_options_active(state)
             && (state.frontend.screen != GameScreen::InGame || state.match_state.paused || state.match_state.match_presentation.show_save_load_panel);
 
         match event {
@@ -499,6 +503,8 @@ impl ApplicationHandler for App {
                     state.match_state.input.tactical_mouse = Default::default();
                     state.match_state.input.selection_state.cancel_drag();
                     state.match_state.input.minimap_dragging = false;
+                    state.match_state.match_presentation.in_game_options.dragging_slider = None;
+                    state.match_state.match_presentation.in_game_options.pressed_button = None;
                     if let Some(dialog) = state.frontend.options_dialog.as_mut() {
                         dialog.shell_cancel_pointer_gesture();
                     }
