@@ -686,7 +686,7 @@ fn build_hierarchy_level(
 }
 
 /// Endpoint-A bridge-tile slot to the native `BuildZoneLevel` side direction.
-const HIGH_BRIDGE_HIERARCHY_DIRECTIONS: [i8; 16] =
+pub(crate) const HIGH_BRIDGE_HIERARCHY_DIRECTIONS: [i8; 16] =
     [0, 0, -1, 2, 2, -1, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2];
 
 include!("hierarchy_bridge.rs");
@@ -1678,7 +1678,17 @@ pub(crate) fn find_high_bridge_record(
     query: (u16, u16),
     tolerance: u16,
 ) -> Option<&BridgeEndpointRecord> {
-    bridge_records.iter().skip(start_index).find(|record| {
+    find_high_bridge_record_index(bridge_records, start_index, query, tolerance)
+        .map(|index| &bridge_records[index])
+}
+
+pub(crate) fn find_high_bridge_record_index(
+    bridge_records: &[BridgeEndpointRecord],
+    start_index: usize,
+    query: (u16, u16),
+    tolerance: u16,
+) -> Option<usize> {
+    bridge_records.iter().enumerate().skip(start_index).find(|(_, record)| {
         if !record.is_high() {
             return false;
         }
@@ -1697,7 +1707,7 @@ pub(crate) fn find_high_bridge_record(
         } else {
             qx >= ax && qx <= bx && (qy - ay).abs() <= i32::from(tolerance)
         }
-    })
+    }).map(|(index, _)| index)
 }
 
 ///583180/5835D0 subtract packed words before floating distance and retain

@@ -25,6 +25,9 @@ use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::rules::terrain_rules::LandType;
 use crate::sim::movement::locomotor::MovementLayer;
 
+#[path = "bridge_repair_zones.rs"]
+mod bridge_repair_zones;
+
 /// Zone ID: 0 = impassable/unassigned, 1+ = valid zone.
 pub type ZoneId = u16;
 

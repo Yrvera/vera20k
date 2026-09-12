@@ -39,6 +39,7 @@
 pub mod walker;
 mod damaged_variant;
 mod record_scan;
+mod zone_activation;
 pub(crate) mod gap_restamp;
 pub(crate) mod publication;
 pub(crate) mod ramp_repair;

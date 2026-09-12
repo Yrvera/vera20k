@@ -283,7 +283,7 @@ fn automatic_tube_shell_ground_terrain() -> ResolvedTerrainGrid {
     ResolvedTerrainGrid::from_cells_with_tubes(5, 1, cells, tubes)
 }
 
-fn terrain_from_zone_classes(
+pub(super) fn terrain_from_zone_classes(
     width: u16,
     height: u16,
     classes: &[u8],

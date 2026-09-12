@@ -24,6 +24,9 @@ mod constructor_publication;
 #[path = "bridge_pavement_publication.rs"]
 mod pavement_publication;
 
+#[path = "bridge_zone_publication.rs"]
+mod zone_publication;
+
 #[cfg(test)]
 #[path = "bridge_pavement_publication_tests.rs"]
 mod pavement_tests;
