@@ -56,6 +56,7 @@ pub(crate) mod at_coord;
 mod cell_arrival;
 mod drive_locomotion;
 pub(crate) mod ground_pose;
+pub(crate) mod locomotor_owner;
 pub(crate) mod locomotor_ready;
 mod movement_blocked;
 pub(crate) mod movement_bridge;
@@ -433,32 +434,10 @@ pub(crate) fn locomotor_end_gate_context(
 }
 
 pub(crate) fn tick_locomotor_piggyback_restore_one(entities: &mut EntityStore, id: u64) -> bool {
-    let Some(entity) = entities.get(id) else {
-        return false;
-    };
-    let gate = locomotor_end_gate_context(entity);
     let Some(entity) = entities.get_mut(id) else {
         return false;
     };
-    let owner_moving = gate.owner_moving;
-    let owner_teleporting = gate.owner_teleporting;
-    let owner_deploying = gate.owner_deploying;
-    let mut retired_drive = false;
-    let restored_now = if let Some(ref mut loco) = entity.locomotor {
-        retired_drive = loco.active_kind() == crate::rules::locomotor_type::LocomotorKind::Drive;
-        loco.can_restore_primary_from_piggyback(owner_moving, owner_teleporting, owner_deploying)
-            && loco.restore_primary_from_piggyback()
-    } else {
-        false
-    };
-    if restored_now && retired_drive {
-        // Native FootClass::AI releases the old active locomotor before
-        // installing the stored primary. Do not retain hashed Drive
-        // state after primary Teleport is active again.
-        entity.drive_locomotion = None;
-        entity.drive_track = None;
-    }
-    restored_now
+    locomotor_owner::try_restore_primary(entity)
 }
 
 // ---------------------------------------------------------------------------

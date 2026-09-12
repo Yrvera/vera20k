@@ -243,10 +243,8 @@ pub fn set_destination_for_teleporter_entity(
         let Some(grid) = grid else {
             return false;
         };
-        if let Some(entity) = entities.get_mut(entity_id)
-            && let Some(ref mut loco) = entity.locomotor
-        {
-            loco.begin_drive_piggyback_for_teleporter(binary_frame);
+        if let Some(entity) = entities.get_mut(entity_id) {
+            super::locomotor_owner::begin_drive_for_teleporter(entity, binary_frame);
         }
         return issue_move_command_with_layered(
             entities,
@@ -267,7 +265,7 @@ pub fn set_destination_for_teleporter_entity(
         );
     }
 
-    if let Some(entity) = entities.get(entity_id) {
+    if let Some(entity) = entities.get_mut(entity_id) {
         let should_restore = entity.locomotor.as_ref().is_some_and(|loco| {
             loco.effective_kind() == LocomotorKind::Teleport
                 && loco.active_kind() != LocomotorKind::Teleport
@@ -281,20 +279,8 @@ pub fn set_destination_for_teleporter_entity(
         // nevertheless part of a *swap*. Here the gated form is the right one:
         // a Chrono Miner still driving keeps Drive installed and the per-tick
         // restore picks it up on the frame the drive actually stops.
-        let gate = super::locomotor_end_gate_context(entity);
-        let may_end = entity.locomotor.as_ref().is_some_and(|loco| {
-            loco.can_restore_primary_from_piggyback(
-                gate.owner_moving,
-                gate.owner_teleporting,
-                gate.owner_deploying,
-            )
-        });
-        if should_restore
-            && may_end
-            && let Some(entity) = entities.get_mut(entity_id)
-            && let Some(ref mut loco) = entity.locomotor
-        {
-            loco.restore_primary_from_piggyback();
+        if should_restore {
+            super::locomotor_owner::try_restore_primary(entity);
         }
     }
 
