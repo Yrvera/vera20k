@@ -3,7 +3,7 @@
 // needs its own production-host comparison and is not certified by this test.
 use crate::map::playfield::PlayfieldBounds;
 
-fn hierarchy_native_bounds(input: &serde_json::Value) -> PlayfieldBounds {
+pub(crate) fn hierarchy_native_bounds(input: &serde_json::Value) -> PlayfieldBounds {
     let size = &input["size"];
     let bounds = input
         .get("bounds")
@@ -18,7 +18,7 @@ fn hierarchy_native_bounds(input: &serde_json::Value) -> PlayfieldBounds {
     }
 }
 
-fn hierarchy_native_fixture(
+pub(crate) fn hierarchy_native_fixture(
     input: &serde_json::Value,
 ) -> (
     BaseZoneTopology,
@@ -137,7 +137,7 @@ fn hierarchy_native_sequence(actual: serde_json::Value, expected: &serde_json::V
     assert_eq!(actual.len(), expected.len(), "{label} length");
 }
 
-fn assert_native_hierarchy_graphs(
+pub(crate) fn assert_native_hierarchy_graphs(
     hierarchy: &ZoneHierarchy,
     terrain: &ResolvedTerrainGrid,
     expected: &serde_json::Value,

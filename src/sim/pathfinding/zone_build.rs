@@ -1220,6 +1220,11 @@ pub(crate) fn add_adjacency(adj: &mut [Vec<ZoneId>], a: ZoneId, b: ZoneId) {
 }
 
 #[cfg(test)]
+pub(crate) use tests::{
+    assert_native_hierarchy_graphs, hierarchy_native_bounds, hierarchy_native_fixture,
+};
+
+#[cfg(test)]
 mod tests {
     include!("bridge_hierarchy_native_tests.rs");
     include!("tube_hierarchy_native_tests.rs");

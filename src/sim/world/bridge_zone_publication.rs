@@ -1,8 +1,16 @@
 //! Live56DB70 repair callback. Keep the record owner and navigation's retained
 //! input mirror synchronized without replacing the ordered hierarchy graph.
 use super::*;
+use crate::sim::pathfinding::zone_incremental::{
+    ZoneBatchHost, recalculate_zone_batch, repair_zone_hierarchy_around_cell,
+};
 
 impl LivePublication<'_> {
+    /// Original586990. The repair/walker owns the ordered input vector; this
+    /// callback preserves its duplicates and never rebuilds base connectivity.
+    pub(super) fn recalculate_bridge_zones(&mut self, cells: &[CellCoord]) -> Result<(), String> {
+        recalculate_zone_batch(self, cells)
+    }
     /// Original56C510, after the ramp walker has completed its synchronous
     /// terrain/constructor writes and requested connectivity. Recalc must
     /// already have projected each touched class and cached height. No hierarchy
@@ -65,9 +73,80 @@ impl LivePublication<'_> {
     }
 }
 
+impl ZoneBatchHost for LivePublication<'_> {
+    type Error = String;
+
+    fn admitted(&mut self, coord: CellCoord) -> Result<bool, String> {
+        let terrain = self
+            .sim
+            .resolved_terrain
+            .as_ref()
+            .ok_or("zone batch has no live terrain")?;
+        Ok(crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+            (i32::from(coord.0), i32::from(coord.1)),
+            self.sim.playfield_bounds,
+            Some(terrain),
+        ))
+    }
+
+    fn clear_fine_zone(&mut self, coord: CellCoord) -> Result<(), String> {
+        let zones = self
+            .sim
+            .zone_grid
+            .as_mut()
+            .ok_or("zone batch has no live zone owner")?;
+        let (base, hierarchy) = zones
+            .base_and_hierarchy_mut()
+            .ok_or("zone batch has no retained hierarchy")?;
+        hierarchy.levels_mut()[0]
+            .set_native_zone_at(coord, base.native_bridge_source_size, 0)
+            .ok_or_else(|| "zone batch coordinate has no native zone storage".into())
+    }
+
+    fn recalc_at(&mut self, coord: CellCoord) -> Result<(), String> {
+        // Query and lookup are distinct native operations; both stamp a missing
+        // Cell's dummy coordinate before the immediate47D2B0 dummy guard.
+        let cell = self.lookup(coord);
+        self.recalc_cell(cell, -1)
+    }
+
+    fn fine_zone(&self, coord: CellCoord) -> Result<u16, String> {
+        self.sim
+            .zone_grid
+            .as_ref()
+            .and_then(|zones| zones.hierarchy_zone_at_native(0, (coord.0 as u16, coord.1 as u16)))
+            .ok_or_else(|| "zone batch has no native fine-zone storage".into())
+    }
+
+    fn patch_hierarchy(&mut self, coord: CellCoord) -> Result<(), String> {
+        let sim = &mut self.sim;
+        let terrain = sim
+            .resolved_terrain
+            .as_ref()
+            .ok_or("zone batch has no live terrain")?;
+        let bridges = sim
+            .bridge_state
+            .as_ref()
+            .ok_or("zone batch has no bridge record owner")?;
+        let zones = sim
+            .zone_grid
+            .as_mut()
+            .ok_or("zone batch has no live zone owner")?;
+        repair_zone_hierarchy_around_cell(
+            zones,
+            coord,
+            sim.playfield_bounds,
+            terrain,
+            bridges.endpoint_records(),
+        )
+        .ok_or_else(|| "zone batch has no retained hierarchy".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("bridge_batch_native_tests.rs");
     use crate::rules::ini_parser::IniFile;
     use crate::rules::locomotor_type::MovementZone;
     use crate::sim::pathfinding::{PathGrid, zone_map::ZoneGrid};

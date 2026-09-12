@@ -276,6 +276,33 @@ impl ZoneLevelGraph {
         }
     }
 
+    /// The586990 fine-zone clear uses the same signed/clamped native record
+    /// as56D3F0 reads, including mutable padding beyond represented cells.
+    pub(crate) fn set_native_zone_at(
+        &mut self,
+        coord: (i16, i16),
+        source_size: Option<(i32, i32)>,
+        zone: ZoneId,
+    ) -> Option<()> {
+        let (x, y) = if let Some(size) = source_size {
+            super::zone_build::native_zone_grid_position(size, coord)?
+        } else {
+            let (x, y) = (i32::from(coord.0), i32::from(coord.1));
+            if x < 0 || y < 0 || x >= i32::from(self.width) || y >= i32::from(self.height) {
+                return None;
+            }
+            (x, y)
+        };
+        if x < i32::from(self.width) && y < i32::from(self.height) {
+            self.set_zone_at(x, y, zone);
+        } else {
+            let size = source_size?;
+            let side = size.0.wrapping_add(size.1).wrapping_add(1);
+            self.set_native_padding_zone((y * side + x) as usize, zone);
+        }
+        Some(())
+    }
+
     pub(crate) fn cell_zone_ids_mut(&mut self) -> &mut [ZoneId] {
         &mut self.cell_zone_ids
     }

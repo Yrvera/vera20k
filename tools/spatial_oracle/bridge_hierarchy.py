@@ -32,6 +32,7 @@ def execute(case):
         return pointer
 
     queries, dummy_writes, calls, patch_calls, recalcs, high_pair_calls = [], [], [], [], [], []
+    batch_queries = []
 
     def observe(_uc, address, _size, _data):
         if address == 0x578460:
@@ -39,6 +40,10 @@ def execute(case):
             coord = struct.unpack('<hh', uc.mem_read(u32(uc, esp + 4), 4))
             queries.append(list(coord))
             assert u32(uc, esp + 8) == 1
+            # Exact return addresses of586990's two outer mode-one queries.
+            # Nested Recalc and584550 queries remain in the full transcript.
+            if u32(uc, esp) in (0x5869BA, 0x586A5B):
+                batch_queries.append(list(coord))
         if address in (0x581F90, 0x584550, 0x5824A0, 0x42C1C0):
             calls.append(hex(address))
         if address == 0x584550:
@@ -243,7 +248,7 @@ def execute(case):
         return dict(graphs=graphs, queries=list(queries), dummy_writes=list(dummy_writes),
                     dummy=list(struct.unpack('<hh', uc.mem_read(DUMMY + 0x24, 4))), calls=list(calls),
                     patch_calls=list(patch_calls), recalcs=list(recalcs), recalculated_cells=recalculated_cells,
-                    high_pair_calls=list(high_pair_calls),
+                    high_pair_calls=list(high_pair_calls), batch_queries=list(batch_queries),
                     classes=[retained[(y * side + x) * 4] for y in range(width) for x in range(width)],
                     levels=[retained[(y * side + x) * 4 + 1] for y in range(width) for x in range(width)],
                     base_ids=[struct.unpack_from('<H', retained, (y * side + x) * 4 + 2)[0]
@@ -254,6 +259,7 @@ def execute(case):
     states = []
     for action in case.get('actions', []):
         queries.clear(); dummy_writes.clear(); calls.clear(); patch_calls.clear(); recalcs.clear(); high_pair_calls.clear()
+        batch_queries.clear()
         for change in action.get('changes', []):
             x, y = change['cell']; i = y * width + x; native = y * side + x
             if 'cell_level' in change:

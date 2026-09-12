@@ -40,6 +40,35 @@ pub(crate) fn bridge_constructor_terrain() -> ResolvedTerrainGrid {
     grid
 }
 
+/// Real resident inputs for bridge_hierarchy's original586990/Recalc corpus.
+/// Tile2 is invalid against the two-entry registry; tile0 has the supplied
+/// slope used by the second-pass admission discriminator. No Recalc substitute.
+pub(crate) fn install_bridge_batch_test_catalog(grid: &mut ResolvedTerrainGrid, slope: bool) {
+    let theater = synthetic_theater_from_ini(
+        b"[TileSet0000]\nTilesInSet=2\nFileName=source\nSetName=Plain\n",
+    );
+    let mut first = gsi_04_02_last_tiles_tmp_bytes(11, [0; 3], [0; 3]);
+    first[62] = u8::from(slope);
+    let second = gsi_04_02_last_tiles_tmp_bytes(11, [0; 3], [0; 3]);
+    let (_directory, assets) = gsi_04_02_asset_manager_with_loose_tmps(&[
+        ("source01.tem", &first),
+        ("source02.tem", &second),
+    ]);
+    let rules_text: String = crate::rules::terrain_rules::LandType::ALL
+        .iter()
+        .take(9)
+        .map(|land| format!("[{}]\nWheel=100%\n", land.section_name()))
+        .collect();
+    let rules = TerrainRules::from_ini(&IniFile::from_str(&rules_text));
+    grid.bridge_recalc_catalog = Some(Arc::new(
+        BridgeRecalcCatalog::for_tiles(&theater, &assets, &rules, false, 0, [0, 1])
+            // Live publication also refreshes presentation for the invalid
+            // tile's clear fallback. Its single file always selects variant0;
+            // supply the initialized process table required by that path.
+            .with_fixture_files(0, &assets, &["source01.tem"], [0; 64]),
+    ));
+}
+
 #[test]
 fn recalc_pristine_metadata_and_level_override_match_original_instructions() {
     let corpus: serde_json::Value = serde_json::from_str(include_str!(

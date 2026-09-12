@@ -59,6 +59,40 @@ impl PackedZoneCoord {
     }
 }
 
+/// Ordered586990 callbacks. Recalc owns live Cell/cache publication; this
+/// controller never changes base connectivity or infers Assign/Merge repairs.
+pub(crate) trait ZoneBatchHost {
+    type Error;
+    fn admitted(&mut self, coord: (i16, i16)) -> Result<bool, Self::Error>;
+    fn clear_fine_zone(&mut self, coord: (i16, i16)) -> Result<(), Self::Error>;
+    fn recalc_at(&mut self, coord: (i16, i16)) -> Result<(), Self::Error>;
+    fn fine_zone(&self, coord: (i16, i16)) -> Result<ZoneId, Self::Error>;
+    fn patch_hierarchy(&mut self, coord: (i16, i16)) -> Result<(), Self::Error>;
+}
+
+/// Original MapClass::RecalcCellsAndRebuildZones @0x00586990. Both passes walk
+/// the supplied vector backwards, including duplicate coordinates. Admission
+/// is queried again after all recalculations, and each patch observes the
+/// hierarchy produced by earlier patches. Evidence: bridge_hierarchy native
+/// corpus; caller-owned rectangle/span enumeration remains separate.
+pub(crate) fn recalculate_zone_batch<H: ZoneBatchHost>(
+    host: &mut H,
+    cells: &[(i16, i16)],
+) -> Result<(), H::Error> {
+    for &coord in cells.iter().rev() {
+        if host.admitted(coord)? {
+            host.clear_fine_zone(coord)?;
+            host.recalc_at(coord)?;
+        }
+    }
+    for &coord in cells.iter().rev() {
+        if host.admitted(coord)? && host.fine_zone(coord)? == ZONE_INVALID {
+            host.patch_hierarchy(coord)?;
+        }
+    }
+    Ok(())
+}
+
 /// Provenance selects between the two distinct native one-cell helpers —
 /// `MapClass::AssignOrphanedCellZone` @ `0x0056D460` and
 /// `MapClass::MergeAdjacentCellZone` @ `0x0056D5A0`. It is never inferred from
@@ -162,6 +196,30 @@ pub(crate) fn repair_zone_cell(
         }
     };
 
+    // Every native caller invokes584550 independently of base eligibility.
+    let _ = repair_zone_hierarchy_around_cell(
+        zone_grid,
+        coord,
+        bounds,
+        resolved_terrain,
+        bridge_records,
+    );
+    outcome
+}
+
+/// Shared hierarchy-only584550 delivery; preserves all retained base IDs/rows.
+/// Rust currently compacts when itsu16 append IDs are exhausted. Native instead
+/// reaches584D64 recovery on dword record-byte-offset wrap at584A8B; equivalence
+/// at these storage boundaries remains open. Both world paths retain the same
+/// existing Rust recovery instead of leaving a partly patched graph on capacity.
+pub(crate) fn repair_zone_hierarchy_around_cell(
+    zone_grid: &mut ZoneGrid,
+    coord: (i16, i16),
+    bounds: Option<crate::map::playfield::PlayfieldBounds>,
+    resolved_terrain: &ResolvedTerrainGrid,
+    bridge_records: &[crate::sim::bridge_state::BridgeEndpointRecord],
+) -> Option<()> {
+    let (width, height) = (zone_grid.width, zone_grid.height);
     let patch_result = zone_grid
         .base_and_hierarchy_mut()
         .map(|(base, hierarchy)| {
@@ -184,9 +242,8 @@ pub(crate) fn repair_zone_cell(
             )
         })
         .unwrap_or(LocalHierarchyPatchResult::NeedsFullRebuild);
-    if patch_result == LocalHierarchyPatchResult::NeedsFullRebuild
-        && let Some(base) = zone_grid.base_topology_mut().map(|base| base.clone())
-    {
+    if patch_result == LocalHierarchyPatchResult::NeedsFullRebuild {
+        let base = zone_grid.base_topology_mut()?.clone();
         zone_grid.replace_hierarchy(build_zone_hierarchy_with_query(
             &base,
             Some(resolved_terrain),
@@ -203,7 +260,7 @@ pub(crate) fn repair_zone_cell(
         ));
     }
 
-    outcome
+    Some(())
 }
 
 fn decide_base_zone_repair(

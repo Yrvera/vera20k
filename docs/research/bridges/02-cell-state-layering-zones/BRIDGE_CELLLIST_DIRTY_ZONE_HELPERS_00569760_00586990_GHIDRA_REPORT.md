@@ -9,6 +9,53 @@
 
 ## 1. Overview
 
+### 2026-09-12 native execution and Rust delivery update
+
+The current active-retail body and callers of `0x00586990` were reread directly.
+The earlier no-live-Ghidra limitation below describes the original report only.
+Reproducible original-instruction evidence is now in
+[bridge_hierarchy.py](../../../../tools/spatial_oracle/bridge_hierarchy.py),
+with binary identity, substitutions and coverage limits in its adjacent metadata.
+
+Both passes reverse the supplied coordinate vector, retaining duplicates. Each
+pass makes a fresh mode-1 playfield query (`0x005869B5` and `0x00586A56`). The
+first clears only the fine hierarchy ID through signed, clamped native indexing,
+then performs a separate fixed-stride Cell lookup and original Recalc(-1) at
+`0x00586A31`. The second reads the current fine ID and calls `0x00584550` only
+when it is zero. Neither pass invokes base-connectivity rebuild `0x0056C510`.
+Missing-Cell queries and lookups stamp the shared dummy independently; Recalc
+returns immediately for that dummy.
+
+The eight batch actions in the native corpus cover reversed order, duplicates,
+same-block patch suppression, missing/outside cells, retained-height publication,
+and a real resident TMP slope change that removes a cell from second-pass
+admission. A normalized-map case fills native padding and aliases represented
+cells after a supplied raw +4 height change. The corpus records outer queries,
+Recalc/patch order, all hierarchy IDs and ordered records/edges, retained classes
+and heights, base IDs, all 13 raw rows, and final dummy state. Existing captures
+are unchanged apart from the added outer-query trace.
+
+Rust's shared `recalculate_zone_batch` controller and `LivePublication` callbacks
+are exercised in
+[bridge_batch_native_tests.rs](../../../../src/sim/world/bridge_batch_native_tests.rs).
+These comparisons execute actual resident Recalc and cache publication, using
+supplied TMP/registry inputs matching the native fixture. The Rust presentation
+tail additionally receives an initialized variant table for its single-file clear
+fallback. This does not assert original rendering or a complete retail map load.
+
+Local repair and batch callbacks share hierarchy-only capacity recovery, preserving
+retained base IDs and movement rows. A Rust regression exhausts fine-level append
+slots after the coarse levels can be partly changed, then checks the reconstructed
+graph against the native full-build snapshot. **Capacity threshold parity remains
+open:** Rust currently compacts at its u16 ID limit; original `0x00584A8B` branches
+to `0x00584D64` on a dword record-byte-offset wrap. These are different boundaries.
+
+The prepared batch callback still needs the engineer and damage/repair walker
+callers. Original rectangle wrapper `0x005868A0` enumerates X outer/Y inner and
+calls the batch even for an empty list; it has eight low/high damage/repair walker
+callers. These integrations, resident lifecycle admission, and the whole bridge
+mechanism remain open. No TS-only behavior is claimed.
+
 `FUN_00569760` is not a reusable map-update helper. It is a bridge-specific low-bridge pavement/destruction walker that scans up to 30 cells along one bridge axis, mutates bridge pavement/tile state, accumulates some touched cells into a stack `DynamicVector`, computes an optional tactical dirty rectangle, and tail-dispatches the accumulated list to `FUN_00586990`.
 
 `FUN_00586990` is the reusable piece. It consumes a dynamic vector of packed cell coordinates and performs a generic deferred cell refresh: clear the level-0 zone slot, run `CellClass::RecalcAttributes`, then patch the zone graph around cells whose slot remains zero. Current verified callers are bridge/damage/rectangle update paths, but the body itself is not bridge-specialized.
