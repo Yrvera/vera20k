@@ -69,6 +69,7 @@ mod navcom;
 mod path_markers;
 pub(crate) mod ready_producer;
 pub(crate) mod slope_transition;
+mod track_head;
 
 // --- Movement-related modules (public API) ---
 pub mod air_movement;
@@ -123,11 +124,13 @@ pub(crate) use movement_tick::tick_movement_with_grids;
 
 /// Install the active-YR `DriveLocomotion::Force_Track` state for a flat-ground
 /// unit. The caller supplies head offsets from the unit's current cell origin;
-/// the stored head itself is an exact absolute lepton coordinate.
+/// and the caller's raw Z (native Force_Track4B0C40 copies the full XYZ).
+/// The stored head is an exact absolute lepton coordinate.
 pub(crate) fn install_forced_drive_track(
     entity: &mut crate::sim::game_entity::GameEntity,
     cell_occupation: &mut crate::sim::occupancy::CellOccupationGrid,
     mut forced: drive_track::ForcedDriveTrackState,
+    head_z_leptons: i32,
 ) -> bool {
     if entity.occupancy_list_layer() != Some(locomotor::MovementLayer::Ground) {
         return false;
@@ -145,7 +148,7 @@ pub(crate) fn install_forced_drive_track(
     let head = crate::sim::components::DriveCoord {
         x: absolute_x,
         y: absolute_y,
-        z: i32::from(entity.position.z),
+        z: head_z_leptons,
     };
     let footprint = crate::sim::components::DriveOccupationFootprint {
         rx: target_rx,
@@ -524,7 +527,7 @@ pub(crate) fn tick_movement_with_grid(
 // ---------------------------------------------------------------------------
 
 /// Returns true if the entity has a within-cell destination it hasn't reached yet.
-/// Used for both infantry (sub-cell corners) and vehicles (cell center).
+/// Generic sub-cell arrival for locomotors without a retained Drive/Ship head.
 /// The locomotor's `subcell_dest` field stores the target lepton coordinates.
 ///
 /// Takes individual fields to avoid borrow conflicts with `entity.movement_target`.
@@ -536,6 +539,12 @@ fn walking_to_subcell_dest(
     let Some(loco) = locomotor else {
         return false;
     };
+    // Drive/Ship terminate at their retained raw head. CellArrival's legacy
+    // center projection must not start a second generic movement afterward.
+    if matches!(loco.kind, crate::rules::locomotor_type::LocomotorKind::Drive
+        | crate::rules::locomotor_type::LocomotorKind::Ship) {
+        return false;
+    }
     let Some((dest_x, dest_y)) = loco.subcell_dest else {
         return false;
     };

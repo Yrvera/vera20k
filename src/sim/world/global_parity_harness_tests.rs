@@ -394,8 +394,20 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // Only entities 3/4 gain Some(0) in the final state. Clearing ONLY those exact-Z
 // values reproduces all eight parent (588f4079) probes; full RNG states are equal.
 // No hash formula changed. See RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md, replay provenance.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xBBCE_5931_7D88_FED0;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x70AC_1694_ECE3_412B;
+// 2026-09-12: raw Drive/Ship head delivery intentionally changes these
+// current-state projections, which all fold Drive runtime even under older
+// hash schemas. Against exact6580e4c8, replacing only the measured mover leaves
+// reproduced all ten new hashes; every original baseline pin also passed.
+// The global trace first changes curve selection at tick352: the remaining W
+// direction adopts Raw6 at entry16-1 with retained budget15, while the old
+// physical-path reader keeps Raw5. Raw5[45] and Raw6[16] meet at the same world
+// coordinate. Position first differs at354; final movement differs by9 leptons.
+// All600 record/replay hashes and all three RNG stream pins still agree.
+// The final six differing leaves are headX, Drive/curve cursors and residuals,
+// and subcellX. Native same-pass timing remains open; this is a Rust regression
+// ratchet, not whole-movement parity. See the bridge walker report's raw-head section.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x8CEF_5A70_F4A9_D0EE;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xE7AC_3E98_B3AF_D6C4;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -575,15 +587,15 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x70AC_1694_ECE3_412B;
 // composed measurement, unchanged by this branch.
 // Re-baselined 2026-09-05 for GSI-09.03 harvest bite size (behavior-bearing,
 // see `FINAL_STREAM_STATES`); the historical probes move with the final hash.
-const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x736D_0DE6_3FA9_0228;
-const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xC7A2_F0D8_CA11_B5D9;
-const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xA333_2779_6344_1458;
+const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x3BD0_0F58_EFC4_6367;
+const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x7CE6_BA04_7B2A_D892;
+const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xB168_3F80_22D7_90EC;
 // Re-baselined 2026-09-02 for v117's disguise-detect folds (FogState's
 // `CellClass+0xAC[house]` counter plane and the cached `DetectDisguiseRange=`
 // deposit radius). The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved. The three RNG stream pins are unchanged.
-const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x2429_1350_9A70_23B7;
+const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xDEF9_D601_4DBA_EA1D;
 // Baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): the
 // `BuildingClass+0x6D0` ProduceCash timer and the `TechnoClass+0x1CC/+0x1D0`
 // drain link on every entity. The dedicated pre-v135 probe reproduces the
@@ -591,13 +603,13 @@ const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x2429_1350_9A70_23B7;
 // DrainWeapon and no capture, so only current-schema composition moved (every
 // object folds its dead constructor timer and two `None`s). RNG stream pins
 // unchanged.
-const GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x8CA1_75A9_1A1A_7699;
+const GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x11EF_9692_DC03_F706;
 // Re-baselined 2026-09-05 for GSI-09.03 harvest bite size (one density level
 // per Harvest_Ore_Tick gate, 0x0073D450); see `FINAL_STREAM_STATES`.
 // Re-baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01),
 // composition-only: `GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH` holds the
 // prior value and every historical probe and stream pin is unchanged.
-const GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x53C3_17DD_E1B0_51F6;
+const GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x0E13_584B_AA4C_316C;
 // v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
 // reproduces the ramp branch's current baseline exactly; older probes and RNG pins
 // are unchanged. This is Rust hash-composition provenance, not native parity.
@@ -609,7 +621,7 @@ const GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x53C3_17DD_E1B0_51F
 // every older probe, replay tick and all three RNG streams pass unchanged.
 // Receipt: .local/shroud-current-sight-broader-v1-3.log. This is Rust hash
 // composition provenance, not a native full-simulation comparison.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xC9FF_6605_2C99_8226;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x7F4B_C14E_8F10_0A83;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -821,6 +833,7 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
             Some(&overlays),
             HARNESS_TICK_MS,
         );
+
         if rec
             .substrate
             .entities
@@ -929,8 +942,8 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
 
     assert_eq!(
         rep.state_hash_without_sustained_gap_sight_v142(),
-        0x71EC_0BD6_ED9D_45CC,
-        "pre-v142 fog provenance projection must reproduce the prior current baseline"
+        0x7C48_6EFE_4C48_7D3E,
+        "committed pre-v142 global projection changed"
     );
     let pre_lifecycle_hash = rep.state_hash_before_lifecycle_v28_and_mission_v29();
     let pre_mission_hash = rep.state_hash_without_mission_v29();
@@ -942,38 +955,38 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     assert_eq!(
         rep.state_hash_without_infantry_terminal_v136(),
         GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH,
-        "pre-v136 composition must reproduce the prior global baseline"
+        "committed pre-v136 global projection changed"
     );
     println!(
         "[global parity] probes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},pre-v115:{pre_wall_runtime_hash:016X},pre-v117:{pre_disguise_detect_hash:016X},pre-v135:{pre_credit_income_hash:016X}"
     );
     assert_eq!(
         pre_credit_income_hash, GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH,
-        "the dedicated pre-v135 probe must reproduce the prior global-harness current baseline"
+        "committed pre-v135 projection changed"
     );
     assert_eq!(
         pre_lifecycle_hash, GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH,
-        "pre-v28/pre-v29 schema probe must reproduce the historical baseline"
+        "committed pre-v28/pre-v29 projection changed"
     );
     assert_eq!(
         pre_mission_hash, GLOBAL_HARNESS_PRE_MISSION_V29_HASH,
-        "v29 provenance probe must reproduce the prior live v28 baseline; otherwise this is behavior drift"
+        "committed pre-v29 projection changed; trace any behavior or composition drift"
     );
     assert_eq!(
         pre_base_plan_hash, GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH,
-        "the dedicated pre-v110 probe must reproduce the prior global-harness baseline"
+        "committed pre-v110 projection changed"
     );
     assert_eq!(
         pre_crate_authority_hash, GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH,
-        "the dedicated pre-v114 probe must reproduce the prior global-harness current baseline"
+        "committed pre-v114 projection changed"
     );
     assert_eq!(
         pre_wall_runtime_hash, GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH,
-        "the dedicated pre-v115 probe must reproduce the prior global-harness current baseline"
+        "committed pre-v115 projection changed"
     );
     assert_eq!(
         pre_disguise_detect_hash, GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH,
-        "the dedicated pre-v117 probe must reproduce the prior global-harness current baseline"
+        "committed pre-v117 projection changed"
     );
     assert_eq!(
         final_hash, GLOBAL_HARNESS_FINAL_HASH,

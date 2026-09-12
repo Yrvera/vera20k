@@ -371,9 +371,10 @@ pub struct DrivePathQueue {
     /// a later guard keeps it harmless.
     #[serde(default)]
     pub cursor: u16,
-    /// Native FootClass path-reference cell (`+0x558`). Drive advances this
-    /// when it accepts a path direction, before the curve physically crosses
-    /// into the destination cell.
+    /// Native FootClass path-reference cell (`+0x558`). Fresh Drive/Ship
+    /// acceptance writes it before physical cell crossing (4B4618 / 6A3C47).
+    /// A chained successor only consumes directions and retains this reference
+    /// (4B1DF7 / 6A143A; locomotor_head_coordinates evidence).
     #[serde(default)]
     pub reference_cell: Option<(i16, i16)>,
 }

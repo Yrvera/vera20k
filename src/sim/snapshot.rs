@@ -462,7 +462,10 @@ use crate::sim::world::Simulation;
 // v147 persists the Scenario+214 native numeric-ID cursor. A v146 save has no
 // continuation for live constructors; the missing mid-record field cannot be
 // defaulted safely by bincode. Original689310/689470 evidence: native_id_snapshot.
-const SNAPSHOT_VERSION: u32 = 147;
+// v148 stores ordinary Drive/Ship destination/head Z in raw world leptons.
+// v147 mixed level indices and raw ForceTrack/Tube coordinates; the lost
+// original head heights cannot be reconstructed from a later terrain snapshot.
+const SNAPSHOT_VERSION: u32 = 148;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3289,7 +3292,7 @@ mod tests {
         // 143 -> 144: per-Building operational edge and retained gap deposit.
         // 145 -> 146: pavement is owned by raw terrain flags, not bridge cells.
         // 146 -> 147: retain Scenario+214 for subsequent native constructors.
-        assert_eq!(super::SNAPSHOT_VERSION, 147);
+        assert_eq!(super::SNAPSHOT_VERSION, 148);
     }
 
     #[test]

@@ -34,17 +34,77 @@ fn target_cell_coord(
     ry: u16,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
 ) -> DriveCoord {
-    let z = resolved_terrain
-        .and_then(|terrain| terrain.cell(rx, ry))
-        .map(|cell| {
-            if cell.has_bridge_deck {
-                i32::from(cell.bridge_deck_level)
-            } else {
-                i32::from(cell.level)
+    // Cell486840 sign-extends the returned object's own CellStruct, including
+    // aliased fixed-grid lookups and the shared dummy's stamped coordinates.
+    let identity =
+        resolved_terrain.map(|terrain| terrain.native_cell_identity((rx as i16, ry as i16)));
+    let cell = resolved_terrain
+        .zip(identity)
+        .map_or((rx as i16, ry as i16), |(terrain, identity)| {
+            terrain.native_cell_coord(identity)
+        });
+    let mut coord = DriveCoord {
+        x: i32::from(cell.0) * 256 + 128,
+        y: i32::from(cell.1) * 256 + 128,
+        z: 0,
+    };
+    if let Some((terrain, identity)) = resolved_terrain.zip(identity) {
+        // 486840 -> 47B3A0 retains the SAME Cell receiver for height. A new
+        // world-XY lookup changes the cell for negative/aliased coordinates.
+        let (level, slope) = match identity {
+            crate::map::cell_index::NativeCellIdentity::Real(index) => {
+                let cell = &terrain.cells()[index];
+                (cell.level, cell.slope_type)
             }
-        })
-        .unwrap_or(0);
-    DriveCoord::cell(rx, ry, z)
+            crate::map::cell_index::NativeCellIdentity::Dummy => {
+                let dummy = terrain.shared_cell_dummy().snapshot();
+                (dummy.level as u8, dummy.slope_type)
+            }
+        };
+        coord.z =
+            crate::util::lepton::ground_height_leptons(level, slope, coord.x, coord.y).unwrap_or(0);
+    }
+    coord
+}
+
+/// Shared destination-setter adjustment (Drive4AFD40 / Ship69F450). Each call
+/// receives raw caller XYZ, including already elevated Infantry GetCoords.
+fn adjusted_destination(
+    mut coord: DriveCoord,
+    terrain: Option<&ResolvedTerrainGrid>,
+) -> DriveCoord {
+    if coord == (DriveCoord { x: 0, y: 0, z: 0 }) {
+        return coord;
+    }
+    if let Some(terrain) = terrain {
+        let rx = (coord.x / 256) as i16;
+        let ry = (coord.y / 256) as i16;
+        let cell = terrain.native_cell_identity((rx, ry));
+        let structural = terrain.native_cell_flags(cell) & 0x100 != 0;
+        if structural {
+            coord.z = coord
+                .z
+                .wrapping_add(crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32);
+        }
+    }
+    coord
+}
+
+/// Native4B05D0..0638 compares the raw target XYZ before calling SetDestination.
+/// The committed head is independent and remains owned by movement acceptance.
+pub(super) fn refresh_drive_destination_coord(
+    entity: &mut GameEntity,
+    coord: DriveCoord,
+    terrain: Option<&ResolvedTerrainGrid>,
+) -> bool {
+    let Some(drive) = entity.drive_locomotion.as_ref() else {
+        return false;
+    };
+    if drive.destination == Some(coord) {
+        return false;
+    }
+    drive_set_destination(entity, coord, terrain);
+    true
 }
 
 pub(super) fn resolve_entity_nav_target_drive_coord(
@@ -52,14 +112,12 @@ pub(super) fn resolve_entity_nav_target_drive_coord(
     entities: &EntityStore,
 ) -> Option<DriveCoord> {
     match target {
-        NavTargetRef::Entity { id } => entities.get(id).map(|entity| {
-            let pos = &entity.position;
-            DriveCoord {
-                x: i32::from(pos.rx) * 256 + pos.sub_x.to_num::<i32>(),
-                y: i32::from(pos.ry) * 256 + pos.sub_y.to_num::<i32>(),
-                z: i32::from(pos.z),
-            }
-        }),
+        // OPEN: Foot4DBDF0 first asks the target's active locomotor Head_To.
+        // This current-coordinate fallback needs the retained Walk/Hover heads
+        // before moving Infantry reaim is complete; never write it into our head.
+        NavTargetRef::Entity { id } => entities
+            .get(id)
+            .map(|entity| super::ground_pose::position_world_coord(&entity.position)),
         NavTargetRef::Cell { .. } | NavTargetRef::Object { .. } | NavTargetRef::Building { .. } => {
             None
         }
@@ -80,11 +138,13 @@ pub(super) fn set_destination_internal_cell(
         drive_set_destination(
             entity,
             target_cell_coord(target.0, target.1, resolved_terrain),
+            resolved_terrain,
         );
     } else if is_ship_locomotor(entity) {
         ship_set_destination(
             entity,
             target_cell_coord(target.0, target.1, resolved_terrain),
+            resolved_terrain,
         );
     }
 }
@@ -242,12 +302,17 @@ pub(super) fn process_pending_empty_drive_arrivals_in_order(
     }
 }
 
-fn drive_set_destination(entity: &mut GameEntity, destination: DriveCoord) {
+fn drive_set_destination(
+    entity: &mut GameEntity,
+    destination: DriveCoord,
+    terrain: Option<&ResolvedTerrainGrid>,
+) {
+    let destination = adjusted_destination(destination, terrain);
     let drive = entity
         .drive_locomotion
         .get_or_insert_with(DriveLocomotionRuntime::default);
+    // Native4AFD40 writes destination only. Accepted movement owns Head_To.
     drive.destination = Some(destination);
-    drive.head_to = Some(destination);
 }
 
 fn drive_stop_moving(entity: &mut GameEntity) {
@@ -272,7 +337,12 @@ fn drive_stop_moving(entity: &mut GameEntity) {
     }
 }
 
-fn ship_set_destination(entity: &mut GameEntity, destination: DriveCoord) {
+fn ship_set_destination(
+    entity: &mut GameEntity,
+    destination: DriveCoord,
+    terrain: Option<&ResolvedTerrainGrid>,
+) {
+    let destination = adjusted_destination(destination, terrain);
     let ship = entity
         .ship_locomotion
         .get_or_insert_with(ShipLocomotionRuntime::default);

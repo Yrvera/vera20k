@@ -163,6 +163,11 @@ pub(super) fn accept_path_replay(
     consumed_directions: usize,
 ) {
     queue.reference_cell = Some(endpoint);
+    consume_path_replay(queue, consumed_directions);
+}
+
+/// Accepted chain4B1DF7/6A143A pops the queue without rewriting Foot+558.
+pub(super) fn consume_path_replay(queue: &mut DrivePathQueue, consumed_directions: usize) {
     let cursor = usize::from(queue.cursor)
         .saturating_add(consumed_directions)
         .min(queue.directions.len());

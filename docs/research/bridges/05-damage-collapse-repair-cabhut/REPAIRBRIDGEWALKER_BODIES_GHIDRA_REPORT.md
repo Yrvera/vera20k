@@ -187,6 +187,80 @@ Destination setters and entity-target refresh must cease overwriting the head.
 Their complete native owner-guard lifecycle remains a separately open behavior;
 the head/query migration does not establish that lifecycle.
 
+### Raw head delivery and remaining native state (2026-09-12)
+
+Fresh Rust command, deferred repath and subsequent segment selection now share
+`movement/track_head.rs`: one current raw XYZ produces both the retained head
+and the actual curve anchor. Chaining instead adds the remaining native queue
+direction to the old head. Native fresh acceptance writes Foot+558 at
+`0x004B4618..0x004B4649` / `0x006A3C47..0x006A3C78`; accepted chain only pops
+one direction at `0x004B1DF7..0x004B1E10` / `0x006A143A..0x006A1453`.
+It does not rewrite that replay reference.
+
+Ordinary chain admission rejects zero RawTrack entry at
+`0x004B1B93..0x004B1B9B` / `0x006A11D4..0x006A11DC`.
+Its stored entry-minus-one is incremented by the common tail
+`0x004B1F48..0x004B1F53` / `0x006A158B..0x006A1596`. Native retained cursor
+means next to consume; Rust's curve cursor still means last consumed. Native
+raw1 includes a zero sentinel after its last real point (0,3); Rust currently
+terminates on that last real point. Copying exact Head_To fixes terminal XYZ,
+not this paid-point timing. Boundary-head transfers still use Rust's deferred
+cell transaction. Native cursor/selector publication and same-pass scheduling
+remain required before live Is_At_Coord delivery can pass.
+
+Destination setters now preserve the head and apply their structural +416
+adjustment to raw caller XYZ. Cell GetCoords `0x00486840 -> 0x0047B3A0` uses
+the retained Cell receiver for ground/slope height, then the destination setter
+looks up the resulting coordinate separately. For signed Cell(-1,-1), level-3
+and slope0, the original returns (-128,-128,-311), including its +0.5 then
+truncation rule; relooking up XY prematurely would sample a different cell.
+ForceTrack copies caller Z: the bunker caller now supplies the building's exact Z.
+The refinery-exit adapter remains explicitly unproven.
+
+The current-coordinate fallback for moving Infantry reaim is still incomplete:
+Foot `0x004DBDF0`, especially `0x004DBE46..0x004DBECB`, first asks the target's
+active locomotor for non-null Head_To. Retained Walk/Hover heads, the four native
+destination guards and the live repair/marker query adapters remain open.
+Snapshot148 rejects older mixed-unit retained coordinates. Production command,
+chain, terminal, forced-height and signed-dummy regressions exercise the changed
+Rust paths; the 288-case scalar comparison does not certify complete movement.
+
+Chain selection now reads the native replay queue. The existing Rust Stop/MCV
+handoff also retires its remaining directions while retaining the committed
+curve, raw head and replay reference, so an abandoned successor cannot chain.
+This preserves the existing current-to-head Stop contract; it does not prove
+the complete native user-Stop owner cascade.
+
+The Rust replay rebaseline was causally checked against exact `6580e4c8`.
+Both old fixtures passed all ten of their existing hash projections. Replacing
+only the measured candidate mover state in those baseline simulations reproduced
+all twenty new hashes; only nine individual leaves differed. Slice6 changes
+entity1's retained head XY `(6272,640) -> (1408,1152)` and Stop's replay cursor
+`0 -> 19`. Global changes entity4's head X `2176 -> 2432`, Drive/curve point
+`5 -> 4`, Drive/curve residual `6 -> 7`, and subcell X `53 -> 62` leptons.
+
+The two 600-tick global traces first differ in curve selection at tick352.
+Raw5/flags6 reaches point45 in cell(34,9). The old physical-path reader sees
+NW toward(33,8), equal to the current curve's exit direction, and declines the
+successor. The remaining queue actually holds W: TurnTrack62 selects Raw6,
+entry16, normalized transform flags2. Rust adopts point15, budget15, head
+`(8320,2176,0)` and retains replay reference(33,8). Raw5[45] and Raw6[16]
+both transform to world `(8705,2305)`, preserving junction continuity. Tick353
+consumes entries16 and17; position first differs at354 and facing at355.
+Navigation, locomotor state and all three actual Drive speed fields agree at
+every tick. All600 record/replay hashes and all three RNG fingerprints agree.
+This explains the changed trajectory and remaining six-budget-unit difference;
+it does not close the separately open native same-pass/paid-cursor timing.
+
+| Current-schema Rust fixture | Prior `6580e4c8` | Raw-head delivery |
+| --- | --- | --- |
+| Slice6 | `9CDA1908000F0176` | `4A23C8ADF513F9D2` |
+| Global | `C9FF66052C998226` | `7F4BC14E8F100A83` |
+
+These are Rust regression ratchets, not native whole-movement goldens. The
+fresh independent critic separately checked all twenty projections, the nine
+leaves and both traces before passing this rebaseline's causal attribution.
+
 ## 0. TL;DR
 
 The four `RepairBridgeWalker_{NS,EW}_{Low,High}` functions are the per-cell

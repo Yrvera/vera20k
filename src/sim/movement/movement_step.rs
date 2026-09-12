@@ -39,7 +39,6 @@ use crate::util::fixed_math::{
 };
 use crate::util::lepton::CELL_CENTER_LEPTON;
 
-use super::movement_occupancy::BRIDGE_DECK_LEVEL_DELTA;
 use super::{
     CLIFF_HEIGHT_THRESHOLD, MovementConfig, MovementTickStats, MoverSnapshot, PATH_STUCK_INIT,
     PathfindingContext,
@@ -66,33 +65,6 @@ fn path_window_to_delta(target: &MovementTarget) -> Option<(i32, i32)> {
     ))
 }
 
-/// VERA's coarse navigation endpoint: this DriveCoord Z is a signed level
-/// index, not native raw leptons. The coordinate writer separately reconstructs
-/// exact surface Z at the final world XY through `ground_pose`.
-///
-/// The coarse bridge term follows the owner's OnBridge byte, matching the gate
-/// on native Drive's bridge offset (0x004B2196; initializer 0x004AF4A0). It must
-/// not derive that byte from A* layer or a cell-side deck height. Migrating all
-/// ordinary navigation endpoints to raw leptons is outside this producer.
-fn resolved_track_endpoint(
-    path_grid: Option<&PathGrid>,
-    cell: (u16, u16),
-    on_bridge: bool,
-    fallback_z: u8,
-) -> DriveCoord {
-    let z = path_grid
-        .and_then(|grid| grid.cell(cell.0, cell.1))
-        .map_or(fallback_z, |path_cell| {
-            (path_cell.signed_level()
-                + if on_bridge {
-                    BRIDGE_DECK_LEVEL_DELTA
-                } else {
-                    0
-                }) as u8
-        });
-    DriveCoord::cell(cell.0, cell.1, i32::from(z as i8))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn accept_shared_track(
     kind: LocomotorKind,
@@ -105,6 +77,7 @@ fn accept_shared_track(
     match kind {
         LocomotorKind::Drive => {
             if let Some(drive) = drive_locomotion.as_mut() {
+                drive.head_to = Some(endpoint_coord);
                 super::path_markers::accept_path_replay(
                     &mut drive.path,
                     endpoint,
@@ -222,12 +195,10 @@ pub(super) fn configure_motion_after_transition(
     facing_target: &mut Option<u8>,
     category: EntityCategory,
     mover_rot: i32,
-    current_cell: (u16, u16),
-    current_sub: (SimFixed, SimFixed),
-    path_grid: Option<&PathGrid>,
-    current_z: u8,
-    on_bridge: bool,
+    position: &Position,
 ) {
+    let current_cell = (position.rx, position.ry);
+    let current_sub = (position.sub_x, position.sub_y);
     target.next_index += 1;
     if target.next_index < target.path.len() {
         let next = target.path[target.next_index];
@@ -239,7 +210,7 @@ pub(super) fn configure_motion_after_transition(
         let uses_drive_tracks = shared_kind.is_some();
         let is_ship = shared_kind == Some(LocomotorKind::Ship);
         let mut turn_first: Option<u8> = None;
-        let mut accepted_plan: Option<drive_track::DriveTrackPlan> = None;
+        let mut accepted_plan = None;
         if uses_drive_tracks {
             match drive_track::plan_drive_track_from_path(
                 *facing,
@@ -252,9 +223,9 @@ pub(super) fn configure_motion_after_transition(
                     turn_first = Some(desired_facing);
                 }
                 drive_track::DriveTrackDecision::Select(plan) => {
-                    *drive_track = drive_track::begin_selected_drive_track(&plan);
-                    if drive_track.is_some() {
-                        accepted_plan = Some(plan);
+                    if let Some((head, curve)) = super::track_head::begin_fresh(&plan, position) {
+                        *drive_track = Some(curve);
+                        accepted_plan = Some((plan, head));
                     }
                 }
                 drive_track::DriveTrackDecision::Unavailable => {}
@@ -263,20 +234,19 @@ pub(super) fn configure_motion_after_transition(
             *drive_track = None;
         }
 
-        if let Some(plan) = accepted_plan {
+        if let Some((plan, head)) = accepted_plan {
             *facing_target = None;
             if let Some(kind) = shared_kind {
                 let endpoint = (
                     (i32::from(current_cell.0) + plan.head_dx) as i16,
                     (i32::from(current_cell.1) + plan.head_dy) as i16,
                 );
-                let endpoint_cell = (endpoint.0 as u16, endpoint.1 as u16);
                 accept_shared_track(
                     kind,
                     drive_locomotion,
                     ship_locomotion,
                     endpoint,
-                    resolved_track_endpoint(path_grid, endpoint_cell, on_bridge, current_z),
+                    head,
                     plan.nodes,
                 );
             }
@@ -507,6 +477,70 @@ mod tests {
     use super::*;
     use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::movement::locomotor::LocomotorState;
+
+    #[test]
+    fn fresh_retry_terminal_retains_raw_head_for_both_track_families() {
+        for kind in [LocomotorKind::Drive, LocomotorKind::Ship] {
+            let head = DriveCoord {
+                x: 3 * 256 + 85,
+                y: 2 * 256 + 153,
+                z: 731,
+            };
+            let mut position = Position {
+                rx: 3,
+                ry: 2,
+                z: 1,
+                exact_z_leptons: Some(104),
+                sub_x: SimFixed::from_num(85),
+                sub_y: SimFixed::from_num(154),
+            };
+            let mut curve =
+                drive_track::begin_drive_track_with_head_offset(1, 0, 85, 153, 0).unwrap();
+            curve.point_index = drive_track::raw_track_meta(1).unwrap().points_count - 2;
+            curve.residual = 8;
+            let mut curve = Some(curve);
+            let mut drive = (kind == LocomotorKind::Drive).then(|| DriveLocomotionRuntime {
+                head_to: Some(head),
+                residual_budget: 8,
+                ..Default::default()
+            });
+            let mut ship = (kind == LocomotorKind::Ship).then(|| ShipLocomotionRuntime {
+                head_to: Some(head),
+                ..Default::default()
+            });
+            let mut target = MovementTarget {
+                path: vec![(3, 2)],
+                path_layers: vec![MovementLayer::Ground],
+                ..Default::default()
+            };
+            let result = advance_drive_track_retry_after_selection(
+                &mut target,
+                &mut position,
+                &mut 0,
+                &mut None,
+                &mut curve,
+                &mut drive,
+                &mut ship,
+                kind,
+                &mut None,
+                1,
+                MovementLayer::Ground,
+                None,
+                None,
+            );
+            assert!(
+                matches!(result, AdvanceResult::ReadyForCrossings),
+                "{kind:?}"
+            );
+            assert!(curve.is_none());
+            assert_eq!(
+                super::super::ground_pose::position_world_coord(&position),
+                head
+            );
+            assert_eq!(drive.and_then(|d| d.head_to), None);
+            assert_eq!(ship.and_then(|s| s.head_to), None);
+        }
+    }
 
     /// Body/hull in-place turn duration = abs(delta_8bit) / ROT native frames
     /// (gamemd DriveLocomotionClass::Do_Turn on the hull FacingClass at the
@@ -1193,7 +1227,6 @@ fn select_fresh_drive_track_at_current_cell(
     admission: DriveCellAdmission<'_>,
     entity_id: u64,
     current_occupation_layer: MovementLayer,
-    path_grid: Option<&PathGrid>,
     shared_kind: LocomotorKind,
 ) -> FreshTrackOutcome {
     let Some(next) = target.path.get(target.next_index).copied() else {
@@ -1288,6 +1321,9 @@ fn select_fresh_drive_track_at_current_cell(
             // the mover's claim on the cell its body is standing in, then hand
             // the refusal — the cell that ACTUALLY tripped, never a different
             // one — to the caller's dispatch.
+            if let Some(drive) = drive_locomotion.as_mut() {
+                drive.head_to = None;
+            }
             install_drive_head_to_occupation(
                 drive_locomotion,
                 cell_occupation,
@@ -1317,7 +1353,7 @@ fn select_fresh_drive_track_at_current_cell(
         }
     }
 
-    let Some(new_track) = drive_track::begin_selected_drive_track(&plan) else {
+    let Some((head, new_track)) = super::track_head::begin_fresh(&plan, position) else {
         return FreshTrackOutcome::None;
     };
 
@@ -1335,19 +1371,13 @@ fn select_fresh_drive_track_at_current_cell(
         (i32::from(position.rx) + plan.head_dx) as i16,
         (i32::from(position.ry) + plan.head_dy) as i16,
     );
-    let endpoint_cell = (endpoint.0 as u16, endpoint.1 as u16);
     let endpoint_layer = target.layer_at(head_index);
     accept_shared_track(
         shared_kind,
         drive_locomotion,
         ship_locomotion,
         endpoint,
-        resolved_track_endpoint(
-            path_grid,
-            endpoint_cell,
-            current_occupation_layer == MovementLayer::Bridge,
-            position.z,
-        ),
+        head,
         plan.nodes,
     );
     let next_occupation = (endpoint_layer == MovementLayer::Ground)
@@ -1439,6 +1469,69 @@ fn apply_track_residual(
     AdvanceResult::DriveTrackActive
 }
 
+/// Shared ordinary terminal, including a freshly selected curve completed by
+/// retained budget in the same movement pass. Native copies Head_To, then
+/// SetHeight(0); no caller may substitute a cell center afterward.
+#[allow(clippy::too_many_arguments)]
+fn finish_shared_track(
+    position: &mut Position,
+    curve: &mut DriveTrackState,
+    kind: LocomotorKind,
+    drive_locomotion: &mut Option<DriveLocomotionRuntime>,
+    ship_locomotion: &mut Option<ShipLocomotionRuntime>,
+    on_bridge: bool,
+    terrain: Option<&ResolvedTerrainGrid>,
+    path_grid: Option<&PathGrid>,
+) -> Option<(i32, i32)> {
+    let head = match kind {
+        LocomotorKind::Drive => drive_locomotion.as_ref().and_then(|d| d.head_to),
+        LocomotorKind::Ship => ship_locomotion.as_ref().and_then(|s| s.head_to),
+        _ => None,
+    };
+    let (head_x, head_y) = if let Some(head) = head {
+        position.exact_z_leptons = Some(head.z);
+        (
+            head.x.wrapping_sub(i32::from(position.rx) * 256),
+            head.y.wrapping_sub(i32::from(position.ry) * 256),
+        )
+    } else {
+        // Legacy/test curves can lack retained instance state. Their exact
+        // curve anchor is still authoritative; raw1's last real point is
+        // three leptons short of the head, not the zero sentinel.
+        (
+            curve.head_offset_x + curve.cell_offset_x,
+            curve.head_offset_y + curve.cell_offset_y,
+        )
+    };
+    let cell_delta = (head_x.div_euclid(256), head_y.div_euclid(256));
+    position.sub_x = SimFixed::from_num(head_x - cell_delta.0 * 256);
+    position.sub_y = SimFixed::from_num(head_y - cell_delta.1 * 256);
+    if cell_delta != (0, 0) {
+        // A boundary-aligned head can cross after the last real point. Let the
+        // existing outer CellArrival transaction commit its list/path cell
+        // before any fresh selection reads Position as an origin. Ordinary
+        // movement's deferred cell cadence remains a separate parity gap.
+        curve.cell_offset_x -= cell_delta.0 * 256;
+        curve.cell_offset_y -= cell_delta.1 * 256;
+        return Some(cell_delta);
+    }
+    match kind {
+        LocomotorKind::Drive => {
+            if let Some(drive) = drive_locomotion {
+                drive.head_to = None;
+            }
+        }
+        LocomotorKind::Ship => {
+            if let Some(ship) = ship_locomotion {
+                ship.head_to = None;
+            }
+        }
+        _ => {}
+    }
+    super::ground_pose::commit_ground_height(position, on_bridge, terrain, path_grid);
+    None
+}
+
 fn advance_drive_track_retry_after_selection(
     target: &mut MovementTarget,
     position: &mut Position,
@@ -1446,6 +1539,8 @@ fn advance_drive_track_retry_after_selection(
     facing_target: &mut Option<u8>,
     drive_track_state: &mut Option<DriveTrackState>,
     drive_locomotion: &mut Option<DriveLocomotionRuntime>,
+    ship_locomotion: &mut Option<ShipLocomotionRuntime>,
+    kind: LocomotorKind,
     cell_occupation: &mut Option<&mut CellOccupationGrid>,
     entity_id: u64,
     current_occupation_layer: MovementLayer,
@@ -1521,15 +1616,19 @@ fn advance_drive_track_retry_after_selection(
     }
 
     if advance.finished {
-        *drive_track_state = None;
-        position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
-        position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
-        super::ground_pose::commit_ground_height(
+        if let Some((cell_dx, cell_dy)) = finish_shared_track(
             position,
+            track_state,
+            kind,
+            drive_locomotion,
+            ship_locomotion,
             current_occupation_layer == MovementLayer::Bridge,
             terrain,
             path_grid,
-        );
+        ) {
+            return AdvanceResult::DriveTrackCellJump { cell_dx, cell_dy };
+        }
+        *drive_track_state = None;
         return AdvanceResult::ReadyForCrossings;
     }
 
@@ -1647,15 +1746,21 @@ pub(super) fn advance_lepton_position(
         }
 
         if advance.finished {
+            if let Some(kind) = shared_track_kind(locomotor) {
+                if let Some((cell_dx, cell_dy)) = finish_shared_track(
+                    position,
+                    track_state,
+                    kind,
+                    drive_locomotion,
+                    ship_locomotion,
+                    current_occupation_layer == MovementLayer::Bridge,
+                    terrain,
+                    path_grid,
+                ) {
+                    return AdvanceResult::DriveTrackCellJump { cell_dx, cell_dy };
+                }
+            }
             *drive_track_state = None;
-            position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
-            position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
-            super::ground_pose::commit_ground_height(
-                position,
-                current_occupation_layer == MovementLayer::Bridge,
-                terrain,
-                path_grid,
-            );
             let shared_kind = shared_track_kind(locomotor);
             let uses_drive_tracks = shared_kind.is_some();
             let is_ship = shared_kind == Some(LocomotorKind::Ship);
@@ -1675,7 +1780,6 @@ pub(super) fn advance_lepton_position(
                     admission,
                     entity_id,
                     current_occupation_layer,
-                    path_grid,
                     kind,
                 ) {
                     FreshTrackOutcome::Installed => {
@@ -1686,6 +1790,8 @@ pub(super) fn advance_lepton_position(
                             facing_target,
                             drive_track_state,
                             drive_locomotion,
+                            ship_locomotion,
+                            kind,
                             &mut cell_occupation,
                             entity_id,
                             current_occupation_layer,
@@ -1709,15 +1815,6 @@ pub(super) fn advance_lepton_position(
                     }
                 }
             }
-            // Track complete — snap to cell center so standard movement resumes.
-            position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
-            position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
-            super::ground_pose::commit_ground_height(
-                position,
-                current_occupation_layer == MovementLayer::Bridge,
-                terrain,
-                path_grid,
-            );
             // Fall through to ReadyForCrossings — normal movement takes over.
         } else {
             // Mid-track, no events — apply discrete-step pos, then layer
@@ -1763,7 +1860,6 @@ pub(super) fn advance_lepton_position(
                     admission,
                     entity_id,
                     current_occupation_layer,
-                    path_grid,
                     kind,
                 ) {
                     FreshTrackOutcome::Installed => {
@@ -1774,6 +1870,8 @@ pub(super) fn advance_lepton_position(
                             facing_target,
                             drive_track_state,
                             drive_locomotion,
+                            ship_locomotion,
+                            kind,
                             &mut cell_occupation,
                             entity_id,
                             current_occupation_layer,
@@ -2391,11 +2489,7 @@ pub(super) fn process_cell_crossings(
             facing_target,
             category,
             snap.rot,
-            (nx, ny),
-            (position.sub_x, position.sub_y),
-            path_grid,
-            position.z,
-            projected_on_bridge_state,
+            position,
         );
 
         // Pre-allocate subcell in the NEXT path cell for infantry direction targeting.

@@ -3,7 +3,9 @@
 use super::*;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::rules::locomotor_type::LocomotorKind;
-use crate::sim::components::{DriveLocomotionRuntime, MovementTarget, ShipLocomotionRuntime};
+use crate::sim::components::{
+    DriveCoord, DriveLocomotionRuntime, MovementTarget, ShipLocomotionRuntime,
+};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::world::Simulation;
@@ -734,7 +736,8 @@ fn forced_track_terminal_samples_full_head_xy_before_relink() {
     assert!(install_forced_drive_track(
         sim.substrate.entities.get_mut(1).unwrap(),
         &mut sim.substrate.cell_occupation,
-        forced
+        forced,
+        -347,
     ));
     for frame in 0..64 {
         tick(&mut sim, &terrain, &grid, frame);
@@ -760,6 +763,71 @@ fn forced_track_terminal_samples_full_head_xy_before_relink() {
     assert_eq!(entity.position.exact_z_leptons, Some(expected));
     assert!(!sim.substrate.occupancy.contains_entity(3, 3, 1));
     assert!(sim.substrate.occupancy.contains_entity(3, 4, 1));
+}
+
+#[test]
+fn ordinary_drive_ship_command_keeps_subcell_origin_through_terminal_cleanup() {
+    let terrain = terrain();
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    for kind in [LocomotorKind::Drive, LocomotorKind::Ship] {
+        for (sub_x, sub_y, facing, destination) in [
+            (85, 153, 0, (3, 2)),
+            (0, 153, 64, (4, 3)),
+            (85, 0, 128, (3, 4)),
+        ] {
+            let mut sim = Simulation::new();
+            let mut entity = mover(&mut sim, kind);
+            entity.movement_target = None;
+            entity.position.sub_x = SimFixed::from_num(sub_x);
+            entity.position.sub_y = SimFixed::from_num(sub_y);
+            entity.facing = facing;
+            insert(&mut sim, entity);
+            assert!(crate::sim::movement::issue_move_command(
+                &mut sim.substrate.entities,
+                &grid,
+                1,
+                destination,
+                SimFixed::from_num(128),
+                false,
+                None,
+                None,
+                None,
+                false,
+            ));
+            for frame in 0..128 {
+                tick(&mut sim, &terrain, &grid, frame);
+                if sim
+                    .substrate
+                    .entities
+                    .get(1)
+                    .unwrap()
+                    .movement_target
+                    .is_none()
+                {
+                    break;
+                }
+            }
+            let entity = sim.substrate.entities.get(1).unwrap();
+            assert!(entity.movement_target.is_none(), "{kind:?} must arrive");
+            assert_eq!(
+                ground_pose::position_world_xy(&entity.position),
+                [
+                    i32::from(destination.0) * 256 + sub_x,
+                    i32::from(destination.1) * 256 + sub_y
+                ],
+                "{kind:?}"
+            );
+            assert!(entity.drive_track.is_none());
+            assert_eq!(
+                entity.drive_locomotion.as_ref().and_then(|d| d.head_to),
+                None
+            );
+            assert_eq!(
+                entity.ship_locomotion.as_ref().and_then(|s| s.head_to),
+                None
+            );
+        }
+    }
 }
 
 fn cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
@@ -818,4 +886,194 @@ fn cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         has_damaged_data: false,
         bridgehead_anchor_class_at_load: None,
     }
+}
+
+fn chained_mover(sim: &mut Simulation, kind: LocomotorKind) -> (GameEntity, DriveCoord) {
+    let mut entity = mover(sim, kind);
+    entity.position.sub_x = SimFixed::from_num(85);
+    entity.position.sub_y = SimFixed::from_num(153);
+    let path = vec![(3, 3), (3, 2), (4, 1), (5, 1)];
+    let drive_track::DriveTrackDecision::Select(plan) = drive_track::plan_drive_track_from_path(
+        0,
+        (0, -1),
+        Some((1, -1)),
+        kind == LocomotorKind::Ship,
+    ) else {
+        panic!("native N -> NE curve");
+    };
+    assert_eq!(plan.nodes, 2);
+    let (head, curve) = super::track_head::begin_fresh(&plan, &entity.position).unwrap();
+    entity.drive_track = Some(curve);
+    let mut replay = crate::sim::components::DrivePathQueue::default();
+    super::path_markers::install_path_replay(&mut replay, (3, 3), &path, 1);
+    super::path_markers::accept_path_replay(&mut replay, (4, 1), 2);
+    match kind {
+        LocomotorKind::Drive => {
+            let d = entity.drive_locomotion.as_mut().unwrap();
+            d.head_to = Some(head);
+            d.occupation_head_to = Some(crate::sim::components::DriveOccupationFootprint {
+                rx: (head.x / 256) as u16,
+                ry: (head.y / 256) as u16,
+                layer: MovementLayer::Ground,
+            });
+            d.path = replay;
+        }
+        LocomotorKind::Ship => {
+            let s = entity.ship_locomotion.as_mut().unwrap();
+            s.head_to = Some(head);
+            s.path = replay;
+        }
+        _ => unreachable!(),
+    }
+    entity.movement_target = Some(MovementTarget {
+        path,
+        path_layers: vec![MovementLayer::Ground; 4],
+        next_index: 1,
+        speed: SimFixed::from_num(128),
+        current_speed: SimFixed::from_num(128),
+        final_goal: Some((5, 1)),
+        ..Default::default()
+    });
+    (entity, head)
+}
+
+#[test]
+fn actual_tick_chain_uses_remaining_queue_and_retains_old_head_z() {
+    let terrain = terrain();
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    for kind in [LocomotorKind::Drive, LocomotorKind::Ship] {
+        let mut sim = Simulation::new();
+        let (entity, head) = chained_mover(&mut sim, kind);
+        insert(&mut sim, entity);
+        let expected = super::track_head::offset_head(head, 2);
+        let mut chained = false;
+        for frame in 0..128 {
+            tick(&mut sim, &terrain, &grid, frame);
+            let entity = sim.substrate.entities.get(1).unwrap();
+            let (stored, queue) = match kind {
+                LocomotorKind::Drive => {
+                    let d = entity.drive_locomotion.as_ref().unwrap();
+                    (d.head_to, &d.path)
+                }
+                LocomotorKind::Ship => {
+                    let s = entity.ship_locomotion.as_ref().unwrap();
+                    (s.head_to, &s.path)
+                }
+                _ => unreachable!(),
+            };
+            if stored == Some(expected) {
+                assert_eq!(queue.cursor, 3);
+                assert_eq!(queue.reference_cell, Some((4, 1)));
+                let curve = entity.drive_track.as_ref().unwrap();
+                assert_eq!(
+                    curve.head_offset_x + i32::from(entity.position.rx) * 256,
+                    expected.x
+                );
+                assert_eq!(
+                    curve.head_offset_y + i32::from(entity.position.ry) * 256,
+                    expected.y
+                );
+                assert_ne!(entity.position.exact_z_leptons, Some(expected.z));
+                chained = true;
+                break;
+            }
+        }
+        assert!(
+            chained,
+            "{kind:?} must chain from retained head rather than changed Foot Z"
+        );
+    }
+}
+
+#[test]
+fn stop_before_chain_keeps_committed_head_and_discards_abandoned_turn() {
+    let terrain = terrain();
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    for (kind, teleport_identity) in [
+        (LocomotorKind::Drive, false),
+        (LocomotorKind::Ship, false),
+        (LocomotorKind::Drive, true),
+    ] {
+        let mut sim = Simulation::new();
+        let (mut entity, head) = chained_mover(&mut sim, kind);
+        if teleport_identity {
+            let mut locomotor = LocomotorState::for_test_kind(LocomotorKind::Teleport);
+            assert!(locomotor.begin_drive_piggyback_for_teleporter(0));
+            entity.locomotor = Some(locomotor);
+        }
+        // The N->NE segment has accepted two directions; E is still queued.
+        // Stop is the production helper also used by the MCV deploy handoff.
+        super::movement_commands::stop_navigation_at_committed_head(&mut entity);
+        let (stored, queue) = match kind {
+            LocomotorKind::Drive => {
+                let d = entity.drive_locomotion.as_ref().unwrap();
+                (d.head_to, &d.path)
+            }
+            LocomotorKind::Ship => {
+                let s = entity.ship_locomotion.as_ref().unwrap();
+                (s.head_to, &s.path)
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(stored, Some(head));
+        assert_eq!(queue.cursor as usize, queue.directions.len());
+        assert_eq!(queue.reference_cell, Some((4, 1)));
+        assert_eq!(
+            entity.movement_target.as_ref().unwrap().final_goal,
+            Some((4, 1))
+        );
+        insert(&mut sim, entity);
+        let mut finished = false;
+        for frame in 0..512 {
+            tick(&mut sim, &terrain, &grid, frame);
+            let entity = sim.substrate.entities.get(1).unwrap();
+            let stored = match kind {
+                LocomotorKind::Drive => entity
+                    .drive_locomotion
+                    .as_ref()
+                    .and_then(|drive| drive.head_to),
+                LocomotorKind::Ship => entity.ship_locomotion.as_ref().unwrap().head_to,
+                _ => unreachable!(),
+            };
+            assert!(
+                stored.is_none() || stored == Some(head),
+                "{kind:?}: abandoned E turn"
+            );
+            if entity.movement_target.is_none() {
+                assert!(entity.drive_track.is_none());
+                assert_eq!(stored, None);
+                assert_eq!(
+                    ground_pose::position_world_xy(&entity.position),
+                    [head.x, head.y]
+                );
+                finished = true;
+                break;
+            }
+        }
+        assert!(finished, "{kind:?}: Stop must finish the committed segment");
+    }
+}
+
+#[test]
+fn destination_cell_height_keeps_receiver_before_structural_lookup() {
+    let mut terrain = terrain();
+    terrain.cell_mut(0, 0).unwrap().level = 7;
+    terrain.test_set_dummy_cell_level_slope(-3, 0);
+    let real = terrain.native_cell_identity((0, 0));
+    terrain.write_native_cell_flags(real, 0x100);
+    let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 3, 3);
+    entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    super::navcom::set_destination_internal_cell(&mut entity, (u16::MAX, u16::MAX), Some(&terrain));
+    // Original486840/47B3A0 returns(-128,-128,-311): native adds0.5 before
+    // truncation, including negative heights. Setter4AFD40 then looks up real
+    // cell(0,0), because signed division truncates toward zero, and adds416.
+    assert_eq!(
+        entity.drive_locomotion.as_ref().unwrap().destination,
+        Some(crate::sim::components::DriveCoord {
+            x: -128,
+            y: -128,
+            z: 105
+        })
+    );
+    assert_eq!(terrain.shared_cell_dummy().snapshot().coord, (-1, -1));
 }

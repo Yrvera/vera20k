@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::rules::locomotor_type::{MovementZone, SpeedType};
+use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::sim::cell_rect::PlayfieldBounds;
 use crate::sim::components::{DriveOccupationFootprint, MovementTarget, NavTargetRef, Position};
 use crate::sim::debug_event_log::DebugEventKind;
@@ -48,8 +48,7 @@ use super::movement_bridge::{
 use super::movement_occupancy::{
     DeferredCellCheck, build_live_building_entry_skip_map,
     evaluate_runtime_can_enter_cell_with_transition, handle_deferred_occupancy,
-    has_unignored_runtime_occupants_on_layers, runtime_can_enter_direction,
-    runtime_current_effective_height,
+    has_unignored_runtime_occupants_on_layers, runtime_current_effective_height,
 };
 use super::movement_path::{find_move_path, supports_layered_bridge_pathing};
 use super::movement_step;
@@ -209,9 +208,7 @@ fn tick_forced_drive_tracks(
                     entity.position.ry = target_ry;
                     entity.position.sub_x = SimFixed::from_num(head.x.rem_euclid(256));
                     entity.position.sub_y = SimFixed::from_num(head.y.rem_euclid(256));
-                    if let Ok(z) = u8::try_from(head.z) {
-                        entity.position.z = z;
-                    }
+                    entity.position.exact_z_leptons = Some(head.z);
                     // Native final snap calls SetHeight(0) before Mark(PUT).
                     super::ground_pose::commit_ground_height(
                         &mut entity.position,
@@ -819,8 +816,13 @@ fn process_pending_drive_arrivals(
                     entity.facing_target = Some(desired_facing);
                 }
                 super::drive_track::DriveTrackDecision::Select(plan) => {
-                    entity.drive_track = super::drive_track::begin_selected_drive_track(&plan);
-                    if entity.drive_track.is_some() {
+                    if let Some((head, curve)) =
+                        super::track_head::begin_fresh(&plan, &entity.position)
+                    {
+                        entity.drive_track = Some(curve);
+                        if let Some(drive) = entity.drive_locomotion.as_mut() {
+                            drive.head_to = Some(head);
+                        }
                         entity.facing_target = None;
                         accepted_path_nodes = plan.nodes;
                         // `next_index` is 1 here, so the head node index equals
@@ -996,6 +998,7 @@ fn handle_deferred_drive_selection_block(
 #[derive(Debug, Clone, Copy)]
 struct DeferredDriveTrackChain {
     target_cell: (u16, u16),
+    head: crate::sim::components::DriveCoord,
     layers: cell_entry::CanEnterLayerContext,
     bridge_traversal_allowed: bool,
     cur_face: u8,
@@ -1311,17 +1314,32 @@ fn handle_deferred_drive_track_chain(
     let Some(entity) = entities.get_mut(entity_id) else {
         return false;
     };
-    let chain_dx = chain.target_cell.0 as i32 - entity.position.rx as i32;
-    let chain_dy = chain.target_cell.1 as i32 - entity.position.ry as i32;
-    let Some(new_track) = super::drive_track::begin_drive_track(
+    if sel.entry_index == 0 {
+        return false;
+    }
+    let Some(mut new_track) = super::drive_track::begin_drive_track_with_head_offset(
         sel.raw_track_index,
         sel.flags,
-        chain_dx,
-        chain_dy,
+        chain
+            .head
+            .x
+            .wrapping_sub(i32::from(entity.position.rx) * 256),
+        chain
+            .head
+            .y
+            .wrapping_sub(i32::from(entity.position.ry) * 256),
         sel.target_facing,
     ) else {
         return false;
     };
+    // Native chain stores entry-1, then the common tail increments to entry.
+    // Rust's curve increments before lookup, so its last-consumed cursor is
+    // entry-1. The retained native next-to-consume projection is separate.
+    new_track.point_index = sel.entry_index - 1;
+    new_track.residual = entity
+        .drive_track
+        .as_ref()
+        .map_or(0, |track| track.residual);
     let current_cell = (entity.position.rx, entity.position.ry);
     // Same pair of claims the fresh selection installs: the forward RawTrack
     // handoff cell this curve passes through, then its head cell.
@@ -1351,11 +1369,8 @@ fn handle_deferred_drive_track_chain(
         .occupancy_list_layer()
         .unwrap_or(MovementLayer::Ground);
     if let Some(drive) = entity.drive_locomotion.as_mut() {
-        super::path_markers::accept_path_replay(
-            &mut drive.path,
-            (chain.target_cell.0 as i16, chain.target_cell.1 as i16),
-            1,
-        );
+        drive.head_to = Some(chain.head);
+        super::path_markers::consume_path_replay(&mut drive.path, 1);
         let next = (chain.layers.occupancy_bits_layer == MovementLayer::Ground).then_some(
             DriveOccupationFootprint {
                 rx: chain.target_cell.0,
@@ -1388,6 +1403,10 @@ fn handle_deferred_drive_track_chain(
             current_layer,
             handoff,
         );
+    }
+    if let Some(ship) = entity.ship_locomotion.as_mut() {
+        ship.head_to = Some(chain.head);
+        super::path_markers::consume_path_replay(&mut ship.path, 1);
     }
     true
 }
@@ -1636,7 +1655,7 @@ fn tick_movement_with_grids_scoped(
             .collect();
     for (mover_id, coord) in drive_reaims {
         if let Some(entity) = entities.get_mut(mover_id) {
-            drive_locomotion::refresh_drive_head_to_coord(entity, coord);
+            super::navcom::refresh_drive_destination_coord(entity, coord, resolved_terrain);
         }
     }
 
@@ -2475,84 +2494,64 @@ fn tick_movement_with_grids_scoped(
                     continue;
                 }
                 movement_step::AdvanceResult::DriveTrackChainReady => {
-                    // Track reached chain_index — attempt to chain into a
-                    // follow-on track curve. Check passability of the next
-                    // cell in the path, select a new track if the direction
-                    // changes, and replace the drive track state.
-                    // If chaining fails, the current track continues normally.
-                    if target.next_index < target.path.len() {
-                        // The chain window is (current curve's exit direction,
-                        // the queue head's direction) — gamemd's
-                        // `path[0]_dir + octant(target_facing) * 8`, taken from
-                        // the mover's own cell, not one node further on. Its
-                        // eligibility test is the same inequality, which can
-                        // only be true once the curve has already consumed the
-                        // node it turns into.
-                        let cur_cell = (entity.position.rx, entity.position.ry);
-                        let head_cell = target.path[target.next_index];
-                        let ndx = head_cell.0 as i32 - cur_cell.0 as i32;
-                        let ndy = head_cell.1 as i32 - cur_cell.1 as i32;
-                        // gamemd's queue head is octant-adjacent by
-                        // construction (the path queue stores direction
-                        // octants), so a chain is only planned against an
-                        // adjacent node. A two-cell head occurs in VERA only
-                        // while a curve kept across a mid-flight re-order still
-                        // has its own two-node head queued; chaining against it
-                        // would anchor the follow-on curve on the wrong cell.
-                        if (ndx != 0 || ndy != 0) && ndx.abs() <= 1 && ndy.abs() <= 1 {
-                            let next_face = super::facing_from_delta(ndx, ndy);
-                            // Use the active track's post-turn facing as the
-                            // chain "from-dir." By the time the chain attempt
-                            // fires (at chain_index of the current track),
-                            // entity.facing is mid-rotation along the curve;
-                            // the binary uses the TurnTrack entry's
-                            // target_facing here. The unwrap_or is defensive:
-                            // DriveTrackChainReady is only produced inside an
-                            // active track.
-                            let cur_face = entity
-                                .drive_track
-                                .as_ref()
-                                .map(|t| t.target_facing)
-                                .unwrap_or(entity.facing);
-                            // Only chain if the direction changes (otherwise
-                            // the current track finishes into straight movement).
-                            // The comparison is between direction octants, as in
-                            // the binary: a computed step facing is not always
-                            // the exact octant byte (east is 63, not 64), so
-                            // comparing raw bytes chains a curve into its own
-                            // continuation.
-                            if crate::util::direction::direction_from_facing(next_face)
-                                != crate::util::direction::direction_from_facing(cur_face)
-                            {
-                                // Runtime Can_Enter_Cell tuple for the chained
-                                // lookahead: target, direction, current height,
-                                // null parent, arg5=1.
-                                let next_layer = target.layer_at(target.next_index);
-                                let runtime_entry = evaluate_runtime_can_enter_cell_with_transition(
-                                    path_grid,
-                                    next_layer,
-                                    &mut entity.runtime_bridge_transition,
-                                    entity.on_bridge,
-                                    super::movement_occupancy::RuntimeCanEnterCellArgs::runtime(
-                                        head_cell,
-                                        runtime_can_enter_direction(cur_cell, head_cell),
-                                        runtime_current_effective_height(
-                                            path_grid,
-                                            (entity.position.rx, entity.position.ry),
-                                            entity.on_bridge,
-                                            entity.position.z,
-                                        ),
+                    // Original Drive4B128F captures the remaining queue head,
+                    // independently of physical arrivals in MovementTarget.
+                    let state = match entity.locomotor.as_ref().map(|l| l.kind) {
+                        Some(crate::rules::locomotor_type::LocomotorKind::Drive) => entity
+                            .drive_locomotion
+                            .as_ref()
+                            .map(|drive| (&drive.path, drive.head_to)),
+                        Some(crate::rules::locomotor_type::LocomotorKind::Ship) => entity
+                            .ship_locomotion
+                            .as_ref()
+                            .map(|ship| (&ship.path, ship.head_to)),
+                        _ => None,
+                    };
+                    if let Some((queue, Some(old_head))) = state
+                        && let Some(&direction) = queue.directions.get(usize::from(queue.cursor))
+                        && direction < 8
+                        && let Some(track) = entity.drive_track.as_ref()
+                    {
+                        let cur_face = track.target_facing;
+                        let next_face = direction * 32;
+                        if crate::util::direction::direction_from_facing(cur_face) != direction
+                            && let Some(selection) =
+                                super::drive_track::select_drive_track(cur_face, next_face, false)
+                            && selection.entry_index != 0
+                        {
+                            // Chain4B1BC4/6A120A retains the previous head's
+                            // full XYZ, even when paid movement changed Foot Z.
+                            let head = super::track_head::offset_head(old_head, direction);
+                            let head_cell = ((head.x / 256) as u16, (head.y / 256) as u16);
+                            let next_layer = if entity.on_bridge {
+                                MovementLayer::Bridge
+                            } else {
+                                MovementLayer::Ground
+                            };
+                            let runtime_entry = evaluate_runtime_can_enter_cell_with_transition(
+                                path_grid,
+                                next_layer,
+                                &mut entity.runtime_bridge_transition,
+                                entity.on_bridge,
+                                super::movement_occupancy::RuntimeCanEnterCellArgs::runtime(
+                                    head_cell,
+                                    direction as i8,
+                                    runtime_current_effective_height(
+                                        path_grid,
+                                        (entity.position.rx, entity.position.ry),
+                                        entity.on_bridge,
+                                        entity.position.z,
                                     ),
-                                );
-                                deferred_drive_track_chain = Some(DeferredDriveTrackChain {
-                                    target_cell: head_cell,
-                                    layers: runtime_entry.layers,
-                                    bridge_traversal_allowed: runtime_entry
-                                        .bridge_traversal_allowed,
-                                    cur_face,
-                                    next_face,
-                                });
-                            }
+                                ),
+                            );
+                            deferred_drive_track_chain = Some(DeferredDriveTrackChain {
+                                target_cell: head_cell,
+                                head,
+                                layers: runtime_entry.layers,
+                                bridge_traversal_allowed: runtime_entry.bridge_traversal_allowed,
+                                cur_face,
+                                next_face,
+                            });
                         }
                     }
                     // Whether chaining succeeded or not, continue to next tick.
@@ -3107,16 +3106,21 @@ fn finalize_finished_entities(
             }
             // Native arrival SetCoords -> SetHeight precedes navigation cleanup.
             // Capture the active Drive owner before cleanup can restore Teleport.
-            // Snap sub-cell leptons to final position. Use the locomotor's
-            // subcell_dest if available (set during cell entry), otherwise fall
-            // back to computing from sub_cell index. Vehicles snap to center.
-            let (snap_x, snap_y) = entity
+            // Drive/Ship terminal movement already committed their exact head.
+            // Centering again here would erase the retained subcell origin.
+            let shared_track_owner = entity
                 .locomotor
                 .as_ref()
-                .and_then(|l| l.subcell_dest)
-                .unwrap_or_else(|| crate::util::lepton::subcell_lepton_offset(entity.sub_cell));
-            entity.position.sub_x = snap_x;
-            entity.position.sub_y = snap_y;
+                .is_some_and(|l| matches!(l.kind, LocomotorKind::Drive | LocomotorKind::Ship));
+            if !shared_track_owner {
+                let (snap_x, snap_y) = entity
+                    .locomotor
+                    .as_ref()
+                    .and_then(|l| l.subcell_dest)
+                    .unwrap_or_else(|| crate::util::lepton::subcell_lepton_offset(entity.sub_cell));
+                entity.position.sub_x = snap_x;
+                entity.position.sub_y = snap_y;
+            }
             if entity.locomotor.as_ref().is_some_and(|loco| {
                 matches!(
                     loco.kind,
@@ -3397,6 +3401,7 @@ mod drive_track_chain_tests {
     fn chain_to_east_cell() -> DeferredDriveTrackChain {
         DeferredDriveTrackChain {
             target_cell: (11, 10),
+            head: crate::sim::components::DriveCoord::cell(11, 10, 0),
             layers: cell_entry::CanEnterLayerContext::single(MovementLayer::Ground),
             bridge_traversal_allowed: true,
             cur_face: 0,

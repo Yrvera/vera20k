@@ -6,9 +6,9 @@
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
-use crate::sim::components::{
-    DriveCoord, DriveLocomotionRuntime, NavTargetRef, ShipLocomotionRuntime,
-};
+#[cfg(test)]
+use crate::sim::components::DriveCoord;
+use crate::sim::components::{DriveLocomotionRuntime, NavTargetRef, ShipLocomotionRuntime};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::pathfinding::terrain_speed::{self, TerrainSpeedConfig};
@@ -59,17 +59,6 @@ pub(crate) fn drive_locomotor_is_moving(entity: &GameEntity) -> bool {
     head.x != owner_x || head.y != owner_y
 }
 
-pub(super) fn refresh_drive_head_to_coord(entity: &mut GameEntity, coord: DriveCoord) -> bool {
-    let Some(drive) = entity.drive_locomotion.as_mut() else {
-        return false;
-    };
-    if drive.head_to == Some(coord) {
-        return false;
-    }
-    drive.head_to = Some(coord);
-    true
-}
-
 pub(super) fn drive_entity_nav_targets(entities: &EntityStore) -> Vec<(u64, NavTargetRef)> {
     entities
         .keys_sorted()
@@ -77,7 +66,19 @@ pub(super) fn drive_entity_nav_targets(entities: &EntityStore) -> Vec<(u64, NavT
         .filter_map(|id| {
             let entity = entities.get(id)?;
             let target = entity.navigation.nav_com?;
-            matches!(target, NavTargetRef::Entity { .. }).then_some((id, target))
+            let NavTargetRef::Entity { id: target_id } = target else {
+                return None;
+            };
+            // Native4B05D0: only Unit -> Infantry, on the active Drive instance.
+            (entity.category == crate::map::entities::EntityCategory::Unit
+                && entity
+                    .locomotor
+                    .as_ref()
+                    .is_some_and(|l| l.kind == LocomotorKind::Drive)
+                && entities.get(target_id).is_some_and(|target| {
+                    target.category == crate::map::entities::EntityCategory::Infantry
+                }))
+            .then_some((id, target))
         })
         .collect()
 }

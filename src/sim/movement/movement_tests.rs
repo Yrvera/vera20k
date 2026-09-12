@@ -473,6 +473,7 @@ fn drive_slope_boundary_is_detected_on_process_after_forced_track_crossing() {
             entities.get_mut(1).unwrap(),
             cell_occupation,
             forced,
+            0,
         ));
     }
 
@@ -985,6 +986,7 @@ fn gsi_04_05_forced_refinery_exit_preserves_lists_until_terminal_relink() {
             entities.get_mut(1).unwrap(),
             cell_occupation,
             forced,
+            0,
         ));
     }
 
@@ -1768,7 +1770,7 @@ fn test_issue_move_command_starts_drive_track_for_drive_locomotor() {
         "Drive Head_To_Coord should write Drive destination state"
     );
     let drive = entity.drive_locomotion.as_ref().expect("drive state");
-    assert_eq!(drive.head_to, Some(DriveCoord::cell(7, 3, 0)));
+    assert_eq!(drive.head_to, Some(DriveCoord::cell(3, 3, 0)));
     assert_eq!(drive.path.directions, vec![2, 2, 2, 2, 2]);
     assert_eq!(drive.path.cursor, 1);
     assert_eq!(drive.path.reference_cell, Some((3, 3)));
@@ -5409,11 +5411,14 @@ fn sharp_turn_preserves_path_node_count() {
         &mut facing_target,
         EntityCategory::Unit,
         0,
-        (10, 10),
-        (SIM_ZERO, SIM_ZERO),
-        None,
-        0,
-        false,
+        &crate::sim::components::Position {
+            rx: 10,
+            ry: 10,
+            sub_x: SimFixed::from_num(128),
+            sub_y: SimFixed::from_num(128),
+            z: 0,
+            exact_z_leptons: None,
+        },
     );
 
     assert!(
@@ -5464,11 +5469,14 @@ fn off_octant_hull_turns_before_any_curve_is_selected() {
         &mut facing_target,
         EntityCategory::Unit,
         5, // ROT=5, the stock ground-vehicle rate
-        (10, 10),
-        (SIM_ZERO, SIM_ZERO),
-        None,
-        0,
-        false,
+        &crate::sim::components::Position {
+            rx: 10,
+            ry: 10,
+            sub_x: SimFixed::from_num(128),
+            sub_y: SimFixed::from_num(128),
+            z: 0,
+            exact_z_leptons: None,
+        },
     );
 
     assert!(
