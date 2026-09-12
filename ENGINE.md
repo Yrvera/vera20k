@@ -22,10 +22,9 @@ Be brief, plain and result-first.
 
 ## Exactness and evidence
 
-Establish native behavior before sim changes from bodies and active callers,
-directly or through cited research. Recheck uncertain, conflicting or consequential
-claims against the binary/retail data. Research, labels and other engines can be
-wrong. Confirm active-YR reachability; unreachable claims need a breakpoint or
+Confirm gamemd-derived changes against original instructions, active callers, and
+retail data. Research docs and Ghidra annotations are often wrong; treat them as
+leads, not proof. Confirm active-YR reachability; unreachable claims need a breakpoint or
 flag-to-leaf trace. Never invent offsets, identities or behavior.
 
 Priority follows player visibility and frequency; it does not establish equivalence.
