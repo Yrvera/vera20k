@@ -8,9 +8,8 @@
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::assets::error::AssetError;
 use crate::assets::mix_archive::MixArchive;
@@ -24,28 +23,29 @@ struct NamedArchive {
     archive: MixArchive,
 }
 
-enum LooseBytes {
-    Empty,
-    Mapped(memmap2::Mmap),
-    #[cfg(test)]
-    Owned(Box<[u8]>),
-}
-
-impl LooseBytes {
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Empty => &[],
-            Self::Mapped(data) => data,
-            #[cfg(test)]
-            Self::Owned(data) => data,
-        }
-    }
-}
-
 struct LooseAsset {
     path: PathBuf,
     source_name: String,
-    bytes: LooseBytes,
+    bytes: OnceLock<Option<Box<[u8]>>>,
+}
+
+impl LooseAsset {
+    /// Borrowed asset APIs need stable storage, but loose files may be rewritten
+    /// by profile/SED/preview owners. A retained mapping prevents Windows writes
+    /// and cannot safely coexist with truncation on other platforms. Snapshot
+    /// only requested payloads; root indexing must not copy entire MIX archives.
+    /// This is Rust storage policy, not native raw-file cache equivalence.
+    fn bytes(&self) -> Option<&[u8]> {
+        self.bytes
+            .get_or_init(|| match std::fs::read(&self.path) {
+                Ok(bytes) => Some(bytes.into_boxed_slice()),
+                Err(err) => {
+                    log::debug!("Skipping loose {}: {}", self.path.display(), err);
+                    None
+                }
+            })
+            .as_deref()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -151,6 +151,8 @@ pub struct AssetManager {
     /// `LoadFileFromMIX`'s process-lifetime, normalized-CRC first-winner cache.
     mix_file_cache: Mutex<HashMap<i32, MixFileLoad>>,
     /// Case-insensitive, non-recursive view of the retail executable directory.
+    /// Payloads are owned snapshots at first lookup (including failed reads).
+    /// Mutable profile/seed/preview consumers read the filesystem directly.
     loose_files: HashMap<String, LooseAsset>,
     /// Currently registered theater identity and its archive names.
     active_theater: Option<String>,
@@ -317,9 +319,9 @@ impl AssetManager {
 
     /// Look up a file by name across all loaded archives.
     pub fn get(&self, name: &str) -> Option<Vec<u8>> {
-        if let Some(loose) = self.loose_asset(name) {
+        if let Some((loose, bytes)) = self.loose_bytes(name) {
             log::trace!("Found loose '{}' at {}", name, loose.path.display());
-            return Some(loose.bytes.as_slice().to_vec());
+            return Some(bytes.to_vec());
         }
         let (named, entry_id) = self.lookup_asset_entry(name)?;
         log::trace!("Found '{}' in {}", name, named.name);
@@ -328,9 +330,9 @@ impl AssetManager {
 
     /// Look up a file by name without copying the asset bytes.
     pub fn get_ref(&self, name: &str) -> Option<&[u8]> {
-        if let Some(loose) = self.loose_asset(name) {
+        if let Some((loose, bytes)) = self.loose_bytes(name) {
             log::trace!("Found loose '{}' at {}", name, loose.path.display());
-            return Some(loose.bytes.as_slice());
+            return Some(bytes);
         }
         let (named, entry_id) = self.lookup_asset_entry(name)?;
         log::trace!("Found '{}' in {}", name, named.name);
@@ -339,8 +341,8 @@ impl AssetManager {
 
     /// Look up a file by name and return both the bytes and source archive name.
     pub fn get_with_source(&self, name: &str) -> Option<(Vec<u8>, String)> {
-        if let Some(loose) = self.loose_asset(name) {
-            return Some((loose.bytes.as_slice().to_vec(), loose.source_name.clone()));
+        if let Some((loose, bytes)) = self.loose_bytes(name) {
+            return Some((bytes.to_vec(), loose.source_name.clone()));
         }
         let (named, entry_id) = self.lookup_asset_entry(name)?;
         named
@@ -357,9 +359,9 @@ impl AssetManager {
 
     /// Resolve one file through the normal first-match archive lookup.
     pub fn resolve_ref(&self, name: &str) -> Option<AssetResolutionRef<'_>> {
-        if let Some(loose) = self.loose_asset(name) {
+        if let Some((loose, bytes)) = self.loose_bytes(name) {
             return Some(AssetResolutionRef {
-                bytes: loose.bytes.as_slice(),
+                bytes,
                 source_archive: loose.source_name.as_str(),
                 entry_id: mix_hash(name),
             });
@@ -393,9 +395,9 @@ impl AssetManager {
             return Some(cached);
         }
 
-        let candidate = if let Some(loose) = self.loose_asset(name) {
+        let candidate = if let Some((loose, bytes)) = self.loose_bytes(name) {
             MixFileLoad {
-                bytes: Arc::from(loose.bytes.as_slice()),
+                bytes: Arc::from(bytes),
                 source_archive: Arc::from(loose.source_name.as_str()),
                 entry_id: cache_key,
             }
@@ -496,9 +498,7 @@ impl AssetManager {
                 Ok(true) => self.active_theater_archives.push(name.to_string()),
                 Ok(false) => {}
                 Err(err) => {
-                    log::warn!(
-                        "Theater {theater_name}: skipping optional archive {name}: {err}"
-                    );
+                    log::warn!("Theater {theater_name}: skipping optional archive {name}: {err}");
                 }
             }
         }
@@ -560,7 +560,8 @@ impl AssetManager {
         Ok(loaded_count)
     }
 
-    /// Check if a file is available through a registered MIX or the loose root.
+    /// Check the registered MIX and startup loose-file catalogs without loading
+    /// payloads. Catalog presence does not guarantee a subsequent disk read.
     /// Retail provenance: MIX-then-raw availability — `CCFileClass__IsAvailable_MixThenRaw` @ `0x00473C50`.
     pub fn contains(&self, name: &str) -> bool {
         self.lookup_location_for_name(name).is_some() || self.loose_asset(name).is_some()
@@ -940,36 +941,12 @@ impl AssetManager {
                 continue;
             }
 
-            let bytes = match entry.metadata() {
-                Ok(metadata) if metadata.len() == 0 => LooseBytes::Empty,
-                Ok(_) => {
-                    let file = match File::open(&path) {
-                        Ok(file) => file,
-                        Err(err) => {
-                            log::debug!("Skipping loose {}: {}", path.display(), err);
-                            continue;
-                        }
-                    };
-                    let mapped = unsafe { memmap2::MmapOptions::new().map(&file) };
-                    match mapped {
-                        Ok(mapped) => LooseBytes::Mapped(mapped),
-                        Err(err) => {
-                            log::debug!("Skipping loose {}: {}", path.display(), err);
-                            continue;
-                        }
-                    }
-                }
-                Err(err) => {
-                    log::debug!("Skipping loose {}: {}", path.display(), err);
-                    continue;
-                }
-            };
             files.insert(
                 key,
                 LooseAsset {
                     path: path.clone(),
                     source_name: format!("loose:{}", path.display()),
-                    bytes,
+                    bytes: OnceLock::new(),
                 },
             );
         }
@@ -980,6 +957,12 @@ impl AssetManager {
     fn loose_asset(&self, name: &str) -> Option<&LooseAsset> {
         let key = loose_lookup_key(name)?;
         self.loose_files.get(&key)
+    }
+
+    /// Unreadable catalogued files must not hide a readable MIX fallback.
+    fn loose_bytes(&self, name: &str) -> Option<(&LooseAsset, &[u8])> {
+        let asset = self.loose_asset(name)?;
+        Some((asset, asset.bytes()?))
     }
 
     fn loose_path(&self, name: &str) -> Option<&Path> {
@@ -1138,6 +1121,70 @@ mod tests {
     fn make_new_format_mix(name: &str, body: &[u8]) -> MixArchive {
         MixArchive::from_bytes(make_new_format_mix_bytes(name, body))
             .expect("new-format test mix should parse")
+    }
+
+    #[test]
+    fn loose_payloads_are_lazy_stable_and_do_not_lock_writable_files() {
+        let dir = TestDirectory::new("mutable-loose");
+        for name in ["SAVE0001.SED", "RandMap.Sed", "RandMap.img", "RandMap.PCX"] {
+            std::fs::write(dir.path().join(name), b"old payload").expect("initial file");
+        }
+        std::fs::write(dir.path().join("empty.bin"), b"").expect("empty file");
+        let manager = empty_manager(dir.path());
+        assert!(manager.contains("RANDMAP.PCX"));
+        assert!(
+            manager
+                .loose_files
+                .values()
+                .all(|file| file.bytes.get().is_none())
+        );
+
+        for name in ["SAVE0001.SED", "RandMap.Sed", "RandMap.img", "RandMap.PCX"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"first lookup").expect("write after catalog creation");
+            let borrowed = manager.get_ref(name).expect("loose payload");
+            assert_eq!(borrowed, b"first lookup");
+            std::fs::write(&path, b"new").expect("truncate while borrowed payload lives");
+            assert_eq!(std::fs::read(&path).expect("current disk bytes"), b"new");
+            assert_eq!(borrowed, b"first lookup", "owned borrow remains stable");
+            assert_eq!(manager.get_ref(name), Some(borrowed));
+        }
+        assert_eq!(manager.get_ref("empty.bin"), Some(&b""[..]));
+    }
+
+    #[test]
+    fn unreadable_loose_snapshot_falls_through_all_byte_apis_to_mix() {
+        let dir = TestDirectory::new("unreadable-loose");
+        let path = dir.path().join("duplicate.shp");
+        std::fs::write(&path, b"loose").expect("initial loose file");
+        let mut manager = empty_manager(dir.path());
+        manager.archives.push(NamedArchive {
+            name: "first.mix".to_string(),
+            archive: make_new_format_mix("duplicate.shp", b"archived"),
+        });
+        manager.rebuild_indexes();
+        std::fs::remove_file(&path).expect("remove before first payload read");
+        assert_eq!(
+            manager.get("duplicate.shp").as_deref(),
+            Some(&b"archived"[..])
+        );
+        assert_eq!(manager.get_ref("duplicate.shp"), Some(&b"archived"[..]));
+        assert_eq!(
+            manager.get_with_source("duplicate.shp"),
+            Some((b"archived".to_vec(), "first.mix".to_string()))
+        );
+        assert_eq!(
+            manager.get_with_source_ref("duplicate.shp"),
+            Some((&b"archived"[..], "first.mix"))
+        );
+        let resolved = manager.resolve_ref("duplicate.shp").expect("MIX fallback");
+        assert_eq!(resolved.bytes, b"archived");
+        assert_eq!(resolved.source_archive, "first.mix");
+        let cached = manager
+            .load_file_from_mix("duplicate.shp")
+            .expect("sticky fallback");
+        assert_eq!(&*cached.bytes, b"archived");
+        assert_eq!(&*cached.source_archive, "first.mix");
     }
 
     #[test]
@@ -1589,7 +1636,7 @@ mod tests {
                 LooseAsset {
                     path: PathBuf::from("RA2MD.CSF"),
                     source_name: "loose:RA2MD.CSF".to_string(),
-                    bytes: LooseBytes::Owned(Box::from(&b"loose"[..])),
+                    bytes: OnceLock::from(Some(Box::from(&b"loose"[..]))),
                 },
             )]),
             active_theater: None,
