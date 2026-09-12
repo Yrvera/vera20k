@@ -91,6 +91,10 @@ pub struct SkirmishShellChromeAtlas {
     /// Both adjacent border-2 primitive frames drawn around a `128x21`
     /// owner-draw trackbar, including the two-pixel outside expansion.
     pub trackbar_rail: Option<SkirmishShellChromeEntry>,
+    /// Active B8 numeric263x21 rail, original6B6300 retains the50px plaque.
+    pub trackbar_numeric_263: Option<SkirmishShellChromeEntry>,
+    /// RMG105 Players numeric225x21 rail.
+    pub trackbar_numeric_225: Option<SkirmishShellChromeEntry>,
     /// Launcher D5 plain 180x21 trackbar (4AC disables the value plaque).
     pub trackbar_plain_180: Option<SkirmishShellChromeEntry>,
     /// Active BBB plain 192x21 rail, 4E1FE0 disables its plaque.
@@ -117,6 +121,10 @@ pub struct ControlChrome {
     pub checkbox_unchecked_cue_i: Option<SkirmishShellChromeEntry>,
     pub checkbox_checked_cce_i: Option<SkirmishShellChromeEntry>,
     pub trackbar_rail: Option<SkirmishShellChromeEntry>,
+    /// Active B8 numeric263x21 rail, original6B6300 retains the50px plaque.
+    pub trackbar_numeric_263: Option<SkirmishShellChromeEntry>,
+    /// RMG105 Players numeric225x21 rail.
+    pub trackbar_numeric_225: Option<SkirmishShellChromeEntry>,
     pub trackbar_plain_180: Option<SkirmishShellChromeEntry>,
     /// Active BBB plain 192x21 rail, 4E1FE0 disables its plaque.
     pub trackbar_plain_192: Option<SkirmishShellChromeEntry>,
@@ -151,6 +159,8 @@ impl SkirmishShellChromeAtlas {
             checkbox_unchecked_cue_i: self.checkbox_unchecked_cue_i,
             checkbox_checked_cce_i: self.checkbox_checked_cce_i,
             trackbar_rail: self.trackbar_rail,
+            trackbar_numeric_263: self.trackbar_numeric_263,
+            trackbar_numeric_225: self.trackbar_numeric_225,
             trackbar_plain_180: self.trackbar_plain_180,
             trackbar_plain_192: self.trackbar_plain_192,
             combo_face_180: self.combo_face_180,
@@ -413,12 +423,29 @@ pub fn build_skirmish_shell_chrome_atlas(
 
     rendered.push(render_trackbar_frame_entry("skirmish_trackbar_rail"));
     rendered.push(render_trackbar_frame_geometry(
+        "rmg_trackbar_numeric_225",
+        225,
+        21,
+        50,
+    ));
+    rendered.push(render_trackbar_frame_geometry(
+        "sound_trackbar_numeric_263",
+        263,
+        21,
+        50,
+    ));
+    rendered.push(render_trackbar_frame_geometry(
         "launcher_trackbar_plain_180",
         180,
         21,
         0,
     ));
-    rendered.push(render_trackbar_frame_geometry("in_game_trackbar_plain_192", 192, 21, 0));
+    rendered.push(render_trackbar_frame_geometry(
+        "in_game_trackbar_plain_192",
+        192,
+        21,
+        0,
+    ));
     for (label, width) in [
         ("skirmish_combo_face_150", 150),
         ("launcher_combo_face_180", 180),
@@ -515,6 +542,8 @@ pub fn build_skirmish_shell_chrome_atlas(
         scrollbar_thumb_mid: by_label.get("sbgripm.pcx").copied(),
         scrollbar_thumb_bottom: by_label.get("sbgripb.pcx").copied(),
         trackbar_rail: by_label.get("skirmish_trackbar_rail").copied(),
+        trackbar_numeric_263: by_label.get("sound_trackbar_numeric_263").copied(),
+        trackbar_numeric_225: by_label.get("rmg_trackbar_numeric_225").copied(),
         trackbar_plain_180: by_label.get("launcher_trackbar_plain_180").copied(),
         trackbar_plain_192: by_label.get("in_game_trackbar_plain_192").copied(),
         combo_face_180: by_label.get("launcher_combo_face_180").copied(),
@@ -1225,6 +1254,24 @@ mod tests {
         assert_eq!(pixel(&entry, 79, 10), [0, 0, 0, 0]);
         assert_eq!(pixel(&entry, 100, 10), [0, 0, 0, 0]);
         assert_eq!(pixel(&entry, 80, 24), mixed);
+    }
+
+    #[test]
+    fn sound_trackbar_frames_keep_native_wide_rail_and_fixed_plaque() {
+        // Original61E1B9..61E269 +6208F0: rail213, value x215/w48;
+        // both border2 expanded. Reusing the128 bitmap misplaced this divider.
+        let entry = super::render_trackbar_frame_geometry("sound", 263, 21, 50);
+        assert_eq!((entry.width, entry.height), (267, 25));
+        assert_eq!(
+            pixel(&entry, 215, 10),
+            rgba_color(PRIMITIVE_BEVEL_COLOR_A_RGB)
+        );
+        assert_eq!(
+            pixel(&entry, 216, 10),
+            rgba_color(PRIMITIVE_BEVEL_COLOR_B_RGB)
+        );
+        assert_eq!(pixel(&entry, 214, 10), [0, 0, 0, 0]);
+        assert_eq!(pixel(&entry, 235, 10), [0, 0, 0, 0]);
     }
 
     #[test]

@@ -37,6 +37,7 @@ impl App {
         state.match_state.match_presentation.in_game_options_anchor = None;
         state.match_state.match_presentation.pause_menu_interaction = Default::default();
         state.match_state.match_presentation.abort_buttons = Default::default();
+        state.match_state.match_presentation.sound_dialog = None;
         state.match_state.match_presentation.saved_game_browser = None;
         // Persist the deterministic diagnostic log before leaving the scenario.
         // Runtime and presentation resources remain retained in the shell.
@@ -198,6 +199,7 @@ impl App {
         state.match_state.match_presentation.in_game_menu = next;
         state.match_state.match_presentation.pause_menu_interaction = Default::default();
         state.match_state.match_presentation.abort_buttons = Default::default();
+        state.match_state.match_presentation.sound_dialog = None;
         if next == InGameMenuState::Menu {
             state.match_state.match_presentation.pause_menu_has_saves = !state.persistence.repository.browser_entries().is_empty();
         }
@@ -208,6 +210,7 @@ impl App {
             state.match_state.match_presentation.in_game_options_anchor = None;
         }
         if next == InGameMenuState::Options {
+            state.match_state.match_presentation.in_game_options.sound_enabled=state.audio.launcher_audio_available;
             // Reset the transient interaction flags so the drag-gated
             // value-label quirk resets on every open.
             state
@@ -265,7 +268,7 @@ impl App {
             }
             // Options is the native `0xBBB` overlay, drawn earlier in the frame
             // and reconciled by `sync_in_game_menu_with_options_overlay`.
-            InGameMenuState::Options | InGameMenuState::SavedGame(_) => ModalOutcome::Stay,
+            InGameMenuState::Options | InGameMenuState::Sound | InGameMenuState::SavedGame(_) => ModalOutcome::Stay,
         };
 
         Self::apply_in_game_modal_outcome(state, outcome);

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "Eight original YR music WAV metadata inputs, sixteen PCM seconds-boundary cases, four retained-or-pending cases for each original caller",
+  "assumptions": [
+    "Retail inputs explicitly thememd.mix; mount precedence independently inspected with asset browser, not emulated",
+    "Python supplies fmt pointer ESI, zeroed descriptor EBX, declared data length EDX, valid stack and destination; original RIFF file I/O/chunk walk not executed",
+    "PCM positive mono/stereo 8/16-bit at22050/44100Hz; bytes immediately before/at60seconds, no overflow/malformed/zero-rate scope",
+    "Original duration helper and its CRT arithmetic execute completely; descriptor rate and whole-second store execute bounded original blocks",
+    "Supplied x87 control027F; scoped stored integer seconds are exactly representable and independent of rounding",
+    "Current-song comparisons supply three global slots and stop before Queue; no playback/output or complete dialog execution"
+  ],
+  "substitutions": [
+    "File I/O/chunk parsing and allocations replaced by supplied original fmt/data metadata and writable scratch; no native instructions patched"
+  ],
+  "entry_points": {
+    "catalog": "0x007207F0",
+    "descriptor": "0x00408751",
+    "milliseconds": "0x00408560",
+    "seconds": "0x007208D3",
+    "launcher_current": "0x0055FBE5",
+    "sound_current": "0x006B6918"
+  },
+  "payload_sha256": "445681154dc4366839506262f8986a3966d533174c280c50b490fe2d8712474a"
+}

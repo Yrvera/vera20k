@@ -655,7 +655,7 @@ pub(crate) fn trackbar_position_from_x(
     relative.min(i32::from(maximum)) as u8
 }
 
-fn thumb_left(position: u8, client_width: i32, reserve: i32, maximum: u8) -> i32 {
+pub(crate) fn thumb_left(position: u8, client_width: i32, reserve: i32, maximum: u8) -> i32 {
     let usable_span = (client_width - reserve - 13).max(1);
     // Original 0x0061E486..0x0061E4A8 (TBM_SETPOS) and
     // 0x0061DC44..0x0061DC58 (drag) divide the painted offset by range.
@@ -1974,9 +1974,9 @@ mod tests {
             "../../../tools/storage_oracle/launcher_trackbar.json"
         ))
         .unwrap();
-        // BBB adds a192px geometry to this shared oracle; retain D5 coverage here.
+        // BBB/B8 add geometries to the shared oracle; retain original D5 coverage.
         let geometries: Vec<_> = golden["geometries"].as_array().unwrap().iter()
-            .filter(|geometry| geometry["width"].as_i64() != Some(192)).collect();
+            .filter(|geometry| matches!(geometry["width"].as_i64(), Some(128 | 180))).collect();
         assert_eq!(geometries.len(), 16);
         let integer = |value: &serde_json::Value, key: &str| value[key].as_i64().unwrap() as i32;
         let mut position_count = 0;

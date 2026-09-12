@@ -1,5 +1,13 @@
 # MNBTTN.SHP + MAINBTTN.PAL Modal Button Art Investigation
 
+> September12 correction: any frame2-as-pressed interpretation below is superseded.
+> Original612F36..612F5B selects frame1 while held, frame2 for timer highlighting,
+> and frame0 otherwise. Disabled text is handled after frame selection. The
+> [Sound increment evidence](2026-09-12-sound-shell-evidence.md) records fresh
+> independent confirmation and an executable comparison. Historical Rust state
+> and validation results below describe the earlier implementation.
+
+
 Date: 2026-05-24
 
 Scope: focused research on `MNBTTN.SHP` and `MAINBTTN.PAL`, especially whether they are live Yuri's Revenge UI assets and whether the Skirmish Start validation modal should use them.

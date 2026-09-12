@@ -809,11 +809,7 @@ fn build_exit_confirm_modal_overlay(state: &AppState) -> Option<shell_paint::Mod
     let pressed = state.frontend.shell_controller.pressed();
     let ok_pressed = pressed == Some(modal::control::OK);
     let cancel_pressed = pressed == Some(modal::control::CANCEL);
-    let frames = shell_paint::ModalButtonFrames {
-        up: atlas.modal_button_mnbttn_frame0,
-        disabled: atlas.modal_button_mnbttn_frame1,
-        pressed: atlas.modal_button_mnbttn_frame2,
-    };
+    let frames = crate::app::frontend::skirmish_shell_render::type3_button_frames(atlas);
     let buttons = [
         shell_paint::ModalButton {
             rect: layout.ok,

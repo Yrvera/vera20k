@@ -507,6 +507,7 @@ impl ApplicationHandler for App {
                     state.match_state.match_presentation.in_game_options.pressed_button = None;
                     state.match_state.match_presentation.pause_menu_interaction = Default::default();
         state.match_state.match_presentation.abort_buttons = Default::default();
+        if let Some(dialog)=state.match_state.match_presentation.sound_dialog.as_mut() {dialog.reset_interaction();}
                     if let Some(browser) = state.match_state.match_presentation.saved_game_browser.as_mut() {
                         browser.pressed_control = None;
                         browser.scroll_repeat_at = None;
@@ -627,6 +628,10 @@ impl ApplicationHandler for App {
                             Self::saved_game_key(state, Some(code), event.text.as_deref());
                         }
                         state.platform.window.request_redraw();
+                        return;
+                    }
+                    if in_game && state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Sound {
+                        // B8 has no IDOK/IDCANCEL close command.
                         return;
                     }
                     if in_game && state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::AbortConfirm {

@@ -111,11 +111,11 @@ def generate():
     fixture = TrackbarFixture()
     geometries = []
     # Preserve the original sixteen launcher arithmetic fixtures verbatim and
-    # append only the ordinary in-game plain192/range6 control.
+    # append ordinary BBB plain192/range6 and B8 numeric263/range10 controls.
     inputs = [(width, reserve, maximum)
               for width in (128, 180) for reserve in (0, 50)
               for maximum in (1, 2, 6, 10)]
-    inputs.append((192, 0, 6))
+    inputs.extend(((192, 0, 6), (263, 50, 10)))
     for width, reserve, maximum in inputs:
         positions = []
         for position in range(maximum + 1):
@@ -151,12 +151,13 @@ def generate():
 if __name__ == "__main__":
     finish_vectors(generate, Path(__file__).with_suffix(".json"),
                    provenance=lambda: provenance(
-        scope=("17 supplied geometries; 99 valid positions compared across "
-               "initialization/405/406; 2945 drag pointer samples, including "
-               "2656 in-client samples compared with the admitted rail-click block"),
+        scope=("18 supplied geometries; 110 valid positions compared across "
+               "initialization/405/406; 3225 drag pointer samples, including "
+               "2919 in-client samples compared with the admitted rail-click block"),
         assumptions=[
             "Client RECT left/top zero; widths 128 and 180, plaque reserve 0 or 50; these cross combinations are arithmetic fixtures, not observed layouts",
             "Additional BBB fixture is width192/reserve0/maximum6, from 128x13 DLU and the active 4E1FE0 configuration; height21 does not enter these arithmetic blocks",
+            "B8 adds width263/reserve50/maximum10 from175x13 DLU;6B6382..647F disables cue but retains the default numeric plaque",
             "Range minimum zero, maximum 1/2/6/10, step one, every valid position; no invalid setter or zero-range claims",
             "Client x is every integer from -8 through width+8; negative/overshoot samples model capture drag, not admitted rail clicks",
             "The admitted rail-click block is compared for x in [0,width); y/old-thumb admission, HWND state lookup, Windows pointer retrieval and notifications are outside the fixture",

@@ -75,6 +75,7 @@ pub(crate) fn build_in_game_options_text_instances(
     screen_h: i32,
     anchor: InGameOptionsAnchor,
     state: &InGameOptionsState,
+    theme: crate::sidebar::SidebarTheme,
 ) -> Vec<ShellTextDraw> {
     let mut out = Vec::new();
     for draw in in_game_options_static_draws(csf, screen_w, screen_h, anchor, state) {
@@ -88,7 +89,11 @@ pub(crate) fn build_in_game_options_text_instances(
             font,
             &draw.text,
             rect,
-            SHELL_LABEL_TEXT_RGB,
+            if draw.id == control::SOUND && !state.sound_enabled {
+                super::pause_menu::button_text_rgb(theme, false)
+            } else {
+                SHELL_LABEL_TEXT_RGB
+            },
             draw.align,
             [0.0, 0.0],
             SHELL_CONTROL_TEXT_DEPTH,
@@ -434,6 +439,7 @@ mod tests {
             600,
             test_anchor(),
             &InGameOptionsState::default(),
+            crate::sidebar::SidebarTheme::Allied,
         );
         assert!(out.iter().any(|draw| !draw.instances.is_empty()));
         assert!(

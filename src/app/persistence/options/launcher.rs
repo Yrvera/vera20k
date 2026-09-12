@@ -5,6 +5,7 @@
 //! accepted parent boundary; UI drawing, Winit enumeration, concrete audio,
 //! persistence I/O, and child routing remain with their established owners.
 
+use super::audio::{AudioVolume, AudioVolumeOperations, apply_volume};
 use crate::app::persistence::options_profile::RetailOptionsProfile;
 use crate::ui::main_menu_dialogs::options::{
     LauncherCue, LauncherOptionsEvent, LauncherOptionsLabels, LauncherOptionsPacked,
@@ -111,17 +112,9 @@ pub(crate) fn launcher_dialog_from_profile(
 ///
 /// The common audio predicate is deliberately queried again at dispatch so a
 /// forged or stale audio event cannot store a profile value or touch output.
-pub(crate) trait LauncherPreviewOperations {
-    fn launcher_audio_available(&self) -> bool;
+pub(crate) trait LauncherPreviewOperations: AudioVolumeOperations {
     fn play_cue(&mut self, cue: LauncherCue);
     fn store_resolution(&mut self, width: i32, height: i32);
-    fn store_score_volume(&mut self, volume: f32);
-    fn apply_score_output(&mut self, volume: f32);
-    fn store_sound_volume(&mut self, volume: f32);
-    fn apply_sound_output(&mut self, volume: f32);
-    fn store_voice_volume(&mut self, volume: f32);
-    fn apply_voice_output(&mut self, volume: f32);
-    fn play_generic_beep(&mut self, local_multiplier: f32);
 }
 
 /// Dispatch one already-ordered UI event without an INI write or display-mode
@@ -136,27 +129,13 @@ pub(crate) fn dispatch_launcher_preview_event(
             operations.store_resolution(width, height);
         }
         LauncherOptionsEvent::ScorePreview(volume) => {
-            if !operations.launcher_audio_available() {
-                return;
-            }
-            operations.store_score_volume(volume);
-            operations.apply_score_output(volume);
+            apply_volume(operations, AudioVolume::Score, volume, true)
         }
         LauncherOptionsEvent::SoundPreview(volume) => {
-            if !operations.launcher_audio_available() {
-                return;
-            }
-            operations.store_sound_volume(volume);
-            operations.apply_sound_output(volume);
-            operations.play_generic_beep(1.0);
+            apply_volume(operations, AudioVolume::Sound, volume, true)
         }
         LauncherOptionsEvent::VoicePreview(volume) => {
-            if !operations.launcher_audio_available() {
-                return;
-            }
-            operations.store_voice_volume(volume);
-            operations.apply_voice_output(volume);
-            operations.play_generic_beep(volume);
+            apply_volume(operations, AudioVolume::Voice, volume, true)
         }
     }
 }
@@ -466,16 +445,18 @@ mod tests {
     }
 
     impl LauncherPreviewOperations for PreviewRecorder {
-        fn launcher_audio_available(&self) -> bool {
-            self.available
-        }
-
         fn play_cue(&mut self, cue: LauncherCue) {
             self.calls.push(PreviewCall::Cue(cue));
         }
 
         fn store_resolution(&mut self, width: i32, height: i32) {
             self.calls.push(PreviewCall::Resolution(width, height));
+        }
+    }
+
+    impl AudioVolumeOperations for PreviewRecorder {
+        fn launcher_audio_available(&self) -> bool {
+            self.available
         }
 
         fn store_score_volume(&mut self, volume: f32) {
@@ -560,6 +541,32 @@ mod tests {
             },
         );
         assert_eq!(recorder.calls, [PreviewCall::Resolution(640, 480)]);
+    }
+
+    #[test]
+    fn accepted_sound_back_setters_are_unconditional_and_cue_silent() {
+        let mut recorder = PreviewRecorder {
+            available: false,
+            calls: Vec::new(),
+        };
+        for (channel, value) in [
+            (AudioVolume::Score, 0.2),
+            (AudioVolume::Sound, 0.5),
+            (AudioVolume::Voice, 0.8),
+        ] {
+            apply_volume(&mut recorder, channel, value, false);
+        }
+        assert_eq!(
+            recorder.calls,
+            vec![
+                PreviewCall::StoreScore(0.2),
+                PreviewCall::OutputScore(0.2),
+                PreviewCall::StoreSound(0.5),
+                PreviewCall::OutputSound(0.5),
+                PreviewCall::StoreVoice(0.8),
+                PreviewCall::OutputVoice(0.8)
+            ]
+        );
     }
 
     #[derive(Debug, Clone, PartialEq)]

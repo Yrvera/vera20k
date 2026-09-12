@@ -45,6 +45,7 @@ pub(crate) fn native_in_game_shell_active(state: &AppState) -> bool {
             state.match_state.match_presentation.in_game_menu,
             crate::ui::pause_menu::InGameMenuState::Menu
                 | crate::ui::pause_menu::InGameMenuState::AbortConfirm
+                | crate::ui::pause_menu::InGameMenuState::Sound
                 | crate::ui::pause_menu::InGameMenuState::Options
                 | crate::ui::pause_menu::InGameMenuState::SavedGame(_)
         )
@@ -234,6 +235,7 @@ pub(crate) fn render_in_game_options_shell(
         height as i32,
         anchor,
         options,
+        crate::app::presentation::sidebar_render::current_sidebar_theme(state),
     );
     render_in_game_shell_frame(
         state,
