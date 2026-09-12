@@ -49,6 +49,8 @@ pub struct SkirmishShellChromeAtlas {
     /// `None` when the loaded SHP lacks that frame (draw clamps, never panics).
     pub right_panel_button_sdbtnanm_frames: [Option<SkirmishShellChromeEntry>; 17],
     pub right_panel_bottom_sdbtm: Option<SkirmishShellChromeEntry>,
+    /// D5 static71C: 6038F7->6039EF selects SDWRNANM through SHELL2.PAL.
+    pub launcher_warning_frames: Vec<SkirmishShellChromeEntry>,
     pub sd_map_button: Option<SkirmishShellChromeEntry>,
     pub background_640_mnscrns: Option<SkirmishShellChromeEntry>,
     pub background_800_coop_game_setup: Option<SkirmishShellChromeEntry>,
@@ -94,6 +96,9 @@ pub struct SkirmishShellChromeAtlas {
     /// Both adjacent border-2 primitive frames drawn around a `128x21`
     /// owner-draw trackbar, including the two-pixel outside expansion.
     pub trackbar_rail: Option<SkirmishShellChromeEntry>,
+    /// Launcher D5 plain 180x21 trackbar (4AC disables the value plaque).
+    pub trackbar_plain_180: Option<SkirmishShellChromeEntry>,
+    pub combo_face_180: Option<SkirmishShellChromeEntry>,
     pub combo_face_150: Option<SkirmishShellChromeEntry>,
     pub combo_face_117: Option<SkirmishShellChromeEntry>,
     pub combo_face_44: Option<SkirmishShellChromeEntry>,
@@ -115,6 +120,8 @@ pub struct ControlChrome {
     pub checkbox_unchecked_cue_i: Option<SkirmishShellChromeEntry>,
     pub checkbox_checked_cce_i: Option<SkirmishShellChromeEntry>,
     pub trackbar_rail: Option<SkirmishShellChromeEntry>,
+    pub trackbar_plain_180: Option<SkirmishShellChromeEntry>,
+    pub combo_face_180: Option<SkirmishShellChromeEntry>,
     pub trackbar_plaque_left_trofl: Option<SkirmishShellChromeEntry>,
     pub trackbar_plaque_mid_trofm: Option<SkirmishShellChromeEntry>,
     pub trackbar_plaque_right_trofr: Option<SkirmishShellChromeEntry>,
@@ -148,6 +155,8 @@ impl SkirmishShellChromeAtlas {
             checkbox_unchecked_cue_i: self.checkbox_unchecked_cue_i,
             checkbox_checked_cce_i: self.checkbox_checked_cce_i,
             trackbar_rail: self.trackbar_rail,
+            trackbar_plain_180: self.trackbar_plain_180,
+            combo_face_180: self.combo_face_180,
             trackbar_plaque_left_trofl: self.trackbar_plaque_left_trofl,
             trackbar_plaque_mid_trofm: self.trackbar_plaque_mid_trofm,
             trackbar_plaque_right_trofr: self.trackbar_plaque_right_trofr,
@@ -211,6 +220,20 @@ pub fn build_skirmish_shell_chrome_atlas(
     let choose_map_background_palette = load_choose_map_background_palette(assets);
 
     let mut rendered = Vec::new();
+    // Original SDWRNANM header supplies 91 frames; keep the runtime sequence
+    // bounded by the available retail frames, without stretching the canvas.
+    for frame in 0..91 {
+        let Some(entry) = render_shp_entry_labeled(
+            assets,
+            "SDWRNANM.SHP",
+            &format!("sdwrnanm.shp#{frame}"),
+            &shell2_palette,
+            frame,
+        ) else {
+            break;
+        };
+        rendered.push(entry);
+    }
     rendered.push(mandatory_shp(
         assets,
         "SDTP.SHP",
@@ -420,8 +443,15 @@ pub fn build_skirmish_shell_chrome_atlas(
     }
 
     rendered.push(render_trackbar_frame_entry("skirmish_trackbar_rail"));
+    rendered.push(render_trackbar_frame_geometry(
+        "launcher_trackbar_plain_180",
+        180,
+        21,
+        0,
+    ));
     for (label, width) in [
         ("skirmish_combo_face_150", 150),
+        ("launcher_combo_face_180", 180),
         ("skirmish_combo_face_117", 117),
         ("skirmish_combo_face_44", 44),
         ("skirmish_combo_face_38", 38),
@@ -463,6 +493,9 @@ pub fn build_skirmish_shell_chrome_atlas(
 
     Some(SkirmishShellChromeAtlas {
         texture,
+        launcher_warning_frames: (0..91)
+            .map_while(|frame| by_label.get(&format!("sdwrnanm.shp#{frame}")).copied())
+            .collect(),
         right_panel_top_sdtp: by_label.get("sdtp.shp").copied(),
         right_panel_top_highlight_sdtp_frame1: by_label.get("sdtp.shp#1").copied(),
         right_panel_tile_sdbtnbkgd: by_label.get("sdbtnbkgd.shp").copied(),
@@ -515,6 +548,8 @@ pub fn build_skirmish_shell_chrome_atlas(
         scrollbar_thumb_mid: by_label.get("sbgripm.pcx").copied(),
         scrollbar_thumb_bottom: by_label.get("sbgripb.pcx").copied(),
         trackbar_rail: by_label.get("skirmish_trackbar_rail").copied(),
+        trackbar_plain_180: by_label.get("launcher_trackbar_plain_180").copied(),
+        combo_face_180: by_label.get("launcher_combo_face_180").copied(),
         combo_face_150: by_label.get("skirmish_combo_face_150").copied(),
         combo_face_117: by_label.get("skirmish_combo_face_117").copied(),
         combo_face_44: by_label.get("skirmish_combo_face_44").copied(),
@@ -741,16 +776,33 @@ fn render_primitive_bevel_entry(
 }
 
 fn render_trackbar_frame_entry(label: &str) -> RenderedShellEntry {
+    render_trackbar_frame_geometry(
+        label,
+        TRACKBAR_CONTROL_W,
+        TRACKBAR_CONTROL_H,
+        TRACKBAR_VALUE_PLAQUE_W,
+    )
+}
+
+/// Original 61E1B9..61E269: draw the rail frame at the current control size;
+/// only a plaque-enabled control draws the adjacent value frame. Both use
+/// 6208F0's two-pixel outside expansion. Never stretch a split-frame bitmap.
+fn render_trackbar_frame_geometry(
+    label: &str,
+    control_width: u32,
+    control_height: u32,
+    reserve: i32,
+) -> RenderedShellEntry {
     let border = TRACKBAR_FRAME_BORDER;
-    let width = TRACKBAR_CONTROL_W + (border as u32) * 2;
-    let height = TRACKBAR_CONTROL_H + (border as u32) * 2;
+    let width = control_width + (border as u32) * 2;
+    let height = control_height + (border as u32) * 2;
     let mut rgba = vec![0u8; (width * height * 4) as usize];
 
-    let control_w = TRACKBAR_CONTROL_W as i32;
-    let control_h = TRACKBAR_CONTROL_H as i32;
-    let left_frame_w = control_w - TRACKBAR_VALUE_PLAQUE_W;
+    let control_w = control_width as i32;
+    let control_h = control_height as i32;
+    let left_frame_w = control_w - reserve;
     let value_frame_x = left_frame_w + TRACKBAR_VALUE_FRAME_INSET;
-    let value_frame_w = TRACKBAR_VALUE_PLAQUE_W - TRACKBAR_VALUE_FRAME_INSET;
+    let value_frame_w = reserve - TRACKBAR_VALUE_FRAME_INSET;
 
     // `OwnerDraw_Trackbar_0061D950` supplies control-relative boxes and
     // FUN_006208F0 expands each by two pixels. Shift both inputs by the canvas
@@ -762,13 +814,15 @@ fn render_trackbar_frame_entry(label: &str) -> RenderedShellEntry {
         [border, border, left_frame_w, control_h],
         border,
     );
-    draw_primitive_bevel(
-        &mut rgba,
-        width,
-        height,
-        [border + value_frame_x, border, value_frame_w, control_h],
-        border,
-    );
+    if reserve > 0 {
+        draw_primitive_bevel(
+            &mut rgba,
+            width,
+            height,
+            [border + value_frame_x, border, value_frame_w, control_h],
+            border,
+        );
+    }
 
     RenderedShellEntry {
         label: label.to_ascii_lowercase(),

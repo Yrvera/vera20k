@@ -5,6 +5,8 @@
 
 use crate::ui::client_theme;
 
+pub(crate) mod shell;
+
 /// gamemd-derived: launcher owner `OptionsClass__ShowLauncherDialog @
 /// 0x0055FC80` and its primary-proc slice `0x0055FDB0..0x0056047A` bind the
 /// RT_DIALOG `0xD5` controls to these launcher-local CSF keys/fallbacks.
@@ -339,6 +341,7 @@ pub(crate) enum LauncherCue {
     GenericClick,
     Checkbox,
     ComboOpen,
+    ComboClose,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -654,7 +657,10 @@ pub(crate) fn trackbar_position_from_x(
 
 fn thumb_left(position: u8, client_width: i32, reserve: i32, maximum: u8) -> i32 {
     let usable_span = (client_width - reserve - 13).max(1);
-    1 + i32::from(position) * usable_span / (i32::from(maximum) + 1)
+    // Original 0x0061E486..0x0061E4A8 (TBM_SETPOS) and
+    // 0x0061DC44..0x0061DC58 (drag) divide the painted offset by range.
+    // Mouse quantization above deliberately uses range + 1 instead.
+    1 + i32::from(position) * usable_span / i32::from(maximum).max(1)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -671,6 +677,7 @@ pub(crate) struct OptionsDialogState {
     capture: Option<LauncherTrackbarId>,
     pending_events: Vec<LauncherOptionsEvent>,
     pending_result: Option<LauncherParentResult>,
+    shell_interaction: shell::ShellInteraction,
 }
 
 impl Default for OptionsDialogState {
@@ -720,6 +727,7 @@ impl OptionsDialogState {
             capture: None,
             pending_events: Vec::new(),
             pending_result: None,
+            shell_interaction: shell::ShellInteraction::default(),
         }
     }
 
@@ -1955,6 +1963,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn launcher_trackbar_position_and_painted_thumb_match_original_instruction_goldens() {
+        // Reproduced by tools/storage_oracle/launcher_trackbar.py from the
+        // hash-checked retail executable. This compares the separate native
+        // range+1 pointer partition and range-only retained paint calculation.
+        let golden: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tools/storage_oracle/launcher_trackbar.json"
+        ))
+        .unwrap();
+        let geometries = golden["geometries"].as_array().unwrap();
+        assert_eq!(geometries.len(), 16);
+        let integer = |value: &serde_json::Value, key: &str| value[key].as_i64().unwrap() as i32;
+        let mut position_count = 0;
+        let mut pointer_count = 0;
+        for geometry in geometries {
+            let width = integer(geometry, "width");
+            let reserve = integer(geometry, "reserve");
+            let maximum = integer(geometry, "maximum") as u8;
+            for sample in geometry["positions"].as_array().unwrap() {
+                let position = integer(sample, "position") as u8;
+                let left = thumb_left(position, width, reserve, maximum);
+                assert_eq!(
+                    left,
+                    integer(sample, "thumb_left"),
+                    "{geometry:?} {sample:?}"
+                );
+                assert_eq!(left + 12, integer(sample, "thumb_right"));
+                position_count += 1;
+            }
+            for sample in geometry["pointers"].as_array().unwrap() {
+                let x = integer(sample, "x");
+                let position = trackbar_position_from_x(x, width, reserve, maximum);
+                assert_eq!(
+                    i32::from(position),
+                    integer(sample, "position"),
+                    "width={width} reserve={reserve} maximum={maximum} x={x}"
+                );
+                let left = thumb_left(position, width, reserve, maximum);
+                assert_eq!(left, integer(sample, "thumb_left"));
+                assert_eq!(left + 12, integer(sample, "thumb_right"));
+                pointer_count += 1;
+            }
+        }
+        assert_eq!(position_count, 92);
+        assert_eq!(pointer_count, 2736);
     }
 
     #[test]

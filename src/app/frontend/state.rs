@@ -66,6 +66,7 @@ pub(crate) struct FrontendState {
     pub(crate) exit_confirm_modal: Option<crate::ui::main_menu_dialogs::ExitConfirmModalState>,
     /// Retained active-YR launcher Options `0xD5` parent snapshot.
     pub(crate) options_dialog: Option<crate::ui::main_menu_dialogs::OptionsDialogState>,
+    pub(crate) launcher_options_presentation: super::skirmish_shell_render::LauncherOptionsPresentation,
     /// Movies & Credits sub-panel (open-level shell; playback not implemented).
     pub(crate) movies_credits_dialog:
         Option<crate::ui::main_menu_dialogs::MoviesCreditsDialogState>,

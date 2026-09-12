@@ -49,6 +49,7 @@ pub(super) fn combo_face_entry(
     rect: RectPx,
 ) -> Option<SkirmishShellChromeEntry> {
     match rect.w {
+        180 => chrome.combo_face_180,
         150 => chrome.combo_face_150,
         117 => chrome.combo_face_117,
         44 => chrome.combo_face_44,
@@ -252,6 +253,11 @@ pub(super) enum ControlPaint {
         rect: RectPx,
         thumb_px: i32,
     },
+    /// D5 Detail/Difficulty/Scroll receive 4AC(false): no numeric plaque.
+    PlainTrackbar {
+        rect: RectPx,
+        thumb_px: i32,
+    },
     Combo {
         rect: RectPx,
         swatch: Option<[f32; 3]>,
@@ -294,16 +300,24 @@ pub(super) fn paint_control(
                 push_entry(out, entry, checkbox_icon_rect(rect), SHELL_CONTROL_DEPTH);
             }
         }
-        ControlPaint::Trackbar { rect, thumb_px } => {
+        ControlPaint::Trackbar { rect, thumb_px }
+        | ControlPaint::PlainTrackbar { rect, thumb_px } => {
             // The active owner-draw callback blits plaque and thumb art before
             // drawing its two adjacent border-2 primitive frames. The frame
             // entry includes the native two-pixel outside expansion.
-            paint_trackbar_plaque(out, chrome, rect, SHELL_CONTROL_DEPTH);
+            let plain = matches!(paint, ControlPaint::PlainTrackbar { .. });
+            if !plain {
+                paint_trackbar_plaque(out, chrome, rect, SHELL_CONTROL_DEPTH);
+            }
             if let Some(thumb) = chrome.trackbar_thumb_trakgrip {
                 let thumb_rect = trackbar_thumb_rect(rect, thumb_px);
                 push_entry(out, thumb, thumb_rect, SHELL_CONTROL_DEPTH - 0.00002);
             }
-            if let Some(frame) = chrome.trackbar_rail {
+            if let Some(frame) = if plain {
+                chrome.trackbar_plain_180
+            } else {
+                chrome.trackbar_rail
+            } {
                 push_entry_native(
                     out,
                     frame,

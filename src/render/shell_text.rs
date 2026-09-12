@@ -118,8 +118,13 @@ pub fn draw_in_rect(
     // in left-to-right from the centered start position. `None` reveal leaves
     // the per-line output byte-identical to the steady-state path.
     let mut consumed: u32 = 0;
-    for span in &layout.lines {
-        if (line_y + font.glyph_height()) > (rect.y as f32 + rect.h as f32) {
+    for (line_index, span) in layout.lines.iter().enumerate() {
+        // 434CD0 paints the first line before consulting max-height. Its
+        // newline/wrap tails (434EC2..434ED7 /435112..435127) stop only after
+        // consumed cell advances reach the nonzero limit. The raster scissor
+        // clips overhanging glyph pixels; a short clip must not discard an
+        // admitted line. Retail GAME.FNT has16 bitmap rows and17px cell advance.
+        if line_index > 0 && rect.h != 0 && line_index as f32 * line_advance >= rect.h as f32 {
             break;
         }
         if let Some(r) = reveal {
@@ -186,8 +191,9 @@ pub fn draw_in_rect_path_a(
     let mut instances = Vec::with_capacity(text.len());
     let mut consumed = 0u32;
 
-    for span in &layout.lines {
-        if line_y + font.glyph_height() > rect.y as f32 + rect.h as f32 {
+    for (line_index, span) in layout.lines.iter().enumerate() {
+        // Same original 434CD0 line admission as the non-reveal entry above.
+        if line_index > 0 && rect.h != 0 && line_index as f32 * line_advance >= rect.h as f32 {
             break;
         }
         let line_x_offset = if flags.contains(ShellAlign::H_CENTER) && span.width < rect.w {
@@ -222,6 +228,133 @@ mod tests {
 
     fn test_font() -> BitFont {
         make_test_font(&[(b'x' as u16, 6), (b'a' as u16, 6), (b'b' as u16, 6)], 4)
+    }
+
+    #[test]
+    fn line_submissions_match_original_434cd0_for_short_static_rectangles() {
+        let golden: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/storage_oracle/shell_text_lines.json"
+        ))
+        .unwrap();
+        let mut font = make_test_font(&[(b'A' as u16, 6)], 3);
+        font.cell_height = 17;
+        font.bitmap_rows = 16;
+        font.char_spacing = 0;
+        let cases = golden["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 66);
+        for case in cases {
+            let rect = TextRect {
+                x: 11,
+                y: 13,
+                w: case["width"].as_u64().unwrap() as u32,
+                h: case["height"].as_u64().unwrap() as u32,
+            };
+            let text = case["text"].as_str().unwrap();
+            let plain = draw_in_rect(
+                &font,
+                text,
+                rect,
+                [1.0; 3],
+                ShellAlign::NONE,
+                [0.0; 2],
+                0.5,
+                None,
+            );
+            let reveal = draw_in_rect_path_a(
+                &font,
+                text,
+                rect,
+                ShellAlign::NONE,
+                [0.0; 2],
+                0.5,
+                PathAReveal {
+                    count: 0,
+                    range: 8,
+                    base_rgb: [255; 3],
+                    highlight_rgb: [255; 3],
+                },
+            );
+            let expected: Vec<_> = case["submissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| {
+                    [
+                        p["x"].as_u64().unwrap() as f32,
+                        p["y"].as_u64().unwrap() as f32,
+                    ]
+                })
+                .collect();
+            for draw in [plain, reveal] {
+                let positions: Vec<_> = draw.instances.iter().map(|i| i.position).collect();
+                assert_eq!(positions, expected, "{case}");
+                assert_eq!(draw.scissor.h, rect.h);
+            }
+        }
+    }
+
+    #[test]
+    fn short_native_static_keeps_first_line_and_clips_pixels_in_both_paths() {
+        let font = test_font();
+        let rect = TextRect {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 1,
+        };
+        let plain = draw_in_rect(
+            &font,
+            "x\nx",
+            rect,
+            [1.0; 3],
+            ShellAlign::NONE,
+            [0.0; 2],
+            0.5,
+            None,
+        );
+        let reveal = draw_in_rect_path_a(
+            &font,
+            "x\nx",
+            rect,
+            ShellAlign::NONE,
+            [0.0; 2],
+            0.5,
+            PathAReveal {
+                count: 0,
+                range: 8,
+                base_rgb: [255; 3],
+                highlight_rgb: [255; 3],
+            },
+        );
+        for draw in [plain, reveal] {
+            assert_eq!(draw.instances.len(), 1);
+            assert_eq!(draw.scissor.h, 1);
+            assert!(draw.instances[0].size[1] > 1.0);
+        }
+    }
+
+    #[test]
+    fn native_height_limit_counts_cell_advances_independent_of_vertical_center() {
+        let font = test_font();
+        let h = font.cell_height() as u32 + 1;
+        for align in [ShellAlign::NONE, ShellAlign::V_CENTER] {
+            let draw = draw_in_rect(
+                &font,
+                "x\nx\nx",
+                TextRect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h,
+                },
+                [1.0; 3],
+                align,
+                [0.0; 2],
+                0.5,
+                None,
+            );
+            assert_eq!(draw.instances.len(), 2);
+        }
     }
 
     fn rect_100x30() -> TextRect {
@@ -336,8 +469,13 @@ mod tests {
             0.5,
             None,
         );
-        assert_eq!(draw.instances.len(), 1, "second line is past the rect");
+        // Native height admission counts cell advances independently of the
+        // centering offset: 17 < 30 admits line two, then the scissor clips it.
+        assert_eq!(draw.instances.len(), 2);
         assert_eq!(draw.instances[0].position[1], -2.0);
+        assert_eq!(draw.instances[1].position[1], 15.0);
+        assert_eq!(draw.scissor.y, 0);
+        assert_eq!(draw.scissor.h, 30);
         assert_eq!(vcenter_offset(30, 34), -2.0);
         // C++ integer division truncates toward zero for negatives.
         assert_eq!(vcenter_offset(10, 13), -1.0);

@@ -499,6 +499,9 @@ impl ApplicationHandler for App {
                     state.match_state.input.tactical_mouse = Default::default();
                     state.match_state.input.selection_state.cancel_drag();
                     state.match_state.input.minimap_dragging = false;
+                    if let Some(dialog) = state.frontend.options_dialog.as_mut() {
+                        dialog.shell_cancel_pointer_gesture();
+                    }
                 }
                 Self::set_window_active(state, active);
             }
@@ -703,6 +706,10 @@ impl ApplicationHandler for App {
                 if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                     return;
                 }
+                if Self::native_launcher_options_active(state) {
+                    Self::handle_launcher_options_mouse(state, None);
+                    return;
+                }
                 if !egui_consumed
                     && (state.frontend.screen == GameScreen::InGame || state.frontend.screen == GameScreen::SpawnPick)
                 {
@@ -751,6 +758,10 @@ impl ApplicationHandler for App {
                 // path; the egui fallback and the other egui dialogs (options/movies/
                 // campaign) were already handled by egui above.
                 if Self::main_menu_dialog_open(state) {
+                    if Self::native_launcher_options_active(state) && button == MouseButton::Left {
+                        Self::handle_launcher_options_mouse(state, Some(btn_state.is_pressed()));
+                        return;
+                    }
                     if state.frontend.exit_confirm_modal.is_some()
                         && state.frontend.screen == GameScreen::MainMenu
                         && !state.frontend.main_menu_shell_failed
