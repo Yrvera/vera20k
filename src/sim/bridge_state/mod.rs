@@ -43,6 +43,7 @@ mod zone_activation;
 pub(crate) mod gap_restamp;
 pub(crate) mod publication;
 pub(crate) mod ramp_repair;
+pub(crate) mod repair_occupants;
 pub(crate) mod rim;
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;

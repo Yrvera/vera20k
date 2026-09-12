@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "Complete original487A10(0) two-pass repair occupant controller",
+  "assumptions": [
+    "Bounded supplied Cell/Object lists, initialized ground height104 and C4Warhead pointer",
+    "Original5657A0 fixed cell-pointer lookup and47B3A0 signed/slope ground evaluation execute",
+    "Positive argument branch is excluded: all four ordinary repair walkers supply zero",
+    "Every supplied Foot has a nonnull locomotor; native COM error on null is not executed",
+    "Synthetic mutable callback states expose ordering, not stock-map reachability of every state"
+  ],
+  "substitutions": [
+    "Object1AC admission and2C abstract kind return supplied values",
+    "LocomotorA0 Is_At_Coord returns supplied value after recording original coordinate arguments",
+    "Object16C direct damage records actual packet/flags and mutates its local packet; no death lifecycle",
+    "Declared callback writes change live links, health, cell coordinates or supplied virtual results"
+  ],
+  "entry_points": {
+    "repair_occupants": "0x00487A10",
+    "cell_lookup": "0x005657A0",
+    "ground_height": "0x0047B3A0"
+  },
+  "payload_sha256": "9ae1b823d9b4c337e2a65b6a863201156e72f2207bd149b135b591e7bc2bed70"
+}

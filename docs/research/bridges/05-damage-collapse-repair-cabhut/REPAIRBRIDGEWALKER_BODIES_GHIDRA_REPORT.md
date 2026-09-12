@@ -46,6 +46,41 @@ matching overlay. The existing runtime-only/deferred Rust repair path does not
 deliver these callbacks, and missing runtime entries can conceal live map cells.
 No TS-only behavior is required for these findings.
 
+The reproducible `tools/spatial_oracle/bridge_occupants.{py,json,meta.json}`
+comparison executes the complete zero-argument controller, native cell lookup,
+coordinate construction and signed/slope ground-height evaluation. Its 19 cases
+cover both successor orders, an unlinked captured successor revisited with zero
+health, neighbor unlinking, health changed by admission/kind callbacks, exact-seven
+selection, Aircraft fallback, fresh selected-cell coordinates, retained probes,
+and shared-dummy coordinate wrapping. Admission, abstract kind, IsAtCoord and
+direct damage remain declared virtual seams. The Rust controller in
+`src/sim/bridge_state/repair_occupants.rs` preserves this ordering; the concrete
+world host and ordinary-walker connection remain required delivery work.
+
+Current native receiver review establishes these host prerequisites:
+
+- The sentinel direction `-1` takes the special arm in `0x004D9C60`
+  (`0x004D9CBC` through `0x004D9E3E`), selecting structural deck level and
+  bypassing the normal neighboring traversal comparison. An ordinary path-step
+  admission adapter cannot substitute unchanged. The subsequent stock Unit
+  locomotor `+0x1C` call is simpler: all eleven interface-table references point
+  to unconditional-zero `0x0055ABF0` (`xor eax,eax; ret 8`).
+- Terrain admission `0x0071C4D0` walks its type occupation offsets through cell
+  lookup and `0x0047C620`, passing null type/owner. Building admission `0x00449440`
+  wraps its foundation-placement checks. Both need their own concrete receivers.
+- Aircraft's primary table is `0x007E22A4`; its `+0x1AC` slot at `0x007E2450`
+  points to `0x004196B0`. Historical identification of `0x00415B10` as Aircraft
+  admission used a wrong table base; that function is passenger ejection at
+  `+0x100`. The first pass still invokes admission before its Aircraft fallback.
+- IsAtCoord uses the active locomotor interface, including a Drive piggyback,
+  and full raw-lepton coordinates. Its Head_To owners are Drive `0x004AFCC0`,
+  Ship `0x0069F3D0`, Walk `0x0075AC00`, and Hover `0x00514D10`. Stored Head_To Z
+  must survive changes to the destination terrain. Current Rust
+  `Position.exact_z_leptons` can supply current raw Z, but ordinary
+  `movement_step::resolved_track_endpoint` still stores coarse level Z, and the
+  path-marker snapshot drops slope/stored endpoint Z. Those inputs must be
+  corrected before claiming live repair-occupant delivery.
+
 ## 0. TL;DR
 
 The four `RepairBridgeWalker_{NS,EW}_{Low,High}` functions are the per-cell
