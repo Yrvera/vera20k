@@ -181,6 +181,7 @@ pub(crate) struct MatchPresentationState {
     pub(crate) in_game_menu: crate::ui::pause_menu::InGameMenuState,
     pub(crate) pause_menu_has_saves: bool,
     pub(crate) pause_menu_interaction: crate::ui::shell::pause_menu::PauseMenuInteraction,
+    pub(crate) abort_buttons: crate::ui::shell::button::ShellButtonInteraction<crate::ui::shell::abort::AbortButton>,
     pub(crate) saved_game_browser: Option<crate::ui::skirmish_shell::SavedSeedBrowserState<std::path::PathBuf>>,
     /// Client-side in-game Options (0xBBB) state: the six [Options] values plus
     /// transient interaction flags. `game_speed` mirrors the launched sim and

@@ -39,11 +39,7 @@ pub struct PauseMenuButtonState {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PauseMenuInteraction {
-    pub pressed: Option<PauseMenuButton>,
-    pub highlighted: Option<PauseMenuButton>,
-}
+pub type PauseMenuInteraction = super::button::ShellButtonInteraction<PauseMenuButton>;
 
 impl Default for PauseMenuButtonState {
     fn default() -> Self {

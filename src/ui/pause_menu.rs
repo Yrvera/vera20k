@@ -28,11 +28,13 @@
 //! BEF9D0 contains exactly these six buttons and two statics; no mission-restate
 //! control. Its three saved-game children share the native558DD0 browser owner.
 //!
-//! The abort confirmation is a two-button dialog whose second button is mode
+//! The full-screen B6 abort shell has a secondary action that is mode
 //! dependent: campaign labels it `GUI:Restart` (restart the scenario),
 //! multiplayer with two or more live human players labels it `GUI:Observe`, and
 //! **offline skirmish hides it outright**. What is left in skirmish is one
-//! action button captioned `GUI:Leave` and a cancel. Confirming Leave queues an
+//! action button captioned `GUI:Leave` and Resume Mission. Callback4F18B0
+//! accepts Resume686 and IDOK1; IDCANCEL2 is ignored, so Escape stays in B6.
+//! Confirming Leave queues an
 //! EXIT event for the local player; when that event executes it raises the
 //! graceful-exit session flag, which tears the session down *without* the
 //! victory or defeat teardown — no result screen, no outcome announcement.
@@ -91,9 +93,9 @@ impl InGameMenuState {
             Self::Closed => Self::Menu,
             // B5 has no cancel command; Resume is an explicit button action.
             Self::Menu => Self::Menu,
-            // Cancelling the confirmation resumes the mission — it does not
-            // return to the menu.
-            Self::AbortConfirm => Self::Closed,
+            // B6 callback4F1A37..4F1A97 ignores IDCANCEL2. Its explicit
+            // Resume686 and default IDOK1 resume instead.
+            Self::AbortConfirm => Self::AbortConfirm,
             // Options is a child of the menu.
             Self::Options => Self::Menu,
             Self::SavedGame(_) => self,
@@ -382,8 +384,7 @@ mod tests {
         );
     }
 
-    /// Cancelling the abort confirmation ends at state 0 — never back at the
-    /// menu — and so does dismissing it with Escape.
+    /// Explicit Resume ends at state 0, while native IDCANCEL is ignored.
     #[test]
     fn abort_cancel_resumes_the_mission_instead_of_returning_to_the_menu() {
         assert_eq!(
@@ -392,7 +393,7 @@ mod tests {
         );
         assert_eq!(
             InGameMenuState::AbortConfirm.on_escape(),
-            InGameMenuState::Closed
+            InGameMenuState::AbortConfirm
         );
     }
 

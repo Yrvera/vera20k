@@ -13,7 +13,7 @@ pub(crate) fn button_states(state: &AppState) -> [PauseMenuButtonState; 6] {
     // VERA uses its own compatible snapshot headers; Save remains available.
     let has_saves = state.match_state.match_presentation.pause_menu_has_saves;
     PauseMenuButton::ALL.map(|button| PauseMenuButtonState {
-        pressed: interaction.pressed == Some(button),
+        pressed: interaction.is_pressed(button),
         // C5 timer highlighting is separate from pointer hover.
         highlighted: false,
         enabled: has_saves || !matches!(button, PauseMenuButton::Load | PauseMenuButton::Delete),
@@ -42,7 +42,7 @@ pub(crate) fn cursor_moved(state: &mut AppState) {
         .match_state
         .match_presentation
         .pause_menu_interaction
-        .highlighted = hit(state);
+        .hovered = hit(state);
 }
 
 pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) {
@@ -54,13 +54,13 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) {
         .match_state
         .match_presentation
         .pause_menu_interaction
-        .highlighted = over;
+        .hovered = over;
     if pressed {
         state
             .match_state
             .match_presentation
             .pause_menu_interaction
-            .pressed = over;
+            .press(over);
         if over.is_some() {
             // Common type2 button61374B..613771: generic cue at button-down.
             App::play_skirmish_shell_generic_click_sound(state);
@@ -70,9 +70,8 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) {
             .match_state
             .match_presentation
             .pause_menu_interaction
-            .pressed
-            .take();
-        if let Some(button) = held.filter(|button| Some(*button) == over) {
+            .release(over);
+        if let Some(button) = held {
             activate(state, button);
         }
     }
