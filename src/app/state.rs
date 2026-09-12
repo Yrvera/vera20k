@@ -50,18 +50,23 @@ pub(crate) fn reset_scenario_exit_runtime(state: &mut AppState) {
 }
 
 impl AppState {
-    /// Effective render target width — intermediate texture when upscaling, else window.
-    pub(crate) fn render_width(&self) -> u32 {
-        self.renderer.upscale_pass
-            .as_ref()
-            .map_or(self.renderer.gpu.config.width, |u| u.src_width())
+    /// Current projection: frontend/result use physical window pixels; tactical
+    /// rendering and pending tactical installation use the optional upscaler.
+    /// Loading artwork explicitly uses GPU/window dimensions in loading::pump.
+    fn render_dimensions(&self) -> (u32, u32) {
+        platform::render_dimensions(
+            &self.frontend.screen,
+            (self.renderer.gpu.config.width, self.renderer.gpu.config.height),
+            self.renderer.upscale_pass.as_ref().map(|up| (up.src_width(), up.src_height())),
+        )
     }
 
-    /// Effective render target height — intermediate texture when upscaling, else window.
+    pub(crate) fn render_width(&self) -> u32 {
+        self.render_dimensions().0
+    }
+
     pub(crate) fn render_height(&self) -> u32 {
-        self.renderer.upscale_pass
-            .as_ref()
-            .map_or(self.renderer.gpu.config.height, |u| u.src_height())
+        self.render_dimensions().1
     }
 
     /// Whether the software cursor (mouse.shp) should be active this frame.

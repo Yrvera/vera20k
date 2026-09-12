@@ -6,6 +6,12 @@ Phase: 14, rows 299-300 (`GSI-03.02`, `GSI-17.06`)
 
 Status: APPROVED by final corrective `/design-review`; implementation-ready
 
+September 12 correction: this historical design incorrectly equated the early
+configured game pair with the frontend window pair. Fresh original instructions
+establish separate sizes and a post-load mode change. The sizing claims below
+are superseded by [the shell resolution lifecycle evidence](../research/skirmish-ui/2026-09-12-shell-resolution-lifecycle.md);
+the profile read/write and audio contracts remain separate concerns.
+
 ## Goal
 
 Replace VERA20k's fragmented startup/options/audio persistence with one process-lifetime, Rust-native profile transaction that matches the active-YR `OptionsClass` defaults, typed load, consumer application, accepted-dialog ordering, and coherent write boundary.
