@@ -459,7 +459,10 @@ use crate::sim::world::Simulation;
 // The self relation cannot reconstruct pointers preserved by overlapping stamps.
 // v146 removes the duplicate BridgeRuntimeCell pavement Boolean. CellClass
 // raw flags in dynamic terrain retain bit0x2000 for every allocated cell.
-const SNAPSHOT_VERSION: u32 = 146;
+// v147 persists the Scenario+214 native numeric-ID cursor. A v146 save has no
+// continuation for live constructors; the missing mid-record field cannot be
+// defaulted safely by bincode. Original689310/689470 evidence: native_id_snapshot.
+const SNAPSHOT_VERSION: u32 = 147;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3285,7 +3288,8 @@ mod tests {
         // 142 -> 143: MCV pending and Drive previous-rotation latches.
         // 143 -> 144: per-Building operational edge and retained gap deposit.
         // 145 -> 146: pavement is owned by raw terrain flags, not bridge cells.
-        assert_eq!(super::SNAPSHOT_VERSION, 146);
+        // 146 -> 147: retain Scenario+214 for subsequent native constructors.
+        assert_eq!(super::SNAPSHOT_VERSION, 147);
     }
 
     #[test]

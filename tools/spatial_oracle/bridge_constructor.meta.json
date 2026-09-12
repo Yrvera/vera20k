@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "Original5FC380 bridge constructor over supplied sparse live map and type inputs",
+  "assumptions": [
+    "Raw IDs24/25/237/238, frame-1; Terrain reject, slope5 reject, success and existing Overrides paths only",
+    "One constructor per fresh registry/queue fixture; direct drain, not MainTick admission or mixed-queue ordering",
+    "Supplied allocated object memory, empty registry/queue capacity16, Scenario cursor1000 and active game",
+    "Sparse real9x9 cells centered16,16; source terrain type construction excluded",
+    "Terrain list record uses original TerrainClass RTTI71D300",
+    "Selected OverlayType uses original vtable with supplied raw ID and otherwise zero fields",
+    "Success Recalc receives resident synthetic1x1 Road TMP; no native loader, artwork or whole repair claim",
+    "Original startup vector vtables supplied with empty preallocated storage; other pointer-expiration recipients absent",
+    "Empty Windows SEH chain supplied for original typeid during the post-constructor drain"
+  ],
+  "substitutions": [
+    "7C8B3D external free and Windows IsBadReadPtr transport only during the post-constructor drain; no constructor call is substituted"
+  ],
+  "entry_points": {
+    "constructor": "0x005FC380",
+    "mark": "0x005FC570",
+    "drain": "0x00725C70",
+    "overlay_destructor": "0x005FDF70",
+    "base_destructor": "0x005F3B80"
+  },
+  "payload_sha256": "7ad8b8e704c5cdd2540b2f511b4af42fe208404a72d8d332fa6f3a5e9adb6f37"
+}

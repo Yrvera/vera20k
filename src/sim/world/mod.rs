@@ -798,10 +798,11 @@ pub struct Simulation {
     /// retention remains UNCHECKED.
     #[serde(skip, default = "deserialized_process_rng_placeholder")]
     pub(crate) mapgen_rng: SimRng,
-    /// Independent wrapping `AbstractClass+0x10` identity during fresh load.
+    /// Independent wrapping `AbstractClass+0x10` identity cursor, Scenario+214.
     /// Native numeric IDs may duplicate and are neither stable handles nor RNG.
-    /// They are load-transient until persistence behavior is separately proved.
-    #[serde(skip, default)]
+    /// Original689310/689470 preserve the cursor across save/load, including
+    ///683560's post-read Scenario reinitialization. See native_id_snapshot.
+    /// Runtime constructors still need to consume this shared continuation.
     pub(crate) native_unique_ids: Option<crate::sim::native_identity::NativeUniqueIdCursor>,
     /// `MapClass+0x134` (`0x0087F91C`) analogue: the wrapping signed total that
     /// authored `ScenarioClass::Full_Init @ 0x00686B20` stores from

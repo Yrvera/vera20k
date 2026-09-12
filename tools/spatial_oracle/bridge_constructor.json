@@ -1,0 +1,1692 @@
+{
+  "cases": [
+    {
+      "after_drain": {
+        "cells": [],
+        "cursor": 1001,
+        "frees": [],
+        "queue_count": 0,
+        "registry_counts": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "alive": 1,
+      "cells": [],
+      "cursor": 1001,
+      "kind": "terrain",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        0,
+        0,
+        0
+      ],
+      "on_map": 0,
+      "overlay": -1,
+      "overlay_id": 24,
+      "queue_count": 0,
+      "redraw": 0,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [],
+        "cursor": 1001,
+        "frees": [],
+        "queue_count": 0,
+        "registry_counts": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "alive": 1,
+      "cells": [],
+      "cursor": 1001,
+      "kind": "terrain",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        0,
+        0,
+        0
+      ],
+      "on_map": 0,
+      "overlay": -1,
+      "overlay_id": 25,
+      "queue_count": 0,
+      "redraw": 0,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [],
+        "cursor": 1001,
+        "frees": [],
+        "queue_count": 0,
+        "registry_counts": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "alive": 1,
+      "cells": [],
+      "cursor": 1001,
+      "kind": "terrain",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        0,
+        0,
+        0
+      ],
+      "on_map": 0,
+      "overlay": -1,
+      "overlay_id": 237,
+      "queue_count": 0,
+      "redraw": 0,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [],
+        "cursor": 1001,
+        "frees": [],
+        "queue_count": 0,
+        "registry_counts": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "alive": 1,
+      "cells": [],
+      "cursor": 1001,
+      "kind": "terrain",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        0,
+        0,
+        0
+      ],
+      "on_map": 0,
+      "overlay": -1,
+      "overlay_id": 238,
+      "queue_count": 0,
+      "redraw": 0,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [],
+        "cursor": 1001,
+        "frees": [],
+        "queue_count": 0,
+        "registry_counts": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "alive": 1,
+      "cells": [],
+      "cursor": 1001,
+      "kind": "slope",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        4224,
+        4224,
+        0
+      ],
+      "on_map": 1,
+      "overlay": -1,
+      "overlay_id": 24,
+      "queue_count": 0,
+      "redraw": 1,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [],
+        "cursor": 1001,
+        "frees": [],
+        "queue_count": 0,
+        "registry_counts": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "alive": 1,
+      "cells": [],
+      "cursor": 1001,
+      "kind": "slope",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        4224,
+        4224,
+        0
+      ],
+      "on_map": 1,
+      "overlay": -1,
+      "overlay_id": 25,
+      "queue_count": 0,
+      "redraw": 1,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [],
+        "cursor": 1001,
+        "frees": [],
+        "queue_count": 0,
+        "registry_counts": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "alive": 1,
+      "cells": [],
+      "cursor": 1001,
+      "kind": "slope",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        4224,
+        4224,
+        0
+      ],
+      "on_map": 1,
+      "overlay": -1,
+      "overlay_id": 237,
+      "queue_count": 0,
+      "redraw": 1,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [],
+        "cursor": 1001,
+        "frees": [],
+        "queue_count": 0,
+        "registry_counts": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "alive": 1,
+      "cells": [],
+      "cursor": 1001,
+      "kind": "slope",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        4224,
+        4224,
+        0
+      ],
+      "on_map": 1,
+      "overlay": -1,
+      "overlay_id": 238,
+      "queue_count": 0,
+      "redraw": 1,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [
+          {
+            "anchor": null,
+            "coord": [
+              16,
+              13
+            ],
+            "flags": 4096,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              16,
+              14
+            ],
+            "flags": 71936,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              16,
+              15
+            ],
+            "flags": 72448,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": null,
+            "coord": [
+              16,
+              16
+            ],
+            "flags": 72576,
+            "overlay": 24,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              16,
+              17
+            ],
+            "flags": 68352,
+            "overlay": -1,
+            "state": 0
+          }
+        ],
+        "cursor": 1001,
+        "frees": [
+          "overlay"
+        ],
+        "queue_count": 0,
+        "registry_counts": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "alive": 0,
+      "cells": [
+        {
+          "anchor": null,
+          "coord": [
+            16,
+            13
+          ],
+          "flags": 4096,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            16,
+            14
+          ],
+          "flags": 71936,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            16,
+            15
+          ],
+          "flags": 72448,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": null,
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 72576,
+          "overlay": 24,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            16,
+            17
+          ],
+          "flags": 68352,
+          "overlay": -1,
+          "state": 0
+        }
+      ],
+      "cursor": 1001,
+      "kind": "success",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        4224,
+        4224,
+        0
+      ],
+      "on_map": 0,
+      "overlay": 24,
+      "overlay_id": 24,
+      "queue_count": 1,
+      "redraw": 1,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [
+          {
+            "anchor": null,
+            "coord": [
+              13,
+              16
+            ],
+            "flags": 4096,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              14,
+              16
+            ],
+            "flags": 69888,
+            "overlay": -1,
+            "state": 9
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              15,
+              16
+            ],
+            "flags": 70400,
+            "overlay": -1,
+            "state": 9
+          },
+          {
+            "anchor": null,
+            "coord": [
+              16,
+              16
+            ],
+            "flags": 70528,
+            "overlay": 25,
+            "state": 9
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              17,
+              16
+            ],
+            "flags": 66304,
+            "overlay": -1,
+            "state": 9
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              18,
+              16
+            ],
+            "flags": 65536,
+            "overlay": -1,
+            "state": 0
+          }
+        ],
+        "cursor": 1001,
+        "frees": [
+          "overlay"
+        ],
+        "queue_count": 0,
+        "registry_counts": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "alive": 0,
+      "cells": [
+        {
+          "anchor": null,
+          "coord": [
+            13,
+            16
+          ],
+          "flags": 4096,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            14,
+            16
+          ],
+          "flags": 69888,
+          "overlay": -1,
+          "state": 9
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            15,
+            16
+          ],
+          "flags": 70400,
+          "overlay": -1,
+          "state": 9
+        },
+        {
+          "anchor": null,
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 70528,
+          "overlay": 25,
+          "state": 9
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            17,
+            16
+          ],
+          "flags": 66304,
+          "overlay": -1,
+          "state": 9
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            18,
+            16
+          ],
+          "flags": 65536,
+          "overlay": -1,
+          "state": 0
+        }
+      ],
+      "cursor": 1001,
+      "kind": "success",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        4224,
+        4224,
+        0
+      ],
+      "on_map": 0,
+      "overlay": 25,
+      "overlay_id": 25,
+      "queue_count": 1,
+      "redraw": 1,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [
+          {
+            "anchor": null,
+            "coord": [
+              16,
+              13
+            ],
+            "flags": 4096,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              16,
+              14
+            ],
+            "flags": 71936,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              16,
+              15
+            ],
+            "flags": 72448,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": null,
+            "coord": [
+              16,
+              16
+            ],
+            "flags": 72576,
+            "overlay": 237,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              16,
+              17
+            ],
+            "flags": 68352,
+            "overlay": -1,
+            "state": 0
+          }
+        ],
+        "cursor": 1001,
+        "frees": [
+          "overlay"
+        ],
+        "queue_count": 0,
+        "registry_counts": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "alive": 0,
+      "cells": [
+        {
+          "anchor": null,
+          "coord": [
+            16,
+            13
+          ],
+          "flags": 4096,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            16,
+            14
+          ],
+          "flags": 71936,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            16,
+            15
+          ],
+          "flags": 72448,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": null,
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 72576,
+          "overlay": 237,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            16,
+            17
+          ],
+          "flags": 68352,
+          "overlay": -1,
+          "state": 0
+        }
+      ],
+      "cursor": 1001,
+      "kind": "success",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        4224,
+        4224,
+        0
+      ],
+      "on_map": 0,
+      "overlay": 237,
+      "overlay_id": 237,
+      "queue_count": 1,
+      "redraw": 1,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [
+          {
+            "anchor": null,
+            "coord": [
+              13,
+              16
+            ],
+            "flags": 4096,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              14,
+              16
+            ],
+            "flags": 69888,
+            "overlay": -1,
+            "state": 9
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              15,
+              16
+            ],
+            "flags": 70400,
+            "overlay": -1,
+            "state": 9
+          },
+          {
+            "anchor": null,
+            "coord": [
+              16,
+              16
+            ],
+            "flags": 70528,
+            "overlay": 238,
+            "state": 9
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              17,
+              16
+            ],
+            "flags": 66304,
+            "overlay": -1,
+            "state": 9
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              18,
+              16
+            ],
+            "flags": 65536,
+            "overlay": -1,
+            "state": 0
+          }
+        ],
+        "cursor": 1001,
+        "frees": [
+          "overlay"
+        ],
+        "queue_count": 0,
+        "registry_counts": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "alive": 0,
+      "cells": [
+        {
+          "anchor": null,
+          "coord": [
+            13,
+            16
+          ],
+          "flags": 4096,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            14,
+            16
+          ],
+          "flags": 69888,
+          "overlay": -1,
+          "state": 9
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            15,
+            16
+          ],
+          "flags": 70400,
+          "overlay": -1,
+          "state": 9
+        },
+        {
+          "anchor": null,
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 70528,
+          "overlay": 238,
+          "state": 9
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            17,
+            16
+          ],
+          "flags": 66304,
+          "overlay": -1,
+          "state": 9
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            18,
+            16
+          ],
+          "flags": 65536,
+          "overlay": -1,
+          "state": 0
+        }
+      ],
+      "cursor": 1001,
+      "kind": "success",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        4224,
+        4224,
+        0
+      ],
+      "on_map": 0,
+      "overlay": 238,
+      "overlay_id": 238,
+      "queue_count": 1,
+      "redraw": 1,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [
+          {
+            "anchor": null,
+            "coord": [
+              16,
+              13
+            ],
+            "flags": 4096,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              16,
+              14
+            ],
+            "flags": 71936,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              16,
+              15
+            ],
+            "flags": 72448,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": null,
+            "coord": [
+              16,
+              16
+            ],
+            "flags": 72576,
+            "overlay": 7,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              16,
+              17
+            ],
+            "flags": 68352,
+            "overlay": -1,
+            "state": 0
+          }
+        ],
+        "cursor": 1001,
+        "frees": [
+          "overlay"
+        ],
+        "queue_count": 0,
+        "registry_counts": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "alive": 0,
+      "cells": [
+        {
+          "anchor": null,
+          "coord": [
+            16,
+            13
+          ],
+          "flags": 4096,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            16,
+            14
+          ],
+          "flags": 71936,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            16,
+            15
+          ],
+          "flags": 72448,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": null,
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 72576,
+          "overlay": 7,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            16,
+            17
+          ],
+          "flags": 68352,
+          "overlay": -1,
+          "state": 0
+        }
+      ],
+      "cursor": 1001,
+      "kind": "overrides",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        4224,
+        4224,
+        0
+      ],
+      "on_map": 0,
+      "overlay": 7,
+      "overlay_id": 24,
+      "queue_count": 1,
+      "redraw": 1,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [
+          {
+            "anchor": null,
+            "coord": [
+              13,
+              16
+            ],
+            "flags": 4096,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              14,
+              16
+            ],
+            "flags": 69888,
+            "overlay": -1,
+            "state": 9
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              15,
+              16
+            ],
+            "flags": 70400,
+            "overlay": -1,
+            "state": 9
+          },
+          {
+            "anchor": null,
+            "coord": [
+              16,
+              16
+            ],
+            "flags": 70528,
+            "overlay": 7,
+            "state": 9
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              17,
+              16
+            ],
+            "flags": 66304,
+            "overlay": -1,
+            "state": 9
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              18,
+              16
+            ],
+            "flags": 65536,
+            "overlay": -1,
+            "state": 0
+          }
+        ],
+        "cursor": 1001,
+        "frees": [
+          "overlay"
+        ],
+        "queue_count": 0,
+        "registry_counts": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "alive": 0,
+      "cells": [
+        {
+          "anchor": null,
+          "coord": [
+            13,
+            16
+          ],
+          "flags": 4096,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            14,
+            16
+          ],
+          "flags": 69888,
+          "overlay": -1,
+          "state": 9
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            15,
+            16
+          ],
+          "flags": 70400,
+          "overlay": -1,
+          "state": 9
+        },
+        {
+          "anchor": null,
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 70528,
+          "overlay": 7,
+          "state": 9
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            17,
+            16
+          ],
+          "flags": 66304,
+          "overlay": -1,
+          "state": 9
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            18,
+            16
+          ],
+          "flags": 65536,
+          "overlay": -1,
+          "state": 0
+        }
+      ],
+      "cursor": 1001,
+      "kind": "overrides",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        4224,
+        4224,
+        0
+      ],
+      "on_map": 0,
+      "overlay": 7,
+      "overlay_id": 25,
+      "queue_count": 1,
+      "redraw": 1,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [
+          {
+            "anchor": null,
+            "coord": [
+              16,
+              13
+            ],
+            "flags": 4096,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              16,
+              14
+            ],
+            "flags": 71936,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              16,
+              15
+            ],
+            "flags": 72448,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": null,
+            "coord": [
+              16,
+              16
+            ],
+            "flags": 72576,
+            "overlay": 7,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              16,
+              17
+            ],
+            "flags": 68352,
+            "overlay": -1,
+            "state": 0
+          }
+        ],
+        "cursor": 1001,
+        "frees": [
+          "overlay"
+        ],
+        "queue_count": 0,
+        "registry_counts": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "alive": 0,
+      "cells": [
+        {
+          "anchor": null,
+          "coord": [
+            16,
+            13
+          ],
+          "flags": 4096,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            16,
+            14
+          ],
+          "flags": 71936,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            16,
+            15
+          ],
+          "flags": 72448,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": null,
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 72576,
+          "overlay": 7,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            16,
+            17
+          ],
+          "flags": 68352,
+          "overlay": -1,
+          "state": 0
+        }
+      ],
+      "cursor": 1001,
+      "kind": "overrides",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        4224,
+        4224,
+        0
+      ],
+      "on_map": 0,
+      "overlay": 7,
+      "overlay_id": 237,
+      "queue_count": 1,
+      "redraw": 1,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "after_drain": {
+        "cells": [
+          {
+            "anchor": null,
+            "coord": [
+              13,
+              16
+            ],
+            "flags": 4096,
+            "overlay": -1,
+            "state": 0
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              14,
+              16
+            ],
+            "flags": 69888,
+            "overlay": -1,
+            "state": 9
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              15,
+              16
+            ],
+            "flags": 70400,
+            "overlay": -1,
+            "state": 9
+          },
+          {
+            "anchor": null,
+            "coord": [
+              16,
+              16
+            ],
+            "flags": 70528,
+            "overlay": 7,
+            "state": 9
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              17,
+              16
+            ],
+            "flags": 66304,
+            "overlay": -1,
+            "state": 9
+          },
+          {
+            "anchor": [
+              16,
+              16
+            ],
+            "coord": [
+              18,
+              16
+            ],
+            "flags": 65536,
+            "overlay": -1,
+            "state": 0
+          }
+        ],
+        "cursor": 1001,
+        "frees": [
+          "overlay"
+        ],
+        "queue_count": 0,
+        "registry_counts": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "alive": 0,
+      "cells": [
+        {
+          "anchor": null,
+          "coord": [
+            13,
+            16
+          ],
+          "flags": 4096,
+          "overlay": -1,
+          "state": 0
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            14,
+            16
+          ],
+          "flags": 69888,
+          "overlay": -1,
+          "state": 9
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            15,
+            16
+          ],
+          "flags": 70400,
+          "overlay": -1,
+          "state": 9
+        },
+        {
+          "anchor": null,
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 70528,
+          "overlay": 7,
+          "state": 9
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            17,
+            16
+          ],
+          "flags": 66304,
+          "overlay": -1,
+          "state": 9
+        },
+        {
+          "anchor": [
+            16,
+            16
+          ],
+          "coord": [
+            18,
+            16
+          ],
+          "flags": 65536,
+          "overlay": -1,
+          "state": 0
+        }
+      ],
+      "cursor": 1001,
+      "kind": "overrides",
+      "limbo": 1,
+      "native_id": 1001,
+      "object_world": [
+        4224,
+        4224,
+        0
+      ],
+      "on_map": 0,
+      "overlay": 7,
+      "overlay_id": 238,
+      "queue_count": 1,
+      "redraw": 1,
+      "registry_counts": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  ]
+}
