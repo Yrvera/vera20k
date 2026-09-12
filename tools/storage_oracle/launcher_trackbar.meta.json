@@ -7,10 +7,11 @@
     1,
     33621247
   ],
-  "scope": "17 supplied geometries; 99 valid positions compared across initialization/405/406; 2945 drag pointer samples, including 2656 in-client samples compared with the admitted rail-click block",
+  "scope": "18 supplied geometries; 110 valid positions compared across initialization/405/406; 3225 drag pointer samples, including 2919 in-client samples compared with the admitted rail-click block",
   "assumptions": [
     "Client RECT left/top zero; widths 128 and 180, plaque reserve 0 or 50; these cross combinations are arithmetic fixtures, not observed layouts",
     "Additional BBB fixture is width192/reserve0/maximum6, from 128x13 DLU and the active 4E1FE0 configuration; height21 does not enter these arithmetic blocks",
+    "B8 adds width263/reserve50/maximum10 from175x13 DLU;6B6382..647F disables cue but retains the default numeric plaque",
     "Range minimum zero, maximum 1/2/6/10, step one, every valid position; no invalid setter or zero-range claims",
     "Client x is every integer from -8 through width+8; negative/overshoot samples model capture drag, not admitted rail clicks",
     "The admitted rail-click block is compared for x in [0,width); y/old-thumb admission, HWND state lookup, Windows pointer retrieval and notifications are outside the fixture",
@@ -34,5 +35,5 @@
     "thumb_bounds": "0x0061DBB9",
     "thumb_bounds_end": "0x0061DBD6"
   },
-  "payload_sha256": "6124143005a4a8f79f65fab82a2ba428485b744e0380e83edb16b48c4cb6f21e"
+  "payload_sha256": "8825c946f2cf1f91271fa8e0b53abd6ab7a5afbac3768ed9930528686404e3ec"
 }

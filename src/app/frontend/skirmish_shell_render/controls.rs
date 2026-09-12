@@ -305,14 +305,13 @@ pub(super) fn paint_control(
                 let thumb_rect = trackbar_thumb_rect(rect, thumb_px);
                 push_entry(out, thumb, thumb_rect, SHELL_CONTROL_DEPTH - 0.00002);
             }
-            if let Some(frame) = if plain {
-                if rect.w == 192 {
-                    chrome.trackbar_plain_192
-                } else {
-                    chrome.trackbar_plain_180
-                }
-            } else {
-                chrome.trackbar_rail
+            if let Some(frame) = match (plain, rect.w) {
+                (false, 128) => chrome.trackbar_rail,
+                (false, 263) => chrome.trackbar_numeric_263,
+                (false, 225) => chrome.trackbar_numeric_225,
+                (true, 180) => chrome.trackbar_plain_180,
+                (true, 192) => chrome.trackbar_plain_192,
+                _ => None,
             } {
                 push_entry_native(
                     out,
@@ -819,7 +818,7 @@ mod tests {
             trackbar_thumb_trakgrip: Some(thumb),
             ..Default::default()
         };
-        let rect = RectPx::new(176, 168, 200, 24);
+        let rect = RectPx::new(176, 168, 128, 21);
         let plaque = trackbar_plaque_rect(rect);
 
         for thumb_px in [0, 68, 137] {
@@ -872,6 +871,48 @@ mod tests {
             ControlPaint::Trackbar { rect, thumb_px: 0 },
         );
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn numeric_rails_select_native_width_without_stretching_the_divider() {
+        let narrow = SkirmishShellChromeEntry {
+            uv_origin: [0.1, 0.2],
+            uv_size: [0.2, 0.1],
+            pixel_size: [132.0, 25.0],
+        };
+        let wide = SkirmishShellChromeEntry {
+            uv_origin: [0.4, 0.2],
+            uv_size: [0.4, 0.1],
+            pixel_size: [267.0, 25.0],
+        };
+        let rmg = SkirmishShellChromeEntry {
+            uv_origin: [0.1, 0.4],
+            uv_size: [0.3, 0.1],
+            pixel_size: [229.0, 25.0],
+        };
+        let chrome = ControlChrome {
+            trackbar_numeric_225: Some(rmg),
+            trackbar_rail: Some(narrow),
+            trackbar_numeric_263: Some(wide),
+            ..Default::default()
+        };
+        // Actual Skirmish/D5 and B8 widths. The B8 runtime regression was
+        // the narrow atlas entry at a wide control's otherwise correct origin.
+        for (width, expected) in [(128, narrow), (225, rmg), (263, wide)] {
+            let mut out = Vec::new();
+            paint_control(
+                &mut out,
+                &chrome,
+                ControlPaint::Trackbar {
+                    rect: RectPx::new(236, 98, width, 21),
+                    thumb_px: 0,
+                },
+            );
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].position, [234.0, 96.0]);
+            assert_eq!(out[0].size, expected.pixel_size);
+            assert_eq!(out[0].uv_origin, expected.uv_origin);
+        }
     }
 
     #[test]

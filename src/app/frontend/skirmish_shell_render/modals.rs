@@ -358,11 +358,7 @@ pub(super) fn push_random_map_setup_modal_control_instances(
     // take the MNBTTN modal button art rather than the generic PCX slices --
     // the same art the message-box modals use. Native size, centred on the
     // control rect.
-    let modal_button_frames = shell_paint::ModalButtonFrames {
-        up: atlas.modal_button_mnbttn_frame0,
-        disabled: atlas.modal_button_mnbttn_frame1,
-        pressed: atlas.modal_button_mnbttn_frame2,
-    };
+    let modal_button_frames = super::chrome::type3_button_frames(atlas);
     let action_buttons: Vec<shell_paint::ModalButton> = [
         (layout.randomize, RandomMapSetupControl::Randomize0x621),
         (layout.generate, RandomMapSetupControl::Generate0x620),
@@ -487,11 +483,7 @@ pub(super) fn push_validation_modal_instances(
     layout: &ValidationModalLayout,
     pressed: bool,
 ) {
-    let frames = shell_paint::ModalButtonFrames {
-        up: atlas.modal_button_mnbttn_frame0,
-        disabled: atlas.modal_button_mnbttn_frame1,
-        pressed: atlas.modal_button_mnbttn_frame2,
-    };
+    let frames = super::chrome::type3_button_frames(atlas);
     let button = shell_paint::ModalButton {
         rect: layout.ok_button,
         pressed,
@@ -548,33 +540,17 @@ pub(super) fn push_saved_browser_modal_instances<I: Clone + PartialEq>(
     interior: BackdropInteriorPaint,
     column_buttons: bool,
 ) {
-    use crate::ui::skirmish_shell::seed_list::SeedListGeometry;
-    let geometry = SeedListGeometry::new(layout.list, browser.entries.len(), browser.top_index);
-    let depth = SHELL_DROPDOWN_DEPTH - 0.00010;
-    if interior.paints_solid_fill() {
-        push_solid_rect(out, atlas, geometry.content, SHELL_MODAL_PANEL_RGB, depth);
-    }
-    if let Some(selected) = browser.selected.filter(|i| *i >= browser.top_index && *i < browser.top_index + geometry.visible_rows) {
-        push_solid_rect(out, atlas, geometry.row(selected - browser.top_index),
-            OWNERDRAW_SELECTED_RGB_FROM_DAT_00AC4604_PACKED_000000FF, depth - 0.00001);
-    }
-    push_rect_outline(out, atlas, layout.list, OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68, depth - 0.00002);
-    if let (Some(bar), Some(thumb)) = (geometry.scrollbar, geometry.thumb) {
-        let chrome = atlas.control_chrome();
-        let inner = RectPx::new(bar.x + 1, bar.y + 1, 18, bar.h - 2);
-        push_solid_rect(out, atlas, inner, SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE, depth - 0.00002);
-        for (up, y, released, pressed) in [
-            (true, inner.y, chrome.scrollbar_arrow_up_released, chrome.scrollbar_arrow_up_pressed),
-            (false, inner.y + inner.h - 22, chrome.scrollbar_arrow_down_released, chrome.scrollbar_arrow_down_pressed),
-        ] {
-            let control = if up { SavedSeedControl::ScrollUp } else { SavedSeedControl::ScrollDown };
-            if let Some(entry) = super::controls::scrollbar_arrow_entry(released, pressed, browser.pressed_control == Some(control)) {
-                push_entry_native(out, entry, inner.x, y, depth - 0.00003);
-            }
-        }
-        super::controls::push_scrollbar_thumb(out, &chrome, thumb, depth - 0.00004);
-        push_rect_outline(out, atlas, bar, OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68, depth - 0.00005);
-    }
+    use crate::ui::shell::list::{ShellListGeometry,ListScrollPart};
+    let pressed=match browser.pressed_control {
+        Some(SavedSeedControl::ScrollUp)=>Some(ListScrollPart::Up),
+        Some(SavedSeedControl::ScrollDown)=>Some(ListScrollPart::Down),
+        Some(SavedSeedControl::ScrollThumb)=>Some(ListScrollPart::Thumb),
+        Some(SavedSeedControl::ScrollTrack)=>Some(ListScrollPart::Track),
+        _=>None,
+    };
+    super::list::paint_list(out,atlas,
+        ShellListGeometry::new(layout.list,browser.entries.len(),browser.top_index),
+        browser.top_index,browser.selected,pressed,interior.paints_solid_fill());
     // The name field is a plain sunken plate; Save is the only mode that has one.
     if let Some(edit) = layout.name_edit {
         push_solid_rect(
@@ -626,10 +602,7 @@ pub(super) fn push_saved_browser_modal_instances<I: Clone + PartialEq>(
         }
         out.extend(shell_paint::paint_modal_sprites(
             atlas.validation_modal_background_pudlgbgn,
-            shell_paint::ModalButtonFrames {
-                up: atlas.modal_button_mnbttn_frame0, disabled: atlas.modal_button_mnbttn_frame1,
-                pressed: atlas.modal_button_mnbttn_frame2,
-            }, dialog, &buttons, VALIDATION_MODAL_SPRITE_DEPTHS,
+            super::chrome::type3_button_frames(atlas), dialog, &buttons, VALIDATION_MODAL_SPRITE_DEPTHS,
         ));
     }
 

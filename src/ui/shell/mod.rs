@@ -22,3 +22,7 @@ pub mod slide;
 pub mod static_reveal;
 pub mod abort;
 pub mod button;
+
+pub mod sound;
+
+pub mod list;

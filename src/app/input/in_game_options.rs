@@ -104,8 +104,11 @@ pub(crate) fn in_game_options_mouse(state: &mut AppState, button: MouseButton, p
         }
         match in_game_options_hit(&laid, (cx, cy)) {
             OptionsHit::Button(id) => {
+                if id == control::SOUND && !state.audio.launcher_audio_available {
+                    return;
+                }
                 // Buttons (Back/Keyboard/Sound) paint pressed on hold; the action
-                // fires on release over the same rect (Back) or no-ops (KD-7 stubs).
+                // fires on release over the same rectangle (Back or Sound).
                 state
                     .match_state
                     .match_presentation
@@ -141,8 +144,19 @@ pub(crate) fn in_game_options_mouse(state: &mut AppState, button: MouseButton, p
             OptionsHit::None => {}
         }
     } else {
+        let over_sound = state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .pressed_button
+            == Some(control::SOUND)
+            && matches!(
+                in_game_options_hit(&laid, (cx, cy)),
+                OptionsHit::Button(control::SOUND)
+            )
+            && state.audio.launcher_audio_available;
         // Release: a Back press that ends still over the Back rect closes + applies
-        // + persists. Keyboard/Sound release: clear pressed, no action (KD-7).
+        // + persists. Sound accepts this parent before opening B8; Keyboard remains open work.
         let over_back = state
             .match_state
             .match_presentation
@@ -160,7 +174,9 @@ pub(crate) fn in_game_options_mouse(state: &mut AppState, button: MouseButton, p
             .match_presentation
             .in_game_options
             .dragging_slider = None;
-        if over_back {
+        if over_sound {
+            crate::app::input::sound::open(state);
+        } else if over_back {
             crate::app::persistence::options::in_game_options_close(state);
         }
     }

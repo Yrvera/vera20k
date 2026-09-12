@@ -27,6 +27,8 @@ pub struct InGameOptionsState {
     pub tooltips: bool,
     /// Transient: which owner-draw button is held (for the pressed frame).
     pub pressed_button: Option<u16>,
+    /// Native4E2201..2229 projects the common audio-device predicate.
+    pub sound_enabled: bool,
     /// Transient: control id of the slider currently being dragged, if any.
     pub dragging_slider: Option<u16>,
     /// Transient per-slider "changed since this open" — gates the label swap from
@@ -48,6 +50,7 @@ impl Default for InGameOptionsState {
             show_hidden: false,
             tooltips: true,
             pressed_button: None,
+            sound_enabled: true,
             dragging_slider: None,
             game_speed_label_dragged: false,
             scroll_rate_label_dragged: false,

@@ -57,58 +57,13 @@ fn dispatch_egui_fallback_confirmed_quit(operations: &mut impl ConfirmedQuitOper
     dispatch_confirmed_quit(operations, ConfirmedQuitOwner::EguiFallback);
 }
 
-struct AppStateLauncherPreviewOperations<'a> {
-    state: &'a mut AppState,
-}
-
-impl crate::app::persistence::options::launcher::LauncherPreviewOperations
-    for AppStateLauncherPreviewOperations<'_>
-{
-    fn launcher_audio_available(&self) -> bool {
-        self.state.audio.launcher_audio_available
-    }
-
+impl crate::app::persistence::options::launcher::LauncherPreviewOperations for AppState {
     fn play_cue(&mut self, cue: crate::ui::main_menu_dialogs::options::LauncherCue) {
-        App::play_launcher_options_cue(self.state, cue);
+        App::play_launcher_options_cue(self, cue);
     }
-
     fn store_resolution(&mut self, width: i32, height: i32) {
-        self.state.persistence.options_profile.screen_width = width;
-        self.state.persistence.options_profile.screen_height = height;
-    }
-
-    fn store_score_volume(&mut self, volume: f32) {
-        self.state.persistence.options_profile.score_volume = volume;
-    }
-
-    fn apply_score_output(&mut self, volume: f32) {
-        if let Some(player) = self.state.audio.music_player.as_mut() {
-            player.set_volume(f64::from(volume));
-        }
-    }
-
-    fn store_sound_volume(&mut self, volume: f32) {
-        self.state.persistence.options_profile.sound_volume = volume;
-    }
-
-    fn apply_sound_output(&mut self, volume: f32) {
-        if let Some(player) = self.state.audio.sfx_player.as_mut() {
-            player.set_sound_volume(f64::from(volume));
-        }
-    }
-
-    fn store_voice_volume(&mut self, volume: f32) {
-        self.state.persistence.options_profile.voice_volume = volume;
-    }
-
-    fn apply_voice_output(&mut self, volume: f32) {
-        if let Some(player) = self.state.audio.sfx_player.as_mut() {
-            player.set_voice_volume(f64::from(volume));
-        }
-    }
-
-    fn play_generic_beep(&mut self, local_multiplier: f32) {
-        App::play_launcher_generic_beep(self.state, local_multiplier);
+        self.persistence.options_profile.screen_width = width;
+        self.persistence.options_profile.screen_height = height;
     }
 }
 
@@ -604,29 +559,6 @@ impl App {
         Self::play_shell_ui_sound_by_id(state, sound_id.as_deref());
     }
 
-    fn play_launcher_generic_beep(state: &mut AppState, local_multiplier: f32) {
-        let sound_id = state
-            .rules()
-            .and_then(|rules| rules.general.generic_beep_sound.as_deref())
-            .map(str::to_owned);
-        let Some(sound_id) = sound_id else {
-            return;
-        };
-        let Some(assets) = state.process_assets.manager() else {
-            return;
-        };
-        let Some(sfx) = state.audio.sfx_player.as_mut() else {
-            return;
-        };
-        sfx.play_sound_with_volume(
-            &sound_id,
-            local_multiplier,
-            &state.audio.sound_registry,
-            assets,
-            &state.audio.audio_indices,
-        );
-    }
-
     pub(crate) fn native_launcher_options_active(state: &AppState) -> bool {
         state.frontend.screen == GameScreen::MainMenu
             && state.frontend.options_dialog.is_some()
@@ -641,10 +573,9 @@ impl App {
         output: crate::ui::main_menu_dialogs::options::LauncherOptionsFrameOutput,
     ) {
         {
-            let mut operations = AppStateLauncherPreviewOperations { state };
             for event in output.events {
                 crate::app::persistence::options::launcher::dispatch_launcher_preview_event(
-                    &mut operations, event,
+                    state, event,
                 );
             }
         }
