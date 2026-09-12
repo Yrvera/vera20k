@@ -1026,6 +1026,78 @@ Credits=12345\r\n";
         skirmish_global_defaults(&SkirmishShellState::default())
     }
 
+    #[test]
+    fn profile_and_seed_writers_work_with_process_asset_manager_alive() {
+        use crate::app::persistence::options_profile::RetailOptionsProfile;
+        use crate::map::rmg::{RmgOptions, saved_seeds};
+
+        let directory = std::env::temp_dir().join(format!(
+            "vera20k-live-profile-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).expect("fixture directory");
+        let path = directory.join(RA2MD_INI);
+        let initial =
+            b"; keep this comment\r\n[Unrelated]\r\nKey=kept\r\n[Skirmish]\r\nCredits=10000\r\n";
+        std::fs::write(&path, initial).expect("existing nonempty profile");
+        let seed_name = crate::util::native_file_name::NativeFileName::from("SAVE0001.SED");
+        let mut seed = RmgOptions::default();
+        saved_seeds::write_browser_seed(&directory, &seed_name, &seed).expect("existing seed");
+        let assets = AssetManager::from_loose_root_for_test(&directory);
+        let borrowed_profile = assets.get_ref(RA2MD_INI).expect("profile snapshot");
+        let borrowed_seed = assets.get_ref("SAVE0001.SED").expect("seed snapshot");
+        let mut runtime = OfflineSkirmishRuntime::initialize(
+            42,
+            Some(&directory),
+            Some(&assets),
+            None,
+            defaults(),
+        );
+        let mut profile = RetailOptionsProfile::default();
+
+        for (credits, scroll_rate) in [(22000, 3), (33000, 5)] {
+            runtime.snapshot.credits = credits;
+            runtime.persist_snapshot();
+            profile.scroll_rate = scroll_rate;
+            profile
+                .commit_ra2md(&directory)
+                .expect("Options write with manager alive");
+            runtime.persist_snapshot();
+            let bytes = std::fs::read(&path).expect("persisted profile");
+            let ini = IniFile::from_bytes(&bytes).expect("profile INI");
+            assert_eq!(
+                ini.section("Skirmish").unwrap().get("Credits"),
+                Some(credits.to_string().as_str())
+            );
+            assert_eq!(
+                ini.section("Options").unwrap().get("ScrollRate"),
+                Some(scroll_rate.to_string().as_str())
+            );
+            assert_eq!(ini.section("Unrelated").unwrap().get("Key"), Some("kept"));
+            assert!(bytes.starts_with(b"; keep this comment"));
+        }
+
+        seed.seed = 42424;
+        seed.description = "Overwritten".into();
+        saved_seeds::write_browser_seed(&directory, &seed_name, &seed)
+            .expect("overwrite existing seed");
+        let reread = saved_seeds::read_browser_seed(
+            &directory,
+            &seed_name,
+            &RmgOptions::default(),
+            "Random Map",
+        )
+        .expect("read current saved seed");
+        assert_eq!(reread.seed, seed.seed);
+        assert_eq!(reread.description, seed.description);
+        assert_eq!(borrowed_profile, initial);
+        assert_ne!(borrowed_seed, seed.to_sed_bytes());
+        assert_eq!(assets.get_ref(RA2MD_INI), Some(borrowed_profile));
+        drop(assets);
+        std::fs::remove_dir_all(directory).expect("remove owned fixture");
+    }
+
     fn random_session() -> SkirmishLaunchSession {
         SkirmishLaunchSession {
             mode: SkirmishLaunchMode::from_game_mode(&mode()),
