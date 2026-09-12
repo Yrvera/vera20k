@@ -1619,7 +1619,7 @@ pub struct ResolvedTerrainGrid {
     /// subimage advertises damaged data. `None` means native VariantCount is
     /// below two (or the sibling could not be loaded), so bit 0x2000 wraps to
     /// the pristine chain head instead of inventing a damaged color.
-    damaged_radar_metadata: Vec<Option<RadarColorMetadata>>,
+    damaged_radar_metadata: Vec<Option<Result<RadarColorMetadata, BridgeRecalcCatalogError>>>,
     tube_facts: Vec<TubeFact>,
     /// Exact signed `CellClass+0x116` authority aligned with `cells`.
     native_tube_indices: Vec<NativeTubeCellIndex>,
@@ -1758,9 +1758,11 @@ impl ResolvedTerrainGrid {
         let index = self.index(rx, ry)?;
         let cell = self.cells.get(index)?;
         if cell.bridge_facts.raw_flags & super::bridge_pavement::DAMAGED_PAVEMENT != 0
-            && let Some(metadata) = self.damaged_radar_metadata.get(index).copied().flatten()
+            && let Some(metadata) = self.damaged_radar_metadata.get(index).and_then(Option::as_ref)
         {
-            return Some(metadata);
+            // A non-null invalid native RGB pointer has no available color.
+            // Preserve that boundary instead of displaying pristine or gray.
+            return metadata.as_ref().ok().copied();
         }
         Some(RadarColorMetadata {
             left: cell.radar_left,
@@ -1777,7 +1779,7 @@ impl ResolvedTerrainGrid {
         metadata: RadarColorMetadata,
     ) {
         let index = self.index(rx, ry).expect("test damaged-radar cell exists");
-        self.damaged_radar_metadata[index] = Some(metadata);
+        self.damaged_radar_metadata[index] = Some(Ok(metadata));
     }
 
     pub fn height(&self) -> u16 {
@@ -2938,15 +2940,25 @@ impl ResolvedTerrainGrid {
         };
         // Scalar-only updates (including56E990 pavement) keep the exact
         // resident TMP entry and its sparse/valid damaged sibling metadata.
-        // Replacement mechanisms currently admit valid single-file templates;
-        // those keep their existing replacement metadata path below.
+        // A changed entry reconstructs independent presentation inputs from
+        // the resident catalog, including sparse/error damaged radar results.
         let same_entry = self.cells[index].final_tile_index == state.final_tile_index
             && self.cells[index].final_sub_tile == state.final_sub_tile
             && self.cells[index].variant == state.variant;
+        let before = (!same_entry && self.bridge_recalc_catalog.is_some())
+            .then(|| self.cells[index].clone());
         state.apply(&mut self.cells[index]);
         if !same_entry {
-            self.radar_color_valid[index] = true;
-            self.damaged_radar_metadata[index] = None;
+            if let Some(before) = before {
+                if let Err(error) = self.refresh_resident_bridge_presentation(index) {
+                    self.cells[index] = before;
+                    log::error!("terrain snapshot presentation unavailable at {rx},{ry}: {error}");
+                    return false;
+                }
+            } else {
+                self.radar_color_valid[index] = true;
+                self.damaged_radar_metadata[index] = None;
+            }
         }
         true
     }
@@ -4077,7 +4089,7 @@ impl ResolvedTerrainGrid {
                 let is_wood_bridge_repair_tile =
                     is_wood_bridge_repair_tile(theater_data, stored_final_tile_index);
                 radar_color_valid.push(metadata.subtile_entry_valid == Some(true));
-                damaged_radar_metadata.push(damaged_radar);
+                damaged_radar_metadata.push(damaged_radar.map(Ok));
                 cells.push(ResolvedTerrainCell {
                     rx,
                     ry,
@@ -4493,12 +4505,13 @@ impl ResolvedTerrainGrid {
             ),
             bridge_recalc_catalog: match (theater_data, asset_manager, terrain_rules) {
                 (Some(theater), Some(assets), Some(rules)) => Some(Arc::new(
-                    BridgeRecalcCatalog::for_middle_bridges(
+                    BridgeRecalcCatalog::for_runtime_bridges(
                         theater,
                         assets,
                         rules,
                         lat_enabled,
                         cliff_back_impassability,
+                        variant_selector.as_ref().and_then(|selector| selector.initialized_table()),
                     ),
                 )),
                 _ => None,

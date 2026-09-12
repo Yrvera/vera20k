@@ -1,8 +1,8 @@
-//! Resident pristine inputs for the active-retail middle-bridge Recalc callers.
+//! Resident inputs for live bridge terrain reconstruction.
 //!
-//! 576BA0/56EB80 and the terminal586990 rectangle need both middle families,
-//! including M+4. The source set is an admission boundary, not a native registry:
-//! a missing cached head must never become native's invalid/sparse fallback.
+//! Original568E40/569760 constructors and586990 also recalculate ordinary
+//! terrain below/alongside bridges. Retain registered pristine heads plus
+//! independent presentation files; missing sources never become sparse entries.
 
 use super::*;
 
@@ -20,9 +20,108 @@ pub(crate) enum BridgeRecalcCatalogError {
     InvalidReplacement { tile: i32, sub: u8 },
 }
 
+type ResidentTmp = Result<Arc<ResidentBridgeTmp>, BridgeRecalcCatalogError>;
+
+/// Store real entries once, with an explicit out-of-bounds metadata result.
+/// Allocating 256 copies for every registered type is unnecessary:47D2B0
+/// checks the unsigned subtile against the pristine template's actual size.
+#[derive(Debug)]
+struct ResidentBridgeTmp {
+    entries: Box<[TileMetadata]>,
+    invalid_subtile: TileMetadata,
+    raw_pointer_words: Box<[u32]>,
+}
+
+impl ResidentBridgeTmp {
+    fn metadata(&self, sub: u8) -> &TileMetadata {
+        self.entries
+            .get(usize::from(sub))
+            .unwrap_or(&self.invalid_subtile)
+    }
+
+    fn radar(&self, tile: u16, sub: u8) -> Result<RadarColorMetadata, BridgeRecalcCatalogError> {
+        if let Some(entry) = self.entries.get(usize::from(sub)) {
+            return Ok(RadarColorMetadata {
+                left: entry.radar_left,
+                right: entry.radar_right,
+                valid: entry.subtile_entry_valid == Some(true),
+            });
+        }
+        match self.raw_pointer_words.get(usize::from(sub)) {
+            Some(0) => Ok(RadarColorMetadata {
+                left: [0; 3],
+                right: [0; 3],
+                valid: false,
+            }),
+            _ => Err(BridgeRecalcCatalogError::Unsupported {
+                tile,
+                effect: "non-null or unavailable radar pointer beyond the selected TMP entry table",
+            }),
+        }
+    }
+
+    fn tactical(&self, sub: u8) -> &TileMetadata {
+        // Original547F9D: wrap by the selected file's template size, not the
+        // pristine file's size or the strict Recalc entry-validation result.
+        &self.entries[usize::from(sub) % self.entries.len()]
+    }
+}
+
+fn read_resident_tmp(
+    assets: &crate::assets::asset_manager::AssetManager,
+    rules: &TerrainRules,
+    tile: u16,
+    filename: &str,
+    set_name: Option<&str>,
+    set: Option<u16>,
+    warned: &mut HashSet<u8>,
+) -> Result<ResidentBridgeTmp, BridgeRecalcCatalogError> {
+    let bytes = assets
+        .get(filename)
+        .ok_or_else(|| BridgeRecalcCatalogError::Unavailable {
+            tile,
+            reason: format!("missing {filename}"),
+        })?;
+    let tmp =
+        TmpFile::from_bytes(&bytes).map_err(|error| BridgeRecalcCatalogError::Unavailable {
+            tile,
+            reason: format!("{filename}: {error}"),
+        })?;
+    let count = tmp.tiles.len().min(256);
+    if count == 0 {
+        return Err(BridgeRecalcCatalogError::Unavailable {
+            tile,
+            reason: format!("{filename}: empty TMP template"),
+        });
+    }
+    let mut metadata = |sub| {
+        let mut entry = metadata_from_set_name(set_name, set);
+        entry.tmp_file_valid = true;
+        merge_tmp_file_metadata(&mut entry, &tmp, sub, Some(rules), warned);
+        entry
+    };
+    let entries = (0..count).map(|sub| metadata(sub as u8)).collect();
+    let invalid_subtile = metadata(count.min(255) as u8);
+    // Radar47C2CF reads this table directly, unlike tactical547F33's modulo.
+    // Retain the words following the actual table as well, so a missing
+    // selected-file entry is not automatically misclassified as a null one.
+    let raw_pointer_words = bytes[16..]
+        .chunks_exact(4)
+        .take(256)
+        .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+        .collect();
+    Ok(ResidentBridgeTmp {
+        entries,
+        invalid_subtile,
+        raw_pointer_words,
+    })
+}
+
 #[derive(Debug)]
 pub(crate) struct BridgeRecalcCatalog {
-    heads: HashMap<u16, Result<Box<[TileMetadata]>, BridgeRecalcCatalogError>>,
+    heads: HashMap<u16, ResidentTmp>,
+    files: HashMap<u16, Box<[ResidentTmp]>>,
+    selector_table: Option<[u8; 64]>,
     permissions: Vec<(bool, bool)>,
     pub(super) terrain_rules: TerrainRules,
     pub(super) lat_config: Option<lat::LatConfig>,
@@ -33,36 +132,136 @@ pub(crate) struct BridgeRecalcCatalog {
 }
 
 impl BridgeRecalcCatalog {
-    pub(super) fn for_middle_bridges(
+    fn file(&self, tile: u16, variant: u8) -> Result<&ResidentBridgeTmp, BridgeRecalcCatalogError> {
+        self.files
+            .get(&tile)
+            .ok_or(BridgeRecalcCatalogError::Uncached {
+                tile: i32::from(tile),
+            })?
+            .get(usize::from(variant))
+            .ok_or(BridgeRecalcCatalogError::Unavailable {
+                tile,
+                reason: format!("missing registered TMP file {variant}"),
+            })?
+            .as_deref()
+            .map_err(Clone::clone)
+    }
+
+    pub(super) fn tactical_metadata(
+        &self,
+        tile: u16,
+        sub: u8,
+        variant: u8,
+    ) -> Result<TileMetadata, BridgeRecalcCatalogError> {
+        Ok(self.file(tile, variant)?.tactical(sub).clone())
+    }
+
+    fn presentation(
+        &self,
+        tile: u16,
+        retained_sub: u8,
+        draw_sub: u8,
+        rx: u16,
+        ry: u16,
+        clear_fallback: bool,
+    ) -> Result<BridgePresentation, BridgeRecalcCatalogError> {
+        let pristine = self.file(tile, 0)?;
+        let count = self.files[&tile].len() as u8;
+        let source = pristine.tactical(retained_sub);
+        let damaged = !clear_fallback && source.has_damaged_data;
+        // Native sentinel branches bypass the damaged gate altogether.
+        let variant = if clear_fallback || ordinary_variant_selection_enabled(count, false, damaged)
+        {
+            let table =
+                self.selector_table
+                    .as_ref()
+                    .ok_or(BridgeRecalcCatalogError::Unsupported {
+                        tile,
+                        effect: "uninitialized process terrain variant table",
+                    })?;
+            crate::map::tile_variant_selector::select_from_initialized_table(
+                table,
+                i32::from(rx),
+                i32::from(ry),
+                retained_sub,
+                source.template_width_cells,
+                source.template_height_cells,
+                count,
+            )
+        } else {
+            0
+        };
+        let selected = self.file(tile, variant)?;
+        let tactical = self.tactical_metadata(tile, draw_sub, variant)?;
+        Ok(BridgePresentation {
+            radar: selected.radar(tile, retained_sub)?,
+            damaged_radar: if damaged && count > 1 {
+                Some(
+                    self.file(tile, 1)
+                        .and_then(|file| file.radar(tile, retained_sub)),
+                )
+            } else {
+                None
+            },
+            offset: [tactical.render_offset_x, tactical.render_offset_y],
+            has_damaged_data: damaged,
+            variant,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_fixture_files(
+        mut self,
+        tile: u16,
+        assets: &crate::assets::asset_manager::AssetManager,
+        names: &[&str],
+        table: [u8; 64],
+    ) -> Self {
+        let mut warned = HashSet::new();
+        self.files.insert(
+            tile,
+            names
+                .iter()
+                .map(|name| {
+                    read_resident_tmp(
+                        assets,
+                        &self.terrain_rules,
+                        tile,
+                        name,
+                        None,
+                        None,
+                        &mut warned,
+                    )
+                    .map(Arc::new)
+                })
+                .collect(),
+        );
+        self.selector_table = Some(table);
+        self
+    }
+
+    pub(super) fn for_runtime_bridges(
         theater: &TheaterData,
         assets: &crate::assets::asset_manager::AssetManager,
         rules: &TerrainRules,
         lat_enabled: bool,
         cliff_back_impassability: u8,
+        selector_table: Option<[u8; 64]>,
     ) -> Self {
-        let family = super::super::bridge_rim_tiles::HighBridgeRimTiles::from_theater(theater);
-        // The stock Lunar map has no middle-family aliases before or after
-        // ordinary loading. Preserve an empty source catalog there, rather
-        // than interpreting unrelated ZMM ramp aliases as bridge assets.
-        let ids = theater.bridge_set.into_iter().flat_map(|_| {
-            family.middle.into_iter().flat_map(move |middle| {
-                (0..5).map(move |variant| {
-                    family
-                        .base
-                        .wrapping_add(middle)
-                        .wrapping_sub(1)
-                        .wrapping_add(variant)
-                })
-            })
-        });
-        Self::for_tiles(
+        // Span construction and the queued Recalc rectangle have no family
+        // gate. Registered ordinary sources and later LAT replacements must
+        // remain available after TheaterData/AssetManager leave scope.
+        let has_bridge_family = theater.bridge_set.is_some() || theater.wood_bridge_set.is_some();
+        let mut catalog = Self::for_tiles(
             theater,
             assets,
             rules,
             lat_enabled,
             cliff_back_impassability,
-            ids,
-        )
+            (0..theater.lookup.len() as i32).filter(|_| has_bridge_family),
+        );
+        catalog.selector_table = selector_table;
+        catalog
     }
 
     pub(super) fn for_tiles(
@@ -83,6 +282,7 @@ impl BridgeRecalcCatalog {
             .collect();
         let ini = crate::rules::ini_parser::IniFile::from_bytes(&theater.ini_data);
         let mut heads = HashMap::new();
+        let mut files = HashMap::new();
         let mut warned = HashSet::new();
         for id in ids {
             let Ok(tile) = u16::try_from(id) else {
@@ -91,6 +291,19 @@ impl BridgeRecalcCatalog {
             if usize::from(tile) >= theater.lookup.len() || heads.contains_key(&tile) {
                 continue;
             }
+            let set = theater.lookup.tileset_index(tile);
+            let set_name = set.and_then(|set| theater.lookup.set_name(set));
+            let pristine = theater
+                .lookup
+                .filename(id)
+                .ok_or_else(|| BridgeRecalcCatalogError::Unavailable {
+                    tile,
+                    reason: "no pristine filename".into(),
+                })
+                .and_then(|filename| {
+                    read_resident_tmp(assets, rules, tile, filename, set_name, set, &mut warned)
+                })
+                .map(Arc::new);
             let result = (|| {
                 let ini = ini
                     .as_ref()
@@ -124,62 +337,46 @@ impl BridgeRecalcCatalog {
                         effect: "terrain animation attachment",
                     });
                 }
-                // Radar47C060 and tactical draw choose files independently of
-                // Recalc's pristine receiver. Stock middle heads have one file;
-                // a multi-file type needs its native coordinate selector.
-                if theater.lookup.total_file_count(tile) > 1 {
+                let pristine = pristine.as_ref().map_err(Clone::clone)?;
+                if pristine
+                    .entries
+                    .iter()
+                    .any(|entry| entry.yr_cell_land_type == YR_CELL_LAND_TUNNEL)
+                {
                     return Err(BridgeRecalcCatalogError::Unsupported {
                         tile,
-                        effect: "coordinate-selected TMP file variants",
+                        effect: "Tube land",
                     });
                 }
-                let filename = theater.lookup.filename(id).ok_or_else(|| {
-                    BridgeRecalcCatalogError::Unavailable {
-                        tile,
-                        reason: "no pristine filename".into(),
-                    }
-                })?;
-                let bytes =
-                    assets
-                        .get(filename)
-                        .ok_or_else(|| BridgeRecalcCatalogError::Unavailable {
-                            tile,
-                            reason: format!("missing {filename}"),
-                        })?;
-                let tmp = TmpFile::from_bytes(&bytes).map_err(|error| {
-                    BridgeRecalcCatalogError::Unavailable {
-                        tile,
-                        reason: format!("{filename}: {error}"),
-                    }
-                })?;
-                let mut entries = Vec::with_capacity(256);
-                // Parse the file once. All unsigned Cell+11A values retain
-                // their exact registered-entry validity, including holes and
-                // positive out-of-bounds subtiles; no modulo normalization.
-                for sub in 0..=u8::MAX {
-                    let mut metadata = metadata_from_set_name(set_name, set);
-                    metadata.tmp_file_valid = true;
-                    merge_tmp_file_metadata(&mut metadata, &tmp, sub, Some(rules), &mut warned);
-                    if metadata.yr_cell_land_type == YR_CELL_LAND_TUNNEL {
-                        return Err(BridgeRecalcCatalogError::Unsupported {
-                            tile,
-                            effect: "Tube land",
-                        });
-                    }
-                    if metadata.has_damaged_data {
-                        return Err(BridgeRecalcCatalogError::Unsupported {
-                            tile,
-                            effect: "damaged TMP data",
-                        });
-                    }
-                    entries.push(metadata);
-                }
-                Ok(entries.into_boxed_slice())
+                Ok(Arc::clone(pristine))
             })();
+            let mut siblings = vec![pristine];
+            for variant in 1..theater.lookup.total_file_count(tile) {
+                let filename = theater
+                    .lookup
+                    .filename_for_variant(tile, variant)
+                    .expect("registered variant has a filename");
+                let set = theater.lookup.tileset_index(tile);
+                siblings.push(
+                    read_resident_tmp(
+                        assets,
+                        rules,
+                        tile,
+                        filename,
+                        set.and_then(|set| theater.lookup.set_name(set)),
+                        set,
+                        &mut warned,
+                    )
+                    .map(Arc::new),
+                );
+            }
+            files.insert(tile, siblings.into_boxed_slice());
             heads.insert(tile, result);
         }
         Self {
             heads,
+            files,
+            selector_table: None,
             permissions,
             terrain_rules: rules.clone(),
             lat_config: lat_enabled
@@ -211,7 +408,7 @@ impl BridgeRecalcCatalog {
             .ok_or(BridgeRecalcCatalogError::Uncached { tile })?
             .as_ref()
             .map_err(Clone::clone)?;
-        Ok(Some(entries[usize::from(sub)].clone()))
+        Ok(Some(entries.metadata(sub).clone()))
     }
 
     pub(super) fn current_permissions(&self, tile: i32) -> (bool, bool) {
@@ -233,6 +430,14 @@ impl BridgeRecalcCatalog {
                 .wood_bridge_start
                 .is_some_and(|start| tile >= i32::from(start) && tile < i32::from(start) + 16)
     }
+}
+
+struct BridgePresentation {
+    radar: RadarColorMetadata,
+    damaged_radar: Option<Result<RadarColorMetadata, BridgeRecalcCatalogError>>,
+    offset: [i32; 2],
+    has_damaged_data: bool,
+    variant: u8,
 }
 
 impl ResolvedTerrainGrid {
@@ -279,9 +484,9 @@ impl ResolvedTerrainGrid {
 
     /// Refresh final-type queries after47D2B0, without replacing its retained
     /// pristine land/slope/dimensions. Native radar47C060 reads current+38/+11A.
-    /// The admitted live bridge set is valid, single-file and has no damaged
-    /// plane; ClearTile radar/render fallback and file selection are separate
-    /// native paths, never approximated here by stale colors or sub-tile zero.
+    /// Radar reads the selected file's raw table; tactical draw wraps its
+    /// subtile by the selected dimensions. Neither changes pristine gameplay
+    /// attributes. A sentinel uses ClearTile while radar retains raw Cell+11A.
     pub(crate) fn refresh_resident_bridge_presentation(
         &mut self,
         index: usize,
@@ -294,27 +499,38 @@ impl ResolvedTerrainGrid {
             .cells
             .get(index)
             .ok_or(LoadCellRecalcError::CellIndexOutOfBounds { index })?;
-        let tile = cell.final_tile_index;
-        let sub = cell.final_sub_tile;
-        let metadata = catalog
-            .metadata(tile, sub)
-            .map_err(LoadCellRecalcError::ResidentInput)?;
-        let Some(metadata) = metadata.filter(|metadata| metadata.subtile_entry_valid == Some(true))
-        else {
-            return Err(LoadCellRecalcError::ResidentInput(
-                BridgeRecalcCatalogError::InvalidReplacement { tile, sub },
-            ));
+        let clear_fallback = cell.final_tile_index < 0
+            || cell.final_tile_index == 0xffff
+            || cell.final_tile_index as usize >= catalog.permissions.len();
+        let tile = if clear_fallback {
+            self.clear_tile_id
+        } else {
+            cell.final_tile_index as u16
         };
+        let metadata = catalog
+            .presentation(
+                tile,
+                cell.final_sub_tile,
+                if clear_fallback {
+                    0
+                } else {
+                    cell.final_sub_tile
+                },
+                cell.rx,
+                cell.ry,
+                clear_fallback,
+            )
+            .map_err(LoadCellRecalcError::ResidentInput)?;
         let cell = &mut self.cells[index];
-        cell.radar_left = metadata.radar_left;
-        cell.radar_right = metadata.radar_right;
-        cell.render_offset_x = metadata.render_offset_x;
-        cell.render_offset_y = metadata.render_offset_y;
+        cell.radar_left = metadata.radar.left;
+        cell.radar_right = metadata.radar.right;
+        cell.render_offset_x = metadata.offset[0];
+        cell.render_offset_y = metadata.offset[1];
         cell.has_damaged_data = metadata.has_damaged_data;
-        cell.variant = 0;
-        cell.filled_clear = false;
-        self.radar_color_valid[index] = true;
-        self.damaged_radar_metadata[index] = None;
+        cell.variant = metadata.variant;
+        cell.filled_clear = clear_fallback;
+        self.radar_color_valid[index] = metadata.radar.valid;
+        self.damaged_radar_metadata[index] = metadata.damaged_radar;
         Ok(())
     }
 
