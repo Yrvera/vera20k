@@ -196,6 +196,8 @@ impl App {
                 });
         let mut pending_main_menu_entry_token = None;
         let mut pending_main_menu_title_receipt = None;
+        use crate::app::diagnostics::shell_capture::PresentedShell;
+        let mut presented_shell = PresentedShell::Other;
 
         crate::app::frontend::shell_transition::activate_shell_first_paint_after_acquire(state);
         // Advance the Skirmish right-panel static text reveals (started at the
@@ -224,6 +226,9 @@ impl App {
                         &mut encoder,
                         &output.texture,
                     )?;
+                    if state.frontend.skirmish_shell_chrome.is_some() {
+                        presented_shell = PresentedShell::Skirmish;
+                    }
                 } else if Self::single_player_shell_active(state) {
                     match crate::app::frontend::single_player_shell_render::render_single_player_shell(
                         state,
@@ -231,6 +236,7 @@ impl App {
                         &output.texture,
                     )? {
                         crate::app::frontend::single_player_shell_render::SinglePlayerShellRenderResult::Rendered => {
+                            presented_shell = PresentedShell::SinglePlayer;
                             state.renderer.egui.begin_frame(&state.platform.window);
                             if state.match_state.match_presentation.show_save_load_panel {
                                 Self::handle_save_load_panel(state);
@@ -266,6 +272,7 @@ impl App {
                             title_receipt,
                         } => {
                             pending_main_menu_title_receipt = title_receipt;
+                            presented_shell = PresentedShell::MainMenu;
                             state.renderer.egui.begin_frame(&state.platform.window);
                             // The SHP shell renders the quit-confirm as an SHP
                             // overlay (and OK exits via its hit-test), so the egui
@@ -585,6 +592,9 @@ impl App {
                     .record_presented(receipt),
                 "main-menu title receipt was stale at present commit"
             );
+        }
+        if let Some(session) = shell_capture.as_deref_mut() {
+            session.after_present(state, presented_shell)?;
         }
         if let Some(pending_capture) = pending_capture {
             let pixels = pending_capture.finish(

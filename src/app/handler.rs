@@ -774,6 +774,12 @@ impl ApplicationHandler for App {
         } else if let (Some(state), Some(session)) =
             (self.state.as_mut(), self.shell_capture.as_mut())
         {
+            // Windows may deliver another wait callback after exit was requested.
+            // The completed one-shot bundle must not enter rendering again.
+            if session.is_finished() {
+                event_loop.exit();
+                return;
+            }
             if let Err(err) = Self::render_frame(state, event_loop, Some(&mut *session), None) {
                 log::error!("Shell capture render: {err:#}");
                 session.fail(format!("shell capture render failed: {err:#}"));
