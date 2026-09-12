@@ -448,7 +448,7 @@ impl ApplicationHandler for App {
         // Always let egui see the event first for input handling.
         let egui_response: egui_winit::EventResponse =
             state.renderer.egui.on_window_event(&state.platform.window, &event);
-        if crate::app::frontend::skirmish_shell_render::native_in_game_options_active(state) {
+        if crate::app::frontend::skirmish_shell_render::native_in_game_shell_active(state) {
             state.renderer.egui.discard_pending_input(&state.platform.window);
         }
 
@@ -459,7 +459,7 @@ impl ApplicationHandler for App {
         // Exception: when paused or save/load panel is open, egui renders
         // interactive content.
         let egui_consumed: bool = egui_response.consumed
-            && !crate::app::frontend::skirmish_shell_render::native_in_game_options_active(state)
+            && !crate::app::frontend::skirmish_shell_render::native_in_game_shell_active(state)
             && (state.frontend.screen != GameScreen::InGame || state.match_state.paused || state.match_state.match_presentation.show_save_load_panel);
 
         match event {
@@ -505,6 +505,17 @@ impl ApplicationHandler for App {
                     state.match_state.input.minimap_dragging = false;
                     state.match_state.match_presentation.in_game_options.dragging_slider = None;
                     state.match_state.match_presentation.in_game_options.pressed_button = None;
+                    state.match_state.match_presentation.pause_menu_interaction = Default::default();
+                    if let Some(browser) = state.match_state.match_presentation.saved_game_browser.as_mut() {
+                        browser.pressed_control = None;
+                        browser.scroll_repeat_at = None;
+                        browser.last_list_press = None;
+                    }
+                    if let Some(browser) = state.frontend.skirmish_shell_state.saved_seed_browser.as_mut() {
+                        browser.pressed_control = None;
+                        browser.scroll_repeat_at = None;
+                        browser.last_list_press = None;
+                    }
                     if let Some(dialog) = state.frontend.options_dialog.as_mut() {
                         dialog.shell_cancel_pointer_gesture();
                     }
@@ -610,6 +621,13 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    if in_game && matches!(state.match_state.match_presentation.in_game_menu, crate::ui::pause_menu::InGameMenuState::SavedGame(_)) {
+                        if event.state.is_pressed() {
+                            Self::saved_game_key(state, Some(code), event.text.as_deref());
+                        }
+                        state.platform.window.request_redraw();
+                        return;
+                    }
                     if !crate::app::input::hotkeys::input_admitted_while_paused(
                         paused_at_event,
                         &event.logical_key,

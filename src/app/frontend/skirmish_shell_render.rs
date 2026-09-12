@@ -18,7 +18,11 @@ use draw_order::{
 };
 mod in_game_options;
 mod in_game_shell;
-pub(crate) use in_game_shell::{native_in_game_options_active, render_in_game_options_shell};
+pub(crate) use in_game_shell::{native_in_game_shell_active, current_in_game_shell_layout, render_in_game_options_shell};
+mod pause_menu;
+pub(crate) use pause_menu::render_pause_menu_shell;
+mod saved_games;
+pub(crate) use saved_games::render_saved_game_shell;
 mod launcher_options;
 pub(crate) use launcher_options::{LauncherOptionsPresentation, render_launcher_options};
 mod modals;

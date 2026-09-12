@@ -211,9 +211,10 @@ impl App {
         };
         let mut game_render_output: Option<crate::app::presentation::render::GameRenderOutput> = None;
 
-        if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Options {
+        if state.match_state.match_presentation.in_game_menu.is_open() {
             Self::ensure_skirmish_shell_chrome(state);
         }
+        Self::update_saved_game_browser(state, false);
         match &state.frontend.screen {
             GameScreen::MainMenu => {
                 if let crate::app::frontend::shell_transition::ShellFirstPaintRenderResult::Rendered {
@@ -360,12 +361,21 @@ impl App {
                     }
                 }
             }
-            GameScreen::InGame if crate::app::frontend::skirmish_shell_render::native_in_game_options_active(state) => {
+            GameScreen::InGame if crate::app::frontend::skirmish_shell_render::native_in_game_shell_active(state) => {
                 // 621FCE -> 72F540 clears and paints a complete active-game shell.
                 // No battlefield commands share this encoder/camera upload.
-                crate::app::frontend::skirmish_shell_render::render_in_game_options_shell(
-                    state, &mut encoder, &output.texture,
-                )?;
+                if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Menu {
+                    let buttons = crate::app::input::pause_menu::button_states(state);
+                    crate::app::frontend::skirmish_shell_render::render_pause_menu_shell(
+                        state, &mut encoder, &output.texture, buttons,
+                    )?;
+                } else if matches!(state.match_state.match_presentation.in_game_menu, crate::ui::pause_menu::InGameMenuState::SavedGame(_)) {
+                    crate::app::frontend::skirmish_shell_render::render_saved_game_shell(state, &mut encoder, &output.texture)?;
+                } else {
+                    crate::app::frontend::skirmish_shell_render::render_in_game_options_shell(
+                        state, &mut encoder, &output.texture,
+                    )?;
+                }
             }
             GameScreen::InGame => {
                 let game_output = if state.renderer.upscale_pass.is_some() {

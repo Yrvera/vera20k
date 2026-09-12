@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "Original B7/2B4/2B5 resources and 21 complete 60B7A0 ordinary child placements at three resolutions",
+  "assumptions": [
+    "Pinned original resource addresses independently checked through PE RT_DIALOG tree; raw bytes and SHA256 retained",
+    "Supplied retail 6x13 dialog base units map DLU through MulDiv rounding; Windows font metrics not emulated",
+    "60C0C0 active dispatcher and 608500/608CD0 exclusions established by instruction inspection; only complete 60B7A0 is executed",
+    "Parent origin0 with extent640x480,800x600,1024x768; original base800/600 globals remain untouched",
+    "Title, right-button and footer placement, painting, list input and persistence are outside this fixture"
+  ],
+  "substitutions": [
+    "Reuse native_child_case hooks for supplied GetParent/GetWindowRect/MoveWindow and true69BBE0; original placement instructions unchanged"
+  ],
+  "entry_points": {
+    "browser": "0x00558DD0",
+    "dispatcher": "0x0060C0C0",
+    "ordinary_child": "0x0060B7A0"
+  },
+  "payload_sha256": "969f6d3b485487f9c3e09890304057d60016dbc3f6ca4cf0d472c3c27b9dcac2"
+}

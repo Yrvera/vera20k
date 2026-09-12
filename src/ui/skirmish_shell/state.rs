@@ -42,7 +42,7 @@ pub use random_map_setup::{
     AcceptOutcome, RandomMapSetupModalState, SETUP_COMBO_ROWS, SetupCombo, SetupComboItem,
     setup_combo_items,
 };
-pub use saved_seed_browser::{SAVED_SEED_DESCRIPTION_MAX_UNITS, SavedSeedBrowserState, SavedSeedOutcome, SavedSeedPrompt, SavedSeedPromptPurpose};
+pub use saved_seed_browser::{SAVED_SEED_DESCRIPTION_MAX_UNITS, SavedSeedBrowserState, SavedSeedBrowserRow, SavedSeedOutcome, SavedSeedPrompt, SavedSeedPromptPurpose};
 pub use trackbars::{
     SkirmishTrackbarBounds, SkirmishTrackbarHScrollNotification, TrackbarDragState,
     game_speed_from_visual_position, game_speed_visual_position, handle_option_mouse_down,

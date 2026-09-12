@@ -60,10 +60,26 @@ impl PersistenceState {
         tick: u64,
     ) -> Result<PathBuf, SaveWriteError> {
         let path = self.repository.write_named(filename, bytes)?;
+        self.record_successful_save(tick);
+        Ok(path)
+    }
+
+    /// Explicit selected-row replacement shares successful-save bookkeeping.
+    pub(crate) fn overwrite_save(
+        &mut self,
+        path: &Path,
+        bytes: &[u8],
+        tick: u64,
+    ) -> Result<PathBuf, SaveWriteError> {
+        self.repository.overwrite_existing(path, bytes)?;
+        self.record_successful_save(tick);
+        Ok(path.to_path_buf())
+    }
+
+    fn record_successful_save(&mut self, tick: u64) {
         self.last_save_tick = Some(tick);
         self.last_save_instant = Some(Instant::now());
         self.invalidate_save_list();
-        Ok(path)
     }
 
     pub(crate) fn last_save_tick(&self) -> Option<u64> {
@@ -325,6 +341,13 @@ pub(crate) struct SaveWriteError {
 }
 
 impl SaveWriteError {
+    fn write_file(source: std::io::Error) -> Self {
+        Self {
+            stage: SaveWriteStage::WriteFile,
+            source,
+        }
+    }
+
     pub(crate) fn stage(&self) -> SaveWriteStage {
         self.stage
     }
@@ -379,11 +402,61 @@ impl SaveRepository {
             source,
         })?;
         let path = self.directory.join(file_name);
-        std::fs::write(&path, bytes).map_err(|source| SaveWriteError {
-            stage: SaveWriteStage::WriteFile,
-            source,
-        })?;
+        self.create_new_file(&path, bytes)?;
         Ok(path)
+    }
+
+    /// New saves may not silently replace a timestamp-name collision. Remove
+    /// only our newly created partial file if writing fails.
+    fn create_new_file(&self, path: &Path, bytes: &[u8]) -> Result<(), SaveWriteError> {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(SaveWriteError::write_file)?;
+        let result = file.write_all(bytes).and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(source) = result {
+            let _ = std::fs::remove_file(path);
+            return Err(SaveWriteError::write_file(source));
+        }
+        Ok(())
+    }
+
+    /// Only an explicit existing repository row can be replaced. Stage the
+    /// complete snapshot beside it, then publish with same-directory rename;
+    /// failure leaves the previous save and persistence bookkeeping intact.
+    fn overwrite_existing(&self, path: &Path, bytes: &[u8]) -> Result<(), SaveWriteError> {
+        if path.parent() != Some(self.directory.as_path())
+            || path.extension().and_then(|ext| ext.to_str()) != Some("bin")
+        {
+            return Err(SaveWriteError::write_file(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "overwrite target is not a save in this repository",
+            )));
+        }
+        let previous = self.read(path).map_err(SaveWriteError::write_file)?;
+        GameSnapshot::read_header(&previous).map_err(|error| {
+            SaveWriteError::write_file(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
+        static NEXT_STAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let stage = loop {
+            let id = NEXT_STAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let stage = self
+                .directory
+                .join(format!(".save-{}-{id}.tmp", std::process::id()));
+            match self.create_new_file(&stage, bytes) {
+                Ok(()) => break stage,
+                Err(error) if error.source.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        let result = std::fs::rename(&stage, path);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&stage);
+        }
+        result.map_err(SaveWriteError::write_file)
     }
 
     pub(crate) fn delete(&self, path: &Path) -> std::io::Result<()> {
@@ -417,6 +490,24 @@ impl SaveRepository {
         }
         sort_panel_entries_by_embedded_time(&mut entries);
         entries
+    }
+
+    /// Native5596A0 browser metadata: filesystem write time is independent of
+    /// the diagnostic panel's embedded-time policy. The shared browser sorts
+    /// these records with the established retail comparator after adding New.
+    pub(crate) fn browser_entries(&self) -> Vec<(SaveEntry, u64)> {
+        let Ok(directory) = std::fs::read_dir(&self.directory) else { return Vec::new(); };
+        directory.filter_map(|item| {
+            let item = item.ok()?;
+            let path = item.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("bin") { return None; }
+            let metadata = item.metadata().ok()?;
+            if !metadata.is_file() { return None; }
+            let bytes = self.read(&path).ok()?;
+            let header = GameSnapshot::read_header(&bytes).ok()?;
+            let ticks = crate::map::rmg::saved_seeds::system_time_to_file_time(metadata.modified().ok()?);
+            Some((SaveEntry { path, header }, ticks))
+        }).collect()
     }
 
     /// Quickload policy: select the `.bin` file with the newest filesystem
@@ -1213,3 +1304,11 @@ mod tests {
         std::fs::remove_dir_all(directory).expect("remove repository fixture directory");
     }
 }
+
+#[cfg(test)]
+#[path = "tests/save_write_tests.rs"]
+mod save_write_tests;
+
+#[cfg(test)]
+#[path = "tests/save_browser_tests.rs"]
+mod save_browser_tests;

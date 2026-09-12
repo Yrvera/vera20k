@@ -534,6 +534,20 @@ pub(super) fn push_saved_seed_modal_instances(
     browser: &SavedSeedBrowserState,
     interior: BackdropInteriorPaint,
 ) {
+    push_saved_browser_modal_instances(out, atlas, font, layout, browser, interior, true);
+}
+
+/// Shared native list/editor/prompt painting; active-game callers supply
+/// SIDEBTTN from the side atlas and therefore omit the launcher column buttons.
+pub(super) fn push_saved_browser_modal_instances<I: Clone + PartialEq>(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    font: &crate::render::bit_font::BitFont,
+    layout: &SavedSeedLayout,
+    browser: &SavedSeedBrowserState<I>,
+    interior: BackdropInteriorPaint,
+    column_buttons: bool,
+) {
     use crate::ui::skirmish_shell::seed_list::SeedListGeometry;
     let geometry = SeedListGeometry::new(layout.list, browser.entries.len(), browser.top_index);
     let depth = SHELL_DROPDOWN_DEPTH - 0.00010;
@@ -584,19 +598,21 @@ pub(super) fn push_saved_seed_modal_instances(
         }
 
     }
-    for (rect, control) in [
-        (layout.action, SavedSeedControl::Action),
-        (layout.back, SavedSeedControl::Back0x686),
-    ] {
-        let disabled = control == SavedSeedControl::Action && !browser.action_enabled();
-        push_right_panel_button_shp(
-            out,
-            atlas,
-            rect,
-            browser.pressed_control == Some(control),
-            disabled,
-            SHELL_DROPDOWN_DEPTH - 0.00012,
-        );
+    if column_buttons {
+        for (rect, control) in [
+            (layout.action, SavedSeedControl::Action),
+            (layout.back, SavedSeedControl::Back0x686),
+        ] {
+            let disabled = control == SavedSeedControl::Action && !browser.action_enabled();
+            push_right_panel_button_shp(
+                out,
+                atlas,
+                rect,
+                browser.pressed_control == Some(control),
+                disabled,
+                SHELL_DROPDOWN_DEPTH - 0.00012,
+            );
+        }
     }
     if let Some(prompt) = browser.prompt.as_ref() {
         let (dialog, _, yes, no) = prompt.layout(layout.screen.w as u32, layout.screen.h as u32);

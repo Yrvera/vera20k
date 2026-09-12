@@ -10,7 +10,11 @@ use crate::ui::shell::in_game_options::{build_in_game_options_descriptor, contro
 use crate::ui::shell::in_game_shell::{InGameShellLayout, InGameShellSizes};
 use crate::ui::shell::layout::{InGameOptionsAnchor, layout_pass_in_game_options};
 
-fn shell_layout(atlas: &SidebarChromeAtlas, width: i32, height: i32) -> Option<InGameShellLayout> {
+pub(super) fn shell_layout(
+    atlas: &SidebarChromeAtlas,
+    width: i32,
+    height: i32,
+) -> Option<InGameShellLayout> {
     let size = |entry: SidebarChromeEntry| entry.pixel_size.map(|v| v as i32);
     InGameShellLayout::new(
         width,
@@ -34,11 +38,18 @@ fn shell_layout(atlas: &SidebarChromeAtlas, width: i32, height: i32) -> Option<I
     )
 }
 
-pub(crate) fn native_in_game_options_active(state: &AppState) -> bool {
+/// Shared active-game art gate for the implemented full-screen modals.
+pub(crate) fn native_in_game_shell_active(state: &AppState) -> bool {
     state.frontend.screen == crate::app::GameScreen::InGame
-        && state.match_state.match_presentation.in_game_menu
-            == crate::ui::pause_menu::InGameMenuState::Options
-        && state.frontend.skirmish_shell_chrome.is_some()
+        && matches!(
+            state.match_state.match_presentation.in_game_menu,
+            crate::ui::pause_menu::InGameMenuState::Menu
+                | crate::ui::pause_menu::InGameMenuState::Options
+                | crate::ui::pause_menu::InGameMenuState::SavedGame(_)
+        )
+        && (state.match_state.match_presentation.in_game_menu
+            == crate::ui::pause_menu::InGameMenuState::Menu
+            || state.frontend.skirmish_shell_chrome.is_some())
         && crate::app::presentation::sidebar_render::current_sidebar_chrome(state).is_some_and(
             |atlas| {
                 atlas.in_game_shell.panel_tile.is_some()
@@ -53,9 +64,37 @@ pub(crate) fn native_in_game_options_active(state: &AppState) -> bool {
         )
 }
 
+pub(crate) fn native_in_game_options_active(state: &AppState) -> bool {
+    state.match_state.match_presentation.in_game_menu
+        == crate::ui::pause_menu::InGameMenuState::Options
+        && state.frontend.skirmish_shell_chrome.is_some()
+        && native_in_game_shell_active(state)
+}
+
+pub(crate) fn current_in_game_shell_layout(
+    state: &AppState,
+) -> Option<(InGameShellLayout, [i32; 2])> {
+    let atlas = crate::app::presentation::sidebar_render::current_sidebar_chrome(state)?;
+    Some((
+        shell_layout(
+            atlas,
+            state.renderer.gpu.config.width as i32,
+            state.renderer.gpu.config.height as i32,
+        )?,
+        atlas.in_game_shell.buttons[0]?
+            .pixel_size
+            .map(|value| value as i32),
+    ))
+}
+
 /// Native blit at canvas size, with an optional source-preserving clip. No art
 /// is stretched to fill unused pixels at resolutions larger than its canvas.
-fn push_art(out: &mut Vec<SpriteInstance>, entry: SidebarChromeEntry, rect: RectPx, clip: RectPx) {
+pub(super) fn push_art(
+    out: &mut Vec<SpriteInstance>,
+    entry: SidebarChromeEntry,
+    rect: RectPx,
+    clip: RectPx,
+) {
     let x = rect.x.max(clip.x);
     let y = rect.y.max(clip.y);
     let right = (rect.x + entry.pixel_size[0] as i32).min(clip.x + clip.w);
@@ -80,7 +119,7 @@ fn push_art(out: &mut Vec<SpriteInstance>, entry: SidebarChromeEntry, rect: Rect
     });
 }
 
-fn background_instances(
+pub(super) fn background_instances(
     atlas: &SidebarChromeAtlas,
     layout: InGameShellLayout,
     width: i32,
@@ -137,16 +176,6 @@ pub(crate) fn render_in_game_options_shell(
     encoder: &mut wgpu::CommandEncoder,
     destination: &wgpu::Texture,
 ) -> anyhow::Result<()> {
-    // Entry itself must select the cursor; no subsequent pointer event is
-    // required to undo the legacy pause menu's OS-cursor visibility.
-    state
-        .platform
-        .window
-        .set_cursor_visible(!state.use_software_cursor());
-    state
-        .renderer
-        .egui
-        .discard_pending_input(&state.platform.window);
     let width = state.renderer.gpu.config.width;
     let height = state.renderer.gpu.config.height;
     let atlas = crate::app::presentation::sidebar_render::current_sidebar_chrome(state)
@@ -205,6 +234,55 @@ pub(crate) fn render_in_game_options_shell(
         anchor,
         options,
     );
+    render_in_game_shell_frame(
+        state,
+        encoder,
+        destination,
+        InGameShellFrame {
+            art: instances,
+            controls,
+            texts,
+            label: "Active Game Controls BBB",
+        },
+    )
+}
+
+pub(super) struct InGameShellFrame {
+    pub art: Vec<SpriteInstance>,
+    pub controls: Vec<SpriteInstance>,
+    pub texts: Vec<crate::render::shell_text::ShellTextDraw>,
+    pub label: &'static str,
+}
+
+/// One compositor for active-game shells: sidebar art, optional generic
+/// controls, individually clipped text and the software cursor, in native order.
+pub(super) fn render_in_game_shell_frame(
+    state: &mut AppState,
+    encoder: &mut wgpu::CommandEncoder,
+    destination: &wgpu::Texture,
+    frame: InGameShellFrame,
+) -> anyhow::Result<()> {
+    // Entry itself must select the cursor; no subsequent pointer event is
+    // required to undo the legacy pause menu's OS-cursor visibility.
+    state
+        .platform
+        .window
+        .set_cursor_visible(!state.use_software_cursor());
+    state
+        .renderer
+        .egui
+        .discard_pending_input(&state.platform.window);
+    let width = state.renderer.gpu.config.width;
+    let height = state.renderer.gpu.config.height;
+    let atlas = crate::app::presentation::sidebar_render::current_sidebar_chrome(state)
+        .expect("active side art");
+    let control_atlas = state.frontend.skirmish_shell_chrome.as_ref();
+    let InGameShellFrame {
+        art: instances,
+        controls,
+        texts,
+        label,
+    } = frame;
     let batch = &state.renderer.batch_renderer;
     let gpu = &state.renderer.gpu;
     // The frame dispatcher records this instead of the battlefield, so this
@@ -241,7 +319,7 @@ pub(crate) fn render_in_game_options_shell(
         .map(|f| &f.texture);
     let color = state.renderer.shell_surface_presenter.source_render_view();
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Active Game Controls BBB"),
+        label: Some(label),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: &color,
             depth_slice: None,
@@ -265,7 +343,7 @@ pub(crate) fn render_in_game_options_shell(
     if let Some((buffer, count)) = &background_buffer {
         batch.draw_with_buffer_passthrough(&mut pass, &atlas.texture, buffer, *count);
     }
-    if let Some((buffer, count)) = &control_buffer {
+    if let (Some((buffer, count)), Some(control_atlas)) = (&control_buffer, control_atlas) {
         batch.draw_with_buffer_passthrough(&mut pass, &control_atlas.texture, buffer, *count);
     }
     for (draw, buffer) in texts.iter().zip(&text_buffers) {
