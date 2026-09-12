@@ -1721,3 +1721,6 @@ mod sound;
 pub(crate) use sound::render_sound_shell;
 
 pub(crate) use chrome::type3_button_frames;
+
+mod keyboard;
+pub(crate) use keyboard::render_keyboard_shell;

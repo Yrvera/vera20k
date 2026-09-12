@@ -26,7 +26,7 @@ pub struct InGameOptionsState {
     pub show_hidden: bool,
     pub tooltips: bool,
     /// Transient: which owner-draw button is held (for the pressed frame).
-    pub pressed_button: Option<u16>,
+    pub buttons: super::button::ShellButtonInteraction<u16>,
     /// Native4E2201..2229 projects the common audio-device predicate.
     pub sound_enabled: bool,
     /// Transient: control id of the slider currently being dragged, if any.
@@ -49,7 +49,7 @@ impl Default for InGameOptionsState {
             unit_action_lines: true,
             show_hidden: false,
             tooltips: true,
-            pressed_button: None,
+            buttons: Default::default(),
             sound_enabled: true,
             dragging_slider: None,
             game_speed_label_dragged: false,
@@ -62,7 +62,7 @@ impl InGameOptionsState {
     /// Reset the transient interaction flags when the overlay (re)opens — gamemd
     /// recreates the dialog, so the label-dragged quirk resets each open.
     pub fn on_open(&mut self) {
-        self.pressed_button = None;
+        self.buttons = Default::default();
         self.dragging_slider = None;
         self.game_speed_label_dragged = false;
         self.scroll_rate_label_dragged = false;
@@ -126,11 +126,14 @@ mod tests {
     fn on_open_clears_transient_flags() {
         let mut s = InGameOptionsState {
             game_speed_label_dragged: true,
-            pressed_button: Some(0x686),
+            buttons: crate::ui::shell::button::ShellButtonInteraction {
+                pressed: Some(0x686),
+                hovered: Some(0x686),
+            },
             ..Default::default()
         };
         s.on_open();
-        assert!(!s.game_speed_label_dragged && s.pressed_button.is_none());
+        assert!(!s.game_speed_label_dragged && s.buttons.pressed.is_none());
     }
 
     #[test]

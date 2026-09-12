@@ -46,12 +46,15 @@ pub(crate) fn native_in_game_shell_active(state: &AppState) -> bool {
             crate::ui::pause_menu::InGameMenuState::Menu
                 | crate::ui::pause_menu::InGameMenuState::AbortConfirm
                 | crate::ui::pause_menu::InGameMenuState::Sound
+                | crate::ui::pause_menu::InGameMenuState::Keyboard
                 | crate::ui::pause_menu::InGameMenuState::Options
                 | crate::ui::pause_menu::InGameMenuState::SavedGame(_)
         )
-        && (matches!(state.match_state.match_presentation.in_game_menu,
-            crate::ui::pause_menu::InGameMenuState::Menu | crate::ui::pause_menu::InGameMenuState::AbortConfirm)
-            || state.frontend.skirmish_shell_chrome.is_some())
+        && (matches!(
+            state.match_state.match_presentation.in_game_menu,
+            crate::ui::pause_menu::InGameMenuState::Menu
+                | crate::ui::pause_menu::InGameMenuState::AbortConfirm
+        ) || state.frontend.skirmish_shell_chrome.is_some())
         && crate::app::presentation::sidebar_render::current_sidebar_chrome(state).is_some_and(
             |atlas| {
                 atlas.in_game_shell.panel_tile.is_some()
@@ -203,7 +206,7 @@ pub(crate) fn render_in_game_options_shell(
     let desc = build_in_game_options_descriptor();
     for child in layout_pass_in_game_options(&desc, width as i32, height as i32, anchor) {
         if matches!(child.id, control::BACK | control::KEYBOARD | control::SOUND) {
-            let frame = usize::from(options.pressed_button == Some(child.id));
+            let frame = usize::from(options.buttons.is_pressed(child.id));
             if let Some(entry) =
                 atlas.in_game_shell.buttons[frame].or(atlas.in_game_shell.buttons[0])
             {
@@ -265,6 +268,37 @@ pub(super) fn render_in_game_shell_frame(
     destination: &wgpu::Texture,
     frame: InGameShellFrame,
 ) -> anyhow::Result<()> {
+    render_shell_frame(
+        state,
+        encoder,
+        destination,
+        frame,
+        ShellFrameArt::Sidebar,
+        ShellFrameOverlay::default(),
+    )
+}
+
+pub(super) enum ShellFrameArt {
+    Sidebar,
+    Launcher,
+}
+
+#[derive(Default)]
+pub(super) struct ShellFrameOverlay {
+    pub controls: Vec<SpriteInstance>,
+    pub texts: Vec<crate::render::shell_text::ShellTextDraw>,
+}
+
+/// Shared physical shell compositor. Only the parent art atlas differs between
+/// launcher and active-game children; popups paint after all ordinary controls.
+pub(super) fn render_shell_frame(
+    state: &mut AppState,
+    encoder: &mut wgpu::CommandEncoder,
+    destination: &wgpu::Texture,
+    frame: InGameShellFrame,
+    art: ShellFrameArt,
+    overlay: ShellFrameOverlay,
+) -> anyhow::Result<()> {
     // Entry itself must select the cursor; no subsequent pointer event is
     // required to undo the legacy pause menu's OS-cursor visibility.
     state
@@ -277,8 +311,21 @@ pub(super) fn render_in_game_shell_frame(
         .discard_pending_input(&state.platform.window);
     let width = state.renderer.gpu.config.width;
     let height = state.renderer.gpu.config.height;
-    let atlas = crate::app::presentation::sidebar_render::current_sidebar_chrome(state)
-        .expect("active side art");
+    let background_texture = match art {
+        ShellFrameArt::Sidebar => {
+            &crate::app::presentation::sidebar_render::current_sidebar_chrome(state)
+                .expect("active side art")
+                .texture
+        }
+        ShellFrameArt::Launcher => {
+            &state
+                .frontend
+                .skirmish_shell_chrome
+                .as_ref()
+                .expect("launcher art")
+                .texture
+        }
+    };
     let control_atlas = state.frontend.skirmish_shell_chrome.as_ref();
     let InGameShellFrame {
         art: instances,
@@ -302,6 +349,12 @@ pub(super) fn render_in_game_shell_frame(
     let background_buffer = batch.create_instance_buffer(gpu, &instances);
     let control_buffer = batch.create_instance_buffer(gpu, &controls);
     let text_buffers: Vec<_> = texts
+        .iter()
+        .map(|d| batch.create_instance_buffer(gpu, &d.instances))
+        .collect();
+    let overlay_buffer = batch.create_instance_buffer(gpu, &overlay.controls);
+    let overlay_text_buffers: Vec<_> = overlay
+        .texts
         .iter()
         .map(|d| batch.create_instance_buffer(gpu, &d.instances))
         .collect();
@@ -344,12 +397,34 @@ pub(super) fn render_in_game_shell_frame(
         occlusion_query_set: None,
     });
     if let Some((buffer, count)) = &background_buffer {
-        batch.draw_with_buffer_passthrough(&mut pass, &atlas.texture, buffer, *count);
+        batch.draw_with_buffer_passthrough(&mut pass, background_texture, buffer, *count);
     }
     if let (Some((buffer, count)), Some(control_atlas)) = (&control_buffer, control_atlas) {
         batch.draw_with_buffer_passthrough(&mut pass, &control_atlas.texture, buffer, *count);
     }
     for (draw, buffer) in texts.iter().zip(&text_buffers) {
+        if let Some((buffer, count)) = buffer {
+            let x = draw.scissor.x.min(width);
+            let y = draw.scissor.y.min(height);
+            let w = draw.scissor.w.min(width - x);
+            let h = draw.scissor.h.min(height - y);
+            if w == 0 || h == 0 {
+                continue;
+            }
+            pass.set_scissor_rect(x, y, w, h);
+            batch.draw_with_buffer_passthrough(
+                &mut pass,
+                state.renderer.bit_font.atlas(),
+                buffer,
+                *count,
+            );
+        }
+    }
+    pass.set_scissor_rect(0, 0, width, height);
+    if let (Some((buffer, count)), Some(atlas)) = (&overlay_buffer, control_atlas) {
+        batch.draw_with_buffer_passthrough(&mut pass, &atlas.texture, buffer, *count);
+    }
+    for (draw, buffer) in overlay.texts.iter().zip(&overlay_text_buffers) {
         if let Some((buffer, count)) = buffer {
             let x = draw.scissor.x.min(width);
             let y = draw.scissor.y.min(height);

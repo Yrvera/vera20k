@@ -1312,3 +1312,5 @@ mod save_write_tests;
 #[cfg(test)]
 #[path = "tests/save_browser_tests.rs"]
 mod save_browser_tests;
+
+pub(crate) mod keyboard;

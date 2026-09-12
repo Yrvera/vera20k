@@ -339,6 +339,14 @@ impl AssetManager {
         named.archive.get_by_id(entry_id)
     }
 
+    /// Registered archive fallback for mutable loose-file owners. These callers
+    /// read current disk bytes themselves; cached startup loose snapshots must
+    /// not resurrect a file they just deleted (e.g. Keyboard Reset All5FBA05).
+    pub fn get_archive_ref(&self, name: &str) -> Option<&[u8]> {
+        let (named, entry_id) = self.lookup_asset_entry(name)?;
+        named.archive.get_by_id(entry_id)
+    }
+
     /// Look up a file by name and return both the bytes and source archive name.
     pub fn get_with_source(&self, name: &str) -> Option<(Vec<u8>, String)> {
         if let Some((loose, bytes)) = self.loose_bytes(name) {

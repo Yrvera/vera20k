@@ -6,10 +6,11 @@ use crate::app::persistence::options::{
 };
 use crate::app::{App, AppState};
 use crate::ui::pause_menu::InGameMenuState;
-use crate::ui::shell::list::{ListScrollPart, ShellListGeometry};
+use crate::ui::shell::list::ShellListGeometry;
 use crate::ui::shell::sound::{
     SoundButton, SoundControl, SoundLayout, SoundSlider, SoundState, SoundTrackRow,
 };
+use std::time::Instant;
 use winit::event::MouseButton;
 
 fn channel(id: SoundSlider) -> AudioVolume {
@@ -134,6 +135,27 @@ fn activate(state: &mut AppState, id: SoundButton) {
         }
     }
 }
+
+/// Poll the captured list gesture and return its next event-loop wake deadline.
+pub(crate) fn poll_scroll_repeat(state: &mut AppState) -> Option<Instant> {
+    if state.match_state.match_presentation.in_game_menu != InGameMenuState::Sound {
+        return None;
+    }
+    let layout = layout(state)?;
+    let (x, y) = state.window_cursor_position();
+    let dialog = state.match_state.match_presentation.sound_dialog.as_mut()?;
+    let geometry = ShellListGeometry::new(layout.list, dialog.rows.len(), dialog.top);
+    if dialog.scroll.poll(
+        geometry,
+        &mut dialog.top,
+        x.round() as i32,
+        y.round() as i32,
+        Instant::now(),
+    ) {
+        state.platform.window.request_redraw();
+    }
+    dialog.scroll.repeat_at()
+}
 pub(crate) fn cursor_moved(state: &mut AppState) {
     let Some(layout) = layout(state) else {
         return;
@@ -148,10 +170,8 @@ pub(crate) fn cursor_moved(state: &mut AppState) {
         Some(SoundControl::Button(id)) => Some(id),
         _ => None,
     };
-    if dialog.scroll_pressed == Some(ListScrollPart::Thumb) {
-        dialog.top =
-            ShellListGeometry::new(layout.list, dialog.rows.len(), dialog.top).top_at_pointer(y);
-    }
+    let geometry = ShellListGeometry::new(layout.list, dialog.rows.len(), dialog.top);
+    dialog.scroll.pointer_moved(geometry, &mut dialog.top, x, y);
     let changed = dialog.dragging.and_then(|id| {
         dialog
             .set_from_pointer(id, layout.sliders[id as usize], x)
@@ -180,13 +200,15 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) {
     };
     if !pressed {
         dialog.dragging = None;
-        dialog.scroll_pressed = None;
+        dialog.scroll.cancel();
+        state.platform.window.request_redraw();
         let action = dialog.buttons.release(over_button);
         if let Some(id) = action {
             activate(state, id);
         }
         return;
     }
+    dialog.scroll.cancel();
     dialog.buttons.press(over_button);
     match hit {
         Some(SoundControl::Button(_)) => App::play_skirmish_shell_generic_click_sound(state),
@@ -237,12 +259,9 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) {
         Some(SoundControl::List) => {
             let geometry = ShellListGeometry::new(layout.list, dialog.rows.len(), dialog.top);
             if let Some(part) = geometry.scroll_part_at(x, y) {
-                dialog.scroll_pressed = Some(part);
-                dialog.top = match part {
-                    ListScrollPart::Up => dialog.top.saturating_sub(1),
-                    ListScrollPart::Down => (dialog.top + 1).min(geometry.max_top),
-                    _ => geometry.top_at_pointer(y),
-                };
+                dialog
+                    .scroll
+                    .press(part, geometry, &mut dialog.top, y, Instant::now());
             } else if let Some(row) = geometry.row_at(dialog.rows.len(), dialog.top, x, y) {
                 dialog.selected = Some(row);
                 App::play_skirmish_shell_generic_click_sound(state);

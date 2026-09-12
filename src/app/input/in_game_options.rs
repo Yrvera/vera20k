@@ -113,7 +113,8 @@ pub(crate) fn in_game_options_mouse(state: &mut AppState, button: MouseButton, p
                     .match_state
                     .match_presentation
                     .in_game_options
-                    .pressed_button = Some(id);
+                    .buttons
+                    .press(Some(id));
                 // Shared type-2 procedure612B70,61374B..613771: ordinary
                 // button-down plays Rules+188's generic click before dispatch.
                 crate::app::App::play_skirmish_shell_generic_click_sound(state);
@@ -144,40 +145,21 @@ pub(crate) fn in_game_options_mouse(state: &mut AppState, button: MouseButton, p
             OptionsHit::None => {}
         }
     } else {
-        let over_sound = state
-            .match_state
-            .match_presentation
-            .in_game_options
-            .pressed_button
-            == Some(control::SOUND)
-            && matches!(
-                in_game_options_hit(&laid, (cx, cy)),
-                OptionsHit::Button(control::SOUND)
-            )
-            && state.audio.launcher_audio_available;
-        // Release: a Back press that ends still over the Back rect closes + applies
-        // + persists. Sound accepts this parent before opening B8; Keyboard remains open work.
-        let over_back = state
-            .match_state
-            .match_presentation
-            .in_game_options
-            .pressed_button
-            == Some(control::BACK)
-            && back_rect_contains(&laid, cx, cy);
-        state
-            .match_state
-            .match_presentation
-            .in_game_options
-            .pressed_button = None;
-        state
-            .match_state
-            .match_presentation
-            .in_game_options
-            .dragging_slider = None;
-        if over_sound {
-            crate::app::input::sound::open(state);
-        } else if over_back {
-            crate::app::persistence::options::in_game_options_close(state);
+        let over = match in_game_options_hit(&laid, (cx, cy)) {
+            OptionsHit::Button(control::SOUND) if !state.audio.launcher_audio_available => None,
+            OptionsHit::Button(id) => Some(id),
+            _ => None,
+        };
+        let options = &mut state.match_state.match_presentation.in_game_options;
+        options.dragging_slider = None;
+        match options.buttons.release(over) {
+            Some(control::SOUND) => crate::app::input::sound::open(state),
+            Some(control::KEYBOARD) => crate::app::input::keyboard::open(
+                state,
+                crate::ui::shell::keyboard::KeyboardParent::GameControls,
+            ),
+            Some(control::BACK) => crate::app::persistence::options::in_game_options_close(state),
+            _ => {}
         }
     }
 }
@@ -185,16 +167,8 @@ pub(crate) fn in_game_options_mouse(state: &mut AppState, button: MouseButton, p
 /// Live slider drag while paused: re-quantize the dragged slider's value from the
 /// current cursor x against the cached anchor's laid rect. Visual/stored only — the
 /// cadence and other effects are deferred to close (KD-8). No-op when no slider is
-/// being dragged (so a paused move with no active drag is simply swallowed upstream).
+/// being dragged; button hover still updates to release its held visual outside.
 pub(crate) fn in_game_options_drag(state: &mut AppState) {
-    let Some(id) = state
-        .match_state
-        .match_presentation
-        .in_game_options
-        .dragging_slider
-    else {
-        return;
-    };
     let Some(anchor) = state.match_state.match_presentation.in_game_options_anchor else {
         return;
     };
@@ -202,6 +176,17 @@ pub(crate) fn in_game_options_drag(state: &mut AppState) {
     let screen_h = state.renderer.gpu.config.height as i32;
     let desc = build_in_game_options_descriptor();
     let laid = layout_pass_in_game_options(&desc, screen_w, screen_h, anchor);
+    let (x, y) = state.window_cursor_position();
+    let over = match in_game_options_hit(&laid, (x.round() as i32, y.round() as i32)) {
+        OptionsHit::Button(control::SOUND) if !state.audio.launcher_audio_available => None,
+        OptionsHit::Button(id) => Some(id),
+        _ => None,
+    };
+    let options = &mut state.match_state.match_presentation.in_game_options;
+    options.buttons.hovered = over;
+    let Some(id) = options.dragging_slider else {
+        return;
+    };
     let Some(rect) = laid.iter().find(|l| l.id == id).map(|l| l.rect) else {
         return;
     };
@@ -262,12 +247,6 @@ fn toggle_checkbox(opts: &mut InGameOptionsState, id: u16) {
         control::TOOLTIPS => opts.tooltips = !opts.tooltips,
         _ => {}
     }
-}
-
-fn back_rect_contains(laid: &[LaidOutControl], cx: i32, cy: i32) -> bool {
-    laid.iter()
-        .find(|l| l.id == control::BACK)
-        .is_some_and(|l| l.rect.contains(cx, cy))
 }
 
 #[cfg(test)]

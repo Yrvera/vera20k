@@ -79,7 +79,7 @@ pub(crate) fn render_sound_shell(
         geometry,
         dialog.top,
         dialog.selected,
-        dialog.scroll_pressed,
+        dialog.scroll.pressed_part(),
         false,
     );
     // 609FC7..609FE2/60A330 selects type3. MNBTTN uses native canvas

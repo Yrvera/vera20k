@@ -77,7 +77,7 @@ pub struct SoundState {
     pub buttons: ShellButtonInteraction<SoundButton>,
     pub dragging: Option<SoundSlider>,
     pub hovered: Option<SoundControl>,
-    pub scroll_pressed: Option<super::list::ListScrollPart>,
+    pub scroll: super::list::ListScrollInteraction,
 }
 impl SoundState {
     pub fn new(positions: [u8; 3], rows: Vec<SoundTrackRow>, current: i32) -> Self {
@@ -96,7 +96,7 @@ impl SoundState {
             buttons: Default::default(),
             dragging: None,
             hovered: None,
-            scroll_pressed: None,
+            scroll: Default::default(),
         }
     }
     pub fn selected_theme(&self) -> Option<i32> {
@@ -108,7 +108,7 @@ impl SoundState {
         self.buttons = Default::default();
         self.dragging = None;
         self.hovered = None;
-        self.scroll_pressed = None;
+        self.scroll.cancel();
     }
     pub fn thumb_left(&self, id: SoundSlider, rect: RectPx) -> i32 {
         thumb_left(self.positions[id as usize], rect.w, 50, 10)

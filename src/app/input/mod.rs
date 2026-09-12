@@ -23,3 +23,5 @@ mod bridge_click_tests;
 pub(crate) mod abort;
 
 pub(crate) mod sound;
+
+pub(crate) mod keyboard;

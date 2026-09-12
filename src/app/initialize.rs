@@ -519,6 +519,8 @@ impl App {
                     hotkey_bindings,
                     hotkey_modifiers: ModifiersState::empty(),
                     type_select: crate::app::types::TypeSelectInputState::default(),
+                    health_navigation: Default::default(),
+                    cursor_coordinates: false,
                     retail_screenshot_requested: false,
                 },
                 match_presentation: crate::app::presentation::state::MatchPresentationState {
@@ -659,6 +661,7 @@ impl App {
                 startup_splash,
                 exit_confirm_modal: None,
                 options_dialog: None,
+                keyboard_dialog: None,
                 launcher_options_presentation: Default::default(),
                 movies_credits_dialog: None,
                 campaign_select: None,
