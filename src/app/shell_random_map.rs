@@ -701,7 +701,7 @@ impl App {
                 .random_map_setup_modal
                 .as_mut()
             {
-                modal.finish_generate(None);
+                modal.fail_generate();
             }
             return true;
         }
@@ -987,20 +987,28 @@ impl App {
         match outcome {
             Outcome::Close => state.frontend.skirmish_shell_state.saved_seed_browser = None,
             Outcome::Load(file_name) => {
-                match crate::map::rmg::saved_seeds::load_saved_seed(&dir.join(&file_name)) {
+                let description = Self::csf_label(
+                    state,
+                    RANDOM_MAP_DESCRIPTION_KEY,
+                    RANDOM_MAP_DESCRIPTION_FALLBACK,
+                );
+                let Some(modal) = state
+                    .frontend
+                    .skirmish_shell_state
+                    .random_map_setup_modal
+                    .as_mut()
+                else {
+                    return true;
+                };
+                match crate::map::rmg::saved_seeds::load_saved_seed(
+                    &dir.join(&file_name),
+                    &modal.options,
+                    &description,
+                ) {
                     Ok(options) => {
-                        // Loading replaces the working options and invalidates
-                        // any generated result, exactly as an edit would.
-                        if let Some(modal) = state
-                            .frontend
-                            .skirmish_shell_state
-                            .random_map_setup_modal
-                            .as_mut()
-                        {
-                            modal.options = options;
-                            modal.generated = false;
-                            modal.generated_preview = None;
-                        }
+                        modal.options = options;
+                        modal.generated = false;
+                        modal.generated_preview = None;
                         state.frontend.skirmish_shell_state.saved_seed_browser = None;
                     }
                     Err(err) => log::warn!("saved seed: could not read {file_name}: {err}"),
@@ -1368,7 +1376,7 @@ impl App {
                     .random_map_setup_modal
                     .as_mut()
                 {
-                    modal.finish_generate(None);
+                    modal.fail_generate();
                 }
             }
             // Accept, if it was asked for, is now the job's responsibility.
