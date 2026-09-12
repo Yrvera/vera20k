@@ -6,32 +6,10 @@ use super::shell_random_map::{RANDOM_MAP_DESCRIPTION_FALLBACK, RANDOM_MAP_DESCRI
 use super::*;
 use crate::map::rmg::{SeedDescription, saved_seeds};
 use crate::ui::skirmish_shell::seed_list::SeedListGeometry;
-use crate::ui::skirmish_shell::{
-    SavedSeedControl, SavedSeedOutcome, SavedSeedPrompt, SavedSeedPromptPurpose,
-};
+use crate::ui::skirmish_shell::{SavedSeedOutcome, SavedSeedPrompt, SavedSeedPromptPurpose};
 use crate::util::native_file_name::{self, NativeFileName};
 
-/// Native list notifications are produced by the host's double-click policy.
-#[cfg(windows)]
-fn double_click_limits() -> (std::time::Duration, i32, i32) {
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        fn GetDoubleClickTime() -> u32;
-        fn GetSystemMetrics(index: i32) -> i32;
-    }
-    // SAFETY: these Win32 queries take no pointers and have no ownership effects.
-    unsafe {
-        (
-            std::time::Duration::from_millis(u64::from(GetDoubleClickTime())),
-            GetSystemMetrics(36),
-            GetSystemMetrics(37),
-        )
-    }
-}
-#[cfg(not(windows))]
-fn double_click_limits() -> (std::time::Duration, i32, i32) {
-    (std::time::Duration::from_millis(500), 4, 4)
-}
+use crate::ui::shell::saved_file_input::{self, BrowserInputResult};
 
 impl App {
     pub(super) fn saved_seed_dir(state: &AppState) -> Option<std::path::PathBuf> {
@@ -317,6 +295,17 @@ impl App {
         }
     }
 
+    fn apply_saved_seed_input(state: &mut AppState, result: BrowserInputResult<NativeFileName>) {
+        match result {
+            BrowserInputResult::None => {}
+            BrowserInputResult::Outcome(outcome) => Self::apply_saved_seed_outcome(state, outcome),
+            BrowserInputResult::PromptAnswer(answer) => {
+                Self::resolve_saved_seed_prompt(state, answer)
+            }
+            BrowserInputResult::ButtonPressed => Self::play_main_menu_button_sound(state),
+        }
+    }
+
     pub(super) fn handle_saved_seed_browser_key(
         state: &mut AppState,
         code: Option<KeyCode>,
@@ -330,42 +319,8 @@ impl App {
         else {
             return;
         };
-        if browser.prompt.is_some() {
-            // Native shared modal pump 005D4DDB uses IsDialogMessageA; proc 005D370D
-            // maps initial-focus IDOK and IDCANCEL to result 1 (negative for confirms).
-            // Acknowledge without letting the same key reach the browser edit/parent.
-            if matches!(
-                code,
-                Some(KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter)
-            ) {
-                Self::resolve_saved_seed_prompt(state, false);
-            }
-            return;
-        }
-        if !browser.description_edit.focused {
-            return;
-        }
-        if code == Some(KeyCode::Enter) || code == Some(KeyCode::NumpadEnter) {
-            if let Some(outcome) = browser.action_outcome() {
-                Self::apply_saved_seed_outcome(state, outcome);
-            }
-            return;
-        }
-        let edit = &mut browser.description_edit;
-        match code {
-            Some(KeyCode::Backspace) => edit.backspace(),
-            Some(KeyCode::Delete) => edit.delete(),
-            Some(KeyCode::ArrowLeft) => edit.left(),
-            Some(KeyCode::ArrowRight) => edit.right(),
-            Some(KeyCode::Home) => edit.home(),
-            Some(KeyCode::End) => edit.end(),
-            Some(KeyCode::Tab) | Some(KeyCode::Escape) => {}
-            _ => {
-                if let Some(text) = text {
-                    edit.insert_text(text);
-                }
-            }
-        }
+        let result = saved_file_input::key(browser, code, text);
+        Self::apply_saved_seed_input(state, result);
     }
 
     fn sync_saved_seed_edit_scroll(state: &mut AppState) {
@@ -412,33 +367,15 @@ impl App {
             .saved_seed_browser
             .as_mut()
             .unwrap();
-        if browser.prompt.is_some() {
-            return;
+        if saved_file_input::update_scroll(
+            browser,
+            &layout,
+            y,
+            pointer_moved,
+            std::time::Instant::now(),
+        ) {
+            Self::sync_saved_seed_edit_scroll(state);
         }
-        let geometry = SeedListGeometry::new(layout.list, browser.entries.len(), browser.top_index);
-        if pointer_moved && browser.pressed_control == Some(SavedSeedControl::ScrollThumb) {
-            browser.top_index = geometry.top_at_pointer(y);
-        }
-        let now = std::time::Instant::now();
-        if browser
-            .scroll_repeat_at
-            .is_some_and(|deadline| now >= deadline)
-        {
-            match browser.pressed_control {
-                Some(SavedSeedControl::ScrollUp) => {
-                    browser.top_index = browser.top_index.saturating_sub(1)
-                }
-                Some(SavedSeedControl::ScrollDown) => {
-                    browser.top_index = (browser.top_index + 1).min(geometry.max_top)
-                }
-                _ => {
-                    browser.scroll_repeat_at = None;
-                    return;
-                }
-            }
-            browser.scroll_repeat_at = Some(now + std::time::Duration::from_millis(25));
-        }
-        Self::sync_saved_seed_edit_scroll(state);
     }
 
     pub(super) fn handle_saved_seed_browser_mouse_down(state: &mut AppState) -> bool {
@@ -451,77 +388,26 @@ impl App {
             return false;
         };
         let layout = Self::skirmish_saved_seed_layout(state, browser.mode);
-        let x = state.match_state.input.cursor_x.round() as i32;
-        let y = state.match_state.input.cursor_y.round() as i32;
-        let hit = if let Some(prompt) = browser.prompt.as_ref() {
-            prompt.control_at(state.render_width(), state.render_height(), x, y)
-        } else {
-            SeedListGeometry::new(layout.list, browser.entries.len(), browser.top_index)
-                .scroll_control_at(x, y)
-                .or_else(|| crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y))
-        };
+        let extent = (state.render_width(), state.render_height());
+        let pointer = (
+            state.match_state.input.cursor_x.round() as i32,
+            state.match_state.input.cursor_y.round() as i32,
+        );
         let browser = state
             .frontend
             .skirmish_shell_state
             .saved_seed_browser
             .as_mut()
             .unwrap();
-        browser.pressed_control = None;
-        if browser.prompt.is_some() {
-            browser.pressed_control = hit;
-            return true;
-        }
-        browser.description_edit.focused = hit == Some(SavedSeedControl::NameEdit0x526);
-        match hit {
-            Some(SavedSeedControl::List) => {
-                if let Some(row) =
-                    SeedListGeometry::new(layout.list, browser.entries.len(), browser.top_index)
-                        .row_at(browser.entries.len(), browser.top_index, x, y)
-                {
-                    browser.select(row);
-                    let now = std::time::Instant::now();
-                    let (time, width, height) = double_click_limits();
-                    let double_click = browser.last_list_press.is_some_and(|(last, px, py)| {
-                        now.duration_since(last) <= time
-                            && (x - px).abs() * 2 <= width
-                            && (y - py).abs() * 2 <= height
-                    });
-                    browser.last_list_press = if double_click {
-                        None
-                    } else {
-                        Some((now, x, y))
-                    };
-                    if double_click && browser.mode == SavedSeedMode::Load {
-                        if let Some(outcome) = browser.action_outcome() {
-                            Self::apply_saved_seed_outcome(state, outcome);
-                        }
-                    }
-                }
-            }
-            Some(SavedSeedControl::ScrollUp) | Some(SavedSeedControl::ScrollDown) => {
-                let geometry =
-                    SeedListGeometry::new(layout.list, browser.entries.len(), browser.top_index);
-                if hit == Some(SavedSeedControl::ScrollUp) {
-                    browser.top_index = browser.top_index.saturating_sub(1);
-                } else {
-                    browser.top_index = (browser.top_index + 1).min(geometry.max_top);
-                }
-                browser.pressed_control = hit;
-                browser.scroll_repeat_at =
-                    Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
-            }
-            Some(SavedSeedControl::ScrollThumb) => browser.pressed_control = hit,
-            Some(SavedSeedControl::ScrollTrack) => {
-                browser.top_index =
-                    SeedListGeometry::new(layout.list, browser.entries.len(), browser.top_index)
-                        .top_at_pointer(y);
-            }
-            Some(SavedSeedControl::Action) | Some(SavedSeedControl::Back0x686) => {
-                browser.pressed_control = hit;
-                Self::play_main_menu_button_sound(state);
-            }
-            _ => {}
-        }
+        let result = saved_file_input::mouse_down(
+            browser,
+            &layout,
+            extent,
+            pointer,
+            std::time::Instant::now(),
+            saved_file_input::host_double_click_limits(),
+        );
+        Self::apply_saved_seed_input(state, result);
         true
     }
 
@@ -535,45 +421,19 @@ impl App {
             return false;
         };
         let layout = Self::skirmish_saved_seed_layout(state, browser.mode);
-        let x = state.match_state.input.cursor_x.round() as i32;
-        let y = state.match_state.input.cursor_y.round() as i32;
-        let prompt_open = browser.prompt.is_some();
-        let hit = if let Some(prompt) = browser.prompt.as_ref() {
-            prompt.control_at(state.render_width(), state.render_height(), x, y)
-        } else {
-            SeedListGeometry::new(layout.list, browser.entries.len(), browser.top_index)
-                .scroll_control_at(x, y)
-                .or_else(|| crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y))
-        };
+        let extent = (state.render_width(), state.render_height());
+        let pointer = (
+            state.match_state.input.cursor_x.round() as i32,
+            state.match_state.input.cursor_y.round() as i32,
+        );
         let browser = state
             .frontend
             .skirmish_shell_state
             .saved_seed_browser
             .as_mut()
             .unwrap();
-        let pressed = browser.pressed_control.take();
-        browser.scroll_repeat_at = None;
-        if pressed == Some(SavedSeedControl::ScrollThumb) {
-            browser.top_index =
-                SeedListGeometry::new(layout.list, browser.entries.len(), browser.top_index)
-                    .top_at_pointer(y);
-            return true;
-        }
-        if pressed.is_none() || pressed != hit {
-            return true;
-        }
-        if prompt_open {
-            Self::resolve_saved_seed_prompt(state, hit == Some(SavedSeedControl::Action));
-        } else {
-            let outcome = match hit {
-                Some(SavedSeedControl::Action) => browser.action_outcome(),
-                Some(SavedSeedControl::Back0x686) => Some(SavedSeedOutcome::Close),
-                _ => None,
-            };
-            if let Some(outcome) = outcome {
-                Self::apply_saved_seed_outcome(state, outcome);
-            }
-        }
+        let result = saved_file_input::mouse_up(browser, &layout, extent, pointer);
+        Self::apply_saved_seed_input(state, result);
         true
     }
 }

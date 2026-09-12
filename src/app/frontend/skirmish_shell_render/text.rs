@@ -1342,8 +1342,34 @@ pub(super) fn push_saved_seed_modal_text_draws(
         ShellAlign::H_CENTER | ShellAlign::V_CENTER,
         SHELL_DROPDOWN_TEXT_DEPTH - 0.00008,
     );
-    // 0x00558F8A hides resource static 0x40C while session+0x30D8 is zero.
-    // Ordinary pre-match skirmish has no in-game suspension state.
+    // Ordinary pre-match saved seeds hide40C; the active saved-game caller
+    // paints its resource prompt separately.
+    push_saved_browser_contents_text(out, state, layout, browser);
+
+    let (action_key, action_fallback) = browser.mode.action_label();
+    for (key, fallback, rect) in [
+        (action_key, action_fallback, layout.action),
+        ("GUI:Back", "Back", layout.back),
+    ] {
+        push_text_draw(
+            out,
+            state,
+            &localized_label(state, key, fallback),
+            rect_to_text_rect(rect),
+            SHELL_LABEL_TEXT_RGB,
+            ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+            SHELL_DROPDOWN_TEXT_DEPTH - 0.00012,
+        );
+    }
+    push_saved_browser_prompt_text(out, state, layout, browser);
+}
+
+pub(super) fn push_saved_browser_contents_text<I>(
+    out: &mut Vec<ShellTextDraw>,
+    state: &AppState,
+    layout: &SavedSeedLayout,
+    browser: &crate::ui::skirmish_shell::SavedSeedBrowserState<I>,
+) {
     let geometry = crate::ui::skirmish_shell::seed_list::SeedListGeometry::new(layout.list, browser.entries.len(), browser.top_index);
     let visible = geometry.visible_rows;
     for row in 0..visible {
@@ -1377,6 +1403,9 @@ pub(super) fn push_saved_seed_modal_text_draws(
                 SHELL_LABEL_TEXT_RGB, ShellAlign::NONE,
                 SHELL_DROPDOWN_TEXT_DEPTH - 0.00011);
         }
+        // Native559A07 attempts an x200 marker, but the4A8 setter61B0D4
+        // rejects that absent column. These templates register only2/255/315.
+
     }
 
     if let Some(edit) = layout.name_edit {
@@ -1391,23 +1420,16 @@ pub(super) fn push_saved_seed_modal_text_draws(
         );
     }
 
-    let (action_key, action_fallback) = browser.mode.action_label();
-    for (key, fallback, rect) in [
-        (action_key, action_fallback, layout.action),
-        ("GUI:Back", "Back", layout.back),
-    ] {
-        push_text_draw(
-            out,
-            state,
-            &localized_label(state, key, fallback),
-            rect_to_text_rect(rect),
-            SHELL_LABEL_TEXT_RGB,
-            ShellAlign::H_CENTER | ShellAlign::V_CENTER,
-            SHELL_DROPDOWN_TEXT_DEPTH - 0.00012,
-        );
-    }
+}
+
+pub(super) fn push_saved_browser_prompt_text<I>(
+    out: &mut Vec<ShellTextDraw>,
+    state: &AppState,
+    layout: &SavedSeedLayout,
+    browser: &crate::ui::skirmish_shell::SavedSeedBrowserState<I>,
+) {
     if let Some(prompt) = browser.prompt.as_ref() {
-        let (dialog, body_rect, yes, no) = prompt.layout(state.render_width(), state.render_height());
+        let (dialog, body_rect, yes, no) = prompt.layout(layout.screen.w as u32, layout.screen.h as u32);
         // Chrome is drawn before text in this renderer. Exclude the prompt's
         // rectangle from underlying text so it cannot paint through its panel.
         let underlying = std::mem::take(out);

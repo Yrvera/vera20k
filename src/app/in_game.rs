@@ -35,6 +35,8 @@ impl App {
         state.match_state.match_presentation.in_game_menu =
             crate::ui::pause_menu::InGameMenuState::Closed;
         state.match_state.match_presentation.in_game_options_anchor = None;
+        state.match_state.match_presentation.pause_menu_interaction = Default::default();
+        state.match_state.match_presentation.saved_game_browser = None;
         // Persist the deterministic diagnostic log before leaving the scenario.
         // Runtime and presentation resources remain retained in the shell.
         crate::app::match_runtime::sim_tick::flush_replay_log(state);
@@ -168,7 +170,7 @@ impl App {
     /// while a dialog is up. Freezing does not skip ticks — the tick simply
     /// stops advancing and resumes from the same number, so the tick stream is
     /// unchanged and a replay of the match still reproduces.
-    fn enter_in_game_menu_state(
+    pub(crate) fn enter_in_game_menu_state(
         state: &mut AppState,
         next: crate::ui::pause_menu::InGameMenuState,
     ) {
@@ -194,6 +196,10 @@ impl App {
             }
         }
         state.match_state.match_presentation.in_game_menu = next;
+        state.match_state.match_presentation.pause_menu_interaction = Default::default();
+        if next == InGameMenuState::Menu {
+            state.match_state.match_presentation.pause_menu_has_saves = !state.persistence.repository.browser_entries().is_empty();
+        }
 
         // Leaving Options: drop the cached `0xBBB` hit-test anchor so the
         // overlay's own mouse handler cannot claim clicks aimed at the menu.
@@ -258,7 +264,7 @@ impl App {
             }
             // Options is the native `0xBBB` overlay, drawn earlier in the frame
             // and reconciled by `sync_in_game_menu_with_options_overlay`.
-            InGameMenuState::Options => ModalOutcome::Stay,
+            InGameMenuState::Options | InGameMenuState::SavedGame(_) => ModalOutcome::Stay,
         };
 
         match outcome {

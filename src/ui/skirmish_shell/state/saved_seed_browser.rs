@@ -1,4 +1,5 @@
-//! Saved-seed browser records, caret-only description edit, and pending actions.
+//! Shared saved-file browser records, caret-only description edit, and actions.
+//! File identities stay opaque; SED callers retain the NativeFileName default.
 //! Native driver558DD0 and list rebuild5596A0 keep filenames separate from text.
 
 use super::super::layout::{SavedSeedControl, SavedSeedMode};
@@ -8,38 +9,40 @@ use crate::util::native_file_name::NativeFileName;
 pub const SAVED_SEED_DESCRIPTION_MAX_UNITS: usize = 79;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SavedSeedOutcome {
-    Load(NativeFileName),
+pub enum SavedSeedOutcome<I = NativeFileName> {
+    Load(I),
     Save {
-        file_name: Option<NativeFileName>,
+        file_name: Option<I>,
         description: SeedDescription,
     },
-    Delete(NativeFileName),
+    Delete(I),
     Close,
 }
 
 #[derive(Debug, Clone)]
-pub enum SavedSeedPromptPurpose {
+pub enum SavedSeedPromptPurpose<I = NativeFileName> {
     EmptyDescription,
+    /// Acknowledge an operation failure without changing the selected row.
+    Error,
     Overwrite {
-        file_name: NativeFileName,
+        file_name: I,
         description: SeedDescription,
     },
     Delete {
-        file_name: NativeFileName,
+        file_name: I,
     },
     Saved,
 }
 
 #[derive(Debug, Clone)]
-pub struct SavedSeedPrompt {
-    pub purpose: SavedSeedPromptPurpose,
+pub struct SavedSeedPrompt<I = NativeFileName> {
+    pub purpose: SavedSeedPromptPurpose<I>,
     pub body: String,
     pub affirmative: String,
     pub negative: Option<String>,
 }
 
-impl SavedSeedPrompt {
+impl<I> SavedSeedPrompt<I> {
     /// Both shapes use the shared native message-box templates.
     pub fn layout(
         &self,
@@ -74,15 +77,18 @@ impl SavedSeedPrompt {
 
 /// A visible or not-yet-filtered native metadata row. None identifies New.
 #[derive(Debug, Clone)]
-pub struct SavedSeedBrowserRow {
-    pub file_name: Option<NativeFileName>,
+pub struct SavedSeedBrowserRow<I = NativeFileName> {
+    pub file_name: Option<I>,
     pub description: SeedDescription,
     pub last_write_time: u64,
+    /// Metadata admission belongs to the file format. SED uses nonempty
+    /// descriptions; a valid game header can admit an empty description.
+    pub visible: bool,
 }
 
-impl SavedSeedBrowserRow {
+impl<I> SavedSeedBrowserRow<I> {
     fn visible(&self) -> bool {
-        self.file_name.is_none() || !self.description.is_empty()
+        self.file_name.is_none() || self.visible
     }
 }
 
@@ -166,24 +172,54 @@ impl SavedSeedDescriptionEdit {
 }
 
 #[derive(Debug, Clone)]
-pub struct SavedSeedBrowserState {
+pub struct SavedSeedBrowserState<I = NativeFileName> {
     pub mode: SavedSeedMode,
-    pub entries: Vec<SavedSeedBrowserRow>,
+    pub entries: Vec<SavedSeedBrowserRow<I>>,
     pub selected: Option<usize>,
     pub top_index: usize,
     pub description_edit: SavedSeedDescriptionEdit,
     pub pressed_control: Option<SavedSeedControl>,
-    pub prompt: Option<SavedSeedPrompt>,
+    pub prompt: Option<SavedSeedPrompt<I>>,
     pub scroll_repeat_at: Option<std::time::Instant>,
     pub opened_at: std::time::Instant,
     pub last_list_press: Option<(std::time::Instant, i32, i32)>,
     current_description: SeedDescription,
 }
 
-impl SavedSeedBrowserState {
+impl SavedSeedBrowserState<NativeFileName> {
     pub fn open(
         mode: SavedSeedMode,
         entries: Vec<SavedSeed>,
+        current_description: SeedDescription,
+        empty_slot_label: SeedDescription,
+        new_slot_time: u64,
+        visible_rows: usize,
+    ) -> Self {
+        Self::open_rows(
+            mode,
+            entries
+                .into_iter()
+                .map(|entry| SavedSeedBrowserRow {
+                    file_name: Some(entry.file_name),
+                    visible: !entry.description.is_empty(),
+                    description: entry.description,
+                    last_write_time: entry.last_write_time,
+                })
+                .collect(),
+            current_description,
+            empty_slot_label,
+            new_slot_time,
+            visible_rows,
+        )
+    }
+}
+
+impl<I: Clone + PartialEq> SavedSeedBrowserState<I> {
+    /// Shared native list/editor mechanism. The caller supplies opaque file
+    /// identities and metadata; no filename encoding or filesystem I/O occurs.
+    pub fn open_rows(
+        mode: SavedSeedMode,
+        entries: Vec<SavedSeedBrowserRow<I>>,
         current_description: SeedDescription,
         empty_slot_label: SeedDescription,
         new_slot_time: u64,
@@ -195,13 +231,10 @@ impl SavedSeedBrowserState {
                 file_name: None,
                 description: empty_slot_label,
                 last_write_time: new_slot_time,
+                visible: true,
             });
         }
-        rows.extend(entries.into_iter().map(|entry| SavedSeedBrowserRow {
-            file_name: Some(entry.file_name),
-            description: entry.description,
-            last_write_time: entry.last_write_time,
-        }));
+        rows.extend(entries);
         let mut order: Vec<usize> = (0..rows.len()).collect();
         crate::util::retail_pointer_sort::sort_indices_by(&mut order, |left, right| {
             rows[right].last_write_time.cmp(&rows[left].last_write_time)
@@ -243,7 +276,7 @@ impl SavedSeedBrowserState {
         result
     }
 
-    pub fn selected_entry(&self) -> Option<&SavedSeedBrowserRow> {
+    pub fn selected_entry(&self) -> Option<&SavedSeedBrowserRow<I>> {
         self.selected.and_then(|index| self.entries.get(index))
     }
 
@@ -274,7 +307,7 @@ impl SavedSeedBrowserState {
         !self.entries.is_empty()
     }
 
-    pub fn action_outcome(&self) -> Option<SavedSeedOutcome> {
+    pub fn action_outcome(&self) -> Option<SavedSeedOutcome<I>> {
         let entry = self.selected_entry()?;
         match self.mode {
             SavedSeedMode::Save => Some(SavedSeedOutcome::Save {
@@ -286,7 +319,7 @@ impl SavedSeedBrowserState {
         }
     }
 
-    pub fn remove_entry(&mut self, file_name: &NativeFileName, visible_rows: usize) {
+    pub fn remove_entry(&mut self, file_name: &I, visible_rows: usize) {
         self.entries
             .retain(|row| row.file_name.as_ref() != Some(file_name));
         self.selected = (!self.entries.is_empty()).then_some(0);
@@ -403,6 +436,66 @@ mod tests {
         edit.backspace();
         edit.insert_text(":");
         assert_eq!(edit.units[78], u16::from(b':'));
+    }
+
+    #[test]
+    fn path_identity_survives_selection_save_and_delete_without_text_conversion() {
+        let path = std::path::PathBuf::from("saves/保存 — ridge.bin");
+        let mut state = SavedSeedBrowserState::open_rows(
+            SavedSeedMode::Save,
+            vec![SavedSeedBrowserRow {
+                file_name: Some(path.clone()),
+                description: "Saved description".into(),
+                last_write_time: 110,
+                visible: true,
+            }],
+            "Working".into(),
+            "[EMPTY SLOT]".into(),
+            100,
+            2,
+        );
+        assert_eq!(
+            state.selected_entry().unwrap().file_name.as_ref(),
+            Some(&path)
+        );
+        state
+            .description_edit
+            .set_text(&"Changed description".into());
+        assert_eq!(
+            state.action_outcome(),
+            Some(SavedSeedOutcome::Save {
+                file_name: Some(path.clone()),
+                description: "Changed description".into(),
+            })
+        );
+        state.remove_entry(&path, 2);
+        assert_eq!(state.entries.len(), 1);
+        assert_eq!(state.entries[0].file_name, None);
+        state.select(0);
+        assert_eq!(state.description_edit.description(), "Working");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn opaque_windows_path_units_do_not_round_trip_through_description_encoding() {
+        use std::os::windows::ffi::OsStringExt;
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(&[
+            0x73, 0x61, 0x76, 0x65, 0xd800, 0x2e, 0x62, 0x69, 0x6e,
+        ]));
+        let state = SavedSeedBrowserState::open_rows(
+            SavedSeedMode::Load,
+            vec![SavedSeedBrowserRow {
+                file_name: Some(path.clone()),
+                description: SeedDescription::default(),
+                last_write_time: 1,
+                visible: true,
+            }],
+            SeedDescription::default(),
+            "[EMPTY SLOT]".into(),
+            2,
+            2,
+        );
+        assert_eq!(state.action_outcome(), Some(SavedSeedOutcome::Load(path)));
     }
 
     #[test]

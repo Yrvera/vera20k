@@ -2,35 +2,60 @@
 
 use crate::app::AppState;
 
+use std::path::{Path, PathBuf};
+
+/// A save request can fail before disk I/O without changing the running match.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum SaveCommandError {
+    #[error("Enter a name for the saved game.")]
+    EmptyDescription,
+    #[error("There is no active game to save.")]
+    MissingSimulation,
+    #[error("The active game has no authoritative source-map digest.")]
+    MissingMapHash,
+    #[error("Could not save the game: {0}")]
+    Write(#[from] crate::app::persistence::SaveWriteError),
+}
+
 pub(crate) fn quicksave(state: &mut AppState) {
-    save(state, None);
+    log_save_result("Quicksave", save(state, None, None));
 }
 
 /// Save As retains the exact user description in the envelope; only the
 /// filename is sanitized. Quick saves use the map name as their description.
 pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
-    save(state, Some(raw_name));
+    log_save_result("Save As", save_game(state, raw_name, None));
 }
 
-fn save(state: &mut AppState, name: Option<&str>) {
-    let label = if name.is_some() {
-        "Save As"
-    } else {
-        "Quicksave"
-    };
+/// UI save/create/explicit overwrite request. A new timestamp-name collision
+/// is an error, never implicit permission to overwrite an existing save.
+/// This is the VERA snapshot format; it does not claim native SAV compatibility.
+pub(crate) fn save_game(
+    state: &mut AppState,
+    description: &str,
+    overwrite: Option<&Path>,
+) -> Result<PathBuf, SaveCommandError> {
+    save(state, Some(description), overwrite)
+}
+
+fn save(
+    state: &mut AppState,
+    name: Option<&str>,
+    overwrite: Option<&Path>,
+) -> Result<PathBuf, SaveCommandError> {
     let sanitized = name.map(sanitize_save_name);
     if sanitized.as_deref() == Some("") {
-        log::warn!("{label}: empty or whitespace-only name, ignored");
-        return;
+        return Err(SaveCommandError::EmptyDescription);
     }
-    let Some(runtime) = state.match_state.sim_runtime.as_ref() else {
-        log::warn!("{label}: no active simulation");
-        return;
-    };
-    let Some(map_hash) = state.match_state.loaded_map_hash else {
-        log::warn!("{label}: active world has no authoritative source-map digest");
-        return;
-    };
+    let runtime = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .ok_or(SaveCommandError::MissingSimulation)?;
+    let map_hash = state
+        .match_state
+        .loaded_map_hash
+        .ok_or(SaveCommandError::MissingMapHash)?;
     let sim = &runtime.simulation;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -44,13 +69,20 @@ fn save(state: &mut AppState, name: Option<&str>) {
         now,
     );
     let tick = sim.session.tick;
+    if let Some(path) = overwrite {
+        return Ok(state.persistence.overwrite_save(path, &bytes, tick)?);
+    }
     let filename = match sanitized {
         Some(name) => format!("save_{name}_tick{tick}_{now}.bin"),
         None => format!("save_tick{tick}_{now}.bin"),
     };
-    match state.persistence.write_save(&filename, &bytes, tick) {
-        Ok(path) => log::info!("{label}: saved {} bytes to {}", bytes.len(), path.display()),
-        Err(error) => match error.stage() {
+    Ok(state.persistence.write_save(&filename, &bytes, tick)?)
+}
+
+fn log_save_result(label: &str, result: Result<PathBuf, SaveCommandError>) {
+    match result {
+        Ok(path) => log::info!("{label}: saved game to {}", path.display()),
+        Err(SaveCommandError::Write(error)) => match error.stage() {
             crate::app::persistence::SaveWriteStage::CreateDirectory => {
                 log::error!("{label}: failed to create saves dir: {error}")
             }
@@ -58,6 +90,7 @@ fn save(state: &mut AppState, name: Option<&str>) {
                 log::error!("{label}: write failed: {error}")
             }
         },
+        Err(error) => log::warn!("{label}: {error}"),
     }
 }
 
@@ -158,20 +191,27 @@ pub(crate) fn quickload(state: &mut AppState) {
 
 /// Load a save file by path. Used by both quickload and the save/load panel.
 pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
-    let preparation = crate::app::persistence::PreparedLoad::from_repository(
+    if let Err(error) = try_load_save_file(state, path) {
+        log_prepared_load_error(path, &error);
+    }
+}
+
+/// Same-content load with a result for the owning shell. Every fallible read,
+/// schema/hash check and restoration step precedes the existing commit bundle.
+pub(crate) fn try_load_save_file(
+    state: &mut AppState,
+    path: &Path,
+) -> Result<(), crate::app::persistence::PreparedLoadError> {
+    let prepared = crate::app::persistence::PreparedLoad::from_repository(
         crate::app::persistence::LoadPreparationView::from_runtime(
             &state.persistence.repository,
             state.match_state.sim_runtime.as_ref(),
             state.match_state.loaded_map_hash,
         ),
         path,
-    );
-    match preparation {
-        Ok(prepared) => {
-            crate::app::match_runtime::restore::commit_prepared_load(state, path, prepared)
-        }
-        Err(error) => log_prepared_load_error(path, &error),
-    }
+    )?;
+    crate::app::match_runtime::restore::commit_prepared_load(state, path, prepared);
+    Ok(())
 }
 
 fn log_prepared_load_error(

@@ -69,7 +69,13 @@ pub(crate) fn handle_mouse_input(
             state.match_state.input.tactical_mouse.right_held = false;
             state.match_state.input.tactical_mouse.release();
         }
-        crate::app::input::in_game_options::in_game_options_mouse(state, button, pressed);
+        if matches!(state.match_state.match_presentation.in_game_menu, crate::ui::pause_menu::InGameMenuState::SavedGame(_)) {
+            if button == MouseButton::Left { crate::app::App::saved_game_mouse(state, pressed); }
+        } else if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Menu {
+            crate::app::input::pause_menu::mouse(state, button, pressed);
+        } else {
+            crate::app::input::in_game_options::in_game_options_mouse(state, button, pressed);
+        }
         return;
     }
     // The stock tactical handler has no middle-button case.
@@ -653,7 +659,13 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
     // cadence applies on close, KD-8) and swallow the move so it can't begin a
     // selection drag or camera pan behind the overlay.
     if state.match_state.paused {
-        crate::app::input::in_game_options::in_game_options_drag(state);
+        if matches!(state.match_state.match_presentation.in_game_menu, crate::ui::pause_menu::InGameMenuState::SavedGame(_)) {
+            crate::app::App::update_saved_game_browser(state, true);
+        } else if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Menu {
+            crate::app::input::pause_menu::cursor_moved(state);
+        } else {
+            crate::app::input::in_game_options::in_game_options_drag(state);
+        }
         return;
     }
     // Minimap: gamemd re-centers only on press edges and ignores held motion
