@@ -617,6 +617,7 @@ impl App {
                 skirmish_settings,
                 loading_session: None,
                 frontend_main_rng: crate::sim::rng::SimRng::new(u64::from(frontend_seed.value)),
+                legacy_crt_rng: crate::util::legacy_crt_rng::LegacyCrtRng::default(),
                 next_match_correlation: 1,
                 random_map_generation: None,
                 random_map_retention: RandomMapGenerationRetention::default(),

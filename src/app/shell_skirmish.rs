@@ -628,12 +628,12 @@ impl App {
                 .frontend
                 .offline_skirmish_runtime
                 .random_map_options_for_setup();
+            let available = Self::saved_seed_dir(state).is_some_and(|dir| crate::map::rmg::saved_seeds::saved_seeds_available(&dir));
             state.frontend.skirmish_shell_state.random_map_setup_modal =
                 Some(crate::ui::skirmish_shell::RandomMapSetupModalState::open(
                     options,
                     Some(previous),
-                    // Saved-seed browsing (0x6C2/0x6C3/0x6C4) is not implemented.
-                    false,
+                    available,
                 ));
         }
         if close_modal {
@@ -958,6 +958,10 @@ impl App {
     }
 
     pub(super) fn handle_skirmish_shell_mouse_move(state: &mut AppState) {
+        if state.frontend.skirmish_shell_state.saved_seed_browser.is_some() {
+            Self::update_saved_seed_browser_scroll(state, true);
+            return;
+        }
         if state.frontend.skirmish_shell_state.random_map_setup_modal.is_some() {
             Self::handle_random_map_setup_mouse_move(state);
             return;
@@ -990,6 +994,9 @@ impl App {
     }
 
     pub(super) fn handle_skirmish_shell_mouse_wheel(state: &mut AppState, lines: f32) -> bool {
+        if state.frontend.skirmish_shell_state.saved_seed_browser.is_some() {
+            return true;
+        }
         if state.frontend.skirmish_shell_state.validation_modal.is_some() {
             return true;
         }

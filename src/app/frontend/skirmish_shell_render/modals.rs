@@ -28,7 +28,7 @@ use super::{
     OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
     OWNERDRAW_SELECTED_RGB_FROM_DAT_00AC4604_PACKED_000000FF,
     SHELL_DROPDOWN_BG_RGB_PENDING_COMBODROPWIN_SOURCE_CAPTURE, SHELL_DROPDOWN_DEPTH,
-    SHELL_MODAL_BG_RGB, SHELL_MODAL_PANEL_RGB, SHELL_PARENT_BACKGROUND_DEPTH,
+    SHELL_MODAL_BG_RGB, SHELL_MODAL_PANEL_RGB, SHELL_PARENT_BACKGROUND_DEPTH, SHELL_LABEL_TEXT_RGB,
     SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE,
 };
 
@@ -529,44 +529,38 @@ pub(super) fn push_validation_modal_instances(
 pub(super) fn push_saved_seed_modal_instances(
     out: &mut Vec<SpriteInstance>,
     atlas: &SkirmishShellChromeAtlas,
+    font: &crate::render::bit_font::BitFont,
     layout: &SavedSeedLayout,
     browser: &SavedSeedBrowserState,
+    interior: BackdropInteriorPaint,
 ) {
-    if layout.screen.w == 800 {
-        if let Some(background) = atlas.choose_map_background_800_customize_battle {
-            push_entry_native(
-                out,
-                background,
-                layout.screen.x,
-                layout.screen.y,
-                SHELL_PARENT_BACKGROUND_DEPTH,
-            );
-        }
+    use crate::ui::skirmish_shell::seed_list::SeedListGeometry;
+    let geometry = SeedListGeometry::new(layout.list, browser.entries.len(), browser.top_index);
+    let depth = SHELL_DROPDOWN_DEPTH - 0.00010;
+    if interior.paints_solid_fill() {
+        push_solid_rect(out, atlas, geometry.content, SHELL_MODAL_PANEL_RGB, depth);
     }
-    push_solid_rect(
-        out,
-        atlas,
-        layout.dialog,
-        SHELL_MODAL_BG_RGB,
-        SHELL_DROPDOWN_DEPTH - 0.00008,
-    );
-    push_rect_outline(
-        out,
-        atlas,
-        layout.dialog,
-        OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
-        SHELL_DROPDOWN_DEPTH - 0.00009,
-    );
-    push_choose_map_listbox_instances(
-        out,
-        atlas,
-        layout.list,
-        browser.entries.len(),
-        browser.top_index,
-        browser.selected,
-        BackdropInteriorPaint::OpaqueFallback,
-        SHELL_DROPDOWN_DEPTH - 0.00010,
-    );
+    if let Some(selected) = browser.selected.filter(|i| *i >= browser.top_index && *i < browser.top_index + geometry.visible_rows) {
+        push_solid_rect(out, atlas, geometry.row(selected - browser.top_index),
+            OWNERDRAW_SELECTED_RGB_FROM_DAT_00AC4604_PACKED_000000FF, depth - 0.00001);
+    }
+    push_rect_outline(out, atlas, layout.list, OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68, depth - 0.00002);
+    if let (Some(bar), Some(thumb)) = (geometry.scrollbar, geometry.thumb) {
+        let chrome = atlas.control_chrome();
+        let inner = RectPx::new(bar.x + 1, bar.y + 1, 18, bar.h - 2);
+        push_solid_rect(out, atlas, inner, SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE, depth - 0.00002);
+        for (up, y, released, pressed) in [
+            (true, inner.y, chrome.scrollbar_arrow_up_released, chrome.scrollbar_arrow_up_pressed),
+            (false, inner.y + inner.h - 22, chrome.scrollbar_arrow_down_released, chrome.scrollbar_arrow_down_pressed),
+        ] {
+            let control = if up { SavedSeedControl::ScrollUp } else { SavedSeedControl::ScrollDown };
+            if let Some(entry) = super::controls::scrollbar_arrow_entry(released, pressed, browser.pressed_control == Some(control)) {
+                push_entry_native(out, entry, inner.x, y, depth - 0.00003);
+            }
+        }
+        super::controls::push_scrollbar_thumb(out, &chrome, thumb, depth - 0.00004);
+        push_rect_outline(out, atlas, bar, OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68, depth - 0.00005);
+    }
     // The name field is a plain sunken plate; Save is the only mode that has one.
     if let Some(edit) = layout.name_edit {
         push_solid_rect(
@@ -577,6 +571,18 @@ pub(super) fn push_saved_seed_modal_instances(
             SHELL_DROPDOWN_DEPTH - 0.00010,
         );
         push_ownerdraw_two_pixel_bevel_frame(out, atlas, edit, SHELL_DROPDOWN_DEPTH - 0.00011);
+        if browser.description_edit.focused && browser.opened_at.elapsed().as_millis() % 2000 < 1000 {
+            let field = crate::ui::skirmish_shell::player_name_edit_text_rect(edit);
+            let editor = &browser.description_edit;
+            let start = editor.first_visible_unit.min(editor.caret);
+            let prefix = String::from_utf16_lossy(&editor.units[start..editor.caret]);
+            let x = field.x + font.text_width(&prefix) as i32;
+            if x < field.x + field.w {
+                push_solid_rect(out, atlas, RectPx::new(x, field.y + 2, 2, (field.h - 4).max(1)),
+                    SHELL_LABEL_TEXT_RGB, SHELL_DROPDOWN_DEPTH - 0.00012);
+            }
+        }
+
     }
     for (rect, control) in [
         (layout.action, SavedSeedControl::Action),
@@ -592,6 +598,25 @@ pub(super) fn push_saved_seed_modal_instances(
             SHELL_DROPDOWN_DEPTH - 0.00012,
         );
     }
+    if let Some(prompt) = browser.prompt.as_ref() {
+        let (dialog, _, yes, no) = prompt.layout(layout.screen.w as u32, layout.screen.h as u32);
+        let mut buttons = vec![shell_paint::ModalButton {
+            rect: yes, pressed: browser.pressed_control == Some(SavedSeedControl::Action), enabled: true,
+        }];
+        if let Some(rect) = no {
+            buttons.push(shell_paint::ModalButton {
+                rect, pressed: browser.pressed_control == Some(SavedSeedControl::Back0x686), enabled: true,
+            });
+        }
+        out.extend(shell_paint::paint_modal_sprites(
+            atlas.validation_modal_background_pudlgbgn,
+            shell_paint::ModalButtonFrames {
+                up: atlas.modal_button_mnbttn_frame0, disabled: atlas.modal_button_mnbttn_frame1,
+                pressed: atlas.modal_button_mnbttn_frame2,
+            }, dialog, &buttons, VALIDATION_MODAL_SPRITE_DEPTHS,
+        ));
+    }
+
 }
 
 #[cfg(test)]

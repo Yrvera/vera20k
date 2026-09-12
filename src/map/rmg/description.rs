@@ -10,8 +10,48 @@ const ENCODED_BYTES: usize = 0x4fff;
 // sscanf destination. An initial failed conversion therefore emits 0xB573.
 const RANDOM_MAP_SECTION_CRC: u32 = 0x1597_b573;
 
-/// Decode the visible UTF-16 units. Preserve raw units for native comparisons;
-/// the existing options String converts unpaired surrogates lossily separately.
+/// Native wide text, including unpaired surrogate units created by NewEdit's
+/// one-unit Backspace/Delete. Display conversion must not rewrite stored data.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SeedDescription(Vec<u16>);
+
+impl SeedDescription {
+    pub fn from_units(units: impl IntoIterator<Item = u16>) -> Self {
+        Self(units.into_iter().take_while(|unit| *unit != 0).collect())
+    }
+
+    pub fn units(&self) -> &[u16] {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn display_text(&self) -> String {
+        String::from_utf16_lossy(&self.0)
+    }
+}
+
+impl From<&str> for SeedDescription {
+    fn from(text: &str) -> Self {
+        Self::from_units(text.encode_utf16())
+    }
+}
+
+impl From<String> for SeedDescription {
+    fn from(text: String) -> Self {
+        Self::from(text.as_str())
+    }
+}
+
+impl PartialEq<&str> for SeedDescription {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.iter().copied().eq(other.encode_utf16())
+    }
+}
+
+/// Decode the visible UTF-16 units without changing unpaired surrogates.
 fn decode_units(raw: Option<&str>, default: &[u16]) -> Vec<u16> {
     let bytes = raw.unwrap_or_default().as_bytes();
     let bytes = &bytes[..bytes.len().min(ENCODED_BYTES)];
@@ -84,11 +124,8 @@ fn scan_hex(token: &[u8]) -> Option<u32> {
     })
 }
 
-pub(super) fn read_description(raw: Option<&str>, default: &str) -> String {
-    String::from_utf16_lossy(&decode_units(
-        raw,
-        &default.encode_utf16().collect::<Vec<_>>(),
-    ))
+pub(super) fn read_description(raw: Option<&str>, default: &SeedDescription) -> SeedDescription {
+    SeedDescription(decode_units(raw, default.units()))
 }
 
 #[cfg(test)]
@@ -119,13 +156,10 @@ mod tests {
                 .collect();
             let raw = case["raw"].as_str();
             assert_eq!(decode_units(raw, &default), expected, "{}", case["name"]);
-            assert_eq!(
-                read_description(raw, "DEFAULT"),
-                String::from_utf16_lossy(&expected)
-            );
+            assert_eq!(read_description(raw, &"DEFAULT".into()).units(), expected);
             compared += 1;
         }
         assert_eq!(compared, 28);
-        assert_eq!(read_description(None, "Default map"), "Default map");
+        assert_eq!(read_description(None, &"Default map".into()), "Default map");
     }
 }

@@ -7,6 +7,12 @@ whole task. Correct existing behavior is retained; missing or unproven required
 behavior remains open. The 20,000-unit / 30-player scale exception in ENGINE.md
 remains explicit; retail-size comparisons do not certify the extended roster.
 
+Prioritize ordinary player journeys and frequently visible differences. The user's
+September 12 continuation explicitly asks not to spend too much time on edge
+cases. Record rare, unproven corners with their limits instead of expanding each
+increment into exhaustive low-frequency emulation; they must not conceal a broken
+ordinary route or justify a broader parity claim.
+
 ## Acceptance for every reachable route
 
 1. Establish active retail callers, resource/control identities, inputs, state

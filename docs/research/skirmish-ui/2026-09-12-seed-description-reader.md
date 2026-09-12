@@ -57,9 +57,10 @@ prior stack pattern and is excluded from the Rust comparison.
 The committed JSON and metadata sidecar cover 28 cold-cache fixtures (including
 missing section/key and the encoded-source cutoff) and one cached diagnostic.
 The production decoder test compares raw visible UTF-16
-units with those original outputs. The existing options `String` still
-converts unpaired surrogates lossily; that representation is an explicit
-browser/editing integration gap, not claimed raw-text persistence parity.
+units with those original outputs. At the reader-only increment, options still
+used a lossy `String` boundary. The subsequent [browser increment](2026-09-12-saved-seed-browser.md)
+replaces it with raw `SeedDescription` UTF-16 storage and a persistence regression;
+display conversion remains explicitly separate.
 The disk-load regression covers missing/blank, comma-only, failed tokens,
 NUL and prefixed values alongside numeric overlay and unchanged input state.
 It also exercises parse → constructor-default options → `apply_sed`, the
@@ -88,8 +89,9 @@ the source, fixture, caller coverage and Ghidra comment; no unresolved findings.
 
 ## Still required
 
-Saved browser metadata/filtering/sort, generated filenames and shared CRT
-history, Save/Delete confirmations and native write outcomes, caret-only
-UTF-16 editing, date/time columns, input ownership and native visual captures
-remain open. So do RMG Load's control synchronization/regeneration and the
-[whole-shell acceptance inventory](../../plans/2026-09-12-retail-shells-acceptance.md).
+The [saved-browser follow-up](2026-09-12-saved-seed-browser.md) owns metadata,
+sorting, generated filenames, transactions, editing, columns, input routing and
+ordinary Load regeneration. Its report records current validation and bounded
+limits. Native visual comparison and the
+[whole-shell acceptance inventory](../../plans/2026-09-12-retail-shells-acceptance.md)
+remain broader than this reader increment.

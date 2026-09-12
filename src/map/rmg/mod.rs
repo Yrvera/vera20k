@@ -26,6 +26,7 @@ pub mod x87;
 
 pub use grid::{DIRECTION_OFFSETS, DiamondScan, GridCell, RmgGrid};
 pub use options::RmgOptions;
+pub use description::SeedDescription;
 pub use rng::RmgRng;
 pub use scratch::RmgScratch;
 pub use settings::RmgSettings;
