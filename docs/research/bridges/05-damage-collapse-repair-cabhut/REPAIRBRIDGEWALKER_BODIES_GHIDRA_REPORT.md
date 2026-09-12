@@ -115,10 +115,14 @@ query ends at `0x004B4AF4`, as executed by this comparison.
 
 Independent current-body reads also correct the required head producers:
 
-- Ordinary Drive copies current Foot raw Z at `0x004B32BB..0x004B32EC` and
-  stores it in the accepted head at `0x004B46A7/0x004B46D7`. Ship equivalents
-  are `0x006A290B..0x006A293B` and `0x006A3CD6/0x006A3D06`. These successful
-  producers retain current raw Z, rather than resampling the endpoint terrain.
+- Ordinary Drive forms the next coordinate from current Foot **XYZ** at
+  `0x004B32AF..0x004B32EC`: add the direction's lepton delta to X/Y and retain Z.
+  The accepted head stores are `0x004B46A7/0x004B46D7`. Ship equivalents are
+  `0x006A28FF..0x006A293B` and `0x006A3CD6/0x006A3D06`. These producers preserve
+  the current subcell offset as well as height; constructing a destination cell
+  center with current Z would still be wrong. A second-node addition preserves
+  that XYZ origin. A chained successor instead starts from the **previous
+  retained head**, including its old Z, as detailed below.
 - Walk `0x0075C240` stores full XYZ returned by subcell selection `0x00481180`
   at `0x0075C546..0x0075C562`. Its deck request needs the target structural
   flag and current Foot Z **strictly greater than** requested ground Z plus
@@ -146,6 +150,42 @@ It consumes raw retained/current coordinates and independent native selectors,
 without deriving them from a path or terrain. Exact producer state,
 save/hash/piggyback handling and live repair/marker consumers remain required
 integration work; this prepared projection does not establish gameplay delivery.
+
+### Original head-coordinate expression comparison
+
+`tools/spatial_oracle/locomotor_head_coordinates.{py,json,meta.json}` records
+288 original-execution cases: Drive and Ship, fresh/second-node/chain expressions,
+six supplied XYZ origins and all eight native directions. Each case first runs
+the complete original direction initializer `0x0049F3A0..0x0049F413`; the BSS table
+at `0x0089F6D8` is zero in the file and must not be read as initialized data.
+Its output matches the existing `src/util/direction_tables/lepton.rs` table:
+cardinal/diagonal components are exactly 0 or +/-256 leptons. The original startup
+pointer at `0x00812BB0` lies in constructor span `[0x00812000,0x00815DA4)` consumed
+by `0x007CBED3`, called through `0x007CBDAF` before WinMain. The corpus executes
+the initializer directly, not that complete startup traversal.
+
+Fresh blocks are Drive `[0x004B32AF,0x004B32F0)` and Ship
+`[0x006A28FF,0x006A293F)`, including the original XYZ copy constructor
+`0x0041C230`. Second-node additions are `[0x004B40B0,0x004B40D9)` and
+`[0x006A36E0,0x006A3705)`, with the caller's post-PUSH stack layout supplied.
+Chain expressions `[0x004B1BC4,0x004B1BF4)` and `[0x006A120A,0x006A123A)` read
+the previous stored head; they do not substitute the current Foot coordinates.
+The accepted Drive chain separately stores the new TurnTrack index, clears
+reversed and seeds cursor to the new RawTrack entry minus one at
+`0x004B1C78..0x004B1CA4`. These selector stores are body evidence, outside this
+coordinate-expression corpus.
+
+The cases retain noncentered XY, signed height and prior-head height even when
+the supplied Foot has moved or changed height. They include signed overflow and
+NullCoord scalar cases without claiming stock-map reachability. No movement
+admission, intermediate callbacks, final head stores, complete chain scheduling,
+ForceTrack caller or Rust production delivery is executed by this corpus. The
+Rust migration must update head state and the actual curve anchor together,
+covering command installation, deferred repath, fresh selection after a terminal,
+accepted chain, refusal/terminal clears, forced installation and save/hash.
+Destination setters and entity-target refresh must cease overwriting the head.
+Their complete native owner-guard lifecycle remains a separately open behavior;
+the head/query migration does not establish that lifecycle.
 
 ## 0. TL;DR
 
