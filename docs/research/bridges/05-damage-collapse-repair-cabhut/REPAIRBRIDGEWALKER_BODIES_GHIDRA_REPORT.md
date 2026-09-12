@@ -81,6 +81,67 @@ Current native receiver review establishes these host prerequisites:
   path-marker snapshot drops slope/stored endpoint Z. Those inputs must be
   corrected before claiming live repair-occupant delivery.
 
+### Original locomotor query comparison and retained-head producers
+
+`tools/spatial_oracle/locomotor_at_coord.{py,json,meta.json}` now preserves
+336 supplied locomotor states and 4,164 recorded coordinate probes, plus eight
+queries of the active Fly/Jumpjet/Rocket/Teleport false leaf. Both Head_To and
+Is_At_Coord execute original instructions through verified original interface
+slots. Drive/Ship also execute original transforms `0x004B4780`/`0x006A3DB0`
+and retain the original TurnTrack/RawTrack/point tables. The cases cover all
+72 Drive and 64 ordinary Ship descriptors, handoff/reverse gates, separate head
+and current heights, complete/partial NullCoord, signed XY truncation, low-word
+cell aliases, inclusive height tolerance and wrapping signed-Z boundaries.
+
+All four Head_To owners return retained XYZ unless the complete triple equals
+NullCoord; only then do they return current Foot XYZ. Drive/Ship additionally
+reject a returned NullCoord. Walk/Hover do not. XY cell comparisons use signed
+division by 256 truncated toward zero followed by 16-bit comparison. Height
+uses wrapping subtraction and x86 signed absolute value, with inclusive
+`<= height_step`; the INT_MIN absolute-value overflow remains negative.
+
+Drive/Ship first consider a track candidate only when the reversed byte is zero,
+the TurnTrack index is not -1, its **normal** raw-track byte is nonzero, its
+handoff index is nonnegative, and the signed cursor is before that index. The
+normal-track handoff point is transformed around the **stored** head XY, even
+when Head_To itself fell back from NullCoord to current Foot XYZ. This candidate
+uses current Foot Z; the ordinary fallback uses the returned Head_To Z. Using
+the selected short raw track or one shared height for both candidates is wrong.
+Drive tables are `0x007E7B28`/`0x007E7A28`; Ship tables are
+`0x007F2A40`/`0x007F2960`. The TurnTrack stride is 12 and RawTrack stride is 16.
+Hover interface `0x007EACFC` binds Head_To at +0x18 and Is_At_Coord at +0xA0.
+Drive's Ghidra decompile has a truncated/overlapping boundary; the original
+query ends at `0x004B4AF4`, as executed by this comparison.
+
+Independent current-body reads also correct the required head producers:
+
+- Ordinary Drive copies current Foot raw Z at `0x004B32BB..0x004B32EC` and
+  stores it in the accepted head at `0x004B46A7/0x004B46D7`. Ship equivalents
+  are `0x006A290B..0x006A293B` and `0x006A3CD6/0x006A3D06`. These successful
+  producers retain current raw Z, rather than resampling the endpoint terrain.
+- Walk `0x0075C240` stores full XYZ returned by subcell selection `0x00481180`
+  at `0x0075C546..0x0075C562`. Its deck request needs the target structural
+  flag and current Foot Z **strictly greater than** requested ground Z plus
+  three steps (`0x0075C4CD..0x0075C51A`). The returned coordinate includes
+  ground slope at the final selected subcell and its requested deck plane.
+- Hover `0x0051533C..0x005153D8` obtains the new cell center and samples ground
+  height through `0x00578080`. It adds the bridge offset only when current Foot
+  Z is **greater than or equal to** that ground Z plus three steps. OnBridge
+  and the accepted path layer do not select this branch.
+- The existing Rust endpoint comment citing `0x004B2196` as a bridge-offset
+  write is incorrect: it loads the height step for an absolute destination-Z
+  comparison. Drive destination setter `0x004AFD40` writes destination XYZ;
+  it does not simultaneously replace the separate retained head.
+
+This corpus supplies initialized NullCoord=(0,0,0) and per-family height step104;
+it does not execute startup, movement producers, object admission or repair
+lifecycle. Scalar boundary states are branch witnesses, not stock-map reachability
+claims. Mech's separate query `0x005B1AA0` is dormant TS behavior (its retail
+RULESMD locomotor GUID appears only in comments) and is excluded, as are dormant
+Tunnel/DropPod behaviors. This is native query evidence only: the shared Rust
+query, exact producer state, save/hash/piggyback handling and live repair/marker
+consumers remain required integration work.
+
 ## 0. TL;DR
 
 The four `RepairBridgeWalker_{NS,EW}_{Low,High}` functions are the per-cell
