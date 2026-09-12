@@ -1,6 +1,45 @@
 // Included inside resolved_terrain::tests to share its real TMP/loader fixture.
 // Native outputs: tools/spatial_oracle/terrain_recalc, original47D2B0 and callees.
 
+/// Real resident TMP input matching the original bridge-constructor fixture.
+/// Kept with the loader fixture so sim tests don't duplicate asset construction.
+pub(crate) fn bridge_constructor_terrain() -> ResolvedTerrainGrid {
+    let theater = synthetic_theater_from_ini(
+        b"[TileSet0000]\nTilesInSet=1\nFileName=source\nSetName=Plain\n",
+    );
+    let tmp = gsi_04_02_last_tiles_tmp_bytes(11, [0; 3], [0; 3]);
+    let (_directory, assets) = gsi_04_02_asset_manager_with_loose_tmps(&[("source01.tem", &tmp)]);
+    let rules = TerrainRules::from_ini(&IniFile::from_str(
+        "[Clear]\nWheel=100%\n[Road]\nWheel=100%\n",
+    ));
+    let cells = (0..33)
+        .flat_map(|y| {
+            (0..33).map(move |x| {
+                let mut cell = make_test_cell(x, y);
+                cell.final_tile_index = 0;
+                cell.final_sub_tile = 0;
+                cell.level = 6;
+                cell
+            })
+        })
+        .collect();
+    let mut grid = ResolvedTerrainGrid::from_cells(33, 33, cells);
+    grid.native_allocated = Some(
+        (0..33)
+            .flat_map(|y| (0..33).map(move |x| (12..=20).contains(&x) && (12..=20).contains(&y)))
+            .collect(),
+    );
+    grid.bridge_recalc_catalog = Some(Arc::new(BridgeRecalcCatalog::for_tiles(
+        &theater,
+        &assets,
+        &rules,
+        false,
+        0,
+        [0],
+    )));
+    grid
+}
+
 #[test]
 fn recalc_pristine_metadata_and_level_override_match_original_instructions() {
     let corpus: serde_json::Value = serde_json::from_str(include_str!(

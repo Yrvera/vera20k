@@ -823,7 +823,7 @@ pub struct Simulation {
     /// can consume the already-assigned IDs without recounting filtered facts.
     #[serde(skip, default)]
     pub(crate) native_map_tubes: crate::map::tubes::NativeMapTubesState,
-    /// Fresh-map-only OverlayClass registry/deferred-delete owner. These
+    /// Shared authored/runtime OverlayClass registry/deferred-delete owner. These
     /// ephemeral objects are neither gameplay objects nor snapshot/hash state.
     #[serde(skip, default)]
     pub(crate) load_objects: LoadObjectLifecycle,
@@ -5685,6 +5685,14 @@ impl Simulation {
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::PendingDelete);
         self.process_pending_delete();
+
+        // Original55DE9F calls725C70 at this admitted late-frame boundary.
+        // Stock bridge Overlay objects publish only Cell state; their isolated
+        // destructor has no gameplay-object callback effects and cannot allocate
+        // IDs. Drain the shared authored/runtime owner after gameplay objects.
+        self.load_objects
+            .drain_deferred()
+            .expect("live Overlay deferred queue must contain its owned objects");
 
         // Debug-mode safety net: rebuild occupancy after the drain so dead
         // structures are not reconstructed into the comparison.

@@ -20,6 +20,8 @@ pub mod zone_class {
 }
 
 use crate::assets::tmp_file::{TmpFile, TmpTile};
+#[cfg(test)]
+pub(crate) use tests::bridge_constructor_terrain;
 use crate::map::authored_overlay::{FinalizedOverlayCell, NO_OVERLAY_IDENTITY};
 use crate::map::bridge_facts::{
     BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL,
@@ -1910,6 +1912,12 @@ impl ResolvedTerrainGrid {
             NativeCellIdentity::Real(index) => {
                 let previous = self.cells[index].bridge_facts.raw_flags;
                 self.cells[index].bridge_facts.raw_flags = flags;
+                // Runtime constructor47E040/47E470 writes the orientation in
+                // bit0x800. Keep the derived direction used by span rebuilding
+                // current even when this cell has no authored stamp receipt.
+                if flags & (BRIDGE_FLAG_ANCHOR_SELF | BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_DESTROYED_OR_RAMP) != 0 {
+                    self.cells[index].bridge_facts.direction = Some(if flags & 0x800 != 0 { 0 } else { 6 });
+                }
                 // 47E040 removes the deck from stamped non-anchor cells too;
                 // those cells need not carry an overlay/bridge_layer. Preserve
                 // unrelated ramp projections when F3/extra only change markers.

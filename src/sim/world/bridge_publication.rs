@@ -2,9 +2,9 @@
 //! through synchronous fallout, including recursive DeathWeapon damage.
 //!
 //! Rim576770/576200 runs against live scalar cells and uses this same publisher.
-//! Literal tile replacement and complete56EB80/47D2B0 remain open: stock body
-//! sequences in bridge_rim_body prove the tile-untouched production slice only.
-//! In particular terminal middle-tile collapse must eventually publish M+4.
+//! Literal middle-tile replacement uses resident56EB80/47D2B0 inputs. Repair
+//! constructors share this publisher; full engineer/zone/render delivery is
+//! separately required before the bridge mechanism can close.
 
 use super::*;
 use crate::map::cell_index::NativeCellIdentity as Cell;
@@ -17,6 +17,9 @@ mod rim_publication;
 
 #[path = "bridge_tile_publication.rs"]
 mod tile_publication;
+
+#[path = "bridge_constructor_publication.rs"]
+mod constructor_publication;
 
 #[path = "bridge_pavement_publication.rs"]
 mod pavement_publication;
@@ -202,7 +205,7 @@ impl BridgePublicationHost for LivePublication<'_> {
                 .as_mut()
                 .and_then(|s| s.cell_mut(x, y))
             {
-                if state != 0 && state <= 17 {
+                if state <= 17 {
                     runtime.axis = Some(if state <= 8 { Axis::NS } else { Axis::EW });
                 }
                 runtime.damage_state = if state == 0 && flags & BRIDGE_FLAG_STRUCTURAL == 0 {

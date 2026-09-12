@@ -1926,7 +1926,9 @@ fn bridge_fact_axis(cell: &crate::map::resolved_terrain::ResolvedTerrainCell) ->
 fn initial_bridge_damage_state(
     cell: &crate::map::resolved_terrain::ResolvedTerrainCell,
 ) -> DamageState {
-    if cell.bridge_facts.family != crate::map::bridge_facts::BridgeStampFamily::None {
+    if cell.bridge_facts.has_structural_bridge()
+        || cell.bridge_facts.family != crate::map::bridge_facts::BridgeStampFamily::None
+    {
         DamageState::from_state_byte(cell.bridge_facts.state_byte)
             .unwrap_or(DamageState::Healthy { variant: 0 })
     } else {

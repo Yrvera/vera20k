@@ -11,6 +11,7 @@
   "assumptions": [
     "Raw IDs24/25/237/238, frame-1; Terrain reject, slope5 reject, success and existing Overrides paths only",
     "One constructor per fresh registry/queue fixture; direct drain, not MainTick admission or mixed-queue ordering",
+    "Twenty extra success-type requests cover initialized EmptyCell, negative centers, a fixed-stride real alias and signed16 extrema",
     "Supplied allocated object memory, empty registry/queue capacity16, Scenario cursor1000 and active game",
     "Sparse real9x9 cells centered16,16; source terrain type construction excluded",
     "Terrain list record uses original TerrainClass RTTI71D300",
@@ -23,11 +24,12 @@
     "7C8B3D external free and Windows IsBadReadPtr transport only during the post-constructor drain; no constructor call is substituted"
   ],
   "entry_points": {
+    "empty_initializer": "0x005FC310",
     "constructor": "0x005FC380",
     "mark": "0x005FC570",
     "drain": "0x00725C70",
     "overlay_destructor": "0x005FDF70",
     "base_destructor": "0x005F3B80"
   },
-  "payload_sha256": "7ad8b8e704c5cdd2540b2f511b4af42fe208404a72d8d332fa6f3a5e9adb6f37"
+  "payload_sha256": "081e9ef61f9de40bb2f4b1a2db8dd9ffe83846f86d1cf771143c2dd496c6aede"
 }

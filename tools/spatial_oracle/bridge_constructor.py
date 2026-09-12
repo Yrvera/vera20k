@@ -4,7 +4,11 @@ Supplied sparse cells, registered types and preallocated registry capacity are
 explicit fixture inputs. Original instructions/calls are never patched.
 """
 from pathlib import Path
+import hashlib
+import json
 import struct
+
+from capstone import Cs, CS_ARCH_X86, CS_MODE_32
 
 from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE
 from unicorn.x86_const import UC_X86_REG_EAX, UC_X86_REG_ECX, UC_X86_REG_ESP, UC_X86_REG_EIP
@@ -22,8 +26,8 @@ MAP, DUMMY = 0x87F7E8, 0xABDC50
 
 
 class OriginalBridgeConstructor:
-    def __init__(self, kind, overlay_id):
-        self.kind, self.overlay_id = kind, overlay_id
+    def __init__(self, kind, overlay_id, requested=(16, 16)):
+        self.kind, self.overlay_id, self.requested = kind, overlay_id, requested
         self.uc = u = Uc(UC_ARCH_X86, UC_MODE_32)
         load_image(u)
         u.mem_map(D, 0x200000)
@@ -58,7 +62,9 @@ class OriginalBridgeConstructor:
         u.mem_write(self.scenario + 0x214, dwords(1000))
         u.mem_write(0xA8E9A0, b'\x01')
         u.mem_write(0xA8E7AC, dwords(0))
-        u.mem_write(self.coord, packed(16, 16))
+        self.call(0x5FC310)  # Original startup EmptyCell initialization.
+        assert bytes(u.mem_read(0xAC1528, 4)) == bytes(4)
+        u.mem_write(self.coord, packed(*requested))
         u.mem_write(typ, dwords(0x7EF600))
         u.mem_write(typ + 0x294, dwords(overlay_id))
         self.required = [0x5F3900, 0x410230, 0x68BCB0, 0x47C550]
@@ -73,6 +79,8 @@ class OriginalBridgeConstructor:
         else:
             assert kind in ('success', 'overrides')
             self.prepare_success(kind)
+        if requested == (0, 0):
+            self.required = [0x5F3900, 0x410230, 0x68BCB0]
 
     def call(self, entry, receiver=0, args=(), required=()):
         u = self.uc
@@ -124,7 +132,7 @@ class OriginalBridgeConstructor:
         assert returned == self.obj
         u = self.uc
         b = u.mem_read(self.obj, 0xB0)
-        result = dict(kind=self.kind, overlay_id=self.overlay_id,
+        result = dict(kind=self.kind, overlay_id=self.overlay_id, requested=self.requested,
                     native_id=struct.unpack_from('<I', b, 0x10)[0],
                     cursor=self.read_u32(self.scenario + 0x214),
                     alive=b[0x90], limbo=b[0x81], on_map=b[0x74], redraw=b[0x80],
@@ -144,6 +152,13 @@ class OriginalBridgeConstructor:
                                      anchor=next((c for c, p in self.ptrs.items() if p == anchor), None)))
             return rows
         result['cells'] = before_cells = cells()
+        def dummy():
+            return dict(coord=struct.unpack('<2h', u.mem_read(DUMMY + 0x24, 4)),
+                        flags=self.read_u32(DUMMY + 0x140),
+                        overlay=struct.unpack('<i', u.mem_read(DUMMY + 0x44, 4))[0],
+                        state=bytes(u.mem_read(DUMMY + 0x11E, 1))[0],
+                        anchor_is_self=self.read_u32(DUMMY + 0x2C) == DUMMY)
+        result['dummy'] = before_dummy = dummy()
         frees = []
         # Original typeid uses Windows SEH and IsBadReadPtr during finalization.
         # Supply those OS facilities after the complete constructor has returned.
@@ -172,15 +187,42 @@ class OriginalBridgeConstructor:
         self.call(0x725C70, required=(0x5FDF70, 0x5F3B80) if result['queue_count'] else ())
         result['after_drain'] = dict(registry_counts=[self.read_u32(r + 16) for r in REGISTRIES],
                                     queue_count=self.read_u32(0xB0F6A8), frees=frees,
-                                    cursor=self.read_u32(self.scenario + 0x214), cells=cells())
+                                    cursor=self.read_u32(self.scenario + 0x214), cells=cells(), dummy=dummy())
         assert result['after_drain']['cells'] == before_cells
+        assert result['after_drain']['dummy'] == before_dummy
         return result
 
 
+def setter_equivalence():
+    probe = OriginalBridgeConstructor('success', 24)
+    decoder = Cs(CS_ARCH_X86, CS_MODE_32)
+    functions = []
+    for base in (0x47E040, 0x47E470):
+        rows = []
+        for insn in decoder.disasm(bytes(probe.uc.mem_read(base, 0x430)), base):
+            operand = insn.op_str
+            if insn.mnemonic.startswith('j') and operand.startswith('0x'):
+                target = int(operand, 16)
+                assert base <= target < base + 0x420, (insn.address, target)
+                operand = str(target - base)
+            rows.append((insn.address - base, insn.mnemonic, operand))
+            if insn.mnemonic == 'ret':
+                break
+        assert len(rows) == 301 and rows[-1] == (0x41f, 'ret', '8')
+        functions.append(rows)
+    assert functions[0] == functions[1]
+    return dict(instructions=301, functions=['0x0047E040', '0x0047E470'],
+                normalized_sha256=hashlib.sha256(json.dumps(functions[0]).encode()).hexdigest(),
+                normalization='Only internal jump targets become relative; external call operands remain absolute')
+
+
 def cases():
-    return {'cases': [OriginalBridgeConstructor(kind, overlay).run()
+    return {'setter_equivalence': setter_equivalence(), 'cases': [OriginalBridgeConstructor(kind, overlay).run()
                      for kind in ('terrain', 'slope', 'success', 'overrides')
-                     for overlay in (24, 25, 237, 238)]}
+                     for overlay in (24, 25, 237, 238)] +
+            [OriginalBridgeConstructor('success', overlay, requested).run()
+             for requested in ((0, 0), (-1, 16), (-496, 17), (-32768, 16), (32767, 16))
+             for overlay in (24, 25, 237, 238)]}
 
 
 if __name__ == '__main__':
@@ -189,6 +231,7 @@ if __name__ == '__main__':
         assumptions=[
             'Raw IDs24/25/237/238, frame-1; Terrain reject, slope5 reject, success and existing Overrides paths only',
             'One constructor per fresh registry/queue fixture; direct drain, not MainTick admission or mixed-queue ordering',
+            'Twenty extra success-type requests cover initialized EmptyCell, negative centers, a fixed-stride real alias and signed16 extrema',
             'Supplied allocated object memory, empty registry/queue capacity16, Scenario cursor1000 and active game',
             'Sparse real9x9 cells centered16,16; source terrain type construction excluded',
             'Terrain list record uses original TerrainClass RTTI71D300',
@@ -197,5 +240,5 @@ if __name__ == '__main__':
             'Original startup vector vtables supplied with empty preallocated storage; other pointer-expiration recipients absent',
             'Empty Windows SEH chain supplied for original typeid during the post-constructor drain',
         ], substitutions=['7C8B3D external free and Windows IsBadReadPtr transport only during the post-constructor drain; no constructor call is substituted'],
-        entry_points={'constructor': 0x5FC380, 'mark': 0x5FC570, 'drain': 0x725C70,
+        entry_points={'empty_initializer': 0x5FC310, 'constructor': 0x5FC380, 'mark': 0x5FC570, 'drain': 0x725C70,
                       'overlay_destructor': 0x5FDF70, 'base_destructor': 0x5F3B80}))

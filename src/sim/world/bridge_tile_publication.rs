@@ -7,6 +7,11 @@ use super::*;
 use crate::map::iso_tile_flood::{self, IsoTileFloodHost};
 
 impl LivePublication<'_> {
+    /// Shared47D2B0 entry for tile replacement and OverlayClass's common tail.
+    pub(super) fn recalc_cell(&mut self, cell: Cell, level: i32) -> Result<(), String> {
+        LiveTileFlood { publication: self }.recalc(cell, level)
+    }
+
     fn tile(&self, cell: Cell) -> i32 {
         match cell {
             Cell::Real(index) => self.terrain().cells()[index].final_tile_index,

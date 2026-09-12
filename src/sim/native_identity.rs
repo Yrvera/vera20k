@@ -31,6 +31,15 @@ pub(crate) struct NativeUniqueIdCursor {
 }
 
 impl NativeUniqueIdCursor {
+    #[cfg(test)]
+    pub(crate) fn test_at_current_value(value: u32) -> Self {
+        Self {
+            value,
+            saved_after_fresh_prefix: value.wrapping_sub(MAP_READ_NATIVE_ID_RESERVATION),
+            phase: NativeFreshIdPhase::MapReadReserved,
+        }
+    }
+
     fn from_saved_prefix(saved_after_fresh_prefix: u32) -> Self {
         Self {
             value: saved_after_fresh_prefix,
