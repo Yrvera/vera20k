@@ -35,6 +35,27 @@ pub(crate) fn position_world_coord(position: &Position) -> DriveCoord {
     }
 }
 
+/// Object virtual+48: Unit/Infantry/Aircraft5F65A0 copy retained XYZ;
+/// Building447AC0 adds the foundation-center XY offset and keeps raw Z.
+/// This is not Building+4C's optional dock/bunker approach-coordinate owner.
+pub(crate) fn object_center_coord(
+    entity: &crate::sim::game_entity::GameEntity,
+    object_type: &crate::rules::object_type::ObjectType,
+) -> DriveCoord {
+    let mut coord = position_world_coord(&entity.position);
+    if entity.category == crate::map::entities::EntityCategory::Structure {
+        let (width, height) =
+            crate::rules::foundation::foundation_dimensions(&object_type.foundation);
+        coord.x = coord
+            .x
+            .wrapping_add(i32::from(width).wrapping_mul(128).wrapping_sub(128));
+        coord.y = coord
+            .y
+            .wrapping_add(i32::from(height).wrapping_mul(128).wrapping_sub(128));
+    }
+    coord
+}
+
 /// Sample the live surface at full world XY. A PathGrid supplies the same
 /// level/ramp fields only for callers without resolved terrain. Missing
 /// headless terrain leaves the caller's existing coordinate authoritative.

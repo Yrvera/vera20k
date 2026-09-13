@@ -29,9 +29,9 @@ mod lifecycle;
 mod load_object_lifecycle;
 mod logic_vector;
 mod navigation;
-mod track_cell_recalc;
 mod object_turn;
 mod shroud_refresh;
+mod track_cell_recalc;
 #[cfg(test)]
 use object_turn::shp_vehicle_counter_admitted;
 mod projectile_collision;
@@ -61,6 +61,8 @@ mod house_ai_activation_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
+pub(crate) use lifecycle_tests::common_raw_terrain_cell as common_raw_test_terrain_cell;
+#[cfg(test)]
 mod team_script_vm_tests;
 
 pub(crate) use lifecycle::{
@@ -74,7 +76,6 @@ pub(crate) use logic_vector::LogicVector;
 pub use substrate::EnterOrderCounter;
 pub(crate) use substrate::ObjectSubstrate;
 pub(crate) use world_spawn::{GeneratedTechnoInitError, GeneratedTechnoInitTable};
-
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -133,8 +134,8 @@ use crate::sim::pathfinding::zone_map::ZoneGrid;
 use crate::sim::power_system::{self, PowerState};
 use crate::sim::production::{self, ProductionState};
 use crate::sim::projectile::{
-    Projectile, ProjectileBridgeCrossing, ProjectileCollisionResponse,
-    ProjectileCoord, projectile_bridge_crossing,
+    Projectile, ProjectileBridgeCrossing, ProjectileCollisionResponse, ProjectileCoord,
+    projectile_bridge_crossing,
 };
 use crate::sim::radar::{RadarEventQueue, RadarEventType};
 use crate::sim::rng::{SimRng, SimRngLogicalState, SimRngLogicalView};
@@ -620,8 +621,8 @@ pub enum SimSoundEvent {
     C4Planted { rx: u16, ry: u16 },
     /// An engineer entered a `BridgeRepairHut` and triggered bridge repair.
     /// Played at the BUILDING's cell, NOT the engineer's. `owner` is the
-    /// engineer's house — app layer plays `EVA_BridgeRepaired` only if
-    /// `owner` is the local human player. App layer plays the spatial
+    /// engineer's house. Native House50B6F0 and radar dedup determine the
+    /// already-admitted `eva_allowed` result. App layer plays the spatial
     /// `[BridgeRepaired]` sound for everyone in range, gated on
     /// `rules.bridge_rules.repair_sound.is_some()`. `eva_allowed` is the
     /// result of gamemd's non-drawing radar event creation/dedup gate.
@@ -651,8 +652,7 @@ impl SimSoundEvent {
             sub_x: position.sub_x,
             sub_y: position.sub_y,
             world_z_leptons: position.exact_z_leptons.unwrap_or_else(|| {
-                i32::from(position.z)
-                    .wrapping_mul(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS)
+                i32::from(position.z).wrapping_mul(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS)
             }),
         }
     }
@@ -875,8 +875,7 @@ pub struct Simulation {
     /// BulletClass AI results produced in mixed Logic order and consumed at
     /// the existing combat receiver seam later in this master frame.
     #[serde(skip)]
-    pub(crate) pending_projectile_detonations:
-        Vec<crate::sim::projectile::ProjectileDetonation>,
+    pub(crate) pending_projectile_detonations: Vec<crate::sim::projectile::ProjectileDetonation>,
     /// WaveClass AI damage requests produced in mixed Logic order and consumed
     /// at the established wave-damage receiver seam later in this frame.
     #[serde(skip)]
@@ -1038,6 +1037,11 @@ pub struct Simulation {
     /// Radar event queue for minimap pings and Spacebar cycling.
     #[serde(skip)]
     pub radar_events: RadarEventQueue,
+    /// Viewer identity for native House50B6F0 notification admission only.
+    /// Bound from the app's pinned launch owner before each frame, including
+    /// after restore. It never owns gameplay, serialization, or RNG inputs.
+    #[serde(skip)]
+    notification_local_owner: Option<InternedId>,
     /// Runtime terrain cells whose radar/minimap terrain pixel needs refresh.
     /// Presentation reads this generation and acknowledges the exact batch
     /// only after its radar update completes. The list is de-duplicated within
@@ -1290,11 +1294,9 @@ pub(crate) fn simulation_area_damage_cell_prelude<'a>(
     playfield_bounds: Option<PlayfieldBounds>,
 ) -> SimulationAreaDamageCellPrelude<'a> {
     let amount = base_damage / 10;
-    let tiberium_amount = (!scenario_no_damage
-        && affect_resource
-        && warhead.tiberium
-        && amount > 0)
-        .then_some(amount);
+    let tiberium_amount =
+        (!scenario_no_damage && affect_resource && warhead.tiberium && amount > 0)
+            .then_some(amount);
     SimulationAreaDamageCellPrelude {
         rules,
         tiberium_amount,
@@ -1650,8 +1652,15 @@ impl Simulation {
     ) -> crate::sim::combat::CombatTickResult {
         let mut run = crate::sim::combat::world_receiver::ReceiverRun::default();
         let mut result = crate::sim::combat::world_receiver::tick_combat(
-            self, &mut run, rules, overlay_registry, tick_ms, logic_order,
-            fire_suppressed, projectile_detonations, wave_damage_events,
+            self,
+            &mut run,
+            rules,
+            overlay_registry,
+            tick_ms,
+            logic_order,
+            fire_suppressed,
+            projectile_detonations,
+            wave_damage_events,
         );
         result.consequences.finish_navigation(run.finish(self));
         result
@@ -1671,7 +1680,11 @@ impl Simulation {
         }
         let mut run = crate::sim::combat::world_receiver::ReceiverRun::default();
         let commit = crate::sim::combat::world_receiver::commit_projectiles(
-            self, &mut run, detonations, rules, overlay_registry,
+            self,
+            &mut run,
+            detonations,
+            rules,
+            overlay_registry,
         );
         let terrain_navigation_changed_cells = run.finish(self);
 
@@ -1695,7 +1708,11 @@ impl Simulation {
             scenario_rng_state: self.scenario_rng.state(),
         });
         if let Some(wave) = self.prepare_fired_wave(
-            rules, event, &self.substrate.entities, &self.interner, self.resolved_terrain.as_ref(),
+            rules,
+            event,
+            &self.substrate.entities,
+            &self.interner,
+            self.resolved_terrain.as_ref(),
         ) {
             self.admit_fired_wave(event.attacker_id, wave, None);
         }
@@ -1852,7 +1869,9 @@ impl Simulation {
             ry: u16,
             layer: MovementLayer,
         ) -> Vec<CellObject> {
-            occupancy.cell_objects(rx, ry, layer, terrain_cells.get(&(rx, ry)).copied()).collect()
+            occupancy
+                .cell_objects(rx, ry, layer, terrain_cells.get(&(rx, ry)).copied())
+                .collect()
         }
 
         let mut run = crate::sim::combat::world_receiver::ReceiverRun::default();
@@ -1877,7 +1896,8 @@ impl Simulation {
                 let Some(firer) = self.substrate.entities.get(request.firer_id) else {
                     break;
                 };
-                let Some(object_type) = rules.object(self.interner.resolve(firer.type_ref())) else {
+                let Some(object_type) = rules.object(self.interner.resolve(firer.type_ref()))
+                else {
                     break;
                 };
                 let Some(weapon_name) = crate::sim::combat::combat_weapon::primary_for_tier(
@@ -2039,8 +2059,7 @@ impl Simulation {
                 // ChainReaction's Wave-tail callee is a bare RET. Wall damage
                 // follows receivers and reloads raw AmbientDamage, ignoring
                 // the shared mutable occupant value.
-                if let (Some(grid), Some(registry)) =
-                    (self.overlay_grid.as_mut(), overlay_registry)
+                if let (Some(grid), Some(registry)) = (self.overlay_grid.as_mut(), overlay_registry)
                     && let Some(overlay_id) = grid.cell(rx, ry).overlay_id
                     && let Some(flags) = registry.flags(overlay_id)
                 {
@@ -2079,7 +2098,8 @@ impl Simulation {
                 // The cliff tail is independent of damage magnitude and
                 // Warhead. Eligibility alone consumes one Scenario draw,
                 // including signed chances outside 0..=100.
-                let destroyable_cliff = self.resolved_terrain
+                let destroyable_cliff = self
+                    .resolved_terrain
                     .as_ref()
                     .is_some_and(|terrain| terrain.is_destroyable_cliff(rx, ry));
                 if destroyable_cliff {
@@ -2140,12 +2160,12 @@ impl Simulation {
                                     self.scenario_rng.next_range_u32_inclusive(0, 16) as i32 - 8;
                                 let jitter_y =
                                     self.scenario_rng.next_range_u32_inclusive(0, 24) as i32 - 12;
-                                let level = self.resolved_terrain
+                                let level = self
+                                    .resolved_terrain
                                     .as_ref()
                                     .expect("collapse terrain retained")
                                     .collapse_animation_level(cell_x, cell_y);
-                                let delay =
-                                    self.scenario_rng.next_range_u32_inclusive(0, 2) as u16;
+                                let delay = self.scenario_rng.next_range_u32_inclusive(0, 2) as u16;
                                 let world_coord = crate::sim::anim_class::AnimWorldCoord {
                                     x: i32::from(cell_x)
                                         .wrapping_mul(256)
@@ -2179,7 +2199,8 @@ impl Simulation {
                             }
                         }
 
-                        let terrain = self.resolved_terrain
+                        let terrain = self
+                            .resolved_terrain
                             .as_ref()
                             .expect("collapse terrain retained");
                         for &(cell_x, cell_y) in &mutation.changed_cells {
@@ -2223,11 +2244,20 @@ impl Simulation {
     ) {
         let mut run = crate::sim::combat::world_receiver::ReceiverRun::default();
         let (effects, under_attack_events) = crate::sim::combat::world_receiver::commit_entities(
-            self, &mut run, std::slice::from_ref(&event), Some(false), rules, overlay_registry,
+            self,
+            &mut run,
+            std::slice::from_ref(&event),
+            Some(false),
+            rules,
+            overlay_registry,
         );
         let terrain_navigation_changed_cells = run.finish(self);
         self.absorb_noncombat_damage_effects(
-            rules, overlay_registry, effects, under_attack_events, terrain_navigation_changed_cells,
+            rules,
+            overlay_registry,
+            effects,
+            under_attack_events,
+            terrain_navigation_changed_cells,
         );
     }
 
@@ -2241,11 +2271,20 @@ impl Simulation {
     ) {
         let mut run = crate::sim::combat::world_receiver::ReceiverRun::default();
         let (effects, under_attack_events) = crate::sim::combat::world_receiver::commit_terrain(
-            self, &mut run, event, true, rules, overlay_registry,
+            self,
+            &mut run,
+            event,
+            true,
+            rules,
+            overlay_registry,
         );
         let terrain_navigation_changed_cells = run.finish(self);
         self.absorb_noncombat_damage_effects(
-            rules, overlay_registry, effects, under_attack_events, terrain_navigation_changed_cells,
+            rules,
+            overlay_registry,
+            effects,
+            under_attack_events,
+            terrain_navigation_changed_cells,
         );
     }
 
@@ -2278,7 +2317,11 @@ impl Simulation {
     ) -> Vec<u64> {
         let mut run = crate::sim::combat::world_receiver::ReceiverRun::default();
         let (effects, under_attack_events) = crate::sim::combat::world_receiver::commit_area(
-            self, &mut run, receivers, rules, overlay_registry,
+            self,
+            &mut run,
+            receivers,
+            rules,
+            overlay_registry,
         );
         let terrain_navigation_changed_cells = run.finish(self);
         // Fatal transitions are facts of this receiver transaction. Retain
@@ -2339,15 +2382,19 @@ impl Simulation {
     /// same lifecycle/presentation/terrain outputs without leaving an alternate
     /// zero-HP object registered for the next LogicClass visit.
     fn absorb_noncombat_damage_effects(
-        &mut self, rules: &RuleSet,
+        &mut self,
+        rules: &RuleSet,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         effects: crate::sim::combat::DeathEffects,
         under_attack_events: Vec<crate::sim::combat::UnderAttackEvent>,
         terrain_navigation_changed_cells: Vec<(u16, u16)>,
     ) {
         let _ = damage_consequences::DamageConsequences::immediate(
-            effects, under_attack_events, terrain_navigation_changed_cells,
-        ).commit(self, rules, overlay_registry, None);
+            effects,
+            under_attack_events,
+            terrain_navigation_changed_cells,
+        )
+        .commit(self, rules, overlay_registry, None);
     }
 
     /// `HouseClass::NotifyUnderAttack @ 0x004F93E0` for one damaged asset,
@@ -2731,7 +2778,6 @@ impl Simulation {
         )
     }
 
-
     /// Resolve an entity's type to its `ObjectType` in one precomputed hop
     /// (two array indexes, no string allocation). Falls back to the name path
     /// when the table is unbuilt (test setups that skip `resolve_type_handles`),
@@ -2843,6 +2889,7 @@ impl Simulation {
             metallic_debris: Vec::new(),
             bridge_anim_sounds: BTreeMap::new(),
             radar_events: RadarEventQueue::default(),
+            notification_local_owner: None,
             radar_terrain_dirty_cells: Vec::new(),
             radar_terrain_dirty_generation: 0,
             tactical_dirty_cells: Vec::new(),
@@ -3124,7 +3171,10 @@ impl Simulation {
                 .movement_target
                 .as_ref()
                 .map(|target| target.next_index),
-            track_point: entity.drive_locomotion.as_ref().map(|state| &state.track)
+            track_point: entity
+                .drive_locomotion
+                .as_ref()
+                .map(|state| &state.track)
                 .or_else(|| entity.ship_locomotion.as_ref().map(|state| &state.track))
                 .filter(|track| track.turn_index >= 0)
                 .and_then(|track| u16::try_from(track.cursor).ok()),
@@ -3651,8 +3701,7 @@ impl Simulation {
         for entity in self.substrate.entities.values_mut() {
             if enabled {
                 if entity.debug_log.is_none() {
-                    entity.debug_log =
-                        Some(crate::sim::debug_event_log::DebugEventLog::new());
+                    entity.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
                 }
             } else {
                 entity.debug_log = None;
@@ -3809,10 +3858,7 @@ impl Simulation {
                         .projectiles
                         .get(id)
                         .is_some_and(|projectile| projectile.in_logic_vector)
-                    || self
-                        .waves
-                        .get(id)
-                        .is_some_and(|wave| wave.in_logic_vector),
+                    || self.waves.get(id).is_some_and(|wave| wave.in_logic_vector),
                 "logic order id {id} is missing or not membership-flagged",
             );
         }
@@ -4185,7 +4231,6 @@ impl Simulation {
         }
         self.substrate.logic.set_order_for_test(order);
     }
-
 
     /// Admit the `VoxelAnimClass` debris a death threw.
     ///
@@ -4843,10 +4888,13 @@ impl Simulation {
             let (dirty_cells, synchronous_passability_changed) =
                 grid.take_dirty_cells_with_passability_signal();
             let synchronous_navigation_cells = grid.take_synchronous_navigation_cells();
-            navigation_rebuild_requested |= synchronous_passability_changed
-                || !synchronous_navigation_cells.is_empty();
+            navigation_rebuild_requested |=
+                synchronous_passability_changed || !synchronous_navigation_cells.is_empty();
 
-            let terrain = self.resolved_terrain.as_mut().expect("overlay-ready terrain");
+            let terrain = self
+                .resolved_terrain
+                .as_mut()
+                .expect("overlay-ready terrain");
             let registry = overlay_registry.expect("overlay-ready registry");
             for &(rx, ry) in &dirty_cells {
                 navigation_rebuild_requested |=
@@ -5028,7 +5076,9 @@ impl Simulation {
         if events.is_empty() {
             return;
         }
-        let Some(grid) = self.overlay_grid.as_mut() else { return; };
+        let Some(grid) = self.overlay_grid.as_mut() else {
+            return;
+        };
         #[cfg(test)]
         let mut cell_target_detaches = Vec::new();
         let mut host = SimulationWallRuntimeHost {
@@ -5046,8 +5096,14 @@ impl Simulation {
         };
         for event in events {
             let _ = damage_wall_overlay_with_runtime_host(
-                grid, overlay_registry, self.resolved_terrain.as_mut(),
-                event.rx, event.ry, event.damage, &mut self.scenario_rng, Some(&mut host),
+                grid,
+                overlay_registry,
+                self.resolved_terrain.as_mut(),
+                event.rx,
+                event.ry,
+                event.damage,
+                &mut self.scenario_rng,
+                Some(&mut host),
             );
         }
     }
@@ -5509,18 +5565,16 @@ impl Simulation {
             };
             let unit_type_str = self.interner.resolve(unit_type_id).to_string();
             let owner_str = self.interner.resolve(owner_id).to_string();
-            if let Some(new_sid) =
-                self.spawn_object_at_height_with_overlay_context(
-                    &unit_type_str,
-                    &owner_str,
-                    rx,
-                    ry,
-                    0,
-                    z,
-                    rules,
-                    overlay_registry,
-                )
-            {
+            if let Some(new_sid) = self.spawn_object_at_height_with_overlay_context(
+                &unit_type_str,
+                &owner_str,
+                rx,
+                ry,
+                0,
+                z,
+                rules,
+                overlay_registry,
+            ) {
                 if let Some(ge) = self.substrate.entities.get_mut(new_sid) {
                     ge.selected = was_selected;
                 }
@@ -5605,14 +5659,14 @@ impl Simulation {
                 }
                 let placed_owner = self.successful_non_wall_placement_owner(cmd, applied, rules);
                 placed_building_owners.extend(placed_owner);
-                if (applied && matches!(cmd.payload, Command::DeployMcv { entity_id }
+                if (applied
+                    && matches!(cmd.payload, Command::DeployMcv { entity_id }
                     if self.substrate.entities.get(entity_id).is_none_or(|e| e.dying)))
                     || placed_owner.is_some()
                     || applied
                         && matches!(
                             cmd.payload,
-                            Command::UndeployBuilding { .. }
-                                | Command::LaunchSuperWeapon { .. }
+                            Command::UndeployBuilding { .. } | Command::LaunchSuperWeapon { .. }
                         )
                 {
                     *spawned_entities = true;
@@ -5826,9 +5880,13 @@ impl Simulation {
                 draw_flags: WAKE_DRAW_FLAGS,
                 ..AnimClassSpawnDescriptor::new(wake_name, rx, ry, sub_x, sub_y, z)
             };
-            let world = crate::sim::anim_class::AnimWorldCoord::from_cell_sub_z(rx, ry, sub_x, sub_y, z);
+            let world =
+                crate::sim::anim_class::AnimWorldCoord::from_cell_sub_z(rx, ry, sub_x, sub_y, z);
             if let Err(error) = self.spawn_anim_at_world(rules, descriptor, world) {
-                log::debug!("wake [{}] did not construct: {error}", rules.general.wake.name);
+                log::debug!(
+                    "wake [{}] did not construct: {error}",
+                    rules.general.wake.name
+                );
             }
         }
     }
@@ -6024,6 +6082,7 @@ impl Simulation {
         spawned_entities |= std::mem::take(&mut self.mission_spawned_entities);
         let movement_stats = object_pass.movement;
         destroyed_structure |= object_pass.destroyed_structure;
+        bridge_state_changed |= object_pass.bridge_state_changed;
         let tube_turn_owned_ids = object_pass.tube_turn_owned_ids;
         if let Some(rules) = rules {
             self.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, rules, None));
@@ -6176,10 +6235,9 @@ impl Simulation {
             // PRODUCES: damage, deaths, bridge damage, fire events. Ordered
             // ReceiveDamage retaliation is committed inline; only legacy
             // precomputed damage producers can still write last_attacker_id.
-            // tick_bridge_repair_orders runs BEFORE tick_capture_orders so
-            // engineers targeting BridgeRepairHut buildings are consumed by
-            // repair, not by capture. tick_capture_orders has an explicit
-            // BridgeRepairHut skip as defense in depth.
+            // Adjacent idle engineers receive an enter-cell order here.
+            // Repair and consumption occur synchronously at Walk's completed
+            // step in the object pass. The capture system excludes repair huts.
             let bridge_repaired = self.tick_bridge_repair_orders_with_overlay_registry(
                 rules,
                 overlay_registry,
@@ -6209,10 +6267,8 @@ impl Simulation {
             let logic_order = self.live_object_order_snapshot();
             // BulletClass/WaveClass AI already ran at each object's mixed
             // LogicClass slot. Keep their established receiver boundary here.
-            let projectile_detonations =
-                std::mem::take(&mut self.pending_projectile_detonations);
-            let sonic_damage_requests =
-                std::mem::take(&mut self.pending_wave_damage_requests);
+            let projectile_detonations = std::mem::take(&mut self.pending_projectile_detonations);
+            let sonic_damage_requests = std::mem::take(&mut self.pending_wave_damage_requests);
             // Rules-less fixture dispatch is the only producer of this
             // compatibility buffer. If a caller supplies Rules later in the
             // same frame, retain the live one-receiver-at-a-time contract.
@@ -6279,7 +6335,10 @@ impl Simulation {
                 overlay_registry,
             );
             let receipt = combat_result.consequences.commit(
-                self, rules, overlay_registry, active_post_combat_path_grid,
+                self,
+                rules,
+                overlay_registry,
+                active_post_combat_path_grid,
             );
             destroyed_structure |= receipt.structure_destroyed;
             bridge_state_changed |= receipt.bridge_state_changed;
@@ -6484,8 +6543,8 @@ impl Simulation {
         self.debug_assert_logic_membership_consistent();
         #[cfg(debug_assertions)]
         self.debug_assert_lifecycle_consistent();
-        let terminal_score_finalized = self.natural_outcome_exit_ready()
-            && self.finalize_terminal_score_snapshot();
+        let terminal_score_finalized =
+            self.natural_outcome_exit_ready() && self.finalize_terminal_score_snapshot();
         let state_hash = self.state_hash();
         TickResult {
             tick: self.session.tick,

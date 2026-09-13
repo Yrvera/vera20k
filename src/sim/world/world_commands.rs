@@ -2005,9 +2005,22 @@ impl Simulation {
                         if !obj.capturable && !obj.bridge_repair_hut {
                             return None;
                         }
-                        Some((b.position.rx, b.position.ry, b.owner()))
+                        Some((
+                            b.position.rx,
+                            b.position.ry,
+                            b.owner(),
+                            // Building447E90 delegates ordinary targets to+48.
+                            // Special Helipad/UnitRepair/Bunker +A8 docking
+                            // coordinates remain the existing bounded adapter;
+                            // stock CABHUT has none of those flags.
+                            if obj.helipad || obj.unit_repair || obj.bunker {
+                                crate::sim::movement::ground_pose::position_world_coord(&b.position)
+                            } else {
+                                crate::sim::movement::ground_pose::object_center_coord(b, obj)
+                            },
+                        ))
                     });
-                let Some((trx, try_, target_owner)) = target_info else {
+                let Some((trx, try_, target_owner, target_coord)) = target_info else {
                     return false;
                 };
                 // Must be an enemy building.
@@ -2038,6 +2051,16 @@ impl Simulation {
                     e.order_intent = None;
                     e.dock_state = None;
                     e.capture_target = Some(*target_building_id);
+                    // Event4C747C -> Infantry51AA40 -> Foot4D9510 writes
+                    // the actual object destination before locomotor approach.
+                    e.navigation.nav_com = Some(crate::sim::components::NavTargetRef::Building {
+                        id: *target_building_id,
+                    });
+                    e.navigation.nav_com_aux = None;
+                    e.navigation.pending_arrival_clear = false;
+                    if let Some(loco) = e.locomotor.as_mut() {
+                        loco.set_walk_destination(Some(target_coord));
+                    }
                 }
                 // Issue movement toward the building's cell.
                 let info = self.resolve_move_info(*engineer_id, Some(rules));
@@ -2071,7 +2094,7 @@ impl Simulation {
                             &self.interner,
                             Some(rules),
                         );
-                    movement::issue_move_command_with_layered(
+                    movement::issue_move_command_with_destination(
                         &mut self.substrate.entities,
                         grid,
                         *engineer_id,
@@ -2087,6 +2110,12 @@ impl Simulation {
                         Some(&blocker_neighbor_counts),
                         self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
+                        Some((
+                            crate::sim::components::NavTargetRef::Building {
+                                id: *target_building_id,
+                            },
+                            target_coord,
+                        )),
                     );
                 }
                 true

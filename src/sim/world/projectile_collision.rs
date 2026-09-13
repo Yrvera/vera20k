@@ -407,6 +407,34 @@ mod tests {
             let selected = world
                 .nearest(&world.cell(ProjectileCoord::new(384, 128, 0)))
                 .map(|(id, _)| id - 1);
+            // New Walk priority shares the original ordered scalar, with
+            // +48 coordinates. Reuse these executed47C3D0 vectors; no second
+            // hand-authored nearest golden is needed for the repair query.
+            let shared = crate::sim::cell_kernel::nearest_eligible_in_order(
+                crate::sim::cell_kernel::CellQueryPoint { x: 0, y: 0 },
+                row["objects"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, _)| {
+                        let e = sim.substrate.entities.get(index as u64 + 1)?;
+                        let c = crate::sim::movement::ground_pose::object_center_coord(
+                            e,
+                            rules.object("TEST").unwrap(),
+                        );
+                        Some((
+                            index as u64,
+                            true,
+                            crate::sim::cell_kernel::CellQueryPoint { x: c.x, y: c.y },
+                        ))
+                    }),
+            );
+            assert_eq!(
+                shared,
+                row["selected"].as_u64(),
+                "shared original selector: {row}"
+            );
             assert_eq!(
                 selected,
                 row["selected"].as_u64(),

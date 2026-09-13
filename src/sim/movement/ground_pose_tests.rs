@@ -474,7 +474,7 @@ fn walking_bridge_entry_commits_new_surface_and_object_list_plane() {
 }
 
 #[test]
-fn deferred_blocker_centre_recovery_samples_old_cell_not_rejected_xy() {
+fn fresh_walk_refusal_preserves_xyz_before_head_selection() {
     let mut terrain = terrain();
     terrain.cell_mut(3, 3).unwrap().slope_type = 2;
     terrain.cell_mut(3, 2).unwrap().level = 2;
@@ -511,9 +511,11 @@ fn deferred_blocker_centre_recovery_samples_old_cell_not_rejected_xy() {
     );
     assert_eq!(
         (entity.position.sub_x, entity.position.sub_y),
-        (SimFixed::from_num(128), SimFixed::from_num(128))
+        (SimFixed::from_num(128), SimFixed::from_num(2)),
+        "75B690 admission precedes paid SetCoords; a refusal does not take a provisional step"
     );
-    assert_eq!(entity.position.exact_z_leptons, Some(52));
+    assert_eq!(entity.position.exact_z_leptons, Some(731));
+    assert_eq!(entity.locomotor.as_ref().unwrap().step_head(), None);
     assert_eq!(
         sim.substrate
             .occupancy

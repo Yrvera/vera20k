@@ -587,6 +587,9 @@ impl Simulation {
                 true
             }
             EntityCategory::Infantry => {
+                let Some(owner) = self.substrate.entities.get(stable_id).map(|e| e.owner()) else {
+                    return false;
+                };
                 let (ground_level, ground_z, live_structural_bridge) =
                     self.raw_occupation_cell_facts(position, context);
                 let mask = infantry_raw_occupation_mask(position.sub_x, position.sub_y);
@@ -605,14 +608,14 @@ impl Simulation {
                         position.rx,
                         position.ry,
                         mask,
-                        stable_id,
+                        owner,
                     );
                 } else {
                     self.substrate.raw_cell_occupation.mark_ground_infantry(
                         position.rx,
                         position.ry,
                         mask,
-                        stable_id,
+                        owner,
                     );
                 }
                 true
@@ -2110,6 +2113,7 @@ impl Simulation {
             return ConcealOutcome::MissingOrDead;
         }
         self.release_track_occupation_before_foot_limbo(stable_id);
+        self.release_walk_occupation_before_foot_limbo(stable_id);
         if self
             .substrate
             .entities

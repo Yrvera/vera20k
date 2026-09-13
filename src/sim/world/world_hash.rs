@@ -2076,7 +2076,10 @@ fn hash_locomotor_payload(
             0u8.hash(hasher);
             hash_slope_transition_state(state, hasher);
         }
-        LocomotorRuntimePayload::Walk => 1u8.hash(hasher),
+        LocomotorRuntimePayload::Walk(state) => {
+            1u8.hash(hasher);
+            state.hash(hasher);
+        }
         LocomotorRuntimePayload::Teleport(state) => {
             2u8.hash(hasher);
             hash_teleport_state(state.as_ref(), hasher);
@@ -2093,7 +2096,10 @@ fn hash_locomotor_payload(
             5u8.hash(hasher);
             hash_drop_pod_state(state.as_ref(), hasher);
         }
-        LocomotorRuntimePayload::Hover => 6u8.hash(hasher),
+        LocomotorRuntimePayload::Hover(head) => {
+            6u8.hash(hasher);
+            head.hash(hasher);
+        }
         LocomotorRuntimePayload::Mech => 7u8.hash(hasher),
         LocomotorRuntimePayload::Ship(state) => {
             8u8.hash(hasher);

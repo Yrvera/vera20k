@@ -33,6 +33,7 @@ mod track_object_turn_tests;
 pub(super) struct LiveObjectPassOutcome {
     pub movement: movement::MovementTickStats,
     pub destroyed_structure: bool,
+    pub bridge_state_changed: bool,
     pub tube_turn_owned_ids: BTreeSet<u64>,
 }
 
@@ -40,6 +41,7 @@ pub(super) struct LiveObjectPassOutcome {
 struct ObjectTurnOutcome {
     movement: movement::MovementTickStats,
     destroyed_structure: bool,
+    bridge_state_changed: bool,
     tube_owned: bool,
 }
 
@@ -69,6 +71,7 @@ impl Simulation {
             let turn = sim.advance_live_object_turn(stable_id, rules, object_ctx);
             outcome.movement.merge(turn.movement);
             outcome.destroyed_structure |= turn.destroyed_structure;
+            outcome.bridge_state_changed |= turn.bridge_state_changed;
             if turn.tube_owned {
                 outcome.tube_turn_owned_ids.insert(stable_id);
             }
@@ -156,6 +159,12 @@ impl Simulation {
             .entities
             .get(stable_id)
             .map(|entity| (entity.position.rx, entity.position.ry));
+        let walk_process_owned = sim
+            .substrate
+            .entities
+            .get(stable_id)
+            .and_then(|e| e.locomotor.as_ref())
+            .is_some_and(|l| l.kind == crate::rules::locomotor_type::LocomotorKind::Walk);
         let one = [stable_id];
         let mut pending_movement = {
             let current_grid = sim.path_grid_snapshot();
@@ -187,6 +196,7 @@ impl Simulation {
                 &mut sim.pending_lifecycle_requests,
                 true,
                 true,
+                Some(&sim.production.slave_bindings),
             )
         };
         let ordinary_track_owned = pending_movement
@@ -197,6 +207,16 @@ impl Simulation {
                 pending_movement.record_track_movement(moved);
             })
             .is_some();
+        if let Some((id, head)) = pending_movement.take_walk_per_cell() {
+            outcome.bridge_state_changed |=
+                sim.run_completed_walk_step(id, head, rules, path_grid, overlay_registry);
+            pending_movement.retain_walk_completion(id, &sim.substrate.entities);
+        }
+        if let Some((id, coord)) = pending_movement.take_walk_boundary() {
+            sim.run_walk_boundary(id, coord, rules, path_grid, overlay_registry);
+            pending_movement.record_track_movement(1);
+        }
+
         outcome
             .movement
             .merge(movement::movement_tick::finish_movement_pass(
@@ -322,7 +342,10 @@ impl Simulation {
             .entities
             .get(stable_id)
             .map(|entity| (entity.position.rx, entity.position.ry));
-        if !ordinary_track_owned && let Some(rules) = rules {
+        if !ordinary_track_owned
+            && !walk_process_owned
+            && let Some(rules) = rules
+        {
             sim.move_unit_sensor_after_cell_change(
                 stable_id,
                 cell_before_movement,
@@ -335,7 +358,10 @@ impl Simulation {
             // outside clear at 0x00719A99; it must not flow through the
             // ordinary promote-only per-cell writer.
             sim.clear_entity_playfield_membership_after_teleport(stable_id);
-        } else if !ordinary_track_owned && cell_before_movement != cell_after_movement {
+        } else if !ordinary_track_owned
+            && !walk_process_owned
+            && cell_before_movement != cell_after_movement
+        {
             // `FootClass::PerCellProcess @ 0x004D85D0` runs the `Sensors=`
             // neighbour scan on its cell-enter arm, after the sensor
             // deposit has moved (`0x004D8611`/`0x004D8621`, issued just

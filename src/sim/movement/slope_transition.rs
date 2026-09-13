@@ -160,11 +160,7 @@ pub(crate) fn snap_after_successful_unlimbo(
 
 /// Drive Process `0x004B050B..0x004B0557` and Ship Process
 /// `0x0069FC1B..0x0069FC67` sample before any track/movement branch.
-pub(crate) fn sample_process_entry(
-    entity: &mut GameEntity,
-    sampled_slope: u8,
-    binary_frame: u32,
-) {
+pub(crate) fn sample_process_entry(entity: &mut GameEntity, sampled_slope: u8, binary_frame: u32) {
     if let Some(state) = state_for_entity_mut(entity) {
         state.sample_process_entry(sampled_slope, binary_frame);
     }
@@ -320,7 +316,9 @@ mod tests {
             EntityCategory::Infantry,
             EntityCategory::Aircraft,
         ] {
-            assert!(super::state_for_entity(&entity_with(category, LocomotorKind::Drive)).is_some());
+            assert!(
+                super::state_for_entity(&entity_with(category, LocomotorKind::Drive)).is_some()
+            );
             assert!(super::state_for_entity(&entity_with(category, LocomotorKind::Ship)).is_some());
         }
         assert!(
@@ -343,7 +341,8 @@ mod tests {
         }
 
         let mut mismatched = entity_with(EntityCategory::Unit, LocomotorKind::Drive);
-        mismatched.locomotor.as_mut().unwrap().runtime_payload = LocomotorRuntimePayload::Walk;
+        mismatched.locomotor.as_mut().unwrap().runtime_payload =
+            LocomotorRuntimePayload::Walk(Default::default());
         assert!(super::state_for_entity(&mismatched).is_none());
     }
 
@@ -351,10 +350,7 @@ mod tests {
     fn active_drive_piggyback_is_eligible_while_stashed_drive_is_not_active() {
         let constructor = LocomotorState::for_test_kind_at_frame(LocomotorKind::Drive, 17);
         assert_eq!(
-            constructor
-                .active_slope_transition()
-                .unwrap()
-                .hash_fields(),
+            constructor.active_slope_transition().unwrap().hash_fields(),
             (0, 0, 17, 0),
             "ordinary construction retains the live nonzero frame"
         );
@@ -369,7 +365,9 @@ mod tests {
         );
         assert!(super::state_for_entity(&active_drive).is_some());
         assert_eq!(
-            super::state_for_entity(&active_drive).unwrap().hash_fields(),
+            super::state_for_entity(&active_drive)
+                .unwrap()
+                .hash_fields(),
             (0, 0, 22, 0),
             "fresh Drive replacement retains the live nonzero frame"
         );
@@ -397,7 +395,9 @@ mod tests {
         ));
         assert!(stashed_drive.locomotor.as_mut().unwrap().end_piggyback());
         assert_eq!(
-            super::state_for_entity(&stashed_drive).unwrap().hash_fields(),
+            super::state_for_entity(&stashed_drive)
+                .unwrap()
+                .hash_fields(),
             (0, 0, 0, 0),
             "generic piggyback restore does not invent a terrain snap"
         );
@@ -477,26 +477,20 @@ mod tests {
         assert!(wrong_stash.locomotor.as_ref().unwrap().piggyback.is_some());
 
         let mut wrong_active_payload = entity_with(EntityCategory::Unit, LocomotorKind::Drive);
-        assert!(wrong_active_payload
-            .locomotor
-            .as_mut()
-            .unwrap()
-            .begin_piggyback(
-                LocomotorKind::Tunnel,
-                MovementLayer::Ground,
-                22,
-            ));
+        assert!(
+            wrong_active_payload
+                .locomotor
+                .as_mut()
+                .unwrap()
+                .begin_piggyback(LocomotorKind::Tunnel, MovementLayer::Ground, 22,)
+        );
         wrong_active_payload
             .locomotor
             .as_mut()
             .unwrap()
             .runtime_payload = LocomotorRuntimePayload::Teleport(None);
         assert!(
-            !super::restore_ground_tunnel_stashed_drive_and_snap(
-                &mut wrong_active_payload,
-                9,
-                30,
-            ),
+            !super::restore_ground_tunnel_stashed_drive_and_snap(&mut wrong_active_payload, 9, 30,),
             "a Tunnel discriminant with a non-Tunnel active payload is rejected"
         );
         assert_eq!(

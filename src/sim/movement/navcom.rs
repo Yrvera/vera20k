@@ -146,6 +146,12 @@ pub(super) fn set_destination_internal_cell(
             target_cell_coord(target.0, target.1, resolved_terrain),
             resolved_terrain,
         );
+    } else if let Some(loco) = entity.locomotor.as_mut() {
+        loco.set_walk_destination(Some(target_cell_coord(
+            target.0,
+            target.1,
+            resolved_terrain,
+        )));
     }
 }
 
@@ -159,7 +165,37 @@ pub(super) fn set_destination_internal_null(entity: &mut GameEntity) {
         drive_stop_moving(entity);
     } else if is_ship_locomotor(entity) {
         ship_stop_moving(entity);
+    } else if let Some(loco) = entity.locomotor.as_mut() {
+        loco.set_walk_destination(None);
     }
+}
+
+/// Walk75BE6F..75BF29 reloads the persistent destination AFTER PerCell and
+/// survival. Only null or matching signed cell + |dz| < 2*B45C28 retires NavCom.
+/// An A* approach endpoint has no independent destination authority.
+pub(super) fn finish_walk_navigation(entity: &mut GameEntity) -> bool {
+    let Some(loco) = entity.locomotor.as_ref() else {
+        return false;
+    };
+    if loco.kind != LocomotorKind::Walk
+        || loco.step_head().is_some()
+        || !entity.lifecycle.object_alive
+        || entity.lifecycle.in_limbo
+        || entity.object_is_falling_down != 0
+    {
+        return false;
+    }
+    let current = super::ground_pose::position_world_coord(&entity.position);
+    let arrived = loco.walk_destination().is_none_or(|dest| {
+        (current.x / 256) as i16 == (dest.x / 256) as i16
+            && (current.y / 256) as i16 == (dest.y / 256) as i16
+            && current.z.wrapping_sub(dest.z).wrapping_abs()
+                < 2 * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS
+    });
+    if arrived {
+        set_destination_internal_null(entity);
+    }
+    arrived
 }
 
 /// FootClass::Stop_Moving-equivalent owner clear: zeroes only the owner
@@ -193,6 +229,15 @@ pub(super) fn finish_drive_navigation(
     entity: &mut GameEntity,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
 ) {
+    // Walk's PerCell completion owns its cell/height destination test. Reaching
+    // an A* approach endpoint does not authorize Foot SetDestination(NULL).
+    if entity
+        .locomotor
+        .as_ref()
+        .is_some_and(|l| l.kind == LocomotorKind::Walk)
+    {
+        return;
+    }
     if is_drive_locomotor(entity) && entity.navigation.nav_com.is_some() {
         if entity.dying {
             // Native liveness gate: no owner clear for a dying object; the

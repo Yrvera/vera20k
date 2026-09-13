@@ -1,0 +1,1491 @@
+//! Literal repair +1AC(cell,-1,-1,null,true), reduced to its consumed ==7.
+//! Unit73F0A0 / Infantry51BF90. Soft codes retain only zero/nonzero; early
+//! terminal answers preserve native list order. This is not the movement
+//! classifier (which has different callers and partially represented inputs).
+use super::*;
+use crate::rules::{
+    locomotor_type::{LocomotorKind, SpeedType},
+    mission_data::MissionType,
+    object_type::ObjectType,
+};
+use crate::sim::combat::combat_weapon;
+use crate::sim::movement::bump_crush::{self, CrushCapability, CrushTarget};
+use crate::sim::{components::NavTargetRef, game_entity::GameEntity, intern::InternedId};
+
+fn friendly(live: &LivePublication<'_>, a: InternedId, b: InternedId) -> bool {
+    crate::map::houses::are_houses_friendly(
+        &live.sim.house_alliances,
+        live.sim.interner.resolve(a),
+        live.sim.interner.resolve(b),
+    )
+}
+fn row_nonzero(live: &LivePublication<'_>, cell: Cell, speed: SpeedType) -> Result<bool, String> {
+    let Cell::Real(index) = cell else {
+        return Ok(false);
+    };
+    live.terrain().cells()[index]
+        .speed_costs
+        .cost_for_speed_type(speed)
+        .map(|speed| speed != 0)
+        .ok_or("repair admission has no resolved speed row".into())
+}
+fn raw(live: &LivePublication<'_>, cell: Cell, layer: MovementLayer) -> (u8, Option<InternedId>) {
+    if cell == Cell::Dummy {
+        return (0, None);
+    }
+    let p = live.coord(cell);
+    let grid = &live.sim.substrate.raw_cell_occupation;
+    let bits = if layer == MovementLayer::Bridge {
+        grid.deck_bits(p.0 as u16, p.1 as u16)
+    } else {
+        grid.ground_bits(p.0 as u16, p.1 as u16)
+    };
+    (bits, grid.infantry_owner(p.0 as u16, p.1 as u16, layer))
+}
+// Unit73F5EF/73F628/73F823 compare actual object pointers, never a Cell
+// sharing the blocker's coordinates. Infantry has a distinct Cell shortcut.
+fn object_target_is(mover: &GameEntity, blocker: &GameEntity) -> bool {
+    matches!(mover.navigation.nav_com, Some(NavTargetRef::Entity{id}|NavTargetRef::Object{id}|NavTargetRef::Building{id}) if id==blocker.stable_id())
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InfantryTargetAdmission {
+    Ordinary,
+    DirectTarget,
+    SkipCurrent,
+}
+
+fn infantry_target_admission(
+    live: &LivePublication<'_>,
+    mover: &GameEntity,
+    obj: &ObjectType,
+    blocker: &GameEntity,
+    selected_cell: Cell,
+) -> Result<InfantryTargetAdmission, String> {
+    //51C2D3..51C37D: gate effects first. InfantryType EC2=C4 (52453D/
+    //825978), EC3=Engineer (524571/82596C). +1D4 is the warp latch.
+    if blocker
+        .teleport_state
+        .as_ref()
+        .is_some_and(|s| s.warp_out_active())
+    {
+        return Ok(InfantryTargetAdmission::Ordinary);
+    }
+    let eligible = match mover.mission.current().known() {
+        Some(MissionType::Enter | MissionType::Capture | MissionType::Eaten) => true,
+        Some(MissionType::Sabotage) => obj.c4,
+        Some(MissionType::AreaGuard | MissionType::Patrol | MissionType::Guard) => obj.engineer,
+        _ => false,
+    };
+    if !eligible {
+        return Ok(InfantryTargetAdmission::Ordinary);
+    }
+    if object_target_is(mover, blocker) {
+        return Ok(InfantryTargetAdmission::DirectTarget);
+    }
+    //51C3B1 executes even with NULL or a nonmatching object NavCom. The
+    //retained Cell NavCom resolves by identity without another lookup/stamp.
+    let current = crate::sim::movement::ground_pose::position_world_coord(&blocker.position);
+    let blocker_cell = live
+        .terrain()
+        .native_cell_identity(((current.x / 256) as i16, (current.y / 256) as i16));
+    let cell_target_is = |cell| {
+        if let Some(NavTargetRef::Cell { rx, ry }) = mover.navigation.nav_com {
+            live.terrain()
+                .native_fixed_cell_index(rx as i16, ry as i16)
+                .map(Cell::Real)
+                .unwrap_or(Cell::Dummy)
+                == cell
+        } else {
+            false
+        }
+    };
+    let attack_target_is = |id| {
+        mover.attack_target.as_ref().is_some_and(
+            |a| matches!(a.target, crate::sim::combat::TargetKind::Entity(target) if target == id),
+        )
+    };
+    if cell_target_is(blocker_cell) || attack_target_is(blocker.stable_id()) {
+        return Ok(InfantryTargetAdmission::DirectTarget);
+    }
+
+    //51C3CE queries the original selected Cell's GROUND first Building only
+    //after all direct-target checks fail. These matches jump to51C70F and
+    //continue the list, unlike the direct target's terminal51C71B path.
+    let Cell::Real(index) = selected_cell else {
+        return Ok(InfantryTargetAdmission::Ordinary);
+    };
+    let selected = &live.terrain().cells()[index];
+    let Some(first_id) = live.sim.substrate.occupancy.first_building_on_layer(
+        selected.rx,
+        selected.ry,
+        MovementLayer::Ground,
+    ) else {
+        return Ok(InfantryTargetAdmission::Ordinary);
+    };
+    if first_id == blocker.stable_id() {
+        return Ok(InfantryTargetAdmission::Ordinary);
+    }
+    let first = live
+        .sim
+        .substrate
+        .entities
+        .get(first_id)
+        .ok_or("repair first-Building target has retired entity")?;
+    if object_target_is(mover, first) {
+        return Ok(InfantryTargetAdmission::SkipCurrent);
+    }
+    //51C3F6 uses Building+48 (foundation center), not the approach+4C.
+    //565730 runs even for NULL/nonmatching object NavCom, before +2B4.
+    let first_type = live
+        .rules
+        .object(live.sim.interner.resolve(first.type_ref()))
+        .ok_or("repair first-Building target has missing type")?;
+    let center = crate::sim::movement::ground_pose::object_center_coord(first, first_type);
+    let first_cell = live
+        .terrain()
+        .native_cell_identity(((center.x / 256) as i16, (center.y / 256) as i16));
+    if cell_target_is(first_cell) || attack_target_is(first_id) {
+        return Ok(InfantryTargetAdmission::SkipCurrent);
+    }
+    Ok(InfantryTargetAdmission::Ordinary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unit_fixture(flags: &str, blocker_category: EntityCategory) -> (Simulation, RuleSet, Cell) {
+        let (mut sim, _, _) = super::super::super::tests::fixture();
+        let rules=RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(&format!(
+            "[VehicleTypes]\n0=MOVER\n1=BLOCKER\n[MOVER]\nSpeedType=Track\n[BuildingTypes]\n0=BUILDING\n1=HIDDEN\n[HIDDEN]\nInvisibleInGame=yes\n[BLOCKER]\nSpeedType=Track\n[BUILDING]\nFoundation=1x1\n{flags}\n"
+        ))).unwrap();
+        for (id, name, category, cell) in [
+            (90, "MOVER", EntityCategory::Unit, (15, 15)),
+            (
+                91,
+                if blocker_category == EntityCategory::Structure {
+                    "BUILDING"
+                } else {
+                    "BLOCKER"
+                },
+                blocker_category,
+                (16, 15),
+            ),
+        ] {
+            let mut e = GameEntity::test_default(id, name, "Americans", cell.0, cell.1);
+            e.owner = sim.intern("Americans");
+            e.type_ref = sim.intern(name);
+            e.category = category;
+            sim.substrate.entities.insert(e);
+        }
+        sim.substrate.occupancy.add(
+            16,
+            15,
+            91,
+            MovementLayer::Ground,
+            None,
+            crate::sim::occupancy::CellListInsertion::from_category(blocker_category),
+        );
+        let cell = sim
+            .resolved_terrain
+            .as_ref()
+            .unwrap()
+            .native_cell_identity((16, 15));
+        (sim, rules, cell)
+    }
+
+    fn unit_probe(
+        sim: &mut Simulation,
+        rules: &RuleSet,
+        cell: Cell,
+        mission: MissionType,
+        nav: Option<NavTargetRef>,
+    ) -> bool {
+        sim.mission_assign_exact(
+            90,
+            crate::sim::mission::MissionId::from_known(mission),
+            sim.session.binary_frame,
+        )
+        .unwrap();
+        sim.substrate
+            .entities
+            .get_mut(90)
+            .unwrap()
+            .navigation
+            .nav_com = nav;
+        impassable(
+            &mut LivePublication {
+                sim,
+                rules,
+                registry: None,
+                collapsed: false,
+            },
+            CellObjectMember::Entity(90),
+            cell,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn unit_absorb_and_grinding_keep_distinct_missions_and_object_targets() {
+        let target = Some(NavTargetRef::Building { id: 91 });
+        let (mut sim, rules, cell) = unit_fixture("UnitAbsorb=yes", EntityCategory::Structure);
+        assert!(!unit_probe(
+            &mut sim,
+            &rules,
+            cell,
+            MissionType::Enter,
+            target
+        ));
+        assert!(unit_probe(
+            &mut sim,
+            &rules,
+            cell,
+            MissionType::Eaten,
+            target
+        ));
+        assert!(
+            unit_probe(
+                &mut sim,
+                &rules,
+                cell,
+                MissionType::Enter,
+                Some(NavTargetRef::Cell { rx: 16, ry: 15 })
+            ),
+            "a Cell is not the Unit's object NavCom"
+        );
+        let (mut sim, rules, cell) = unit_fixture("Grinding=yes", EntityCategory::Structure);
+        assert!(!unit_probe(
+            &mut sim,
+            &rules,
+            cell,
+            MissionType::Eaten,
+            target
+        ));
+        assert!(unit_probe(
+            &mut sim,
+            &rules,
+            cell,
+            MissionType::Enter,
+            target
+        ));
+        // Supplied list topology isolates the later current-ground check.
+        // It does not claim a stock grinder/repair footprint scene.
+        sim.substrate.occupancy.add(
+            15,
+            15,
+            91,
+            MovementLayer::Ground,
+            None,
+            crate::sim::occupancy::CellListInsertion::AppendBuilding,
+        );
+        assert!(
+            !unit_probe(&mut sim, &rules, cell, MissionType::Move, None),
+            "current-ground Grinding arm has no mission/NavCom gate"
+        );
+    }
+
+    #[test]
+    fn exact_enter_unit_target_returns_before_a_later_hard_building() {
+        let (mut sim, rules, cell) = unit_fixture("", EntityCategory::Unit);
+        let mut b = GameEntity::test_default(92, "BUILDING", "Americans", 16, 15);
+        b.owner = sim.intern("Americans");
+        b.type_ref = sim.intern("BUILDING");
+        b.category = EntityCategory::Structure;
+        sim.substrate.entities.insert(b);
+        sim.substrate.occupancy.add(
+            16,
+            15,
+            92,
+            MovementLayer::Ground,
+            None,
+            crate::sim::occupancy::CellListInsertion::AppendBuilding,
+        );
+        assert!(!unit_probe(
+            &mut sim,
+            &rules,
+            cell,
+            MissionType::Enter,
+            Some(NavTargetRef::Entity { id: 91 })
+        ));
+        assert!(unit_probe(
+            &mut sim,
+            &rules,
+            cell,
+            MissionType::Enter,
+            Some(NavTargetRef::Cell { rx: 16, ry: 15 })
+        ));
+    }
+
+    #[test]
+    fn contacted_building_skips_when_a_different_building_is_first() {
+        let (mut sim, rules, cell) =
+            unit_fixture("NumberImpassableRows=-1", EntityCategory::Structure);
+        let mut b = GameEntity::test_default(92, "HIDDEN", "Americans", 16, 15);
+        assert!(rules.object("HIDDEN").unwrap().invisible_in_game);
+        b.owner = sim.intern("Americans");
+        b.type_ref = sim.intern("HIDDEN");
+        b.category = EntityCategory::Structure;
+        sim.substrate.entities.insert(b);
+        sim.substrate.occupancy.remove(16, 15, 91);
+        for id in [92, 91] {
+            sim.substrate.occupancy.add(
+                16,
+                15,
+                id,
+                MovementLayer::Ground,
+                None,
+                crate::sim::occupancy::CellListInsertion::AppendBuilding,
+            );
+        }
+        assert!(unit_probe(&mut sim, &rules, cell, MissionType::Move, None));
+        sim.substrate
+            .entities
+            .get_mut(90)
+            .unwrap()
+            .mark_live_contact_with(91);
+        assert!(
+            !unit_probe(&mut sim, &rules, cell, MissionType::Move, None),
+            "radio false row receiver skips only its checked Building"
+        );
+    }
+
+    fn infantry_fallback_fixture() -> (Simulation, RuleSet, Cell) {
+        let (mut sim, _, _) = super::super::super::tests::fixture();
+        let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[InfantryTypes]\n0=MOVER\n1=BLOCKER\n[BuildingTypes]\n0=TARGET\n[MOVER]\nEngineer=yes\nSpeedType=Foot\n[BLOCKER]\nSpeedType=Foot\n[TARGET]\nFoundation=2x2\n",
+        )).unwrap();
+        // Supplied overlap isolates the literal ordered +1AC receiver; this
+        // is not a retail footprint/construction or complete capture scene.
+        for (id, name, owner, category, p) in [
+            (70, "MOVER", "Americans", EntityCategory::Infantry, (15, 15)),
+            (
+                71,
+                "TARGET",
+                "Americans",
+                EntityCategory::Structure,
+                (16, 15),
+            ),
+            (
+                72,
+                "BLOCKER",
+                "Russians",
+                EntityCategory::Infantry,
+                (16, 15),
+            ),
+        ] {
+            let mut entity = GameEntity::test_default(id, name, owner, p.0, p.1);
+            entity.owner = sim.intern(owner);
+            entity.type_ref = sim.intern(name);
+            entity.category = category;
+            entity.position.sub_x = crate::util::fixed_math::SimFixed::from_num(128);
+            entity.position.sub_y = crate::util::fixed_math::SimFixed::from_num(128);
+            sim.substrate.entities.insert(entity);
+        }
+        for (id, insertion) in [
+            (71, crate::sim::occupancy::CellListInsertion::AppendBuilding),
+            (
+                72,
+                crate::sim::occupancy::CellListInsertion::PrependNonBuilding,
+            ),
+        ] {
+            sim.substrate
+                .occupancy
+                .add(16, 15, id, MovementLayer::Ground, None, insertion);
+        }
+        sim.mission_assign_exact(
+            70,
+            crate::sim::mission::MissionId::from_known(MissionType::Capture),
+            sim.session.binary_frame,
+        )
+        .unwrap();
+        let cell = sim
+            .resolved_terrain
+            .as_ref()
+            .unwrap()
+            .native_cell_identity((16, 15));
+        (sim, rules, cell)
+    }
+
+    #[test]
+    fn infantry_first_building_skip_preserves_a_later_target_refusal() {
+        let (mut sim, rules, cell) = infantry_fallback_fixture();
+        let probe = |sim: &mut Simulation| {
+            impassable(
+                &mut LivePublication {
+                    sim,
+                    rules: &rules,
+                    registry: None,
+                    collapsed: false,
+                },
+                CellObjectMember::Entity(70),
+                cell,
+            )
+            .unwrap()
+        };
+        assert!(
+            probe(&mut sim),
+            "unarmed mover cannot pass the ordinary enemy blocker"
+        );
+        sim.substrate
+            .entities
+            .get_mut(70)
+            .unwrap()
+            .navigation
+            .nav_com = Some(NavTargetRef::Building { id: 71 });
+        assert!(
+            !probe(&mut sim),
+            "first-Building target skips the earlier enemy blocker"
+        );
+        let frame = sim.session.binary_frame;
+        crate::sim::superweapon::invulnerability::apply_invulnerability(
+            sim.substrate.entities.get_mut(71).unwrap(),
+            frame,
+            30,
+            crate::sim::superweapon::invulnerability::InvulnKind::ForceShield,
+        );
+        assert!(
+            probe(&mut sim),
+            "skip-current must continue into the protected target's refusal"
+        );
+    }
+
+    #[test]
+    fn infantry_first_building_lookup_uses_center_then_attack_identity() {
+        let (mut sim, rules, cell) = infantry_fallback_fixture();
+        let probe = |sim: &mut Simulation, blocker| {
+            let live = LivePublication {
+                sim,
+                rules: &rules,
+                registry: None,
+                collapsed: false,
+            };
+            infantry_target_admission(
+                &live,
+                live.sim.substrate.entities.get(70).unwrap(),
+                rules.object("MOVER").unwrap(),
+                live.sim.substrate.entities.get(blocker).unwrap(),
+                cell,
+            )
+            .unwrap()
+        };
+        sim.substrate
+            .entities
+            .get_mut(70)
+            .unwrap()
+            .navigation
+            .nav_com = Some(NavTargetRef::Cell { rx: 17, ry: 16 });
+        assert_eq!(
+            probe(&mut sim, 72),
+            InfantryTargetAdmission::SkipCurrent,
+            "first Building+48 center differs from its raw anchor"
+        );
+        assert_eq!(
+            probe(&mut sim, 71),
+            InfantryTargetAdmission::Ordinary,
+            "the first Building cannot skip itself via its own center"
+        );
+        sim.substrate
+            .entities
+            .get_mut(70)
+            .unwrap()
+            .navigation
+            .nav_com = None;
+        sim.substrate.entities.get_mut(70).unwrap().attack_target =
+            Some(crate::sim::combat::AttackTarget {
+                target: crate::sim::combat::TargetKind::Entity(71),
+                cooldown_ticks: 0,
+                burst_remaining: 0,
+                burst_delay_ticks: 0,
+                pending_infantry_fire: None,
+            });
+        // Raw blocker lookup stamps(60,60), then first Building+48 stamps
+        //(62,62). Attack-target identity is deliberately evaluated last.
+        for (id, p) in [(72, (60, 60)), (71, (61, 61))] {
+            let position = &mut sim.substrate.entities.get_mut(id).unwrap().position;
+            position.rx = p.0;
+            position.ry = p.1;
+        }
+        assert_eq!(probe(&mut sim, 72), InfantryTargetAdmission::SkipCurrent);
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .dummy_cell_requested_coord(),
+            (62, 62)
+        );
+    }
+
+    #[test]
+    fn infantry_target_lookup_obeys_gates_and_retains_cell_identity() {
+        let (mut sim, rules, registry) = super::super::super::tests::fixture();
+        let hut = sim
+            .spawn_object(
+                "CABHUT",
+                "Americans",
+                16,
+                15,
+                0,
+                &rules,
+                &Default::default(),
+            )
+            .unwrap();
+        let infantry = sim
+            .spawn_object(
+                "ENGINEER",
+                "Americans",
+                15,
+                15,
+                0,
+                &rules,
+                &Default::default(),
+            )
+            .unwrap();
+        // Supplied query coordinates isolate the effectful51C3B1 boundary.
+        sim.substrate.entities.get_mut(hut).unwrap().position.rx = 60;
+        sim.substrate.entities.get_mut(hut).unwrap().position.ry = 60;
+        let probe = |sim: &mut Simulation| {
+            let live = LivePublication {
+                sim,
+                rules: &rules,
+                registry: Some(&registry),
+                collapsed: false,
+            };
+            infantry_target_admission(
+                &live,
+                live.sim.substrate.entities.get(infantry).unwrap(),
+                rules.object("ENGINEER").unwrap(),
+                live.sim.substrate.entities.get(hut).unwrap(),
+                live.terrain().native_cell_identity((16, 15)),
+            )
+            .unwrap()
+                == InfantryTargetAdmission::DirectTarget
+        };
+        sim.resolved_terrain
+            .as_ref()
+            .unwrap()
+            .stamp_dummy_cell_requested_coord(7, 8);
+        sim.mission_assign_exact(
+            infantry,
+            crate::sim::mission::MissionId::from_known(MissionType::Move),
+            sim.session.binary_frame,
+        )
+        .unwrap();
+        assert!(!probe(&mut sim));
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .dummy_cell_requested_coord(),
+            (7, 8)
+        );
+        sim.mission_assign_exact(
+            infantry,
+            crate::sim::mission::MissionId::from_known(MissionType::Capture),
+            sim.session.binary_frame,
+        )
+        .unwrap();
+        sim.substrate
+            .entities
+            .get_mut(infantry)
+            .unwrap()
+            .navigation
+            .nav_com = Some(NavTargetRef::Building { id: hut });
+        assert!(probe(&mut sim));
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .dummy_cell_requested_coord(),
+            (7, 8),
+            "exact object match precedes map lookup"
+        );
+        sim.substrate
+            .entities
+            .get_mut(infantry)
+            .unwrap()
+            .navigation
+            .nav_com = Some(NavTargetRef::Cell { rx: 61, ry: 61 });
+        assert!(
+            probe(&mut sim),
+            "two absent coordinates denote the same retained native Dummy Cell"
+        );
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .dummy_cell_requested_coord(),
+            (60, 60)
+        );
+        sim.substrate
+            .entities
+            .get_mut(infantry)
+            .unwrap()
+            .navigation
+            .nav_com = None;
+        sim.substrate
+            .entities
+            .get_mut(infantry)
+            .unwrap()
+            .attack_target = Some(crate::sim::combat::AttackTarget {
+            target: crate::sim::combat::TargetKind::Entity(hut),
+            cooldown_ticks: 0,
+            burst_remaining: 0,
+            burst_delay_ticks: 0,
+            pending_infantry_fire: None,
+        });
+        sim.resolved_terrain
+            .as_ref()
+            .unwrap()
+            .stamp_dummy_cell_requested_coord(7, 8);
+        assert!(probe(&mut sim));
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .dummy_cell_requested_coord(),
+            (60, 60),
+            "attack target is checked after the map lookup"
+        );
+    }
+
+    #[test]
+    fn slave_deposit_skip_keeps_later_building_refusal_and_raw_history() {
+        let (mut sim, rules, registry) = super::super::super::tests::fixture();
+        let hut = sim
+            .spawn_object(
+                "CABHUT",
+                "Americans",
+                16,
+                15,
+                0,
+                &rules,
+                &Default::default(),
+            )
+            .unwrap();
+        let slave = sim
+            .spawn_object(
+                "ENGINEER",
+                "Americans",
+                15,
+                15,
+                0,
+                &rules,
+                &Default::default(),
+            )
+            .unwrap();
+        sim.substrate
+            .entities
+            .get_mut(slave)
+            .unwrap()
+            .slave_harvester = Some(crate::sim::slave_miner::SlaveHarvester::new(hut, 4));
+        sim.production.slave_bindings.insert(hut, vec![slave]);
+        sim.substrate.raw_cell_occupation.mark_ground(16, 15, 0x20);
+        let cell = sim
+            .resolved_terrain
+            .as_ref()
+            .unwrap()
+            .native_cell_identity((16, 15));
+        let probe = |sim: &mut Simulation| {
+            let mut live = LivePublication {
+                sim,
+                rules: &rules,
+                registry: Some(&registry),
+                collapsed: false,
+            };
+            impassable(&mut live, CellObjectMember::Entity(slave), cell).unwrap()
+        };
+        assert!(
+            !probe(&mut sim),
+            "master membership admits this deposit cell"
+        );
+        assert_ne!(
+            sim.substrate.raw_cell_occupation.ground_bits(16, 15) & 0x20,
+            0,
+            "receiver clears only a local latch"
+        );
+        sim.production.slave_bindings.get_mut(&hut).unwrap().clear();
+        assert!(probe(&mut sim), "empty manager cannot skip the blocker");
+        sim.production.slave_bindings.insert(hut, vec![slave]);
+        // Supplied overlapping Building list tests native continuation, not
+        // ordinary construction legality or a retail repair footprint scene.
+        let mut later = GameEntity::test_default(100, "CABHUT", "Americans", 16, 15);
+        later.owner = sim.intern("Americans");
+        later.type_ref = sim.intern("CABHUT");
+        later.category = EntityCategory::Structure;
+        sim.substrate.entities.insert(later);
+        sim.substrate.occupancy.add(
+            16,
+            15,
+            100,
+            MovementLayer::Ground,
+            None,
+            crate::sim::occupancy::CellListInsertion::AppendBuilding,
+        );
+        assert!(
+            probe(&mut sim),
+            "true6B0880 continues into the later hard blocker"
+        );
+    }
+}
+
+/// Original6F3970(-1) averages Damage+AmbientDamage, despite the historical
+/// GetWeaponRange name. Weapon ReadINI7722D4/7720B2 identify+A4/+98.
+fn damage_aggregate(live: &LivePublication<'_>, e: &GameEntity, obj: &ObjectType) -> i32 {
+    let current = combat_weapon::attacker_facts(e, obj).current_weapon_number;
+    let slots = if obj.turret_count > 0 && !obj.is_gattling {
+        [current, -1]
+    } else {
+        [0, 1]
+    };
+    let mut count = 0;
+    let mut sum = 0i32;
+    for slot in slots {
+        if let Some((name, _)) = combat_weapon::weapon_for_index(obj, e.veterancy, slot)
+            && let Some(weapon) = live.rules.weapon(name)
+        {
+            sum = sum.wrapping_add(weapon.damage.wrapping_add(weapon.ambient_damage));
+            count += 1;
+        }
+    }
+    if count == 0 { 0 } else { sum / count }
+}
+
+fn moving(e: &GameEntity) -> bool {
+    match e.locomotor.as_ref().map(|l| l.kind) {
+        Some(LocomotorKind::Drive) => crate::sim::movement::drive_locomotor_is_moving(e),
+        Some(LocomotorKind::Ship) => e
+            .ship_locomotion
+            .as_ref()
+            .is_some_and(|s| s.destination.is_some() || s.head_to.is_some()),
+        Some(LocomotorKind::Walk | LocomotorKind::Hover) => {
+            e.locomotor
+                .as_ref()
+                .is_some_and(|l| l.step_head().is_some())
+                || e.navigation.nav_com.is_some()
+        }
+        _ => e.movement_target.is_some(),
+    }
+}
+
+fn head_on(mover: &GameEntity, blocker: &GameEntity, frame: u32) -> bool {
+    use crate::util::direction_tables::{dir_from_facing16, facing16_from_delta};
+    let facing = |e: &GameEntity| {
+        e.body_facing
+            .as_ref()
+            .map_or(u16::from(e.facing) << 8, |f| f.current(frame))
+    };
+    let direction = dir_from_facing16(facing(mover));
+    if direction != dir_from_facing16(facing(blocker).wrapping_add(0x7fff)) {
+        return false;
+    }
+    let a = crate::sim::movement::ground_pose::position_world_coord(&mover.position);
+    let b = crate::sim::movement::ground_pose::position_world_coord(&blocker.position);
+    //73F976 uses the same native atan polynomial/constants as FacingFromDelta.
+    direction
+        == dir_from_facing16(facing16_from_delta(
+            b.x.wrapping_sub(a.x),
+            b.y.wrapping_sub(a.y),
+        ))
+        && crate::util::native_x87::distance_3d_leptons([a.x, a.y, a.z], [b.x, b.y, b.z]) <= 511
+}
+
+/// ILocomotion+A4 is a chain-cursor predicate, not IsMoving. Original Drive
+///4B4B00 and Ship6A4130; Walk/Hover share false leaf4B6640.
+fn chain_cursor(e: &GameEntity) -> bool {
+    use crate::sim::movement::drive_track::{raw_track_meta, turn_track_at};
+    let progress = match e.locomotor.as_ref().map(|l| l.kind) {
+        Some(LocomotorKind::Drive) => e.drive_locomotion.as_ref().map(|s| s.track),
+        Some(LocomotorKind::Ship) => e.ship_locomotion.as_ref().map(|s| s.track),
+        _ => return false,
+    };
+    let Some(progress) = progress else {
+        return false;
+    };
+    let Some(&direction) = e
+        .navigation
+        .path_replay
+        .remaining_directions()
+        .first()
+        .filter(|d| **d < 8)
+    else {
+        return false;
+    };
+    let Some(turn) = usize::try_from(progress.turn_index)
+        .ok()
+        .and_then(turn_track_at)
+    else {
+        return false;
+    };
+    let target = crate::util::direction_tables::dir_from_facing8(turn.target_facing);
+    if direction == target || progress.cursor == 0 {
+        return false;
+    }
+    let raw = if progress.reversed {
+        turn.short_track
+    } else {
+        turn.normal_track
+    };
+    if raw_track_meta(raw).is_none_or(|r| i32::from(r.chain_index) != progress.cursor) {
+        return false;
+    }
+    turn_track_at(usize::from(target) * 8 + usize::from(direction))
+        .filter(|t| t.normal_track != 0)
+        .and_then(|t| raw_track_meta(t.normal_track))
+        .is_some_and(|r| r.entry_index != 0)
+}
+
+pub(super) fn impassable(
+    live: &mut LivePublication<'_>,
+    object: CellObjectMember,
+    cell: Cell,
+) -> Result<bool, String> {
+    let CellObjectMember::Entity(id) = object else {
+        return terrain_impassable(live, object, cell);
+    };
+    let e = live
+        .sim
+        .substrate
+        .entities
+        .get(id)
+        .ok_or("repair admission retired entity")?;
+    let obj = live
+        .rules
+        .object(live.sim.interner.resolve(e.type_ref()))
+        .ok_or("repair admission missing ObjectType")?;
+    if e.category == EntityCategory::Structure {
+        return building_impassable(live, e, obj, cell);
+    }
+    if e.category == EntityCategory::Aircraft {
+        return aircraft_effect_quotient(live, e, cell);
+    }
+    let infantry = e.category == EntityCategory::Infantry;
+    let mut layer = if live.flags(cell) & BRIDGE_FLAG_STRUCTURAL != 0 {
+        MovementLayer::Bridge
+    } else {
+        MovementLayer::Ground
+    };
+    let (mut bits, mut owner) = raw(live, cell, MovementLayer::Ground);
+    let initial_level = live.level(cell);
+    if !infantry && let Some(required) = obj.movement_restricted_to {
+        let Cell::Real(index) = cell else {
+            return Ok(true);
+        };
+        let c = &live.terrain().cells()[index];
+        if c.yr_cell_land_type == 10 {
+            //73F12E..73F1D9: passing the Tube shape gate bypasses only
+            //required-land equality; later list/speed/raw predicates still run.
+            let required_subtile = match live
+                .terrain()
+                .current_tile_dimensions(i32::from(c.final_tile_index))?
+            {
+                (5 | 4, 3) => Some(2),
+                (3, 4 | 5) => Some(6),
+                _ => None,
+            };
+            if required_subtile.is_some_and(|sub| c.final_sub_tile != sub) {
+                return Ok(true);
+            }
+        } else if c.yr_cell_land_type != required.as_index()
+            && !(matches!(c.bridge_facts.overlay_id, Some(237 | 238)) && initial_level != -1)
+        {
+            return Ok(true);
+        }
+    }
+    //73F283/51C06B and4D9C74 each resolve dir3 independently. On the shared
+    //dummy the second lookup advances from its newly stamped coordinates.
+    let p = live.coord(cell);
+    let (dx, dy) = crate::util::direction::DIRECTION_DELTAS[3];
+    live.terrain()
+        .native_cell_identity((p.0.wrapping_add(dx as i16), p.1.wrapping_add(dy as i16)));
+    if infantry && -1 - i32::from(initial_level) > 4 {
+        return Ok(false);
+    }
+    let p = live.coord(cell);
+    live.terrain()
+        .native_cell_identity((p.0.wrapping_add(dx as i16), p.1.wrapping_add(dy as i16)));
+    if live.flags(cell) & BRIDGE_FLAG_STRUCTURAL == 0 {
+        layer = MovementLayer::Ground;
+    }
+    if layer == MovementLayer::Bridge {
+        (bits, owner) = raw(live, cell, layer);
+    }
+    let p = live.coord(cell);
+    if e.in_playfield
+        && !crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+            (i32::from(p.0), i32::from(p.1)),
+            live.sim.playfield_bounds,
+            Some(live.terrain()),
+        )
+    {
+        return Ok(true);
+    }
+    let weapon0 = combat_weapon::weapon_for_index(obj, e.veterancy, 0)
+        .and_then(|(name, _)| live.rules.weapon(name));
+    let crusher = obj.crusher
+        || (e.veterancy >= 100 && obj.veteran_crusher)
+        || (e.veterancy >= 200 && obj.elite_crusher);
+    let capability = CrushCapability::new(crusher, obj.omni_crusher);
+    let mut nonzero = false;
+    let mut crush_latch = false;
+    let overlay = match cell {
+        Cell::Real(index) => live.terrain().cells()[index].bridge_facts.overlay_id,
+        Cell::Dummy => u8::try_from(
+            live.terrain()
+                .shared_cell_dummy()
+                .overlay_identity_state()
+                .0,
+        )
+        .ok(),
+    };
+    if let Some(overlay) = overlay {
+        let flags = live
+            .registry
+            .and_then(|r| r.flags(overlay))
+            .ok_or("repair overlay receiver lacks registered type")?;
+        if flags.crate_type
+            && (infantry || !live.sim.session.game_mode_nonzero)
+            && !live
+                .sim
+                .houses
+                .get(&e.owner())
+                .is_some_and(|h| h.is_controlled_by_human(live.sim.session.game_mode_nonzero))
+        {
+            return Ok(true);
+        }
+        if flags.wall {
+            let allied = live
+                .sim
+                .overlay_grid
+                .as_ref()
+                .and_then(|g| g.cell(p.0 as u16, p.1 as u16).wall_owner)
+                .is_some_and(|o| friendly(live, e.owner(), o));
+            if !infantry && flags.crushable && crusher && !allied {
+            } else {
+                let warhead = weapon0
+                    .and_then(|w| w.warhead.as_deref())
+                    .and_then(|name| live.rules.warhead(name));
+                if !combat_weapon::is_armed(e, obj)
+                    || !warhead.is_some_and(|w| w.wall || (w.wood && flags.armor_is_wood))
+                {
+                    return Ok(true);
+                }
+                nonzero = true;
+            }
+        }
+    }
+    let first_building = live.sim.substrate.occupancy.first_building_on_layer(
+        p.0 as u16,
+        p.1 as u16,
+        MovementLayer::Ground,
+    );
+    let members = live.sim.substrate.occupancy.cell_objects(
+        p.0 as u16,
+        p.1 as u16,
+        layer,
+        live.sim
+            .production
+            .terrain_object_cells
+            .get(&(p.0 as u16, p.1 as u16))
+            .copied(),
+    );
+    for member in members {
+        let CellObjectMember::Entity(blocker_id) = member else {
+            if !infantry {
+                // Unit73FBAC calls the target-sensitive +2E4 selector. Terrain
+                // has no Techno bit and is not a Cell (746CD0 ->6F3330).
+                let selected = combat_weapon::what_weapon_should_i_use(
+                    live.rules,
+                    obj,
+                    &combat_weapon::attacker_facts(e, obj),
+                    Some(&combat_weapon::TargetFacts::Terrain),
+                );
+                let weapon = combat_weapon::weapon_for_index(obj, e.veterancy, selected)
+                    .and_then(|(name, _)| live.rules.weapon(name));
+                if !weapon
+                    .and_then(|w| w.warhead.as_deref())
+                    .and_then(|name| live.rules.warhead(name))
+                    .is_some_and(|w| w.wood)
+                {
+                    return Ok(true);
+                }
+                nonzero = true;
+            }
+            continue;
+        };
+        if blocker_id == id {
+            if !infantry {
+                bits &= !0x20;
+            }
+            continue;
+        }
+        let b = live
+            .sim
+            .substrate
+            .entities
+            .get(blocker_id)
+            .ok_or("repair list has retired blocker")?;
+        let bt = live
+            .rules
+            .object(live.sim.interner.resolve(b.type_ref()))
+            .ok_or("repair list missing blocker type")?;
+        if infantry
+            && e.slave_harvester
+                .as_ref()
+                .is_some_and(|s| s.master_id == blocker_id)
+        {
+            let query = crate::sim::slave_deposit::SlaveDepositQuery {
+                entities: &live.sim.substrate.entities,
+                bindings: &live.sim.production.slave_bindings,
+                occupancy: &live.sim.substrate.occupancy,
+                terrain: live.terrain(),
+                rules: live.rules,
+                interner: &live.sim.interner,
+            };
+            if query.admits(id, blocker_id, cell) {
+                //51C2CA clears the local vehicle latch and CONTINUES; earlier
+                //soft results and later blockers retain their significance.
+                bits &= !0x20;
+                continue;
+            }
+        }
+        let allied = friendly(live, e.owner(), b.owner());
+        let mission = e.mission.current().known();
+        if infantry {
+            match infantry_target_admission(live, e, obj, b, cell)? {
+                InfantryTargetAdmission::Ordinary => {}
+                InfantryTargetAdmission::SkipCurrent => continue,
+                InfantryTargetAdmission::DirectTarget => {
+                    if crate::sim::superweapon::invulnerability::is_invulnerable(
+                        b.invulnerability.as_ref(),
+                        live.sim.session.binary_frame,
+                    ) {
+                        return Ok(true);
+                    }
+                    return Ok(layer == MovementLayer::Ground
+                        && e.dock_entered_with.is_none()
+                        && !row_nonzero(live, cell, obj.speed_type)?);
+                }
+            }
+        }
+        if b.category == EntityCategory::Structure {
+            if !infantry {
+                //73F57C..5A2: a contacted Building whose458A00 result is
+                //false is skipped before the ordinary Building branches.
+                if matches!(crate::sim::pathfinding::cell_entry::decide_live_vehicle_building_entry(
+                    crate::sim::pathfinding::cell_entry::LiveVehicleBuildingEntry {
+                        mover_category:e.category,
+                        branch:crate::sim::pathfinding::cell_entry::VehicleBuildingEntryBranch::RadioContact { mover_has_contact:e.has_live_contact_with(blocker_id) },
+                        checked_building_id:blocker_id,candidate_building_id:first_building,
+                        candidate_x:p.0 as u16,building_origin_x:b.position.rx,
+                        number_impassable_rows:bt.number_impassable_rows,is_unit_repair:bt.unit_repair,is_bunker:bt.bunker,
+                        bunker_occupied:b.bunker_occupant.is_some(),
+                    }),crate::sim::pathfinding::cell_entry::BuildingOccupantEntryDecision::SkipBlocker) {
+                    continue;
+                }
+                //73F5EF/73F628 have distinct type/mission pairs. +1D4 is
+                //the live warp latch; the represented Teleport writer is used.
+                if object_target_is(e, b)
+                    && ((mission == Some(MissionType::Enter) && bt.unit_absorb)
+                        || (mission == Some(MissionType::Eaten) && bt.grinding))
+                    && !b
+                        .teleport_state
+                        .as_ref()
+                        .is_some_and(|s| s.warp_out_active())
+                {
+                    return Ok(false);
+                }
+                //73F661..6CF: Grinding additionally walks CURRENT ground E4,
+                //without mission/NavCom/radio/warp gates. Do the actual lookup
+                //at this list position, preserving shared-Dummy stamping.
+                if bt.grinding {
+                    let current =
+                        crate::sim::movement::ground_pose::position_world_coord(&e.position);
+                    let current_cell = live
+                        .terrain()
+                        .native_cell_identity(((current.x / 256) as i16, (current.y / 256) as i16));
+                    if let Cell::Real(index) = current_cell {
+                        let c = &live.terrain().cells()[index];
+                        if live
+                            .sim
+                            .substrate
+                            .occupancy
+                            .get(c.rx, c.ry)
+                            .is_some_and(|list| {
+                                list.iter_layer(MovementLayer::Ground)
+                                    .any(|entry| entry.entity_id == blocker_id)
+                            })
+                        {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+            if infantry && bt.invisible_in_game {
+                continue;
+            }
+            if bt.gate {
+                if b.building_gate.is_some_and(|s| s.can_garrison_passable()) {
+                    continue;
+                }
+                if !allied && !combat_weapon::is_armed(e, obj) {
+                    return Ok(true);
+                }
+                nonzero = true;
+                continue;
+            }
+            if !infantry {
+                if (bt.unit_repair||bt.bunker)&&first_building==Some(blocker_id)
+                    && matches!(crate::sim::pathfinding::cell_entry::decide_live_vehicle_building_entry(
+                        crate::sim::pathfinding::cell_entry::LiveVehicleBuildingEntry {
+                            mover_category:e.category,branch:crate::sim::pathfinding::cell_entry::VehicleBuildingEntryBranch::UnitRepairOrBunker,
+                            checked_building_id:blocker_id,candidate_building_id:first_building,
+                            candidate_x:p.0 as u16,building_origin_x:b.position.rx,
+                            number_impassable_rows:bt.number_impassable_rows,is_unit_repair:bt.unit_repair,is_bunker:bt.bunker,
+                            bunker_occupied:b.bunker_occupant.is_some(),
+                        }),crate::sim::pathfinding::cell_entry::BuildingOccupantEntryDecision::SkipBlocker) {continue;}
+                if bt.invisible_in_game {
+                    continue;
+                }
+                if bt.bib
+                    && live.sim.substrate.occupancy.first_building_on_layer(
+                        (p.0 as u16).wrapping_add(1),
+                        p.1 as u16,
+                        MovementLayer::Ground,
+                    ) != Some(blocker_id)
+                {
+                    continue;
+                }
+            }
+            if allied {
+                return Ok(true);
+            }
+        }
+        //73F823..844: this exact Unit target is admitted immediately. Other
+        //transport capacity/radio requirements belong to the order/PerCell
+        //producers; there is no extra gate in this admission arm.
+        if !infantry
+            && mission == Some(MissionType::Enter)
+            && b.category == EntityCategory::Unit
+            && object_target_is(e, b)
+        {
+            return Ok(false);
+        }
+        if !allied {
+            if b.cloak.as_ref().is_some_and(|s| s.state == 2) {
+                nonzero = true;
+                continue;
+            }
+            if !infantry
+                && bump_crush::can_crush(
+                    capability,
+                    CrushTarget::from_entity(b, live.sim.session.binary_frame),
+                )
+            {
+                crush_latch = true;
+                continue;
+            }
+            if if infantry {
+                damage_aggregate(live, e, obj) <= 0
+            } else {
+                weapon0.is_none()
+            } {
+                return Ok(true);
+            }
+            if b.category == EntityCategory::Structure && bt.bridge_repair_hut {
+                return Ok(true);
+            }
+            nonzero = true;
+        } else if !infantry {
+            if moving(b) {
+                if head_on(e, b, live.sim.session.binary_frame) {
+                    return Ok(true);
+                }
+                if (b.foot_occupation_enabled && b.category != EntityCategory::Infantry)
+                    || chain_cursor(b)
+                {
+                    nonzero = true;
+                }
+            } else {
+                nonzero = true;
+            }
+        } else {
+            match b.category {
+                EntityCategory::Aircraft | EntityCategory::Structure => return Ok(true),
+                EntityCategory::Unit => {
+                    if !moving(b) && b.navigation.nav_com.is_none()
+                        || b.foot_occupation_enabled
+                        || chain_cursor(b)
+                    {
+                        nonzero = true;
+                    }
+                }
+                EntityCategory::Infantry => {}
+            }
+        }
+    }
+    if layer == MovementLayer::Ground
+        && (!infantry || e.dock_entered_with.is_none())
+        && !row_nonzero(live, cell, obj.speed_type)?
+    {
+        return Ok(true);
+    }
+    if infantry {
+        if !nonzero && bits & 0x20 != 0 {
+            return Ok(false);
+        }
+        if let Some(owner) = owner {
+            if friendly(live, e.owner(), owner) {
+                if bits & 0x1c == 0x1c {
+                    nonzero = true;
+                }
+            } else {
+                if damage_aggregate(live, e, obj) <= 0 {
+                    return Ok(true);
+                }
+                nonzero = true;
+            }
+        }
+        Ok(!nonzero && bits & 0x1c == 0x1c)
+    } else {
+        if nonzero || crush_latch || bits & 0x20 != 0 {
+            return Ok(false);
+        }
+        let allied = owner.is_some_and(|owner| friendly(live, e.owner(), owner));
+        if bits & 0x3f != 0 && !allied && !crusher {
+            return Ok(!weapon0
+                .and_then(|w| w.projectile.as_deref())
+                .and_then(|name| live.rules.projectile(name))
+                .is_some_and(|p| p.ag));
+        }
+        Ok(false)
+    }
+}
+
+/// Aircraft4196B0's answer is ignored by the first487A3B pass (kind2 damage).
+/// The neighbor pass cannot query active Fly: its+A0 is constantfalse4B6630.
+/// With no possible Team waypoint lookup and every potential586360 lookup real, both client-local
+/// predicate outcomes have the same gameplay effects. Never stamp a dummy
+/// during this proof: a missing slot makes the quotient inadmissible.
+fn aircraft_effect_quotient(
+    live: &LivePublication<'_>,
+    entity: &GameEntity,
+    cell: Cell,
+) -> Result<bool, String> {
+    if entity
+        .locomotor
+        .as_ref()
+        .is_none_or(|l| l.kind != LocomotorKind::Fly)
+    {
+        return Err("repair Aircraft requires active Fly".into());
+    }
+    //Team6EC300 only invokes waypoint578460 for action3 at the raw cursor.
+    //Do not use completed/refusal/advance_pending to skip that native read.
+    //Evidence: LIVE_REPAIR_AIRCRAFT_RECEIVER.md, Team query effects section.
+    if let Some((id, _)) = live.sim.team_script_vm.team_for_member(entity.stable_id()) {
+        let team = live
+            .sim
+            .team_script_vm
+            .team(id)
+            .ok_or("repair Aircraft missing Team state")?;
+        let script = live
+            .sim
+            .team_script_vm
+            .script(team.script_id())
+            .ok_or("repair Aircraft Team has unknown ScriptType")?;
+        if script
+            .actions
+            .get(team.cursor() as u32 as usize)
+            .is_some_and(|a| a.action_id == 3)
+        {
+            return Err(
+                "repair Aircraft Team action3 has unresolved waypoint lookup effects".into(),
+            );
+        }
+    }
+    let Cell::Real(index) = cell else {
+        return Err("repair Aircraft shared-dummy receiver has observable lookup effects".into());
+    };
+    let c = &live.terrain().cells()[index];
+    let xy = [
+        i32::from(c.rx as i16) * 256 + 128,
+        i32::from(c.ry as i16) * 256 + 128,
+    ];
+    let z = crate::util::lepton::ground_height_leptons(c.level, c.slope_type, xy[0], xy[1])
+        .map_err(|e| format!("repair Aircraft ground height: {e:?}"))?;
+    // ABDE88 and ground89E7C0 have identical startup arithmetic (5617E0 /
+    //47B220). They share the existing native ground-height unit, not a new
+    //client-specific divisor. Signed quotient and word wrap are intentional.
+    let quotient = z / crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS;
+    let offset = quotient / 2 + i32::from(quotient & 1 != 0);
+    let p = (
+        (c.rx as i16).wrapping_sub(offset as i16),
+        (c.ry as i16).wrapping_sub(offset as i16),
+    );
+    let Some(first) = live.terrain().native_fixed_cell_index(p.0, p.1) else {
+        return Err("repair Aircraft projected shroud lookup can mutate shared dummy".into());
+    };
+    if quotient & 1 != 0 {
+        // When its bit8 is absent,5863FF calls481810(3) on the selected
+        //receiver. Require this lookup too, independent of the local viewer.
+        let first = &live.terrain().cells()[first];
+        if live
+            .terrain()
+            .native_fixed_cell_index(
+                (first.rx as i16).wrapping_add(1),
+                (first.ry as i16).wrapping_add(1),
+            )
+            .is_none()
+        {
+            return Err("repair Aircraft odd-height neighbor can mutate shared dummy".into());
+        }
+    }
+    Ok(false)
+}
+
+fn terrain_impassable(
+    live: &LivePublication<'_>,
+    object: CellObjectMember,
+    cell: Cell,
+) -> Result<bool, String> {
+    let CellObjectMember::Terrain(id) = object else {
+        unreachable!()
+    };
+    let terrain = live
+        .sim
+        .production
+        .terrain_objects
+        .get(&id)
+        .ok_or("repair retired Terrain")?;
+    let ty = live
+        .rules
+        .terrain_object_type_case_insensitive(live.sim.interner.resolve(terrain.type_ref))
+        .ok_or("repair missing TerrainType")?;
+    let p = live.coord(cell);
+    for offset in crate::rules::foundation::foundation_cell_offsets(&ty.foundation) {
+        let selected = live
+            .terrain()
+            .native_cell_identity((p.0.wrapping_add(offset.0), p.1.wrapping_add(offset.1)));
+        if !placement_cell(
+            live,
+            selected,
+            if ty.water_bound {
+                SpeedType::Float
+            } else {
+                SpeedType::Track
+            },
+            None,
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+fn placement_cell(
+    live: &LivePublication<'_>,
+    cell: Cell,
+    speed: SpeedType,
+    with_type: Option<&ObjectType>,
+) -> Result<bool, String> {
+    let p = live.coord(cell);
+    if let Some(ty) = with_type {
+        let to_tile = ty
+            .to_tile
+            .as_deref()
+            .map(|name| live.terrain().resolve_registered_tile_name(name))
+            .transpose()?
+            .flatten();
+        if to_tile.is_some() {
+            if !live
+                .terrain()
+                .tile_allows_morph_placement(live.tile(cell))?
+                || live
+                    .sim
+                    .substrate
+                    .occupancy
+                    .first_building_on_layer(p.0 as u16, p.1 as u16, MovementLayer::Ground)
+                    .is_some()
+            {
+                return Ok(false);
+            }
+        } else if live
+            .sim
+            .substrate
+            .occupancy
+            .get(p.0 as u16, p.1 as u16)
+            .is_some_and(|c| c.iter_layer(MovementLayer::Ground).next().is_some())
+            || live
+                .sim
+                .production
+                .terrain_object_cells
+                .contains_key(&(p.0 as u16, p.1 as u16))
+            || raw(live, cell, MovementLayer::Ground).0 & 0x3f != 0
+        {
+            return Ok(false);
+        }
+    }
+    if !crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+        (i32::from(p.0), i32::from(p.1)),
+        live.sim.playfield_bounds,
+        Some(live.terrain()),
+    ) {
+        return Ok(false);
+    }
+    let overlay = match cell {
+        Cell::Real(index) => live.terrain().cells()[index]
+            .bridge_facts
+            .overlay_id
+            .is_some(),
+        Cell::Dummy => {
+            live.terrain()
+                .shared_cell_dummy()
+                .overlay_identity_state()
+                .0
+                != -1
+        }
+    };
+    if overlay {
+        return Ok(false);
+    }
+    row_nonzero(live, cell, speed)
+}
+fn building_impassable(
+    live: &LivePublication<'_>,
+    e: &GameEntity,
+    obj: &ObjectType,
+    cell: Cell,
+) -> Result<bool, String> {
+    if obj.undeploys_into.is_some() && e.lifecycle.cell_marked {
+        return placement_cell(live, cell, obj.speed_type, Some(obj)).map(|p| !p);
+    }
+    if obj.place_anywhere {
+        return Ok(false);
+    }
+    let to_tile = obj
+        .to_tile
+        .as_deref()
+        .map(|name| live.terrain().resolve_registered_tile_name(name))
+        .transpose()?
+        .flatten();
+    let p = live.coord(cell);
+    //71615F compares Cell::Empty; active710A80 startup initializes B0EB58
+    //to the two zero words. The foundation terminator7fff is separate.
+    if p == (0, 0) {
+        return Ok(true);
+    }
+    let mut rejected = false;
+    let mut accepted = false;
+    for offset in crate::rules::foundation::foundation_cell_offsets(&obj.foundation) {
+        let selected = live
+            .terrain()
+            .native_cell_identity((p.0.wrapping_add(offset.0), p.1.wrapping_add(offset.1)));
+        let admitted = placement_cell(live, selected, obj.speed_type, Some(obj))?;
+        rejected |= !admitted;
+        accepted |= admitted;
+    }
+    Ok(if to_tile.is_some() {
+        !accepted
+    } else {
+        rejected
+    })
+}

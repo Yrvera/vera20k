@@ -721,6 +721,9 @@ fn retail_bridge_catalog_after_normal_map_loading() {
 #[test]
 fn repair_tile_queries_use_registered_names_and_live_index_validity() {
     let grid = bridge_constructor_terrain();
+    assert_eq!(grid.current_tile_dimensions(0).unwrap(), (1, 1));
+    assert!(grid.current_tile_dimensions(-1).is_err());
+    assert!(grid.current_tile_dimensions(1).is_err());
     assert_eq!(
         grid.resolve_registered_tile_name("SOURCE01").unwrap(),
         Some(0)

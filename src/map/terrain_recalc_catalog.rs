@@ -453,6 +453,25 @@ struct BridgePresentation {
 }
 
 impl ResolvedTerrainGrid {
+    /// Unit73F12E..73F1D9 reads the CURRENT registered type's pristine
+    /// dimensions, even when that type is not admitted by the runtime Recalc
+    /// effect adapter. Registration546B46/546B50 stores the header low bytes.
+    pub(crate) fn current_tile_dimensions(&self, tile: i32) -> Result<(u8, u8), String> {
+        let catalog = self
+            .bridge_recalc_catalog
+            .as_ref()
+            .ok_or("tile dimensions query has no resident registry")?;
+        let tile = u16::try_from(tile).map_err(|_| "invalid current tile dimensions index")?;
+        let pristine = catalog
+            .file(tile, 0)
+            .map_err(|e| format!("tile dimensions: {e:?}"))?;
+        let metadata = &pristine.invalid_subtile;
+        Ok((
+            metadata.template_width_cells as u8,
+            metadata.template_height_cells as u8,
+        ))
+    }
+
     /// Original544CE0/465CC0. A missing name is a null ToTile pointer, not an
     /// invalid tile index; the input itself is never truncated to24 bytes.
     pub(crate) fn resolve_registered_tile_name(

@@ -442,7 +442,7 @@ fn common_raw_request(rx: u16, ry: u16, z: u8, sub_x: i32, sub_y: i32) -> Reveal
     }
 }
 
-pub(super) fn common_raw_terrain_cell(
+pub(crate) fn common_raw_terrain_cell(
     rx: u16,
     ry: u16,
     level: u8,
@@ -1233,7 +1233,7 @@ fn gsi_04_12_common_raw_occupation_infantry_marks_after_link_then_clears() {
         sim.substrate
             .raw_cell_occupation
             .ground_infantry_owner(3, 4),
-        Some(1)
+        Some(sim.substrate.entities.get(1).unwrap().owner())
     );
 
     sim.lifecycle_test_events.clear();
@@ -1271,7 +1271,7 @@ fn gsi_04_12_common_raw_occupation_infantry_above_deck_height_marks_and_clears_d
     assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0x04);
     assert_eq!(
         sim.substrate.raw_cell_occupation.deck_infantry_owner(3, 4),
-        Some(1)
+        Some(sim.substrate.entities.get(1).unwrap().owner())
     );
     assert!(
         sim.lifecycle_test_events
@@ -6506,7 +6506,11 @@ fn assert_direct_fatal_death_weapon_starts_crater(bridge: bool) {
     ));
     if bridge {
         super::bridge_orchestrator::kill_ground_occupants_at(
-            &mut sim, &rules, 4, 5, Some(&registry),
+            &mut sim,
+            &rules,
+            4,
+            5,
+            Some(&registry),
         );
     } else {
         let firer_id = sim.allocate_stable_id();
@@ -7515,4 +7519,89 @@ fn naval_build_const_capture_moves_old_entry_to_new_owner_tail() {
     assert_eq!(sim.houses[&old_owner].build_const_order, vec![12]);
     assert_eq!(sim.houses[&new_owner].build_const_order, vec![50, 40]);
     assert_eq!(sim.substrate.entities.get(40).unwrap().owner, new_owner);
+}
+
+#[test]
+fn infantry_raw_owner_remains_the_marking_house_after_live_owner_change() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    let old = sim.substrate.entities.get(1).unwrap().owner();
+    sim.try_reveal_entity(1, common_raw_request(3, 4, 0, 192, 64));
+    let changed = sim.interner.intern("Russians");
+    sim.change_owner(1, changed);
+    assert_eq!(sim.substrate.entities.get(1).unwrap().owner(), changed);
+    assert_eq!(
+        sim.substrate
+            .raw_cell_occupation
+            .ground_infantry_owner(3, 4),
+        Some(old)
+    );
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 4);
+}
+
+#[test]
+fn walk_first_limbo_releases_head_but_repeated_limbo_preserves_new_claim() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    sim.try_reveal_entity(1, common_raw_request(3, 4, 0, 192, 64));
+    let head = crate::sim::components::DriveCoord {
+        x: 4 * 256 + 192,
+        y: 4 * 256 + 64,
+        z: 0,
+    };
+    let owner = sim.substrate.entities.get(1).unwrap().owner();
+    let e = sim.substrate.entities.get_mut(1).unwrap();
+    e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
+    e.locomotor.as_mut().unwrap().set_step_head(Some(head));
+    crate::sim::movement::walk_head::raw_at(
+        &mut sim.substrate.raw_cell_occupation,
+        owner,
+        head,
+        true,
+        None,
+        None,
+    );
+    sim.techno_limbo(1);
+    assert_eq!(
+        sim.substrate.raw_cell_occupation.ground_bits(4, 4) & 0x1c,
+        0
+    );
+    assert_eq!(
+        sim.substrate
+            .raw_cell_occupation
+            .ground_infantry_owner(4, 4),
+        None
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .locomotor
+            .as_ref()
+            .unwrap()
+            .step_head(),
+        Some(head)
+    );
+    let other = sim.interner.intern("Russians");
+    crate::sim::movement::walk_head::raw_at(
+        &mut sim.substrate.raw_cell_occupation,
+        other,
+        head,
+        true,
+        None,
+        None,
+    );
+    sim.techno_limbo(1);
+    sim.uninit(1);
+    assert_eq!(
+        sim.substrate.raw_cell_occupation.ground_bits(4, 4) & 0x1c,
+        4
+    );
+    assert_eq!(
+        sim.substrate
+            .raw_cell_occupation
+            .ground_infantry_owner(4, 4),
+        Some(other)
+    );
 }

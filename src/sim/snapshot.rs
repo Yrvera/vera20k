@@ -474,7 +474,10 @@ use crate::sim::world::Simulation;
 // v152 stores Foot occupation enable, pending fresh Apply1, and Ship head/handoff
 // projection metadata alongside the existing serialized raw occupation plane.
 // Drive END permission and the distinct Foot forced-swap gate are retained too.
-const SNAPSHOT_VERSION: u32 = 152;
+// v153 retains full Walk/Hover committed head XYZ on the locomotor instance.
+// Raw Infantry owner slots now retain the mark-time house index, not entity IDs.
+// Walk also retains the order-time destination XYZ independently of the A* endpoint.
+const SNAPSHOT_VERSION: u32 = 153;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3303,7 +3306,7 @@ mod tests {
         // 146 -> 147: retain Scenario+214 for subsequent native constructors.
         // 150 -> 151: Foot also owns applied speed independently of its locomotor.
         // 151 -> 152: Foot occupation enable and pending fresh Apply1 obligation.
-        assert_eq!(super::SNAPSHOT_VERSION, 152);
+        assert_eq!(super::SNAPSHOT_VERSION, 153);
     }
 
     #[test]
@@ -5194,14 +5197,16 @@ mod tests {
     #[test]
     fn gsi_04_12_raw_occupation_snapshot_roundtrip_preserves_both_planes() {
         let mut sim = Simulation::new();
+        let ground_owner = sim.interner.intern("Americans");
+        let deck_owner = sim.interner.intern("Russians");
         sim.substrate.raw_cell_occupation.mark_ground(17, 23, 0x23);
         sim.substrate.raw_cell_occupation.mark_deck(17, 23, 0xC4);
         sim.substrate
             .raw_cell_occupation
-            .mark_ground_infantry(17, 23, 0x04, 7001);
+            .mark_ground_infantry(17, 23, 0x04, ground_owner);
         sim.substrate
             .raw_cell_occupation
-            .mark_deck_infantry(17, 23, 0x08, 7002);
+            .mark_deck_infantry(17, 23, 0x08, deck_owner);
         sim.substrate.raw_cell_occupation.mark_ground(2, 31, 0x02);
         // Native in-scenario load restarts Scenario RNG from Seed0; isolate
         // occupation-plane persistence on that same post-load cursor.
@@ -5234,14 +5239,14 @@ mod tests {
                 .substrate
                 .raw_cell_occupation
                 .ground_infantry_owner(17, 23),
-            Some(7001)
+            Some(ground_owner)
         );
         assert_eq!(
             restored
                 .substrate
                 .raw_cell_occupation
                 .deck_infantry_owner(17, 23),
-            Some(7002)
+            Some(deck_owner)
         );
         assert_eq!(
             restored.substrate.raw_cell_occupation.ground_bits(2, 31),

@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::map::entities::EntityCategory;
 use crate::sim::components::{DriveLocomotionRuntime, DriveOccupationFootprint};
 use crate::sim::game_entity::GameEntity;
+use crate::sim::intern::InternedId;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
@@ -191,9 +192,9 @@ struct RawCellOccupation {
     ground: u8,
     deck: u8,
     #[serde(default)]
-    ground_infantry_owner: Option<u64>,
+    ground_infantry_owner: Option<InternedId>,
     #[serde(default)]
-    deck_infantry_owner: Option<u64>,
+    deck_infantry_owner: Option<InternedId>,
 }
 
 /// Sparse canonical storage for the raw ground/deck occupation bytes.
@@ -228,7 +229,7 @@ impl RawCellOccupationGrid {
     }
 
     #[cfg(test)]
-    pub(crate) fn ground_infantry_owner(&self, rx: u16, ry: u16) -> Option<u64> {
+    pub(crate) fn ground_infantry_owner(&self, rx: u16, ry: u16) -> Option<InternedId> {
         self.cells
             .get(&(rx, ry))
             .and_then(|cell| cell.ground_infantry_owner)
@@ -238,14 +239,10 @@ impl RawCellOccupationGrid {
     /// vtable `+0xF0`, `0x007EB148`) writes the owner **house index** — from
     /// vtable `+0x38` — after setting the quadrant bit.
     ///
-    /// **VERA-internal, gamemd equivalent UNCHECKED:** the value stored is an
-    /// entity id, not a house index. `UnitClass::Can_Enter_Cell` @ `0x0073F0A0`
-    /// consumes the native field through `HouseClass::Is_Ally_ByIndex` in its
-    /// infantry-present-but-no-object-found fallback. Trigger: none today —
-    /// VERA serializes and hashes the field and never runs an ally test on it.
-    /// Player effect: none. Frequency: zero. Downstream risk: a port of that
-    /// fallback would read an entity id as a house index.
-    pub(crate) fn mark_ground_infantry(&mut self, rx: u16, ry: u16, mask: u8, owner: u64) {
+    /// The interned house identity survives entity retirement and ownership
+    /// changes, matching native's retained House index. Repair CanEnter uses
+    /// this raw slot even when no infantry object remains in the selected list.
+    pub(crate) fn mark_ground_infantry(&mut self, rx: u16, ry: u16, mask: u8, owner: InternedId) {
         if mask == 0 {
             return;
         }
@@ -289,7 +286,12 @@ impl RawCellOccupationGrid {
 
     /// Infantry owner identity paired with the selected native occupation byte.
     /// Ground (`+0x124`) and deck (`+0x128`) are independent planes.
-    pub(crate) fn infantry_owner(&self, rx: u16, ry: u16, layer: MovementLayer) -> Option<u64> {
+    pub(crate) fn infantry_owner(
+        &self,
+        rx: u16,
+        ry: u16,
+        layer: MovementLayer,
+    ) -> Option<InternedId> {
         self.cells.get(&(rx, ry)).and_then(|cell| match layer {
             MovementLayer::Ground => cell.ground_infantry_owner,
             MovementLayer::Bridge => cell.deck_infantry_owner,
@@ -298,13 +300,13 @@ impl RawCellOccupationGrid {
     }
 
     #[cfg(test)]
-    pub(crate) fn deck_infantry_owner(&self, rx: u16, ry: u16) -> Option<u64> {
+    pub(crate) fn deck_infantry_owner(&self, rx: u16, ry: u16) -> Option<InternedId> {
         self.cells
             .get(&(rx, ry))
             .and_then(|cell| cell.deck_infantry_owner)
     }
 
-    pub(crate) fn mark_deck_infantry(&mut self, rx: u16, ry: u16, mask: u8, owner: u64) {
+    pub(crate) fn mark_deck_infantry(&mut self, rx: u16, ry: u16, mask: u8, owner: InternedId) {
         if mask == 0 {
             return;
         }
@@ -343,7 +345,7 @@ impl RawCellOccupationGrid {
     /// Canonical coordinate-key iteration used by the deterministic hash.
     pub(crate) fn entries(
         &self,
-    ) -> impl Iterator<Item = (u16, u16, u8, u8, Option<u64>, Option<u64>)> + '_ {
+    ) -> impl Iterator<Item = (u16, u16, u8, u8, Option<InternedId>, Option<InternedId>)> + '_ {
         self.cells.iter().map(|(&(rx, ry), cell)| {
             (
                 rx,
@@ -1626,19 +1628,31 @@ mod tests {
     #[test]
     fn infantry_owner_indices_follow_selected_plane_and_functional_bits() {
         let mut grid = RawCellOccupationGrid::new();
-        grid.mark_ground_infantry(7, 9, 1 << 2, 41);
-        grid.mark_ground_infantry(7, 9, 1 << 3, 42);
-        grid.mark_deck_infantry(7, 9, 1 << 4, 99);
+        grid.mark_ground_infantry(7, 9, 1 << 2, InternedId::from_index(41));
+        grid.mark_ground_infantry(7, 9, 1 << 3, InternedId::from_index(42));
+        grid.mark_deck_infantry(7, 9, 1 << 4, InternedId::from_index(99));
 
         assert_eq!(grid.ground_bits(7, 9) & 0x1C, 0x0C);
-        assert_eq!(grid.ground_infantry_owner(7, 9), Some(42));
-        assert_eq!(grid.deck_infantry_owner(7, 9), Some(99));
+        assert_eq!(
+            grid.ground_infantry_owner(7, 9),
+            Some(InternedId::from_index(42))
+        );
+        assert_eq!(
+            grid.deck_infantry_owner(7, 9),
+            Some(InternedId::from_index(99))
+        );
 
         grid.clear_ground_infantry(7, 9, 1 << 3);
-        assert_eq!(grid.ground_infantry_owner(7, 9), Some(42));
+        assert_eq!(
+            grid.ground_infantry_owner(7, 9),
+            Some(InternedId::from_index(42))
+        );
         grid.clear_ground_infantry(7, 9, 1 << 2);
         assert_eq!(grid.ground_infantry_owner(7, 9), None);
-        assert_eq!(grid.deck_infantry_owner(7, 9), Some(99));
+        assert_eq!(
+            grid.deck_infantry_owner(7, 9),
+            Some(InternedId::from_index(99))
+        );
     }
 
     #[test]
