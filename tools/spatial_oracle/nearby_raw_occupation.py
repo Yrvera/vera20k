@@ -16,6 +16,7 @@ from tools.spatial_oracle.map_queries import dwords, packed
 
 MAP, TABLE, DUMMY = 0x87F7E8, 0xC00000, 0xABDC50
 CELL, SEED, OUTPUT = SCRATCH, SCRATCH + 0x200, SCRATCH + 0x210
+OWNER, VTABLE, OWNER_GET, MARK_INPUT = [SCRATCH + i * 0x1000 for i in range(1, 5)]
 
 
 def query(row):
@@ -32,6 +33,8 @@ def query(row):
     u.mem_write(0x87F924, dwords(TABLE))
     u.mem_write(MAP + 0xF4, dwords(row['cap'], 0))
     u.mem_write(DUMMY, bytes(0x200))
+    u.mem_write(DUMMY + 0x54, dwords(-1, -1))
+    u.mem_write(DUMMY + 0x44, dwords(-1))
     u.mem_write(CELL + 0x24, packed(10, 10))
     u.mem_write(CELL + 0x44, dwords(-1))  # no overlay
     u.mem_write(CELL + 0xEC, dwords(0))  # clear land
@@ -41,6 +44,7 @@ def query(row):
     u.mem_write(SEED, packed(*row['seed']))
     u.mem_write(0x89EA40, struct.pack('<90f', *([1.0] * 90)))
     events = []
+    mark_owner = 0
 
     def read32(address):
         return struct.unpack('<I', u.mem_read(address, 4))[0]
@@ -53,7 +57,9 @@ def query(row):
 
     def observe(_machine, address, _size, _data):
         sp = u.reg_read(UC_X86_REG_ESP)
-        if address == 0x578540:
+        if address == OWNER_GET:
+            ret(0, mark_owner)
+        elif address == 0x578540:
             assert read32(sp + 8) == 1
             events.append('playfield')
             ret(8, 1)
@@ -68,6 +74,21 @@ def query(row):
             ret(8, out)
 
     u.hook_add(UC_HOOK_CODE, observe)
+    if 'dummy_actions' in row:
+        u.mem_write(OWNER, dwords(VTABLE))
+        u.mem_write(VTABLE + 0x38, dwords(OWNER_GET))
+        for address, value in [(0x89E7C0, 104), (0x89E7B4, 416), (0xA8F234, 416)]:
+            u.mem_write(address, dwords(value))
+        for action in row['dummy_actions']:
+            mark_owner = action['owner']
+            u.mem_write(MARK_INPUT, dwords(*action['coord']))
+            entry = 0x5217C0 if action['put'] else 0x521850
+            sp = STACK_BASE + STACK_SIZE - 0x1000
+            u.mem_write(sp, dwords(RET_MAGIC, MARK_INPUT))
+            u.reg_write(UC_X86_REG_ESP, sp)
+            u.reg_write(UC_X86_REG_ECX, OWNER)
+            run_checked(u, entry, RET_MAGIC, count=30000, required_addresses=[entry, 0x578080])
+            assert u.reg_read(UC_X86_REG_ESP) == sp + 8
     args = [OUTPUT, SEED, 0, -1, 0, row['bridge_aware'], 1, 1, 0,
             row['height'], 0, 1, SEED, 0, 0]
     sp = STACK_BASE + STACK_SIZE - 0x1000
@@ -80,8 +101,12 @@ def query(row):
     run_checked(u, 0x56DC20, RET_MAGIC, count=30000, required_addresses=required)
     assert u.reg_read(UC_X86_REG_ESP) == sp + 4 * (len(args) + 1)
     assert bytes(u.mem_read(SEED, 4)) == packed(*row['seed'])
-    return dict(cell=list(struct.unpack('<hh', u.mem_read(OUTPUT, 4))),
-                dummy=list(struct.unpack('<hh', u.mem_read(DUMMY + 0x24, 4))), events=events)
+    result = dict(cell=list(struct.unpack('<hh', u.mem_read(OUTPUT, 4))),
+                  dummy=list(struct.unpack('<hh', u.mem_read(DUMMY + 0x24, 4))), events=events)
+    if 'dummy_actions' in row:
+        result['dummy_raw'] = [read32(DUMMY + 0x124) & 255, read32(DUMMY + 0x128) & 255]
+        result['dummy_owners'] = [read32(DUMMY + 0x54), read32(DUMMY + 0x58)]
+    return result
 
 
 def generate():
@@ -97,18 +122,30 @@ def generate():
     row = dict(structural=False, ground=0, deck=0, bridge_aware=False,
                height=False, level=0, cap=0, seed=[40, 41])
     rows.append(dict(input=row, output=query(row)))
+    # Different absent coordinates alias the same marked Cell. The second
+    # case clears through yet another coordinate before the identical query.
+    for clear in [False, True]:
+        actions = [dict(coord=[40 * 256 + 192, 41 * 256 + 64, 0], put=True, owner=99)]
+        if clear:
+            actions.append(dict(coord=[43 * 256 + 192, 44 * 256 + 64, 0], put=False, owner=99))
+        row = dict(structural=False, ground=0, deck=0, bridge_aware=False,
+                   height=False, level=0, cap=1, seed=[40, 42], dummy_actions=actions)
+        rows.append(dict(input=row, output=query(row)))
     return rows
 
 
 if __name__ == '__main__':
     finish_vectors(generate, Path(__file__).with_suffix('.json'), provenance=lambda: provenance(
-        scope='Original FNPC/rectangle/raw leaf for six supplied zero/one-ring queries; not full map, projection, or Scatter parity',
-        assumptions=['Sparse original fixed-stride table allocates only Cell(10,10); dummy data is explicitly zeroed',
+        scope='Original FNPC/rectangle/raw leaf and two missing-cell mark/query histories; not full map, projection, or Scatter parity',
+        assumptions=['Sparse original fixed-stride table allocates only Cell(10,10); dummy data starts zero except overlay and infantry owners=-1',
                      'Map size sum supplies cap0 or1; Foot speed0, zone-1, movement-zone0, footprint1x1, target=seed',
                      'No overlay, reject-overlay=false, occupant-safety=false, allow-bridge=true, extra-ring=false, final-occupancy=false',
                      'All supplied land speed floats are1.0; signed level, structural flag and both raw planes vary',
-                     'No whole constructor, gameplay lifetime, missing-dummy raw state or multi-ring distance coverage'],
+                     'Two additional rows execute Infantry5217C0/521850 with supplied owner99/height constants104 and416 before querying another missing coordinate',
+                     'No whole constructor, live actor reachability or multi-ring distance coverage'],
         substitutions=['578540 returns true after verifying mode1; map geometry is outside this comparison',
                        '6D6410 returns the supplied candidate cell directly; no native projection lookup side effects are claimed',
+                       'Infantry+38 supplies the explicit row owner index; both raw leaves and their map/ground calls execute original code',
                        'Events observe those two seams and entry4834A0 only; map lookup, raw/height gates and collection/selection execute original bytes'],
-        entry_points={'nearby': 0x56DC20, 'rectangle': 0x56E7C0, 'raw_passability': 0x4834A0}))
+        entry_points={'nearby': 0x56DC20, 'rectangle': 0x56E7C0, 'raw_passability': 0x4834A0,
+                      'infantry_mark': 0x5217C0, 'infantry_clear': 0x521850}))

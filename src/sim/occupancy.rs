@@ -197,6 +197,29 @@ struct RawCellOccupation {
     deck_infantry_owner: Option<InternedId>,
 }
 
+/// Identity of the CellClass holding a raw byte. All missing map slots share
+/// one receiver; stamping its coordinate never changes this storage key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RawCellKey {
+    Real(u16, u16),
+    Dummy,
+}
+
+impl RawCellKey {
+    pub(crate) fn from_native(
+        terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+        cell: crate::map::cell_index::NativeCellIdentity,
+    ) -> Self {
+        match cell {
+            crate::map::cell_index::NativeCellIdentity::Real(index) => {
+                let cell = &terrain.cells()[index];
+                Self::Real(cell.rx, cell.ry)
+            }
+            crate::map::cell_index::NativeCellIdentity::Dummy => Self::Dummy,
+        }
+    }
+}
+
 /// Sparse canonical storage for the raw ground/deck occupation bytes.
 ///
 /// An absent entry is exactly `(ground = 0, deck = 0)`. Zero entries are
@@ -207,11 +230,96 @@ struct RawCellOccupation {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RawCellOccupationGrid {
     cells: BTreeMap<(u16, u16), RawCellOccupation>,
+    // The process-global fallback Cell is not Scenario save payload. Map
+    // Resize reconstructs it: Cell47BC2D/30 owners=-1,47BD95/9B raw bytes=0.
+    #[serde(skip)]
+    dummy: RawCellOccupation,
 }
 
 impl RawCellOccupationGrid {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn bits_at(&self, key: RawCellKey, layer: MovementLayer) -> u8 {
+        let cell = match key {
+            RawCellKey::Real(x, y) => self.cells.get(&(x, y)),
+            RawCellKey::Dummy => Some(&self.dummy),
+        };
+        cell.map_or(0, |cell| match layer {
+            MovementLayer::Ground => cell.ground,
+            MovementLayer::Bridge => cell.deck,
+            _ => 0,
+        })
+    }
+
+    pub(crate) fn owner_at(&self, key: RawCellKey, layer: MovementLayer) -> Option<InternedId> {
+        match key {
+            RawCellKey::Real(x, y) => self.infantry_owner(x, y, layer),
+            RawCellKey::Dummy => match layer {
+                MovementLayer::Ground => self.dummy.ground_infantry_owner,
+                MovementLayer::Bridge => self.dummy.deck_infantry_owner,
+                _ => None,
+            },
+        }
+    }
+
+    /// Infantry5217C0/521850 mutate the retained receiver after the ground
+    /// query. In particular, a later missing lookup does not allocate a cell.
+    pub(crate) fn write_infantry(
+        &mut self,
+        key: RawCellKey,
+        layer: MovementLayer,
+        mask: u8,
+        owner: InternedId,
+        put: bool,
+    ) {
+        if let RawCellKey::Real(x, y) = key {
+            match (layer, put) {
+                (MovementLayer::Ground, true) => self.mark_ground_infantry(x, y, mask, owner),
+                (MovementLayer::Bridge, true) => self.mark_deck_infantry(x, y, mask, owner),
+                (MovementLayer::Ground, false) => self.clear_ground_infantry(x, y, mask),
+                (MovementLayer::Bridge, false) => self.clear_deck_infantry(x, y, mask),
+                _ => {}
+            }
+            return;
+        }
+        let (bits, retained_owner) = match layer {
+            MovementLayer::Ground => (
+                &mut self.dummy.ground,
+                &mut self.dummy.ground_infantry_owner,
+            ),
+            MovementLayer::Bridge => (&mut self.dummy.deck, &mut self.dummy.deck_infantry_owner),
+            _ => return,
+        };
+        if put {
+            *bits |= mask;
+            *retained_owner = Some(owner);
+        } else {
+            *bits &= !mask;
+            if *bits & 0x1C == 0 {
+                *retained_owner = None;
+            }
+        }
+    }
+
+    pub(crate) fn retain_process_dummy_from(&mut self, live: &Self) {
+        self.dummy = live.dummy;
+    }
+
+    pub(crate) fn reconstruct_dummy_for_map_resize(&mut self) {
+        self.dummy = RawCellOccupation::default();
+    }
+
+    pub(crate) fn dummy_for_hash(
+        &self,
+    ) -> Option<(u8, u8, Option<InternedId>, Option<InternedId>)> {
+        (self.dummy != RawCellOccupation::default()).then_some((
+            self.dummy.ground,
+            self.dummy.deck,
+            self.dummy.ground_infantry_owner,
+            self.dummy.deck_infantry_owner,
+        ))
     }
 
     pub(crate) fn mark_ground(&mut self, rx: u16, ry: u16, mask: u8) {

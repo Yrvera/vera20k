@@ -6191,11 +6191,36 @@ mod tests {
     fn gsi_04_01_snapshot_handoff_retains_live_process_dummy_without_serializing_it() {
         use crate::sim::combat::RAD_NO_ATTACKER;
         use crate::sim::projectile::ProjectileTarget;
+        use crate::sim::{movement::locomotor::MovementLayer, occupancy::RawCellKey};
 
         let mut live = Simulation::new();
         let process_dummy = live.shared_cell_dummy.clone();
         process_dummy.set_level_slope(-7, 11);
         process_dummy.stamp_coord(7, 9);
+
+        let owner = live.intern("DummyOccupationOwner");
+        let hash_before_raw = live.state_hash();
+        live.substrate.raw_cell_occupation.write_infantry(
+            RawCellKey::Dummy,
+            MovementLayer::Ground,
+            4,
+            owner,
+            true,
+        );
+        let ground_hash = live.state_hash();
+        assert_ne!(hash_before_raw, ground_hash);
+        live.substrate.raw_cell_occupation.write_infantry(
+            RawCellKey::Dummy,
+            MovementLayer::Bridge,
+            8,
+            owner,
+            true,
+        );
+        assert_ne!(
+            ground_hash,
+            live.state_hash(),
+            "the fallback cell's two raw planes are future-affecting"
+        );
         let projectile_id = live.allocate_stable_id();
         live.admit_projectile(
             projectile_id,
@@ -6213,6 +6238,13 @@ mod tests {
 
         let bytes = GameSnapshot::save(&live, 0, 0, "shared-dummy.map", 0);
         let cold = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        assert!(
+            cold.substrate
+                .raw_cell_occupation
+                .dummy_for_hash()
+                .is_none(),
+            "process-global occupation is not saved Scenario payload"
+        );
         assert_eq!(
             cold.projectiles.get(projectile_id).unwrap().target,
             ProjectileTarget::DummyCell
@@ -6226,6 +6258,10 @@ mod tests {
 
         let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         restored.retain_in_scenario_process_state_from(&live);
+        assert_eq!(
+            restored.substrate.raw_cell_occupation.dummy_for_hash(),
+            live.substrate.raw_cell_occupation.dummy_for_hash()
+        );
         assert!(restored.shared_cell_dummy.same_identity(&process_dummy));
         assert_eq!(
             restored.shared_cell_dummy.snapshot(),
@@ -6258,6 +6294,14 @@ mod tests {
         assert_eq!(rebuilt_dummy.snapshot().coord, (7, 9));
 
         restored.reconstruct_cellclass_dummy_for_map_resize();
+        assert!(
+            restored
+                .substrate
+                .raw_cell_occupation
+                .dummy_for_hash()
+                .is_none(),
+            "Cell47BBF0 reconstructs both raw bytes and owners"
+        );
         assert_eq!(
             rebuilt_dummy.snapshot(),
             crate::map::resolved_terrain::SharedCellDummySnapshot {

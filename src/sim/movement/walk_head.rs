@@ -1,11 +1,11 @@
 //! Walk75C240 retained head and Infantry5217C0/521850 raw subcell leaves.
 //! The raw bits and mark-time house are canonical; no later occupancy rebuild
 //! reconstructs the history from the path or a changed terrain layer.
-use crate::map::{cell_index::NativeCellIdentity, resolved_terrain::ResolvedTerrainGrid};
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::sim::{
     components::DriveCoord,
     intern::InternedId,
-    occupancy::{RawCellOccupationGrid, infantry_raw_occupation_mask},
+    occupancy::{RawCellKey, RawCellOccupationGrid, infantry_raw_occupation_mask},
     pathfinding::PathGrid,
 };
 use crate::util::fixed_math::SimFixed;
@@ -63,35 +63,34 @@ pub(crate) fn raw_at(
 ) {
     let cell = ((coord.x / 256) as u16, (coord.y / 256) as u16);
     // The native leaves select the Cell before ground height and raw plane.
-    if let Some(terrain) = terrain {
-        if terrain.native_cell_identity((cell.0 as i16, cell.1 as i16)) == NativeCellIdentity::Dummy
-        {
-            log::error!("Walk raw occupation has no represented shared-dummy occupation bytes");
-            return;
-        }
-    }
+    let identity = terrain.map(|t| t.native_cell_identity((cell.0 as i16, cell.1 as i16)));
+    let key = terrain
+        .zip(identity)
+        .map_or(RawCellKey::Real(cell.0, cell.1), |(t, c)| {
+            RawCellKey::from_native(t, c)
+        });
     let ground =
         super::ground_pose::ground_surface_z_at([coord.x, coord.y], false, terrain, fallback)
             .unwrap_or(coord.z);
-    let structural = terrain.and_then(|t| t.cell(cell.0, cell.1)).map_or_else(
+    let structural = terrain.zip(identity).map_or_else(
         || {
             fallback
                 .and_then(|g| g.cell(cell.0, cell.1))
                 .is_some_and(|c| c.bridge_deck_level_if_any().is_some())
         },
-        |c| c.bridge_facts.has_structural_bridge(),
+        |(t, c)| t.native_cell_flags(c) & 0x100 != 0,
     );
     let deck = coord.z >= ground.wrapping_add(416) && (!put || structural);
     let mask = infantry_raw_occupation_mask(
         SimFixed::from_num(coord.x % 256),
         SimFixed::from_num(coord.y % 256),
     );
-    match (put, deck) {
-        (true, true) => raw.mark_deck_infantry(cell.0, cell.1, mask, owner),
-        (true, false) => raw.mark_ground_infantry(cell.0, cell.1, mask, owner),
-        (false, true) => raw.clear_deck_infantry(cell.0, cell.1, mask),
-        (false, false) => raw.clear_ground_infantry(cell.0, cell.1, mask),
-    }
+    let layer = if deck {
+        super::locomotor::MovementLayer::Bridge
+    } else {
+        super::locomotor::MovementLayer::Ground
+    };
+    raw.write_infantry(key, layer, mask, owner, put);
 }
 
 impl crate::sim::world::Simulation {
@@ -512,12 +511,13 @@ pub(super) fn prepare_step_head(
             priority |= slave_priority;
         }
         //75C4C8 reloads input Cell after the complete priority corridor.
-        let (cell, structural) = terrain.map_or_else(
+        let (cell, structural, raw_key) = terrain.map_or_else(
             || {
                 (
                     next,
                     grid.and_then(|g| g.cell(next.0, next.1))
                         .is_some_and(|c| c.bridge_structural),
+                    RawCellKey::Real(next.0, next.1),
                 )
             },
             |t| {
@@ -527,6 +527,7 @@ pub(super) fn prepare_step_head(
                 (
                     (c.0 as u16, c.1 as u16),
                     t.native_cell_flags(selected) & 0x100 != 0,
+                    RawCellKey::from_native(t, selected),
                 )
             },
         );
@@ -535,9 +536,9 @@ pub(super) fn prepare_step_head(
                 > super::ground_pose::ground_surface_z_at([input.x, input.y], false, terrain, grid)
                     .unwrap_or(current.z)
                     .wrapping_add(312);
-        let ground_raw = raw.ground_bits(cell.0, cell.1);
+        let ground_raw = raw.bits_at(raw_key, MovementLayer::Ground);
         let selected_raw = if bridge {
-            raw.deck_bits(cell.0, cell.1)
+            raw.bits_at(raw_key, MovementLayer::Bridge)
         } else {
             ground_raw
         };

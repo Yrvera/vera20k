@@ -2583,6 +2583,9 @@ impl Simulation {
         self.main_rng = live.main_rng.clone();
         self.mapgen_rng = live.mapgen_rng.clone();
         self.bind_shared_cell_dummy(live.effective_shared_cell_dummy());
+        self.substrate
+            .raw_cell_occupation
+            .retain_process_dummy_from(&live.substrate.raw_cell_occupation);
         // Static map data, not saved state: the live scenario is still the one
         // being reloaded, so its parsed lighting profile carries over.
         self.scenario_normal_lighting = live.scenario_normal_lighting;
@@ -2601,6 +2604,9 @@ impl Simulation {
             .reconstruct_for_map_resize();
         self.substrate
             .base_reservations
+            .reconstruct_dummy_for_map_resize();
+        self.substrate
+            .raw_cell_occupation
             .reconstruct_dummy_for_map_resize();
     }
 

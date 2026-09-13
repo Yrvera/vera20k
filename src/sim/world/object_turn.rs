@@ -38,6 +38,13 @@ pub(super) struct LiveObjectPassOutcome {
 }
 
 #[derive(Default)]
+pub(super) struct GroundLocomotorOutcome {
+    pub(super) movement: movement::MovementTickStats,
+    pub(super) bridge_state_changed: bool,
+    ordinary_track_owned: bool,
+}
+
+#[derive(Default)]
 struct ObjectTurnOutcome {
     movement: movement::MovementTickStats,
     destroyed_structure: bool,
@@ -46,6 +53,89 @@ struct ObjectTurnOutcome {
 }
 
 impl Simulation {
+    /// The ordinary ground locomotor Process corridor, without Object/Techno AI.
+    /// Infantry Scatter51D478 calls the active locomotor synchronously; its
+    /// PerCell and boundary receivers must finish before Scatter returns.
+    pub(super) fn process_ground_locomotor_one(
+        &mut self,
+        stable_id: u64,
+        rules: Option<&RuleSet>,
+        path_grid: Option<&PathGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> GroundLocomotorOutcome {
+        let sim = self;
+        let one = [stable_id];
+        let mut outcome = GroundLocomotorOutcome::default();
+        let mut pending_movement = {
+            let current_grid = sim.path_grid_snapshot();
+            movement::movement_tick::begin_movement_with_grids_scoped(
+                &mut sim.substrate.entities,
+                Some(&one),
+                current_grid.as_deref().or(path_grid),
+                &sim.terrain_costs,
+                &sim.house_alliances,
+                &mut sim.substrate.occupancy,
+                &mut sim.substrate.cell_occupation,
+                &mut sim.substrate.raw_cell_occupation,
+                &mut sim.substrate.next_occupancy_enter_order,
+                &mut sim.scenario_rng,
+                sim.session.tick,
+                sim.session.binary_frame,
+                sim.zone_grid.as_ref(),
+                sim.resolved_terrain.as_ref(),
+                sim.overlay_grid.as_ref(),
+                overlay_registry,
+                sim.playfield_bounds,
+                &sim.terrain_speed_config,
+                sim.close_enough,
+                sim.path_delay_ticks,
+                sim.blockage_path_delay_ticks,
+                &mut sim.interner,
+                rules,
+                &mut sim.sound_events,
+                &mut sim.pending_lifecycle_requests,
+                true,
+                true,
+                Some(&sim.production.slave_bindings),
+            )
+        };
+        outcome.ordinary_track_owned = pending_movement
+            .take_native_track()
+            .map(|invocation| {
+                let moved =
+                    sim.run_ordinary_track_process(invocation, rules, path_grid, overlay_registry);
+                pending_movement.record_track_movement(moved);
+            })
+            .is_some();
+        if let Some((id, head)) = pending_movement.take_walk_per_cell() {
+            outcome.bridge_state_changed |=
+                sim.run_completed_walk_step(id, head, rules, path_grid, overlay_registry);
+            pending_movement.retain_walk_completion(id, &sim.substrate.entities);
+        }
+        if let Some((id, coord)) = pending_movement.take_walk_boundary() {
+            sim.run_walk_boundary(id, coord, rules, path_grid, overlay_registry);
+            pending_movement.record_track_movement(1);
+        }
+
+        outcome
+            .movement
+            .merge(movement::movement_tick::finish_movement_pass(
+                pending_movement,
+                &mut sim.substrate.entities,
+                &sim.house_alliances,
+                &mut sim.substrate.cell_occupation,
+                sim.session.tick,
+                sim.session.binary_frame,
+                sim.resolved_terrain.as_ref(),
+                sim.path_grid.as_deref().or(path_grid),
+                &mut sim.interner,
+                rules,
+                &mut sim.sound_events,
+                &mut sim.pending_lifecycle_requests,
+                true,
+            ));
+        outcome
+    }
     pub(super) fn advance_live_object_pass(
         &mut self,
         rules: Option<&RuleSet>,
@@ -166,74 +256,11 @@ impl Simulation {
             .and_then(|e| e.locomotor.as_ref())
             .is_some_and(|l| l.kind == crate::rules::locomotor_type::LocomotorKind::Walk);
         let one = [stable_id];
-        let mut pending_movement = {
-            let current_grid = sim.path_grid_snapshot();
-            movement::movement_tick::begin_movement_with_grids_scoped(
-                &mut sim.substrate.entities,
-                Some(&one),
-                current_grid.as_deref().or(path_grid),
-                &sim.terrain_costs,
-                &sim.house_alliances,
-                &mut sim.substrate.occupancy,
-                &mut sim.substrate.cell_occupation,
-                &mut sim.substrate.raw_cell_occupation,
-                &mut sim.substrate.next_occupancy_enter_order,
-                &mut sim.scenario_rng,
-                sim.session.tick,
-                sim.session.binary_frame,
-                sim.zone_grid.as_ref(),
-                sim.resolved_terrain.as_ref(),
-                sim.overlay_grid.as_ref(),
-                overlay_registry,
-                sim.playfield_bounds,
-                &sim.terrain_speed_config,
-                sim.close_enough,
-                sim.path_delay_ticks,
-                sim.blockage_path_delay_ticks,
-                &mut sim.interner,
-                rules,
-                &mut sim.sound_events,
-                &mut sim.pending_lifecycle_requests,
-                true,
-                true,
-                Some(&sim.production.slave_bindings),
-            )
-        };
-        let ordinary_track_owned = pending_movement
-            .take_native_track()
-            .map(|invocation| {
-                let moved =
-                    sim.run_ordinary_track_process(invocation, rules, path_grid, overlay_registry);
-                pending_movement.record_track_movement(moved);
-            })
-            .is_some();
-        if let Some((id, head)) = pending_movement.take_walk_per_cell() {
-            outcome.bridge_state_changed |=
-                sim.run_completed_walk_step(id, head, rules, path_grid, overlay_registry);
-            pending_movement.retain_walk_completion(id, &sim.substrate.entities);
-        }
-        if let Some((id, coord)) = pending_movement.take_walk_boundary() {
-            sim.run_walk_boundary(id, coord, rules, path_grid, overlay_registry);
-            pending_movement.record_track_movement(1);
-        }
-
-        outcome
-            .movement
-            .merge(movement::movement_tick::finish_movement_pass(
-                pending_movement,
-                &mut sim.substrate.entities,
-                &sim.house_alliances,
-                &mut sim.substrate.cell_occupation,
-                sim.session.tick,
-                sim.session.binary_frame,
-                sim.resolved_terrain.as_ref(),
-                sim.path_grid.as_deref().or(path_grid),
-                &mut sim.interner,
-                rules,
-                &mut sim.sound_events,
-                &mut sim.pending_lifecycle_requests,
-                true,
-            ));
+        let ground =
+            sim.process_ground_locomotor_one(stable_id, rules, path_grid, overlay_registry);
+        let ordinary_track_owned = ground.ordinary_track_owned;
+        outcome.movement.merge(ground.movement);
+        outcome.bridge_state_changed |= ground.bridge_state_changed;
 
         // FootClass advances the SHP Unit body counter immediately after
         // this object's locomotor Process, against the still-current

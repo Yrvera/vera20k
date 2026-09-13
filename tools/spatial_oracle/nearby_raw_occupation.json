@@ -185,5 +185,118 @@
       ],
       "events": []
     }
+  },
+  {
+    "input": {
+      "bridge_aware": false,
+      "cap": 1,
+      "deck": 0,
+      "dummy_actions": [
+        {
+          "coord": [
+            10432,
+            10560,
+            0
+          ],
+          "owner": 99,
+          "put": true
+        }
+      ],
+      "ground": 0,
+      "height": false,
+      "level": 0,
+      "seed": [
+        40,
+        42
+      ],
+      "structural": false
+    },
+    "output": {
+      "cell": [
+        0,
+        0
+      ],
+      "dummy": [
+        40,
+        42
+      ],
+      "dummy_owners": [
+        99,
+        4294967295
+      ],
+      "dummy_raw": [
+        4,
+        0
+      ],
+      "events": [
+        "playfield",
+        "raw",
+        "playfield",
+        "raw"
+      ]
+    }
+  },
+  {
+    "input": {
+      "bridge_aware": false,
+      "cap": 1,
+      "deck": 0,
+      "dummy_actions": [
+        {
+          "coord": [
+            10432,
+            10560,
+            0
+          ],
+          "owner": 99,
+          "put": true
+        },
+        {
+          "coord": [
+            11200,
+            11328,
+            0
+          ],
+          "owner": 99,
+          "put": false
+        }
+      ],
+      "ground": 0,
+      "height": false,
+      "level": 0,
+      "seed": [
+        40,
+        42
+      ],
+      "structural": false
+    },
+    "output": {
+      "cell": [
+        40,
+        42
+      ],
+      "dummy": [
+        40,
+        42
+      ],
+      "dummy_owners": [
+        4294967295,
+        4294967295
+      ],
+      "dummy_raw": [
+        0,
+        0
+      ],
+      "events": [
+        "playfield",
+        "raw",
+        "projection",
+        "playfield",
+        "raw",
+        "projection",
+        "projection",
+        "projection"
+      ]
+    }
   }
 ]

@@ -30,17 +30,9 @@ fn row_nonzero(live: &LivePublication<'_>, cell: Cell, speed: SpeedType) -> Resu
         .ok_or("repair admission has no resolved speed row".into())
 }
 fn raw(live: &LivePublication<'_>, cell: Cell, layer: MovementLayer) -> (u8, Option<InternedId>) {
-    if cell == Cell::Dummy {
-        return (0, None);
-    }
-    let p = live.coord(cell);
+    let key = crate::sim::occupancy::RawCellKey::from_native(live.terrain(), cell);
     let grid = &live.sim.substrate.raw_cell_occupation;
-    let bits = if layer == MovementLayer::Bridge {
-        grid.deck_bits(p.0 as u16, p.1 as u16)
-    } else {
-        grid.ground_bits(p.0 as u16, p.1 as u16)
-    };
-    (bits, grid.infantry_owner(p.0 as u16, p.1 as u16, layer))
+    (grid.bits_at(key, layer), grid.owner_at(key, layer))
 }
 // Unit73F5EF/73F628/73F823 compare actual object pointers, never a Cell
 // sharing the blocker's coordinates. Infantry has a distinct Cell shortcut.

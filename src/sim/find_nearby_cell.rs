@@ -806,7 +806,7 @@ mod tests {
         ))
         .unwrap();
         let cases = cases.as_array().unwrap();
-        assert_eq!(cases.len(), 6);
+        assert_eq!(cases.len(), 8);
         for case in cases {
             let input = &case["input"];
             let output = &case["output"];
@@ -825,6 +825,25 @@ mod tests {
             let mut raw = RawCellOccupationGrid::default();
             raw.mark_ground(10, 10, input["ground"].as_u64().unwrap() as u8);
             raw.mark_deck(10, 10, input["deck"].as_u64().unwrap() as u8);
+            if let Some(actions) = input["dummy_actions"].as_array() {
+                for action in actions {
+                    let c = &action["coord"];
+                    crate::sim::movement::walk_head::raw_at(
+                        &mut raw,
+                        crate::sim::intern::InternedId::from_index(
+                            action["owner"].as_u64().unwrap() as u32,
+                        ),
+                        crate::sim::components::DriveCoord {
+                            x: c[0].as_i64().unwrap() as i32,
+                            y: c[1].as_i64().unwrap() as i32,
+                            z: c[2].as_i64().unwrap() as i32,
+                        },
+                        action["put"].as_bool().unwrap(),
+                        Some(&terrain),
+                        None,
+                    );
+                }
+            }
             let seed = (
                 input["seed"][0].as_i64().unwrap() as i32,
                 input["seed"][1].as_i64().unwrap() as i32,
@@ -872,6 +891,30 @@ mod tests {
                     .count(),
                 "{case}"
             );
+            if !output["dummy_raw"].is_null() {
+                use crate::sim::{movement::locomotor::MovementLayer, occupancy::RawCellKey};
+                for (index, layer) in [MovementLayer::Ground, MovementLayer::Bridge]
+                    .into_iter()
+                    .enumerate()
+                {
+                    assert_eq!(
+                        raw.bits_at(RawCellKey::Dummy, layer),
+                        output["dummy_raw"][index].as_u64().unwrap() as u8,
+                        "{case}"
+                    );
+                    assert_eq!(
+                        raw.owner_at(RawCellKey::Dummy, layer)
+                            .map_or(u32::MAX, |owner| owner.index()),
+                        output["dummy_owners"][index].as_u64().unwrap() as u32,
+                        "{case}"
+                    );
+                }
+                assert_eq!(
+                    raw.entry_count(),
+                    0,
+                    "missing lookups must not create coordinate-key entries"
+                );
+            }
         }
     }
 

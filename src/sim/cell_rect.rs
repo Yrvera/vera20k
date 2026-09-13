@@ -929,9 +929,13 @@ fn check_cell_passability(
     //4834A0 consumes the selected raw plane, including reservations whose
     //owners are not yet listed here (Walk75C240). Never combine the planes.
     let (ground_bits, deck_bits) = if let Some(raw) = raw {
-        canonical.map_or((0, 0), |(rx, ry)| {
-            (raw.ground_bits(rx, ry), raw.deck_bits(rx, ry))
-        })
+        let key = canonical.map_or(crate::sim::occupancy::RawCellKey::Dummy, |(x, y)| {
+            crate::sim::occupancy::RawCellKey::Real(x, y)
+        });
+        (
+            raw.bits_at(key, MovementLayer::Ground),
+            raw.bits_at(key, MovementLayer::Bridge),
+        )
     } else {
         (projected_ground_bits, projected_deck_bits)
     };
