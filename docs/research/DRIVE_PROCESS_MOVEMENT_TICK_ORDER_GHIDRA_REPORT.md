@@ -225,3 +225,32 @@ Potential stale or incomplete wording:
 - Retail `gamemd.exe` byte-level direct-call scan: `0x004B0576 -> 0x004B0F20`, `0x004B0AAA -> 0x004B0F20`, `0x004B0647 -> 0x004B2630`, `0x004B0A79 -> 0x004B2630`, recursive `Process_Movement` calls listed above
 - Prior docs: `docs/research/DRIVELOCOMOTION_ARRIVAL_QUEUE_NULL_DESTINATION_GHIDRA_REPORT.md`, `docs/research/DRIVELOCOMOTION_HEAD_TO_COORD_CLEAR_NAVIGATION_STATE_GHIDRA_REPORT.md`, `docs/research/miner/DRIVELOCOMOTION_PROCESS_DRIVE_TRACK_CHRONO_MINER_004B0F20_GHIDRA_REPORT.md`, `docs/research/GRIZZLY_ACCELERATES_FALSE_SEMANTICS_GHIDRA_REPORT.md`
 - Rust source scan: `src/sim/movement/movement_tick.rs`, `src/sim/movement/movement_step.rs`, `src/sim/movement/drive_locomotion.rs`, `src/sim/movement/navcom.rs`
+
+
+### Foot-owned replay lifetime (2026-09-13)
+
+`tools/spatial_oracle/foot_path_queue.py` executes original fresh/chain/tube
+queue-write blocks and complete FootStop4DF0D0 / Drive END4AF930 helpers.
+Its 28 supplied-state witnesses cover short and full24 queues, empty preservation,
+negative coordinate division and signed16 reference wrapping. Fresh Drive4B45CB /
+4B45F6 and Ship6A3BF7 /6A3C22 consume two/one directions and write owner+558;
+chain4B1DF7 /6A143A and tube4B1362 consume one without changing that reference.
+FootStop clears only owner+5A0/+5A4; END transfers the piggyback pointer without
+writing the owner queue. These are bounded memory-operation proofs, not callback
+admission, constructor, release, or whole-Process proofs. Rust compares them in
+`locomotor_owner_tests::foot_queue_operations_match_original_memory_witnesses`.
+
+Rust now retains this replay in `NavigationState.path_replay`, outside the
+retired Drive/Ship payload. Failed miner-command rollback separately captures it;
+current snapshot version150 records the changed field layout. Explicit Stop and
+MCV unload exhaustion remain separate from FootStop/instance retirement.
+
+Still OPEN for the same bridge TrackProcess host: native Stop4AFE00 /69F510
+clamp target fraction and clear destination without resetting applied speed.
+The rest reset belongs to Drive4B0828..4B0880 /Ship69FEF0..FF47 and requires full
+Null destination/head, live empty Foot queue and positive applied fraction.
+Same-cell/coordinate/queued arrival, active ProcessTrack nonzero, and the
+ProcessMovement early-return byte can skip that tail. The current Rust NavCom
+adapter still resets applied speed early; adding an unconditional tail or merely
+an empty-queue guard there would not fix native call order. Exact tail admissions
+and retained invocation ownership remain required before bridge mechanism closure.

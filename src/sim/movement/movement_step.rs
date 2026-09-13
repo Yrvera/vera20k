@@ -67,6 +67,7 @@ fn path_window_to_delta(target: &MovementTarget) -> Option<(i32, i32)> {
 
 #[allow(clippy::too_many_arguments)]
 fn accept_shared_track(
+    path_replay: &mut crate::sim::components::FootPathQueue,
     kind: LocomotorKind,
     drive_locomotion: &mut Option<DriveLocomotionRuntime>,
     ship_locomotion: &mut Option<ShipLocomotionRuntime>,
@@ -80,20 +81,12 @@ fn accept_shared_track(
         LocomotorKind::Drive => {
             if let Some(drive) = drive_locomotion.as_mut() {
                 drive.head_to = Some(endpoint_coord);
-                super::path_markers::accept_path_replay(
-                    &mut drive.path,
-                    endpoint,
-                    consumed_directions,
-                );
+                super::path_markers::accept_path_replay(path_replay, endpoint, consumed_directions);
             }
         }
         LocomotorKind::Ship => {
             if let Some(ship) = ship_locomotion.as_mut() {
-                super::path_markers::accept_path_replay(
-                    &mut ship.path,
-                    endpoint,
-                    consumed_directions,
-                );
+                super::path_markers::accept_path_replay(path_replay, endpoint, consumed_directions);
                 ship.head_to = Some(endpoint_coord);
             }
         }
@@ -188,6 +181,7 @@ pub(super) fn apply_cell_transition_remainder(
 }
 
 pub(super) fn configure_motion_after_transition(
+    path_replay: &mut crate::sim::components::FootPathQueue,
     target: &mut MovementTarget,
     locomotor: &Option<LocomotorState>,
     drive_track: &mut Option<DriveTrackState>,
@@ -244,6 +238,7 @@ pub(super) fn configure_motion_after_transition(
                     (i32::from(current_cell.1) + plan.head_dy) as i16,
                 );
                 accept_shared_track(
+                    path_replay,
                     kind,
                     drive_locomotion,
                     ship_locomotion,
@@ -485,6 +480,88 @@ mod tests {
     use crate::sim::movement::locomotor::LocomotorState;
 
     #[test]
+    fn exhausted_foot_queue_cannot_bypass_drive_or_ship_track_admission() {
+        for kind in [LocomotorKind::Drive, LocomotorKind::Ship] {
+            for directions in [vec![], vec![2, 2]] {
+                let mut queue = crate::sim::components::FootPathQueue {
+                    cursor: directions.len() as u16,
+                    directions,
+                    reference_cell: Some((0, 0)),
+                };
+                let mut target = MovementTarget {
+                    path: vec![(0, 0), (1, 0)],
+                    next_index: 1,
+                    move_dir_x: SimFixed::from_num(256),
+                    move_dir_y: SIM_ZERO,
+                    move_dir_len: SimFixed::from_num(256),
+                    current_speed: SimFixed::from_num(255),
+                    ..Default::default()
+                };
+                let mut position = Position {
+                    rx: 0,
+                    ry: 0,
+                    z: 0,
+                    exact_z_leptons: None,
+                    sub_x: CELL_CENTER_LEPTON,
+                    sub_y: CELL_CENTER_LEPTON,
+                };
+                let before = position.clone();
+                let mut drive =
+                    (kind == LocomotorKind::Drive).then(DriveLocomotionRuntime::default);
+                let mut ship = (kind == LocomotorKind::Ship).then(ShipLocomotionRuntime::default);
+                let mut curve = None;
+                let result = advance_lepton_position(
+                    &mut queue,
+                    &mut target,
+                    &mut position,
+                    &mut 64,
+                    &mut None,
+                    &mut curve,
+                    &mut drive,
+                    &mut ship,
+                    &mut Some(LocomotorState::for_test_kind(kind)),
+                    EntityCategory::Unit,
+                    SimFixed::from_num(255),
+                    255,
+                    SimFixed::from_num(1) / SimFixed::from_num(15),
+                    1,
+                    None,
+                    DriveCellAdmission::default(),
+                    MovementLayer::Ground,
+                    None,
+                    None,
+                );
+                assert!(
+                    matches!(result, AdvanceResult::DriveTrackActive),
+                    "{kind:?}"
+                );
+                assert_eq!(
+                    (
+                        position.rx,
+                        position.ry,
+                        position.sub_x,
+                        position.sub_y,
+                        position.z,
+                        position.exact_z_leptons
+                    ),
+                    (
+                        before.rx,
+                        before.ry,
+                        before.sub_x,
+                        before.sub_y,
+                        before.z,
+                        before.exact_z_leptons
+                    ),
+                    "{kind:?}: no admitted track, no coordinate step"
+                );
+                assert!(curve.is_none());
+                assert_eq!(target.next_index, 1);
+                assert!(queue.remaining_directions().is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn fresh_retry_terminal_retains_raw_head_for_both_track_families() {
         for kind in [LocomotorKind::Drive, LocomotorKind::Ship] {
             let head = DriveCoord {
@@ -656,6 +733,7 @@ mod tests {
         let mut locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
 
         let result = advance_lepton_position(
+            &mut Default::default(),
             &mut target,
             &mut position,
             &mut facing,
@@ -704,6 +782,7 @@ mod tests {
         facing = 0x40;
         facing_target = None;
         let result = advance_lepton_position(
+            &mut Default::default(),
             &mut target,
             &mut position,
             &mut facing,
@@ -765,6 +844,7 @@ mod tests {
         let current_speed = target.current_speed;
 
         let result = advance_lepton_position(
+            &mut Default::default(),
             &mut target,
             &mut position,
             &mut facing,
@@ -833,6 +913,7 @@ mod tests {
         bits.mark_vehicle_on_layer(1, 0, 1, MovementLayer::Ground);
 
         let result = advance_lepton_position(
+            &mut Default::default(),
             &mut target,
             &mut position,
             &mut facing,
@@ -898,6 +979,7 @@ mod tests {
         let current_speed = target.current_speed;
 
         let _ = advance_lepton_position(
+            &mut Default::default(),
             &mut target,
             &mut position,
             &mut facing,
@@ -920,6 +1002,7 @@ mod tests {
         let index_after_native_frame = drive_track_state.as_ref().unwrap().point_index;
 
         let _ = advance_lepton_position(
+            &mut Default::default(),
             &mut target,
             &mut position,
             &mut facing,
@@ -975,6 +1058,7 @@ mod tests {
         let mut locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
 
         let result = advance_lepton_position(
+            &mut Default::default(),
             &mut target,
             &mut position,
             &mut facing,
@@ -1231,6 +1315,7 @@ impl DriveCellAdmission<'_> {
 /// curve).
 #[allow(clippy::too_many_arguments)]
 fn select_fresh_drive_track_at_current_cell(
+    path_replay: &mut crate::sim::components::FootPathQueue,
     target: &mut MovementTarget,
     position: &Position,
     facing: u8,
@@ -1388,6 +1473,7 @@ fn select_fresh_drive_track_at_current_cell(
     );
     let endpoint_layer = target.layer_at(head_index);
     accept_shared_track(
+        path_replay,
         shared_kind,
         drive_locomotion,
         ship_locomotion,
@@ -1678,6 +1764,7 @@ fn advance_shared_track(
 /// Takes individual entity fields to avoid borrow conflicts with
 /// `entity.movement_target` (which the caller holds as `ref mut target`).
 pub(super) fn advance_lepton_position(
+    path_replay: &mut crate::sim::components::FootPathQueue,
     target: &mut MovementTarget,
     position: &mut Position,
     facing: &mut u8,
@@ -1750,6 +1837,7 @@ pub(super) fn advance_lepton_position(
                 && let Some(kind) = shared_kind
             {
                 match select_fresh_drive_track_at_current_cell(
+                    path_replay,
                     target,
                     position,
                     *facing,
@@ -1800,21 +1888,21 @@ pub(super) fn advance_lepton_position(
             // Fall through to ReadyForCrossings — normal movement takes over.
         }
     } else {
-        let needs_drive_native_step = drive_locomotion
-            .as_ref()
-            .is_some_and(drive_locomotion_helpers::drive_requires_native_step);
+        let needs_drive_native_step = drive_locomotion.as_ref().is_some_and(|drive| {
+            drive_locomotion_helpers::drive_requires_native_step(drive, path_replay)
+        });
         let shared_kind = shared_track_kind(locomotor);
         let is_ship = shared_kind == Some(LocomotorKind::Ship);
         let needs_ship_native_step = is_ship
             && ship_locomotion
                 .as_ref()
-                .is_some_and(|ship| !ship.path.directions.is_empty());
+                .is_some_and(|_| !path_replay.remaining_directions().is_empty());
         if needs_drive_native_step || needs_ship_native_step {
             if target.next_index >= target.path.len() {
                 if let Some(drive) = drive_locomotion.as_mut() {
                     drive.track.residual = 0;
-                    drive.path.cursor = drive.path.directions.len().min(u16::MAX as usize) as u16;
-                    drive.path.directions.clear();
+                    path_replay.cursor = path_replay.directions.len().min(u16::MAX as usize) as u16;
+                    path_replay.directions.clear();
                 }
                 return AdvanceResult::ReadyForCrossings;
             }
@@ -1824,6 +1912,7 @@ pub(super) fn advance_lepton_position(
                 && let Some(kind) = shared_kind
             {
                 match select_fresh_drive_track_at_current_cell(
+                    path_replay,
                     target,
                     position,
                     *facing,
@@ -1868,6 +1957,12 @@ pub(super) fn advance_lepton_position(
                     }
                 }
             }
+            return AdvanceResult::DriveTrackActive;
+        }
+        if shared_kind.is_some() && path_replay.reference_cell.is_some() {
+            // Once the Foot replay has been installed, its exhausted suffix
+            // cannot turn the physical A* adapter into an alternate locomotor.
+            // Drive/Ship admission must produce another native track first.
             return AdvanceResult::DriveTrackActive;
         }
         // **VERA-internal, gamemd has no equivalent for the Walk arm.**
@@ -2005,6 +2100,7 @@ pub(super) struct CrossingOutput {
 /// `entity.movement_target` (which the caller holds as `ref mut target`).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn process_cell_crossings(
+    path_replay: &mut crate::sim::components::FootPathQueue,
     target: &mut MovementTarget,
     position: &mut Position,
     facing: &mut u8,
@@ -2110,6 +2206,7 @@ pub(super) fn process_cell_crossings(
             target.movement_delay = 0;
             let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
             let evts = handle_blocked_tick(
+                path_replay,
                 target,
                 facing,
                 body_facing,
@@ -2238,6 +2335,7 @@ pub(super) fn process_cell_crossings(
             target.movement_delay = 0;
             let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
             let evts = handle_blocked_tick(
+                path_replay,
                 target,
                 facing,
                 body_facing,
@@ -2318,6 +2416,7 @@ pub(super) fn process_cell_crossings(
                     target.movement_delay = 0;
                     let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
                     let evts = handle_blocked_tick(
+                        path_replay,
                         target,
                         facing,
                         body_facing,
@@ -2456,6 +2555,7 @@ pub(super) fn process_cell_crossings(
         active_layer = next_layer;
 
         configure_motion_after_transition(
+            path_replay,
             target,
             locomotor,
             drive_track_state,

@@ -32,6 +32,7 @@ use super::{MovementConfig, MovementTickStats, PathfindingContext};
 /// escalating.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_blocked_tick(
+    path_replay: &mut crate::sim::components::FootPathQueue,
     target: &mut MovementTarget,
     facing: &mut u8,
     body_facing: Option<super::FacingClass>,
@@ -204,9 +205,9 @@ pub(super) fn handle_blocked_tick(
         }
         match locomotor.as_ref().map(|locomotor| locomotor.kind) {
             Some(crate::rules::locomotor_type::LocomotorKind::Drive) => {
-                if let Some(drive) = drive_locomotion.as_mut() {
+                if drive_locomotion.is_some() {
                     super::path_markers::install_path_replay(
-                        &mut drive.path,
+                        path_replay,
                         current_pos,
                         &target.path,
                         target.next_index,
@@ -214,9 +215,9 @@ pub(super) fn handle_blocked_tick(
                 }
             }
             Some(crate::rules::locomotor_type::LocomotorKind::Ship) => {
-                if let Some(ship) = ship_locomotion.as_mut() {
+                if ship_locomotion.is_some() {
                     super::path_markers::install_path_replay(
-                        &mut ship.path,
+                        path_replay,
                         current_pos,
                         &target.path,
                         target.next_index,
@@ -358,6 +359,7 @@ mod native_walk_timer_tests {
             let mut finished = Vec::new();
             let mut aborted = false;
             let events = handle_blocked_tick(
+                &mut Default::default(),
                 &mut target,
                 &mut facing,
                 None,

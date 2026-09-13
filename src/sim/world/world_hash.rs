@@ -220,7 +220,11 @@ mod shared_dummy_bridge_hash_tests {
         let retained = sim.state_hash();
         assert_ne!(side_flag, retained);
         dummy.stamp_coord(7, -3);
-        assert_ne!(retained, sim.state_hash(), "retained bridge pointer makes dummy coordinate future-affecting");
+        assert_ne!(
+            retained,
+            sim.state_hash(),
+            "retained bridge pointer makes dummy coordinate future-affecting"
+        );
         dummy.write_native_anchor(None);
         assert_eq!(side_flag, sim.state_hash());
     }
@@ -644,10 +648,14 @@ impl Simulation {
             let shared_dummy = shared_dummy_handle.snapshot();
             let gap_flags = shared_dummy_handle.retained_bridge_flags() & 0xC00;
             let bridge_keeps_dummy = schema.includes(HashFeature::BridgePublication)
-                && (shared_dummy_handle.native_anchor() == Some(crate::map::cell_index::NativeCellIdentity::Dummy)
-                    || self.resolved_terrain.as_ref().is_some_and(|terrain| terrain.iter().any(|cell| {
-                        cell.bridge_facts.native_anchor == Some(crate::map::cell_index::NativeCellIdentity::Dummy)
-                    })));
+                && (shared_dummy_handle.native_anchor()
+                    == Some(crate::map::cell_index::NativeCellIdentity::Dummy)
+                    || self.resolved_terrain.as_ref().is_some_and(|terrain| {
+                        terrain.iter().any(|cell| {
+                            cell.bridge_facts.native_anchor
+                                == Some(crate::map::cell_index::NativeCellIdentity::Dummy)
+                        })
+                    }));
             if schema.includes(HashFeature::BridgePublication) {
                 let extra_flags = shared_dummy_handle.raw_flags()
                     & !crate::map::bridge_facts::RETAINED_CELLCLASS_BRIDGE_FLAG_MASK;
@@ -688,9 +696,11 @@ impl Simulation {
                 b"shared-cell-dummy-overlay-v1".hash(&mut hasher);
                 shared_dummy_overlay.hash(&mut hasher);
             }
-            if bridge_keeps_dummy || self.projectiles.iter().any(|(_, projectile)| {
-                projectile.target == crate::sim::projectile::ProjectileTarget::DummyCell
-            }) {
+            if bridge_keeps_dummy
+                || self.projectiles.iter().any(|(_, projectile)| {
+                    projectile.target == crate::sim::projectile::ProjectileTarget::DummyCell
+                })
+            {
                 // A retained Bullet pointer additionally makes coordinate
                 // deterministic future behavior. Preserve the complete v106
                 // field/tag order for historical provenance probes.
@@ -2886,7 +2896,7 @@ mod rally_hash_tests {
         let mut entity_b = entity_a.clone();
         let mut drive = DriveLocomotionRuntime::default();
         drive.destination = Some(DriveCoord::cell(45, 40, 0));
-        drive.path.directions = vec![2, 2, 2, 2, 2];
+        entity_b.navigation.path_replay.directions = vec![2, 2, 2, 2, 2];
         drive.track.residual = 3;
         entity_b.drive_locomotion = Some(drive);
         sim_a.substrate.entities.insert(entity_a);

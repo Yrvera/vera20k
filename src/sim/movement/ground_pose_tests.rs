@@ -904,9 +904,10 @@ fn chained_mover(sim: &mut Simulation, kind: LocomotorKind) -> (GameEntity, Driv
     assert_eq!(plan.nodes, 2);
     let (head, curve) = super::track_head::begin_fresh(&plan, &entity.position).unwrap();
     entity.drive_track = Some(curve);
-    let mut replay = crate::sim::components::DrivePathQueue::default();
+    let mut replay = crate::sim::components::FootPathQueue::default();
     super::path_markers::install_path_replay(&mut replay, (3, 3), &path, 1);
     super::path_markers::accept_path_replay(&mut replay, (4, 1), 2);
+    entity.navigation.path_replay = replay;
     match kind {
         LocomotorKind::Drive => {
             let d = entity.drive_locomotion.as_mut().unwrap();
@@ -916,12 +917,10 @@ fn chained_mover(sim: &mut Simulation, kind: LocomotorKind) -> (GameEntity, Driv
                 ry: (head.y / 256) as u16,
                 layer: MovementLayer::Ground,
             });
-            d.path = replay;
         }
         LocomotorKind::Ship => {
             let s = entity.ship_locomotion.as_mut().unwrap();
             s.head_to = Some(head);
-            s.path = replay;
         }
         _ => unreachable!(),
     }
@@ -953,11 +952,11 @@ fn actual_tick_chain_uses_remaining_queue_and_retains_old_head_z() {
             let (stored, queue) = match kind {
                 LocomotorKind::Drive => {
                     let d = entity.drive_locomotion.as_ref().unwrap();
-                    (d.head_to, &d.path)
+                    (d.head_to, &entity.navigation.path_replay)
                 }
                 LocomotorKind::Ship => {
                     let s = entity.ship_locomotion.as_ref().unwrap();
-                    (s.head_to, &s.path)
+                    (s.head_to, &entity.navigation.path_replay)
                 }
                 _ => unreachable!(),
             };
@@ -1007,11 +1006,11 @@ fn stop_before_chain_keeps_committed_head_and_discards_abandoned_turn() {
         let (stored, queue) = match kind {
             LocomotorKind::Drive => {
                 let d = entity.drive_locomotion.as_ref().unwrap();
-                (d.head_to, &d.path)
+                (d.head_to, &entity.navigation.path_replay)
             }
             LocomotorKind::Ship => {
                 let s = entity.ship_locomotion.as_ref().unwrap();
-                (s.head_to, &s.path)
+                (s.head_to, &entity.navigation.path_replay)
             }
             _ => unreachable!(),
         };

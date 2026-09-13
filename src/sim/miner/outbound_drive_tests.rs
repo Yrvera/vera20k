@@ -491,10 +491,10 @@ fn assert_command_state(
         (expected_head.x, expected_head.y),
     );
     assert_eq!(
-        drive.path.directions.len(),
+        entity.navigation.path_replay.directions.len(),
         movement.path.len().saturating_sub(1),
     );
-    assert!(!drive.path.directions.is_empty());
+    assert!(!entity.navigation.path_replay.directions.is_empty());
     // The Harvest handler dispatches BEFORE Phase-1 ground movement (the
     // native handler→locomotion order), so by observation time the drive has
     // already begun accelerating in the same tick the command was issued.

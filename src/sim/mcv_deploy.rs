@@ -102,9 +102,12 @@ pub(crate) fn mission_unload(sim: &mut Simulation, id: u64, rules: &RuleSet) -> 
         .map(|e| e.mission.handler_state());
     if state == Some(0) {
         let e = sim.substrate.entities.get_mut(id).unwrap();
-        if let Some(drive) = e.drive_locomotion.as_mut() {
-            drive.path.cursor = drive.path.directions.len().min(u16::MAX as usize) as u16;
-        }
+        e.navigation.path_replay.cursor = e
+            .navigation
+            .path_replay
+            .directions
+            .len()
+            .min(u16::MAX as usize) as u16;
         e.mission.set_handler_state(1);
         // Native state 0 falls through to state 1 in this same invocation.
     }

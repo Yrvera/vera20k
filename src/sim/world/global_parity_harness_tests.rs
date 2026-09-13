@@ -1087,7 +1087,7 @@ fn dense_converging_setup() -> (
 /// now dispatch at the tail, after the live object/movement walk, so a move
 /// accepted on frame N first advances its object on frame N+1.
 /// Re-baselined 2026-08-02 for the GSI-04.12 bridge-marker slice (c0b688a6),
-/// which moves positions on purpose: `DrivePathQueue::reference_cell` advances
+/// which moves positions on purpose: `FootPathQueue::reference_cell` advances
 /// the path-reference cell when Drive accepts a direction, before the curve
 /// physically crosses into the destination cell, and ship locomotion split out
 /// of Drive. Hash composition is not involved — this fingerprint folds entity

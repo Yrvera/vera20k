@@ -68,7 +68,16 @@ fn curve() -> DriveTrackState {
     }
 }
 
+fn replay_fixture() -> crate::sim::components::FootPathQueue {
+    crate::sim::components::FootPathQueue {
+        directions: vec![2, 8, 7],
+        cursor: 1,
+        reference_cell: Some((-17, 301)),
+    }
+}
+
 fn supply_drive_state(entity: &mut GameEntity) {
+    entity.navigation.path_replay = replay_fixture();
     entity.drive_locomotion = Some(DriveLocomotionRuntime {
         // Is_Moving compares exact XY only. Retained Z deliberately differs
         // from the owner's height, so retirement cannot depend on full XYZ.
@@ -97,6 +106,7 @@ fn owned_state(entity: &GameEntity) -> serde_json::Value {
         &entity.drive_locomotion,
         &entity.drive_track,
         &entity.forced_drive_track,
+        &entity.navigation.path_replay,
     ))
     .expect("serialized locomotor and external instance state")
 }
@@ -359,5 +369,134 @@ fn failed_miner_path_restores_full_payload_and_external_instance_state() {
             LocomotorRuntimePayload::Teleport(None)
         ));
         assert!(entity.movement_target.is_none());
+    }
+}
+
+#[test]
+fn foot_queue_survives_drive_retirement_construction_and_reuse() {
+    let (mut sim, _) = fixture();
+    let entity = sim.substrate.entities.get_mut(1).unwrap();
+    activate_drive(entity);
+    let queue = entity.navigation.path_replay.clone();
+    assert!(try_restore_primary(entity));
+    assert_retired(entity);
+    assert_eq!(entity.navigation.path_replay, queue);
+    assert!(begin_drive_for_teleporter(entity, 51));
+    assert_eq!(entity.navigation.path_replay, queue);
+    assert!(begin_drive_for_teleporter(entity, 52));
+    assert_eq!(entity.navigation.path_replay, queue);
+}
+
+#[test]
+fn foot_stop_preserves_queue_while_explicit_abandonment_exhausts_it() {
+    let (mut sim, _) = fixture();
+    let entity = sim.substrate.entities.get_mut(1).unwrap();
+    activate_drive(entity);
+    entity.navigation.nav_com = Some(crate::sim::components::NavTargetRef::cell(12, 8));
+    super::super::navcom::foot_stop_moving(entity);
+    assert_eq!(entity.navigation.path_replay, replay_fixture());
+    super::super::movement_commands::stop_navigation_at_committed_head(entity);
+    assert!(
+        entity
+            .navigation
+            .path_replay
+            .remaining_directions()
+            .is_empty()
+    );
+    assert_eq!(
+        entity.navigation.path_replay.reference_cell,
+        Some((-17, 301))
+    );
+}
+
+#[test]
+fn foot_queue_without_class_payload_roundtrips_and_hashes_each_field() {
+    let (mut sim, _) = fixture();
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .navigation
+        .path_replay = replay_fixture();
+    let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "foot_queue", 0);
+    let mut loaded = crate::sim::snapshot::GameSnapshot::load(&bytes)
+        .unwrap()
+        .sim;
+    let entity = loaded.substrate.entities.get(1).unwrap();
+    assert!(entity.drive_locomotion.is_none());
+    assert!(entity.ship_locomotion.is_none());
+    assert_eq!(entity.navigation.path_replay, replay_fixture());
+    let original_hash = loaded.state_hash();
+    for field in 0..3 {
+        let queue = &mut loaded
+            .substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .navigation
+            .path_replay;
+        *queue = replay_fixture();
+        match field {
+            0 => queue.directions[1] = 6,
+            1 => queue.cursor = 2,
+            _ => queue.reference_cell = Some((-18, 301)),
+        }
+        assert_ne!(
+            loaded.state_hash(),
+            original_hash,
+            "Foot queue field {field}"
+        );
+    }
+}
+
+#[test]
+fn foot_queue_operations_match_original_memory_witnesses() {
+    let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/foot_path_queue.json"
+    ))
+    .unwrap();
+    assert_eq!(cases.len(), 28);
+    for case in cases {
+        let input = &case["input"];
+        let operation = input["operation"].as_str().unwrap();
+        let directions: Vec<u8> = serde_json::from_value(input["directions"].clone()).unwrap();
+        let reference: (i16, i16) = serde_json::from_value(input["reference"].clone()).unwrap();
+        let endpoint: (i32, i32) = serde_json::from_value(input["endpoint"].clone()).unwrap();
+        let (mut sim, _) = fixture();
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        activate_drive(entity);
+        // Native shifts the queue; Rust can retain an already-consumed prefix.
+        entity.navigation.path_replay = crate::sim::components::FootPathQueue {
+            directions: [vec![6], directions].concat(),
+            cursor: 1,
+            reference_cell: Some(reference),
+        };
+        if operation.contains("fresh") {
+            super::super::path_markers::accept_path_replay(
+                &mut entity.navigation.path_replay,
+                ((endpoint.0 / 256) as i16, (endpoint.1 / 256) as i16),
+                if operation.ends_with("two") { 2 } else { 1 },
+            );
+        } else if operation == "foot_stop" {
+            super::super::navcom::foot_stop_moving(entity);
+        } else if operation == "drive_end" {
+            assert!(try_restore_primary(entity));
+        } else {
+            super::super::path_markers::consume_path_replay(&mut entity.navigation.path_replay, 1);
+        }
+        let expected: Vec<u8> =
+            serde_json::from_value(case["output"]["directions"].clone()).unwrap();
+        let expected_reference: (i16, i16) =
+            serde_json::from_value(case["output"]["reference"].clone()).unwrap();
+        assert_eq!(
+            entity.navigation.path_replay.remaining_directions(),
+            expected,
+            "{operation}"
+        );
+        assert_eq!(
+            entity.navigation.path_replay.reference_cell,
+            Some(expected_reference),
+            "{operation}"
+        );
     }
 }

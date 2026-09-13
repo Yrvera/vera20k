@@ -224,7 +224,12 @@ pub(super) fn finish_drive_navigation(
         // ordinary Ship null-destination path observes that same rest state.
         if let Some(ship) = entity.ship_locomotion.as_mut() {
             ship.head_to = None;
-            ship.path.cursor = ship.path.directions.len().min(u16::MAX as usize) as u16;
+            entity.navigation.path_replay.cursor = entity
+                .navigation
+                .path_replay
+                .directions
+                .len()
+                .min(u16::MAX as usize) as u16;
         }
         set_destination_internal_null(entity);
         entity.navigation.nav_queue.clear();
@@ -362,12 +367,10 @@ fn ship_stop_moving(entity: &mut GameEntity) {
     }
     ship.destination = None;
 
-    // FootClass::Stop_Moving clears the owner path sentinel. With no committed
-    // Ship head there is therefore no segment left to consume: retire Rust's
-    // path-replay adapter and reproduce the Process-tail SetSpeedFraction(0).
-    // A non-null head is the sole case that preserves the committed segment.
+    // OPEN Process-host correction: this preexisting adapter applies the
+    // rest speed before the native Process-tail admission. FootStop4DF0D0
+    // does NOT clear Foot+5E0; explicit abandonment is a separate owner call.
     if ship.head_to.is_none() {
-        ship.path.cursor = ship.path.directions.len().min(u16::MAX as usize) as u16;
         if ship.current_speed_fraction > SIM_ZERO {
             ship.current_speed_fraction = SIM_ZERO;
         }
@@ -397,14 +400,14 @@ mod tests {
         ship.target_speed_fraction = SIM_ONE;
         ship.current_speed_fraction = SIM_HALF;
         ship.owner_current_speed = 10;
-        ship.path.directions = vec![64, 64];
-        ship.path.cursor = 0;
+        entity.navigation.path_replay.directions = vec![2, 2];
+        entity.navigation.path_replay.cursor = 0;
 
         set_destination_internal_null(&mut entity);
         let ship = entity.ship_locomotion.as_ref().expect("Ship runtime");
         assert_eq!(ship.destination, None);
         assert_eq!(ship.target_speed_fraction, SHIP_STOP_TARGET_FRACTION);
-        assert_eq!(ship.path.cursor, 2);
+        assert_eq!(entity.navigation.path_replay.cursor, 0);
         assert_eq!(ship.current_speed_fraction, SIM_ZERO);
         assert_eq!(ship.owner_current_speed, 0);
     }
@@ -414,14 +417,14 @@ mod tests {
         let mut entity = GameEntity::test_default(1, "DLPH", "Americans", 3, 3);
         entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
         entity.navigation.nav_com = Some(NavTargetRef::cell(5, 3));
+        entity.navigation.path_replay = crate::sim::components::FootPathQueue {
+            directions: vec![64, 64],
+            cursor: 1,
+            ..Default::default()
+        };
         entity.ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(DriveCoord::cell(5, 3, 0)),
             head_to: Some(DriveCoord::cell(4, 3, 0)),
-            path: crate::sim::components::DrivePathQueue {
-                directions: vec![64, 64],
-                cursor: 1,
-                ..Default::default()
-            },
             target_speed_fraction: SIM_ONE,
             current_speed_fraction: SIM_HALF,
             owner_current_speed: 10,
@@ -457,14 +460,14 @@ mod tests {
         let mut entity = GameEntity::test_default(1, "DLPH", "Americans", 4, 3);
         entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
         entity.navigation.nav_com = Some(NavTargetRef::cell(4, 3));
+        entity.navigation.path_replay = crate::sim::components::FootPathQueue {
+            directions: vec![64],
+            cursor: 0,
+            ..Default::default()
+        };
         entity.ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(DriveCoord::cell(4, 3, 0)),
             head_to: Some(DriveCoord::cell(4, 3, 0)),
-            path: crate::sim::components::DrivePathQueue {
-                directions: vec![64],
-                cursor: 0,
-                ..Default::default()
-            },
             target_speed_fraction: SIM_ONE,
             current_speed_fraction: SIM_HALF,
             owner_current_speed: 10,
@@ -476,7 +479,7 @@ mod tests {
         let ship = entity.ship_locomotion.as_ref().expect("Ship runtime");
         assert_eq!(ship.destination, None);
         assert_eq!(ship.head_to, None);
-        assert_eq!(ship.path.cursor, 1);
+        assert_eq!(entity.navigation.path_replay.cursor, 1);
         assert_eq!(ship.current_speed_fraction, SIM_ZERO);
         assert_eq!(ship.owner_current_speed, 0);
     }

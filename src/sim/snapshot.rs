@@ -468,7 +468,9 @@ use crate::sim::world::Simulation;
 // v149 gives Drive and Ship the same retained signed track state. The prior
 // Drive cursor was u16 and Ship had no independent residual/selector fields;
 // bincode cannot infer those records across this ownership migration.
-const SNAPSHOT_VERSION: u32 = 149;
+// v150 moves Foot+5E0/+558 replay from class payloads to NavigationState.
+// Bincode field order changes even for owners without Drive/Ship instances.
+const SNAPSHOT_VERSION: u32 = 150;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3295,7 +3297,8 @@ mod tests {
         // 143 -> 144: per-Building operational edge and retained gap deposit.
         // 145 -> 146: pavement is owned by raw terrain flags, not bridge cells.
         // 146 -> 147: retain Scenario+214 for subsequent native constructors.
-        assert_eq!(super::SNAPSHOT_VERSION, 149);
+        // 149 -> 150: Foot owns route replay independently of Drive/Ship instances.
+        assert_eq!(super::SNAPSHOT_VERSION, 150);
     }
 
     #[test]

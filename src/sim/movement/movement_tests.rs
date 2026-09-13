@@ -120,16 +120,8 @@ fn ordinary_drive_retires_selector_before_entering_an_explicit_tube() {
             );
             assert_eq!((entity.position.rx, entity.position.ry), (1, 0));
             assert_eq!(entity.low_bridge_tube_state.unwrap().cursor, 0);
-            assert_eq!(entity.drive_locomotion.as_ref().unwrap().path.cursor, 2);
-            assert_eq!(
-                entity
-                    .drive_locomotion
-                    .as_ref()
-                    .unwrap()
-                    .path
-                    .reference_cell,
-                Some((1, 0))
-            );
+            assert_eq!(entity.navigation.path_replay.cursor, 2);
+            assert_eq!(entity.navigation.path_replay.reference_cell, Some((1, 0)));
             assert_eq!(
                 entity.drive_locomotion.as_ref().unwrap().head_to,
                 Some(DriveCoord {
@@ -1925,9 +1917,12 @@ fn test_issue_move_command_starts_drive_track_for_drive_locomotor() {
     );
     let drive = entity.drive_locomotion.as_ref().expect("drive state");
     assert_eq!(drive.head_to, Some(DriveCoord::cell(3, 3, 0)));
-    assert_eq!(drive.path.directions, vec![2, 2, 2, 2, 2]);
-    assert_eq!(drive.path.cursor, 1);
-    assert_eq!(drive.path.reference_cell, Some((3, 3)));
+    assert_eq!(
+        entity.navigation.path_replay.directions,
+        vec![2, 2, 2, 2, 2]
+    );
+    assert_eq!(entity.navigation.path_replay.cursor, 1);
+    assert_eq!(entity.navigation.path_replay.reference_cell, Some((3, 3)));
     assert_eq!(drive.turn.target_direction, Some(2));
     assert_eq!(
         drive.turn.target_facing_16,
@@ -2057,8 +2052,8 @@ fn test_reissue_mid_curve_keeps_track_and_anchors_path_at_head() {
         Some((3, 3)),
         "the kept curve keeps its head-to occupation claim"
     );
-    assert_eq!(drive.path.reference_cell, Some((3, 3)));
-    assert_eq!(drive.path.cursor, 0);
+    assert_eq!(entity.navigation.path_replay.reference_cell, Some((3, 3)));
+    assert_eq!(entity.navigation.path_replay.cursor, 0);
     assert_eq!(drive.target_speed_fraction, SimFixed::lit("0.4"));
     assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.25"));
     assert_eq!(drive.owner_current_speed, 7);
@@ -5559,6 +5554,7 @@ fn sharp_turn_preserves_path_node_count() {
     let mut facing_target = None;
 
     super::movement_step::configure_motion_after_transition(
+        &mut Default::default(),
         &mut target,
         &locomotor,
         &mut drive_track_state,
@@ -5617,6 +5613,7 @@ fn off_octant_hull_turns_before_any_curve_is_selected() {
     let mut facing_target = None;
 
     super::movement_step::configure_motion_after_transition(
+        &mut Default::default(),
         &mut target,
         &locomotor,
         &mut drive_track_state,
@@ -5677,12 +5674,12 @@ fn gsi_06_13_fixture_mover(
         final_goal: Some(goal),
         ..Default::default()
     });
+    e.navigation.path_replay = crate::sim::components::FootPathQueue {
+        directions,
+        cursor: 0,
+        reference_cell: Some((start.0 as i16, start.1 as i16)),
+    };
     e.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
-        path: crate::sim::components::DrivePathQueue {
-            directions,
-            cursor: 0,
-            reference_cell: Some((start.0 as i16, start.1 as i16)),
-        },
         target_speed_fraction: SIM_ONE,
         current_speed_fraction: SIM_ONE,
         ..Default::default()

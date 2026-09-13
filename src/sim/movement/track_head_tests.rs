@@ -137,7 +137,7 @@ fn destination_change_preserves_the_committed_head() {
 
 #[test]
 fn chained_queue_consumption_preserves_the_native_replay_reference() {
-    let mut queue = crate::sim::components::DrivePathQueue {
+    let mut queue = crate::sim::components::FootPathQueue {
         directions: vec![2, 3, 4],
         cursor: 2,
         reference_cell: Some((10, 9)),

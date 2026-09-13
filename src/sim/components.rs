@@ -304,6 +304,11 @@ impl NavTargetRef {
 /// `MovementTarget`, which is only the active execution path.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct NavigationState {
+    /// Foot-owned direction replay and reference cell (+5E0/+558), shared by
+    /// every locomotor instance. Retirement must not discard the owner queue.
+    /// Native chain tails reload the owner at Drive4B1DF7 / Ship6A143A.
+    #[serde(default)]
+    pub path_replay: FootPathQueue,
     #[serde(default)]
     pub nav_com_aux: Option<NavTargetRef>,
     #[serde(default)]
@@ -339,47 +344,32 @@ impl DriveCoord {
     }
 }
 
-/// DriveLocomotion-owned path direction cursor.
+/// Foot-owned path replay. Native shifts a 24-dword queue on consumption;
+/// Rust retains the consumed prefix with an explicit cursor. Consumers must
+/// interpret the remaining suffix, not vector emptiness, as the native queue.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct DrivePathQueue {
-    /// Native `Foot+0x5E0`: a 24-entry direction array, codes 0..=7 plus the
-    /// tube sentinel 8, terminated by `-1`. `FootClass::Find_Path` @ `0x004D3920`
-    /// copies `min(count, 0x18 - prefix)` dwords into it at `0x004D3E98`, and
-    /// `AStar_reconstruct_path` @ `0x0042AA90` is what produces the codes —
-    /// octant from the 3×3 delta table for an adjacent hop, literal `8` for any
-    /// non-adjacent one.
+pub struct FootPathQueue {
+    /// Foot+5E0: octants0..7, explicit tube direction8, native -1 terminator.
+    /// Find_Path4D3E98 writes it; Drive/Ship movement consumes the same owner
+    /// memory, independently of which locomotor is currently installed.
     #[serde(default)]
     pub directions: Vec<u8>,
-    /// **VERA-internal representation, gamemd equivalent UNCHECKED.** Native has
-    /// no cursor: each locomotor's `Process_Movement` pops by `REP MOVSD`
-    /// (`0x004B45F6` for one entry, `0x004B45CB` for two) and writes `-1` into
-    /// the freed tail slots, so "queue exhausted" is literally `[+0x5E0] == -1`.
-    /// This advances an index and leaves the consumed prefix in place, so
-    /// `directions.is_empty()` is **not** the native predicate. Trigger: a
-    /// fully-consumed queue. Player effect: none today — `movement_step` clears
-    /// the queue on `next_index >= path.len()` before either reader sees it.
-    /// Frequency: zero while that clear holds. Downstream risk: the two
-    /// `!directions.is_empty()` readers diverge the moment the queue and
-    /// `MovementTarget` are allowed to disagree — which for **Ship** has
-    /// already happened: `navcom` marks ship exhaustion by setting
-    /// `cursor = directions.len()` and deliberately leaving `directions`
-    /// populated, and the drive-side clear in `movement_step` never touches
-    /// `ship_locomotion.path`. Trigger: an exhausted ship path. Player effect:
-    /// unmeasured — the branch's first act is the `next_index >= path.len()`
-    /// return, so no naval symptom is traced. Frequency: every ship that
-    /// finishes a path. Downstream risk: the predicate is wrong today and only
-    /// a later guard keeps it harmless.
     #[serde(default)]
     pub cursor: u16,
-    /// Native FootClass path-reference cell (`+0x558`). Fresh Drive/Ship
-    /// acceptance writes it before physical cell crossing (4B4618 / 6A3C47).
-    /// A chained successor only consumes directions and retains this reference
-    /// (4B1DF7 / 6A143A; locomotor_head_coordinates evidence).
+    /// Foot+558. Fresh acceptance writes this reference (4B4618/6A3C47);
+    /// chain consumption preserves it (4B1DF7/6A143A).
     #[serde(default)]
     pub reference_cell: Option<(i16, i16)>,
 }
 
-/// ShipLocomotion-owned destination, committed head, speed, and path replay state.
+impl FootPathQueue {
+    /// Native queue emptiness tests the unconsumed head, not retained history.
+    pub(crate) fn remaining_directions(&self) -> &[u8] {
+        &self.directions[usize::from(self.cursor).min(self.directions.len())..]
+    }
+}
+
+/// ShipLocomotion-owned destination, committed head, and speed state.
 ///
 /// Ships share the ordinary TurnTrack/RawTrack curves, target/applied speed
 /// fractions, and cached owner-speed result with Drive, but do not own Drive's
@@ -390,8 +380,6 @@ pub struct ShipLocomotionRuntime {
     pub destination: Option<DriveCoord>,
     #[serde(default)]
     pub head_to: Option<DriveCoord>,
-    #[serde(default)]
-    pub path: DrivePathQueue,
     #[serde(default)]
     pub track: TrackProgress,
     #[serde(default)]
@@ -467,8 +455,6 @@ pub struct DriveLocomotionRuntime {
     #[serde(default)]
     pub head_to: Option<DriveCoord>,
     #[serde(default)]
-    pub path: DrivePathQueue,
-    #[serde(default)]
     pub turn: DriveTurnState,
     #[serde(default)]
     pub track: TrackProgress,
@@ -505,7 +491,6 @@ impl Default for DriveLocomotionRuntime {
         Self {
             destination: None,
             head_to: None,
-            path: DrivePathQueue::default(),
             turn: DriveTurnState::default(),
             track: TrackProgress::default(),
             track_valid: false,
@@ -1245,8 +1230,9 @@ mod tests {
         let drive = DriveLocomotionRuntime::default();
         assert_eq!(drive.destination, None);
         assert_eq!(drive.head_to, None);
-        assert!(drive.path.directions.is_empty());
-        assert_eq!(drive.path.cursor, 0);
+        let navigation = NavigationState::default();
+        assert!(navigation.path_replay.directions.is_empty());
+        assert_eq!(navigation.path_replay.cursor, 0);
         assert_eq!(drive.turn.target_direction, None);
         assert_eq!(drive.track.turn_index, -1);
         assert_eq!(drive.track.cursor, -1);
@@ -1277,7 +1263,6 @@ mod tests {
         let drive_a = DriveLocomotionRuntime::default();
         let mut drive_b = DriveLocomotionRuntime::default();
         drive_b.destination = Some(DriveCoord::cell(45, 40, 0));
-        drive_b.path.directions = vec![2, 2, 2];
         drive_b.turn.target_facing_16 = Some(0x4000);
         drive_b.track.residual = 6;
 

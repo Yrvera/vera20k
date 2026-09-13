@@ -21,7 +21,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield_height_aware};
-use crate::sim::components::DrivePathQueue;
+use crate::sim::components::FootPathQueue;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::movement::FacingClass;
@@ -140,7 +140,7 @@ fn direction_from_step(from: (i16, i16), to: (u16, u16)) -> u8 {
 }
 
 pub(super) fn install_path_replay(
-    queue: &mut DrivePathQueue,
+    queue: &mut FootPathQueue,
     reference: (u16, u16),
     path: &[(u16, u16)],
     first_destination: usize,
@@ -158,7 +158,7 @@ pub(super) fn install_path_replay(
 }
 
 pub(super) fn accept_path_replay(
-    queue: &mut DrivePathQueue,
+    queue: &mut FootPathQueue,
     endpoint: (i16, i16),
     consumed_directions: usize,
 ) {
@@ -168,26 +168,24 @@ pub(super) fn accept_path_replay(
 
 /// Accepted chain4B1DF7/6A143A and Drive tube4B1362..136E pop the queue
 /// without rewriting Foot+558.
-pub(super) fn consume_path_replay(queue: &mut DrivePathQueue, consumed_directions: usize) {
+pub(super) fn consume_path_replay(queue: &mut FootPathQueue, consumed_directions: usize) {
     let cursor = usize::from(queue.cursor)
         .saturating_add(consumed_directions)
         .min(queue.directions.len());
     queue.cursor = cursor.min(u16::MAX as usize) as u16;
 }
 
+/// Explicit owner abandonment, distinct from FootStop_Moving4DF0D0.
+pub(super) fn exhaust_path_replay(queue: &mut FootPathQueue) {
+    queue.cursor = queue.directions.len().min(u16::MAX as usize) as u16;
+}
+
 fn remaining_path_from_entity(
     entity: &crate::sim::game_entity::GameEntity,
 ) -> ((i16, i16), Vec<u8>) {
-    let replay = match entity.locomotor.as_ref().map(|locomotor| locomotor.kind) {
-        Some(LocomotorKind::Drive) => entity.drive_locomotion.as_ref().map(|drive| &drive.path),
-        Some(LocomotorKind::Ship) => entity.ship_locomotion.as_ref().map(|ship| &ship.path),
-        _ => None,
-    };
-    if let Some(queue) = replay
-        && let Some(reference) = queue.reference_cell
-    {
-        let cursor = usize::from(queue.cursor).min(queue.directions.len());
-        return (reference, queue.directions[cursor..].to_vec());
+    let queue = &entity.navigation.path_replay;
+    if let Some(reference) = queue.reference_cell {
+        return (reference, queue.remaining_directions().to_vec());
     }
 
     let mut reference = (entity.position.rx as i16, entity.position.ry as i16);
@@ -780,8 +778,8 @@ mod tests {
         drive.track_valid = true;
         drive.track.turn_index = 3;
         drive.track.cursor = 12;
-        drive.path.reference_cell = Some((5, 4));
-        drive.path.directions = vec![2, 2];
+        peer.navigation.path_replay.reference_cell = Some((5, 4));
+        peer.navigation.path_replay.directions = vec![2, 2];
         peer.drive_locomotion = Some(drive);
         // RawTrack 3 handoff point 22, transformed around head cell (6,3),
         // lies in probe cell (5,4).  A deck track deliberately owns no ground

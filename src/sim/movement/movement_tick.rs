@@ -404,6 +404,7 @@ enum PathExhaustionResult {
 /// Takes individual entity fields to avoid borrow conflicts.
 #[allow(clippy::too_many_arguments)]
 fn handle_path_exhaustion(
+    path_replay: &mut crate::sim::components::FootPathQueue,
     target: &mut MovementTarget,
     locomotor: &Option<super::locomotor::LocomotorState>,
     drive_locomotion: &mut Option<crate::sim::components::DriveLocomotionRuntime>,
@@ -550,9 +551,9 @@ fn handle_path_exhaustion(
                     };
                     match locomotor.as_ref().map(|locomotor| locomotor.kind) {
                         Some(crate::rules::locomotor_type::LocomotorKind::Drive) => {
-                            if let Some(drive) = drive_locomotion.as_mut() {
+                            if drive_locomotion.is_some() {
                                 super::path_markers::install_path_replay(
-                                    &mut drive.path,
+                                    path_replay,
                                     cur,
                                     &target.path,
                                     target.next_index,
@@ -560,9 +561,9 @@ fn handle_path_exhaustion(
                             }
                         }
                         Some(crate::rules::locomotor_type::LocomotorKind::Ship) => {
-                            if let Some(ship) = ship_locomotion.as_mut() {
+                            if ship_locomotion.is_some() {
                                 super::path_markers::install_path_replay(
-                                    &mut ship.path,
+                                    path_replay,
                                     cur,
                                     &target.path,
                                     target.next_index,
@@ -853,10 +854,15 @@ fn process_pending_drive_arrivals(
             }
         }
         if let Some(drive) = entity.drive_locomotion.as_mut() {
-            super::path_markers::install_path_replay(&mut drive.path, current, &movement.path, 1);
+            super::path_markers::install_path_replay(
+                &mut entity.navigation.path_replay,
+                current,
+                &movement.path,
+                1,
+            );
             if let Some(reference) = accepted_path_reference {
                 super::path_markers::accept_path_replay(
-                    &mut drive.path,
+                    &mut entity.navigation.path_replay,
                     reference,
                     accepted_path_nodes,
                 );
@@ -965,6 +971,7 @@ fn handle_deferred_drive_selection_block(
     };
     let mut aborted_for_stuck = false;
     handle_blocked_tick(
+        &mut entity.navigation.path_replay,
         target,
         &mut entity.facing,
         body_facing,
@@ -1380,7 +1387,6 @@ fn handle_deferred_drive_track_chain(
             sel.turn_track_index as i32,
         );
         drive.head_to = Some(chain.head);
-        super::path_markers::consume_path_replay(&mut drive.path, 1);
         let next = (chain.layers.occupancy_bits_layer == MovementLayer::Ground).then_some(
             DriveOccupationFootprint {
                 rx: chain.target_cell.0,
@@ -1420,8 +1426,8 @@ fn handle_deferred_drive_track_chain(
             sel.turn_track_index as i32,
         );
         ship.head_to = Some(chain.head);
-        super::path_markers::consume_path_replay(&mut ship.path, 1);
     }
+    super::path_markers::consume_path_replay(&mut entity.navigation.path_replay, 1);
     true
 }
 
@@ -1884,6 +1890,7 @@ fn tick_movement_with_grids_scoped(
             target.blocked_delay = target.blocked_delay.saturating_sub(1);
 
             match handle_path_exhaustion(
+                &mut entity.navigation.path_replay,
                 target,
                 &entity.locomotor,
                 &mut entity.drive_locomotion,
@@ -1921,6 +1928,7 @@ fn tick_movement_with_grids_scoped(
             ) {
                 let terrain = resolved_terrain.expect("tube admission resolved terrain");
                 if tube_movement::begin_path_tube_step(
+                    &mut entity.navigation.path_replay,
                     entity_id,
                     entity.category,
                     &mut entity.position,
@@ -2250,6 +2258,7 @@ fn tick_movement_with_grids_scoped(
             };
             let prior_path_index = target.next_index;
             let advance_result = movement_step::advance_lepton_position(
+                &mut entity.navigation.path_replay,
                 target,
                 &mut entity.position,
                 &mut entity.facing,
@@ -2286,6 +2295,7 @@ fn tick_movement_with_grids_scoped(
                     let terrain =
                         resolved_terrain.expect("terminal tube admission resolved terrain");
                     if tube_movement::begin_path_tube_step(
+                        &mut entity.navigation.path_replay,
                         entity_id,
                         entity.category,
                         &mut entity.position,
@@ -2527,11 +2537,11 @@ fn tick_movement_with_grids_scoped(
                         Some(crate::rules::locomotor_type::LocomotorKind::Drive) => entity
                             .drive_locomotion
                             .as_ref()
-                            .map(|drive| (&drive.path, drive.head_to)),
+                            .map(|drive| (&entity.navigation.path_replay, drive.head_to)),
                         Some(crate::rules::locomotor_type::LocomotorKind::Ship) => entity
                             .ship_locomotion
                             .as_ref()
-                            .map(|ship| (&ship.path, ship.head_to)),
+                            .map(|ship| (&entity.navigation.path_replay, ship.head_to)),
                         _ => None,
                     };
                     if let Some((queue, Some(old_head))) = state
@@ -2639,6 +2649,7 @@ fn tick_movement_with_grids_scoped(
             if !skip_cell_crossings_after_chain_ready {
                 // Check for cell boundary crossings and handle cell transitions.
                 let crossing = movement_step::process_cell_crossings(
+                    &mut entity.navigation.path_replay,
                     target,
                     &mut entity.position,
                     &mut entity.facing,

@@ -87,6 +87,7 @@ pub fn pending_path_tube_id(
 /// the route tail for the post-tube object turn.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn begin_path_tube_step(
+    path_replay: &mut crate::sim::components::FootPathQueue,
     entity_id: u64,
     category: EntityCategory,
     position: &mut Position,
@@ -140,7 +141,7 @@ pub(crate) fn begin_path_tube_step(
                 .wrapping_add(128),
             z: 0,
         });
-        super::path_markers::consume_path_replay(&mut drive.path, 1);
+        super::path_markers::consume_path_replay(path_replay, 1);
         drive.track_valid = true; // Original4B1480.
         drive.track.turn_index = -1; // Original4B1484; cursor is untouched.
     }
@@ -968,7 +969,7 @@ mod tests {
             z: 512,
         });
         drive.track = retained;
-        drive.path = crate::sim::components::DrivePathQueue {
+        entity.navigation.path_replay = crate::sim::components::FootPathQueue {
             directions: vec![8, 2],
             cursor: 0,
             reference_cell: Some((-3, 7)),
@@ -993,6 +994,7 @@ mod tests {
         raw.mark_ground(0, 0, VEHICLE_OCCUPATION_BIT);
 
         begin_path_tube_step(
+            &mut entity.navigation.path_replay,
             entity.stable_id,
             entity.category,
             &mut entity.position,
@@ -1026,8 +1028,8 @@ mod tests {
         );
         assert!(drive.track_valid);
         assert_eq!(drive.track, retained);
-        assert_eq!(drive.path.cursor, 1);
-        assert_eq!(drive.path.reference_cell, Some((-3, 7)));
+        assert_eq!(entity.navigation.path_replay.cursor, 1);
+        assert_eq!(entity.navigation.path_replay.reference_cell, Some((-3, 7)));
     }
 
     #[test]

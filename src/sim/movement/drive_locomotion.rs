@@ -29,8 +29,11 @@ pub(crate) fn process_drive_locomotion_shell(entity: &GameEntity) -> DriveProces
     DriveProcessOutcome::Processed
 }
 
-pub(super) fn drive_requires_native_step(drive: &DriveLocomotionRuntime) -> bool {
-    !drive.path.directions.is_empty() || drive.track.residual != 0
+pub(super) fn drive_requires_native_step(
+    drive: &DriveLocomotionRuntime,
+    path_replay: &crate::sim::components::FootPathQueue,
+) -> bool {
+    !path_replay.remaining_directions().is_empty() || drive.track.residual != 0
 }
 
 /// `ILocomotion::Is_Moving` (slot 4) for the Drive locomotor.

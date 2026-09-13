@@ -89,14 +89,7 @@ pub fn stop_navigation_at_committed_head(e: &mut GameEntity) {
     // independent of the physical A* cursor. Stop must retire that abandoned
     // suffix as well as truncate MovementTarget below. Keep the committed
     // curve/head and replay reference intact until the segment finishes.
-    let remaining_path = match e.locomotor.as_ref().map(|loco| loco.active_kind()) {
-        Some(LocomotorKind::Drive) => e.drive_locomotion.as_mut().map(|drive| &mut drive.path),
-        Some(LocomotorKind::Ship) => e.ship_locomotion.as_mut().map(|ship| &mut ship.path),
-        _ => None,
-    };
-    if let Some(path) = remaining_path {
-        path.cursor = path.directions.len().min(u16::MAX as usize) as u16;
-    }
+    super::path_markers::exhaust_path_replay(&mut e.navigation.path_replay);
     // Stop clears the owner destination immediately, but an
     // already committed Drive/Ship curve keeps only the
     // current-to-head step. Removing every trailing A* entry
@@ -739,12 +732,17 @@ pub(crate) fn issue_move_command_with_layered(
                 .drive_locomotion
                 .get_or_insert_with(Default::default);
             super::path_markers::install_path_replay(
-                &mut drive.path,
+                &mut entity_mut.navigation.path_replay,
                 (start_rx, start_ry),
                 &movement.path,
                 1,
             );
-            drive.turn.target_direction = drive.path.directions.first().copied();
+            drive.turn.target_direction = entity_mut
+                .navigation
+                .path_replay
+                .directions
+                .first()
+                .copied();
             drive.turn.target_facing_16 = initial_step_delta
                 .map(|(dx, dy)| crate::util::fixed_math::facing_from_delta_int_u16(dx, dy));
             drive.turn.rate_timer = 0;
@@ -754,11 +752,11 @@ pub(crate) fn issue_move_command_with_layered(
             // DriveLocomotionClass::Process_Movement @ 0x004B2630 and applies it in
             // Process_Drive_Track @ 0x004B0F20.
         } else if uses_ship_locomotor {
-            let ship = entity_mut
+            entity_mut
                 .ship_locomotion
                 .get_or_insert_with(Default::default);
             super::path_markers::install_path_replay(
-                &mut ship.path,
+                &mut entity_mut.navigation.path_replay,
                 (start_rx, start_ry),
                 &movement.path,
                 1,
@@ -867,7 +865,7 @@ pub(crate) fn issue_move_command_with_layered(
                 drive.head_to = accepted_head;
                 if let Some(reference) = accepted_path_reference {
                     super::path_markers::accept_path_replay(
-                        &mut drive.path,
+                        &mut entity_mut.navigation.path_replay,
                         reference,
                         accepted_path_nodes,
                     );
@@ -925,7 +923,7 @@ pub(crate) fn issue_move_command_with_layered(
                 ship.head_to = accepted_head;
                 if let Some(reference) = accepted_path_reference {
                     super::path_markers::accept_path_replay(
-                        &mut ship.path,
+                        &mut entity_mut.navigation.path_replay,
                         reference,
                         accepted_path_nodes,
                     );
