@@ -1,10 +1,10 @@
 # Module map
 
-Generated snapshot: `ad3e6c797b919bdbe61bfe9bf3a3fbd23beaba6b` (2026-09-13), cargo-modules 0.26.0.
+Generated snapshot: `2e6db6010a75ba3d0449c7e05424f9029dd88919` (2026-09-13), cargo-modules 0.26.0.
 
 Scope: `vera20k` library, default features, `x86_64-pc-windows-msvc`, no depth limit.
 Test-only, binary-specific and inactive conditional modules are excluded.
-This snapshot contains 790 modules; check its source commit against your checkout.
+This snapshot contains 808 modules; check its source commit against your checkout.
 
 Regenerate from the repository root with the command below, replace the tree, and
 update the source commit and build scope above.
@@ -232,6 +232,7 @@ crate vera20k
 │   ├── mod authored_overlay: pub(crate)
 │   ├── mod basic: pub
 │   ├── mod bridge_facts: pub
+│   ├── mod bridge_pavement: pub(crate)
 │   ├── mod bridge_rim_tiles: pub(crate)
 │   ├── mod briefing: pub
 │   ├── mod cell_index: pub
@@ -240,6 +241,7 @@ crate vera20k
 │   ├── mod entities: pub
 │   ├── mod events: pub
 │   ├── mod houses: pub
+│   ├── mod iso_tile_flood: pub(crate)
 │   ├── mod lat: pub
 │   ├── mod lighting: pub
 │   ├── mod map_file: pub
@@ -249,6 +251,8 @@ crate vera20k
 │   ├── mod preview: pub
 │   ├── mod resolved_terrain: pub
 │   │   ├── mod mutation: pub(self)
+│   │   ├── mod pavement: pub(self)
+│   │   ├── mod recalc_catalog: pub(self)
 │   │   └── mod zone_class: pub
 │   ├── mod retail_trig: pub
 │   ├── mod rmg: pub
@@ -460,9 +464,12 @@ crate vera20k
 │   │   ├── mod damaged_variant: pub(self)
 │   │   ├── mod gap_restamp: pub(crate)
 │   │   ├── mod publication: pub(crate)
+│   │   ├── mod ramp_repair: pub(crate)
 │   │   ├── mod record_scan: pub(self)
+│   │   ├── mod repair_occupants: pub(crate)
 │   │   ├── mod rim: pub(crate)
-│   │   └── mod walker: pub
+│   │   ├── mod walker: pub
+│   │   └── mod zone_activation: pub(self)
 │   ├── mod capture_manager: pub
 │   ├── mod cell_kernel: pub
 │   ├── mod cell_rect: pub
@@ -542,6 +549,7 @@ crate vera20k
 │   │   └── mod verb: pub
 │   ├── mod movement: pub
 │   │   ├── mod air_movement: pub
+│   │   ├── mod at_coord: pub(crate)
 │   │   ├── mod bump_crush: pub
 │   │   ├── mod cell_arrival: pub(self)
 │   │   ├── mod drive_locomotion: pub(self)
@@ -559,6 +567,7 @@ crate vera20k
 │   │   │   ├── mod power: pub
 │   │   │   └── mod slot: pub
 │   │   ├── mod locomotor: pub
+│   │   ├── mod locomotor_owner: pub(crate)
 │   │   ├── mod locomotor_ready: pub(crate)
 │   │   ├── mod movement_blocked: pub(self)
 │   │   ├── mod movement_bridge: pub(crate)
@@ -566,7 +575,7 @@ crate vera20k
 │   │   ├── mod movement_occupancy: pub(self)
 │   │   ├── mod movement_path: pub(self)
 │   │   ├── mod movement_step: pub(self)
-│   │   ├── mod movement_tick: pub(self)
+│   │   ├── mod movement_tick: pub(crate)
 │   │   ├── mod navcom: pub(self)
 │   │   ├── mod parachute_descent: pub
 │   │   ├── mod path_markers: pub(self)
@@ -575,6 +584,9 @@ crate vera20k
 │   │   ├── mod scatter: pub
 │   │   ├── mod slope_transition: pub(crate)
 │   │   ├── mod teleport_movement: pub
+│   │   ├── mod track_head: pub(self)
+│   │   ├── mod track_host: pub(self)
+│   │   ├── mod track_process: pub(crate)
 │   │   ├── mod tube_movement: pub
 │   │   ├── mod tunnel_movement: pub
 │   │   └── mod turret: pub
@@ -610,6 +622,7 @@ crate vera20k
 │   │   ├── mod zone_hierarchy: pub(crate)
 │   │   ├── mod zone_incremental: pub(crate)
 │   │   ├── mod zone_map: pub
+│   │   │   └── mod bridge_repair_zones: pub(self)
 │   │   └── mod zone_search: pub
 │   ├── mod power_system: pub
 │   ├── mod production: pub
@@ -687,7 +700,11 @@ crate vera20k
 │       ├── mod bridge_orchestrator: pub(crate)
 │       │   ├── mod ground_fallout: pub(self)
 │       │   └── mod live_publication: pub(self)
-│       │       └── mod rim_publication: pub(self)
+│       │       ├── mod constructor_publication: pub(self)
+│       │       ├── mod pavement_publication: pub(self)
+│       │       ├── mod rim_publication: pub(self)
+│       │       ├── mod tile_publication: pub(self)
+│       │       └── mod zone_publication: pub(self)
 │       ├── mod building_anim: pub(crate)
 │       ├── mod command_schedule: pub(self)
 │       ├── mod damage_consequences: pub(crate)
@@ -707,6 +724,7 @@ crate vera20k
 │       │   ├── mod bounce_terrain: pub(self)
 │       │   └── mod mission_handlers: pub(self)
 │       ├── mod techno_ai_cloak: pub(crate)
+│       ├── mod track_cell_recalc: pub(self)
 │       ├── mod unit_post: pub(crate)
 │       ├── mod world_commands: pub(self)
 │       ├── mod world_hash: pub(self)
