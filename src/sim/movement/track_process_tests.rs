@@ -20,6 +20,68 @@ fn assert_progress(progress: &TrackProgress, expected: &Value) {
 }
 
 #[test]
+fn post_placement_gates_reload_cursor_and_preserve_the_paid_raw_descriptor() {
+    let corpus: Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/locomotor_track_point_gates.json"
+    ))
+    .unwrap();
+    let mut descriptors = 0;
+    let mut cases = 0;
+    let mut within_point_cursor_changes = 0;
+    let mut selector_changes = 0;
+    for (name, family) in [("drive", TrackFamily::Drive), ("ship", TrackFamily::Ship)] {
+        descriptors += integer(&corpus[name]["raw_descriptors"]);
+        for case in corpus[name]["cases"].as_array().unwrap() {
+            let (input, output) = (&case["input"], &case["output"]);
+            let initial = &input["initial"];
+            let mut progress = TrackProgress {
+                turn_index: integer(&initial["turn"]),
+                cursor: 0,
+                reversed: initial["reversed"].as_bool().unwrap(),
+                residual: 6,
+            };
+            let mut call = TrackProcess::begin(family, &progress, 9);
+            let Some(TrackPayment::Sample(sample)) = call.pay_current(&progress) else {
+                panic!("native case pays the initial point: {name} {input}");
+            };
+            assert!(!sample.terminal);
+            assert_eq!(
+                i32::from(sample.raw_index),
+                integer(&output["cached"]["raw"])
+            );
+            let mutation = &input["mutation"];
+            progress.turn_index = integer(&mutation["turn"]);
+            progress.cursor = integer(&mutation["cursor"]);
+            progress.reversed = mutation["reversed"].as_bool().unwrap();
+            progress.residual = integer(&mutation["residual"]);
+            assert_eq!(
+                call.is_at_occupation_handoff(&progress),
+                output["handoff"].as_bool().unwrap(),
+                "{name} handoff {input}"
+            );
+            assert_progress(&progress, &output["after_handoff"]);
+            let chain_cursor = integer(&input["chain_cursor"]);
+            within_point_cursor_changes += usize::from(progress.cursor != chain_cursor);
+            selector_changes += usize::from(progress.turn_index != integer(&initial["turn"]));
+            progress.cursor = chain_cursor;
+            assert_eq!(
+                call.is_at_chain_cursor(&progress),
+                output["chain"].as_bool().unwrap(),
+                "{name} chain {input}"
+            );
+            assert_progress(&progress, &output["after_chain"]);
+            assert_eq!(call.budget(), integer(&output["local_budget"]));
+            assert_eq!(progress.residual, integer(&output["retained_residual"]));
+            cases += 1;
+        }
+    }
+    assert_eq!(descriptors, 25);
+    assert_eq!(cases, 510);
+    assert_eq!(within_point_cursor_changes, 230);
+    assert!(selector_changes > 0);
+}
+
+#[test]
 fn retained_cursor_and_paid_samples_match_original_drive_and_ship() {
     let corpus: Value = serde_json::from_str(include_str!(
         "../../../tools/spatial_oracle/locomotor_track_cursor.json"

@@ -8,6 +8,8 @@
 //! The paid loop caches its raw descriptor across callbacks, while coordinate
 //! transformation and residual selection read live retained fields; see
 //! tools/spatial_oracle/locomotor_track_callback.{py,json,meta.json}.
+//! Post-placement descriptor gates additionally reload the cursor between
+//! world effects: tools/spatial_oracle/locomotor_track_point_gates.{py,json,meta.json}.
 
 use super::drive_track::{self, TrackPoint, TurnTrack};
 use crate::sim::components::{DriveCoord, TrackProgress};
@@ -224,8 +226,6 @@ pub(crate) struct PaidSample {
     pub xy: [i32; 2],
     pub facing: u8,
     pub terminal: bool,
-    pub chain: bool,
-    pub occupation_handoff: bool,
 }
 
 impl PaidSample {
@@ -325,6 +325,32 @@ impl TrackProcess {
         self.selection.map(|selection| selection.target_facing)
     }
 
+    /// Drive4B1AC6..1AD7 / Ship6A1102..1113 run after coordinate, Mark and
+    /// height effects. They compare the LIVE cursor with the call's CACHED
+    /// raw descriptor, excluding cursor zero even when its metadata is zero.
+    /// Do not capture this result in PaidSample before those world effects.
+    pub fn is_at_occupation_handoff(&self, progress: &TrackProgress) -> bool {
+        assert_eq!(self.phase, ProcessPhase::PointCallbacks);
+        progress.cursor != 0
+            && self
+                .selection
+                .and_then(|selection| drive_track::raw_track_meta(selection.raw_index))
+                .is_some_and(|raw| progress.cursor == i32::from(raw.occupation_handoff_point_index))
+    }
+
+    /// Cursor portion of the later chain gate, Drive4B1B35..1B4A and
+    /// Ship6A1171..1186. Direction and mismatch admission belong to the host.
+    /// A preceding handoff/world receiver may change the cursor again, so
+    /// query this separately from the occupation-handoff gate above.
+    pub fn is_at_chain_cursor(&self, progress: &TrackProgress) -> bool {
+        assert_eq!(self.phase, ProcessPhase::PointCallbacks);
+        progress.cursor != 0
+            && self
+                .selection
+                .and_then(|selection| drive_track::raw_track_meta(selection.raw_index))
+                .is_some_and(|raw| progress.cursor == i32::from(raw.chain_index))
+    }
+
     /// Accepted chaining explicitly replaces both retained progress and the
     /// invocation's caches BEFORE PerCellProcess(2), unlike a selector change
     /// made by that callback. Head clearing/valid publication belong to the
@@ -355,7 +381,6 @@ impl TrackProcess {
         // reselect this paid loop; the later residual branch does reselect.
         let raw_index = self.selection?.raw_index;
         let point = raw_point(raw_index, progress.cursor)?;
-        let raw = drive_track::raw_track_meta(raw_index)?;
         self.budget = self.budget.wrapping_sub(POINT_COST);
         let terminal = progress.cursor != 0 && point.x == 0 && point.y == 0;
         self.phase = if terminal {
@@ -369,8 +394,6 @@ impl TrackProcess {
             xy: [i32::from(point.x), i32::from(point.y)],
             facing: point.facing,
             terminal,
-            chain: progress.cursor == i32::from(raw.chain_index),
-            occupation_handoff: progress.cursor == i32::from(raw.occupation_handoff_point_index),
         }))
     }
 
