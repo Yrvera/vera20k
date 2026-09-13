@@ -234,6 +234,8 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         can_be_occupied: false,
         can_occupy_fire: false,
         show_occupant_pips: false,
+        place_anywhere: false,
+        to_tile: None,
         bridge_repair_hut: false,
         laser_fence: false,
         passengers: 0,

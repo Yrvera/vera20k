@@ -21,7 +21,7 @@ pub mod zone_class {
 
 use crate::assets::tmp_file::{TmpFile, TmpTile};
 #[cfg(test)]
-pub(crate) use tests::{bridge_constructor_terrain, install_bridge_batch_test_catalog};
+pub(crate) use tests::{bridge_constructor_terrain, install_bridge_batch_test_catalog, install_ordinary_repair_test_catalog};
 use crate::map::authored_overlay::{FinalizedOverlayCell, NO_OVERLAY_IDENTITY};
 use crate::map::bridge_facts::{
     BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL,
@@ -1989,9 +1989,15 @@ impl ResolvedTerrainGrid {
     }
 
     pub(crate) fn clear_native_cell_overlay(&mut self, cell: NativeCellIdentity) {
+        self.write_native_cell_overlay(cell, None);
+    }
+
+    /// Raw Cell+44 publication; derived Recalc fields remain untouched until
+    /// the caller reaches47D2B0. Ordinary repair stores all three identities first.
+    pub(crate) fn write_native_cell_overlay(&mut self, cell: NativeCellIdentity, overlay: Option<u8>) {
         match cell {
-            NativeCellIdentity::Real(index) => self.cells[index].bridge_facts.overlay_id = None,
-            NativeCellIdentity::Dummy => self.shared_cell_dummy.write_overlay_identity(-1),
+            NativeCellIdentity::Real(index) => self.cells[index].bridge_facts.overlay_id = overlay,
+            NativeCellIdentity::Dummy => self.shared_cell_dummy.write_overlay_identity(overlay.map_or(-1, i32::from)),
         }
     }
 
