@@ -511,8 +511,8 @@ fn native_lepton_to_cell(leptons: i32) -> i32 {
 
 /// Run the per-candidate predicates in engine order: the independent height-aware
 /// anchor diamond, rectangle passability (`required_height_or_level = -1`,
-/// caller-supplied overlay rejection), optional occupancy with reservations SKIPPED
-/// (`-1`), the caller's height gate, then the bridge filter last.
+/// caller-supplied overlay rejection), the caller's height gate, bridge filter,
+/// then optional occupancy with reservations SKIPPED (`-1`).
 // gamemd-derived: `MapClass::Find_Nearby_Passable_Cell @ 0x0056DC20`; anchor
 // calls `0x0056DDC0/0x0056DFD6/0x0056E217/0x0056E419` dispatch to
 // `MapClass::Is_Cell_In_Playfield_CellClass @ 0x00578540` immediately before
@@ -796,6 +796,82 @@ mod tests {
             entities: None,
             zone_grid: None,
             playfield_bounds: None,
+        }
+    }
+
+    #[test]
+    fn nearby_raw_and_retained_seed_match_original_bounded_queries() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/spatial_oracle/nearby_raw_occupation.json"
+        ))
+        .unwrap();
+        let cases = cases.as_array().unwrap();
+        assert_eq!(cases.len(), 6);
+        for case in cases {
+            let input = &case["input"];
+            let output = &case["output"];
+            let mut terrain = flat_terrain(21, 21);
+            // Leave the cache at its initial level/flags to ensure the exact
+            // query uses the live CellClass fields sampled by original code.
+            let grid = PathGrid::from_resolved_terrain(&terrain);
+            let cell = &mut terrain.cells[10 * 21 + 10];
+            cell.level = input["level"].as_u64().unwrap() as u8;
+            cell.bridge_facts.raw_flags = if input["structural"].as_bool().unwrap() {
+                BRIDGE_FLAG_STRUCTURAL
+            } else {
+                0
+            };
+            terrain.shared_cell_dummy().stamp_coord(0, 0);
+            let mut raw = RawCellOccupationGrid::default();
+            raw.mark_ground(10, 10, input["ground"].as_u64().unwrap() as u8);
+            raw.mark_deck(10, 10, input["deck"].as_u64().unwrap() as u8);
+            let seed = (
+                input["seed"][0].as_i64().unwrap() as i32,
+                input["seed"][1].as_i64().unwrap() as i32,
+            );
+            let mut q = base_query(&terrain, &grid);
+            q.raw_occupation = Some(&raw);
+            q.passability.speed_type = SpeedType::Foot;
+            q.passability.bridge_aware_zone = input["bridge_aware"].as_bool().unwrap();
+            q.check_height = input["height"].as_bool().unwrap();
+            q.radius_cap = input["cap"].as_u64().unwrap() as u16;
+            q.target_cell = Some(seed);
+            // Match the native corpus's declared playfield/direct-projection
+            // substitutions; the live query/rectangle/raw bodies stay shared.
+            let mut projections = 0;
+            let mut project = |_, _, _| {
+                projections += 1;
+                true
+            };
+            let result = find_nearby_passable_cell_with_projection(
+                seed,
+                &q,
+                NearbySearchOptions::default(),
+                0,
+                &mut project,
+            )
+            .unwrap_or((0, 0));
+            assert_eq!(
+                serde_json::json!([result.0, result.1]),
+                output["cell"],
+                "{case}"
+            );
+            let dummy = terrain.shared_cell_dummy().snapshot().coord;
+            assert_eq!(
+                serde_json::json!([dummy.0, dummy.1]),
+                output["dummy"],
+                "{case}"
+            );
+            assert_eq!(
+                projections,
+                output["events"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|event| event.as_str() == Some("projection"))
+                    .count(),
+                "{case}"
+            );
         }
     }
 

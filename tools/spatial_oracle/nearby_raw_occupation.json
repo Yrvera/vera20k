@@ -1,0 +1,189 @@
+[
+  {
+    "input": {
+      "bridge_aware": false,
+      "cap": 1,
+      "deck": 0,
+      "ground": 4,
+      "height": false,
+      "level": 2,
+      "seed": [
+        10,
+        10
+      ],
+      "structural": false
+    },
+    "output": {
+      "cell": [
+        0,
+        0
+      ],
+      "dummy": [
+        0,
+        0
+      ],
+      "events": [
+        "playfield",
+        "raw",
+        "playfield",
+        "raw"
+      ]
+    }
+  },
+  {
+    "input": {
+      "bridge_aware": false,
+      "cap": 1,
+      "deck": 0,
+      "ground": 4,
+      "height": false,
+      "level": 2,
+      "seed": [
+        10,
+        10
+      ],
+      "structural": true
+    },
+    "output": {
+      "cell": [
+        10,
+        10
+      ],
+      "dummy": [
+        0,
+        0
+      ],
+      "events": [
+        "playfield",
+        "raw",
+        "projection",
+        "playfield",
+        "raw",
+        "projection",
+        "projection",
+        "projection"
+      ]
+    }
+  },
+  {
+    "input": {
+      "bridge_aware": false,
+      "cap": 1,
+      "deck": 8,
+      "ground": 0,
+      "height": false,
+      "level": 2,
+      "seed": [
+        10,
+        10
+      ],
+      "structural": true
+    },
+    "output": {
+      "cell": [
+        0,
+        0
+      ],
+      "dummy": [
+        0,
+        0
+      ],
+      "events": [
+        "playfield",
+        "raw",
+        "playfield",
+        "raw"
+      ]
+    }
+  },
+  {
+    "input": {
+      "bridge_aware": false,
+      "cap": 1,
+      "deck": 0,
+      "ground": 0,
+      "height": true,
+      "level": 2,
+      "seed": [
+        10,
+        10
+      ],
+      "structural": true
+    },
+    "output": {
+      "cell": [
+        0,
+        0
+      ],
+      "dummy": [
+        0,
+        0
+      ],
+      "events": [
+        "playfield",
+        "raw",
+        "playfield",
+        "raw"
+      ]
+    }
+  },
+  {
+    "input": {
+      "bridge_aware": true,
+      "cap": 1,
+      "deck": 0,
+      "ground": 0,
+      "height": true,
+      "level": 2,
+      "seed": [
+        10,
+        10
+      ],
+      "structural": true
+    },
+    "output": {
+      "cell": [
+        10,
+        10
+      ],
+      "dummy": [
+        0,
+        0
+      ],
+      "events": [
+        "playfield",
+        "raw",
+        "playfield",
+        "raw",
+        "projection",
+        "projection"
+      ]
+    }
+  },
+  {
+    "input": {
+      "bridge_aware": false,
+      "cap": 0,
+      "deck": 0,
+      "ground": 0,
+      "height": false,
+      "level": 0,
+      "seed": [
+        40,
+        41
+      ],
+      "structural": false
+    },
+    "output": {
+      "cell": [
+        0,
+        0
+      ],
+      "dummy": [
+        40,
+        41
+      ],
+      "events": []
+    }
+  }
+]
