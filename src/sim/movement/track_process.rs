@@ -5,6 +5,9 @@
 //! cursor. The call-local budget must survive those callbacks independently
 //! of the residual stored on the locomotor. Executable evidence:
 //! tools/spatial_oracle/locomotor_track_cursor.{py,json,meta.json}.
+//! The paid loop caches its raw descriptor across callbacks, while coordinate
+//! transformation and residual selection read live retained fields; see
+//! tools/spatial_oracle/locomotor_track_callback.{py,json,meta.json}.
 
 use super::drive_track::{self, TrackPoint, TurnTrack};
 use crate::sim::components::{DriveCoord, TrackProgress};
@@ -220,10 +223,38 @@ pub(crate) struct PaidSample {
     pub cursor: i32,
     pub xy: [i32; 2],
     pub facing: u8,
-    pub flags: u8,
     pub terminal: bool,
     pub chain: bool,
     pub occupation_handoff: bool,
+}
+
+impl PaidSample {
+    /// Transform_Track_Coords4B4780/6A3DB0 reads the LIVE selector and head,
+    /// even when this point came from the invocation's cached older raw array.
+    /// Call at the placement boundary, after preceding owner callbacks; do not
+    /// snapshot flags when paying for the point. The native helper writes XY
+    /// and facing only; height belongs to the subsequent placement work.
+    pub fn transform(
+        self,
+        family: TrackFamily,
+        progress: &TrackProgress,
+        head: DriveCoord,
+    ) -> Option<([i32; 2], u8)> {
+        let turn = family.turn(progress.turn_index)?;
+        let (x, y, facing) = drive_track::transform_track_point(
+            i16::try_from(self.xy[0]).ok()?,
+            i16::try_from(self.xy[1]).ok()?,
+            self.facing,
+            turn.flags,
+        );
+        Some((
+            [
+                head.x.wrapping_add(i32::from(x)),
+                head.y.wrapping_add(i32::from(y)),
+            ],
+            facing,
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,20 +270,49 @@ enum ProcessPhase {
     TerminalCallbacks,
 }
 
+/// Original immutable TurnTrack/RawTrack data retained by one paid loop.
+/// The selected target facing is used by chain-direction calculations; it is
+/// not the authority for a later coordinate transform's flags.
+#[derive(Debug, Clone, Copy)]
+struct PaidTrackSelection {
+    raw_index: u8,
+    target_facing: u8,
+}
+
+impl PaidTrackSelection {
+    fn from_progress(family: TrackFamily, progress: &TrackProgress) -> Option<Self> {
+        let (raw_index, turn) = progress.selected_raw(family)?;
+        Some(Self {
+            raw_index,
+            target_facing: turn.target_facing,
+        })
+    }
+}
+
 /// A call-local continuation, never serialized and never holding an entity
-/// borrow. After a callback the host must refetch the same active instance;
-/// callback death/limbo/off-map exits drop this call without residual writeback.
+/// borrow. After a callback the host resumes the INVOKED instance, which is
+/// not necessarily the owner's current active slot. Native owner alive/limbo/
+/// falling gates can end this call without residual writeback.
 #[derive(Debug)]
 pub(crate) struct TrackProcess {
+    family: TrackFamily,
     budget: i32,
     phase: ProcessPhase,
+    selection: Option<PaidTrackSelection>,
 }
 
 impl TrackProcess {
-    pub fn begin(progress: &TrackProgress, fresh_budget: i32) -> Self {
+    pub fn begin(family: TrackFamily, progress: &TrackProgress, fresh_budget: i32) -> Self {
+        let budget = progress.residual.wrapping_add(fresh_budget);
         Self {
-            budget: progress.residual.wrapping_add(fresh_budget),
+            family,
+            budget,
             phase: ProcessPhase::Ready,
+            // Drive4B1519..154C / Ship6A0BE1..0C14 are reached only after the
+            // strict paid gate. These locals survive the owner callbacks.
+            selection: (budget > POINT_COST)
+                .then(|| PaidTrackSelection::from_progress(family, progress))
+                .flatten(),
         }
     }
 
@@ -260,14 +320,28 @@ impl TrackProcess {
         self.budget
     }
 
+    /// Drive4B1B50 / Ship6A118C use the cached TurnTrack for chain direction.
+    pub fn chain_target_facing(&self) -> Option<u8> {
+        self.selection.map(|selection| selection.target_facing)
+    }
+
+    /// Accepted chaining explicitly replaces both retained progress and the
+    /// invocation's caches BEFORE PerCellProcess(2), unlike a selector change
+    /// made by that callback. Head clearing/valid publication belong to the
+    /// host. Drive4B1C78..1CF9 / Ship6A12C2..133C.
+    pub fn accept_chain(&mut self, progress: &mut TrackProgress, turn_index: i32) -> bool {
+        assert_eq!(self.phase, ProcessPhase::PointCallbacks);
+        if !progress.accept_chain(self.family, turn_index) {
+            return false;
+        }
+        self.selection = PaidTrackSelection::from_progress(self.family, progress);
+        true
+    }
+
     /// None means the supplied selector/cursor has no readable catalog point;
     /// the host must establish native active-track admission before calling.
     /// A payment exposes a callback barrier, not an automatic cursor advance.
-    pub fn pay_current(
-        &mut self,
-        family: TrackFamily,
-        progress: &TrackProgress,
-    ) -> Option<TrackPayment> {
+    pub fn pay_current(&mut self, progress: &TrackProgress) -> Option<TrackPayment> {
         assert_eq!(
             self.phase,
             ProcessPhase::Ready,
@@ -276,7 +350,10 @@ impl TrackProcess {
         if self.budget <= POINT_COST {
             return Some(TrackPayment::Exhausted);
         }
-        let (raw_index, turn) = progress.selected_raw(family)?;
+        // Drive4B158F/1596 and Ship6A0C52/0C55 reload only the retained cursor
+        // and the cached raw pointer. Callback selector/short writes do not
+        // reselect this paid loop; the later residual branch does reselect.
+        let raw_index = self.selection?.raw_index;
         let point = raw_point(raw_index, progress.cursor)?;
         let raw = drive_track::raw_track_meta(raw_index)?;
         self.budget = self.budget.wrapping_sub(POINT_COST);
@@ -291,7 +368,6 @@ impl TrackProcess {
             cursor: progress.cursor,
             xy: [i32::from(point.x), i32::from(point.y)],
             facing: point.facing,
-            flags: turn.flags,
             terminal,
             chain: progress.cursor == i32::from(raw.chain_index),
             occupation_handoff: progress.cursor == i32::from(raw.occupation_handoff_point_index),

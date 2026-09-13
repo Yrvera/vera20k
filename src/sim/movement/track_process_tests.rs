@@ -92,8 +92,8 @@ fn retained_cursor_and_paid_samples_match_original_drive_and_ship() {
                 residual: integer(&input["budget"]),
             };
             let residual_before = progress.residual;
-            let mut call = TrackProcess::begin(&progress, 0);
-            match call.pay_current(family, &progress).unwrap() {
+            let mut call = TrackProcess::begin(family, &progress, 0);
+            match call.pay_current(&progress).unwrap() {
                 TrackPayment::Exhausted => assert_eq!(output["kind"], "unpaid"),
                 TrackPayment::Sample(sample) => {
                     assert_eq!(
@@ -153,10 +153,12 @@ fn retained_cursor_and_paid_samples_match_original_drive_and_ship() {
             // Like the native corpus, supply an already-reached chain callback
             // seam. This does not claim the preceding owner callbacks ran.
             let mut call = TrackProcess {
+                family,
                 budget: integer(&input["budget"]),
                 phase: ProcessPhase::PointCallbacks,
+                selection: PaidTrackSelection::from_progress(family, &progress),
             };
-            assert!(progress.accept_chain(family, integer(&input["turn"])));
+            assert!(call.accept_chain(&mut progress, integer(&input["turn"])));
             assert_progress(&progress, &output["accepted"]);
             assert_eq!(
                 call.finish_surviving_point(&mut progress),
@@ -176,8 +178,10 @@ fn retained_cursor_and_paid_samples_match_original_drive_and_ship() {
                 residual: 971,
             };
             let mut call = TrackProcess {
+                family,
                 budget: integer(&input["budget"]),
                 phase: ProcessPhase::TerminalCallbacks,
+                selection: PaidTrackSelection::from_progress(family, &progress),
             };
             call.adjust_terminal_budget(coord(&input["current"]), coord(&input["head"]));
             assert_eq!(
@@ -269,21 +273,20 @@ fn rejected_chain_cannot_publish_the_null_raw_record_as_a_curve() {
 }
 
 #[test]
-fn callback_replacement_advances_refetched_cursor_and_exit_retains_old_residual() {
+fn accepted_chain_advances_refetched_cursor_and_preserves_old_residual_until_store() {
     let mut progress = TrackProgress {
         turn_index: 0,
         cursor: 0,
         reversed: false,
         residual: 6,
     };
-    let mut call = TrackProcess::begin(&progress, 9);
-    let TrackPayment::Sample(sample) = call.pay_current(TrackFamily::Drive, &progress).unwrap()
-    else {
+    let mut call = TrackProcess::begin(TrackFamily::Drive, &progress, 9);
+    let TrackPayment::Sample(sample) = call.pay_current(&progress).unwrap() else {
         panic!("paid first sample")
     };
     assert_eq!(sample.xy, [0, 245]);
     assert_eq!(call.budget(), 8);
-    assert!(progress.accept_chain(TrackFamily::Drive, 1));
+    assert!(call.accept_chain(&mut progress, 1));
     assert_eq!(progress.cursor, 11);
     // A native callback exit stops here, preserving entry-1 and old residual.
     assert_eq!(progress.residual, 6);
@@ -291,14 +294,130 @@ fn callback_replacement_advances_refetched_cursor_and_exit_retains_old_residual(
     assert!(call.finish_surviving_point(&mut progress));
     assert_eq!(progress.cursor, 12);
     assert_eq!(callback_exit_state.cursor, 11);
-    let TrackPayment::Sample(next) = call.pay_current(TrackFamily::Drive, &progress).unwrap()
-    else {
+    let TrackPayment::Sample(next) = call.pay_current(&progress).unwrap() else {
         panic!("same-process successor")
     };
     assert_eq!(next.xy, [-256, 373]);
     assert!(!call.finish_surviving_point(&mut progress));
     call.store_residual(&mut progress);
     assert_eq!(progress.residual, 1);
+}
+
+#[test]
+fn callback_mutations_keep_paid_raw_cache_but_transform_and_residual_use_live_state() {
+    let corpus: Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/locomotor_track_callback.json"
+    ))
+    .unwrap();
+    let mut cases = 0;
+    let mut chains = 0;
+    let mut changed_raw_cases = 0;
+    for (name, family) in [("drive", TrackFamily::Drive), ("ship", TrackFamily::Ship)] {
+        for case in corpus[name].as_array().unwrap() {
+            let (input, output) = (&case["input"], &case["output"]);
+            let initial = &input["initial"];
+            let mut progress = TrackProgress {
+                turn_index: integer(&initial["turn"]),
+                cursor: integer(&initial["cursor"]),
+                reversed: initial["reversed"].as_bool().unwrap(),
+                residual: integer(&initial["residual"]),
+            };
+            // The fixture enters after budget calculation with budget15.
+            let mut call = TrackProcess::begin(family, &progress, 9);
+            let TrackPayment::Sample(first) = call.pay_current(&progress).unwrap() else {
+                panic!("{name} first paid point: {input}")
+            };
+            assert_native_cached_sample(&call, first, &output["first"]);
+            if let Some(chain) = input["chain"].as_i64() {
+                assert!(call.accept_chain(&mut progress, chain as i32));
+                chains += 1;
+            }
+            assert_progress(&progress, &output["accepted"]["progress"]);
+            assert_eq!(
+                call.chain_target_facing().map(i32::from),
+                Some(integer(&output["accepted"]["selected"]["target_facing"]))
+            );
+            // These are the same supplied mutations as the native witness;
+            // this test does not claim a gameplay callback produces each one.
+            let mutation = &input["mutation"];
+            if let Some(turn) = mutation["turn"].as_i64() {
+                progress.turn_index = turn as i32;
+            }
+            if let Some(cursor) = mutation["cursor"].as_i64() {
+                progress.cursor = cursor as i32;
+            }
+            if let Some(reversed) = mutation["reversed"].as_bool() {
+                progress.reversed = reversed;
+            }
+            if let Some(residual) = mutation["residual"].as_i64() {
+                progress.residual = residual as i32;
+            }
+            let head = coord(&mutation["head"]);
+            assert_progress(&progress, &output["before_tail"]);
+            assert!(call.finish_surviving_point(&mut progress));
+            let TrackPayment::Sample(second) = call.pay_current(&progress).unwrap() else {
+                panic!("{name} second paid point: {input}")
+            };
+            assert_native_cached_sample(&call, second, &output["second"]);
+            assert_progress(&progress, &output["after_payment"]);
+            assert_eq!(progress.residual, integer(&output["retained_residual"]));
+            let (xy, facing) = second.transform(family, &progress, head).unwrap();
+            let transformed = &output["second"]["transformed"];
+            assert_eq!(
+                xy,
+                [
+                    integer(&transformed["xy"][0]),
+                    integer(&transformed["xy"][1])
+                ],
+                "{name} live transform: {input}"
+            );
+            assert_eq!(i32::from(facing), integer(&transformed["facing"]));
+            if progress.selected_raw(family).unwrap().0 != second.raw_index {
+                changed_raw_cases += 1;
+            }
+            assert!(!call.finish_surviving_point(&mut progress));
+            call.store_residual(&mut progress);
+            let expected = &output["residual"];
+            assert_progress(&progress, &expected["progress"]);
+            assert_eq!(progress.residual, integer(&expected["budget"]));
+            let residual = progress.residual_step(family, head, head).unwrap();
+            assert_eq!(
+                [residual.full.x, residual.full.y],
+                [
+                    integer(&expected["transformed_xy"][0]),
+                    integer(&expected["transformed_xy"][1]),
+                ],
+                "{name} live residual reselect: {input}"
+            );
+            cases += 1;
+        }
+    }
+    assert_eq!((cases, chains), (54, 12));
+    assert!(
+        changed_raw_cases > 0,
+        "corpus must distinguish cached and live raw selection"
+    );
+}
+
+fn assert_native_cached_sample(call: &TrackProcess, sample: PaidSample, expected: &Value) {
+    assert_eq!(sample.cursor, integer(&expected["cursor"]));
+    assert_eq!(
+        i32::from(sample.raw_index),
+        integer(&expected["selected"]["raw"])
+    );
+    assert_eq!(
+        call.chain_target_facing().map(i32::from),
+        Some(integer(&expected["selected"]["target_facing"]))
+    );
+    assert_eq!(
+        [sample.xy[0], sample.xy[1], i32::from(sample.facing)],
+        [
+            integer(&expected["point"][0]),
+            integer(&expected["point"][1]),
+            integer(&expected["point"][2]),
+        ]
+    );
+    assert_eq!(call.budget(), integer(&expected["budget"]));
 }
 
 #[test]

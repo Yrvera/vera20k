@@ -13,7 +13,7 @@
     "Original TurnTrack/RawTrack data includes every real point and the trailing XY-zero sentinel, including its facing",
     "Every point uses budgets 7/8/14/15; original tail decides cursor increment and whether another paid step is due",
     "Fresh selection and cursor reset are separate blocks; chain cases supply an already admitted nonzero-entry successor",
-    "Chain after-state executes the survivor common tail; callback-triggered death/limbo/off-map exits can retain entry-minus-one and are excluded",
+    "Chain after-state executes the survivor common tail; callback-triggered death/limbo/falling exits can retain entry-minus-one and are excluded",
     "Terminal expressions execute original ftol with supplied FPCW and ftol control word 0xE7F, consistent with saved startup capture; runtime immutability is not proved",
     "Terminal offsets include every referenced raw track last-real-point offset and separate scalar boundaries/distant poses; they are supplied coordinates, not complete curve-execution results"
   ],

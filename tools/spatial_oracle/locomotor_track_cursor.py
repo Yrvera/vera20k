@@ -131,7 +131,7 @@ class OriginalCursor:
             self.uc.reg_write(UC_X86_REG_EBX, pointer)
         self.run(*self.f['chain'])
         accepted = self.state()
-        # Survivor/common-tail witness only. Native owner death/limbo/off-map
+        # Survivor/common-tail witness only. Native owner death/limbo/falling
         # after the intervening callback can leave the accepted entry-1 state.
         end = self.run(self.f['tail'], (self.f['again'], self.f['exhausted']))
         return dict(accepted=accepted, after=self.state(), continue_paid=end == self.f['again'],
@@ -208,7 +208,7 @@ def metadata():
             'Original TurnTrack/RawTrack data includes every real point and the trailing XY-zero sentinel, including its facing',
             'Every point uses budgets 7/8/14/15; original tail decides cursor increment and whether another paid step is due',
             'Fresh selection and cursor reset are separate blocks; chain cases supply an already admitted nonzero-entry successor',
-            'Chain after-state executes the survivor common tail; callback-triggered death/limbo/off-map exits can retain entry-minus-one and are excluded',
+            'Chain after-state executes the survivor common tail; callback-triggered death/limbo/falling exits can retain entry-minus-one and are excluded',
             'Terminal expressions execute original ftol with supplied FPCW and ftol control word 0xE7F, consistent with saved startup capture; runtime immutability is not proved',
             'Terminal offsets include every referenced raw track last-real-point offset and separate scalar boundaries/distant poses; they are supplied coordinates, not complete curve-execution results',
         ], substitutions=[

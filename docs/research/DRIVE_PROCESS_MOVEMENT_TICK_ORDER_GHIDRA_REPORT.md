@@ -7,6 +7,30 @@ previously reversed those movement call sites. Direction `8` returns from
 movement selection at `4B3298/4B3A4D`; the track retry's tube gate at
 `4B1297/4B12AE` runs before the paid-point gate at `4B150D`.
 
+**2026-09-13 callback/state correction:** the paid loop retains its raw array,
+raw metadata and chain-direction descriptor across owner callbacks
+(`4B1542/154C`, resume `4B158F/1596`; Ship `6A0C08/0C14`, resume `6A0C52`).
+Accepted chaining explicitly replaces those caches before its callback
+(`4B1C78..1CF9` / `6A12C2..133C`). Coordinate transformation instead reads
+the current selector's flags and current head (`4B4780` / `6A3DB0`), and the
+residual branch reselects the raw array from current selector/short fields
+(`4B1F6D..4B22E2` / `6A15B0..6A1924`). The saved
+[`locomotor_track_callback` oracle](../../tools/spatial_oracle/locomotor_track_callback.py)
+compares 54 supplied-mutation cases against original instructions, including
+original facing loads and complete transform helpers. It does not execute
+gameplay callback bodies or prove that each supplied mutation occurs in retail.
+
+Geometric list crossing is separate from `PerCellProcess(2)`: the two explicit
+Drive calls are `4B1CFD` (accepted chain) and `4B220F` (paid terminal), with
+Ship counterparts `6A1340/6A1852`. During accepted-chain `PerCellProcess`, the
+head is full Null and valid is true; the saved candidate head is installed
+only after the callback and owner lifecycle checks. Those checks are alive
+`+90`, not-in-limbo `+81`, and not-falling `+8D`, not an off-map check. Native
+continuation retains the invoked locomotor, without an active-slot equality
+guard. Rust's `track_process` tests cover the bounded retained/call-local state
+semantics; canonical production stepping and the synchronous world callback
+host remain required. The old batch stepper is still active.
+
 **Address(es):** `0x004B0500` (`DriveLocomotionClass::Process`), `0x004B2630` (`Process_Movement`), `0x004B0F20` (`Process_Drive_Track`)
 **Investigation Mode:** exhaustive-slice
 **Claimed Scope:** call/order relationship among the three DriveLocomotion functions for speed/timing-visible state: slope sampling, active-track processing, path/track selection, speed fraction update, residual consumption, arrival stop, and state clears.
