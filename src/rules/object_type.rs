@@ -1026,6 +1026,11 @@ pub struct ObjectType {
     /// Parsed from `UnitAbsorb=yes` in rules.ini.
     pub unit_absorb: bool,
 
+    /// Whether this building grinds entering units (`BuildingTypeClass+0x16AD`).
+    /// gamemd 0x45E0D8 defaults false; 0x460968..0x460982 reads `Grinding=`.
+    /// The Unit cell-entry receiver tests this separately from UnitAbsorb.
+    pub grinding: bool,
+
     /// Whether this techno type can enter a Tank Bunker.
     /// Parsed from `Bunkerable=` in rules.ini. UnitTypeClass entries default
     /// true; other object categories default false.
@@ -1826,10 +1831,13 @@ impl ObjectType {
             ),
             // BuildingType's parent constructor receives SpeedType0
             // (45DD9D/710AF0/7110E0); other existing category defaults stay owned here.
-            speed_type: section
-                .get("SpeedType")
-                .map(SpeedType::from_ini)
-                .unwrap_or(if category == ObjectCategory::Building { SpeedType::Foot } else { SpeedType::default() }),
+            speed_type: section.get("SpeedType").map(SpeedType::from_ini).unwrap_or(
+                if category == ObjectCategory::Building {
+                    SpeedType::Foot
+                } else {
+                    SpeedType::default()
+                },
+            ),
             movement_zone: section
                 .get("MovementZone")
                 .map(MovementZone::from_ini)
@@ -1988,6 +1996,7 @@ impl ObjectType {
                 .unwrap_or_default(),
             infantry_absorb: section.get_bool("InfantryAbsorb").unwrap_or(false),
             unit_absorb: section.get_bool("UnitAbsorb").unwrap_or(false),
+            grinding: section.get_bool("Grinding").unwrap_or(false),
             bunkerable: section
                 .get_bool("Bunkerable")
                 .unwrap_or(category == ObjectCategory::Vehicle),
@@ -2344,13 +2353,23 @@ fn parse_exit_coord(value: Option<&str>) -> Option<(i32, i32, i32)> {
 mod tests {
     #[test]
     fn building_native_speed_default_and_repair_type_inputs() {
-        let ini=crate::rules::ini_parser::IniFile::from_str("[TEST]\nPlaceAnywhere=yes\nToTile=Green01\n[EXPLICIT]\nSpeedType=Float\n");
-        let building=super::ObjectType::from_ini_section("TEST",ini.section("TEST").unwrap(),super::ObjectCategory::Building);
-        assert_eq!(building.speed_type,super::SpeedType::Foot);
+        let ini = crate::rules::ini_parser::IniFile::from_str(
+            "[TEST]\nPlaceAnywhere=yes\nToTile=Green01\n[EXPLICIT]\nSpeedType=Float\n",
+        );
+        let building = super::ObjectType::from_ini_section(
+            "TEST",
+            ini.section("TEST").unwrap(),
+            super::ObjectCategory::Building,
+        );
+        assert_eq!(building.speed_type, super::SpeedType::Foot);
         assert!(building.place_anywhere);
-        assert_eq!(building.to_tile.as_deref(),Some("Green01"));
-        let explicit=super::ObjectType::from_ini_section("EXPLICIT",ini.section("EXPLICIT").unwrap(),super::ObjectCategory::Building);
-        assert_eq!(explicit.speed_type,super::SpeedType::Float);
+        assert_eq!(building.to_tile.as_deref(), Some("Green01"));
+        let explicit = super::ObjectType::from_ini_section(
+            "EXPLICIT",
+            ini.section("EXPLICIT").unwrap(),
+            super::ObjectCategory::Building,
+        );
+        assert_eq!(explicit.speed_type, super::SpeedType::Float);
     }
 
     use super::*;
@@ -3263,6 +3282,15 @@ mod tests {
         let obj = ObjectType::from_ini_section("YABRCK", section, ObjectCategory::Building);
         assert!(obj.infantry_absorb);
         assert!(!obj.unit_absorb);
+        assert!(!obj.grinding);
+        let grinder_ini = IniFile::from_str("[YAGRND]\nGrinding=yes\nUnitAbsorb=no\n");
+        let grinder = ObjectType::from_ini_section(
+            "YAGRND",
+            grinder_ini.section("YAGRND").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(grinder.grinding);
+        assert!(!grinder.unit_absorb);
     }
 
     #[test]

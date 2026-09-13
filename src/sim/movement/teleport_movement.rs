@@ -716,6 +716,7 @@ mod tests {
             pip_scale: PipScale::None,
             infantry_absorb: false,
             unit_absorb: false,
+            grinding: false,
             bunkerable: true,
             weapon_list: vec![None; crate::rules::object_type::WEAPON_SLOT_COUNT],
             elite_weapon_list: vec![None; crate::rules::object_type::WEAPON_SLOT_COUNT],
