@@ -2073,6 +2073,7 @@ fn tick_movement_with_grids_scoped(
                     if let Some(drive) = entity.drive_locomotion.as_mut() {
                         super::drive_locomotion::update_drive_speed_fraction(
                             drive,
+                            &mut entity.foot_speed,
                             cell_speed_mod,
                             snap.drive_accelerates,
                             raw_speed_per_frame,
@@ -2081,11 +2082,11 @@ fn tick_movement_with_grids_scoped(
                             target.slowdown_distance,
                             dist,
                         );
-                        target.current_speed = target.speed * drive.current_speed_fraction;
-                        drive.owner_current_speed =
+                        target.current_speed = target.speed * entity.foot_speed.applied_fraction;
+                        entity.foot_speed.cached_current_speed =
                             super::drive_locomotion::owner_current_speed_from_fraction(
                                 target.speed,
-                                drive.current_speed_fraction,
+                                entity.foot_speed.applied_fraction,
                             );
                     } else {
                         target.current_speed = target.speed * cell_speed_mod;
@@ -2099,6 +2100,7 @@ fn tick_movement_with_grids_scoped(
                         );
                     super::drive_locomotion::update_ship_speed_fraction(
                         ship,
+                        &mut entity.foot_speed,
                         requested_fraction,
                         snap.drive_accelerates,
                         raw_speed_per_frame,
@@ -2107,11 +2109,11 @@ fn tick_movement_with_grids_scoped(
                         target.slowdown_distance,
                         dist,
                     );
-                    target.current_speed = target.speed * ship.current_speed_fraction;
-                    ship.owner_current_speed =
+                    target.current_speed = target.speed * entity.foot_speed.applied_fraction;
+                    entity.foot_speed.cached_current_speed =
                         super::drive_locomotion::owner_current_speed_from_fraction(
                             target.speed,
-                            ship.current_speed_fraction,
+                            entity.foot_speed.applied_fraction,
                         );
                 } else {
                     target.current_speed = target.speed * cell_speed_mod;

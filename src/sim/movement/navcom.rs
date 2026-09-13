@@ -325,20 +325,16 @@ fn drive_stop_moving(entity: &mut GameEntity) {
         .drive_locomotion
         .get_or_insert_with(DriveLocomotionRuntime::default);
     drive.destination = None;
-    // Drive rest state. The gamemd Drive `Process` tail drives the applied speed
-    // fraction to exactly 0.0 once the drive destination coord, the head-to
-    // coord and the owner path head are all empty and the fraction is still
-    // above zero — there is no rest clamp on this path. The 0.3 an earlier
-    // revision used here is the destination-brake FLOOR (a different branch),
-    // and the 0.2 it was modelled on belongs to the unrelated bump/rock clamp
-    // inside `Process_Drive_Track`. Every `Accelerates=true` departure therefore
-    // ramps up from zero; in stock YR that set is the Ore Miner and both MCVs,
-    // which omit `Accelerates=` and take the constructor default.
+    // OPEN Process-host timing: native Stop4AFE00 clamps only class target
+    // and clears destination. The owner zero belongs to the admitted Process
+    // rest tail4B0828, which also tests queue emptiness. Several ordinary
+    // arrival returns skip that tail. Preserve the existing adapter timing
+    // here until that continuation is wired; this is not Stop parity.
     if drive.head_to.is_none() {
-        if drive.current_speed_fraction > SIM_ZERO {
-            drive.current_speed_fraction = SIM_ZERO;
+        if entity.foot_speed.applied_fraction > SIM_ZERO {
+            entity.foot_speed.applied_fraction = SIM_ZERO;
         }
-        drive.owner_current_speed = 0;
+        entity.foot_speed.cached_current_speed = 0;
     }
 }
 
@@ -371,10 +367,10 @@ fn ship_stop_moving(entity: &mut GameEntity) {
     // rest speed before the native Process-tail admission. FootStop4DF0D0
     // does NOT clear Foot+5E0; explicit abandonment is a separate owner call.
     if ship.head_to.is_none() {
-        if ship.current_speed_fraction > SIM_ZERO {
-            ship.current_speed_fraction = SIM_ZERO;
+        if entity.foot_speed.applied_fraction > SIM_ZERO {
+            entity.foot_speed.applied_fraction = SIM_ZERO;
         }
-        ship.owner_current_speed = 0;
+        entity.foot_speed.cached_current_speed = 0;
     }
 }
 
@@ -398,8 +394,8 @@ mod tests {
             "Move_To does not invent a committed head"
         );
         ship.target_speed_fraction = SIM_ONE;
-        ship.current_speed_fraction = SIM_HALF;
-        ship.owner_current_speed = 10;
+        entity.foot_speed.applied_fraction = SIM_HALF;
+        entity.foot_speed.cached_current_speed = 10;
         entity.navigation.path_replay.directions = vec![2, 2];
         entity.navigation.path_replay.cursor = 0;
 
@@ -408,8 +404,8 @@ mod tests {
         assert_eq!(ship.destination, None);
         assert_eq!(ship.target_speed_fraction, SHIP_STOP_TARGET_FRACTION);
         assert_eq!(entity.navigation.path_replay.cursor, 0);
-        assert_eq!(ship.current_speed_fraction, SIM_ZERO);
-        assert_eq!(ship.owner_current_speed, 0);
+        assert_eq!(entity.foot_speed.applied_fraction, SIM_ZERO);
+        assert_eq!(entity.foot_speed.cached_current_speed, 0);
     }
 
     #[test]
@@ -422,12 +418,12 @@ mod tests {
             cursor: 1,
             ..Default::default()
         };
+        entity.foot_speed.applied_fraction = SIM_HALF;
+        entity.foot_speed.cached_current_speed = 10;
         entity.ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(DriveCoord::cell(5, 3, 0)),
             head_to: Some(DriveCoord::cell(4, 3, 0)),
             target_speed_fraction: SIM_ONE,
-            current_speed_fraction: SIM_HALF,
-            owner_current_speed: 10,
             track: Default::default(),
         });
 
@@ -437,8 +433,8 @@ mod tests {
         assert_eq!(ship.destination, None);
         assert_eq!(ship.head_to, Some(DriveCoord::cell(4, 3, 0)));
         assert_eq!(ship.target_speed_fraction, SHIP_STOP_TARGET_FRACTION);
-        assert_eq!(ship.current_speed_fraction, SIM_HALF);
-        assert_eq!(ship.owner_current_speed, 10);
+        assert_eq!(entity.foot_speed.applied_fraction, SIM_HALF);
+        assert_eq!(entity.foot_speed.cached_current_speed, 10);
 
         let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
         ship.destination = Some(DriveCoord::cell(5, 3, 0));
@@ -465,12 +461,12 @@ mod tests {
             cursor: 0,
             ..Default::default()
         };
+        entity.foot_speed.applied_fraction = SIM_HALF;
+        entity.foot_speed.cached_current_speed = 10;
         entity.ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(DriveCoord::cell(4, 3, 0)),
             head_to: Some(DriveCoord::cell(4, 3, 0)),
             target_speed_fraction: SIM_ONE,
-            current_speed_fraction: SIM_HALF,
-            owner_current_speed: 10,
             track: Default::default(),
         });
 
@@ -480,16 +476,16 @@ mod tests {
         assert_eq!(ship.destination, None);
         assert_eq!(ship.head_to, None);
         assert_eq!(entity.navigation.path_replay.cursor, 1);
-        assert_eq!(ship.current_speed_fraction, SIM_ZERO);
-        assert_eq!(ship.owner_current_speed, 0);
+        assert_eq!(entity.foot_speed.applied_fraction, SIM_ZERO);
+        assert_eq!(entity.foot_speed.cached_current_speed, 0);
     }
 
     fn resting_drive_miner() -> GameEntity {
         let mut entity = GameEntity::test_default(1, "HARV", "Americans", 3, 3);
         entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        entity.foot_speed.applied_fraction = SIM_ONE;
         entity.drive_locomotion = Some(DriveLocomotionRuntime {
             destination: Some(DriveCoord::cell(3, 3, 0)),
-            current_speed_fraction: SIM_ONE,
             ..Default::default()
         });
         entity
@@ -506,7 +502,7 @@ mod tests {
         set_destination_internal_null(&mut entity);
 
         let drive = entity.drive_locomotion.as_ref().expect("drive state");
-        assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+        assert_eq!(entity.foot_speed.applied_fraction, SIM_ZERO);
         assert_eq!(drive.destination, None);
     }
 
@@ -520,22 +516,11 @@ mod tests {
             .as_mut()
             .expect("drive state")
             .head_to = Some(DriveCoord::cell(4, 3, 0));
-        entity
-            .drive_locomotion
-            .as_mut()
-            .expect("drive state")
-            .current_speed_fraction = SIM_HALF;
+        entity.foot_speed.applied_fraction = SIM_HALF;
 
         set_destination_internal_null(&mut entity);
 
-        assert_eq!(
-            entity
-                .drive_locomotion
-                .as_ref()
-                .expect("drive state")
-                .current_speed_fraction,
-            SIM_HALF
-        );
+        assert_eq!(entity.foot_speed.applied_fraction, SIM_HALF);
     }
 
     #[test]

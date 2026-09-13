@@ -193,20 +193,11 @@ fn drive_family(
 
     let (slot_moving, head_to_nonnull) = drive_family_motion_slot(entity, family);
 
-    // The movement pass caches the exact signed owner +0x538 result after its
-    // two native truncations. Reading that value (rather than just the sign of
-    // +0x578) preserves the first low-fraction acceleration frame where stock
-    // DLPH/SQD still return zero.
-    let owner_speed = match family {
-        DriveFamily::Drive => entity
-            .drive_locomotion
-            .as_ref()
-            .map_or(0, |drive| drive.owner_current_speed),
-        DriveFamily::Ship => entity
-            .ship_locomotion
-            .as_ref()
-            .map_or(0, |ship| ship.owner_current_speed),
-    };
+    // Existing adapter caches the signed speed after two truncations, retaining
+    // the low-fraction DLPH/SQD frame where a positive fraction yields zero.
+    // OPEN host integration: native4AFC71 invokes the live getter here; a
+    // callback's speed/modifier changes must be observed without a stale cache.
+    let owner_speed = entity.foot_speed.cached_current_speed;
 
     match family {
         DriveFamily::Drive => LocomotorReadyState::Drive {

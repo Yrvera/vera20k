@@ -521,9 +521,9 @@ fn drive_slope_boundary_is_detected_on_process_after_ordinary_crossing() {
         .active_slope_transition_mut()
         .unwrap()
         .snap(3, 0);
+    entity.foot_speed.applied_fraction = SIM_ONE;
     entity.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
         target_speed_fraction: SIM_ONE,
-        current_speed_fraction: SIM_ONE,
         ..Default::default()
     });
     entity.movement_target = Some(MovementTarget {
@@ -1146,7 +1146,15 @@ fn gsi_04_05_forced_refinery_exit_preserves_lists_until_terminal_relink() {
     assert_eq!(drive.head_to, Some(head));
     assert_eq!(drive.track.turn_index, 0x47);
     assert!(drive.track_valid);
-    assert_eq!(drive.owner_current_speed, 8);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .foot_speed
+            .cached_current_speed,
+        8
+    );
     assert_eq!(drive.track.residual, 5);
     assert_eq!(
         sim.substrate
@@ -1930,8 +1938,8 @@ fn test_issue_move_command_starts_drive_track_for_drive_locomotor() {
         "computed east is 16,383 on the active-retail 65,534 scale"
     );
     assert_eq!(drive.target_speed_fraction, SIM_ZERO);
-    assert_eq!(drive.current_speed_fraction, SIM_ZERO);
-    assert_eq!(drive.owner_current_speed, 0);
+    assert_eq!(entity.foot_speed.applied_fraction, SIM_ZERO);
+    assert_eq!(entity.foot_speed.cached_current_speed, 0);
 }
 
 #[test]
@@ -2004,13 +2012,11 @@ fn test_reissue_mid_curve_keeps_track_and_anchors_path_at_head() {
         Some((3, 3)),
     );
     {
-        let drive = entities
-            .get_mut(1)
-            .and_then(|entity| entity.drive_locomotion.as_mut())
-            .expect("drive state");
+        let entity = entities.get_mut(1).expect("entity exists");
+        let drive = entity.drive_locomotion.as_mut().expect("drive state");
         drive.target_speed_fraction = SimFixed::lit("0.4");
-        drive.current_speed_fraction = SimFixed::lit("0.25");
-        drive.owner_current_speed = 7;
+        entity.foot_speed.applied_fraction = SimFixed::lit("0.25");
+        entity.foot_speed.cached_current_speed = 7;
     }
 
     // Re-order behind the body while the curve is in flight. Pre-fix this
@@ -2055,8 +2061,8 @@ fn test_reissue_mid_curve_keeps_track_and_anchors_path_at_head() {
     assert_eq!(entity.navigation.path_replay.reference_cell, Some((3, 3)));
     assert_eq!(entity.navigation.path_replay.cursor, 0);
     assert_eq!(drive.target_speed_fraction, SimFixed::lit("0.4"));
-    assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.25"));
-    assert_eq!(drive.owner_current_speed, 7);
+    assert_eq!(entity.foot_speed.applied_fraction, SimFixed::lit("0.25"));
+    assert_eq!(entity.foot_speed.cached_current_speed, 7);
     assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(0, 3)));
 }
 
@@ -4360,7 +4366,7 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
     let entity = entities.get(1).expect("mover exists");
     let drive = entity.drive_locomotion.as_ref().expect("drive state");
     assert_eq!(drive.target_speed_fraction, SIM_HALF);
-    assert_eq!(drive.current_speed_fraction, SIM_HALF);
+    assert_eq!(entity.foot_speed.applied_fraction, SIM_HALF);
     assert_eq!(
         entity.movement_target.as_ref().expect("still moving").speed,
         SimFixed::from_num(100),
@@ -4441,7 +4447,7 @@ fn drive_accelerates_true_tick_ramps_fraction_before_movement_speed() {
     let entity = entities.get(1).expect("mover exists");
     let drive = entity.drive_locomotion.as_ref().expect("drive state");
     assert_eq!(drive.target_speed_fraction, SIM_ONE);
-    assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.03"));
+    assert_eq!(entity.foot_speed.applied_fraction, SimFixed::lit("0.03"));
     assert_eq!(
         entity
             .movement_target
@@ -5679,9 +5685,9 @@ fn gsi_06_13_fixture_mover(
         cursor: 0,
         reference_cell: Some((start.0 as i16, start.1 as i16)),
     };
+    e.foot_speed.applied_fraction = SIM_ONE;
     e.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
         target_speed_fraction: SIM_ONE,
-        current_speed_fraction: SIM_ONE,
         ..Default::default()
     });
     e

@@ -78,6 +78,8 @@ fn replay_fixture() -> crate::sim::components::FootPathQueue {
 
 fn supply_drive_state(entity: &mut GameEntity) {
     entity.navigation.path_replay = replay_fixture();
+    entity.foot_speed.applied_fraction = SimFixed::lit("0.5");
+    entity.foot_speed.cached_current_speed = 11;
     entity.drive_locomotion = Some(DriveLocomotionRuntime {
         // Is_Moving compares exact XY only. Retained Z deliberately differs
         // from the owner's height, so retirement cannot depend on full XYZ.
@@ -88,8 +90,6 @@ fn supply_drive_state(entity: &mut GameEntity) {
             residual: 971,
             ..Default::default()
         },
-        current_speed_fraction: SimFixed::lit("0.5"),
-        owner_current_speed: 11,
         ..Default::default()
     });
     entity.drive_track = Some(curve());
@@ -107,6 +107,7 @@ fn owned_state(entity: &GameEntity) -> serde_json::Value {
         &entity.drive_track,
         &entity.forced_drive_track,
         &entity.navigation.path_replay,
+        &entity.foot_speed,
     ))
     .expect("serialized locomotor and external instance state")
 }
@@ -223,8 +224,8 @@ fn building_destination_installs_fresh_drive_without_previous_instance_state() {
     assert!(entity.forced_drive_track.is_none());
     let drive = entity.drive_locomotion.as_ref().unwrap();
     assert_eq!(drive.track.residual, 0);
-    assert_eq!(drive.current_speed_fraction, SIM_ZERO);
-    assert_eq!(drive.owner_current_speed, 0);
+    assert_eq!(entity.foot_speed.applied_fraction, SimFixed::lit("0.5"));
+    assert_eq!(entity.foot_speed.cached_current_speed, 11);
     if let Some(track) = &entity.drive_track {
         assert_eq!(track.residual, 0);
     }
@@ -378,13 +379,128 @@ fn foot_queue_survives_drive_retirement_construction_and_reuse() {
     let entity = sim.substrate.entities.get_mut(1).unwrap();
     activate_drive(entity);
     let queue = entity.navigation.path_replay.clone();
+    let speed = entity.foot_speed.clone();
     assert!(try_restore_primary(entity));
     assert_retired(entity);
     assert_eq!(entity.navigation.path_replay, queue);
+    assert_eq!(entity.foot_speed, speed);
     assert!(begin_drive_for_teleporter(entity, 51));
     assert_eq!(entity.navigation.path_replay, queue);
+    assert_eq!(entity.foot_speed, speed);
     assert!(begin_drive_for_teleporter(entity, 52));
     assert_eq!(entity.navigation.path_replay, queue);
+    assert_eq!(entity.foot_speed, speed);
+}
+
+#[test]
+fn foot_speed_without_class_payload_roundtrips_and_hashes_each_field() {
+    let (mut sim, _) = fixture();
+    // Scenario RNG is deliberately reset by the production deserializer.
+    // Normalize this fixture to that load state before comparing whole hashes.
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+    let expected = crate::sim::components::FootSpeedState {
+        applied_fraction: SimFixed::lit("0.625"),
+        cached_current_speed: 13,
+    };
+    sim.substrate.entities.get_mut(1).unwrap().foot_speed = expected.clone();
+    let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "foot_speed", 0);
+    let mut loaded = crate::sim::snapshot::GameSnapshot::load(&bytes)
+        .unwrap()
+        .sim;
+    let entity = loaded.substrate.entities.get(1).unwrap();
+    assert!(entity.drive_locomotion.is_none());
+    assert!(entity.ship_locomotion.is_none());
+    assert_eq!(entity.foot_speed, expected);
+    assert_eq!(loaded.state_hash(), sim.state_hash());
+    let original = loaded.state_hash();
+    for field in 0..2 {
+        let speed = &mut loaded.substrate.entities.get_mut(1).unwrap().foot_speed;
+        *speed = expected.clone();
+        if field == 0 {
+            speed.applied_fraction += SimFixed::lit("0.125");
+        } else {
+            speed.cached_current_speed += 1;
+        }
+        assert_ne!(loaded.state_hash(), original, "Foot speed field {field}");
+    }
+}
+
+#[test]
+fn foot_speed_ownership_matches_original_helper_witnesses() {
+    use crate::sim::components::{FootSpeedState, ShipLocomotionRuntime};
+    use crate::util::fixed_math::SIM_ONE;
+    let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/foot_speed_owner.json"
+    ))
+    .unwrap();
+    assert_eq!(cases.len(), 12);
+    for case in cases {
+        let requested = SimFixed::from_num(case["input"]["requested"].as_f64().unwrap());
+        let expected = SimFixed::from_num(case["output"]["applied"].as_f64().unwrap());
+        let (mut sim, _) = fixture();
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        let mut owner_speed = FootSpeedState::default();
+        // The non-accelerating production branch reaches the same finite
+        // SetSpeedFraction clamp. Native witnesses execute the complete setter.
+        if case["input"]["family"] == "drive" {
+            let mut drive = DriveLocomotionRuntime::default();
+            super::super::drive_locomotion::update_drive_speed_fraction(
+                &mut drive,
+                &mut owner_speed,
+                requested,
+                false,
+                SIM_ONE,
+                SIM_ZERO,
+                SIM_ZERO,
+                SIM_ZERO,
+                SIM_ONE,
+            );
+            assert_eq!(owner_speed.applied_fraction, expected);
+            entity.foot_speed = owner_speed.clone();
+            assert!(begin_drive_for_teleporter(entity, 3));
+            super::super::navcom::set_destination_internal_cell(entity, (12, 8), None);
+            assert_eq!(entity.foot_speed, owner_speed);
+            assert_eq!(
+                entity
+                    .drive_locomotion
+                    .as_ref()
+                    .unwrap()
+                    .target_speed_fraction,
+                SimFixed::from_num(case["output"]["constructor_target"].as_f64().unwrap())
+            );
+            assert!(restore_admitted_primary(entity));
+            assert_retired(entity);
+            assert_eq!(entity.foot_speed, owner_speed);
+            assert_eq!(case["output"]["end_preserves_owner"], true);
+        } else {
+            let mut ship = ShipLocomotionRuntime::default();
+            super::super::drive_locomotion::update_ship_speed_fraction(
+                &mut ship,
+                &mut owner_speed,
+                requested,
+                false,
+                SIM_ONE,
+                SIM_ZERO,
+                SIM_ZERO,
+                SIM_ZERO,
+                SIM_ONE,
+            );
+            assert_eq!(owner_speed.applied_fraction, expected);
+            entity.foot_speed = owner_speed.clone();
+            entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+            super::super::navcom::set_destination_internal_cell(entity, (12, 8), None);
+            assert_eq!(entity.foot_speed, owner_speed);
+            assert_eq!(
+                entity
+                    .ship_locomotion
+                    .as_ref()
+                    .unwrap()
+                    .target_speed_fraction,
+                SimFixed::from_num(case["output"]["constructor_target"].as_f64().unwrap())
+            );
+        }
+        assert_eq!(case["output"]["constructor_preserves_owner"], true);
+    }
 }
 
 #[test]

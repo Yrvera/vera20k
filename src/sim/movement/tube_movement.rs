@@ -478,9 +478,11 @@ fn finalize_tube_object(
             if let Some(drive) = entity.drive_locomotion.as_mut() {
                 drive.turn.first_movement_allowed = true;
                 drive.target_speed_fraction = SIM_ONE;
-                drive.current_speed_fraction = SIM_ONE;
-                drive.owner_current_speed = owner_current_speed;
             }
+            // Unit73604F writes the live Foot owner even if PerCell replaced
+            // Drive. Exact post-callback timing remains part of the Process host.
+            entity.foot_speed.applied_fraction = SIM_ONE;
+            entity.foot_speed.cached_current_speed = owner_current_speed;
         }
         entity.low_bridge_tube_state = None;
     }
@@ -605,10 +607,11 @@ fn stop_blocked_mover(entities: &mut EntityStore, entity_id: u64) {
             target.current_speed = SIM_ZERO;
         }
         if let Some(drive) = entity.drive_locomotion.as_mut() {
-            drive.current_speed_fraction = SIM_ZERO;
             drive.target_speed_fraction = SIM_ZERO;
-            drive.owner_current_speed = 0;
         }
+        // Unit735F6A / Infantry51B8FC apply zero on the live Foot owner.
+        entity.foot_speed.applied_fraction = SIM_ZERO;
+        entity.foot_speed.cached_current_speed = 0;
     }
 }
 
@@ -903,6 +906,97 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// Supplied post-Tube state exercises the real finalizer's owner writes.
+    /// It does not emulate the preceding native PerCell callback or its timing.
+    #[test]
+    fn tube_finalizer_updates_live_owner_speed_without_drive_payload() {
+        use crate::rules::locomotor_type::LocomotorKind;
+        use crate::sim::movement::locomotor::LocomotorState;
+        use crate::util::fixed_math::SimFixed;
+        for (category, blocked) in [
+            (EntityCategory::Unit, false),
+            (EntityCategory::Unit, true),
+            (EntityCategory::Infantry, true),
+        ] {
+            let terrain = explicit_terrain(vec![2, 2]);
+            let mut entity = unit(1);
+            entity.category = category;
+            entity.drive_locomotion = None;
+            entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Teleport));
+            entity.lifecycle.cell_marked = false;
+            entity.position.rx = 2;
+            entity.foot_speed.applied_fraction = SimFixed::lit("0.625");
+            entity.foot_speed.cached_current_speed = 6;
+            entity.movement_target = Some(MovementTarget {
+                speed: SimFixed::from_num(150),
+                current_speed: SimFixed::from_num(100),
+                ..Default::default()
+            });
+            let state = LowBridgeTubeMovementState {
+                tube_id: TubeId(0),
+                cursor: 2,
+                target: DriveCoord::cell(2, 0, 0),
+            };
+            entity.low_bridge_tube_state = Some(state);
+            let mut entities = EntityStore::new();
+            entities.insert(entity);
+            let mut occupancy = OccupancyGrid::new();
+            if blocked && category == EntityCategory::Unit {
+                let mut blocker = unit(2);
+                blocker.position.rx = 2;
+                entities.insert(blocker);
+                occupancy.add(
+                    2,
+                    0,
+                    2,
+                    MovementLayer::Ground,
+                    None,
+                    CellListInsertion::PrependNonBuilding,
+                );
+            }
+            let grid = PathGrid::test_all_blocked(4, 1);
+            assert!(finalize_tube_object(
+                &mut entities,
+                1,
+                state,
+                &terrain,
+                (category == EntityCategory::Infantry).then_some(&grid),
+                &mut occupancy,
+                &mut CellOccupationGrid::new(),
+                &mut RawCellOccupationGrid::new(),
+                &mut EnterOrderCounter::new(),
+                None,
+                &StringInterner::default(),
+                &mut SimRng::new(7),
+                21,
+            ));
+            let owner = entities.get(1).unwrap();
+            assert!(owner.drive_locomotion.is_none());
+            assert_eq!(
+                owner.locomotor.as_ref().unwrap().active_kind(),
+                LocomotorKind::Teleport
+            );
+            assert_eq!(
+                owner.foot_speed.applied_fraction,
+                if blocked { SIM_ZERO } else { SIM_ONE }
+            );
+            assert_eq!(
+                owner.foot_speed.cached_current_speed,
+                if blocked { 0 } else { 10 }
+            );
+            assert_eq!(owner.low_bridge_tube_state.is_some(), blocked);
+            if blocked {
+                assert_eq!(
+                    owner.movement_target.as_ref().unwrap().current_speed,
+                    SIM_ZERO
+                );
+            } else {
+                assert!(owner.lifecycle.cell_marked);
+                assert_eq!(occupancy.count_on_layer(2, 0, MovementLayer::Ground), 1);
+            }
+        }
     }
 
     #[test]

@@ -470,7 +470,8 @@ use crate::sim::world::Simulation;
 // bincode cannot infer those records across this ownership migration.
 // v150 moves Foot+5E0/+558 replay from class payloads to NavigationState.
 // Bincode field order changes even for owners without Drive/Ship instances.
-const SNAPSHOT_VERSION: u32 = 150;
+// v151 moves applied speed and its existing query cache to the live Foot owner.
+const SNAPSHOT_VERSION: u32 = 151;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3297,8 +3298,8 @@ mod tests {
         // 143 -> 144: per-Building operational edge and retained gap deposit.
         // 145 -> 146: pavement is owned by raw terrain flags, not bridge cells.
         // 146 -> 147: retain Scenario+214 for subsequent native constructors.
-        // 149 -> 150: Foot owns route replay independently of Drive/Ship instances.
-        assert_eq!(super::SNAPSHOT_VERSION, 150);
+        // 150 -> 151: Foot also owns applied speed independently of its locomotor.
+        assert_eq!(super::SNAPSHOT_VERSION, 151);
     }
 
     #[test]
@@ -4387,16 +4388,13 @@ mod tests {
         assert_ne!(populated_counter_hash, zero_counter_hash);
 
         let ship_head = DriveCoord::cell(6, 5, 0);
-        sim.substrate
-            .entities
-            .get_mut(1)
-            .expect("SHP unit")
-            .ship_locomotion = Some(ShipLocomotionRuntime {
+        let entity = sim.substrate.entities.get_mut(1).expect("SHP unit");
+        entity.foot_speed.applied_fraction = SIM_HALF;
+        entity.foot_speed.cached_current_speed = 10;
+        entity.ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(ship_head),
             head_to: Some(ship_head),
             target_speed_fraction: SIM_ONE,
-            current_speed_fraction: SIM_HALF,
-            owner_current_speed: 10,
             ..Default::default()
         });
         let populated_shp_state_hash = sim.state_hash();
@@ -4426,8 +4424,9 @@ mod tests {
         assert_eq!(restored_ship.destination, Some(ship_head));
         assert_eq!(restored_ship.head_to, Some(ship_head));
         assert_eq!(restored_ship.target_speed_fraction, SIM_ONE);
-        assert_eq!(restored_ship.current_speed_fraction, SIM_HALF);
-        assert_eq!(restored_ship.owner_current_speed, 10);
+        let restored_owner_speed = &restored.substrate.entities.get(1).unwrap().foot_speed;
+        assert_eq!(restored_owner_speed.applied_fraction, SIM_HALF);
+        assert_eq!(restored_owner_speed.cached_current_speed, 10);
         assert_eq!(restored.state_hash(), populated_shp_state_hash);
     }
 

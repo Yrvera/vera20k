@@ -1545,6 +1545,7 @@ impl Simulation {
 
             entity.drive_locomotion.hash(hasher);
             entity.ship_locomotion.hash(hasher);
+            entity.foot_speed.hash(hasher);
 
             if let Some(ref forced) = entity.forced_drive_track {
                 1u8.hash(hasher);

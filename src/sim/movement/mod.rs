@@ -47,9 +47,9 @@ use crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 #[cfg(test)]
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SIM_ONE, SimFixed, facing_from_delta_int};
 #[cfg(test)]
 use crate::util::fixed_math::SIM_ZERO;
+use crate::util::fixed_math::{SIM_ONE, SimFixed, facing_from_delta_int};
 
 // --- Internal submodules ---
 pub(crate) mod at_coord;
@@ -109,8 +109,8 @@ pub(crate) use drive_locomotion::{DriveProcessOutcome, process_drive_locomotion_
 // Re-export command functions so callers can use `movement::issue_move_command` etc.
 pub(crate) use movement_commands::issue_move_command_with_layered;
 pub use movement_commands::{
-    clear_navigation_for_entity, stop_navigation_at_committed_head, issue_direct_move, issue_move_command,
-    set_destination_for_teleporter_entity,
+    clear_navigation_for_entity, issue_direct_move, issue_move_command,
+    set_destination_for_teleporter_entity, stop_navigation_at_committed_head,
 };
 #[cfg(test)]
 pub(crate) use movement_path::{
@@ -171,11 +171,15 @@ pub(crate) fn install_forced_drive_track(
     forced.track.residual = drive.track.residual;
     drive.destination = Some(head);
     drive.head_to = Some(head);
-    drive.track.select_forced(i32::from(forced.turn_track_index));
+    drive
+        .track
+        .select_forced(i32::from(forced.turn_track_index));
     drive.track_valid = true;
     drive.target_speed_fraction = SIM_ONE;
-    drive.current_speed_fraction = SIM_ONE;
-    drive.owner_current_speed =
+    // OPEN Process-host timing: native Force_Track4B0D52 changes the class
+    // target only; the subsequent ProcessTrack owns the applied-speed write.
+    entity.foot_speed.applied_fraction = SIM_ONE;
+    entity.foot_speed.cached_current_speed =
         drive_locomotion::owner_current_speed_from_fraction(forced.speed, SIM_ONE);
     // Force_Track directly installs the new head mark. Its active retail callers
     // enter with no old head — but nothing in this function's signature enforces
@@ -541,8 +545,11 @@ fn walking_to_subcell_dest(
     };
     // Drive/Ship terminate at their retained raw head. CellArrival's legacy
     // center projection must not start a second generic movement afterward.
-    if matches!(loco.kind, crate::rules::locomotor_type::LocomotorKind::Drive
-        | crate::rules::locomotor_type::LocomotorKind::Ship) {
+    if matches!(
+        loco.kind,
+        crate::rules::locomotor_type::LocomotorKind::Drive
+            | crate::rules::locomotor_type::LocomotorKind::Ship
+    ) {
         return false;
     }
     let Some((dest_x, dest_y)) = loco.subcell_dest else {
@@ -553,10 +560,10 @@ fn walking_to_subcell_dest(
 }
 
 #[cfg(test)]
+mod ground_pose_tests;
+#[cfg(test)]
 mod movement_bridge_retail_tests;
 #[cfg(test)]
 mod movement_tests;
-#[cfg(test)]
-mod ground_pose_tests;
 #[cfg(test)]
 mod prone_speed_tests;

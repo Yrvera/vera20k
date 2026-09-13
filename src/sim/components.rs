@@ -369,10 +369,26 @@ impl FootPathQueue {
     }
 }
 
-/// ShipLocomotion-owned destination, committed head, and speed state.
+/// Foot-owned applied speed, shared by every installed locomotor instance.
 ///
-/// Ships share the ordinary TurnTrack/RawTrack curves, target/applied speed
-/// fractions, and cached owner-speed result with Drive, but do not own Drive's
+/// SetSpeedFraction4D3710 writes Foot+578/+57C; GetCurrentSpeed4DB1A0 reads
+/// that fraction. Drive4AF540/Ship69EC50 constructors and DriveEND4AF930 do
+/// not own or reset it. Keep this outside both class payloads so a synchronous
+/// callback can replace a locomotor without replacing the owner's speed.
+/// Original executable witnesses: tools/spatial_oracle/foot_speed_owner.json.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct FootSpeedState {
+    pub applied_fraction: SimFixed,
+    /// Existing Rust adapter cache of GetCurrentSpeed, not a native field.
+    /// Its producers use the movement request's adjusted type speed. The full
+    /// Process host must query live owner/type modifiers at native call sites.
+    pub cached_current_speed: i32,
+}
+
+/// ShipLocomotion-owned destination, committed head, and target speed state.
+///
+/// Ships share the ordinary TurnTrack/RawTrack curves and target fraction
+/// with Drive, but do not own Drive's
 /// tube, forced-track, or raw-occupation state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ShipLocomotionRuntime {
@@ -384,11 +400,6 @@ pub struct ShipLocomotionRuntime {
     pub track: TrackProgress,
     #[serde(default)]
     pub target_speed_fraction: SimFixed,
-    #[serde(default)]
-    pub current_speed_fraction: SimFixed,
-    /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
-    #[serde(default)]
-    pub owner_current_speed: i32,
 }
 
 /// Drive-owned 16-bit facing target and first-movement gate.
@@ -462,11 +473,6 @@ pub struct DriveLocomotionRuntime {
     pub track_valid: bool,
     #[serde(default)]
     pub target_speed_fraction: SimFixed,
-    #[serde(default)]
-    pub current_speed_fraction: SimFixed,
-    /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
-    #[serde(default)]
-    pub owner_current_speed: i32,
     /// Head-to vehicle-occupation mark, independent from CellClass object-list
     /// membership. Ordinary flat Drive installs one mark for its accepted next
     /// cell before any paid track point is consumed.
@@ -495,8 +501,6 @@ impl Default for DriveLocomotionRuntime {
             track: TrackProgress::default(),
             track_valid: false,
             target_speed_fraction: SIM_ZERO,
-            current_speed_fraction: SIM_ZERO,
-            owner_current_speed: 0,
             occupation_head_to: None,
             occupation_handoff: None,
             current_occupation_cleared: false,
@@ -1239,8 +1243,9 @@ mod tests {
         assert!(!drive.track_valid);
         assert!(!drive.track.reversed);
         assert_eq!(drive.target_speed_fraction, SIM_ZERO);
-        assert_eq!(drive.current_speed_fraction, SIM_ZERO);
-        assert_eq!(drive.owner_current_speed, 0);
+        let owner_speed = FootSpeedState::default();
+        assert_eq!(owner_speed.applied_fraction, SIM_ZERO);
+        assert_eq!(owner_speed.cached_current_speed, 0);
         assert_eq!(drive.track.residual, 0);
     }
 

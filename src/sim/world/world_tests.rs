@@ -534,7 +534,7 @@ Rate=120
             .get_or_insert_with(crate::sim::components::DriveLocomotionRuntime::default);
         drive.destination = Some(ahead);
         drive.head_to = Some(ahead);
-        drive.owner_current_speed = 256;
+        boat.foot_speed.cached_current_speed = 256;
     }
 
     // The movement step of a full tick would rewrite the drive runtime from
@@ -577,10 +577,8 @@ Rate=120
         .entities
         .get_mut(boat_id)
         .expect("boat")
-        .drive_locomotion
-        .as_mut()
-        .expect("drive runtime")
-        .owner_current_speed = 0;
+        .foot_speed
+        .cached_current_speed = 0;
     sim.spawn_wakes_for_frame(&rules);
     let count_after = sim
         .tactical_registration_order()
@@ -4630,7 +4628,8 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
         "[VehicleTypes]\n0=MTNK\n[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n\
          [Warheads]\n0=Super\n[Super]\nInfDeath=2\nPenetratesBunker=yes\n\
          Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
-    )).unwrap();
+    ))
+    .unwrap();
     let mut sim = Simulation::new();
     let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     install_rectangular_test_playfield(&mut sim, resolved.width(), resolved.height());
@@ -4888,8 +4887,12 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
         id: 1,
         anchor: (5, 5),
         cells: [
-            Some((5, 5)), Some((4, 5)), Some((3, 5)),
-            Some((2, 5)), Some((6, 5)), None,
+            Some((5, 5)),
+            Some((4, 5)),
+            Some((3, 5)),
+            Some((2, 5)),
+            Some((6, 5)),
+            None,
         ],
         axis: Axis::EW,
         direction: Direction::W,
@@ -6076,8 +6079,8 @@ fn phase14_drive_move_command_preserves_fractions_until_scheduled_visit() {
                 .drive_locomotion
                 .get_or_insert_with(DriveLocomotionRuntime::default);
             drive.target_speed_fraction = SimFixed::lit("0.4");
-            drive.current_speed_fraction = SimFixed::lit("0.25");
-            drive.owner_current_speed = 7;
+            entity.foot_speed.applied_fraction = SimFixed::lit("0.25");
+            entity.foot_speed.cached_current_speed = 7;
         }
 
         assert!(sim.apply_command(
@@ -6102,8 +6105,8 @@ fn phase14_drive_move_command_preserves_fractions_until_scheduled_visit() {
                 .expect("Drive vehicle remains live");
             let drive = entity.drive_locomotion.as_ref().expect("drive state");
             assert_eq!(drive.target_speed_fraction, SimFixed::lit("0.4"));
-            assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.25"));
-            assert_eq!(drive.owner_current_speed, 7);
+            assert_eq!(entity.foot_speed.applied_fraction, SimFixed::lit("0.25"));
+            assert_eq!(entity.foot_speed.cached_current_speed, 7);
             let movement = entity
                 .movement_target
                 .as_ref()
@@ -6126,10 +6129,10 @@ fn phase14_drive_move_command_preserves_fractions_until_scheduled_visit() {
             SIM_ONE
         };
         assert_eq!(drive.target_speed_fraction, SIM_ONE);
-        assert_eq!(drive.current_speed_fraction, expected_current);
+        assert_eq!(entity.foot_speed.applied_fraction, expected_current);
         let raw_stage = (movement_speed / SimFixed::from_num(15)).to_num::<i32>();
         let expected_owner = (SimFixed::from_num(raw_stage) * expected_current).to_num::<i32>();
-        assert_eq!(drive.owner_current_speed, expected_owner);
+        assert_eq!(entity.foot_speed.cached_current_speed, expected_owner);
     }
 }
 
@@ -6631,8 +6634,8 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
         assert!(entity.drive_track.is_some());
         let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
         ship.target_speed_fraction = SIM_ONE;
-        ship.current_speed_fraction = SIM_HALF;
-        ship.owner_current_speed = 10;
+        entity.foot_speed.applied_fraction = SIM_HALF;
+        entity.foot_speed.cached_current_speed = 10;
         ship.head_to.expect("Ship curve has a committed head")
     };
     let committed_cell = (
@@ -6659,8 +6662,8 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
     assert_eq!(ship.destination, None);
     assert_eq!(ship.head_to, Some(committed_head));
     assert_eq!(ship.target_speed_fraction, SimFixed::lit("0.3"));
-    assert_eq!(ship.current_speed_fraction, SIM_HALF);
-    assert_eq!(ship.owner_current_speed, 10);
+    assert_eq!(stopped.foot_speed.applied_fraction, SIM_HALF);
+    assert_eq!(stopped.foot_speed.cached_current_speed, 10);
 }
 
 #[test]

@@ -44,16 +44,16 @@ fn mover(sim: &mut Simulation, kind: LocomotorKind) -> GameEntity {
     });
     match kind {
         LocomotorKind::Drive => {
+            entity.foot_speed.applied_fraction = SIM_ONE;
             entity.drive_locomotion = Some(DriveLocomotionRuntime {
                 target_speed_fraction: SIM_ONE,
-                current_speed_fraction: SIM_ONE,
                 ..Default::default()
             })
         }
         LocomotorKind::Ship => {
+            entity.foot_speed.applied_fraction = SIM_ONE;
             entity.ship_locomotion = Some(ShipLocomotionRuntime {
                 target_speed_fraction: SIM_ONE,
-                current_speed_fraction: SIM_ONE,
                 ..Default::default()
             })
         }

@@ -71,6 +71,7 @@ pub(crate) struct DriveActivationSnapshot {
     curve: Option<DriveTrackState>,
     forced: Option<ForcedDriveTrackState>,
     path_replay: crate::sim::components::FootPathQueue,
+    foot_speed: crate::sim::components::FootSpeedState,
 }
 
 impl DriveActivationSnapshot {
@@ -81,6 +82,7 @@ impl DriveActivationSnapshot {
             curve: entity.drive_track.clone(),
             forced: entity.forced_drive_track.clone(),
             path_replay: entity.navigation.path_replay.clone(),
+            foot_speed: entity.foot_speed.clone(),
         }
     }
 
@@ -90,6 +92,7 @@ impl DriveActivationSnapshot {
         entity.drive_track = self.curve;
         entity.forced_drive_track = self.forced;
         entity.navigation.path_replay = self.path_replay;
+        entity.foot_speed = self.foot_speed;
     }
 }
 
