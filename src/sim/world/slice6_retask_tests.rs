@@ -219,8 +219,8 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // and Stop's abandoned direction cursor (0 -> 19). Retasking no longer replaces
 // the in-flight head with the latest destination. This is a behavior ratchet,
 // not a native whole-movement golden; see the bridge walker report's raw-head section.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xFA79_D79F_E3CF_C07B;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xD099_8BA4_E692_8959;
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x07B6_BCD8_C452_F7B5;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x3D4A_CFCA_A931_0BD2;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -363,18 +363,18 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xD099_8BA4_E692_8959;
 // deposit radius. The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved.
-const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0xA7C7_083D_A15B_B92C;
-const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x8493_194F_E761_FE57;
-const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xE5D5_5EFD_1685_96C2;
-const SLICE6_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xF761_43E5_B6FF_5874;
+const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0xC6FC_9C61_8A09_2DBA;
+const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x92AF_F401_0154_CD1B;
+const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xF627_7ED4_3A1F_0552;
+const SLICE6_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xECA1_BD3E_0D29_0BAD;
 // Re-baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): the
 // `BuildingClass+0x6D0` ProduceCash timer and the `TechnoClass+0x1CC/+0x1D0`
 // drain link pair join the per-entity fold. The dedicated pre-v135 probe
 // reproduces the prior current baseline exactly and every older probe holds;
 // this script has no derrick, DrainWeapon or capture, so only composition
 // moved (each object folds its dead constructor timer and two `None`s).
-const SLICE6_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x402E_0C3B_B820_95F2;
-const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0xB05F_7648_AD81_6C4E;
+const SLICE6_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xC5E0_D10F_E68D_A7CB;
+const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0xA2D7_54E3_B51E_5E3E;
 // v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
 // reproduces the ramp branch's current baseline exactly; older probes and RNG pins
 // are unchanged. This is Rust hash-composition provenance, not native parity.
@@ -385,7 +385,11 @@ const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0xB05F_7648_AD81_6C4E;
 // The dedicated pre-v142 assertion below retains this fixture's prior current
 // pin; older probes and existing replay/stream checks remain unchanged.
 // Receipt: .local/shroud-current-sight-full-v1.log (composition-only candidates).
-const SLICE6_BASELINE_HASH: u64 = 0x4A23_C8AD_F513_F9D2;
+// 2026-09-13 ordinary TrackProcess host: reviewed current-cursor payment,
+// residual and synchronous arrival timing; historical projections also include
+// migrated Foot owners. See docs/research/TRACK_PROCESS_REPLAY_REGRESSION_NOTES.md
+// for baseline/candidate observations and native scope. These are Rust pins.
+const SLICE6_BASELINE_HASH: u64 = 0x7637_05BF_7622_B9E4;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -462,7 +466,7 @@ fn replay_hash_stable_through_slice6() {
 
     assert_eq!(
         sim.state_hash_without_sustained_gap_sight_v142(),
-        0xF56B_4528_0217_86B4,
+        0x2F38_0309_E6D7_C17C,
         "committed pre-v142 Slice6 projection changed"
     );
     let pre_lifecycle_hash = sim.state_hash_before_lifecycle_v28_and_mission_v29();

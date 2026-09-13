@@ -9,7 +9,7 @@
 //! deck height, the `on_bridge` flag, or the bridge occupancy layer sails
 //! straight through the default `--lib` suite. This file closes that gap.
 //!
-//! Scope note: the fixture stamps a synthetic span into a `PathGrid` rather than
+//! Scope note: the fixture stamps a synthetic span into matching path and resolved terrain rather than
 //! loading a retail map, so it runs with no assets and belongs in the DEFAULT
 //! suite. The retail-map half of the same question — does this hold on real
 //! stamped map data — is `sim::movement::movement_bridge_retail_tests`, which is
@@ -132,22 +132,22 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 // Clearing ONLY that field reproduces every parent (588f4079) hash probe; final
 // entity/RNG comparison has no other differences. Route/deck and per-tick
 // replay checks remain active. RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md records scope.
-const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x6CF2_5A22_88C0_2E9C;
-const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xE41A_CE94_5F4E_C69C;
-const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x6EBA_E111_2527_67FE;
+const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x42E6_236A_CDC3_7866;
+const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xF349_725E_613C_4C60;
+const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x1C72_98A6_DCAB_824A;
 // Re-baselined 2026-09-02 for v117's disguise-detect folds (FogState's
 // `CellClass+0xAC[house]` counter plane and the cached `DetectDisguiseRange=`
 // deposit radius). The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved.
-const BRIDGE_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x2EDD_6F87_89A5_E263;
+const BRIDGE_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x6F8E_49DE_DBC9_5236;
 // Baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): every
 // entity folds its dead ProduceCash timer and two `None` drain-link halves.
 // The dedicated pre-v135 probe reproduces the prior committed final exactly
 // and every older probe plus the three RNG streams are unchanged, so this is
 // composition-only (no derrick, DrainWeapon or capture in this fixture).
-const BRIDGE_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xB418_2979_A153_22DB;
-const BRIDGE_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x964B_448B_A90B_D06A;
+const BRIDGE_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x0F7D_D039_D6E5_484D;
+const BRIDGE_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x3F2E_03F0_293D_0369;
 // v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
 // reproduces the ramp branch's current baseline exactly; older probes and RNG pins
 // are unchanged. This is Rust hash-composition provenance, not native parity.
@@ -158,14 +158,19 @@ const BRIDGE_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x964B_448B_A90B_D06
 // The dedicated pre-v142 assertion below retains this fixture's prior current
 // pin; older probes and existing replay/stream checks remain unchanged.
 // Receipt: .local/shroud-current-sight-full-v1.log (composition-only candidates).
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0xE2AC_4ADB_9F48_24F8;
+// 2026-09-13 ordinary TrackProcess host: reviewed current-cursor payment,
+// residual and synchronous arrival timing; historical projections also include
+// migrated Foot owners. See docs/research/TRACK_PROCESS_REPLAY_REGRESSION_NOTES.md
+// for baseline/candidate observations and native scope. These are Rust pins.
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x1C9D_C67C_2209_DACC;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
     // no side is defeated on frame one. Their ranges keep them out of each
     // other's reach for the whole run.
     IniFile::from_str(
-        "[InfantryTypes]\n0=E1\n\n\
+        "[Clear]\nFoot=100%\nTrack=100%\nWheel=100%\nHover=100%\nFloat=0%\nAmphibious=100%\nBuildable=yes\n\n\
+         [InfantryTypes]\n0=E1\n\n\
          [VehicleTypes]\n0=MTNK\n\n\
          [AircraftTypes]\n\n\
          [BuildingTypes]\n\n\
@@ -250,6 +255,99 @@ fn bridge_grid() -> PathGrid {
     grid
 }
 
+/// Native Cell486840 height must agree with the path/spawn levels. In
+/// particular, the far-bank destination is ground level4 (416 leptons),
+/// so terminal owner-Z comparison can complete the actual navigation order.
+fn bridge_resolved_terrain(
+    grid: &PathGrid,
+    rules: &RuleSet,
+) -> crate::map::resolved_terrain::ResolvedTerrainGrid {
+    use crate::map::bridge_facts::{
+        BRIDGE_FLAG_STRUCTURAL, BRIDGE_FLAG_TRANSITION, BridgeCellFacts,
+    };
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::terrain_rules::{LandType, TerrainClass};
+    let clear_costs = rules
+        .terrain_rules
+        .semantics_for_land_type(LandType::Clear.as_index())
+        .expect("fixture authors Clear terrain costs")
+        .speed_costs;
+    let mut cells = Vec::with_capacity(usize::from(GRID_W) * usize::from(GRID_H));
+    for ry in 0..GRID_H {
+        for rx in 0..GRID_W {
+            let path = grid.cell(rx, ry).unwrap();
+            let flags = if path.bridge_structural {
+                BRIDGE_FLAG_STRUCTURAL
+            } else {
+                0
+            } | if path.transition {
+                BRIDGE_FLAG_TRANSITION
+            } else {
+                0
+            };
+            cells.push(ResolvedTerrainCell {
+                rx,
+                ry,
+                source_tile_index: 0,
+                source_sub_tile: 0,
+                final_tile_index: 0,
+                final_sub_tile: 0,
+                is_wood_bridge_repair_tile: false,
+                level: path.ground_level,
+                filled_clear: false,
+                tileset_index: None,
+                land_type: 0,
+                yr_cell_land_type: 0,
+                slope_type: 0,
+                template_height: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: TerrainClass::Clear,
+                speed_costs: clear_costs,
+                is_water: false,
+                is_cliff_like: false,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: false,
+                allows_tiberium: false,
+                height_in_pixels: 0,
+                variant: 0,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: !path.ground_walkable,
+                terrain_object_blocks: false,
+                terrain_object_occupation: None,
+                overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
+                zone_type: 0,
+                base_ground_walk_blocked: !path.ground_walkable,
+                base_build_blocked: !path.ground_walkable,
+                base_land_type: 0,
+                base_yr_cell_land_type: 0,
+                base_terrain_class: TerrainClass::Clear,
+                base_speed_costs: clear_costs,
+                build_blocked: !path.ground_walkable,
+                has_bridge_deck: path.bridge_walkable,
+                bridge_walkable: path.bridge_walkable,
+                bridge_transition: path.transition,
+                bridge_deck_level: path.bridge_deck_level,
+                bridge_layer: None,
+                bridge_facts: BridgeCellFacts {
+                    raw_flags: flags,
+                    ..Default::default()
+                },
+                tube_index: None,
+                radar_left: [0; 3],
+                radar_right: [0; 3],
+                has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
+            });
+        }
+    }
+    ResolvedTerrainGrid::from_cells(GRID_W, GRID_H, cells)
+}
+
 /// Terrain heights matching the grid, so a spawned object starts at its cell's
 /// real level rather than 0.
 fn bridge_heights() -> BTreeMap<(u16, u16), u8> {
@@ -291,6 +389,45 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// Spawn order fixes stable ids: 1 = the crossing tank, 2 = a far-away Soviet
 /// rifleman that exists only so neither house is defeated at once.
 fn seed_bridge_scenario(sim: &mut Simulation, rules: &RuleSet, heights: &BTreeMap<(u16, u16), u8>) {
+    sim.resolved_terrain = Some(bridge_resolved_terrain(&bridge_grid(), rules));
+    // Storage dimensions are independent of the isometric Map Size diamond.
+    // This narrow synthetic playfield retains the original route and distant
+    // actor while supplying the mandatory mode-one constructor input.
+    sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds::from_raw_local_size(
+        16,
+        64,
+        [2, 2, 12, 56],
+    ));
+    for (rx, ry) in (APPROACH_A_X..=APPROACH_B_X)
+        .map(|rx| (rx, SPAN_Y))
+        .chain(std::iter::once((58, 58)))
+    {
+        assert!(
+            crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+                (i32::from(rx), i32::from(ry)),
+                sim.playfield_bounds,
+                sim.resolved_terrain.as_ref(),
+            ),
+            "fixture actor/route cell ({rx},{ry}) must be in the native playfield"
+        );
+    }
+    // Exercise the complete same admission used by normal Unit construction:
+    // configured bounds/terrain, authored speed row, occupants and raw masks.
+    assert!(
+        crate::sim::production::produced_unit_unlimbo_entry_at_resolved_cell(
+            sim,
+            rules,
+            "Americans",
+            "MTNK",
+            TANK_ID,
+            0,
+            (APPROACH_A_X, SPAN_Y),
+            None,
+        )
+        .exact_zero_layer()
+        .is_some(),
+        "fixture must satisfy normal Unit admission"
+    );
     sim.spawn_from_map(
         &[
             unit(
@@ -304,6 +441,10 @@ fn seed_bridge_scenario(sim: &mut Simulation, rules: &RuleSet, heights: &BTreeMa
         ],
         Some(rules),
         heights,
+    );
+    assert!(
+        sim.substrate.entities.get(TANK_ID).is_some(),
+        "fixture tank must pass normal resolved-terrain constructor admission"
     );
 }
 
@@ -526,6 +667,29 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
         "BridgeOccupancy survived the Exit transition: {last:?}"
     );
 
+    let arrived = rec.substrate.entities.get(TANK_ID).unwrap();
+    assert!(
+        arrived.navigation.nav_com.is_none(),
+        "arrival must clear NavCom"
+    );
+    assert!(
+        arrived
+            .drive_locomotion
+            .as_ref()
+            .unwrap()
+            .destination
+            .is_none(),
+        "arrival must clear the class destination"
+    );
+    assert!(
+        arrived.drive_locomotion.as_ref().unwrap().head_to.is_none(),
+        "arrival must retire the paid track head"
+    );
+    assert!(
+        arrived.movement_target.is_none(),
+        "arrival must retire the completed path"
+    );
+
     // ---- Replay pass: fresh sim, real ReplayRunner, tick-for-tick equality. ----
     let mut rep = Simulation::with_seed(BRIDGE_HARNESS_SEED);
     seed_bridge_scenario(&mut rep, &rules, &heights);
@@ -552,7 +716,7 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
 
     assert_eq!(
         rep.state_hash_without_sustained_gap_sight_v142(),
-        0x3CCC_DF29_4DDA_4D4F,
+        0x79F5_7948_8D9D_B192,
         "pre-v142 composition must reproduce this fixture's prior current baseline"
     );
     let final_hash = *replayed.last().expect("at least one tick replayed");

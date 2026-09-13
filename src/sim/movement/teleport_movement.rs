@@ -449,9 +449,7 @@ pub fn tick_teleport_movement(
                     gate.owner_deploying,
                 )
         });
-        if may_end
-            && let Some(entity) = entities.get_mut(id)
-        {
+        if may_end && let Some(entity) = entities.get_mut(id) {
             super::locomotor_owner::restore_admitted_primary(entity);
         }
     }
@@ -497,6 +495,7 @@ mod tests {
             accel_factor: SimFixed::lit("0.03"),
             decel_factor: SimFixed::lit("0.02"),
             accelerates: true,
+            passive: false,
             slowdown_distance: 512,
             sight: 5,
             tech_level: -1,

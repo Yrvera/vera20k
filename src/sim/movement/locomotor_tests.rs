@@ -35,6 +35,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         accel_factor: SimFixed::lit("0.03"),
         decel_factor: SimFixed::lit("0.02"),
         accelerates: true,
+        passive: false,
         slowdown_distance: 512,
         sight: 5,
         tech_level: -1,

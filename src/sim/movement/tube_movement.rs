@@ -87,6 +87,7 @@ pub fn pending_path_tube_id(
 /// the route tail for the post-tube object turn.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn begin_path_tube_step(
+    foot_occupation_enabled: &mut bool,
     path_replay: &mut crate::sim::components::FootPathQueue,
     entity_id: u64,
     category: EntityCategory,
@@ -117,6 +118,7 @@ pub(crate) fn begin_path_tube_step(
     let state = initial_state(category, position, tube_id, tube, terrain)?;
 
     detach_for_tube(
+        foot_occupation_enabled,
         entity_id,
         category,
         position,
@@ -196,6 +198,7 @@ fn initial_state(
 }
 
 fn detach_for_tube(
+    foot_occupation_enabled: &mut bool,
     entity_id: u64,
     category: EntityCategory,
     position: &Position,
@@ -216,7 +219,7 @@ fn detach_for_tube(
                     cell_occupation,
                     entity_id,
                 );
-                drive.current_occupation_cleared = true;
+                *foot_occupation_enabled = false;
             }
             cell_occupation.clear_vehicle_on_layer(rx, ry, entity_id, MovementLayer::Ground);
             raw_cell_occupation.clear_ground(rx, ry, VEHICLE_OCCUPATION_BIT);
@@ -393,6 +396,7 @@ fn finalize_tube_object(
                 entity_id,
                 reached_cell,
                 path_grid,
+                Some(terrain),
                 occupancy,
                 rules,
                 interner,
@@ -432,6 +436,7 @@ fn finalize_tube_object(
                 entity_id,
                 reached_cell,
                 path_grid,
+                Some(terrain),
                 occupancy,
                 rules,
                 interner,
@@ -528,9 +533,7 @@ fn put_after_tube(
         EntityCategory::Unit => {
             raw_cell_occupation.mark_ground(rx, ry, VEHICLE_OCCUPATION_BIT);
             cell_occupation.mark_vehicle_on_layer(rx, ry, entity_id, MovementLayer::Ground);
-            if let Some(drive) = entity.drive_locomotion.as_mut() {
-                drive.current_occupation_cleared = false;
-            }
+            entity.foot_occupation_enabled = true;
         }
         EntityCategory::Infantry => {
             let mask = infantry_raw_occupation_mask(entity.position.sub_x, entity.position.sub_y);
@@ -550,6 +553,7 @@ fn scatter_exit_blockers(
     mover_id: u64,
     cell: (u16, u16),
     path_grid: Option<&PathGrid>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
     occupancy: &OccupancyGrid,
     rules: Option<&RuleSet>,
     interner: &StringInterner,
@@ -582,6 +586,7 @@ fn scatter_exit_blockers(
             entities,
             blocker_id,
             path_grid,
+            resolved_terrain,
             occupancy,
             MovementLayer::Ground,
             rng,
@@ -1088,6 +1093,7 @@ mod tests {
         raw.mark_ground(0, 0, VEHICLE_OCCUPATION_BIT);
 
         begin_path_tube_step(
+            &mut true,
             &mut entity.navigation.path_replay,
             entity.stable_id,
             entity.category,

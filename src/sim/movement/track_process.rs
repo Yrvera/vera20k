@@ -23,6 +23,15 @@ pub(crate) enum TrackFamily {
     Ship,
 }
 
+/// Owned handoff from the once-per-visit speed calculation to the world host.
+/// No path snapshot or entity borrow crosses a synchronous owner receiver.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TrackInvocation {
+    pub entity_id: u64,
+    pub family: TrackFamily,
+    pub fresh_budget: i32,
+}
+
 impl TrackFamily {
     fn turn(self, index: i32) -> Option<&'static TurnTrack> {
         let count = match self {
@@ -302,6 +311,33 @@ pub(crate) struct TrackProcess {
 }
 
 impl TrackProcess {
+    /// Previous point comes from the same cached array as payment, but the
+    /// transform reads the live selector/head (Drive4B164D..16BA).
+    pub fn previous_sample(&self, cursor: i32) -> Option<PaidSample> {
+        let raw_index = self.selection?.raw_index;
+        let point = raw_point(raw_index, cursor.checked_sub(1)?)?;
+        Some(PaidSample {
+            raw_index,
+            cursor: cursor - 1,
+            xy: [i32::from(point.x), i32::from(point.y)],
+            facing: point.facing,
+            terminal: false,
+        })
+    }
+
+    /// Facing reloads the live cursor in the cached raw BEFORE placement. The
+    /// host retains its transformed result across later Mark callbacks.
+    pub fn live_facing_sample(&self, cursor: i32) -> Option<PaidSample> {
+        let raw_index = self.selection?.raw_index;
+        let point = raw_point(raw_index, cursor)?;
+        Some(PaidSample {
+            raw_index,
+            cursor,
+            xy: [i32::from(point.x), i32::from(point.y)],
+            facing: point.facing,
+            terminal: false,
+        })
+    }
     pub fn begin(family: TrackFamily, progress: &TrackProgress, fresh_budget: i32) -> Self {
         let budget = progress.residual.wrapping_add(fresh_budget);
         Self {

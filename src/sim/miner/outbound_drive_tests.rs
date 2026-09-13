@@ -681,7 +681,16 @@ fn production_stock_miners_use_drive_command_for_adjacent_ore() {
         assert!(!entity.navigation.pending_arrival_clear);
         if type_id == "CMIN" {
             let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
-            assert_eq!(locomotor.kind, LocomotorKind::Teleport);
+            assert_eq!(
+                locomotor.kind,
+                LocomotorKind::Teleport,
+                "Drive={:?}; Foot={:?}; position={:?}; Nav={:?}; mission={:?}",
+                entity.drive_locomotion,
+                entity.foot_speed,
+                entity.position,
+                entity.navigation,
+                entity.mission
+            );
             assert_eq!(
                 locomotor.slot,
                 LocomotorSlot::from_kind(LocomotorKind::Teleport)
@@ -1199,7 +1208,16 @@ fn production_cmin_outbound_drive_keeps_teleport_primary() {
         if entity.miner_state().expect("miner") == MinerState::Harvest {
             assert!(entity.movement_target.is_none());
             let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
-            assert_eq!(locomotor.kind, LocomotorKind::Teleport);
+            assert_eq!(
+                locomotor.kind,
+                LocomotorKind::Teleport,
+                "Drive={:?}; Foot={:?}; position={:?}; Nav={:?}; mission={:?}",
+                entity.drive_locomotion,
+                entity.foot_speed,
+                entity.position,
+                entity.navigation,
+                entity.mission
+            );
             assert_eq!(
                 locomotor.slot,
                 LocomotorSlot::from_kind(LocomotorKind::Teleport)
@@ -1443,7 +1461,16 @@ fn production_cmin_arrival_clears_navcom_same_tick_and_releases_drive() {
             assert_eq!(entity.navigation.nav_com, None);
             assert!(!entity.navigation.pending_arrival_clear);
             let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
-            assert_eq!(locomotor.kind, LocomotorKind::Teleport);
+            assert_eq!(
+                locomotor.kind,
+                LocomotorKind::Teleport,
+                "Drive={:?}; Foot={:?}; position={:?}; Nav={:?}; mission={:?}",
+                entity.drive_locomotion,
+                entity.foot_speed,
+                entity.position,
+                entity.navigation,
+                entity.mission
+            );
             assert_eq!(
                 locomotor.slot,
                 LocomotorSlot::from_kind(LocomotorKind::Teleport)

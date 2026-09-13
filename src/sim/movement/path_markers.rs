@@ -214,54 +214,34 @@ fn is_at_coord_cells(
         return (None, current, None);
     };
     match locomotor.kind {
-        LocomotorKind::Drive => {
-            let drive = entity.drive_locomotion.as_ref();
-            let active_track = entity.drive_track.as_ref().or_else(|| {
+        LocomotorKind::Drive | LocomotorKind::Ship => {
+            // Ordinary and forced selectors are retained on the controller.
+            // The geometry adapter's cursor is not production progress.
+            let (head, track) = if locomotor.kind == LocomotorKind::Drive {
                 entity
-                    .forced_drive_track
+                    .drive_locomotion
                     .as_ref()
-                    .map(|forced| &forced.track)
-            });
-            if let Some(track) = active_track {
-                // Every active ordinary and forced Drive constructor currently
-                // installs the normal RawTrack.  A reversed/short provenance
-                // suppresses the native transformed-handoff candidate.
-                let (track_cell, head_cell) = super::drive_track::is_at_coord_track_cells(
-                    track,
-                    (entity.position.rx, entity.position.ry),
-                    !drive.is_some_and(|drive| drive.track.reversed),
-                );
-                return (track_cell, head_cell, None);
+                    .map(|state| (state.head_to, state.track))
+            } else {
+                entity
+                    .ship_locomotion
+                    .as_ref()
+                    .map(|state| (state.head_to, state.track))
             }
-            let head = drive
-                .and_then(|drive| drive.head_to)
-                .map(|head| ((head.x / 256) as i16, (head.y / 256) as i16))
-                .unwrap_or(current);
-            (None, head, None)
-        }
-        LocomotorKind::Ship => {
-            let active_track = entity.drive_track.as_ref().filter(|track| {
-                track.raw_track_index <= 13
-                    && entity
-                        .forced_drive_track
-                        .as_ref()
-                        .is_none_or(|forced| forced.track.raw_track_index != track.raw_track_index)
-            });
-            if let Some(track) = active_track {
-                let (track_cell, head_cell) = super::drive_track::is_at_coord_track_cells(
-                    track,
-                    (entity.position.rx, entity.position.ry),
-                    true,
-                );
-                return (track_cell, head_cell, None);
-            }
-            let head = entity
-                .ship_locomotion
-                .as_ref()
-                .and_then(|ship| ship.head_to)
-                .map(|head| ((head.x / 256) as i16, (head.y / 256) as i16))
-                .unwrap_or(current);
-            (None, head, None)
+            .unwrap_or_default();
+            let query = super::at_coord::AtCoordQuery::from_state(
+                locomotor.kind,
+                super::ground_pose::position_world_coord(&entity.position),
+                head,
+                super::at_coord::AtCoordTrack {
+                    turn_index: track.turn_index,
+                    cursor: track.cursor,
+                    reversed: track.reversed,
+                },
+            )
+            .expect("Drive/Ship have Is_At_Coord receivers");
+            let (handoff, head) = query.cells();
+            (handoff, head, None)
         }
         LocomotorKind::Walk => (
             None,
@@ -774,9 +754,9 @@ mod tests {
         peer.position.z = 4;
         peer.on_bridge = true;
         let mut drive = crate::sim::components::DriveLocomotionRuntime::default();
-        drive.head_to = Some(crate::sim::components::DriveCoord::cell(9, 9, 4));
+        drive.head_to = Some(crate::sim::components::DriveCoord::cell(6, 3, 4));
         drive.track_valid = true;
-        drive.track.turn_index = 3;
+        drive.track.turn_index = 1;
         drive.track.cursor = 12;
         peer.navigation.path_replay.reference_cell = Some((5, 4));
         peer.navigation.path_replay.directions = vec![2, 2];
@@ -784,7 +764,8 @@ mod tests {
         // RawTrack 3 handoff point 22, transformed around head cell (6,3),
         // lies in probe cell (5,4).  A deck track deliberately owns no ground
         // occupation_head_to reservation, so that field cannot answer slot 40.
-        peer.drive_track = super::super::drive_track::begin_drive_track(3, 0, 2, -1, 32);
+        // A stale geometry adapter cannot override the retained live selector/head.
+        peer.drive_track = super::super::drive_track::begin_drive_track(1, 0, 0, -1, 0);
         entities.insert(peer);
 
         let peers = snapshot_bridge_marker_peers(&entities, None, &interner);

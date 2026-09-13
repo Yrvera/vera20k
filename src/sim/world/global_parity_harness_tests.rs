@@ -146,12 +146,15 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// The harness harvester fills ~36 gates later, so its return/dock Scenario
 /// draws land on different frames. Only Scenario moves; Main and MapGen plus
 /// tick-for-tick record/replay remain exact.
+// 2026-09-13: first changed Scenario draw follows the live NavCom guard at
+// tick116 after corrected TrackProcess payment; Main/MapGen remain unchanged.
+// See TRACK_PROCESS_REPLAY_REGRESSION_NOTES.md for the two raw draw values.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
     // MERGE 2026-08-03: both branches re-baselined these independently (dev:
     // passive acquire + spawner; foundations: Move cadence + hashed runtime
     // state). Neither side's values describe the merged tree; re-derived below
     // from the merged tree's own output in the same merge commit.
-    0x78D4_8215_F590_AB97,
+    0x0E65_195B_66CB_8FDC,
     0x39F3_258B_A550_EB7C,
     0x1CE8_1848_7043_6163,
 );
@@ -406,8 +409,8 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // The final six differing leaves are headX, Drive/curve cursors and residuals,
 // and subcellX. Native same-pass timing remains open; this is a Rust regression
 // ratchet, not whole-movement parity. See the bridge walker report's raw-head section.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x8CEF_5A70_F4A9_D0EE;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xE7AC_3E98_B3AF_D6C4;
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x63D4_2755_D099_2B13;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x97A1_12B2_70C5_8817;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -587,15 +590,15 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xE7AC_3E98_B3AF_D6C4;
 // composed measurement, unchanged by this branch.
 // Re-baselined 2026-09-05 for GSI-09.03 harvest bite size (behavior-bearing,
 // see `FINAL_STREAM_STATES`); the historical probes move with the final hash.
-const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x3BD0_0F58_EFC4_6367;
-const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x7CE6_BA04_7B2A_D892;
-const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xB168_3F80_22D7_90EC;
+const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x0108_3DB5_07F1_33E7;
+const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xAB84_4991_F986_9579;
+const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x4C1C_FE51_6CF0_6E18;
 // Re-baselined 2026-09-02 for v117's disguise-detect folds (FogState's
 // `CellClass+0xAC[house]` counter plane and the cached `DetectDisguiseRange=`
 // deposit radius). The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved. The three RNG stream pins are unchanged.
-const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xDEF9_D601_4DBA_EA1D;
+const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x37E2_0C17_7467_7CF7;
 // Baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): the
 // `BuildingClass+0x6D0` ProduceCash timer and the `TechnoClass+0x1CC/+0x1D0`
 // drain link on every entity. The dedicated pre-v135 probe reproduces the
@@ -603,13 +606,13 @@ const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xDEF9_D601_4DBA_EA1D;
 // DrainWeapon and no capture, so only current-schema composition moved (every
 // object folds its dead constructor timer and two `None`s). RNG stream pins
 // unchanged.
-const GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x11EF_9692_DC03_F706;
+const GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x4BAA_8C74_6F98_2E83;
 // Re-baselined 2026-09-05 for GSI-09.03 harvest bite size (one density level
 // per Harvest_Ore_Tick gate, 0x0073D450); see `FINAL_STREAM_STATES`.
 // Re-baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01),
 // composition-only: `GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH` holds the
 // prior value and every historical probe and stream pin is unchanged.
-const GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x0E13_584B_AA4C_316C;
+const GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x5183_C354_B078_DAAD;
 // v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
 // reproduces the ramp branch's current baseline exactly; older probes and RNG pins
 // are unchanged. This is Rust hash-composition provenance, not native parity.
@@ -621,7 +624,11 @@ const GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x0E13_584B_AA4C_316
 // every older probe, replay tick and all three RNG streams pass unchanged.
 // Receipt: .local/shroud-current-sight-broader-v1-3.log. This is Rust hash
 // composition provenance, not a native full-simulation comparison.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x7F4B_C14E_8F10_0A83;
+// 2026-09-13 ordinary TrackProcess host: reviewed current-cursor payment,
+// residual and synchronous arrival timing; historical projections also include
+// migrated Foot owners. See docs/research/TRACK_PROCESS_REPLAY_REGRESSION_NOTES.md
+// for baseline/candidate observations and native scope. These are Rust pins.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x2E70_C299_3112_87CA;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -910,6 +917,18 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
         recorded_streams, replayed_streams,
         "per-stream cursor consistency: a nondeterminism moved streams between record and replay"
     );
+    assert_eq!(
+        replayed.len(),
+        log.ticks.len(),
+        "replay tick count must match record"
+    );
+    for (i, h) in replayed.iter().enumerate() {
+        assert_eq!(
+            *h, log.ticks[i].state_hash,
+            "intra-run determinism: replay tick {i} hash must equal the recorded hash"
+        );
+    }
+
     let (_, final_scen, final_main, final_mapgen) =
         *recorded_streams.last().expect("final checkpoint recorded");
     let final_hash = *replayed.last().expect("at least one tick recorded");
@@ -929,20 +948,8 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     );
 
     assert_eq!(
-        replayed.len(),
-        log.ticks.len(),
-        "replay tick count must match record"
-    );
-    for (i, h) in replayed.iter().enumerate() {
-        assert_eq!(
-            *h, log.ticks[i].state_hash,
-            "intra-run determinism: replay tick {i} hash must equal the recorded hash"
-        );
-    }
-
-    assert_eq!(
         rep.state_hash_without_sustained_gap_sight_v142(),
-        0x7C48_6EFE_4C48_7D3E,
+        0xA295_8485_F2B8_E05C,
         "committed pre-v142 global projection changed"
     );
     let pre_lifecycle_hash = rep.state_hash_before_lifecycle_v28_and_mission_v29();
@@ -1149,7 +1156,10 @@ fn dense_converging_setup() -> (
 /// correction, not a hash-fold change or full locomotor parity claim. The
 /// existing early return on an actual paid crossing remains a separate limit.
 /// See RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md, Rust replay provenance.
-const POSITION_FINGERPRINT: u64 = 0xD1F9_0004_4F62_D8C3;
+// 2026-09-13: unpaid fresh budget0 retains current XY instead of eagerly
+// publishing point0. First native-adjudicated divergence is tick2 (128 vs139);
+// see docs/research/TRACK_PROCESS_REPLAY_REGRESSION_NOTES.md.
+const POSITION_FINGERPRINT: u64 = 0x864F_F9C4_2481_072F;
 
 #[test]
 fn s2_dense_scenario_position_fingerprint_stable() {
@@ -1184,6 +1194,6 @@ fn s2_dense_scenario_position_fingerprint_stable() {
     assert_eq!(
         h.finish(),
         POSITION_FINGERPRINT,
-        "S2 must not change any position sequence (captured pre-flip in T2)"
+        "committed per-tick position sequence changed; attribute the first divergence before updating"
     );
 }

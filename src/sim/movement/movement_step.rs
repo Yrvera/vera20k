@@ -251,6 +251,7 @@ pub(super) fn configure_motion_after_transition(
         } else {
             if is_ship && let Some(ship) = ship_locomotion.as_mut() {
                 ship.head_to = None;
+                ship.pending_track_occupation = false;
             }
             // The exact-facing precondition takes precedence over the ordinary
             // step facing: the body must reach the head node's octant before any
@@ -511,6 +512,7 @@ mod tests {
                 let mut ship = (kind == LocomotorKind::Ship).then(ShipLocomotionRuntime::default);
                 let mut curve = None;
                 let result = advance_lepton_position(
+                    &mut true,
                     &mut queue,
                     &mut target,
                     &mut position,
@@ -604,6 +606,7 @@ mod tests {
                 ..Default::default()
             };
             let result = advance_shared_track(
+                &mut true,
                 &mut target,
                 &mut position,
                 &mut 0,
@@ -733,6 +736,7 @@ mod tests {
         let mut locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
 
         let result = advance_lepton_position(
+            &mut true,
             &mut Default::default(),
             &mut target,
             &mut position,
@@ -782,6 +786,7 @@ mod tests {
         facing = 0x40;
         facing_target = None;
         let result = advance_lepton_position(
+            &mut true,
             &mut Default::default(),
             &mut target,
             &mut position,
@@ -844,6 +849,7 @@ mod tests {
         let current_speed = target.current_speed;
 
         let result = advance_lepton_position(
+            &mut true,
             &mut Default::default(),
             &mut target,
             &mut position,
@@ -875,6 +881,7 @@ mod tests {
 
     #[test]
     fn gsi_04_05_paid_track_point_clears_current_before_same_cell_coordinate_commit() {
+        let mut foot_occupation_enabled = true;
         let mut target = MovementTarget {
             path: vec![(0, 0), (1, 0)],
             path_layers: vec![MovementLayer::Ground; 2],
@@ -913,6 +920,7 @@ mod tests {
         bits.mark_vehicle_on_layer(1, 0, 1, MovementLayer::Ground);
 
         let result = advance_lepton_position(
+            &mut foot_occupation_enabled,
             &mut Default::default(),
             &mut target,
             &mut position,
@@ -938,12 +946,7 @@ mod tests {
         assert_eq!((position.rx, position.ry), (0, 0));
         assert_eq!(bits.vehicle_bits(0, 0, MovementLayer::Ground), 0);
         assert_eq!(bits.vehicle_bits(1, 0, MovementLayer::Ground), 0x20);
-        assert!(
-            drive_locomotion
-                .as_ref()
-                .unwrap()
-                .current_occupation_cleared
-        );
+        assert!(!foot_occupation_enabled);
     }
 
     #[test]
@@ -979,6 +982,7 @@ mod tests {
         let current_speed = target.current_speed;
 
         let _ = advance_lepton_position(
+            &mut true,
             &mut Default::default(),
             &mut target,
             &mut position,
@@ -1002,6 +1006,7 @@ mod tests {
         let index_after_native_frame = drive_track_state.as_ref().unwrap().point_index;
 
         let _ = advance_lepton_position(
+            &mut true,
             &mut Default::default(),
             &mut target,
             &mut position,
@@ -1058,6 +1063,7 @@ mod tests {
         let mut locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
 
         let result = advance_lepton_position(
+            &mut true,
             &mut Default::default(),
             &mut target,
             &mut position,
@@ -1108,6 +1114,7 @@ mod tests {
 /// `Apply_Track_Occupation_Mode` writes both on modes 1 and 3 (handoff first,
 /// head second) and clears both on mode 0.
 fn install_drive_head_to_occupation(
+    foot_occupation_enabled: &mut bool,
     drive_locomotion: &mut Option<DriveLocomotionRuntime>,
     cell_occupation: &mut Option<&mut CellOccupationGrid>,
     entity_id: u64,
@@ -1126,6 +1133,7 @@ fn install_drive_head_to_occupation(
     };
     match next {
         Some(next) => crate::sim::occupancy::replace_drive_head_to_occupation(
+            foot_occupation_enabled,
             drive,
             occupation,
             entity_id,
@@ -1134,6 +1142,7 @@ fn install_drive_head_to_occupation(
             next,
         ),
         None => crate::sim::occupancy::clear_drive_head_to_occupation_for_replacement(
+            foot_occupation_enabled,
             drive,
             occupation,
             entity_id,
@@ -1142,6 +1151,7 @@ fn install_drive_head_to_occupation(
         ),
     }
     crate::sim::occupancy::replace_drive_handoff_occupation(
+        foot_occupation_enabled,
         drive,
         occupation,
         entity_id,
@@ -1315,6 +1325,7 @@ impl DriveCellAdmission<'_> {
 /// curve).
 #[allow(clippy::too_many_arguments)]
 fn select_fresh_drive_track_at_current_cell(
+    foot_occupation_enabled: &mut bool,
     path_replay: &mut crate::sim::components::FootPathQueue,
     target: &mut MovementTarget,
     position: &Position,
@@ -1423,8 +1434,10 @@ fn select_fresh_drive_track_at_current_cell(
             // one — to the caller's dispatch.
             if let Some(drive) = drive_locomotion.as_mut() {
                 drive.head_to = None;
+                drive.pending_track_occupation = false;
             }
             install_drive_head_to_occupation(
+                foot_occupation_enabled,
                 drive_locomotion,
                 cell_occupation,
                 entity_id,
@@ -1437,6 +1450,7 @@ fn select_fresh_drive_track_at_current_cell(
                 (drive_locomotion.as_mut(), cell_occupation.as_deref_mut())
             {
                 crate::sim::occupancy::restore_current_drive_occupation_after_refusal(
+                    foot_occupation_enabled,
                     drive,
                     occupation,
                     entity_id,
@@ -1495,6 +1509,7 @@ fn select_fresh_drive_track_at_current_cell(
         drive_track_handoff_footprint(track, (position.rx, position.ry), endpoint_layer)
     });
     install_drive_head_to_occupation(
+        foot_occupation_enabled,
         drive_locomotion,
         cell_occupation,
         entity_id,
@@ -1504,6 +1519,86 @@ fn select_fresh_drive_track_at_current_cell(
         handoff_occupation,
     );
     FreshTrackOutcome::Installed
+}
+
+pub(super) enum NativeTrackPreparation {
+    Invoke(super::track_process::TrackInvocation),
+    Idle,
+    Blocked(DriveSelectionRefusal),
+}
+
+/// Ordinary world execution hands off below the speed prefix. Geometry remains
+/// an admission/occupation adapter; only the locomotor TrackProgress is advanced.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_native_track(
+    foot_occupation_enabled: &mut bool,
+    replay: &mut crate::sim::components::FootPathQueue,
+    target: &mut MovementTarget,
+    position: &Position,
+    facing: u8,
+    facing_target: &mut Option<u8>,
+    geometry: &mut Option<DriveTrackState>,
+    drive: &mut Option<DriveLocomotionRuntime>,
+    ship: &mut Option<ShipLocomotionRuntime>,
+    locomotor: &Option<LocomotorState>,
+    category: EntityCategory,
+    entity_id: u64,
+    occupation: &mut CellOccupationGrid,
+    admission: DriveCellAdmission<'_>,
+    layer: MovementLayer,
+    fresh_budget: i32,
+) -> Option<NativeTrackPreparation> {
+    use super::track_process::{TrackFamily, TrackInvocation};
+    let kind = shared_track_kind(locomotor)?;
+    if category == EntityCategory::Infantry {
+        return None;
+    }
+    let active = match kind {
+        LocomotorKind::Drive => drive
+            .as_ref()
+            .is_some_and(|state| state.track.turn_index >= 0 && state.head_to.is_some()),
+        LocomotorKind::Ship => ship
+            .as_ref()
+            .is_some_and(|state| state.track.turn_index >= 0 && state.head_to.is_some()),
+        _ => false,
+    };
+    if !active {
+        match select_fresh_drive_track_at_current_cell(
+            foot_occupation_enabled,
+            replay,
+            target,
+            position,
+            facing,
+            facing_target,
+            geometry,
+            drive,
+            ship,
+            &mut Some(occupation),
+            admission,
+            entity_id,
+            layer,
+            kind,
+        ) {
+            FreshTrackOutcome::Installed => {}
+            FreshTrackOutcome::TurnFirst(desired) => {
+                *facing_target = Some(desired);
+                return Some(NativeTrackPreparation::Idle);
+            }
+            FreshTrackOutcome::BlockedByOccupation(refusal) => {
+                return Some(NativeTrackPreparation::Blocked(refusal));
+            }
+            FreshTrackOutcome::None => return Some(NativeTrackPreparation::Idle),
+        }
+    }
+    Some(NativeTrackPreparation::Invoke(TrackInvocation {
+        entity_id,
+        family: if kind == LocomotorKind::Ship {
+            TrackFamily::Ship
+        } else {
+            TrackFamily::Drive
+        },
+        fresh_budget,
+    }))
 }
 
 fn commit_paid_track_height(
@@ -1621,6 +1716,7 @@ fn finish_shared_track(
         LocomotorKind::Drive => {
             if let Some(drive) = drive_locomotion {
                 drive.head_to = None;
+                drive.pending_track_occupation = false;
                 // Original terminal retirement4B210E precedes the next path
                 // selector/tube admission and preserves residual/short state.
                 drive.track.clear_selector();
@@ -1629,6 +1725,7 @@ fn finish_shared_track(
         LocomotorKind::Ship => {
             if let Some(ship) = ship_locomotion {
                 ship.head_to = None;
+                ship.pending_track_occupation = false;
                 ship.track.clear_selector(); // Ship6A1751 counterpart.
             }
         }
@@ -1639,6 +1736,7 @@ fn finish_shared_track(
 }
 
 fn advance_shared_track(
+    foot_occupation_enabled: &mut bool,
     target: &mut MovementTarget,
     position: &mut Position,
     facing: &mut u8,
@@ -1693,6 +1791,7 @@ fn advance_shared_track(
             (drive_locomotion.as_mut(), cell_occupation.as_deref_mut())
         {
             crate::sim::occupancy::clear_current_drive_occupation_for_paid_point(
+                foot_occupation_enabled,
                 drive,
                 occupation,
                 entity_id,
@@ -1764,6 +1863,7 @@ fn advance_shared_track(
 /// Takes individual entity fields to avoid borrow conflicts with
 /// `entity.movement_target` (which the caller holds as `ref mut target`).
 pub(super) fn advance_lepton_position(
+    foot_occupation_enabled: &mut bool,
     path_replay: &mut crate::sim::components::FootPathQueue,
     target: &mut MovementTarget,
     position: &mut Position,
@@ -1796,6 +1896,7 @@ pub(super) fn advance_lepton_position(
             (effective_speed * dt).to_num::<i32>()
         };
         let advance = advance_shared_track(
+            foot_occupation_enabled,
             target,
             position,
             facing,
@@ -1837,6 +1938,7 @@ pub(super) fn advance_lepton_position(
                 && let Some(kind) = shared_kind
             {
                 match select_fresh_drive_track_at_current_cell(
+                    foot_occupation_enabled,
                     path_replay,
                     target,
                     position,
@@ -1853,6 +1955,7 @@ pub(super) fn advance_lepton_position(
                 ) {
                     FreshTrackOutcome::Installed => {
                         return advance_shared_track(
+                            foot_occupation_enabled,
                             target,
                             position,
                             facing,
@@ -1881,6 +1984,7 @@ pub(super) fn advance_lepton_position(
                     FreshTrackOutcome::None => {
                         if is_ship && let Some(ship) = ship_locomotion.as_mut() {
                             ship.head_to = None;
+                            ship.pending_track_occupation = false;
                         }
                     }
                 }
@@ -1912,6 +2016,7 @@ pub(super) fn advance_lepton_position(
                 && let Some(kind) = shared_kind
             {
                 match select_fresh_drive_track_at_current_cell(
+                    foot_occupation_enabled,
                     path_replay,
                     target,
                     position,
@@ -1928,6 +2033,7 @@ pub(super) fn advance_lepton_position(
                 ) {
                     FreshTrackOutcome::Installed => {
                         return advance_shared_track(
+                            foot_occupation_enabled,
                             target,
                             position,
                             facing,
@@ -1953,6 +2059,7 @@ pub(super) fn advance_lepton_position(
                     FreshTrackOutcome::None => {
                         if is_ship && let Some(ship) = ship_locomotion.as_mut() {
                             ship.head_to = None;
+                            ship.pending_track_occupation = false;
                         }
                     }
                 }
@@ -2100,6 +2207,7 @@ pub(super) struct CrossingOutput {
 /// `entity.movement_target` (which the caller holds as `ref mut target`).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn process_cell_crossings(
+    foot_occupation_enabled: &mut bool,
     path_replay: &mut crate::sim::components::FootPathQueue,
     target: &mut MovementTarget,
     position: &mut Position,
@@ -2543,6 +2651,7 @@ pub(super) fn process_cell_crossings(
             position,
             locomotor,
             drive_locomotion,
+            foot_occupation_enabled,
             sub_cell,
             occupancy_enter_order,
             next_occupancy_enter_order,

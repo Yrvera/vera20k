@@ -29,18 +29,25 @@ pub(super) fn accept_fresh_progress(
 ) {
     use super::track_process::TrackFamily;
     let (progress, family) = match kind {
-        LocomotorKind::Drive => (
-            &mut drive.get_or_insert_with(Default::default).track,
-            TrackFamily::Drive,
-        ),
-        LocomotorKind::Ship => (
-            &mut ship.get_or_insert_with(Default::default).track,
-            TrackFamily::Ship,
-        ),
+        LocomotorKind::Drive => {
+            let state = drive.get_or_insert_with(Default::default);
+            state.pending_track_occupation = true;
+            (&mut state.track, TrackFamily::Drive)
+        }
+        LocomotorKind::Ship => {
+            let state = ship.get_or_insert_with(Default::default);
+            state.pending_track_occupation = true;
+            (&mut state.track, TrackFamily::Ship)
+        }
         _ => return,
     };
     assert!(progress.select_fresh(family, (turn_index / 8) as u8, (turn_index % 8) as u8));
     progress.accept_fresh();
+    // Drive ProcessMovement4B46C5 publishes +63 before the accepted head
+    // and Apply1, even when this invocation cannot pay a point.
+    if kind == LocomotorKind::Drive {
+        drive.as_mut().unwrap().track_valid = true;
+    }
 }
 
 /// Build the stored coordinate and executable curve together, before either is

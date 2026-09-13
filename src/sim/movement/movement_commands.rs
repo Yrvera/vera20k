@@ -57,33 +57,42 @@ pub fn clear_navigation_for_entity(entity: &mut GameEntity) {
     entity.navigation.nav_queue.clear();
 }
 
+/// Head_To and selector remain authoritative after world callbacks; neither
+/// ordinary geometry cursor nor raw occupation metadata can reconstruct them.
+fn committed_track_head(entity: &GameEntity) -> Option<(u16, u16)> {
+    let (head, track) = match entity.locomotor.as_ref()?.kind {
+        LocomotorKind::Drive => {
+            let state = entity.drive_locomotion.as_ref()?;
+            (state.head_to?, state.track)
+        }
+        LocomotorKind::Ship => {
+            let state = entity.ship_locomotion.as_ref()?;
+            (state.head_to?, state.track)
+        }
+        _ => return None,
+    };
+    (track.turn_index >= 0).then_some(((head.x / 256) as u16, (head.y / 256) as u16))
+}
+
 /// Clear a destination while preserving only an already committed Drive/Ship
 /// segment. Shared by Stop and the MCV EventClass deploy handoff.
 pub fn stop_navigation_at_committed_head(e: &mut GameEntity) {
     let current_cell = (e.position.rx, e.position.ry);
     let current_layer = e.movement_layer_or_ground();
-    let committed_head = e
-        .drive_track
-        .as_ref()
-        .and_then(|_| {
-            e.drive_locomotion
-                .as_ref()
-                .and_then(|drive| drive.occupation_head_to)
-        })
-        .map(|head| ((head.rx, head.ry), head.layer))
-        .or_else(|| {
-            let head = e
-                .drive_track
-                .as_ref()
-                .and_then(|_| e.ship_locomotion.as_ref()?.head_to)?;
-            let head_cell = (
-                u16::try_from(head.x.div_euclid(256)).ok()?,
-                u16::try_from(head.y.div_euclid(256)).ok()?,
-            );
-            let target = e.movement_target.as_ref()?;
-            let head_index = target.path.iter().position(|&cell| cell == head_cell)?;
-            Some((head_cell, target.layer_at(head_index)))
-        });
+    let committed_head = committed_track_head(e).map(|head_cell| {
+        let layer = e
+            .movement_target
+            .as_ref()
+            .and_then(|target| {
+                target
+                    .path
+                    .iter()
+                    .position(|&cell| cell == head_cell)
+                    .map(|index| target.layer_at(index))
+            })
+            .unwrap_or(current_layer);
+        (head_cell, layer)
+    });
     clear_navigation_for_entity(e);
     // Chain selection consumes the remaining native direction queue, which is
     // independent of the physical A* cursor. Stop must retire that abandoned
@@ -387,14 +396,9 @@ pub(crate) fn issue_move_command_with_layered(
     // the vehicle backward, up to half a cell, on every mid-drive re-order.
     // Keep the curve and anchor the new path at its committed head cell.
     let current_cell = (entity.position.rx, entity.position.ry);
-    let in_flight_curve_head: Option<(u16, u16)> = if uses_shared_tracks {
-        entity.drive_track.as_ref().and_then(|track| {
-            let (_, head) = drive_track::is_at_coord_track_cells(track, current_cell, false);
-            u16::try_from(head.0).ok().zip(u16::try_from(head.1).ok())
-        })
-    } else {
-        None
-    };
+    let in_flight_curve_head = uses_shared_tracks
+        .then(|| committed_track_head(entity))
+        .flatten();
     let keep_in_flight_curve = in_flight_curve_head.is_some();
     let (start_rx, start_ry) = in_flight_curve_head.unwrap_or(current_cell);
     let current_layer = match in_flight_curve_head {
@@ -840,6 +844,7 @@ pub(crate) fn issue_move_command_with_layered(
                 entity_mut.facing_target = turn_first;
                 if let Some(ship) = entity_mut.ship_locomotion.as_mut() {
                     ship.head_to = None;
+                    ship.pending_track_occupation = false;
                 }
             } else {
                 entity_mut.drive_track = None;
@@ -873,6 +878,7 @@ pub(crate) fn issue_move_command_with_layered(
                 match (track_occupation_target, cell_occupation.as_deref_mut()) {
                     (Some(next), Some(occupation)) => {
                         crate::sim::occupancy::replace_drive_head_to_occupation(
+                            &mut entity_mut.foot_occupation_enabled,
                             drive,
                             occupation,
                             entity_id,
@@ -885,6 +891,7 @@ pub(crate) fn issue_move_command_with_layered(
                         // cell nothing occupies, and every later mover is
                         // refused entry to it for the rest of the match.
                         crate::sim::occupancy::drop_drive_handoff_occupation(
+                            &mut entity_mut.foot_occupation_enabled,
                             drive,
                             occupation,
                             entity_id,
@@ -898,6 +905,7 @@ pub(crate) fn issue_move_command_with_layered(
                     }
                     (None, Some(occupation)) => {
                         crate::sim::occupancy::clear_drive_head_to_occupation_for_replacement(
+                            &mut entity_mut.foot_occupation_enabled,
                             drive,
                             occupation,
                             entity_id,
@@ -905,6 +913,7 @@ pub(crate) fn issue_move_command_with_layered(
                             current_layer,
                         );
                         crate::sim::occupancy::drop_drive_handoff_occupation(
+                            &mut entity_mut.foot_occupation_enabled,
                             drive,
                             occupation,
                             entity_id,

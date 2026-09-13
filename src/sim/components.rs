@@ -365,7 +365,22 @@ pub struct FootPathQueue {
 impl FootPathQueue {
     /// Native queue emptiness tests the unconsumed head, not retained history.
     pub(crate) fn remaining_directions(&self) -> &[u8] {
-        &self.directions[usize::from(self.cursor).min(self.directions.len())..]
+        let suffix = &self.directions[usize::from(self.cursor).min(self.directions.len())..];
+        &suffix[..suffix
+            .iter()
+            .position(|&direction| direction == u8::MAX)
+            .unwrap_or(suffix.len())]
+    }
+
+    /// Drive4B224F/Ship6A1899 overwrites the live queue head with -1 after
+    /// terminal PerCell2, preserving the backing suffix and reference cell.
+    pub(crate) fn clear_live_head(&mut self) {
+        let cursor = usize::from(self.cursor).min(self.directions.len());
+        if cursor == self.directions.len() {
+            self.directions.push(u8::MAX);
+        } else {
+            self.directions[cursor] = u8::MAX;
+        }
     }
 }
 
@@ -398,8 +413,16 @@ pub struct ShipLocomotionRuntime {
     pub head_to: Option<DriveCoord>,
     #[serde(default)]
     pub track: TrackProgress,
+    /// Accepted fresh head awaits its Process-owned Apply1 receiver. Persist
+    /// this obligation across save/rollback; cursor zero cannot infer it.
+    #[serde(default)]
+    pub pending_track_occupation: bool,
     #[serde(default)]
     pub target_speed_fraction: SimFixed,
+    #[serde(default)]
+    pub occupation_head_to: Option<DriveOccupationFootprint>,
+    #[serde(default)]
+    pub occupation_handoff: Option<DriveOccupationFootprint>,
 }
 
 /// Drive-owned 16-bit facing target and first-movement gate.
@@ -469,6 +492,15 @@ pub struct DriveLocomotionRuntime {
     pub turn: DriveTurnState,
     #[serde(default)]
     pub track: TrackProgress,
+    /// Accepted fresh head awaits its Process-owned Apply1 receiver. Persist
+    /// this obligation across save/rollback; cursor zero cannot infer it.
+    #[serde(default)]
+    pub pending_track_occupation: bool,
+    /// Drive+65, seeded true at constructor4AF5BB. Native4B4BE0/4B4BF0
+    /// disable/enable END while Foot Find_Path removes a Team membership.
+    /// No production Rust writer models that synchronous pair yet.
+    #[serde(default = "drive_end_permitted_default")]
+    pub end_permitted: bool,
     #[serde(default)]
     pub track_valid: bool,
     #[serde(default)]
@@ -486,10 +518,10 @@ pub struct DriveLocomotionRuntime {
     /// turning mover is about to drive through looks free to every other mover.
     #[serde(default)]
     pub occupation_handoff: Option<DriveOccupationFootprint>,
-    /// A paid within-cell Drive point clears the current-coordinate occupation
-    /// bit before committing coordinates. Entering a new cell marks it again.
-    #[serde(default)]
-    pub current_occupation_cleared: bool,
+}
+
+fn drive_end_permitted_default() -> bool {
+    true
 }
 
 impl Default for DriveLocomotionRuntime {
@@ -499,11 +531,12 @@ impl Default for DriveLocomotionRuntime {
             head_to: None,
             turn: DriveTurnState::default(),
             track: TrackProgress::default(),
+            pending_track_occupation: false,
+            end_permitted: true,
             track_valid: false,
             target_speed_fraction: SIM_ZERO,
             occupation_head_to: None,
             occupation_handoff: None,
-            current_occupation_cleared: false,
         }
     }
 }

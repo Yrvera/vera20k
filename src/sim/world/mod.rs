@@ -29,6 +29,7 @@ mod lifecycle;
 mod load_object_lifecycle;
 mod logic_vector;
 mod navigation;
+mod track_cell_recalc;
 mod object_turn;
 mod shroud_refresh;
 #[cfg(test)]
@@ -3123,7 +3124,10 @@ impl Simulation {
                 .movement_target
                 .as_ref()
                 .map(|target| target.next_index),
-            track_point: entity.drive_track.as_ref().map(|track| track.point_index),
+            track_point: entity.drive_locomotion.as_ref().map(|state| &state.track)
+                .or_else(|| entity.ship_locomotion.as_ref().map(|state| &state.track))
+                .filter(|track| track.turn_index >= 0)
+                .and_then(|track| u16::try_from(track.cursor).ok()),
         })
     }
 
@@ -3588,7 +3592,7 @@ impl Simulation {
     /// Ordinary per-cell movement writer (`0x006F511A..0x006F5139`): only
     /// promote 0 -> 1. A unit that walks back outside retains membership until
     /// an exact writer (teleport or Set_Clipped_LocalSize) clears it.
-    fn promote_entity_playfield_membership_after_move(&mut self, stable_id: u64) {
+    pub(crate) fn promote_entity_playfield_membership_after_move(&mut self, stable_id: u64) {
         if self
             .substrate
             .entities

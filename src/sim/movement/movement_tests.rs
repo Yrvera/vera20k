@@ -898,7 +898,13 @@ fn gsi_04_05_production_drive_observes_premark_clear_cross_and_finish() {
         .unwrap();
     assert_eq!(drive.head_to, None);
     assert_eq!(drive.occupation_head_to, None);
-    assert!(!drive.current_occupation_cleared);
+    assert!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .foot_occupation_enabled
+    );
     assert!(sim.substrate.occupancy.contains_entity(3, 2, 1));
     assert_eq!(
         sim.substrate
@@ -1275,7 +1281,6 @@ fn gsi_04_05_production_finish_promotes_endpoint_without_clearing_bit() {
             ry: 2,
             layer: MovementLayer::Ground,
         }),
-        current_occupation_cleared: true,
         ..Default::default()
     });
     entity.movement_target = Some(MovementTarget {
@@ -1285,6 +1290,7 @@ fn gsi_04_05_production_finish_promotes_endpoint_without_clearing_bit() {
         final_goal: Some((3, 2)),
         ..Default::default()
     });
+    entity.foot_occupation_enabled = false;
     entities.insert(entity);
 
     let mut lifecycle_requests = Vec::new();
@@ -1292,7 +1298,7 @@ fn gsi_04_05_production_finish_promotes_endpoint_without_clearing_bit() {
 
     let drive = entities.get(1).unwrap().drive_locomotion.as_ref().unwrap();
     assert_eq!(drive.occupation_head_to, None);
-    assert!(!drive.current_occupation_cleared);
+    assert!(entities.get(1).unwrap().foot_occupation_enabled);
     let rebuilt = CellOccupationGrid::rebuild(&entities);
     assert_eq!(
         rebuilt.vehicle_bits(3, 2, MovementLayer::Ground),

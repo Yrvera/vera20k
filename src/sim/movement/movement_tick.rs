@@ -126,6 +126,7 @@ fn tick_forced_drive_tracks(
             }
             if let Some(drive) = entity.drive_locomotion.as_mut() {
                 crate::sim::occupancy::clear_current_drive_occupation_for_paid_point(
+                    &mut entity.foot_occupation_enabled,
                     drive,
                     cell_occupation,
                     entity_id,
@@ -229,6 +230,7 @@ fn tick_forced_drive_tracks(
                     }
                     if let Some(drive) = entity.drive_locomotion.as_mut() {
                         crate::sim::occupancy::finish_drive_head_to_occupation(
+                            &mut entity.foot_occupation_enabled,
                             drive,
                             cell_occupation,
                             entity_id,
@@ -236,6 +238,7 @@ fn tick_forced_drive_tracks(
                             MovementLayer::Ground,
                         );
                         drive.head_to = None;
+                        drive.pending_track_occupation = false;
                         drive.track_valid = false;
                         drive.track.turn_index = -1;
                         drive.track.cursor = 0;
@@ -285,7 +288,7 @@ fn distance_to_goal_leptons(pos: &Position, goal: (u16, u16)) -> SimFixed {
 /// Build a read-only snapshot of the mover's properties before entering the
 /// inner movement loop. This avoids repeated `entities.get()` calls and keeps
 /// the data available across the mutable/immutable borrow boundary.
-fn snapshot_mover(
+pub(super) fn snapshot_mover(
     entities: &EntityStore,
     entity_id: u64,
     playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
@@ -868,6 +871,7 @@ fn process_pending_drive_arrivals(
             }
             match track_occupation_target {
                 Some(next) => crate::sim::occupancy::replace_drive_head_to_occupation(
+                    &mut entity.foot_occupation_enabled,
                     drive,
                     cell_occupation,
                     entity_id,
@@ -876,6 +880,7 @@ fn process_pending_drive_arrivals(
                     next,
                 ),
                 None => crate::sim::occupancy::clear_drive_head_to_occupation_for_replacement(
+                    &mut entity.foot_occupation_enabled,
                     drive,
                     cell_occupation,
                     entity_id,
@@ -1008,17 +1013,17 @@ fn handle_deferred_drive_selection_block(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct DeferredDriveTrackChain {
-    target_cell: (u16, u16),
-    head: crate::sim::components::DriveCoord,
-    layers: cell_entry::CanEnterLayerContext,
-    bridge_traversal_allowed: bool,
-    cur_face: u8,
-    next_face: u8,
+pub(super) struct DeferredDriveTrackChain {
+    pub target_cell: (u16, u16),
+    pub head: crate::sim::components::DriveCoord,
+    pub layers: cell_entry::CanEnterLayerContext,
+    pub bridge_traversal_allowed: bool,
+    pub cur_face: u8,
+    pub next_face: u8,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn classify_drive_track_chain_entry(
+pub(super) fn classify_drive_track_chain_entry(
     chain: DeferredDriveTrackChain,
     entity_id: u64,
     snap: &MoverSnapshot,
@@ -1169,7 +1174,7 @@ fn drive_track_chain_entry_allows_track_install(entry_result: &CellEntryResult) 
     )
 }
 
-fn drive_track_chain_check_crushable_obstacle(
+pub(super) fn drive_track_chain_check_crushable_obstacle(
     entities: &mut EntityStore,
     occupancy: &OccupancyGrid,
     chain: DeferredDriveTrackChain,
@@ -1298,6 +1303,7 @@ fn handle_deferred_drive_track_chain(
                     entities,
                     blocker_id,
                     path_grid,
+                    resolved_terrain,
                     occupancy,
                     chain.layers.object_list_layer,
                     rng,
@@ -1395,6 +1401,7 @@ fn handle_deferred_drive_track_chain(
         );
         match next {
             Some(next) => crate::sim::occupancy::replace_drive_head_to_occupation(
+                &mut entity.foot_occupation_enabled,
                 drive,
                 cell_occupation,
                 entity_id,
@@ -1403,6 +1410,7 @@ fn handle_deferred_drive_track_chain(
                 next,
             ),
             None => crate::sim::occupancy::clear_drive_head_to_occupation_for_replacement(
+                &mut entity.foot_occupation_enabled,
                 drive,
                 cell_occupation,
                 entity_id,
@@ -1411,6 +1419,7 @@ fn handle_deferred_drive_track_chain(
             ),
         }
         crate::sim::occupancy::replace_drive_handoff_occupation(
+            &mut entity.foot_occupation_enabled,
             drive,
             cell_occupation,
             entity_id,
@@ -1438,6 +1447,7 @@ struct MovementPassEffects {
     finished_entities: Vec<u64>,
     crush_kills: Vec<PendingCrushKill>,
     already_scattered: BTreeSet<u64>,
+    native_track: Option<super::track_process::TrackInvocation>,
 }
 
 /// Run one ordinary mover visit. An early return ends this visit, including
@@ -1465,6 +1475,7 @@ fn advance_ordinary_mover(
     rules: Option<&crate::rules::ruleset::RuleSet>,
     prepared: &mut PreparedMovementPass,
     effects: &mut MovementPassEffects,
+    suspend_native_track: bool,
 ) {
     let path_grid = ctx.path_grid;
     let resolved_terrain = ctx.resolved_terrain;
@@ -1481,6 +1492,7 @@ fn advance_ordinary_mover(
         finished_entities,
         crush_kills,
         already_scattered,
+        native_track,
     } = effects;
     if contains_crush_victim(crush_kills, entity_id) {
         return;
@@ -1610,6 +1622,7 @@ fn advance_ordinary_mover(
         ) {
             let terrain = resolved_terrain.expect("tube admission resolved terrain");
             if tube_movement::begin_path_tube_step(
+                &mut entity.foot_occupation_enabled,
                 &mut entity.navigation.path_replay,
                 entity_id,
                 entity.category,
@@ -1939,32 +1952,72 @@ fn advance_ordinary_mover(
             MovementLayer::Ground
         };
         let prior_path_index = target.next_index;
-        let advance_result = movement_step::advance_lepton_position(
-            &mut entity.navigation.path_replay,
-            target,
-            &mut entity.position,
-            &mut entity.facing,
-            &mut entity.facing_target,
-            &mut entity.drive_track,
-            &mut entity.drive_locomotion,
-            &mut entity.ship_locomotion,
-            &mut entity.locomotor,
-            entity.category,
-            effective_speed,
-            frame_budget,
-            dt,
-            entity_id,
-            Some(&mut *cell_occupation),
-            // The object-list arm, from this owner's blocker snapshot.
-            // It is refreshed above whenever occupancy changed, so it
-            // reflects every mover that already committed this tick.
-            movement_step::DriveCellAdmission {
-                units: mover_entity_block_map,
-            },
-            current_occupation_layer,
-            path_grid,
-            resolved_terrain,
-        );
+        let native_preparation = suspend_native_track
+            .then(|| {
+                movement_step::prepare_native_track(
+                    &mut entity.foot_occupation_enabled,
+                    &mut entity.navigation.path_replay,
+                    target,
+                    &entity.position,
+                    entity.facing,
+                    &mut entity.facing_target,
+                    &mut entity.drive_track,
+                    &mut entity.drive_locomotion,
+                    &mut entity.ship_locomotion,
+                    &entity.locomotor,
+                    entity.category,
+                    entity_id,
+                    cell_occupation,
+                    movement_step::DriveCellAdmission {
+                        units: mover_entity_block_map,
+                    },
+                    current_occupation_layer,
+                    frame_budget,
+                )
+            })
+            .flatten();
+        let advance_result = if let Some(preparation) = native_preparation {
+            match preparation {
+                movement_step::NativeTrackPreparation::Invoke(invocation) => {
+                    *native_track = Some(invocation);
+                    return;
+                }
+                movement_step::NativeTrackPreparation::Idle => {
+                    movement_step::AdvanceResult::DriveTrackActive
+                }
+                movement_step::NativeTrackPreparation::Blocked(refusal) => {
+                    movement_step::AdvanceResult::DriveTrackFreshBlocked(refusal)
+                }
+            }
+        } else {
+            movement_step::advance_lepton_position(
+                &mut entity.foot_occupation_enabled,
+                &mut entity.navigation.path_replay,
+                target,
+                &mut entity.position,
+                &mut entity.facing,
+                &mut entity.facing_target,
+                &mut entity.drive_track,
+                &mut entity.drive_locomotion,
+                &mut entity.ship_locomotion,
+                &mut entity.locomotor,
+                entity.category,
+                effective_speed,
+                frame_budget,
+                dt,
+                entity_id,
+                Some(&mut *cell_occupation),
+                // The object-list arm, from this owner's blocker snapshot.
+                // It is refreshed above whenever occupancy changed, so it
+                // reflects every mover that already committed this tick.
+                movement_step::DriveCellAdmission {
+                    units: mover_entity_block_map,
+                },
+                current_occupation_layer,
+                path_grid,
+                resolved_terrain,
+            )
+        };
         if target.next_index > prior_path_index {
             active_layer = target.layer_at(prior_path_index);
             if let Some(loco) = entity.locomotor.as_mut() {
@@ -1976,6 +2029,7 @@ fn advance_ordinary_mover(
             movement_step::AdvanceResult::DriveTrackTubeReady(tube_id) => {
                 let terrain = resolved_terrain.expect("terminal tube admission resolved terrain");
                 if tube_movement::begin_path_tube_step(
+                    &mut entity.foot_occupation_enabled,
                     &mut entity.navigation.path_replay,
                     entity_id,
                     entity.category,
@@ -2050,6 +2104,7 @@ fn advance_ordinary_mover(
                 );
                 if let Some(drive) = entity.drive_locomotion.as_mut() {
                     crate::sim::occupancy::mark_current_drive_occupation_after_crossing(
+                        &mut entity.foot_occupation_enabled,
                         drive,
                         cell_occupation,
                         entity_id,
@@ -2161,6 +2216,7 @@ fn advance_ordinary_mover(
                         position: &entity.position,
                         locomotor: &mut entity.locomotor,
                         drive_locomotion: &mut entity.drive_locomotion,
+                        foot_occupation_enabled: &mut entity.foot_occupation_enabled,
                         sub_cell: &mut entity.sub_cell,
                         occupancy_enter_order: &mut entity.occupancy_enter_order,
                         next_occupancy_enter_order,
@@ -2330,6 +2386,7 @@ fn advance_ordinary_mover(
         if !skip_cell_crossings_after_chain_ready {
             // Check for cell boundary crossings and handle cell transitions.
             let crossing = movement_step::process_cell_crossings(
+                &mut entity.foot_occupation_enabled,
                 &mut entity.navigation.path_replay,
                 target,
                 &mut entity.position,
@@ -2602,6 +2659,7 @@ fn advance_ordinary_mover(
 ///
 /// This extraction preserves the existing dispatch order; ordinary stepping
 /// below still needs the native synchronous callback continuation.
+#[derive(Default)]
 struct PreparedMovementPass {
     movers: Vec<u64>,
     tube_processed: BTreeSet<u64>,
@@ -2966,11 +3024,106 @@ fn tick_movement_with_grids_scoped(
     lifecycle_requests: &mut Vec<LifecycleRequest>,
     single_object: bool,
 ) -> MovementTickStats {
+    let pending = begin_movement_with_grids_scoped(
+        entities,
+        live_order,
+        path_grid,
+        terrain_costs,
+        alliances,
+        occupancy,
+        cell_occupation,
+        raw_cell_occupation,
+        next_occupancy_enter_order,
+        rng,
+        sim_tick,
+        native_frame,
+        zone_grid,
+        resolved_terrain,
+        overlay_grid,
+        overlay_registry,
+        playfield_bounds,
+        terrain_speed_config,
+        close_enough,
+        path_delay_ticks,
+        blockage_path_delay_ticks,
+        interner,
+        rules,
+        sound_events,
+        lifecycle_requests,
+        single_object,
+        false,
+    );
+    finish_movement_pass(
+        pending,
+        entities,
+        alliances,
+        cell_occupation,
+        sim_tick,
+        native_frame,
+        resolved_terrain,
+        path_grid,
+        interner,
+        rules,
+        sound_events,
+        lifecycle_requests,
+        single_object,
+    )
+}
+
+pub(crate) struct PendingMovementPass {
+    effects: MovementPassEffects,
+    prepared: PreparedMovementPass,
+    entity_order: Vec<u64>,
+}
+
+impl PendingMovementPass {
+    pub(crate) fn take_native_track(&mut self) -> Option<super::track_process::TrackInvocation> {
+        self.effects.native_track.take()
+    }
+    pub(crate) fn record_track_movement(&mut self, moved: u32) {
+        self.effects.stats.moved_steps = self.effects.stats.moved_steps.saturating_add(moved);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn begin_movement_with_grids_scoped(
+    entities: &mut EntityStore,
+    live_order: Option<&[u64]>,
+    path_grid: Option<&PathGrid>,
+    terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
+    alliances: &HouseAllianceMap,
+    occupancy: &mut OccupancyGrid,
+    cell_occupation: &mut CellOccupationGrid,
+    raw_cell_occupation: &mut RawCellOccupationGrid,
+    next_occupancy_enter_order: &mut EnterOrderCounter,
+    rng: &mut SimRng,
+    sim_tick: u64,
+    native_frame: u32,
+    zone_grid: Option<&ZoneGrid>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    playfield_bounds: Option<PlayfieldBounds>,
+    terrain_speed_config: &TerrainSpeedConfig,
+    close_enough: SimFixed,
+    path_delay_ticks: u16,
+    blockage_path_delay_ticks: u16,
+    interner: &mut crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    _sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
+    _lifecycle_requests: &mut Vec<LifecycleRequest>,
+    _single_object: bool,
+    suspend_native_track: bool,
+) -> PendingMovementPass {
     let mut stats = MovementTickStats::default();
     if live_order.is_some_and(|order| order.is_empty()) {
         // An explicitly supplied empty LogicVector is authoritative. It is not
         // the test-wrapper signal for deriving stable-id order from storage.
-        return stats;
+        return PendingMovementPass {
+            effects: MovementPassEffects::default(),
+            prepared: PreparedMovementPass::default(),
+            entity_order: Vec::new(),
+        };
     }
     let blocker_neighbor_counts = path_grid.map(|grid| {
         bump_crush::build_blocker_neighbor_counts_with_overlays(
@@ -3048,8 +3201,37 @@ fn tick_movement_with_grids_scoped(
             rules,
             &mut prepared,
             &mut effects,
+            suspend_native_track,
         );
     }
+    PendingMovementPass {
+        effects,
+        prepared,
+        entity_order: entity_order.to_vec(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finish_movement_pass(
+    pending: PendingMovementPass,
+    entities: &mut EntityStore,
+    alliances: &HouseAllianceMap,
+    cell_occupation: &mut CellOccupationGrid,
+    sim_tick: u64,
+    native_frame: u32,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    path_grid: Option<&PathGrid>,
+    interner: &mut crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
+    lifecycle_requests: &mut Vec<LifecycleRequest>,
+    single_object: bool,
+) -> MovementTickStats {
+    let PendingMovementPass {
+        effects,
+        prepared,
+        entity_order,
+    } = pending;
     let MovementPassEffects {
         mut stats,
         finished_entities,
@@ -3277,6 +3459,7 @@ fn finalize_finished_entities(
                 && let Some(drive) = entity.drive_locomotion.as_mut()
             {
                 crate::sim::occupancy::finish_drive_head_to_occupation(
+                    &mut entity.foot_occupation_enabled,
                     drive,
                     cell_occupation,
                     entity_id,

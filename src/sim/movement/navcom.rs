@@ -29,7 +29,7 @@ fn is_ship_locomotor(entity: &GameEntity) -> bool {
         .is_some_and(|loco| matches!(loco.kind, LocomotorKind::Ship))
 }
 
-fn target_cell_coord(
+pub(super) fn target_cell_coord(
     rx: u16,
     ry: u16,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
@@ -173,6 +173,7 @@ pub(super) fn foot_stop_moving(entity: &mut GameEntity) {
 fn reset_drive_track_runtime(entity: &mut GameEntity) {
     if let Some(drive) = entity.drive_locomotion.as_mut() {
         drive.head_to = None;
+        drive.pending_track_occupation = false;
         drive.track_valid = false;
         drive.track.turn_index = -1;
         drive.track.cursor = 0;
@@ -198,6 +199,7 @@ pub(super) fn finish_drive_navigation(
             // ended track still loses its aim point.
             if let Some(drive) = entity.drive_locomotion.as_mut() {
                 drive.head_to = None;
+                drive.pending_track_occupation = false;
             }
             return;
         }
@@ -224,6 +226,7 @@ pub(super) fn finish_drive_navigation(
         // ordinary Ship null-destination path observes that same rest state.
         if let Some(ship) = entity.ship_locomotion.as_mut() {
             ship.head_to = None;
+            ship.pending_track_occupation = false;
             entity.navigation.path_replay.cursor = entity
                 .navigation
                 .path_replay
@@ -425,6 +428,7 @@ mod tests {
             head_to: Some(DriveCoord::cell(4, 3, 0)),
             target_speed_fraction: SIM_ONE,
             track: Default::default(),
+            ..Default::default()
         });
 
         set_destination_internal_null(&mut entity);
@@ -468,6 +472,7 @@ mod tests {
             head_to: Some(DriveCoord::cell(4, 3, 0)),
             target_speed_fraction: SIM_ONE,
             track: Default::default(),
+            ..Default::default()
         });
 
         finish_drive_navigation(&mut entity, None);

@@ -132,7 +132,7 @@ fn step_install(
                 set_state(sim, building_id, BunkerState::TurnToBuilding, Some(unit_id));
             } else {
                 // Shove the blockers off the footprint (gamemd Scatter()); wait.
-                shove_footprint_blockers(sim, path_grid, building_id, unit_id);
+                shove_footprint_blockers(sim, rules, path_grid, building_id, unit_id);
             }
         }
         BunkerState::TurnToBuilding => {
@@ -239,6 +239,7 @@ fn footprint_clear_of_others(sim: &Simulation, building_id: u64, unit_id: u64) -
 /// the footprint is physically clear.
 fn shove_footprint_blockers(
     sim: &mut Simulation,
+    rules: &RuleSet,
     path_grid: Option<&PathGrid>,
     building_id: u64,
     unit_id: u64,
@@ -267,12 +268,11 @@ fn shove_footprint_blockers(
             &mut sim.substrate.entities,
             blocker_id,
             path_grid,
+            sim.resolved_terrain.as_ref(),
             &sim.substrate.occupancy,
             MovementLayer::Ground,
             &mut sim.scenario_rng,
-            // No rules handle on this path; an absent table resolves to the
-            // constructed `Scatter=yes` default, matching an unread slot.
-            None,
+            Some(rules),
             &sim.interner,
         );
     }

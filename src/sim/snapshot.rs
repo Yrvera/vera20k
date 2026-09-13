@@ -471,7 +471,10 @@ use crate::sim::world::Simulation;
 // v150 moves Foot+5E0/+558 replay from class payloads to NavigationState.
 // Bincode field order changes even for owners without Drive/Ship instances.
 // v151 moves applied speed and its existing query cache to the live Foot owner.
-const SNAPSHOT_VERSION: u32 = 151;
+// v152 stores Foot occupation enable, pending fresh Apply1, and Ship head/handoff
+// projection metadata alongside the existing serialized raw occupation plane.
+// Drive END permission and the distinct Foot forced-swap gate are retained too.
+const SNAPSHOT_VERSION: u32 = 152;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3299,7 +3302,8 @@ mod tests {
         // 145 -> 146: pavement is owned by raw terrain flags, not bridge cells.
         // 146 -> 147: retain Scenario+214 for subsequent native constructors.
         // 150 -> 151: Foot also owns applied speed independently of its locomotor.
-        assert_eq!(super::SNAPSHOT_VERSION, 151);
+        // 151 -> 152: Foot occupation enable and pending fresh Apply1 obligation.
+        assert_eq!(super::SNAPSHOT_VERSION, 152);
     }
 
     #[test]
@@ -5586,9 +5590,13 @@ mod tests {
             .expect("Drive unit")
             .drive_locomotion = Some(DriveLocomotionRuntime {
             occupation_head_to: Some(footprint),
-            current_occupation_cleared: true,
             ..Default::default()
         });
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .foot_occupation_enabled = false;
         sim.substrate.cell_occupation = CellOccupationGrid::rebuild(&sim.substrate.entities);
         // Native in-scenario load restarts Scenario RNG from Seed0; isolate
         // Drive footprint persistence on that same post-load cursor.
@@ -5622,7 +5630,14 @@ mod tests {
                 .as_ref()
                 .expect("restored Drive runtime");
             assert_eq!(drive.occupation_head_to, Some(footprint));
-            assert!(drive.current_occupation_cleared);
+            assert!(
+                !restored
+                    .substrate
+                    .entities
+                    .get(entity_id)
+                    .unwrap()
+                    .foot_occupation_enabled
+            );
             assert_eq!(restored.state_hash(), expected_hash);
             assert_eq!(
                 restored

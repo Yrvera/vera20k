@@ -1134,9 +1134,7 @@ impl Simulation {
                 }
             }
             entity.lifecycle.cell_marked = true;
-            if let Some(drive) = entity.drive_locomotion.as_mut() {
-                drive.current_occupation_cleared = false;
-            }
+            entity.foot_occupation_enabled = true;
         }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::CellMarked);
@@ -1496,9 +1494,7 @@ impl Simulation {
                 entity.air_spatial_bucket = None;
                 entity.air_spatial_enter_order = 0;
             }
-            if let Some(drive) = entity.drive_locomotion.as_mut() {
-                drive.current_occupation_cleared = true;
-            }
+            entity.foot_occupation_enabled = false;
         }
         true
     }
@@ -2113,6 +2109,7 @@ impl Simulation {
         if !self.substrate.entities.contains(stable_id) {
             return ConcealOutcome::MissingOrDead;
         }
+        self.release_track_occupation_before_foot_limbo(stable_id);
         if self
             .substrate
             .entities

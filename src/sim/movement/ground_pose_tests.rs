@@ -903,6 +903,12 @@ fn chained_mover(sim: &mut Simulation, kind: LocomotorKind) -> (GameEntity, Driv
     };
     assert_eq!(plan.nodes, 2);
     let (head, curve) = super::track_head::begin_fresh(&plan, &entity.position).unwrap();
+    super::track_head::accept_fresh_progress(
+        kind,
+        &mut entity.drive_locomotion,
+        &mut entity.ship_locomotion,
+        plan.selection.turn_track_index,
+    );
     entity.drive_track = Some(curve);
     let mut replay = crate::sim::components::FootPathQueue::default();
     super::path_markers::install_path_replay(&mut replay, (3, 3), &path, 1);

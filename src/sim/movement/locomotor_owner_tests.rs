@@ -185,9 +185,10 @@ fn refused_restore_keeps_live_head_and_forced_segment() {
                 track: curve(),
                 speed: SimFixed::from_num(6),
             });
-        } else {
-            entity.drive_locomotion.as_mut().unwrap().head_to = Some(DriveCoord::cell(9, 8, 731));
         }
+        // An active forced segment also has a native head ahead of its owner.
+        // The legacy forced adapter alone cannot add an IsOKToEnd gate.
+        entity.drive_locomotion.as_mut().unwrap().head_to = Some(DriveCoord::cell(9, 8, 731));
         let before = owned_state(entity);
 
         assert!(!destination(&mut sim, &rules, false));
@@ -614,5 +615,65 @@ fn foot_queue_operations_match_original_memory_witnesses() {
             Some(expected_reference),
             "{operation}"
         );
+    }
+}
+
+#[test]
+fn foot_idle_drive_end_uses_native_gates_and_preserves_owner_state() {
+    for denied in [0, 1, 2, 3] {
+        let (mut sim, _) = fixture();
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        activate_drive(entity);
+        entity.locomotor.as_mut().unwrap().phase =
+            super::super::locomotor::GroundMovePhase::Cruising;
+        match denied {
+            1 => entity.drive_locomotion.as_mut().unwrap().end_permitted = false,
+            2 => entity.foot_locomotor_swap_active = true,
+            3 => {
+                entity.drive_locomotion.as_mut().unwrap().destination =
+                    Some(DriveCoord { x: 0, y: 0, z: 1 })
+            }
+            _ => {}
+        }
+        let before = owned_state(entity);
+        let speed = entity.foot_speed.clone();
+        assert_eq!(try_end_drive_at_foot_idle(entity), denied == 0);
+        assert_eq!(entity.foot_speed, speed);
+        if denied != 0 {
+            assert_eq!(owned_state(entity), before);
+        } else {
+            assert_retired(entity);
+        }
+    }
+}
+
+#[test]
+fn drive_end_denial_flags_survive_save_and_block_generic_restore() {
+    use crate::sim::snapshot::GameSnapshot;
+    for permission in [false, true] {
+        let (mut sim, _) = fixture();
+        // Production load resets Scenario RNG; normalize the fixture before
+        // comparing whole hashes, as in the Foot speed roundtrip above.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        activate_drive(entity);
+        entity.drive_locomotion.as_mut().unwrap().end_permitted = permission;
+        entity.foot_locomotor_swap_active = permission;
+        let bytes = GameSnapshot::save(&sim, 0, 0, "drive_end_gate", 0);
+        let mut loaded = GameSnapshot::load(&bytes).unwrap().sim;
+        assert_eq!(loaded.state_hash(), sim.state_hash());
+        assert!(!movement::tick_locomotor_piggyback_restore_one(
+            &mut loaded.substrate.entities,
+            1
+        ));
+        let before = loaded.state_hash();
+        let entity = loaded.substrate.entities.get_mut(1).unwrap();
+        entity.drive_locomotion.as_mut().unwrap().end_permitted = true;
+        entity.foot_locomotor_swap_active = false;
+        assert_ne!(loaded.state_hash(), before);
+        assert!(movement::tick_locomotor_piggyback_restore_one(
+            &mut loaded.substrate.entities,
+            1
+        ));
     }
 }

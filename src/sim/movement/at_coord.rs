@@ -99,6 +99,13 @@ impl AtCoordQuery {
             .is_some_and(|point| matches_coord(point, probe))
             || matches_coord(self.head, probe)
     }
+
+    /// The bridge peer snapshot retains these same native signed cell words;
+    /// its separate live-height test supplies the Z comparison.
+    pub(crate) fn cells(self) -> (Option<(i16, i16)>, (i16, i16)) {
+        let cell = |point: DriveCoord| ((point.x / 256) as i16, (point.y / 256) as i16);
+        (self.handoff.map(cell), cell(self.head))
+    }
 }
 
 fn matches_coord(point: DriveCoord, probe: DriveCoord) -> bool {

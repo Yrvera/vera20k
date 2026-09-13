@@ -382,6 +382,12 @@ impl Simulation {
         if old_cell == new_cell {
             return;
         }
+        self.refresh_unit_sensor_at_per_cell(stable_id, rules);
+    }
+
+    /// Foot4D8611/4D8621 executes both receivers for PerCellProcess(2),
+    /// including a terminal or chain callback in the same cell.
+    pub(crate) fn refresh_unit_sensor_at_per_cell(&mut self, stable_id: u64, rules: &RuleSet) {
         let had_unit_deposit = self
             .substrate
             .entities

@@ -196,7 +196,6 @@ pub(crate) fn drive_process_prelude(sim: &mut Simulation, id: u64, rules: &RuleS
         !e.dying
             // 0x4B055A..0x4B056D: active track owns Process and must leave
             // the previous-rotation latch alone until the track is finished.
-            && e.drive_track.is_none()
             && e.forced_drive_track.is_none()
             && !e.drive_locomotion.as_ref().is_some_and(|d| d.track_valid && d.track.turn_index != -1)
             // 0x4B066C..0x4B06C3: same-cell NavCom is handled by the

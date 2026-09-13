@@ -2415,6 +2415,35 @@ impl PathGrid {
         true
     }
 
+    /// Read-only counterpart of the one-cell publisher. Ordinary Enter/Exit
+    /// usually recomputes unchanged terrain; retain the shared grid Arc then.
+    pub(crate) fn resolved_cell_is_current(
+        &self,
+        cell: &crate::map::resolved_terrain::ResolvedTerrainCell,
+        bridge_state: Option<&BridgeRuntimeState>,
+        structure_blocked: bool,
+    ) -> bool {
+        if cell.rx >= self.width || cell.ry >= self.height {
+            return false;
+        }
+        let index = usize::from(cell.ry) * usize::from(self.width) + usize::from(cell.rx);
+        let (mut projected, bits, mut without_terrain) =
+            project_terrain_path_cell(cell, bridge_state);
+        if structure_blocked {
+            projected.ground_walkable = false;
+            without_terrain = false;
+        }
+        self.cells[index] == projected
+            && self
+                .terrain_object_cell_bits
+                .get(index)
+                .is_none_or(|old| *old == bits)
+            && self
+                .ground_walkable_without_terrain_object
+                .get(index)
+                .is_none_or(|old| *old == without_terrain)
+    }
+
     /// A marked structure closes ground movement even where terrain occupation
     /// leaves an infantry sub-cell free. Deck movement above it is independent.
     pub(crate) fn block_structure_cell(&mut self, x: u16, y: u16) {

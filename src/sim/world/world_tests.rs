@@ -6466,7 +6466,7 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
     );
 
     let heights = empty_heights();
-    let initial_point_index = stopped.drive_track.as_ref().unwrap().point_index;
+    let initial_point_index = stopped.drive_locomotion.as_ref().unwrap().track.cursor;
     let mut cursor_advanced = false;
     for _ in 0..32 {
         let _ = sim.advance_tick(&[], None, &heights, Some(&grid), None, 33);
@@ -6475,9 +6475,9 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
             .entities
             .get(1)
             .unwrap()
-            .drive_track
+            .drive_locomotion
             .as_ref()
-            .is_some_and(|track| track.point_index > initial_point_index);
+            .is_some_and(|drive| drive.track.cursor > initial_point_index);
         if cursor_advanced {
             break;
         }
@@ -8362,7 +8362,7 @@ fn stacking_motion_state(sim: &Simulation, id: u64) -> String {
     let Some(e) = sim.substrate.entities.get(id) else {
         return "<gone>".to_string();
     };
-    match e.movement_target.as_ref() {
+    let adapter = match e.movement_target.as_ref() {
         None => format!(
             "id={id} at ({},{}) sub=({},{}) movement_target=None",
             e.position.rx, e.position.ry, e.position.sub_x, e.position.sub_y
@@ -8377,7 +8377,16 @@ fn stacking_motion_state(sim: &Simulation, id: u64) -> String {
             mt.next_index,
             mt.path.last().copied()
         ),
-    }
+    };
+    format!(
+        "{adapter} nav={:?} drive={:?} foot={:?} mission={:?} marked={} occupation={}",
+        e.navigation.nav_com,
+        e.drive_locomotion,
+        e.foot_speed,
+        e.mission.current(),
+        e.lifecycle.cell_marked,
+        e.foot_occupation_enabled
+    )
 }
 
 /// MINIMAL CASE: one stopped vehicle sits on a cell; a second vehicle is
@@ -9232,7 +9241,7 @@ fn stacking_reservation_state(sim: &Simulation, id: u64) -> String {
         e.position.sub_x,
         e.position.sub_y,
         d.occupation_head_to.map(|f| (f.rx, f.ry)),
-        d.current_occupation_cleared,
+        !e.foot_occupation_enabled,
     )
 }
 

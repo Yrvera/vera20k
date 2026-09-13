@@ -36,6 +36,13 @@ pub(crate) fn begin_drive_for_teleporter(entity: &mut GameEntity, binary_frame: 
 }
 
 pub(crate) fn try_restore_primary(entity: &mut GameEntity) -> bool {
+    if entity
+        .locomotor
+        .as_ref()
+        .is_some_and(|locomotor| locomotor.active_kind() == LocomotorKind::Drive)
+    {
+        return try_end_drive_at_foot_idle(entity);
+    }
     let gate = super::locomotor_end_gate_context(entity);
     let admitted = entity.locomotor.as_ref().is_some_and(|locomotor| {
         locomotor.can_restore_primary_from_piggyback(
@@ -44,6 +51,23 @@ pub(crate) fn try_restore_primary(entity: &mut GameEntity) -> bool {
             gate.owner_deploying,
         )
     });
+    admitted && restore_admitted_primary(entity)
+}
+
+/// Drive IsOKToEnd4AF970 at Foot EnterIdle4D833D, before NavQueue.
+/// Native tests IsMoving, stash, Drive+65 and Foot+6AD only. Animation phase
+/// and unrelated deploy/teleport adapters cannot add admission gates here.
+/// This same class gate applies at other entity-level END callers. A missing
+/// lazily allocated Drive payload has its constructor's true permission.
+pub(crate) fn try_end_drive_at_foot_idle(entity: &mut GameEntity) -> bool {
+    let admitted = entity.locomotor.as_ref().is_some_and(|locomotor| {
+        locomotor.active_kind() == LocomotorKind::Drive && locomotor.piggyback.is_some()
+    }) && entity
+        .drive_locomotion
+        .as_ref()
+        .is_none_or(|drive| drive.end_permitted)
+        && !super::drive_locomotion::drive_locomotor_is_moving(entity)
+        && !entity.foot_locomotor_swap_active;
     admitted && restore_admitted_primary(entity)
 }
 
@@ -72,6 +96,7 @@ pub(crate) struct DriveActivationSnapshot {
     forced: Option<ForcedDriveTrackState>,
     path_replay: crate::sim::components::FootPathQueue,
     foot_speed: crate::sim::components::FootSpeedState,
+    foot_occupation_enabled: bool,
 }
 
 impl DriveActivationSnapshot {
@@ -83,6 +108,7 @@ impl DriveActivationSnapshot {
             forced: entity.forced_drive_track.clone(),
             path_replay: entity.navigation.path_replay.clone(),
             foot_speed: entity.foot_speed.clone(),
+            foot_occupation_enabled: entity.foot_occupation_enabled,
         }
     }
 
@@ -93,6 +119,7 @@ impl DriveActivationSnapshot {
         entity.forced_drive_track = self.forced;
         entity.navigation.path_replay = self.path_replay;
         entity.foot_speed = self.foot_speed;
+        entity.foot_occupation_enabled = self.foot_occupation_enabled;
     }
 }
 

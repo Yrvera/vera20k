@@ -64,12 +64,13 @@ mod movement_commands;
 mod movement_occupancy;
 mod movement_path;
 mod movement_step;
-mod movement_tick;
+pub(crate) mod movement_tick;
 mod navcom;
 mod path_markers;
 pub(crate) mod ready_producer;
 pub(crate) mod slope_transition;
 mod track_head;
+mod track_host;
 pub(crate) mod track_process;
 
 // --- Movement-related modules (public API) ---
@@ -116,9 +117,7 @@ pub use movement_commands::{
 pub(crate) use movement_path::{
     path_search_used_zone_grid_marker, reset_path_search_used_zone_grid_marker,
 };
-pub(crate) use movement_tick::{
-    sync_formation_speeds_after_live_pass, tick_movement_object_with_grids,
-};
+pub(crate) use movement_tick::sync_formation_speeds_after_live_pass;
 // Legacy batch tick used by focused movement fixtures.
 #[cfg(test)]
 pub(crate) use movement_tick::tick_movement_with_grids;
@@ -169,6 +168,7 @@ pub(crate) fn install_forced_drive_track(
     // Force_Track preserves DriveLocomotion's integer movement residual. The
     // detached forced cursor mirrors that canonical owner field for snapshots.
     forced.track.residual = drive.track.residual;
+    drive.pending_track_occupation = false;
     drive.destination = Some(head);
     drive.head_to = Some(head);
     drive
@@ -189,6 +189,7 @@ pub(crate) fn install_forced_drive_track(
     // `Apply_Track_Occupation_Mode` releases the pair together on mode 0, so
     // release them here before installing the replacement.
     crate::sim::occupancy::drop_drive_handoff_occupation(
+        &mut entity.foot_occupation_enabled,
         drive,
         cell_occupation,
         entity_stable_id,
@@ -196,6 +197,7 @@ pub(crate) fn install_forced_drive_track(
         current_layer,
     );
     crate::sim::occupancy::clear_drive_head_to_occupation_for_replacement(
+        &mut entity.foot_occupation_enabled,
         drive,
         cell_occupation,
         entity_stable_id,

@@ -157,7 +157,6 @@ fn hut_drop_in_owns_order_footprints_and_restore_without_teardown_side_effects()
         ry: 8,
         layer: MovementLayer::Bridge,
     });
-    drive.current_occupation_cleared = false;
     let drive_before = bincode::serialize(drive).unwrap();
     sim.substrate
         .cell_occupation
@@ -166,9 +165,7 @@ fn hut_drop_in_owns_order_footprints_and_restore_without_teardown_side_effects()
         .entities
         .get_mut(newer)
         .unwrap()
-        .drive_locomotion
-        .get_or_insert_with(Default::default)
-        .current_occupation_cleared = true;
+        .foot_occupation_enabled = false;
     sim.substrate
         .cell_occupation
         .reconcile_entity(sim.substrate.entities.get(newer).unwrap());
@@ -253,14 +250,11 @@ fn hut_drop_in_owns_order_footprints_and_restore_without_teardown_side_effects()
     );
 
     assert!(
-        sim.substrate
+        !sim.substrate
             .entities
             .get(newer)
             .unwrap()
-            .drive_locomotion
-            .as_ref()
-            .unwrap()
-            .current_occupation_cleared
+            .foot_occupation_enabled
     );
     assert_eq!(
         sim.substrate
@@ -293,15 +287,12 @@ fn hut_drop_in_owns_order_footprints_and_restore_without_teardown_side_effects()
         vec![building]
     );
     assert!(
-        restored
+        !restored
             .substrate
             .entities
             .get(newer)
             .unwrap()
-            .drive_locomotion
-            .as_ref()
-            .unwrap()
-            .current_occupation_cleared
+            .foot_occupation_enabled
     );
     assert_eq!(
         restored.substrate.cell_occupation.vehicle_bits_ignoring(

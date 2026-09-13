@@ -71,6 +71,42 @@ pub(super) struct NavigationCaches<'a> {
 }
 
 impl NavigationCaches<'_> {
+    /// Ordinary movement supplies structure presence from this cell's live
+    /// list. It must not scan every object/footprint for every paid crossing.
+    pub(super) fn publish_recalculated_cell_with_presence(
+        &mut self,
+        terrain: &ResolvedTerrainGrid,
+        bridges: Option<&BridgeRuntimeState>,
+        coord: (u16, u16),
+        structure_blocked: bool,
+    ) -> Result<(), String> {
+        let cell = terrain
+            .cell(coord.0, coord.1)
+            .ok_or("Recalc cell is outside terrain")?;
+        if let Some(zones) = self.zones.as_mut() {
+            zones.refresh_base_cell_attributes_at(terrain, coord.0, coord.1);
+        }
+        if let Some(path) = self.path.as_mut() {
+            if path.width() != terrain.width() || path.height() != terrain.height() {
+                return Err("path dimensions differ from terrain".into());
+            }
+            if !path.resolved_cell_is_current(cell, bridges, structure_blocked)
+                && !Arc::make_mut(path).refresh_resolved_cell(cell, bridges, structure_blocked)
+            {
+                return Err("current path cell could not be published".into());
+            }
+        }
+        for (&speed_type, costs) in self.terrain_costs.iter_mut() {
+            if costs.width() != terrain.width()
+                || costs.height() != terrain.height()
+                || !costs.refresh_resolved_cell(cell, speed_type)
+            {
+                return Err("Recalc terrain cost cell could not be published".into());
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn rebuild_dynamic(
         &mut self,
         terrain: &ResolvedTerrainGrid,
