@@ -103,7 +103,33 @@ The projection quotient is 2 and its real alternate cell is (98,66):
 tile 91, subtile 2, level 2. This argument does not assume a hand-chosen
 numerical divisor. It establishes a concrete stock case within the reduction.
 
-Active Team, missing/dummy projected identities and other locomotor histories
-remain outside this proof. They must not silently receive the same reduction.
+## Team query effects
+
+Nonnull Team membership does not by itself require broader Team AI in this
+receiver. `4196B0` calls `6EC300` through Aircraft `+5D4`. That query reaches
+the waypoint lookup only when Team byte `+7F` is nonzero, the current Script
+cursor is unsigned-less-than its action count (`6915D0`), and the current
+action is 3. `691500` copies the action/argument into caller-local storage;
+`68BCC0` copies the Scenario waypoint at `+632 + argument*4` into that storage.
+Neither advances the Script or writes gameplay state.
+
+`578460(waypoint, true)` performs a fixed Map lookup. A missing or out-of-range
+slot writes the shared dummy coordinate at `ABDC74` (`578498`). Its real-cell
+path only reads. The subsequent `578540(selectedCell, true)` also only reads
+and performs no lookup. Early admission failure still cannot prevent the
+first repair pass's kind-2 damage continuation.
+
+The reduction can therefore also cover a Team with an authoritative existing
+Script whose raw cursor is out of range or whose current action is not 3.
+Those conditions exclude the waypoint lookup regardless of unrepresented
+Team `+7F`. For action 3, an authoritative real waypoint lookup would likewise
+prove that branch has no gameplay writes. Missing Script information is unknown;
+completion, refusal and pending-advance flags cannot replace the native cursor
+test. Do not assume a missing waypoint is `(0,0)` or assume `+7F` is false.
+
+This instruction-level extension was independently reviewed. It does not prove
+a stock landed-Team aircraft repair scene, supply authoritative waypoint inputs,
+or certify a Rust implementation. Missing/dummy projected identities, unresolved
+waypoint effects and other locomotor histories remain outside the reduction.
 Unresolved reachable cases keep the repair mechanism open. Full Rust integration,
 regression checks and final independent source review are separate requirements.
