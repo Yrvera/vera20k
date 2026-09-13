@@ -18,8 +18,6 @@ const SHELL_BASE_H: i32 = 600;
 /// `x = screen_w - 147`. A literal pixel inset the native child-resize helper
 /// applies, not a struct field or canvas-size read.
 const IN_GAME_OPTIONS_BUTTON_RIGHT_INSET: i32 = 147;
-/// 25-px row pitch for the upper button stack (Sound at +0, Keyboard at +25).
-const IN_GAME_OPTIONS_BUTTON_ROW_PITCH: i32 = 25;
 
 /// One control's resolved pixel rect, keyed by its resource id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,8 +43,7 @@ pub fn layout_pass(desc: &DialogDescriptor, screen_w: i32, screen_h: i32) -> Vec
                     geom::dlu_rect(c.dlu_rect.x, c.dlu_rect.y, c.dlu_rect.w, c.dlu_rect.h)
                 }
                 // Active in-game Options (`0xBBB`). Ordinary controls
-                // (trackbars/checkboxes/statics) take the screen-centered offset
-                // (zero at the 800x600 base, +112/+84 at 1024x768); owner-draw
+                // (trackbars/checkboxes/statics) take signed screen-centered offsets; owner-draw
                 // buttons additionally pin to the right edge at the SIDEBTTN canvas
                 // with a sidebar-anchored row Y. That button anchoring needs the
                 // runtime SIDEBTTN size + in-game sidebar geometry (above this
@@ -69,10 +66,7 @@ pub fn layout_pass(desc: &DialogDescriptor, screen_w: i32, screen_h: i32) -> Vec
 /// +112/+84 at 1024x768). Owner-draw buttons do NOT take this — they right-edge
 /// anchor instead.
 fn in_game_options_centered_offset(screen_w: i32, screen_h: i32) -> (i32, i32) {
-    (
-        geom::center_offset(screen_w, SHELL_BASE_W),
-        geom::center_offset(screen_h, SHELL_BASE_H),
-    )
+    ((screen_w - SHELL_BASE_W) / 2, (screen_h - SHELL_BASE_H) / 2)
 }
 
 /// App-supplied anchoring inputs for the active in-game Options (`0xBBB`) overlay
@@ -114,9 +108,7 @@ pub fn layout_pass_in_game_options(
             let rect = if c.kind == ControlKind::Button {
                 let y = match c.id {
                     control::BACK => anchor.back_button_y,
-                    control::KEYBOARD => {
-                        anchor.button_stack_top_y + IN_GAME_OPTIONS_BUTTON_ROW_PITCH
-                    }
+                    control::KEYBOARD => anchor.button_stack_top_y + anchor.button_canvas_h,
                     // Sound tops the stack; any other button shares its anchor.
                     _ => anchor.button_stack_top_y,
                 };
@@ -126,9 +118,17 @@ pub fn layout_pass_in_game_options(
                     anchor.button_canvas_w,
                     anchor.button_canvas_h,
                 )
+            } else if c.id == control::TITLE {
+                // Active branch60B1D0 and title finalizer60B950: no launcher nudge.
+                RectPx::new(screen_w - 165, 2, 162, 16)
+            } else if c.id == control::FOOTER {
+                // Active60B550 footer branch: fixed10px left,1px above bottom.
+                let raw = geom::dlu_rect(c.dlu_rect.x, c.dlu_rect.y, c.dlu_rect.w, c.dlu_rect.h);
+                RectPx::new(10, screen_h - raw.h - 1, raw.w, raw.h)
             } else {
-                geom::dlu_rect(c.dlu_rect.x, c.dlu_rect.y, c.dlu_rect.w, c.dlu_rect.h)
-                    .translate(dx, dy)
+                // 60B7A0 shifts even smaller screens, then clamps final positions.
+                let raw = geom::dlu_rect(c.dlu_rect.x, c.dlu_rect.y, c.dlu_rect.w, c.dlu_rect.h);
+                RectPx::new((raw.x + dx).max(0), (raw.y + dy).max(0), raw.w, raw.h)
             };
             LaidOutControl { id: c.id, rect }
         })
@@ -372,6 +372,39 @@ mod tests {
             rect_for(&at1024, control::GAME_SPEED),
             RectPx::new(base.x + 112, base.y + 84, base.w, base.h)
         );
+    }
+
+    #[test]
+    fn in_game_options_ordinary_children_match_original_procedure() {
+        let native: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tools/storage_oracle/in_game_shell_geometry.json"
+        ))
+        .unwrap();
+        let cases = native["child_layout"].as_array().unwrap();
+        assert_eq!(cases.len(), 9);
+        let desc = build_in_game_options_descriptor();
+        for case in cases {
+            let integer = |key: &str| case[key].as_i64().unwrap() as i32;
+            let id = integer("control_id") as u16;
+            let expected: Vec<i32> = case["rect"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap() as i32)
+                .collect();
+            let laid = layout_pass_in_game_options(
+                &desc,
+                integer("width"),
+                integer("height"),
+                options_test_anchor(),
+            );
+            let actual = rect_for(&laid, id);
+            assert_eq!(
+                [actual.x, actual.y, actual.w, actual.h].as_slice(),
+                expected,
+                "{case}"
+            );
+        }
     }
 
     /// 5a-ii: owner-draw buttons render at the SIDEBTTN 125x25 canvas, right-edge

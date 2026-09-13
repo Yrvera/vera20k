@@ -1,29 +1,11 @@
-//! In-game Options dialog (0xBBB active) descriptor.
+//! Active Game Controls dialog (BBB), reached through pause menu state5.
 //!
-//! Render-agnostic data for the native in-game Options dialog the screen ESC
-//! opens during an active game. Depends only on the shared shell descriptor +
-//! geometry types (no sim/render/assets), honoring the ui/ layering rule.
-//!
-//! Scope: the ACTIVE `0xBBB` set of all 17 controls — nine interactive (buttons/
-//! trackbars/checkboxes) plus eight text statics (title/captions/value-labels/
-//! footer) — with their verified resource DLU rects and CSF caption keys. Input
-//! and INI persistence land in 5a-iii. The shell variant `0xF5` is a follow-on
-//! (its full control rects are not all yet verified).
-//!
-//! Control set + rects + CSF keys verified by transcribing the live `0xBBB`
-//! DLGTEMPLATE (a plain `DLGTEMPLATE`, not DIALOGEX) at VA `0x00C01B18`
-//! (`read_memory 0x00C01B18`): 17 controls = 3 owner-draw buttons
-//! (Back/Keyboard/Sound) + 3 trackbars (GameSpeed/ScrollRate/VisualDetails) +
-//! 3 auto-checkboxes (TargetLines/Tooltips/ShowHidden) + 8 statics (title `0x694`
-//! `GUI:GameOptions`, captions `0x714` `GUI:GameSpeed` / `0x715` `GUI:ScrollRate`
-//! / `0x716` `GUI:VisualDetails`, value labels `0x671`/`0x672` `GUI:Faster` /
-//! `0x673` `GUI:HigherDetail`, footer `0x695` `GUI:Blank`). The VisualDetails
-//! trackbar `0x52B` and its caption `0x716` + value label `0x673` are created
-//! `WS_DISABLED` with no `WS_VISIBLE` (the proc never shows them), so they ship
-//! `visible: false` and the emitter skips them. The two value labels carry the
-//! template default `GUI:Faster`; the proc's init path never sets the label text
-//! (only WM_HSCROLL drag does), so this default is what shows at populate — the
-//! slider-position-driven swap is 5a-iii.
+//! Original 4E1D00 selects BBB while A8E9A0==1 and installs 4E1FE0. This
+//! render-agnostic descriptor carries all17 controls from the plain DLGTEMPLATE
+//! at VA0x00C01B18 (RVA0x801B18), freshly decoded from the original image.
+//! VisualDetails and its two labels are hidden/disabled. GameSpeed/ScrollRate
+//! labels start with GUI:Faster and change only after a changed-position scroll
+//! notification. Runtime input and persistence belong to in_game_options_state.
 
 use super::descriptor::{
     AnchorRule, BgKind, ControlDescriptor, ControlKind, DialogDescriptor, DialogId,
@@ -91,9 +73,9 @@ pub const SPEED_LABEL_KEYS: [&str; 7] = [
 ];
 
 /// CSF key for a speed value-label: template default `GUI:Faster` until the slider
-/// has been dragged this open, then the position-indexed `SPEED_LABEL_KEYS` entry.
+/// has changed position this open, then the position-indexed `SPEED_LABEL_KEYS` entry.
 /// Reproduces the gamemd quirk: the proc's init path never sets the label text, so
-/// both sliders show the template default `GUI:Faster` until the user first drags
+/// both sliders show the template default `GUI:Faster` until the user first changed positions
 /// *that* slider (WM_HSCROLL), which swaps it to the position CSF text.
 pub fn speed_value_label_key(slider_pos: u32, dragged: bool) -> &'static str {
     if !dragged {
@@ -107,10 +89,8 @@ pub fn speed_value_label_key(slider_pos: u32, dragged: bool) -> &'static str {
 const DIALOG_0BBB: u16 = 0x0BBB;
 
 /// Build the render-agnostic descriptor for the ACTIVE in-game Options dialog
-/// (`0xBBB`): the nine interactive controls with their verified resource DLU
-/// rects. Background composites as an overlay over the frozen battlefield.
-/// Reposition uses the `InGameOptions` baseline (raw DLU->pixel in 5a-i; native
-/// anchoring in 5a-ii).
+/// (`0xBBB`), including resource captions and hidden controls. The shared
+/// active-game layout positions its chrome and owner-draw buttons.
 ///
 /// `enabled` carries the **resource-template default** (per `ControlDescriptor`):
 /// VisualDetails (`0x52B`) is created disabled in the active-game template and
@@ -248,7 +228,7 @@ pub fn build_in_game_options_descriptor() -> DialogDescriptor {
 /// One Options control descriptor. The `anchor` field is unused under
 /// `RepositionPolicy::InGameOptions` (the native child-resize helpers key off
 /// control id/kind, not a per-control anchor enum), so a benign value is stored;
-/// CSF captions/labels are attached with the paint sub-step (5a-ii). `enabled`
+/// CSF captions come directly from the original resource. `enabled`
 /// records the resource-template default (runtime enable/disable layers over it
 /// in the controller).
 fn options_control(
@@ -263,7 +243,16 @@ fn options_control(
         kind,
         dlu_rect,
         anchor: AnchorRule::RightAnchor,
-        csf_key: None,
+        // Original plain DLGTEMPLATE at VA0x00C01B18, all17 records.
+        csf_key: match id {
+            control::BACK => Some("GUI:Back"),
+            control::KEYBOARD => Some("GUI:Keyboard"),
+            control::SOUND => Some("GUI:Sound"),
+            control::TARGET_LINES => Some("GUI:TargetLines"),
+            control::SHOW_HIDDEN => Some("GUI:ShowHidden"),
+            control::TOOLTIPS => Some("GUI:Tooltips"),
+            _ => None,
+        },
         tooltip_key: None,
         group: 0,
         enabled,
@@ -429,7 +418,13 @@ mod tests {
         assert_eq!(key(control::SCROLL_RATE_VALUE), Some("GUI:Faster"));
         assert_eq!(key(control::VISUAL_DETAILS_VALUE), Some("GUI:HigherDetail"));
         assert_eq!(key(control::FOOTER), Some("GUI:Blank"));
-        // Interactive controls carry no static CSF caption (owner-draw painted).
+        assert_eq!(key(control::BACK), Some("GUI:Back"));
+        assert_eq!(key(control::KEYBOARD), Some("GUI:Keyboard"));
+        assert_eq!(key(control::SOUND), Some("GUI:Sound"));
+        assert_eq!(key(control::TARGET_LINES), Some("GUI:TargetLines"));
+        assert_eq!(key(control::SHOW_HIDDEN), Some("GUI:ShowHidden"));
+        assert_eq!(key(control::TOOLTIPS), Some("GUI:Tooltips"));
+        // Trackbar resource titles are identifiers, not displayed CSF captions.
         assert_eq!(key(control::GAME_SPEED), None);
     }
 

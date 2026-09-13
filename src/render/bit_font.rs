@@ -310,9 +310,9 @@ impl BitFont {
         let mut line_x: u32 = 0;
         let mut chars_on_line: u32 = 0;
         let mut max_line_width: u32 = 0;
-        let mut last_space_byte: Option<usize> = None;
-        let mut last_space_byte_after: usize = 0;
-        let mut last_space_x: u32 = 0;
+        // Character index and measured width before the break. Keep the
+        // scanner restart and UTF-8 byte boundary tied to the same character.
+        let mut last_space: Option<(usize, u32)> = None;
         let mut prev_char: Option<char> = None;
         let mut y_lines: u32 = 1;
 
@@ -346,16 +346,14 @@ impl BitFont {
                     line_start_byte = next_byte_off;
                     line_x = 0;
                     chars_on_line = 0;
-                    last_space_byte = None;
+                    last_space = None;
                     y_lines += 1;
                     prev_char = Some(ch);
                     i += 1;
                     continue;
                 }
                 ' ' => {
-                    last_space_byte = Some(byte_off);
-                    last_space_byte_after = next_byte_off;
-                    last_space_x = line_x;
+                    last_space = Some((i, line_x));
                 }
                 _ => {}
             }
@@ -382,31 +380,44 @@ impl BitFont {
                 chars_on_line = 1;
                 prev_char = Some(ch);
                 i += 1;
-            } else if let Some(space_b) = last_space_byte {
+            } else if let Some((space_index, space_x)) = last_space {
                 lines.push(LineSpan {
                     start_byte: line_start_byte,
-                    end_byte: space_b,
-                    width: last_space_x,
+                    end_byte: chars[space_index].0,
+                    width: space_x,
                 });
-                max_line_width = max_line_width.max(last_space_x);
-                line_start_byte = last_space_byte_after;
+                max_line_width = max_line_width.max(space_x);
+                // gamemd 434F60..434F64 rewinds the scanner to the saved
+                // space; 4350F5..435103 and 43512D..435138 resume after it.
+                // Retrying only the overflow character either revisits an
+                // already consumed space or skips measuring a word prefix.
+                // Native comparison: tools/storage_oracle/shell_text_lines.py.
+                i = space_index + 1;
+                line_start_byte = chars.get(i).map(|c| c.0).unwrap_or(text.len());
                 line_x = 0;
                 chars_on_line = 0;
-                last_space_byte = None;
+                last_space = None;
+                prev_char = Some(' ');
                 y_lines += 1;
-                // do not advance i -- retry char on new line
             } else {
+                // Native 434F6F..434F78 excludes the preceding fitting unit
+                // from this line's emission. 43512D..435138 nevertheless
+                // resumes measurement at the overflowing unit. Preserve the
+                // separate emission start and scan cursor; remeasuring the
+                // deferred glyph changes subsequent native line boundaries.
+                let deferred_byte = chars[i - 1].0;
                 lines.push(LineSpan {
                     start_byte: line_start_byte,
-                    end_byte: byte_off,
+                    end_byte: deferred_byte,
                     width: line_x,
                 });
                 max_line_width = max_line_width.max(line_x);
-                line_start_byte = byte_off;
+                line_start_byte = deferred_byte;
                 line_x = 0;
                 chars_on_line = 0;
                 y_lines += 1;
-                // do not advance i
+                // Retry the overflow character; the deferred glyph remains
+                // in the emitted span without being measured a second time.
             }
         }
         lines.push(LineSpan {

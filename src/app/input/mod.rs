@@ -12,6 +12,7 @@ pub(crate) mod gadget_input;
 pub(crate) mod hotkeys;
 pub(crate) mod state;
 pub(crate) mod in_game_options;
+pub(crate) mod pause_menu;
 pub(crate) mod messages;
 pub(crate) mod sidebar_eva;
 pub(crate) mod tooltips;
@@ -19,3 +20,8 @@ pub(crate) mod transport_orders;
 
 #[cfg(test)]
 mod bridge_click_tests;
+pub(crate) mod abort;
+
+pub(crate) mod sound;
+
+pub(crate) mod keyboard;

@@ -49,6 +49,8 @@ pub(super) fn combo_face_entry(
     rect: RectPx,
 ) -> Option<SkirmishShellChromeEntry> {
     match rect.w {
+        207 => chrome.combo_face_207,
+        180 => chrome.combo_face_180,
         150 => chrome.combo_face_150,
         117 => chrome.combo_face_117,
         44 => chrome.combo_face_44,
@@ -252,6 +254,11 @@ pub(super) enum ControlPaint {
         rect: RectPx,
         thumb_px: i32,
     },
+    /// D5 Detail/Difficulty/Scroll receive 4AC(false): no numeric plaque.
+    PlainTrackbar {
+        rect: RectPx,
+        thumb_px: i32,
+    },
     Combo {
         rect: RectPx,
         swatch: Option<[f32; 3]>,
@@ -262,14 +269,6 @@ pub(super) enum ControlPaint {
         scrollbar: RectPx,
         thumb: RectPx,
         pressed_part: Option<DropdownScrollbarPart>,
-    },
-    /// Active in-game Options (0xBBB) owner-draw button — SIDEBTTN type 2, drawn at
-    /// the SHP native 125x25 size. `rect` is the already-anchored top-left from the
-    /// layout pass; `frame` is the resolved SIDEBTTN frame (0 released / 1 pressed /
-    /// 2 flash).
-    Button {
-        rect: RectPx,
-        frame: u8,
     },
 }
 
@@ -294,16 +293,27 @@ pub(super) fn paint_control(
                 push_entry(out, entry, checkbox_icon_rect(rect), SHELL_CONTROL_DEPTH);
             }
         }
-        ControlPaint::Trackbar { rect, thumb_px } => {
+        ControlPaint::Trackbar { rect, thumb_px }
+        | ControlPaint::PlainTrackbar { rect, thumb_px } => {
             // The active owner-draw callback blits plaque and thumb art before
             // drawing its two adjacent border-2 primitive frames. The frame
             // entry includes the native two-pixel outside expansion.
-            paint_trackbar_plaque(out, chrome, rect, SHELL_CONTROL_DEPTH);
+            let plain = matches!(paint, ControlPaint::PlainTrackbar { .. });
+            if !plain {
+                paint_trackbar_plaque(out, chrome, rect, SHELL_CONTROL_DEPTH);
+            }
             if let Some(thumb) = chrome.trackbar_thumb_trakgrip {
                 let thumb_rect = trackbar_thumb_rect(rect, thumb_px);
                 push_entry(out, thumb, thumb_rect, SHELL_CONTROL_DEPTH - 0.00002);
             }
-            if let Some(frame) = chrome.trackbar_rail {
+            if let Some(frame) = match (plain, rect.w) {
+                (false, 128) => chrome.trackbar_rail,
+                (false, 263) => chrome.trackbar_numeric_263,
+                (false, 225) => chrome.trackbar_numeric_225,
+                (true, 180) => chrome.trackbar_plain_180,
+                (true, 192) => chrome.trackbar_plain_192,
+                _ => None,
+            } {
                 push_entry_native(
                     out,
                     frame,
@@ -404,27 +414,7 @@ pub(super) fn paint_control(
                 SHELL_DROPDOWN_DEPTH - 0.00007,
             );
         }
-        ControlPaint::Button { rect, frame } => {
-            // Active 0xBBB owner-draw button: one SIDEBTTN glyph at its native
-            // 125x25 size, at the anchored top-left. `entry` is `Copy` and
-            // push_entry_native takes it by value (match the other arms).
-            let entry = match frame {
-                1 => chrome.options_button_sidebttn_frame1,
-                2 => chrome.options_button_sidebttn_frame2,
-                _ => chrome.options_button_sidebttn_frame0,
-            };
-            if let Some(entry) = entry {
-                push_entry_native(out, entry, rect.x, rect.y, SHELL_CONTROL_DEPTH);
-            }
-        }
     }
-}
-
-/// SIDEBTTN type-2 button frame: released 0, pressed 1. Frame 2 is the
-/// timer-driven flash/checked state (record `0xC5`), deferred until the
-/// button-flash timer is modeled — 5a-ii renders released/pressed only.
-pub(super) fn options_button_sidebttn_frame_index(pressed: bool) -> u8 {
-    if pressed { 1 } else { 0 }
 }
 
 pub(super) fn push_checkbox_instances(
@@ -795,56 +785,6 @@ mod tests {
     }
 
     #[test]
-    fn options_button_frame_index_released_pressed() {
-        assert_eq!(options_button_sidebttn_frame_index(false), 0);
-        assert_eq!(options_button_sidebttn_frame_index(true), 1);
-    }
-
-    #[test]
-    fn options_button_paint_seam_emits_sidebttn_frame_at_rect() {
-        // Draw-list assertion: the 0xBBB owner-draw button arm emits exactly one
-        // SIDEBTTN glyph at its native size, at the anchored top-left, at
-        // SHELL_CONTROL_DEPTH. Frame selects by the resolved index (0/1/2).
-        let entry = SkirmishShellChromeEntry {
-            uv_origin: [0.10, 0.20],
-            uv_size: [0.30, 0.40],
-            pixel_size: [125.0, 25.0],
-        };
-        let chrome = ControlChrome {
-            options_button_sidebttn_frame0: Some(entry),
-            ..Default::default()
-        };
-        let rect = RectPx::new(653, 198, 125, 25);
-
-        let mut out = Vec::new();
-        paint_control(&mut out, &chrome, ControlPaint::Button { rect, frame: 0 });
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].position, [653.0, 198.0]);
-        assert_eq!(out[0].size, entry.pixel_size);
-        assert_eq!(out[0].uv_origin, entry.uv_origin);
-        assert_eq!(out[0].uv_size, entry.uv_size);
-        assert_eq!(out[0].depth, SHELL_CONTROL_DEPTH);
-
-        // A frame whose entry isn't loaded → no instance (only frame 0 is set here).
-        let mut missing = Vec::new();
-        paint_control(
-            &mut missing,
-            &chrome,
-            ControlPaint::Button { rect, frame: 1 },
-        );
-        assert!(missing.is_empty());
-
-        // Empty chrome → no instance.
-        let mut empty = Vec::new();
-        paint_control(
-            &mut empty,
-            &ControlChrome::default(),
-            ControlPaint::Button { rect, frame: 0 },
-        );
-        assert!(empty.is_empty());
-    }
-
-    #[test]
     fn trackbar_paint_seam_emits_plaque_thumb_and_native_frames_in_order() {
         let frame = SkirmishShellChromeEntry {
             uv_origin: [0.01, 0.02],
@@ -879,7 +819,7 @@ mod tests {
             trackbar_thumb_trakgrip: Some(thumb),
             ..Default::default()
         };
-        let rect = RectPx::new(176, 168, 200, 24);
+        let rect = RectPx::new(176, 168, 128, 21);
         let plaque = trackbar_plaque_rect(rect);
 
         for thumb_px in [0, 68, 137] {
@@ -932,6 +872,76 @@ mod tests {
             ControlPaint::Trackbar { rect, thumb_px: 0 },
         );
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn numeric_rails_select_native_width_without_stretching_the_divider() {
+        let narrow = SkirmishShellChromeEntry {
+            uv_origin: [0.1, 0.2],
+            uv_size: [0.2, 0.1],
+            pixel_size: [132.0, 25.0],
+        };
+        let wide = SkirmishShellChromeEntry {
+            uv_origin: [0.4, 0.2],
+            uv_size: [0.4, 0.1],
+            pixel_size: [267.0, 25.0],
+        };
+        let rmg = SkirmishShellChromeEntry {
+            uv_origin: [0.1, 0.4],
+            uv_size: [0.3, 0.1],
+            pixel_size: [229.0, 25.0],
+        };
+        let chrome = ControlChrome {
+            trackbar_numeric_225: Some(rmg),
+            trackbar_rail: Some(narrow),
+            trackbar_numeric_263: Some(wide),
+            ..Default::default()
+        };
+        // Actual Skirmish/D5 and B8 widths. The B8 runtime regression was
+        // the narrow atlas entry at a wide control's otherwise correct origin.
+        for (width, expected) in [(128, narrow), (225, rmg), (263, wide)] {
+            let mut out = Vec::new();
+            paint_control(
+                &mut out,
+                &chrome,
+                ControlPaint::Trackbar {
+                    rect: RectPx::new(236, 98, width, 21),
+                    thumb_px: 0,
+                },
+            );
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].position, [234.0, 96.0]);
+            assert_eq!(out[0].size, expected.pixel_size);
+            assert_eq!(out[0].uv_origin, expected.uv_origin);
+        }
+    }
+
+    #[test]
+    fn keyboard_category_uses_its_wide_native_face() {
+        let face = SkirmishShellChromeEntry {
+            uv_origin: [0.4, 0.2],
+            uv_size: [0.3, 0.1],
+            pixel_size: [207.0, 24.0],
+        };
+        let chrome = ControlChrome {
+            combo_face_207: Some(face),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        paint_control(
+            &mut out,
+            &chrome,
+            ControlPaint::Combo {
+                rect: RectPx::new(95, 135, 207, 24),
+                swatch: None,
+                open: false,
+                disabled: false,
+            },
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].position, [95.0, 135.0]);
+        assert_eq!(out[0].size, [207.0, 24.0]);
+        assert_eq!(out[0].uv_origin, face.uv_origin);
     }
 
     #[test]

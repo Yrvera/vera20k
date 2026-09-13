@@ -2080,85 +2080,32 @@ fn upmix_i16_to_f32_stereo(samples: &[i16], channels: u16) -> Vec<f32> {
 /// and IMA ADPCM (format tag 0x11) used by RA2 EVA announcements.
 /// Mono or stereo. This covers all RA2 sound effects and EVA voices.
 pub(crate) fn decode_wav(data: &[u8], filename: &str) -> Option<DecodedAudio> {
-    if data.len() < 44 {
+    let wav = crate::assets::wav_file::WavFile::parse(data)?;
+    let samples = match wav.format_tag {
+        1 => decode_pcm(wav.data, wav.channels, wav.bits_per_sample),
+        0x11 => decode_ima_adpcm(wav.data, wav.channels, wav.block_align),
+        _ => {
+            log::trace!(
+                "WAV: unsupported format tag {} for {}",
+                wav.format_tag,
+                filename
+            );
+            return None;
+        }
+    };
+    if samples.is_empty() {
         return None;
     }
-
-    // Verify RIFF/WAVE header.
-    if &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
-        log::trace!("WAV: invalid header for {}", filename);
-        return None;
-    }
-
-    // Find "fmt " and "data" chunks.
-    let mut offset: usize = 12;
-    let mut fmt_found: bool = false;
-    let mut channels: u16 = 1;
-    let mut sample_rate: u32 = 22050;
-    let mut bits_per_sample: u16 = 16;
-    let mut format_tag: u16 = 1;
-    let mut block_align: u16 = 0;
-
-    while offset + 8 <= data.len() {
-        let chunk_id: &[u8] = &data[offset..offset + 4];
-        let chunk_size: u32 = u32::from_le_bytes([
-            data[offset + 4],
-            data[offset + 5],
-            data[offset + 6],
-            data[offset + 7],
-        ]);
-
-        if chunk_id == b"fmt " && offset + 8 + chunk_size as usize <= data.len() {
-            let fmt: &[u8] = &data[offset + 8..];
-            format_tag = u16::from_le_bytes([fmt[0], fmt[1]]);
-            channels = u16::from_le_bytes([fmt[2], fmt[3]]);
-            sample_rate = u32::from_le_bytes([fmt[4], fmt[5], fmt[6], fmt[7]]);
-            block_align = u16::from_le_bytes([fmt[12], fmt[13]]);
-            bits_per_sample = u16::from_le_bytes([fmt[14], fmt[15]]);
-            fmt_found = true;
-        }
-
-        if chunk_id == b"data" && fmt_found {
-            let pcm_start: usize = offset + 8;
-            let pcm_end: usize = (pcm_start + chunk_size as usize).min(data.len());
-            let pcm: &[u8] = &data[pcm_start..pcm_end];
-
-            let samples: Vec<f32> = match format_tag {
-                1 => decode_pcm(pcm, channels, bits_per_sample),
-                0x11 => decode_ima_adpcm(pcm, channels, block_align),
-                _ => {
-                    log::trace!(
-                        "WAV: unsupported format tag {} for {}",
-                        format_tag,
-                        filename
-                    );
-                    return None;
-                }
-            };
-            if samples.is_empty() {
-                return None;
-            }
-
-            // Always output stereo — upmix mono if needed.
-            let stereo: Vec<f32> = if channels == 1 {
-                samples.iter().flat_map(|&s| [s, s]).collect()
-            } else {
-                samples
-            };
-
-            return Some(DecodedAudio {
-                samples: stereo,
-                sample_rate,
-                channels: 2,
-            });
-        }
-
-        // Advance to next chunk (chunks are word-aligned).
-        offset += 8 + ((chunk_size as usize + 1) & !1);
-    }
-
-    log::trace!("WAV: no data chunk found for {}", filename);
-    None
+    let stereo = if wav.channels == 1 {
+        samples.iter().flat_map(|&s| [s, s]).collect()
+    } else {
+        samples
+    };
+    Some(DecodedAudio {
+        samples: stereo,
+        sample_rate: wav.sample_rate,
+        channels: 2,
+    })
 }
 
 /// Decode IMA ADPCM WAV data into interleaved f32 samples.

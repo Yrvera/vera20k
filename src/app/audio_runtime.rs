@@ -213,6 +213,19 @@ impl AppAudioRuntime {
         self.apply_theme_action(action);
     }
 
+    /// B8 user commands preserve Theme fade/queue ordering and output ownership.
+    pub(crate) fn play_sound_selection(&mut self, index: i32, wall_ms: u64) {
+        let gates = self.theme_gates();
+        let physical = self.music_output_state();
+        let action = self.theme.play_selection(index, gates, physical, wall_ms);
+        self.apply_theme_action(action);
+    }
+    pub(crate) fn stop_sound_selection(&mut self, wall_ms: u64) {
+        let gates = self.theme_gates();
+        let physical = self.music_output_state();
+        let action = self.theme.stop_selection(gates, physical, wall_ms);
+        self.apply_theme_action(action);
+    }
     /// Launcher ScoreVolume zero (`0x0055FAA0`): `Queue(cur)` then `Stop(0)`.
     pub(crate) fn queue_then_stop_score_zero(&mut self, wall_ms: u64) {
         let gates = self.theme_gates();

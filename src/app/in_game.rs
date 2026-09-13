@@ -35,6 +35,10 @@ impl App {
         state.match_state.match_presentation.in_game_menu =
             crate::ui::pause_menu::InGameMenuState::Closed;
         state.match_state.match_presentation.in_game_options_anchor = None;
+        state.match_state.match_presentation.pause_menu_interaction = Default::default();
+        state.match_state.match_presentation.abort_buttons = Default::default();
+        state.match_state.match_presentation.sound_dialog = None;
+        state.match_state.match_presentation.saved_game_browser = None;
         // Persist the deterministic diagnostic log before leaving the scenario.
         // Runtime and presentation resources remain retained in the shell.
         crate::app::match_runtime::sim_tick::flush_replay_log(state);
@@ -79,6 +83,7 @@ impl App {
         state.platform.window_active = active;
         state.match_state.input.keys_held.clear();
         state.match_state.input.hotkey_modifiers = ModifiersState::empty();
+        state.platform.live_modifiers = ModifiersState::empty();
         state.match_state.input.type_select.clear_held();
         // gamemd-derived: the `WM_ACTIVATEAPP` changed edge at 0x007778AC
         // stops/restores the primary DirectSound output through 0x00407020 /
@@ -117,10 +122,9 @@ impl App {
 
     /// Does the in-scenario modal machine own this Escape press?
     ///
-    /// gamemd reaches the in-game menu from the sidebar menu control; this port
-    /// has no such control yet, so Escape stands in for it. Both the binding and
-    /// this precedence are VERA-internal — gamemd's keyboard route into the menu
-    /// is UNCHECKED. Escape keeps its in-world cancel duties: while no modal is
+    /// Native Escape reaches Options through5372D0→647040→4C7939. B5 and B6
+    /// ignore IDCANCEL, while Game Controls returns to B5. Escape keeps its
+    /// in-world cancel duties: while no modal is
     /// open and a placement/targeting or repair/sell mode is armed, Escape
     /// cancels that instead and the machine stays out of it.
     pub(super) fn in_game_menu_owns_escape(state: &AppState) -> bool {
@@ -168,7 +172,7 @@ impl App {
     /// while a dialog is up. Freezing does not skip ticks — the tick simply
     /// stops advancing and resumes from the same number, so the tick stream is
     /// unchanged and a replay of the match still reproduces.
-    fn enter_in_game_menu_state(
+    pub(crate) fn enter_in_game_menu_state(
         state: &mut AppState,
         next: crate::ui::pause_menu::InGameMenuState,
     ) {
@@ -194,6 +198,12 @@ impl App {
             }
         }
         state.match_state.match_presentation.in_game_menu = next;
+        state.match_state.match_presentation.pause_menu_interaction = Default::default();
+        state.match_state.match_presentation.abort_buttons = Default::default();
+        state.match_state.match_presentation.sound_dialog = None;
+        if next == InGameMenuState::Menu {
+            state.match_state.match_presentation.pause_menu_has_saves = !state.persistence.repository.browser_entries().is_empty();
+        }
 
         // Leaving Options: drop the cached `0xBBB` hit-test anchor so the
         // overlay's own mouse handler cannot claim clicks aimed at the menu.
@@ -201,6 +211,7 @@ impl App {
             state.match_state.match_presentation.in_game_options_anchor = None;
         }
         if next == InGameMenuState::Options {
+            state.match_state.match_presentation.in_game_options.sound_enabled=state.audio.launcher_audio_available;
             // Reset the transient interaction flags so the drag-gated
             // value-label quirk resets on every open.
             state
@@ -258,9 +269,15 @@ impl App {
             }
             // Options is the native `0xBBB` overlay, drawn earlier in the frame
             // and reconciled by `sync_in_game_menu_with_options_overlay`.
-            InGameMenuState::Options => ModalOutcome::Stay,
+            InGameMenuState::Options | InGameMenuState::Sound | InGameMenuState::Keyboard | InGameMenuState::SavedGame(_) => ModalOutcome::Stay,
         };
 
+        Self::apply_in_game_modal_outcome(state, outcome);
+    }
+
+    /// Every physical or fallback modal commits through the same state/exit owner.
+    pub(crate) fn apply_in_game_modal_outcome(state: &mut AppState, outcome: crate::ui::pause_menu::ModalOutcome) {
+        use crate::ui::pause_menu::ModalOutcome;
         match outcome {
             ModalOutcome::Stay => {}
             ModalOutcome::Enter(next) => Self::enter_in_game_menu_state(state, next),
@@ -701,6 +718,9 @@ impl App {
                 state.frontend.score_screen = Some(model);
                 state.frontend.score_shell_state = Default::default();
                 state.frontend.screen = GameScreen::MissionResult { title, detail };
+                // Victory 006857AE restores the shell pair before score
+                // construction/run at 00685884/0068588B, not after Continue.
+                Self::enter_shell_window_mode(state);
             }
             Some(crate::app::match_runtime::scenario_exit::ScenarioExitDestination::MainMenu) => {
                 Self::return_to_main_menu(state);

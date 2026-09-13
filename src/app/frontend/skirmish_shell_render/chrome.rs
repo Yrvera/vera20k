@@ -22,6 +22,24 @@ const RIGHT_PANEL_TILE_DEPTH: f32 = 0.00079;
 const RIGHT_PANEL_OVERLAY_DEPTH: f32 = 0.000785;
 const RIGHT_PANEL_BOTTOM_DEPTH: f32 = 0.00078;
 
+/// Native612B70 type3: MNBTTN0 released,1 held,2 timer highlight.
+/// Disabled ordinary controls retain released art; text has a separate gate.
+pub(crate) fn type3_button_frames(
+    atlas: &SkirmishShellChromeAtlas,
+) -> crate::render::shell_paint::ModalButtonFrames {
+    let frames = [
+        atlas.modal_button_mnbttn_frame0,
+        atlas.modal_button_mnbttn_frame1,
+        atlas.modal_button_mnbttn_frame2,
+    ];
+    let index = crate::ui::shell::button::owner_button_frame;
+    crate::render::shell_paint::ModalButtonFrames {
+        up: frames[index(false, false)],
+        disabled: frames[index(false, false)],
+        pressed: frames[index(true, false)],
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ButtonPiece {
     Left,

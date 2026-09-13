@@ -56,6 +56,10 @@ pub(crate) fn handle_mouse_input(
 ) {
     use crate::app::input::gadget_input::GadgetConsume;
     let pressed = btn_state.is_pressed();
+    if state.frontend.keyboard_dialog.is_some() {
+        crate::app::input::keyboard::mouse(state, button, pressed);
+        return;
+    }
     // Paused in-game Options overlay owns the mouse: route press/release/checkbox/
     // Back here and CONSUME the click so it never reaches the tactical viewport or
     // a gadget (no unit orders behind the overlay). KD-6.
@@ -69,7 +73,21 @@ pub(crate) fn handle_mouse_input(
             state.match_state.input.tactical_mouse.right_held = false;
             state.match_state.input.tactical_mouse.release();
         }
-        crate::app::input::in_game_options::in_game_options_mouse(state, button, pressed);
+        if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Sound {
+            crate::app::input::sound::mouse(state,button,pressed);
+            return;
+        }
+        if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::AbortConfirm {
+            crate::app::input::abort::mouse(state, button, pressed);
+            return;
+        }
+        if matches!(state.match_state.match_presentation.in_game_menu, crate::ui::pause_menu::InGameMenuState::SavedGame(_)) {
+            if button == MouseButton::Left { crate::app::App::saved_game_mouse(state, pressed); }
+        } else if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Menu {
+            crate::app::input::pause_menu::mouse(state, button, pressed);
+        } else {
+            crate::app::input::in_game_options::in_game_options_mouse(state, button, pressed);
+        }
         return;
     }
     // The stock tactical handler has no middle-button case.
@@ -649,11 +667,29 @@ fn clamp_tactical_drag_endpoint(
 }
 
 pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
+    if state.frontend.keyboard_dialog.is_some() {
+        crate::app::input::keyboard::cursor_moved(state);
+        return;
+    }
     // Paused in-game Options overlay: drive a live slider drag (visual/stored only —
     // cadence applies on close, KD-8) and swallow the move so it can't begin a
     // selection drag or camera pan behind the overlay.
     if state.match_state.paused {
-        crate::app::input::in_game_options::in_game_options_drag(state);
+        if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Sound {
+            crate::app::input::sound::cursor_moved(state);
+            return;
+        }
+        if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::AbortConfirm {
+            crate::app::input::abort::cursor_moved(state);
+            return;
+        }
+        if matches!(state.match_state.match_presentation.in_game_menu, crate::ui::pause_menu::InGameMenuState::SavedGame(_)) {
+            crate::app::App::update_saved_game_browser(state, true);
+        } else if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Menu {
+            crate::app::input::pause_menu::cursor_moved(state);
+        } else {
+            crate::app::input::in_game_options::in_game_options_drag(state);
+        }
         return;
     }
     // Minimap: gamemd re-centers only on press edges and ignores held motion
@@ -1421,8 +1457,16 @@ pub(crate) fn handle_hotkey_pressed(
     crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
 }
 
+#[path = "selection_navigation.rs"]
+pub(crate) mod selection_navigation;
+
 fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
     match command {
+        HotkeyCommand::HealthNav => selection_navigation::execute_health_navigation(state),
+        HotkeyCommand::CursorCheat => {
+            // 537EF0: flag only; the next mouse move refreshes the tooltip.
+            state.match_state.input.cursor_coordinates = !state.match_state.input.cursor_coordinates;
+        }
         HotkeyCommand::StopObject => queue_stop_for_selected(state),
         HotkeyCommand::DeployObject => queue_deploy_undeploy_for_selected(state),
         HotkeyCommand::GuardObject => {
@@ -1977,8 +2021,14 @@ pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
     else {
         state.match_state.input.selection_order.clear();
         state.match_state.input.selection_order_pending = false;
+        state.match_state.input.health_navigation = Default::default();
+        state.match_state.input.type_select.reset_scope();
         return;
     };
+    // 733160 removes expired objects from the retained navigation snapshot.
+    state.match_state.input.health_navigation.retain(|id| {
+        sim.entities().get(*id).is_some_and(|entity| entity.lifecycle.object_alive)
+    });
     if state.match_state.input.selection_order_pending {
         let before_retain = state.match_state.input.selection_order.len();
         state.match_state.input.selection_order.retain(|id| {

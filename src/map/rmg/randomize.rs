@@ -97,7 +97,7 @@ pub fn randomize(
 
     derive_from_map_type(options, settings, rng);
 
-    options.description = description.to_string();
+    options.description = description.into();
     options.seed = rng.ranged(0, 0xFFFF);
 
     options.normalize();

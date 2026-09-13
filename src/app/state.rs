@@ -50,25 +50,42 @@ pub(crate) fn reset_scenario_exit_runtime(state: &mut AppState) {
 }
 
 impl AppState {
-    /// Effective render target width — intermediate texture when upscaling, else window.
-    pub(crate) fn render_width(&self) -> u32 {
-        self.renderer.upscale_pass
-            .as_ref()
-            .map_or(self.renderer.gpu.config.width, |u| u.src_width())
+    /// Current projection: frontend/result use physical window pixels; tactical
+    /// rendering and pending tactical installation use the optional upscaler.
+    /// Loading artwork explicitly uses GPU/window dimensions in loading::pump.
+    fn render_dimensions(&self) -> (u32, u32) {
+        platform::render_dimensions(
+            &self.frontend.screen,
+            (self.renderer.gpu.config.width, self.renderer.gpu.config.height),
+            self.renderer.upscale_pass.as_ref().map(|up| (up.src_width(), up.src_height())),
+        )
     }
 
-    /// Effective render target height — intermediate texture when upscaling, else window.
+    pub(crate) fn render_width(&self) -> u32 {
+        self.render_dimensions().0
+    }
+
     pub(crate) fn render_height(&self) -> u32 {
-        self.renderer.upscale_pass
-            .as_ref()
-            .map_or(self.renderer.gpu.config.height, |u| u.src_height())
+        self.render_dimensions().1
+    }
+
+    /// Modal shells use physical window pixels, while the retained tactical
+    /// cursor stays in battlefield source pixels even during an upscaled match.
+    pub(crate) fn window_cursor_position(&self) -> (f32, f32) {
+        (
+            self.match_state.input.cursor_x * self.renderer.gpu.config.width as f32
+                / self.render_width().max(1) as f32,
+            self.match_state.input.cursor_y * self.renderer.gpu.config.height as f32
+                / self.render_height().max(1) as f32,
+        )
     }
 
     /// Whether the software cursor (mouse.shp) should be active this frame.
     /// Returns false when an egui interactive panel is open so the OS cursor shows.
     pub(crate) fn use_software_cursor(&self) -> bool {
         self.match_state.match_presentation.software_cursor.is_some()
-            && !self.match_state.paused
+            && (!self.match_state.paused
+                || crate::app::frontend::skirmish_shell_render::native_in_game_shell_active(self))
             && !self.match_state.match_presentation.show_save_load_panel
             && !self.main_menu_dialog_open()
     }
@@ -86,6 +103,7 @@ impl AppState {
     pub(crate) fn main_menu_dialog_open(&self) -> bool {
         self.frontend.exit_confirm_modal.is_some()
             || self.frontend.options_dialog.is_some()
+            || self.frontend.keyboard_dialog.is_some()
             || self.frontend.movies_credits_dialog.is_some()
             || self.frontend.campaign_select.is_some()
     }

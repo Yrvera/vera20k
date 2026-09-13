@@ -196,6 +196,9 @@ impl App {
                 });
         let mut pending_main_menu_entry_token = None;
         let mut pending_main_menu_title_receipt = None;
+        let mut pending_launcher_title_receipt = None;
+        use crate::app::diagnostics::shell_capture::PresentedShell;
+        let mut presented_shell = PresentedShell::Other;
 
         crate::app::frontend::shell_transition::activate_shell_first_paint_after_acquire(state);
         // Advance the Skirmish right-panel static text reveals (started at the
@@ -208,7 +211,14 @@ impl App {
         };
         let mut game_render_output: Option<crate::app::presentation::render::GameRenderOutput> = None;
 
+        if state.match_state.match_presentation.in_game_menu.is_open() {
+            Self::ensure_skirmish_shell_chrome(state);
+        }
+        Self::update_saved_game_browser(state, false);
         match &state.frontend.screen {
+            _ if state.frontend.keyboard_dialog.is_some() => {
+                crate::app::frontend::skirmish_shell_render::render_keyboard_shell(state, &mut encoder, &output.texture)?;
+            }
             GameScreen::MainMenu => {
                 if let crate::app::frontend::shell_transition::ShellFirstPaintRenderResult::Rendered {
                     main_menu_entry_token,
@@ -218,12 +228,20 @@ impl App {
                     &output.texture,
                 )? {
                     pending_main_menu_entry_token = main_menu_entry_token;
+                } else if Self::native_launcher_options_active(state) {
+                    pending_launcher_title_receipt = Some(
+                        crate::app::frontend::skirmish_shell_render::render_launcher_options(
+                            state, &mut encoder, &output.texture,
+                        )?);
                 } else if Self::native_skirmish_shell_active(state) {
                     crate::app::frontend::skirmish_shell_render::render_skirmish_shell(
                         state,
                         &mut encoder,
                         &output.texture,
                     )?;
+                    if state.frontend.skirmish_shell_chrome.is_some() {
+                        presented_shell = PresentedShell::Skirmish;
+                    }
                 } else if Self::single_player_shell_active(state) {
                     match crate::app::frontend::single_player_shell_render::render_single_player_shell(
                         state,
@@ -231,6 +249,7 @@ impl App {
                         &output.texture,
                     )? {
                         crate::app::frontend::single_player_shell_render::SinglePlayerShellRenderResult::Rendered => {
+                            presented_shell = PresentedShell::SinglePlayer;
                             state.renderer.egui.begin_frame(&state.platform.window);
                             if state.match_state.match_presentation.show_save_load_panel {
                                 Self::handle_save_load_panel(state);
@@ -266,6 +285,7 @@ impl App {
                             title_receipt,
                         } => {
                             pending_main_menu_title_receipt = title_receipt;
+                            presented_shell = PresentedShell::MainMenu;
                             state.renderer.egui.begin_frame(&state.platform.window);
                             // The SHP shell renders the quit-confirm as an SHP
                             // overlay (and OK exits via its hit-test), so the egui
@@ -344,6 +364,26 @@ impl App {
                     }
                 }
             }
+            GameScreen::InGame if crate::app::frontend::skirmish_shell_render::native_in_game_shell_active(state) => {
+                // 621FCE -> 72F540 clears and paints a complete active-game shell.
+                // No battlefield commands share this encoder/camera upload.
+                if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Menu {
+                    let buttons = crate::app::input::pause_menu::button_states(state);
+                    crate::app::frontend::skirmish_shell_render::render_pause_menu_shell(
+                        state, &mut encoder, &output.texture, buttons,
+                    )?;
+                } else if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::AbortConfirm {
+                    crate::app::frontend::skirmish_shell_render::render_abort_shell(state, &mut encoder, &output.texture)?;
+                } else if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Sound {
+                    crate::app::frontend::skirmish_shell_render::render_sound_shell(state, &mut encoder, &output.texture)?;
+                } else if matches!(state.match_state.match_presentation.in_game_menu, crate::ui::pause_menu::InGameMenuState::SavedGame(_)) {
+                    crate::app::frontend::skirmish_shell_render::render_saved_game_shell(state, &mut encoder, &output.texture)?;
+                } else {
+                    crate::app::frontend::skirmish_shell_render::render_in_game_options_shell(
+                        state, &mut encoder, &output.texture,
+                    )?;
+                }
+            }
             GameScreen::InGame => {
                 let game_output = if state.renderer.upscale_pass.is_some() {
                     // Render game to intermediate texture, then upscale to swapchain.
@@ -370,21 +410,6 @@ impl App {
                         .copy_to(&mut encoder, &output.texture);
                     render_output
                 };
-                let sidebar_view = game_output.sidebar_view.as_ref();
-                // Options (the in-scenario state the menu's Game Controls button
-                // opens) draws the native `0xBBB` overlay over the frozen
-                // battlefield, before egui. The in-game menu and the abort
-                // confirmation are egui cards drawn in the pass below.
-                if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Options {
-                    if Self::ensure_skirmish_shell_chrome(state) {
-                        crate::app::frontend::skirmish_shell_render::render_in_game_options_overlay(
-                            state,
-                            &mut encoder,
-                            &view,
-                            sidebar_view,
-                        )?;
-                    }
-                }
                 // All sidebar text (credits, Ready labels, queue counts) is now
                 // GAME.FNT sprite geometry built in presentation::render; egui in-game
                 // carries only the dev/debug overlays.
@@ -585,6 +610,18 @@ impl App {
                     .record_presented(receipt),
                 "main-menu title receipt was stale at present commit"
             );
+        }
+        if let Some(dialog) = state.frontend.keyboard_dialog.as_mut() {
+            if let Some(receipt) = dialog.title_receipt.take() {
+                anyhow::ensure!(dialog.title.record_presented(receipt), "keyboard title receipt was stale at present commit");
+            }
+        }
+        if let Some(receipt) = pending_launcher_title_receipt {
+            anyhow::ensure!(state.frontend.launcher_options_presentation.record_presented(receipt),
+                "launcher title receipt was stale at present commit");
+        }
+        if let Some(session) = shell_capture.as_deref_mut() {
+            session.after_present(state, presented_shell)?;
         }
         if let Some(pending_capture) = pending_capture {
             let pixels = pending_capture.finish(

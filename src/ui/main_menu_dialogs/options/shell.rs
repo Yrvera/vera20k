@@ -1,0 +1,599 @@
+//! Physical-pixel presentation and input for launcher resource 0xD5.
+//!
+//! Retail RT_DIALOG/0xD5/1033 provides the DLU rectangles; common setup
+//! 0x00608CD0/0x00609730 anchors the rail, and 0x0060B950 adjusts its title.
+//! This module projects the retained OptionsDialogState instead of owning a
+//! second set of option values or bypassing its ordered preview events.
+
+use super::{
+    LauncherCheckboxId, LauncherCue, LauncherOptionsEvent, LauncherParentResult,
+    LauncherResolutionRow, LauncherTrackbarId, OptionsDialogState, PhysicalControlFrame,
+    thumb_left,
+};
+use crate::ui::shell::geom::{RectPx, center_offset, dlu_rect};
+use crate::ui::skirmish_shell::{
+    COMBO_DROPDOWN_ROW_H, COMBO_DROPDOWN_SCROLLBAR_BUTTON_H, COMBO_DROPDOWN_SCROLLBAR_W,
+    COMBO_FACE_H, ScrollModel,
+};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ShellInteraction {
+    hovered_button: Option<LauncherParentResult>,
+    pressed_button: Option<LauncherParentResult>,
+    popup_hovered: Option<usize>,
+    popup_top: usize,
+    popup_scroll_grab: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LauncherOptionsLayout {
+    pub(crate) title: RectPx,
+    pub(crate) warning: RectPx,
+    pub(crate) resolution: RectPx,
+    pub(crate) trackbars: [(LauncherTrackbarId, RectPx); 6],
+    pub(crate) checkboxes: [(LauncherCheckboxId, RectPx); 3],
+    pub(crate) buttons: [(LauncherParentResult, RectPx); 3],
+    offset_x: i32,
+    offset_y: i32,
+}
+
+impl LauncherOptionsLayout {
+    pub(crate) fn new(width: i32, height: i32) -> Self {
+        let offset_x = center_offset(width, 800);
+        let offset_y = center_offset(height, 600);
+        let px = |rect: RectPx| rect.translate(offset_x, offset_y);
+        let dlu = |x, y, w, h| px(dlu_rect(x, y, w, h));
+        Self {
+            title: px(RectPx::new(635, 9, 162, 17)),
+            warning: px(RectPx::new(670, 47, 92, 54)),
+            resolution: px(RectPx::new(351, 86, 180, COMBO_FACE_H)),
+            trackbars: [
+                (LauncherTrackbarId::Detail, dlu(89, 53, 120, 13)),
+                (LauncherTrackbarId::Difficulty, dlu(92, 128, 120, 13)),
+                (LauncherTrackbarId::Scroll, dlu(238, 203, 120, 13)),
+                (LauncherTrackbarId::Score, dlu(82, 289, 85, 13)),
+                (LauncherTrackbarId::Sound, dlu(179, 289, 85, 13)),
+                (LauncherTrackbarId::Voice, dlu(277, 289, 85, 13)),
+            ],
+            checkboxes: [
+                (LauncherCheckboxId::Tooltips, dlu(93, 188, 130, 10)),
+                (LauncherCheckboxId::TargetLines, dlu(93, 203, 130, 10)),
+                (LauncherCheckboxId::ShowHidden, dlu(93, 218, 130, 10)),
+            ],
+            buttons: [
+                (
+                    LauncherParentResult::Keyboard,
+                    px(RectPx::new(644, 199, 156, 42)),
+                ),
+                (
+                    LauncherParentResult::Network,
+                    px(RectPx::new(644, 241, 156, 42)),
+                ),
+                (
+                    LauncherParentResult::Back,
+                    px(RectPx::new(644, 535, 156, 42)),
+                ),
+            ],
+            offset_x,
+            offset_y,
+        }
+    }
+
+    fn label_rect(&self, x: i32, y: i32, w: i32, h: i32) -> RectPx {
+        dlu_rect(x, y, w, h).translate(self.offset_x, self.offset_y)
+    }
+
+    fn trackbar_rect(&self, id: LauncherTrackbarId) -> RectPx {
+        self.trackbars
+            .iter()
+            .find(|(candidate, _)| *candidate == id)
+            .unwrap()
+            .1
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LauncherLabelAlign {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LauncherShellLabel<'a> {
+    pub(crate) rect: RectPx,
+    pub(crate) text: &'a str,
+    pub(crate) align: LauncherLabelAlign,
+    pub(crate) title: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LauncherResolutionPopup {
+    pub(crate) rect: RectPx,
+    pub(crate) content: RectPx,
+    pub(crate) row_height: i32,
+    pub(crate) first_row: usize,
+    pub(crate) visible_rows: usize,
+    pub(crate) scrollbar: Option<RectPx>,
+    pub(crate) thumb: Option<RectPx>,
+    pub(crate) selected: Option<usize>,
+    pub(crate) hovered: Option<usize>,
+}
+
+impl LauncherResolutionPopup {
+    fn row_at(self, x: i32, y: i32) -> Option<usize> {
+        self.content
+            .contains(x, y)
+            .then(|| self.first_row + ((y - self.content.y) / self.row_height) as usize)
+    }
+}
+
+fn frame(rect: RectPx, x: i32, y: i32) -> PhysicalControlFrame {
+    PhysicalControlFrame {
+        local_x: x - rect.x,
+        local_y: y - rect.y,
+        width: rect.w,
+        height: rect.h,
+    }
+}
+
+impl OptionsDialogState {
+    /// Native61E3AF..61E44E drops held/drag state once MK_LBUTTON is absent.
+    /// Focus loss is the host's authoritative lost-gesture boundary.
+    pub(crate) fn shell_cancel_pointer_gesture(&mut self) {
+        self.capture = None;
+        self.shell_interaction.pressed_button = None;
+        self.shell_interaction.hovered_button = None;
+        self.shell_interaction.popup_scroll_grab = None;
+    }
+    pub(crate) fn shell_labels(
+        &self,
+        layout: &LauncherOptionsLayout,
+    ) -> Vec<LauncherShellLabel<'_>> {
+        use LauncherLabelAlign::{Center, Left, Right};
+        let labels = &self.labels;
+        let mut result = vec![LauncherShellLabel {
+            rect: layout.title,
+            text: &labels.options,
+            align: Center,
+            title: true,
+        }];
+        for (text, x, y, w, h, align) in [
+            (labels.display_options.as_str(), 20, 18, 140, 10, Left),
+            (&labels.game_options, 20, 93, 298, 10, Left),
+            (&labels.ui_options, 20, 168, 298, 10, Left),
+            (&labels.audio_options, 20, 254, 298, 10, Left),
+            (&labels.visual_details, 89, 38, 60, 10, Left),
+            (&self.detail_caption, 149, 38, 60, 10, Right),
+            (&labels.set_resolution, 234, 38, 120, 10, Left),
+            (&labels.difficulty, 92, 113, 60, 10, Left),
+            (&self.difficulty_caption, 152, 113, 60, 10, Right),
+            (&labels.scroll_rate, 238, 188, 60, 10, Left),
+            (&self.scroll_caption, 298, 188, 60, 10, Right),
+            (&labels.music_volume, 82, 274, 85, 10, Center),
+            (&labels.sound_volume, 179, 274, 85, 10, Center),
+            (&labels.voice_volume, 277, 274, 85, 10, Center),
+            (&labels.blank, 2, 355, 303, 12, Left),
+        ] {
+            result.push(LauncherShellLabel {
+                rect: layout.label_rect(x, y, w, h),
+                text,
+                align,
+                title: false,
+            });
+        }
+        result
+    }
+
+    pub(crate) fn shell_checkbox_label(&self, id: LauncherCheckboxId) -> &str {
+        match id {
+            LauncherCheckboxId::Tooltips => &self.labels.tooltips,
+            LauncherCheckboxId::TargetLines => &self.labels.target_lines,
+            LauncherCheckboxId::ShowHidden => &self.labels.show_hidden,
+        }
+    }
+
+    pub(crate) fn shell_button_label(&self, id: LauncherParentResult) -> &str {
+        match id {
+            LauncherParentResult::Keyboard => &self.labels.keyboard,
+            LauncherParentResult::Network => &self.labels.network,
+            LauncherParentResult::Back => &self.labels.main_menu,
+            LauncherParentResult::Terminal => "",
+        }
+    }
+
+    pub(crate) fn shell_title_text(&self) -> &str {
+        &self.labels.options
+    }
+
+    pub(crate) fn shell_trackbar_thumb_left(&self, id: LauncherTrackbarId, width: i32) -> i32 {
+        thumb_left(
+            self.trackbar_position(id),
+            width,
+            id.plaque_reserve(),
+            id.maximum(),
+        )
+    }
+
+    pub(crate) fn shell_checkbox_checked(&self, id: LauncherCheckboxId) -> bool {
+        match id {
+            LauncherCheckboxId::Tooltips => self.values.tooltips,
+            LauncherCheckboxId::TargetLines => self.values.target_lines,
+            LauncherCheckboxId::ShowHidden => self.values.show_hidden,
+        }
+    }
+
+    pub(crate) fn shell_selected_resolution_text(&self) -> &str {
+        self.selected_resolution_label()
+    }
+    pub(crate) fn shell_resolution_rows(&self) -> &[LauncherResolutionRow] {
+        &self.resolution_rows
+    }
+    pub(crate) fn shell_button_hovered(&self, id: LauncherParentResult) -> bool {
+        self.shell_interaction.hovered_button == Some(id)
+    }
+    pub(crate) fn shell_button_pressed(&self, id: LauncherParentResult) -> bool {
+        self.shell_interaction.pressed_button == Some(id) && self.shell_button_hovered(id)
+    }
+
+    pub(crate) fn shell_popup(
+        &self,
+        layout: &LauncherOptionsLayout,
+    ) -> Option<LauncherResolutionPopup> {
+        if !self.resolution_popup_open || self.resolution_rows.is_empty() {
+            return None;
+        }
+        // Original ComboDropWin creation 0x006180CF..0x00618205 truncates
+        // the retained dropped allocation to whole item-height rows. D5 has
+        // 74 DLU (120px) allocated, admitting five 23px rows. Actual HWND
+        // border adjustments remain outside this resource-derived bound.
+        let model = ScrollModel::combo(5);
+        let visible_rows = model.visible_rows(self.resolution_rows.len(), 0);
+        let rect = RectPx::new(
+            layout.resolution.x,
+            layout.resolution.y + COMBO_FACE_H + 1,
+            layout.resolution.w,
+            visible_rows as i32 * COMBO_DROPDOWN_ROW_H,
+        );
+        let max_top = self.resolution_rows.len().saturating_sub(visible_rows);
+        let first_row = self.shell_interaction.popup_top.min(max_top);
+        let scrollbar = (max_top > 0).then(|| {
+            RectPx::new(
+                rect.x + rect.w - COMBO_DROPDOWN_SCROLLBAR_W,
+                rect.y,
+                COMBO_DROPDOWN_SCROLLBAR_W,
+                rect.h,
+            )
+        });
+        let thumb = scrollbar.and_then(|scrollbar| {
+            let height =
+                model.thumb_height(visible_rows, self.resolution_rows.len(), scrollbar.h)?;
+            Some(RectPx::new(
+                scrollbar.x,
+                model.thumb_y(scrollbar, height, first_row, max_top),
+                scrollbar.w,
+                height,
+            ))
+        });
+        Some(LauncherResolutionPopup {
+            rect,
+            content: RectPx::new(
+                rect.x,
+                rect.y,
+                rect.w - scrollbar.map_or(0, |s| s.w),
+                rect.h,
+            ),
+            row_height: COMBO_DROPDOWN_ROW_H,
+            first_row,
+            visible_rows,
+            scrollbar,
+            thumb,
+            selected: self.selected_resolution,
+            hovered: self.shell_interaction.popup_hovered,
+        })
+    }
+
+    /// The caller routes all pointer messages here while this parent is topmost.
+    pub(crate) fn shell_mouse_down(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        let layout = LauncherOptionsLayout::new(width, height);
+        if self.capture.is_some() {
+            return;
+        }
+        if self.resolution_popup_open {
+            if let Some(popup) = self.shell_popup(&layout) {
+                if let Some(scrollbar) = popup.scrollbar.filter(|rect| rect.contains(x, y)) {
+                    let max_top = self
+                        .resolution_rows
+                        .len()
+                        .saturating_sub(popup.visible_rows);
+                    if y < scrollbar.y + COMBO_DROPDOWN_SCROLLBAR_BUTTON_H {
+                        self.shell_interaction.popup_top = popup.first_row.saturating_sub(1);
+                    } else if y >= scrollbar.y + scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H {
+                        self.shell_interaction.popup_top = (popup.first_row + 1).min(max_top);
+                    } else if let Some(thumb) = popup.thumb {
+                        if thumb.contains(x, y) {
+                            self.shell_interaction.popup_scroll_grab = Some(y - thumb.y);
+                        } else {
+                            self.shell_interaction.popup_top = ScrollModel::combo(5)
+                                .top_index_from_thumb_top(
+                                    scrollbar,
+                                    thumb.h,
+                                    max_top,
+                                    y - thumb.h / 2,
+                                );
+                        }
+                    }
+                    self.shell_interaction.popup_hovered = None;
+                    return;
+                }
+            }
+            // ComboDropWin 0x0060E4E9..0x0060E500 plays Rules+0x1A8
+            // (GUIComboCloseSound) before selection or outside dismissal;
+            // scrollbar forwarding above returns before this cue.
+            self.pending_events
+                .push(LauncherOptionsEvent::Cue(LauncherCue::ComboClose));
+            if let Some(index) = self
+                .shell_popup(&layout)
+                .and_then(|popup| popup.row_at(x, y))
+            {
+                self.select_resolution(index);
+            } else {
+                self.resolution_popup_open = false;
+            }
+            self.shell_interaction = ShellInteraction::default();
+            return;
+        }
+        self.shell_mouse_move(x, y, width, height);
+        if let Some((id, _)) = layout.buttons.iter().find(|(_, rect)| rect.contains(x, y)) {
+            self.shell_interaction.pressed_button = Some(*id);
+            self.main_button_mouse_down();
+        } else if let Some((id, rect)) = layout
+            .trackbars
+            .iter()
+            .find(|(_, rect)| rect.contains(x, y))
+        {
+            self.trackbar_mouse_down(*id, frame(*rect, x, y));
+        } else if let Some((id, rect)) = layout
+            .checkboxes
+            .iter()
+            .find(|(_, rect)| rect.contains(x, y))
+        {
+            self.checkbox_mouse_down(*id, frame(*rect, x, y));
+        } else if layout.resolution.contains(x, y) {
+            self.combo_mouse_down(frame(layout.resolution, x, y));
+            self.shell_interaction.hovered_button = None;
+            // The fresh custom popup record is zeroed. Its 0x7E8 refresh
+            // copies CB_GETCURSEL to highlight +E8, leaving top-index +F0
+            // zero (0x0060F276..0x0060F283).
+            self.shell_interaction.popup_top = 0;
+        }
+    }
+
+    pub(crate) fn shell_mouse_move(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        let layout = LauncherOptionsLayout::new(width, height);
+        if let Some(id) = self.capture {
+            self.trackbar_mouse_move(id, frame(layout.trackbar_rect(id), x, y));
+            self.shell_interaction.hovered_button = None;
+            return;
+        }
+        if self.resolution_popup_open {
+            if let Some(grab) = self.shell_interaction.popup_scroll_grab {
+                if let Some(popup) = self.shell_popup(&layout) {
+                    if let (Some(scrollbar), Some(thumb)) = (popup.scrollbar, popup.thumb) {
+                        let max_top = self
+                            .resolution_rows
+                            .len()
+                            .saturating_sub(popup.visible_rows);
+                        self.shell_interaction.popup_top = ScrollModel::combo(5)
+                            .top_index_from_thumb_top(scrollbar, thumb.h, max_top, y - grab);
+                    }
+                }
+                self.shell_interaction.popup_hovered = None;
+                return;
+            }
+            self.shell_interaction.popup_hovered = self
+                .shell_popup(&layout)
+                .and_then(|popup| popup.row_at(x, y));
+            self.shell_interaction.hovered_button = None;
+        } else {
+            self.shell_interaction.hovered_button = layout
+                .buttons
+                .iter()
+                .find(|(_, rect)| rect.contains(x, y))
+                .map(|(id, _)| *id);
+        }
+    }
+
+    pub(crate) fn shell_mouse_up(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        self.shell_interaction.popup_scroll_grab = None;
+        if let Some(id) = self.capture {
+            self.trackbar_mouse_up(id);
+        }
+        self.shell_mouse_move(x, y, width, height);
+        if let Some(id) = self.shell_interaction.pressed_button.take() {
+            if self.shell_interaction.hovered_button == Some(id) && !self.resolution_popup_open {
+                self.request_result(id);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::main_menu_dialogs::options::{
+        LauncherCue, LauncherOptionsEvent, LauncherOptionsLabels, LauncherOptionsValues,
+    };
+
+    fn state() -> OptionsDialogState {
+        OptionsDialogState::new(
+            LauncherOptionsLabels::resolve(&|_| None),
+            LauncherOptionsValues::default(),
+            vec![
+                LauncherResolutionRow::new(800, 600),
+                LauncherResolutionRow::new(1024, 768),
+            ],
+            Some(0),
+            true,
+        )
+    }
+
+    #[test]
+    fn physical_slider_capture_crosses_other_controls_without_activating_them() {
+        let mut state = state();
+        let layout = LauncherOptionsLayout::new(800, 600);
+        let rect = layout.trackbar_rect(LauncherTrackbarId::Score);
+        let thumb = state.shell_trackbar_thumb_left(LauncherTrackbarId::Score, rect.w);
+        state.shell_mouse_down(rect.x + thumb + 5, rect.y + 10, 800, 600);
+        assert_eq!(state.capture, Some(LauncherTrackbarId::Score));
+        state.shell_mouse_move(799, 550, 800, 600);
+        state.shell_mouse_up(799, 550, 800, 600);
+        assert_eq!(state.trackbar_position(LauncherTrackbarId::Score), 10);
+        assert_eq!(state.capture, None);
+        let output = state.drain_output();
+        assert_eq!(output.events, [LauncherOptionsEvent::ScorePreview(1.0)]);
+        assert_eq!(output.result, None);
+    }
+
+    #[test]
+    fn lost_focus_cancels_drag_before_pointer_reentry() {
+        let mut state = state();
+        // Fixture starts at4: original128px/50px plaque projection puts the
+        // thumb at client27 (screen150), so155 is inside its12px capture box.
+        state.shell_mouse_down(155, 475, 800, 600);
+        assert_eq!(state.capture, Some(LauncherTrackbarId::Score));
+        state.shell_cancel_pointer_gesture();
+        let before = state.pack();
+        state.shell_mouse_move(799, 550, 800, 600);
+        state.shell_mouse_up(799, 550, 800, 600);
+        assert_eq!(state.pack(), before);
+        assert!(state.drain_output().events.is_empty());
+    }
+
+    #[test]
+    fn rail_jump_and_checkbox_text_do_not_acquire_capture() {
+        let mut state = state();
+        state.shell_mouse_down(140, 210, 800, 600);
+        assert_eq!(
+            state.trackbar_position(LauncherTrackbarId::Difficulty),
+            1,
+            "native lower strip rejects y=2"
+        );
+        state.shell_mouse_down(140, 218, 800, 600);
+        assert_eq!(state.trackbar_position(LauncherTrackbarId::Difficulty), 0);
+        assert_eq!(state.capture, None);
+        state.shell_mouse_move(317, 218, 800, 600);
+        assert_eq!(state.trackbar_position(LauncherTrackbarId::Difficulty), 0);
+        state.shell_mouse_down(170, 310, 800, 600);
+        assert!(state.shell_checkbox_checked(LauncherCheckboxId::Tooltips));
+        state.shell_mouse_down(150, 310, 800, 600);
+        assert!(!state.shell_checkbox_checked(LauncherCheckboxId::Tooltips));
+        assert_eq!(
+            state.drain_output().events,
+            [
+                LauncherOptionsEvent::Cue(LauncherCue::GenericClick),
+                LauncherOptionsEvent::Cue(LauncherCue::Checkbox)
+            ]
+        );
+    }
+
+    #[test]
+    fn button_release_requires_the_pressed_button_and_popup_dismissal_consumes_click() {
+        let mut state = state();
+        state.shell_mouse_down(700, 210, 800, 600);
+        assert!(state.shell_button_pressed(LauncherParentResult::Keyboard));
+        state.shell_mouse_up(700, 250, 800, 600);
+        assert_eq!(state.drain_output().result, None);
+        state.shell_mouse_down(520, 95, 800, 600);
+        assert!(state.resolution_popup_open);
+        state.shell_mouse_down(700, 550, 800, 600);
+        state.shell_mouse_up(700, 550, 800, 600);
+        assert!(!state.resolution_popup_open);
+        let dismissed = state.drain_output();
+        assert_eq!(dismissed.result, None);
+        assert_eq!(
+            dismissed.events,
+            [
+                LauncherOptionsEvent::Cue(LauncherCue::ComboOpen),
+                LauncherOptionsEvent::Cue(LauncherCue::ComboClose)
+            ]
+        );
+        state.shell_mouse_down(700, 550, 800, 600);
+        let down = state.drain_output();
+        assert_eq!(
+            down.events,
+            [LauncherOptionsEvent::Cue(LauncherCue::MainButton)]
+        );
+        assert_eq!(down.result, None);
+        state.shell_mouse_up(700, 550, 800, 600);
+        assert_eq!(
+            state.drain_output().result,
+            Some(LauncherParentResult::Back)
+        );
+    }
+
+    #[test]
+    fn resolution_selection_uses_the_painted_row_and_emits_immediate_pair() {
+        let mut state = state();
+        let layout = LauncherOptionsLayout::new(800, 600);
+        state.shell_mouse_down(520, 95, 800, 600);
+        state.drain_output();
+        let popup = state.shell_popup(&layout).unwrap();
+        let x = popup.rect.x + 10;
+        let y = popup.rect.y + popup.row_height + 5;
+        state.shell_mouse_move(x, y, 800, 600);
+        assert_eq!(state.shell_popup(&layout).unwrap().hovered, Some(1));
+        state.shell_mouse_down(x, y, 800, 600);
+        assert_eq!(state.shell_selected_resolution_text(), "1024 x 768 x 16");
+        assert!(state.shell_popup(&layout).is_none());
+        assert_eq!(
+            state.drain_output().events,
+            [
+                LauncherOptionsEvent::Cue(LauncherCue::ComboClose),
+                LauncherOptionsEvent::ResolutionSelected {
+                    width: 1024,
+                    height: 768
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn resolution_popup_scroll_reaches_later_rows_without_selecting_under_scrollbar() {
+        let mut state = state();
+        state.resolution_rows = (0..8)
+            .map(|index| LauncherResolutionRow::new(800 + index * 100, 600))
+            .collect();
+        let layout = LauncherOptionsLayout::new(800, 600);
+        state.shell_mouse_down(520, 95, 800, 600);
+        state.drain_output();
+        let popup = state.shell_popup(&layout).unwrap();
+        assert_eq!(popup.visible_rows, 5);
+        assert_eq!(popup.rect.h, 115);
+        let scrollbar = popup.scrollbar.unwrap();
+        for _ in 0..3 {
+            state.shell_mouse_down(scrollbar.x + 5, scrollbar.y + scrollbar.h - 5, 800, 600);
+            state.shell_mouse_up(scrollbar.x + 5, scrollbar.y + scrollbar.h - 5, 800, 600);
+        }
+        let popup = state.shell_popup(&layout).unwrap();
+        assert_eq!(popup.first_row, 3);
+        assert!(state.drain_output().events.is_empty());
+        state.shell_mouse_down(
+            popup.content.x + 5,
+            popup.content.y + 4 * popup.row_height + 5,
+            800,
+            600,
+        );
+        assert_eq!(state.shell_selected_resolution_text(), "1500 x 600 x 16");
+        assert_eq!(
+            state.drain_output().events,
+            [
+                LauncherOptionsEvent::Cue(LauncherCue::ComboClose),
+                LauncherOptionsEvent::ResolutionSelected {
+                    width: 1500,
+                    height: 600
+                }
+            ]
+        );
+    }
+}

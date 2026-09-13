@@ -2,7 +2,7 @@
 //!
 //! This module translates the active-YR `OptionsClass` profile boundary into
 //! one ordinary Rust value. It owns exact defaults, typed `RA2MD.INI` loading,
-//! startup screen-pair resolution, native-shaped formatting, and the one-read /
+//! separate game-pair resolution and frontend selection, native-shaped formatting, and the one-read /
 //! one-write preservation-safe commit. Runtime consumers remain in their
 //! existing app, presentation, and audio owners.
 
@@ -21,6 +21,10 @@ const AUDIO_SECTION: &str = "Audio";
 const SCREEN_SIZE_UNSET: i32 = -1;
 const DEFAULT_SCREEN_WIDTH: i32 = 800;
 const DEFAULT_SCREEN_HEIGHT: i32 = 600;
+pub(crate) const RETAIL_SHELL_SIZE: ScreenSize = ScreenSize {
+    width: 800,
+    height: 600,
+};
 
 /// The process-lifetime subset of active-YR `OptionsClass` owned by
 /// `RA2MD.INI` `[Options]`, `[Video]`, and `[Audio]`.
@@ -69,13 +73,13 @@ pub(crate) struct RetailOptionsProfile {
 /// The two process-start products obtained from one physical `RA2MD.INI`
 /// snapshot.
 ///
-/// Native selects the startup window after an early Video-only read, then
-/// rereads the complete profile later. Keeping both products explicit avoids
-/// making the retained profile double as a historical window decision.
+/// Native resolves the game preference after an early Video read, separately
+/// selects the frontend window, then rereads the complete profile later.
+/// Keeping both products explicit prevents game settings from sizing the shell.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RetailOptionsLoad {
     pub(crate) retained_profile: RetailOptionsProfile,
-    pub(crate) startup_screen: ScreenSize,
+    pub(crate) startup_shell_screen: ScreenSize,
 }
 
 impl Default for RetailOptionsProfile {
@@ -187,7 +191,21 @@ impl RetailOptionsLoad {
         if let Some(ini) = ini {
             retained_profile.apply_startup_video_ini(ini);
         }
-        let startup_screen = retained_profile.resolve_screen_size();
+        retained_profile.resolve_screen_size();
+        // WinMain 006BD9B5 selects the independent shell pair A8EB8C/90
+        // (defaults 800x600 at 005FA3D0), not the configured game pair.
+        // Explicit AllowModeToggle takes the separate 640x480 startup branch.
+        let allow_mode_toggle = ini
+            .and_then(|ini| ini.section(VIDEO_SECTION))
+            .is_some_and(|video| video.read_bool("AllowModeToggle", false));
+        let startup_shell_screen = if allow_mode_toggle {
+            ScreenSize {
+                width: 640,
+                height: 480,
+            }
+        } else {
+            RETAIL_SHELL_SIZE
+        };
 
         // Retail provenance: the complete `OptionsClass__ReadFromINI` @
         // `0x005FA620`, called by `Init_Game` at `0x0052C630`. Reusing the
@@ -199,7 +217,7 @@ impl RetailOptionsLoad {
 
         Self {
             retained_profile,
-            startup_screen,
+            startup_shell_screen,
         }
     }
 }
@@ -294,6 +312,12 @@ impl RetailOptionsProfile {
             self.screen_width = DEFAULT_SCREEN_WIDTH;
             self.screen_height = DEFAULT_SCREEN_HEIGHT;
         }
+        self.game_screen_size()
+    }
+
+    /// Current match preference, including launcher edits, projected only at
+    /// the platform boundary. Scenario start 00683DBB reads A8EB84/88 here.
+    pub(crate) fn game_screen_size(&self) -> ScreenSize {
         ScreenSize {
             width: self.screen_width.max(1) as u32,
             height: self.screen_height.max(1) as u32,
@@ -553,7 +577,7 @@ mod tests {
 
         assert_eq!(reads.get(), 1, "both semantic reads share one snapshot");
         assert_eq!(
-            load.startup_screen,
+            load.startup_shell_screen,
             ScreenSize {
                 width: 800,
                 height: 600,
@@ -580,7 +604,7 @@ mod tests {
         );
 
         assert_eq!(
-            load.startup_screen,
+            load.startup_shell_screen,
             ScreenSize {
                 width: 800,
                 height: 600,
@@ -596,17 +620,62 @@ mod tests {
     }
 
     #[test]
-    fn full_screen_pair_selects_and_retains_the_same_size() {
+    fn ordinary_frontend_size_is_independent_of_game_profile_and_launcher_edits() {
+        for (width, height) in [(640, 480), (800, 600), (1024, 768)] {
+            let ini = format!("[Video]\nScreenWidth={width}\nScreenHeight={height}\n");
+            let mut load = load_snapshot(&RetailStartupOptions::default(), ini.as_bytes());
+            assert_eq!(load.startup_shell_screen, RETAIL_SHELL_SIZE);
+            assert_eq!(
+                load.retained_profile.game_screen_size(),
+                ScreenSize { width, height }
+            );
+            load.retained_profile.screen_width = 1280;
+            load.retained_profile.screen_height = 960;
+            assert_eq!(
+                load.retained_profile.game_screen_size(),
+                ScreenSize {
+                    width: 1280,
+                    height: 960
+                }
+            );
+            assert_eq!(load.startup_shell_screen, RETAIL_SHELL_SIZE);
+        }
+    }
+
+    #[test]
+    fn explicit_mode_toggle_selects_low_startup_without_replacing_game_preference() {
+        let load = load_snapshot(
+            &RetailStartupOptions::default(),
+            b"[Video]\nAllowModeToggle=yes\nScreenWidth=1024\nScreenHeight=768\n",
+        );
+        assert_eq!(
+            load.startup_shell_screen,
+            ScreenSize {
+                width: 640,
+                height: 480
+            }
+        );
+        assert_eq!(
+            load.retained_profile.game_screen_size(),
+            ScreenSize {
+                width: 1024,
+                height: 768
+            }
+        );
+    }
+
+    #[test]
+    fn configured_game_pair_does_not_select_the_shell_size() {
         let load = load_snapshot(
             &RetailStartupOptions::default(),
             b"[Video]\nScreenWidth=640\nScreenHeight=480\n",
         );
 
         assert_eq!(
-            load.startup_screen,
+            load.startup_shell_screen,
             ScreenSize {
-                width: 640,
-                height: 480,
+                width: 800,
+                height: 600,
             }
         );
         assert_eq!(
@@ -628,10 +697,10 @@ mod tests {
         let load = load_snapshot(&startup, b"[Video]\nScreenWidth=640\n");
 
         assert_eq!(
-            load.startup_screen,
+            load.startup_shell_screen,
             ScreenSize {
-                width: 640,
-                height: 768,
+                width: 800,
+                height: 600,
             }
         );
         assert_eq!(
@@ -644,10 +713,10 @@ mod tests {
 
         let missing_both = load_snapshot(&startup, b"[Options]\nGameSpeed=4\n");
         assert_eq!(
-            missing_both.startup_screen,
+            missing_both.startup_shell_screen,
             ScreenSize {
-                width: 1024,
-                height: 768,
+                width: 800,
+                height: 600,
             }
         );
         assert_eq!(
@@ -670,10 +739,10 @@ mod tests {
             Err(io::Error::new(io::ErrorKind::NotFound, "missing"))
         });
         assert_eq!(
-            missing.startup_screen,
+            missing.startup_shell_screen,
             ScreenSize {
-                width: 1024,
-                height: 768,
+                width: 800,
+                height: 600,
             }
         );
         assert_eq!(
@@ -691,7 +760,7 @@ mod tests {
         };
         let partial = RetailOptionsLoad::without_ra2md(&partial);
         assert_eq!(
-            partial.startup_screen,
+            partial.startup_shell_screen,
             ScreenSize {
                 width: 800,
                 height: 600,
@@ -714,10 +783,10 @@ mod tests {
         );
 
         assert_eq!(
-            load.startup_screen,
+            load.startup_shell_screen,
             ScreenSize {
-                width: 1,
-                height: 480,
+                width: 800,
+                height: 600,
             }
         );
         assert_eq!(

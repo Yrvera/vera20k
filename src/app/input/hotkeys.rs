@@ -11,6 +11,8 @@ use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey};
 use crate::assets::asset_manager::AssetManager;
 use crate::rules::ini_parser::IniFile;
 
+pub(crate) mod catalog;
+
 const SHIFT_BIT: u16 = 0x100;
 const CTRL_BIT: u16 = 0x200;
 const ALT_BIT: u16 = 0x400;
@@ -48,6 +50,8 @@ pub(crate) enum HotkeyCommand {
     DefenseTab,
     ScatterObject,
     VeterancyNav,
+    HealthNav,
+    CursorCheat,
     PlanningMode,
     SidebarDown,
     SidebarUp,
@@ -98,17 +102,31 @@ impl HotkeyCommand {
     /// 0x28 = one 9-slot vtable plus its RTTI word), then reading each gap
     /// vtable's +0x04 `GetName` thunk back to its INI-name string. The set is
     /// closed: the grid holds exactly 47 CommandClass vtables, so 42 defaults
-    /// plus these 5 account for all of them. Only four appear below — stock
-    /// ships `HealthNav` unbound, so it has no [`HotkeyCommand`] variant to gate.
+    /// plus these 5 account for all of them. `HealthNav` is registered even
+    /// though the stock INI leaves it unbound.
     ///
     /// Consequence for VERA's dev chord: Ctrl+Shift+P now resolves to the retail
     /// `CombatantSelect` instead of falling through to the pathgrid overlay
     /// toggle, which keeps its F9 binding.
     fn accepts_base_modifiers(self, modifiers: ModifiersState) -> bool {
         match self {
-            Self::TypeSelect | Self::CombatantSelect | Self::VeterancyNav => modifiers.shift_key(),
+            Self::TypeSelect | Self::CombatantSelect | Self::VeterancyNav | Self::HealthNav => {
+                modifiers.shift_key()
+            }
             Self::PlanningMode => modifier_bits(modifiers) != 0,
             _ => modifier_bits(modifiers) == 0,
+        }
+    }
+
+    /// Exact native vtable +0x14 predicate, also used by assignment at
+    /// 48BB40/48BB60. Unlike the dispatch convenience above, the default is false.
+    fn accepts_native_modifiers(self, encoded: u16) -> bool {
+        match self {
+            Self::TypeSelect | Self::CombatantSelect | Self::VeterancyNav | Self::HealthNav => {
+                encoded & SHIFT_BIT != 0
+            }
+            Self::PlanningMode => encoded & (SHIFT_BIT | CTRL_BIT | ALT_BIT) != 0,
+            _ => false,
         }
     }
 }
@@ -153,12 +171,30 @@ pub(crate) struct HotkeyBindings {
     by_key: BTreeMap<u16, HotkeyCommand>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BindingAssignmentError {
+    CannotMap,
+    CannotRemap,
+}
+
 impl HotkeyBindings {
     pub(crate) fn load(assets: Option<&AssetManager>) -> Self {
         Self::from_ini_bytes(assets.and_then(|assets| assets.get_ref("KEYBOARDMD.INI")))
     }
 
     fn from_ini_bytes(bytes: Option<&[u8]>) -> Self {
+        let mut bindings = Self::reload_from_ini_bytes(bytes);
+        // Startup 532150 calls reload 533D20, then installs these three keys.
+        // Cancel/reset use reload alone and must not silently reinstall them.
+        bindings.by_key.insert(VK_DELETE, HotkeyCommand::Delete);
+        bindings.by_key.insert(VK_ESCAPE, HotkeyCommand::Options);
+        bindings
+            .by_key
+            .insert(VK_SPACE, HotkeyCommand::CenterOnRadarEvent);
+        bindings
+    }
+
+    pub(crate) fn reload_from_ini_bytes(bytes: Option<&[u8]>) -> Self {
         let mut bindings = Self::default();
         if let Some(section) = bytes
             .and_then(|bytes| IniFile::from_bytes(bytes).ok())
@@ -179,12 +215,75 @@ impl HotkeyBindings {
             }
         }
 
-        bindings.by_key.insert(VK_DELETE, HotkeyCommand::Delete);
-        bindings.by_key.insert(VK_ESCAPE, HotkeyCommand::Options);
         bindings
-            .by_key
-            .insert(VK_SPACE, HotkeyCommand::CenterOnRadarEvent);
-        bindings
+    }
+
+    pub(crate) fn command_at(&self, encoded: u16) -> Option<HotkeyCommand> {
+        self.by_key.get(&encoded).copied()
+    }
+
+    /// The current-shortcut label and replacement both scan ascending keys and
+    /// stop at the first match (5FB408..5FB44A and 5FBBAC). Additional bindings survive.
+    pub(crate) fn first_key(&self, command: HotkeyCommand) -> Option<u16> {
+        self.by_key
+            .iter()
+            .find_map(|(&key, &owner)| (owner == command).then_some(key))
+    }
+
+    /// Original 5FBB38..5FBDF1; executable comparisons in keyboard_bindings.json.
+    /// Zero unassigns the first existing shortcut. Rejections leave all bindings intact.
+    pub(crate) fn assign(
+        &mut self,
+        command: HotkeyCommand,
+        encoded: u16,
+    ) -> Result<(), BindingAssignmentError> {
+        if encoded & (SHIFT_BIT | CTRL_BIT | ALT_BIT) != 0 {
+            if command.accepts_native_modifiers(encoded) {
+                return Err(BindingAssignmentError::CannotMap);
+            }
+            if self
+                .command_at(encoded & 0xff)
+                .is_some_and(|owner| owner.accepts_native_modifiers(encoded))
+            {
+                return Err(BindingAssignmentError::CannotRemap);
+            }
+        }
+        if let Some(key) = self.first_key(command) {
+            self.by_key.remove(&key);
+        }
+        if encoded != 0 {
+            self.by_key.insert(encoded, command);
+        }
+        Ok(())
+    }
+
+    /// Back's fresh INI writer (5FB900..5FB9D8) visits ascending encoded keys.
+    /// Repeated command names overwrite their earlier value, retaining the
+    /// first insertion position. Thus the highest key survives disk round-trip.
+    pub(crate) fn to_ini_string(&self) -> String {
+        use std::fmt::Write;
+        let mut entries: Vec<(&str, u16)> = Vec::new();
+        for (&key, &command) in &self.by_key {
+            let Some(metadata) = catalog::registered_commands()
+                .iter()
+                .find(|row| row.command == command)
+            else {
+                continue;
+            };
+            if let Some((_, value)) = entries
+                .iter_mut()
+                .find(|(name, _)| *name == metadata.ini_name)
+            {
+                *value = key;
+            } else {
+                entries.push((metadata.ini_name, key));
+            }
+        }
+        let mut output = String::from("[Hotkey]\n");
+        for (name, key) in entries {
+            writeln!(output, "{name}={key}").expect("writing a String cannot fail");
+        }
+        output
     }
 
     pub(crate) fn resolve_event(
@@ -242,6 +341,21 @@ fn fallback_for_virtual_key(virtual_key: u16) -> Option<HotkeyFallback> {
     })
 }
 
+/// Shell controls observe the live message pump while gameplay retains its
+/// paused admission snapshot. A3 capture must not latch a modifier into gameplay
+/// when its key-up occurs later in the paused parent.
+pub(crate) fn record_modifier_event(
+    live: &mut ModifiersState,
+    gameplay: &mut ModifiersState,
+    incoming: ModifiersState,
+    paused: bool,
+) {
+    *live = incoming;
+    if !paused {
+        *gameplay = incoming;
+    }
+}
+
 pub(crate) fn modifier_bits(modifiers: ModifiersState) -> u16 {
     (if modifiers.shift_key() { SHIFT_BIT } else { 0 })
         | (if modifiers.control_key() { CTRL_BIT } else { 0 })
@@ -275,17 +389,46 @@ pub(crate) fn logical_virtual_key(key: &Key, location: KeyLocation) -> Option<u1
                 if character.is_ascii_digit() {
                     return Some(0x60 + (character as u16 - '0' as u16));
                 }
-                if character == '.' {
-                    return Some(0x6e);
+                match character {
+                    '.' | ',' => return Some(0x6e),
+                    '*' => return Some(0x6a),
+                    '+' => return Some(0x6b),
+                    '-' => return Some(0x6d),
+                    '/' => return Some(0x6f),
+                    _ => {}
                 }
             }
-            character
-                .is_ascii_alphanumeric()
-                .then_some(character as u16)
+            if character.is_ascii_alphanumeric() {
+                Some(character as u16)
+            } else {
+                printable_virtual_key(character)
+            }
         }
         Key::Named(named) => named_virtual_key(*named),
         _ => None,
     }
+}
+
+/// Native receives a Win32 virtual key before 55DEE0 dispatch. Winit supplies
+/// the modifier-free logical character instead, so OEM punctuation and ordinary
+/// national-layout letters must be mapped through the current Windows layout.
+/// VkKeyScanW's high-byte modifier recipe is not an event modifier state; the
+/// caller already owns the actual Shift/Ctrl/Alt bits.
+#[cfg(windows)]
+fn printable_virtual_key(character: char) -> Option<u16> {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn VkKeyScanW(character: u16) -> i16;
+    }
+    let character = u16::try_from(character as u32).ok()?;
+    // SAFETY: VkKeyScanW takes one UTF-16 code unit and no pointers.
+    let encoded = unsafe { VkKeyScanW(character) };
+    (encoded != -1).then_some(encoded as u16 & 0xff)
+}
+
+#[cfg(not(windows))]
+fn printable_virtual_key(_character: char) -> Option<u16> {
+    None
 }
 
 fn named_virtual_key(key: NamedKey) -> Option<u16> {
@@ -294,6 +437,9 @@ fn named_virtual_key(key: NamedKey) -> Option<u16> {
         NamedKey::Tab => 0x09,
         NamedKey::Clear => 0x0c,
         NamedKey::Enter => 0x0d,
+        NamedKey::Shift => 0x10,
+        NamedKey::Control => 0x11,
+        NamedKey::Alt => 0x12,
         NamedKey::Escape => VK_ESCAPE,
         NamedKey::Space => VK_SPACE,
         NamedKey::PageUp => 0x21,
@@ -323,76 +469,274 @@ fn named_virtual_key(key: NamedKey) -> Option<u16> {
 }
 
 fn command_from_name(name: &str) -> Option<HotkeyCommand> {
-    Some(match name {
-        "CenterView" => HotkeyCommand::CenterView,
-        "Options" => HotkeyCommand::Options,
-        "CenterOnRadarEvent" => HotkeyCommand::CenterOnRadarEvent,
-        "ToggleAlliance" => HotkeyCommand::ToggleAlliance,
-        "PlaceBeacon" => HotkeyCommand::PlaceBeacon,
-        "AllToCheer" => HotkeyCommand::AllToCheer,
-        "DeployObject" => HotkeyCommand::DeployObject,
-        "InfantryTab" => HotkeyCommand::InfantryTab,
-        "Follow" => HotkeyCommand::Follow,
-        "GuardObject" => HotkeyCommand::GuardObject,
-        "CenterBase" => HotkeyCommand::CenterBase,
-        "ToggleRepair" => HotkeyCommand::ToggleRepair,
-        "ToggleSell" => HotkeyCommand::ToggleSell,
-        "PreviousObject" => HotkeyCommand::PreviousObject,
-        "NextObject" => HotkeyCommand::NextObject,
-        "CombatantSelect" => HotkeyCommand::CombatantSelect,
-        "StructureTab" => HotkeyCommand::StructureTab,
-        "UnitTab" => HotkeyCommand::UnitTab,
-        "StopObject" => HotkeyCommand::StopObject,
-        "TypeSelect" => HotkeyCommand::TypeSelect,
-        "PageUser" => HotkeyCommand::PageUser,
-        "DefenseTab" => HotkeyCommand::DefenseTab,
-        "ScatterObject" => HotkeyCommand::ScatterObject,
-        "VeterancyNav" => HotkeyCommand::VeterancyNav,
-        "PlanningMode" => HotkeyCommand::PlanningMode,
-        "SidebarDown" => HotkeyCommand::SidebarDown,
-        "SidebarUp" => HotkeyCommand::SidebarUp,
-        "Delete" => HotkeyCommand::Delete,
-        "ScreenCapture" => HotkeyCommand::ScreenCapture,
-        _ => return parse_numbered_command(name),
-    })
-}
-
-fn parse_numbered_command(name: &str) -> Option<HotkeyCommand> {
-    if let Some(slot) = name
-        .strip_prefix("View")
-        .and_then(|value| value.parse::<usize>().ok())
-        .and_then(|number| number.checked_sub(1))
-        .filter(|slot| *slot < 4)
-    {
-        return Some(HotkeyCommand::View(slot));
-    }
-    if let Some(slot) = name
-        .strip_prefix("SetView")
-        .and_then(|value| value.parse::<usize>().ok())
-        .and_then(|number| number.checked_sub(1))
-        .filter(|slot| *slot < 4)
-    {
-        return Some(HotkeyCommand::SetView(slot));
-    }
-    let (prefix, suffix) = name.rsplit_once('_')?;
-    let number = suffix.parse::<usize>().ok()?;
-    let slot = if number == 10 { 0 } else { number };
-    if slot > 9 {
-        return None;
-    }
-    match prefix {
-        "TeamSelect" => Some(HotkeyCommand::TeamSelect(slot)),
-        "TeamAddSelect" => Some(HotkeyCommand::TeamAddSelect(slot)),
-        "TeamCreate" => Some(HotkeyCommand::TeamCreate(slot)),
-        "TeamCenter" => Some(HotkeyCommand::TeamCenter(slot)),
-        "Taunt" if (1..=8).contains(&number) => Some(HotkeyCommand::Taunt(number - 1)),
-        _ => None,
-    }
+    // Reload 533DE4..533E29 walks registered vtable+4 names and compares exact
+    // bytes. Numbered commands are registered names, not a permissive grammar.
+    catalog::registered_commands()
+        .iter()
+        .find(|row| row.ini_name == name)
+        .map(|row| row.command)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn native_keyboard_fixture() -> serde_json::Value {
+        serde_json::from_str(include_str!(
+            "../../../tools/storage_oracle/keyboard_bindings.json"
+        ))
+        .expect("preserved original keyboard fixture")
+    }
+
+    #[test]
+    fn registered_catalog_matches_original_objects_and_metadata_getters() {
+        let fixture = native_keyboard_fixture();
+        let native = fixture["catalog"].as_array().unwrap();
+        let catalog = catalog::registered_commands();
+        assert_eq!(catalog.len(), 87);
+        assert_eq!(catalog.len(), native.len());
+        for (index, (actual, expected)) in catalog.iter().zip(native).enumerate() {
+            assert_eq!(expected["index"].as_u64(), Some(index as u64));
+            assert_eq!(actual.ini_name, expected["ini_name"].as_str().unwrap());
+            assert_eq!(actual.name_key, expected["name_key"].as_str().unwrap());
+            assert_eq!(
+                actual.category_key,
+                expected["category_key"].as_str().unwrap()
+            );
+            assert_eq!(
+                actual.description_key,
+                expected["description_key"].as_str().unwrap()
+            );
+            assert_eq!(
+                actual.parameter.map(u64::from),
+                expected["parameter"].as_u64()
+            );
+            assert_eq!(command_from_name(actual.ini_name), Some(actual.command));
+            assert!(
+                !catalog[..index]
+                    .iter()
+                    .any(|row| row.command == actual.command)
+            );
+        }
+    }
+
+    #[test]
+    fn every_original_registered_name_survives_reload_and_serialization() {
+        use std::fmt::Write;
+        let fixture = native_keyboard_fixture();
+        let mut ini = String::from("[Hotkey]\n");
+        for row in fixture["catalog"].as_array().unwrap() {
+            let key = 0x200 + row["index"].as_u64().unwrap();
+            writeln!(ini, "{}={key}", row["ini_name"].as_str().unwrap()).unwrap();
+        }
+        let loaded = HotkeyBindings::reload_from_ini_bytes(Some(ini.as_bytes()));
+        assert_eq!(loaded.by_key.len(), 87);
+        for (index, metadata) in catalog::registered_commands().iter().enumerate() {
+            assert_eq!(
+                loaded.command_at(0x200 + index as u16),
+                Some(metadata.command)
+            );
+        }
+        let saved = loaded.to_ini_string();
+        assert_eq!(saved, ini);
+        let reloaded = HotkeyBindings::reload_from_ini_bytes(Some(saved.as_bytes()));
+        assert_eq!(reloaded.by_key, loaded.by_key);
+    }
+
+    #[test]
+    fn reload_rejects_numeric_aliases_absent_from_original_registered_names() {
+        use std::fmt::Write;
+        // Native533DF4..533E1D compares bytes with each original registered name.
+        // These are former Rust parser aliases, not additional registered commands.
+        let aliases = [
+            "TeamSelect_0",
+            "TeamCreate_01",
+            "TeamAddSelect_+1",
+            "TeamCenter_00",
+            "View01",
+            "SetView+1",
+            "Taunt_01",
+        ];
+        let fixture = native_keyboard_fixture();
+        let original = fixture["catalog"].as_array().unwrap();
+        let mut ini = String::from("[Hotkey]\n");
+        for (index, alias) in aliases.iter().enumerate() {
+            assert!(
+                !original
+                    .iter()
+                    .any(|row| row["ini_name"].as_str() == Some(alias))
+            );
+            assert_eq!(command_from_name(alias), None);
+            writeln!(ini, "{alias}={}", 0x200 + index).unwrap();
+        }
+        assert!(
+            HotkeyBindings::reload_from_ini_bytes(Some(ini.as_bytes()))
+                .by_key
+                .is_empty()
+        );
+        // The stock team10 -> engine slot0 mapping remains valid through metadata.
+        assert_eq!(
+            command_from_name("TeamSelect_10"),
+            Some(HotkeyCommand::TeamSelect(0))
+        );
+    }
+
+    #[test]
+    fn editable_bindings_match_original_assignment_execution() {
+        let fixture = native_keyboard_fixture();
+        let assignments = fixture["assignments"].as_array().unwrap();
+        assert_eq!(assignments.len(), 73);
+        for case in assignments {
+            let mut bindings = HotkeyBindings::default();
+            for row in case["before"].as_array().unwrap() {
+                bindings.by_key.insert(
+                    row[0].as_u64().unwrap() as u16,
+                    command_from_name(row[1].as_str().unwrap()).unwrap(),
+                );
+            }
+            let command = command_from_name(case["command"].as_str().unwrap()).unwrap();
+            let expected_error = match case["error"].as_str() {
+                Some("CannotMap") => Some(BindingAssignmentError::CannotMap),
+                Some("CannotRemap") => Some(BindingAssignmentError::CannotRemap),
+                None => None,
+                other => panic!("unexpected fixture rejection {other:?}"),
+            };
+            assert_eq!(
+                bindings
+                    .assign(command, case["encoded"].as_u64().unwrap() as u16)
+                    .err(),
+                expected_error,
+                "{}",
+                case["name"]
+            );
+            let expected: BTreeMap<_, _> = case["after"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    (
+                        row[0].as_u64().unwrap() as u16,
+                        command_from_name(row[1].as_str().unwrap()).unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(bindings.by_key, expected, "{}", case["name"]);
+            assert_eq!(
+                bindings.first_key(command),
+                expected
+                    .iter()
+                    .find_map(|(&key, &owner)| (owner == command).then_some(key)),
+                "{}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn serialization_collapses_duplicate_commands_and_reload_does_not_force_keys() {
+        let startup =
+            HotkeyBindings::from_ini_bytes(Some(b"[Hotkey]\nDelete=110\nStopObject=83\n"));
+        assert_eq!(startup.first_key(HotkeyCommand::Delete), Some(46));
+        let serialized = startup.to_ini_string();
+        assert_eq!(
+            serialized,
+            "[Hotkey]\nOptions=27\nCenterOnRadarEvent=32\nDelete=110\nStopObject=83\n"
+        );
+        let mut reloaded = HotkeyBindings::reload_from_ini_bytes(Some(serialized.as_bytes()));
+        assert_eq!(reloaded.command_at(46), None);
+        assert_eq!(reloaded.first_key(HotkeyCommand::Delete), Some(110));
+        reloaded.assign(HotkeyCommand::Options, 0).unwrap();
+        reloaded
+            .assign(HotkeyCommand::CenterOnRadarEvent, 0)
+            .unwrap();
+        let serialized = reloaded.to_ini_string();
+        let reloaded = HotkeyBindings::reload_from_ini_bytes(Some(serialized.as_bytes()));
+        assert_eq!(reloaded.command_at(VK_ESCAPE), None);
+        assert_eq!(reloaded.command_at(VK_SPACE), None);
+        assert_eq!(reloaded.command_at(110), Some(HotkeyCommand::Delete));
+        assert_eq!(reloaded.command_at(83), Some(HotkeyCommand::StopObject));
+    }
+
+    #[test]
+    fn keypad_decimal_and_operators_keep_their_win32_identities() {
+        for (text, expected) in [
+            (".", 110),
+            (",", 110),
+            ("*", 106),
+            ("+", 107),
+            ("-", 109),
+            ("/", 111),
+        ] {
+            let mut bindings = HotkeyBindings::default();
+            bindings
+                .assign(HotkeyCommand::StopObject, expected)
+                .unwrap();
+            assert_eq!(
+                logical_virtual_key(&character(text), KeyLocation::Numpad),
+                Some(expected)
+            );
+            assert_eq!(
+                bindings.resolve(
+                    &character(text),
+                    KeyLocation::Numpad,
+                    ModifiersState::empty()
+                ),
+                Some(HotkeyCommand::StopObject)
+            );
+        }
+        // NumLock-off Delete is VK_DELETE even on the keypad; it is not VK_DECIMAL.
+        for location in [KeyLocation::Standard, KeyLocation::Numpad] {
+            assert_eq!(
+                logical_virtual_key(&Key::Named(NamedKey::Delete), location),
+                Some(46)
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ordinary_oem_bindings_dispatch_using_preserved_host_keyboard_mapping() {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn GetKeyboardLayoutNameW(name: *mut u16) -> i32;
+        }
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tools/storage_oracle/keyboard_key_names.json"
+        ))
+        .unwrap();
+        let mut layout = [0u16; 9];
+        // SAFETY: Windows writes at most KL_NAMELENGTH (9) UTF-16 units.
+        assert_ne!(unsafe { GetKeyboardLayoutNameW(layout.as_mut_ptr()) }, 0);
+        let current = String::from_utf16_lossy(&layout[..8]);
+        if fixture["host"]["keyboard_layout"].as_str() != Some(current.as_str()) {
+            // Fixture coverage is explicitly the captured host layout, not every layout.
+            return;
+        }
+        let mut checked = 0;
+        for row in fixture["printable"].as_array().unwrap() {
+            let mapping = row["mapping"].as_i64().unwrap();
+            if !(0..=255).contains(&mapping) {
+                continue; // Only ordinary unmodified characters in this bounded probe.
+            }
+            let key = character(row["character"].as_str().unwrap());
+            let mut bindings = HotkeyBindings::default();
+            bindings
+                .assign(HotkeyCommand::StopObject, mapping as u16 | CTRL_BIT)
+                .unwrap();
+            assert_eq!(
+                bindings.resolve(&key, KeyLocation::Standard, ModifiersState::CONTROL),
+                Some(HotkeyCommand::StopObject),
+                "{}",
+                row["character"]
+            );
+            assert_eq!(
+                bindings.resolve(&key, KeyLocation::Standard, ModifiersState::empty()),
+                None
+            );
+            checked += 1;
+        }
+        assert!(checked >= 5);
+    }
 
     fn modifiers(shift: bool, ctrl: bool, alt: bool) -> ModifiersState {
         let mut value = ModifiersState::empty();
@@ -689,15 +1033,14 @@ mod tests {
         ));
         let raw_shifted_digit = character("!");
         let modifier_free_digit = character("1");
-        assert_eq!(
-            logical_virtual_key(&raw_shifted_digit, KeyLocation::Standard),
-            None
-        );
         let selected_digit = binding_logical_key(
             &raw_shifted_digit,
             &modifier_free_digit,
             KeyLocation::Standard,
         );
+        // OEM mapping may also resolve the shifted glyph on the current host,
+        // but the event boundary must still select the modifier-free identity.
+        assert_eq!(selected_digit, &modifier_free_digit);
         assert_eq!(
             bindings.resolve_event(
                 selected_digit,
@@ -916,5 +1259,30 @@ mod tests {
             ),
             HotkeyResolution::Command(HotkeyCommand::DeployObject)
         );
+    }
+}
+
+#[cfg(test)]
+mod modifier_owner_tests {
+    use super::*;
+    #[test]
+    fn child_capture_modifier_and_parent_release_do_not_leak_into_resumed_commands() {
+        let mut live = ModifiersState::empty();
+        let mut gameplay = ModifiersState::empty();
+        record_modifier_event(
+            &mut live,
+            &mut gameplay,
+            ModifiersState::SHIFT | ModifiersState::CONTROL,
+            true,
+        );
+        assert_eq!(modifier_bits(live), 0x300);
+        assert!(gameplay.is_empty());
+        // Back returns to pausedBBB while keys remain held; key-up occurs there.
+        record_modifier_event(&mut live, &mut gameplay, ModifiersState::empty(), true);
+        assert!(live.is_empty());
+        assert!(gameplay.is_empty());
+        record_modifier_event(&mut live, &mut gameplay, ModifiersState::ALT, false);
+        assert_eq!(live, gameplay);
+        assert_eq!(modifier_bits(gameplay), 0x400);
     }
 }

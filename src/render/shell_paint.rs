@@ -375,24 +375,9 @@ pub fn paint_labels_at_depth(
 
 // --- Slice 5: mode-2 SHP modal emitter (PUDLGBGN + MNBTTN + labels) ---
 
-/// Native MNBTTN.SHP owner-draw type-3 frame index: `0` = up, `1` = disabled,
-/// `2` = pressed. A disabled button shows the disabled frame even when also
-/// flagged pressed (owner-draw precedence); the modal OK/Cancel buttons are always
-/// enabled in practice, so the live path is up-vs-pressed. The `pressed -> 2`
-/// mapping is the corrected one (an earlier modal helper mapped pressed -> 1, the
-/// disabled frame, leaving the pressed frame unreachable).
-pub fn modal_button_frame_index(pressed: bool, enabled: bool) -> usize {
-    if !enabled {
-        1
-    } else if pressed {
-        2
-    } else {
-        0
-    }
-}
-
-/// The three MNBTTN owner-draw frames for a mode-2 modal button (up/disabled/
-/// pressed). `Option` because a missing SHP frame draws nothing rather than panics.
+/// Sprite entries supplied by a modal's button policy. These are semantic
+/// roles, not numbered SHP frames; native type3 callers bind released0/held1.
+/// Missing art draws nothing rather than panicking.
 #[derive(Clone, Copy, Default)]
 pub struct ModalButtonFrames {
     pub up: Option<SkirmishShellChromeEntry>,
@@ -401,12 +386,15 @@ pub struct ModalButtonFrames {
 }
 
 impl ModalButtonFrames {
-    /// The frame for the current state, via [`modal_button_frame_index`].
+    /// Select the caller-supplied sprite role. Eligibility is handled here;
+    /// native SHP indices and timer highlighting belong to the caller's policy.
     pub fn select(self, pressed: bool, enabled: bool) -> Option<SkirmishShellChromeEntry> {
-        match modal_button_frame_index(pressed, enabled) {
-            1 => self.disabled,
-            2 => self.pressed,
-            _ => self.up,
+        if !enabled {
+            self.disabled
+        } else if pressed {
+            self.pressed
+        } else {
+            self.up
         }
     }
 }
@@ -911,19 +899,9 @@ mod tests {
         text: 0.3,
     };
 
-    /// MNBTTN owner-draw type-3 frame mapping: up=0, disabled=1, pressed=2. The
-    /// `pressed -> 2` row is the corrected mapping this slice introduces.
+    /// `select` resolves a semantic state to the caller-supplied entry.
     #[test]
-    fn modal_button_frame_index_maps_states() {
-        assert_eq!(modal_button_frame_index(false, true), 0); // up
-        assert_eq!(modal_button_frame_index(true, true), 2); // pressed -> frame 2
-        assert_eq!(modal_button_frame_index(false, false), 1); // disabled
-        assert_eq!(modal_button_frame_index(true, false), 1); // disabled beats pressed
-    }
-
-    /// `select` resolves the frame index to the matching entry.
-    #[test]
-    fn modal_button_frames_select_matches_index() {
+    fn modal_button_frames_select_matches_role() {
         let up = fake_skirmish_entry([0.0, 0.0], [0.1, 0.1], [80.0, 20.0]);
         let disabled = fake_skirmish_entry([0.2, 0.0], [0.1, 0.1], [80.0, 20.0]);
         let pressed = fake_skirmish_entry([0.4, 0.0], [0.1, 0.1], [80.0, 20.0]);
@@ -944,7 +922,7 @@ mod tests {
     }
 
     /// Pressed modal draws the background at the dialog top-left and the MNBTTN
-    /// PRESSED frame (frame 2) centered on the OK control.
+    /// supplied held sprite centered on the OK control.
     #[test]
     fn modal_sprites_use_pressed_frame_centered_on_control() {
         let bg = fake_skirmish_entry([0.1, 0.1], [0.2, 0.2], [200.0, 120.0]);

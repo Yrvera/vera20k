@@ -28,7 +28,7 @@ use super::{
     OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
     OWNERDRAW_SELECTED_RGB_FROM_DAT_00AC4604_PACKED_000000FF,
     SHELL_DROPDOWN_BG_RGB_PENDING_COMBODROPWIN_SOURCE_CAPTURE, SHELL_DROPDOWN_DEPTH,
-    SHELL_MODAL_BG_RGB, SHELL_MODAL_PANEL_RGB, SHELL_PARENT_BACKGROUND_DEPTH,
+    SHELL_MODAL_BG_RGB, SHELL_MODAL_PANEL_RGB, SHELL_PARENT_BACKGROUND_DEPTH, SHELL_LABEL_TEXT_RGB,
     SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE,
 };
 
@@ -358,11 +358,7 @@ pub(super) fn push_random_map_setup_modal_control_instances(
     // take the MNBTTN modal button art rather than the generic PCX slices --
     // the same art the message-box modals use. Native size, centred on the
     // control rect.
-    let modal_button_frames = shell_paint::ModalButtonFrames {
-        up: atlas.modal_button_mnbttn_frame0,
-        disabled: atlas.modal_button_mnbttn_frame1,
-        pressed: atlas.modal_button_mnbttn_frame2,
-    };
+    let modal_button_frames = super::chrome::type3_button_frames(atlas);
     let action_buttons: Vec<shell_paint::ModalButton> = [
         (layout.randomize, RandomMapSetupControl::Randomize0x621),
         (layout.generate, RandomMapSetupControl::Generate0x620),
@@ -487,11 +483,7 @@ pub(super) fn push_validation_modal_instances(
     layout: &ValidationModalLayout,
     pressed: bool,
 ) {
-    let frames = shell_paint::ModalButtonFrames {
-        up: atlas.modal_button_mnbttn_frame0,
-        disabled: atlas.modal_button_mnbttn_frame1,
-        pressed: atlas.modal_button_mnbttn_frame2,
-    };
+    let frames = super::chrome::type3_button_frames(atlas);
     let button = shell_paint::ModalButton {
         rect: layout.ok_button,
         pressed,
@@ -529,44 +521,36 @@ pub(super) fn push_validation_modal_instances(
 pub(super) fn push_saved_seed_modal_instances(
     out: &mut Vec<SpriteInstance>,
     atlas: &SkirmishShellChromeAtlas,
+    font: &crate::render::bit_font::BitFont,
     layout: &SavedSeedLayout,
     browser: &SavedSeedBrowserState,
+    interior: BackdropInteriorPaint,
 ) {
-    if layout.screen.w == 800 {
-        if let Some(background) = atlas.choose_map_background_800_customize_battle {
-            push_entry_native(
-                out,
-                background,
-                layout.screen.x,
-                layout.screen.y,
-                SHELL_PARENT_BACKGROUND_DEPTH,
-            );
-        }
-    }
-    push_solid_rect(
-        out,
-        atlas,
-        layout.dialog,
-        SHELL_MODAL_BG_RGB,
-        SHELL_DROPDOWN_DEPTH - 0.00008,
-    );
-    push_rect_outline(
-        out,
-        atlas,
-        layout.dialog,
-        OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
-        SHELL_DROPDOWN_DEPTH - 0.00009,
-    );
-    push_choose_map_listbox_instances(
-        out,
-        atlas,
-        layout.list,
-        browser.entries.len(),
-        browser.top_index,
-        browser.selected,
-        BackdropInteriorPaint::OpaqueFallback,
-        SHELL_DROPDOWN_DEPTH - 0.00010,
-    );
+    push_saved_browser_modal_instances(out, atlas, font, layout, browser, interior, true);
+}
+
+/// Shared native list/editor/prompt painting; active-game callers supply
+/// SIDEBTTN from the side atlas and therefore omit the launcher column buttons.
+pub(super) fn push_saved_browser_modal_instances<I: Clone + PartialEq>(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    font: &crate::render::bit_font::BitFont,
+    layout: &SavedSeedLayout,
+    browser: &SavedSeedBrowserState<I>,
+    interior: BackdropInteriorPaint,
+    column_buttons: bool,
+) {
+    use crate::ui::shell::list::{ShellListGeometry,ListScrollPart};
+    let pressed=match browser.pressed_control {
+        Some(SavedSeedControl::ScrollUp)=>Some(ListScrollPart::Up),
+        Some(SavedSeedControl::ScrollDown)=>Some(ListScrollPart::Down),
+        Some(SavedSeedControl::ScrollThumb)=>Some(ListScrollPart::Thumb),
+        Some(SavedSeedControl::ScrollTrack)=>Some(ListScrollPart::Track),
+        _=>None,
+    };
+    super::list::paint_list(out,atlas,
+        ShellListGeometry::new(layout.list,browser.entries.len(),browser.top_index),
+        browser.top_index,browser.selected,pressed,interior.paints_solid_fill());
     // The name field is a plain sunken plate; Save is the only mode that has one.
     if let Some(edit) = layout.name_edit {
         push_solid_rect(
@@ -577,21 +561,51 @@ pub(super) fn push_saved_seed_modal_instances(
             SHELL_DROPDOWN_DEPTH - 0.00010,
         );
         push_ownerdraw_two_pixel_bevel_frame(out, atlas, edit, SHELL_DROPDOWN_DEPTH - 0.00011);
+        if browser.description_edit.focused && browser.opened_at.elapsed().as_millis() % 2000 < 1000 {
+            let field = crate::ui::skirmish_shell::player_name_edit_text_rect(edit);
+            let editor = &browser.description_edit;
+            let start = editor.first_visible_unit.min(editor.caret);
+            let prefix = String::from_utf16_lossy(&editor.units[start..editor.caret]);
+            let x = field.x + font.text_width(&prefix) as i32;
+            if x < field.x + field.w {
+                push_solid_rect(out, atlas, RectPx::new(x, field.y + 2, 2, (field.h - 4).max(1)),
+                    SHELL_LABEL_TEXT_RGB, SHELL_DROPDOWN_DEPTH - 0.00012);
+            }
+        }
+
     }
-    for (rect, control) in [
-        (layout.action, SavedSeedControl::Action),
-        (layout.back, SavedSeedControl::Back0x686),
-    ] {
-        let disabled = control == SavedSeedControl::Action && !browser.action_enabled();
-        push_right_panel_button_shp(
-            out,
-            atlas,
-            rect,
-            browser.pressed_control == Some(control),
-            disabled,
-            SHELL_DROPDOWN_DEPTH - 0.00012,
-        );
+    if column_buttons {
+        for (rect, control) in [
+            (layout.action, SavedSeedControl::Action),
+            (layout.back, SavedSeedControl::Back0x686),
+        ] {
+            let disabled = control == SavedSeedControl::Action && !browser.action_enabled();
+            push_right_panel_button_shp(
+                out,
+                atlas,
+                rect,
+                browser.pressed_control == Some(control),
+                disabled,
+                SHELL_DROPDOWN_DEPTH - 0.00012,
+            );
+        }
     }
+    if let Some(prompt) = browser.prompt.as_ref() {
+        let (dialog, _, yes, no) = prompt.layout(layout.screen.w as u32, layout.screen.h as u32);
+        let mut buttons = vec![shell_paint::ModalButton {
+            rect: yes, pressed: browser.pressed_control == Some(SavedSeedControl::Action), enabled: true,
+        }];
+        if let Some(rect) = no {
+            buttons.push(shell_paint::ModalButton {
+                rect, pressed: browser.pressed_control == Some(SavedSeedControl::Back0x686), enabled: true,
+            });
+        }
+        out.extend(shell_paint::paint_modal_sprites(
+            atlas.validation_modal_background_pudlgbgn,
+            super::chrome::type3_button_frames(atlas), dialog, &buttons, VALIDATION_MODAL_SPRITE_DEPTHS,
+        ));
+    }
+
 }
 
 #[cfg(test)]

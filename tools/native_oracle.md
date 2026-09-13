@@ -41,6 +41,7 @@ These generators now default to **read-only checks**, also spelled `--check`:
 | --- | --- | --- |
 | `tools.rmg_oracle.gen_rng_vectors` | Seeded state and 16 draws for five seeds | `src/map/rmg/rng.rs` |
 | `tools.rmg_oracle.gen_x87_vectors` | Eight Gaussian draws for two seeds | `src/map/rmg/x87.rs` |
+| `tools.storage_oracle.sed_description` | 28 fresh-file Description fixtures and one cached-section diagnostic; original reader with supplied INI indexes | `src/map/rmg/description.rs`; disk-load regression in `saved_seeds.rs` |
 | `tools.projectile_oracle.ordinary_motion` | 120 cases, eight gravity/candidate blocks each | `src/sim/projectile.rs`, `src/sim/world/projectile_collision.rs` |
 | `tools.projectile_oracle.vertical_motion` | 110 cases, eight velocity/candidate blocks each | Same projectile consumers |
 | `tools.color_oracle.hsv_to_rgb` | All 256 hues at nine saturation/value pairs | `src/rules/color_scheme.rs` |
@@ -136,6 +137,17 @@ python -m unittest tools.test_native_oracle -v
 These test runner behavior, not retail behavior. The tests cover limits, faults,
 premature stops, alternate exits, missing paths, fresh state, FSTP completion,
 executable identity, reference preservation, provenance mismatches, and diagnostics.
+
+## Saved-map browser comparisons
+
+The [browser evidence](../docs/research/skirmish-ui/2026-09-12-saved-seed-browser.md)
+links three additional bounded comparisons: `tools.storage_oracle.seed_order`
+(original qsort and timestamp comparator, 36 cases), `tools.storage_oracle.crt_random`
+(supplied TLS seeds, 224 draws), and `tools.storage_oracle.saved_scrollbar`
+(original x87 thumb arithmetic, 450 supplied geometries). Each supports `--check`
+and explicit `--write` through the common runner and records provenance beside
+its JSON payload. None establishes native full-window visual parity or a live
+first-save RNG state.
 
 ## Upstream references
 

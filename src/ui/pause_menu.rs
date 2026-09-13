@@ -24,16 +24,17 @@
 //!
 //! The in-game menu's own dialog template is selected by game mode; offline
 //! campaign and skirmish share one template whose controls are Load Game, Save
-//! Game, Delete Game, Game Controls, Abort Mission, Resume Mission, plus a
-//! campaign-only mission-restate control. Only Game Controls, Abort Mission and
-//! Resume Mission are wired here; the three save-game controls drive dialogs
-//! this port does not have yet.
+//! Game, Delete Game, Game Controls, Abort Mission and Resume Mission. B5 at
+//! BEF9D0 contains exactly these six buttons and two statics; no mission-restate
+//! control. Its three saved-game children share the native558DD0 browser owner.
 //!
-//! The abort confirmation is a two-button dialog whose second button is mode
+//! The full-screen B6 abort shell has a secondary action that is mode
 //! dependent: campaign labels it `GUI:Restart` (restart the scenario),
 //! multiplayer with two or more live human players labels it `GUI:Observe`, and
 //! **offline skirmish hides it outright**. What is left in skirmish is one
-//! action button captioned `GUI:Leave` and a cancel. Confirming Leave queues an
+//! action button captioned `GUI:Leave` and Resume Mission. Callback4F18B0
+//! accepts Resume686 and IDOK1; IDCANCEL2 is ignored, so Escape stays in B6.
+//! Confirming Leave queues an
 //! EXIT event for the local player; when that event executes it raises the
 //! graceful-exit session flag, which tears the session down *without* the
 //! victory or defeat teardown — no result screen, no outcome announcement.
@@ -55,7 +56,7 @@ use crate::ui::client_theme;
 ///
 /// States deliberately absent: the surrender-and-be-scored state (gated on a
 /// WOL-only mode), the replay state, the campaign mission-restate state, the
-/// multiplayer objectives state, and the Keyboard/Sound sub-dialogs of Options.
+/// multiplayer objectives state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InGameMenuState {
     /// No modal is open — the mission runs. (gamemd: 0)
@@ -67,6 +68,13 @@ pub enum InGameMenuState {
     AbortConfirm,
     /// Game Controls / Options — a child of [`InGameMenuState::Menu`]. (gamemd: 5)
     Options,
+    /// Sound options, active B8 (native state6).
+    Sound,
+    /// Shared Keyboard A3, child of Game Controls (native state4).
+    Keyboard,
+    /// Native558DD0 browser nested beneath B5. Its mode has no independent
+    /// scenario-state number: native keeps the parent hidden during this call.
+    SavedGame(crate::ui::skirmish_shell::SavedSeedMode),
 }
 
 impl InGameMenuState {
@@ -78,29 +86,32 @@ impl InGameMenuState {
 
     /// Where Escape goes from here.
     ///
-    /// gamemd's keyboard binding for the in-game menu was not traced, so the
-    /// Escape *binding* is VERA-internal and UNCHECKED against gamemd; the
-    /// destinations below are the verified button routes it stands in for.
+    /// Escape opens Options through5372D0→647040→4C7939. B5 itself ignores
+    /// IDCANCEL2 at4F1320..4F134E and leaves its result unchanged at4F16F1.
+    /// Modeless622650→5D4D50 supplies IsDialogMessageA; Windows sends IDCANCEL
+    /// but requires the application callback to dismiss the dialog.
+    /// See docs/research/skirmish-ui/2026-09-12-pause-save-shells-evidence.md.
     pub fn on_escape(self) -> Self {
         match self {
             // Nothing open: Escape stands in for the sidebar menu control.
             Self::Closed => Self::Menu,
-            // Resume Mission.
-            Self::Menu => Self::Closed,
-            // Cancelling the confirmation resumes the mission — it does not
-            // return to the menu.
-            Self::AbortConfirm => Self::Closed,
+            // B5 has no cancel command; Resume is an explicit button action.
+            Self::Menu => Self::Menu,
+            // B6 callback4F1A37..4F1A97 ignores IDCANCEL2. Its explicit
+            // Resume686 and default IDOK1 resume instead.
+            Self::AbortConfirm => Self::AbortConfirm,
             // Options is a child of the menu.
             Self::Options => Self::Menu,
+            Self::SavedGame(_) | Self::Sound => self,
+            Self::Keyboard => Self::Options,
         }
     }
 }
 
 /// Does an Escape press belong to the in-scenario modal machine?
 ///
-/// Escape is this port's stand-in for gamemd's sidebar menu control (the
-/// binding itself is VERA-internal; gamemd's keyboard route into the menu is
-/// UNCHECKED). It only reaches the machine when no in-world mode is armed:
+/// Escape opens native Options through the command route5372D0→647040.
+/// It only reaches the machine when no in-world mode is armed:
 /// while a placement/targeting cursor or a repair/sell mode is live and no
 /// modal is open, Escape cancels that instead.
 pub fn escape_belongs_to_modal_machine(state: InGameMenuState, in_world_mode_armed: bool) -> bool {
@@ -116,6 +127,8 @@ pub enum InGameMenuAction {
     Resume,
     /// Game Controls — opens the Options dialog as a child of the menu.
     GameControls,
+    /// Open one of the nested native558DD0 saved-game browsers.
+    SavedGame(crate::ui::skirmish_shell::SavedSeedMode),
     /// Abort Mission — opens the confirmation.
     Abort,
 }
@@ -152,6 +165,7 @@ pub fn resolve_menu_action(action: InGameMenuAction) -> ModalOutcome {
         InGameMenuAction::Resume => ModalOutcome::Enter(InGameMenuState::Closed),
         InGameMenuAction::GameControls => ModalOutcome::Enter(InGameMenuState::Options),
         InGameMenuAction::Abort => ModalOutcome::Enter(InGameMenuState::AbortConfirm),
+        InGameMenuAction::SavedGame(mode) => ModalOutcome::Enter(InGameMenuState::SavedGame(mode)),
     }
 }
 
@@ -375,8 +389,7 @@ mod tests {
         );
     }
 
-    /// Cancelling the abort confirmation ends at state 0 — never back at the
-    /// menu — and so does dismissing it with Escape.
+    /// Explicit Resume ends at state 0, while native IDCANCEL is ignored.
     #[test]
     fn abort_cancel_resumes_the_mission_instead_of_returning_to_the_menu() {
         assert_eq!(
@@ -385,7 +398,7 @@ mod tests {
         );
         assert_eq!(
             InGameMenuState::AbortConfirm.on_escape(),
-            InGameMenuState::Closed
+            InGameMenuState::AbortConfirm
         );
     }
 
@@ -404,11 +417,11 @@ mod tests {
         );
     }
 
-    /// Escape opens the menu from the mission and resumes from the menu.
+    /// Escape opens B5, but B5 ignores IDCANCEL and stays paused.
     #[test]
     fn escape_opens_and_closes_the_menu() {
         assert_eq!(InGameMenuState::Closed.on_escape(), InGameMenuState::Menu);
-        assert_eq!(InGameMenuState::Menu.on_escape(), InGameMenuState::Closed);
+        assert_eq!(InGameMenuState::Menu.on_escape(), InGameMenuState::Menu);
     }
 
     /// An armed in-world mode takes Escape ahead of opening the menu, but never

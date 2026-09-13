@@ -1,5 +1,13 @@
 # Validation Modal 0x005D3490 Paint Composition - Ghidra Research Report
 
+> September12 correction: any frame2-as-pressed interpretation below is superseded.
+> Original612F36..612F5B selects frame1 while held, frame2 for timer highlighting,
+> and frame0 otherwise. Disabled text is handled after frame selection. The
+> [Sound increment evidence](2026-09-12-sound-shell-evidence.md) records fresh
+> independent confirmation and an executable comparison. Historical Rust state
+> and validation results below describe the earlier implementation.
+
+
 **Address(es):** `0x005D3490`, `0x005D36A0`, `0x00622650`, `0x00622B50`, `0x00621E90`, `0x0060A330`, `0x00609E20`, `0x00612B70`, `0x006153E0`, `0x0072AA40`, `0x0072B050`  
 **Investigation Mode:** exhaustive-slice  
 **Claimed Scope:** native visual composition and draw ordering for the ordinary Start validation modal created by `0x005D3490` when Skirmish Start validation fails.  

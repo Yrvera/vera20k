@@ -22,9 +22,13 @@ use crate::ui::game_screen::GameScreen;
 use crate::ui::main_menu_shell::MainMenuMovieBase;
 use crate::ui::shell::static_reveal::Kind1PaintWindow;
 
+mod skirmish;
+pub(crate) use skirmish::PresentedShell;
+
 pub(crate) const CAPTURE_FLAG: &str = "--shell-capture";
 const CHECKPOINT_MAIN_MENU_0XE2_STEADY: &str = "main-menu-0xe2-steady";
 const CHECKPOINT_MAIN_MENU_0XE2_ENTRY_SEQUENCE: &str = "main-menu-0xe2-entry-sequence";
+const CHECKPOINT_SKIRMISH_0X102_STEADY: &str = "skirmish-0x102-steady";
 const EXPECTED_WIDTH: u32 = 800;
 const EXPECTED_HEIGHT: u32 = 600;
 const EXPECTED_CURSOR_X: u32 = 400;
@@ -51,6 +55,7 @@ pub enum AppLaunchMode {
 pub enum ShellCaptureCheckpoint {
     MainMenu0xE2Steady,
     MainMenu0xE2EntrySequence,
+    Skirmish0x102Steady,
 }
 
 impl ShellCaptureCheckpoint {
@@ -58,6 +63,7 @@ impl ShellCaptureCheckpoint {
         match value {
             CHECKPOINT_MAIN_MENU_0XE2_STEADY => Ok(Self::MainMenu0xE2Steady),
             CHECKPOINT_MAIN_MENU_0XE2_ENTRY_SEQUENCE => Ok(Self::MainMenu0xE2EntrySequence),
+            CHECKPOINT_SKIRMISH_0X102_STEADY => Ok(Self::Skirmish0x102Steady),
             _ => bail!("unsupported shell-capture checkpoint {value:?}"),
         }
     }
@@ -66,6 +72,7 @@ impl ShellCaptureCheckpoint {
         match self {
             Self::MainMenu0xE2Steady => CHECKPOINT_MAIN_MENU_0XE2_STEADY,
             Self::MainMenu0xE2EntrySequence => CHECKPOINT_MAIN_MENU_0XE2_ENTRY_SEQUENCE,
+            Self::Skirmish0x102Steady => CHECKPOINT_SKIRMISH_0X102_STEADY,
         }
     }
 }
@@ -298,7 +305,8 @@ impl MainMenuCaptureSnapshot {
             main_menu_screen: state.frontend.screen == GameScreen::MainMenu,
             shell_failed: state.frontend.main_menu_shell_failed,
             single_player_active: state.frontend.shell_route.single_player(),
-            skirmish_active: state.frontend.shell_route.skirmish() || state.frontend.dev_skirmish_shell_enabled,
+            skirmish_active: state.frontend.shell_route.skirmish()
+                || state.frontend.dev_skirmish_shell_enabled,
             // The legacy skirmish-setup flag was write-dead (never set after
             // startup); the capture snapshot keeps the field as literal false.
             legacy_skirmish_setup_active: false,
@@ -308,7 +316,8 @@ impl MainMenuCaptureSnapshot {
             active_slide_is_main_menu: state.frontend.shell_slide_active_shell
                 == Some(ShellSlideKind::MainMenu),
             title_terminal_persistent: state
-                .frontend.main_menu_shell_state
+                .frontend
+                .main_menu_shell_state
                 .title_reveal
                 .is_terminal_persistent(),
             movie_loaded: state.frontend.main_menu_movie.is_some(),
@@ -455,6 +464,7 @@ pub(crate) struct ShellCaptureSession {
     frames_seen: u32,
     readback_started: bool,
     entry_sequence: Option<EntrySequenceState>,
+    skirmish: Option<skirmish::SkirmishCapture>,
     outcome: Option<std::result::Result<(), String>>,
 }
 
@@ -463,12 +473,15 @@ impl ShellCaptureSession {
         let entry_sequence = (request.checkpoint
             == ShellCaptureCheckpoint::MainMenu0xE2EntrySequence)
             .then(EntrySequenceState::default);
+        let skirmish = (request.checkpoint == ShellCaptureCheckpoint::Skirmish0x102Steady)
+            .then(skirmish::SkirmishCapture::default);
         Self {
             request,
             started_at: None,
             frames_seen: 0,
             readback_started: false,
             entry_sequence,
+            skirmish,
             outcome: None,
         }
     }
@@ -495,6 +508,32 @@ impl ShellCaptureSession {
         self.started_at = Some(Instant::now());
     }
 
+    fn timeout(&self) -> Duration {
+        if self.skirmish.is_some() {
+            Duration::from_secs(60)
+        } else {
+            CAPTURE_TIMEOUT
+        }
+    }
+
+    fn steady_ready(&self, state: &AppState) -> Result<bool> {
+        match &self.skirmish {
+            Some(capture) => capture.ready(state),
+            None => steady_main_menu_capture_ready(MainMenuCaptureSnapshot::from_state(state)),
+        }
+    }
+
+    pub(crate) fn after_present(
+        &mut self,
+        state: &mut AppState,
+        rendered: PresentedShell,
+    ) -> Result<()> {
+        if let Some(capture) = &mut self.skirmish {
+            capture.after_present(state, rendered, self.frames_seen)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn should_capture_current_frame(&mut self, state: &AppState) -> Result<bool> {
         ensure!(
             self.outcome.is_none(),
@@ -509,9 +548,9 @@ impl ShellCaptureSession {
             "shell capture exceeded {MAX_CAPTURE_FRAMES} frames"
         );
         ensure!(
-            started_at.elapsed() <= CAPTURE_TIMEOUT,
+            started_at.elapsed() <= self.timeout(),
             "shell capture timed out after {} seconds",
-            CAPTURE_TIMEOUT.as_secs()
+            self.timeout().as_secs()
         );
 
         if self.is_entry_sequence() {
@@ -521,7 +560,7 @@ impl ShellCaptureSession {
             !self.readback_started,
             "shell capture attempted more than one readback"
         );
-        let ready = steady_main_menu_capture_ready(MainMenuCaptureSnapshot::from_state(state))?;
+        let ready = self.steady_ready(state)?;
         if ready {
             self.readback_started = true;
         }
@@ -588,7 +627,11 @@ impl ShellCaptureSession {
         );
         ensure!(
             matches!(
-                state.frontend.main_menu_shell_state.title_reveal.paint_window(),
+                state
+                    .frontend
+                    .main_menu_shell_state
+                    .title_reveal
+                    .paint_window(),
                 Kind1PaintWindow::Hidden
             ),
             "entry sequence title became visible"
@@ -623,7 +666,8 @@ impl ShellCaptureSession {
         let started_at = self
             .started_at
             .context("shell capture was not initialized")?;
-        let remaining = CAPTURE_TIMEOUT
+        let remaining = self
+            .timeout()
             .checked_sub(started_at.elapsed())
             .context("shell capture timeout expired before GPU readback")?;
         ensure!(
@@ -666,7 +710,7 @@ impl ShellCaptureSession {
             pixels.len()
         );
         ensure!(
-            steady_main_menu_capture_ready(MainMenuCaptureSnapshot::from_state(state))?,
+            self.steady_ready(state)?,
             "capture state changed before bundle write"
         );
 
@@ -679,9 +723,20 @@ impl ShellCaptureSession {
         let frame_path = self.request.output_dir().join(FRAME_FILE_NAME);
         write_new_file(&frame_path, pixels)?;
 
-        let manifest = capture_manifest(&self.request, surface_format, pixels.len() as u64);
-        let mut manifest_bytes =
-            serde_json::to_vec_pretty(&manifest).context("serialize shell-capture manifest")?;
+        let mut manifest_bytes = match &self.skirmish {
+            Some(capture) => serde_json::to_vec_pretty(&capture.manifest(
+                &self.request,
+                surface_format,
+                pixels,
+                self.frames_seen,
+            )),
+            None => serde_json::to_vec_pretty(&capture_manifest(
+                &self.request,
+                surface_format,
+                pixels.len() as u64,
+            )),
+        }
+        .context("serialize shell-capture manifest")?;
         manifest_bytes.push(b'\n');
         let manifest_path = self.request.output_dir().join(MANIFEST_FILE_NAME);
         write_new_file(&manifest_path, &manifest_bytes)?;
@@ -747,9 +802,9 @@ impl ShellCaptureSession {
                 !remaining.is_zero(),
                 "entry sequence timeout expired during deferred readback"
             );
-            let pixels = item
-                .readback
-                .finish(&state.renderer.gpu.device, item.submission, remaining)?;
+            let pixels =
+                item.readback
+                    .finish(&state.renderer.gpu.device, item.submission, remaining)?;
             ensure!(
                 pixels.len() as u64 == FRAME_BYTE_LENGTH,
                 "entry-sequence tick {expected_tick} length mismatch: expected \
@@ -777,7 +832,8 @@ impl ShellCaptureSession {
                 .join(ENTRY_SEQUENCE_FRAMES_FILE_NAME),
             &payload,
         )?;
-        let manifest = entry_sequence_manifest(&self.request, state.renderer.gpu.config.format, generation);
+        let manifest =
+            entry_sequence_manifest(&self.request, state.renderer.gpu.config.format, generation);
         let mut manifest_bytes =
             serde_json::to_vec_pretty(&manifest).context("serialize entry-sequence manifest")?;
         manifest_bytes.push(b'\n');
@@ -1065,6 +1121,24 @@ mod tests {
             request.checkpoint().as_str(),
             "main-menu-0xe2-entry-sequence"
         );
+    }
+
+    #[test]
+    fn skirmish_capture_uses_distinct_checkpoint_and_route_budget() {
+        let output = new_output_path("skirmish");
+        let mut values = valid_args(&output);
+        values[1] = OsString::from(CHECKPOINT_SKIRMISH_0X102_STEADY);
+        let AppLaunchMode::ShellCapture(request) = parse_launch_args(values).expect("parse") else {
+            panic!("expected capture");
+        };
+        let session = ShellCaptureSession::new(request);
+        assert_eq!(
+            session.request().checkpoint(),
+            ShellCaptureCheckpoint::Skirmish0x102Steady
+        );
+        assert_eq!(session.timeout(), Duration::from_secs(60));
+        assert!(!session.is_entry_sequence());
+        assert!(session.skirmish.is_some());
     }
 
     #[test]

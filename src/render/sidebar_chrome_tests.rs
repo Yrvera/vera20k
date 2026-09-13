@@ -85,6 +85,8 @@ fn generic_route_is_bounded_away_from_yuri_theme_art() {
     for name in [
         "SIDE1.SHP",
         "SIDE2.SHP",
+        "SIDE2B.SHP",
+        "SIDEBTTN.SHP",
         "SIDE3.SHP",
         "TAB00.SHP",
         "TAB01.SHP",
@@ -221,6 +223,50 @@ fn retail_yuri_generic_route_uses_side_two_and_builds_production_clock() {
 }
 
 #[test]
+#[ignore = "requires the configured stock retail RA2/YR install"]
+fn retail_in_game_shell_art_preserves_side_route_and_frame_transparency() {
+    let assets = AssetManager::new(&retail_ra2_dir()).expect("load retail asset stack");
+    // Independent stock MIX/SHP reads: both SIDE2B canvases are 168x50;
+    // SIDEBTTN has three 125x25 frames, with 28 skipped pixels per Allied
+    // frame and none per Soviet frame. Yuri shares the Soviet generic art
+    // and SIDEBAR.PAL, not the RADARYURI.PAL used by its radar.
+    for (theme, archive, skipped_pixels) in [
+        (SidebarTheme::Allied, "sidec01.mix", 28),
+        (SidebarTheme::Soviet, "sidec02.mix", 0),
+        (SidebarTheme::Yuri, "sidec02.mix", 0),
+    ] {
+        let route = SidebarSideRoute::for_theme(&assets, theme);
+        for name in ["SIDE2B.SHP", "SIDEBTTN.SHP", "SIDEBAR.PAL"] {
+            assert_eq!(route.resolve(name).expect(name).archive_name, archive);
+        }
+        let palette = super::decode_sidebar_palette(route.resolve("SIDEBAR.PAL").unwrap().bytes)
+            .expect("native sidebar palette");
+        let art = super::in_game_shell::load(route, &palette);
+        let tile = art.panel_tile.as_ref().expect("SIDE2B frame zero");
+        assert_eq!((tile.width, tile.height), (168, 50));
+        assert!(tile.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
+        for button in &art.buttons {
+            let button = button.as_ref().expect("SIDEBTTN frame");
+            assert_eq!((button.width, button.height), (125, 25));
+            assert_eq!(
+                button
+                    .rgba
+                    .chunks_exact(4)
+                    .filter(|pixel| pixel[3] == 0)
+                    .count(),
+                skipped_pixels,
+            );
+        }
+        for states in art.buttons.windows(2) {
+            assert_ne!(
+                states[0].as_ref().unwrap().rgba,
+                states[1].as_ref().unwrap().rgba
+            );
+        }
+    }
+}
+
+#[test]
 fn original_n1_tables_drive_sidebar_palette_and_skip_alpha() {
     use serde::Deserialize;
     #[derive(Deserialize)]
@@ -252,6 +298,78 @@ fn original_n1_tables_drive_sidebar_palette_and_skip_alpha() {
                     127
                 ),
                 native
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires the configured stock retail RA2/YR install"]
+fn retail_modal_backgrounds_use_ui_palette_for_every_theme_and_size() {
+    let assets = AssetManager::new(&retail_ra2_dir()).unwrap();
+    for (theme, archive_name, names, palette_name, old_palette_name) in [
+        (
+            SidebarTheme::Allied,
+            "sidec01.mix",
+            ("BKGDLG.SHP", "BKGDMD.SHP", "BKGDSM.SHP"),
+            "UIBKGD.PAL",
+            "SIDEBAR.PAL",
+        ),
+        (
+            SidebarTheme::Soviet,
+            "sidec02.mix",
+            ("BKGDLG.SHP", "BKGDMD.SHP", "BKGDSM.SHP"),
+            "UIBKGD.PAL",
+            "SIDEBAR.PAL",
+        ),
+        (
+            SidebarTheme::Yuri,
+            "sidec02md.mix",
+            ("BKGDLGY.SHP", "BKGDMDY.SHP", "BKGDSMY.SHP"),
+            "UIBKGDY.PAL",
+            "RADARYURI.PAL",
+        ),
+    ] {
+        let archive = assets.archive(archive_name).unwrap();
+        let (entries, identity) =
+            super::in_game_shell::load_backgrounds(&assets, &archive, archive_name, theme, names)
+                .unwrap();
+        assert_eq!(identity.logical_name, palette_name);
+        assert_eq!(identity.source_archive.as_deref(), Some(archive_name));
+        let raw_palette = archive.get_by_name(palette_name).unwrap();
+        let old_palette =
+            super::decode_sidebar_palette(archive.get_by_name(old_palette_name).unwrap()).unwrap();
+        for (name, entry) in [names.0, names.1, names.2].into_iter().zip(entries) {
+            let entry = entry.unwrap();
+            let shp = ShpFile::from_bytes(archive.get_by_name(name).unwrap()).unwrap();
+            let frame = &shp.frames[0];
+            assert_eq!((frame.frame_x, frame.frame_y), (0, 0));
+            assert_eq!(
+                (frame.frame_width, frame.frame_height),
+                (shp.width, shp.height)
+            );
+            assert_eq!(entry.rgba.len(), frame.pixels.len() * 4);
+            // Compare every production pixel to the retail palette triplet's
+            // original72ADE0 six-bit expansion and N=1 RGB565 store. The shared
+            // converter arithmetic also has native palette.json coverage above.
+            for (&index, rgba) in frame.pixels.iter().zip(entry.rgba.chunks_exact(4)) {
+                assert_eq!(rgba[3], if index == 0 { 0 } else { 255 });
+                if index == 0 {
+                    continue;
+                }
+                let p = &raw_palette[index as usize * 3..][..3];
+                let expected = ((u16::from(p[0]) >> 1) << 11)
+                    | (u16::from(p[1]) << 5)
+                    | (u16::from(p[2]) >> 1);
+                let actual = ((u16::from(rgba[0]) >> 3) << 11)
+                    | ((u16::from(rgba[1]) >> 2) << 5)
+                    | (u16::from(rgba[2]) >> 3);
+                assert_eq!(actual, expected, "{archive_name}/{name}, index{index}");
+            }
+            let old = super::render_shp(&shp, &old_palette, 0).unwrap();
+            assert_ne!(
+                entry.rgba, old.rgba,
+                "{archive_name}/{name}: old radar palette must differ"
             );
         }
     }

@@ -38,6 +38,13 @@ impl Default for StaticReveal {
 }
 
 impl StaticReveal {
+    /// Unlike the never-started default, a completed run has reached its target.
+    pub(crate) fn has_completed(&self) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|run| run.count >= run.target)
+    }
+
     /// Begin (or restart) the reveal for `text` at the given instant.
     /// target = char count + 1 + range (native wcslen(text)+1+range).
     pub fn start(&mut self, text: &str, now: Instant) {
@@ -92,6 +99,7 @@ mod tests {
     fn default_renders_full_text() {
         // Inactive default => no reveal window => renderer draws full string.
         assert_eq!(StaticReveal::default().window(), None);
+        assert!(!StaticReveal::default().has_completed());
     }
 
     #[test]
@@ -107,6 +115,7 @@ mod tests {
         let t0 = Instant::now();
         let mut r = StaticReveal::default();
         r.start("AB", t0); // target = 2+1+8 = 11
+        assert!(!r.has_completed());
         r.advance(t0 + Duration::from_millis(29));
         assert_eq!(r.window().unwrap().count, 1); // not yet
         r.advance(t0 + Duration::from_millis(30));
@@ -121,6 +130,9 @@ mod tests {
             r.advance(t);
         }
         assert_eq!(r.window(), None);
+        assert!(r.has_completed());
+        r.start("new", t);
+        assert!(!r.has_completed());
     }
 
     #[test]

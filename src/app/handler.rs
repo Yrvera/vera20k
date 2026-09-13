@@ -50,12 +50,26 @@ impl ShellWindowModeOperations for PlatformShellWindowModeOperations<'_> {
 }
 
 fn enter_shell_window_mode_with_operations(operations: &mut impl ShellWindowModeOperations) {
-    operations.set_resizable(false);
     let target = operations.shell_client_size();
+    apply_window_mode(operations, target, false);
+}
+
+fn apply_window_mode(
+    operations: &mut impl ShellWindowModeOperations,
+    target: PhysicalSize<u32>,
+    resizable: bool,
+) {
+    operations.set_resizable(resizable);
     if operations.inner_size() == target {
         return;
     }
-    if let Some(applied_size) = operations.request_inner_size(target) {
+    // winit 0.30.12 Windows calls SetWindowPos but returns None. Read the
+    // actual client size before installing size-dependent tactical resources;
+    // waiting solely for its queued Resized event would use the old shell size.
+    let applied_size = operations
+        .request_inner_size(target)
+        .unwrap_or_else(|| operations.inner_size());
+    if applied_size.width != 0 && applied_size.height != 0 {
         operations.resize_surface_for_window_size(applied_size);
     }
     operations.request_redraw();
@@ -72,7 +86,10 @@ impl App {
     fn resize_surface_for_window_size(state: &mut AppState, size: PhysicalSize<u32>) {
         state.renderer.gpu.resize(size.width, size.height);
         state.renderer.depth_view = state.renderer.gpu.create_depth_texture();
-        state.renderer.shell_surface_presenter.resize(&state.renderer.gpu);
+        state
+            .renderer
+            .shell_surface_presenter
+            .resize(&state.renderer.gpu);
         // The frame-index wave is driven by wall-clock ticks and repaints every
         // frame, so a mid-flight resize simply lets it finish; no snap/cancel.
         Self::invalidate_main_menu_movie_if_base_changed(state);
@@ -82,10 +99,35 @@ impl App {
     pub(crate) fn enter_shell_window_mode(state: &mut AppState) {
         let mut operations = PlatformShellWindowModeOperations { state };
         enter_shell_window_mode_with_operations(&mut operations);
+        log::info!(
+            "Frontend surface {}x{}",
+            state.renderer.gpu.config.width, state.renderer.gpu.config.height,
+        );
     }
 
-    pub(super) fn enter_game_window_mode(state: &AppState) {
-        state.platform.window.set_resizable(true);
+    pub(crate) fn enter_game_window_mode(state: &mut AppState) {
+        // Scenario start 00683DBB..00683DF3 applies the game pair; shell return
+        // 006857AE restores the independent frontend pair. Profile stays sole
+        // authority, so launcher resolution edits take effect on the next match.
+        let size = state.persistence.options_profile.game_screen_size();
+        let target = state
+            .platform
+            .capture_client_size
+            .unwrap_or_else(|| PhysicalSize::new(size.width, size.height));
+        // Explicit low-mode startup is not a permanent return preference:
+        // 006857AE restores Options' independent frontend pair after a match.
+        let shell = crate::app::persistence::options_profile::RETAIL_SHELL_SIZE;
+        state.platform.shell_client_size = state
+            .platform
+            .capture_client_size
+            .unwrap_or_else(|| PhysicalSize::new(shell.width, shell.height));
+        let mut operations = PlatformShellWindowModeOperations { state };
+        apply_window_mode(&mut operations, target, true);
+        log::info!(
+            "Match surface {}x{} (requested {}x{})",
+            state.renderer.gpu.config.width, state.renderer.gpu.config.height,
+            target.width, target.height,
+        );
     }
 }
 
@@ -132,6 +174,9 @@ mod tests {
 
         fn request_inner_size(&mut self, size: PhysicalSize<u32>) -> Option<PhysicalSize<u32>> {
             self.requested_sizes.push(size);
+            if self.applied_size.is_none() {
+                self.current_size = size;
+            }
             self.applied_size
         }
 
@@ -165,6 +210,33 @@ mod tests {
         assert!(equal.requested_sizes.is_empty());
         assert!(equal.resized_surfaces.is_empty());
         assert_eq!(equal.redraw_requests, 0);
+    }
+
+    #[test]
+    fn windows_none_resize_result_reads_back_the_applied_client_size() {
+        let shell = PhysicalSize::new(800, 600);
+        let game = PhysicalSize::new(640, 480);
+        let mut operations = RecordingShellWindowModeOperations::new(shell, shell);
+        operations.applied_size = None;
+        apply_window_mode(&mut operations, game, true);
+        assert_eq!(operations.resized_surfaces, [game]);
+        enter_shell_window_mode_with_operations(&mut operations);
+        assert_eq!(operations.requested_sizes, [game, shell]);
+        assert_eq!(operations.resized_surfaces, [game, shell]);
+    }
+
+    #[test]
+    fn game_mode_applies_the_returned_physical_size_before_resource_installation() {
+        let shell = PhysicalSize::new(800, 600);
+        let game = PhysicalSize::new(1024, 768);
+        let applied = PhysicalSize::new(1000, 740);
+        let mut operations = RecordingShellWindowModeOperations::new(shell, shell);
+        operations.applied_size = Some(applied);
+        apply_window_mode(&mut operations, game, true);
+        assert_eq!(operations.resizable_values, [true]);
+        assert_eq!(operations.requested_sizes, [game]);
+        assert_eq!(operations.resized_surfaces, [applied]);
+        assert_eq!(operations.redraw_requests, 1);
     }
 
     #[test]
@@ -376,6 +448,9 @@ impl ApplicationHandler for App {
         // Always let egui see the event first for input handling.
         let egui_response: egui_winit::EventResponse =
             state.renderer.egui.on_window_event(&state.platform.window, &event);
+        if crate::app::frontend::skirmish_shell_render::native_in_game_shell_active(state) {
+            state.renderer.egui.discard_pending_input(&state.platform.window);
+        }
 
         // In InGame mode, egui only renders non-interactive overlays
         // (mission banner). The custom sidebar handles its own hit-testing.
@@ -384,6 +459,7 @@ impl ApplicationHandler for App {
         // Exception: when paused or save/load panel is open, egui renders
         // interactive content.
         let egui_consumed: bool = egui_response.consumed
+            && !crate::app::frontend::skirmish_shell_render::native_in_game_shell_active(state)
             && (state.frontend.screen != GameScreen::InGame || state.match_state.paused || state.match_state.match_presentation.show_save_load_panel);
 
         match event {
@@ -392,6 +468,7 @@ impl ApplicationHandler for App {
                 // Active YR treats a terminated launcher Options pump as an
                 // always-apply final result: Apply -> destroy -> one write.
                 // Complete that transaction before unrelated shell teardown.
+                crate::app::input::keyboard::prepare_terminal_exit(state);
                 Self::close_launcher_options_terminal(state);
                 if Self::native_skirmish_shell_active(state) {
                     // Pump/quit exits write the last durable snapshot after
@@ -427,6 +504,25 @@ impl ApplicationHandler for App {
                     state.match_state.input.tactical_mouse = Default::default();
                     state.match_state.input.selection_state.cancel_drag();
                     state.match_state.input.minimap_dragging = false;
+                    state.match_state.match_presentation.in_game_options.dragging_slider = None;
+                    state.match_state.match_presentation.in_game_options.buttons = Default::default();
+                    state.match_state.match_presentation.pause_menu_interaction = Default::default();
+        state.match_state.match_presentation.abort_buttons = Default::default();
+        if let Some(dialog)=state.match_state.match_presentation.sound_dialog.as_mut() {dialog.reset_interaction();}
+                    if let Some(browser) = state.match_state.match_presentation.saved_game_browser.as_mut() {
+                        browser.pressed_control = None;
+                        browser.scroll_repeat_at = None;
+                        browser.last_list_press = None;
+                    }
+                    if let Some(browser) = state.frontend.skirmish_shell_state.saved_seed_browser.as_mut() {
+                        browser.pressed_control = None;
+                        browser.scroll_repeat_at = None;
+                        browser.last_list_press = None;
+                    }
+                    if let Some(dialog) = state.frontend.keyboard_dialog.as_mut() { dialog.reset_interaction(); }
+                    if let Some(dialog) = state.frontend.options_dialog.as_mut() {
+                        dialog.shell_cancel_pointer_gesture();
+                    }
                 }
                 Self::set_window_active(state, active);
             }
@@ -438,11 +534,29 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(modifiers) => {
                 // Native's paused input capture admits Escape only and does not
                 // mutate the recorded keyboard state for other input.
-                if !state.match_state.paused {
-                    state.match_state.input.hotkey_modifiers = modifiers.state();
-                }
+                crate::app::input::hotkeys::record_modifier_event(
+                    &mut state.platform.live_modifiers,
+                    &mut state.match_state.input.hotkey_modifiers,
+                    modifiers.state(), state.match_state.paused,
+                );
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                if state.frontend.keyboard_dialog.is_some() {
+                    crate::app::input::keyboard::key(state, &event);
+                    return;
+                }
+                if Self::native_skirmish_shell_active(state)
+                    && state.frontend.skirmish_shell_state.saved_seed_browser.is_some()
+                {
+                    if !crate::app::frontend::shell_transition::blocks_shell_input(state)
+                        && event.state.is_pressed()
+                    {
+                        let code = match event.physical_key { PhysicalKey::Code(code) => Some(code), _ => None };
+                        Self::handle_saved_seed_browser_key(state, code, event.text.as_deref());
+                        state.platform.window.request_redraw();
+                    }
+                    return;
+                }
                 if let PhysicalKey::Code(code) = event.physical_key {
                     // ESC always reaches the handler when in-game (even when paused)
                     // so the player can toggle pause regardless of egui focus.
@@ -517,6 +631,28 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    if in_game && matches!(state.match_state.match_presentation.in_game_menu, crate::ui::pause_menu::InGameMenuState::SavedGame(_)) {
+                        if event.state.is_pressed() {
+                            Self::saved_game_key(state, Some(code), event.text.as_deref());
+                        }
+                        state.platform.window.request_redraw();
+                        return;
+                    }
+                    if in_game && state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Sound {
+                        // B8 has no IDOK/IDCANCEL close command.
+                        return;
+                    }
+                    if in_game && state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::AbortConfirm {
+                        // B6 accepts default IDOK1 as Resume (4F1A59..4F1A65).
+                        // Owner buttons reject focus through610CA0:6118BF..DE;
+                        // their resource has no WS_TABSTOP. Do not invent a
+                        // focused-button Return/Space route. IDCANCEL is ignored.
+                        if event.state.is_pressed() && !event.repeat && matches!(code, KeyCode::Enter | KeyCode::NumpadEnter) {
+                            crate::app::input::abort::activate(state, crate::ui::shell::abort::AbortButton::Resume);
+                        }
+                        state.platform.window.request_redraw();
+                        return;
+                    }
                     if !crate::app::input::hotkeys::input_admitted_while_paused(
                         paused_at_event,
                         &event.logical_key,
@@ -534,7 +670,7 @@ impl ApplicationHandler for App {
 
                     // The in-scenario modal machine owns Escape: it opens the
                     // in-game menu, backs Options out to its parent menu, and
-                    // dismisses the abort confirmation. Escape's in-world
+                    // leaves B5/B6 open. Escape's in-world
                     // cancel duties (placement/targeting, repair/sell) still
                     // run first — see `in_game_menu_owns_escape`.
                     if in_game && is_escape && Self::in_game_menu_owns_escape(state) {
@@ -619,6 +755,14 @@ impl ApplicationHandler for App {
                 if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                     return;
                 }
+                if state.frontend.keyboard_dialog.is_some() {
+                    crate::app::input::keyboard::cursor_moved(state);
+                    return;
+                }
+                if Self::native_launcher_options_active(state) {
+                    Self::handle_launcher_options_mouse(state, None);
+                    return;
+                }
                 if !egui_consumed
                     && (state.frontend.screen == GameScreen::InGame || state.frontend.screen == GameScreen::SpawnPick)
                 {
@@ -666,7 +810,15 @@ impl ApplicationHandler for App {
                 // SHP quit-confirm modal's OK/Cancel hit-test on the normal shell
                 // path; the egui fallback and the other egui dialogs (options/movies/
                 // campaign) were already handled by egui above.
+                if state.frontend.keyboard_dialog.is_some() {
+                    crate::app::input::keyboard::mouse(state, button, btn_state.is_pressed());
+                    return;
+                }
                 if Self::main_menu_dialog_open(state) {
+                    if Self::native_launcher_options_active(state) && button == MouseButton::Left {
+                        Self::handle_launcher_options_mouse(state, Some(btn_state.is_pressed()));
+                        return;
+                    }
                     if state.frontend.exit_confirm_modal.is_some()
                         && state.frontend.screen == GameScreen::MainMenu
                         && !state.frontend.main_menu_shell_failed
@@ -731,6 +883,11 @@ impl ApplicationHandler for App {
                 if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                     return;
                 }
+                if state.frontend.keyboard_dialog.is_some() {
+                    crate::app::input::keyboard::wheel(state, lines);
+                    state.platform.window.request_redraw();
+                    return;
+                }
                 if !egui_consumed
                     && state.frontend.screen == GameScreen::MainMenu
                     && Self::native_skirmish_shell_active(state)
@@ -760,6 +917,12 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let shell_scroll_wake = if let Some(state) = self.state.as_mut() {
+            Self::update_saved_seed_browser_scroll(state, false);
+            [crate::app::input::keyboard::poll_scroll_repeat(state),
+             crate::app::input::sound::poll_scroll_repeat(state)]
+                .into_iter().flatten().min()
+        } else { None };
         if let (Some(state), Some(session)) = (self.state.as_mut(), self.tactical_capture.as_mut())
         {
             if let Err(err) = Self::render_frame(state, event_loop, None, Some(&mut *session)) {
@@ -774,6 +937,12 @@ impl ApplicationHandler for App {
         } else if let (Some(state), Some(session)) =
             (self.state.as_mut(), self.shell_capture.as_mut())
         {
+            // Windows may deliver another wait callback after exit was requested.
+            // The completed one-shot bundle must not enter rendering again.
+            if session.is_finished() {
+                event_loop.exit();
+                return;
+            }
             if let Err(err) = Self::render_frame(state, event_loop, Some(&mut *session), None) {
                 log::error!("Shell capture render: {err:#}");
                 session.fail(format!("shell capture render failed: {err:#}"));
@@ -795,6 +964,7 @@ impl ApplicationHandler for App {
             } else if let Some(deadline) =
                 crate::app::frontend::shell_transition::main_menu_presented_wake_deadline(state)
             {
+                let deadline = shell_scroll_wake.map_or(deadline, |scroll| deadline.min(scroll));
                 if Instant::now() >= deadline {
                     state.platform.window.request_redraw();
                 } else {
@@ -806,6 +976,9 @@ impl ApplicationHandler for App {
                 // than rendering frames no one can see.
                 event_loop.set_control_flow(ControlFlow::Wait);
             } else {
+                if let Some(deadline) = shell_scroll_wake {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+                }
                 state.platform.window.request_redraw();
             }
         }

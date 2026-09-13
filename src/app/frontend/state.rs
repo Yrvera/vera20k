@@ -66,6 +66,9 @@ pub(crate) struct FrontendState {
     pub(crate) exit_confirm_modal: Option<crate::ui::main_menu_dialogs::ExitConfirmModalState>,
     /// Retained active-YR launcher Options `0xD5` parent snapshot.
     pub(crate) options_dialog: Option<crate::ui::main_menu_dialogs::OptionsDialogState>,
+    /// Shared A3 child, reached from launcher Options or paused Game Controls.
+    pub(crate) keyboard_dialog: Option<crate::ui::shell::keyboard::KeyboardState>,
+    pub(crate) launcher_options_presentation: super::skirmish_shell_render::LauncherOptionsPresentation,
     /// Movies & Credits sub-panel (open-level shell; playback not implemented).
     pub(crate) movies_credits_dialog:
         Option<crate::ui::main_menu_dialogs::MoviesCreditsDialogState>,
@@ -101,6 +104,10 @@ pub(crate) struct FrontendState {
     /// seed comes from shell Scenario instead. Accepted matches reseed their
     /// own Main stream rather than inheriting either shell cursor.
     pub(crate) frontend_main_rng: crate::sim::rng::SimRng,
+    /// UI-thread CRT state shared by storage dialogs, preserved across routes.
+    /// Native tactical sparkle/network consumption is still an integration gap;
+    /// do not infer exact post-game filenames from this initial state.
+    pub(crate) legacy_crt_rng: crate::util::legacy_crt_rng::LegacyCrtRng,
     /// Process-lifetime monotonic identity source; zero is permanently reserved.
     pub(crate) next_match_correlation: u64,
     /// Generation running on a worker, if any. Generating a map takes long

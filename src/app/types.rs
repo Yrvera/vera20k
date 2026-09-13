@@ -63,9 +63,18 @@ pub(crate) enum OrderMode {
 pub(crate) struct TypeSelectInputState {
     pressed_at: Option<Instant>,
     physical_key: Option<KeyCode>,
-    selection_mode_is_type_select: bool,
+    selection_mode: SelectionNavigationMode,
     pub(crate) across_map: bool,
     pub(crate) last_outcome: Option<TypeSelectOutcome>,
+}
+
+/// Shared native B0FE54 mode; ordinary selection clears it (731D00).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum SelectionNavigationMode {
+    #[default]
+    Ordinary,
+    Type,
+    Health,
 }
 
 impl TypeSelectInputState {
@@ -108,7 +117,7 @@ impl TypeSelectInputState {
     /// batch consumes the old scope first; its successful Select then resets
     /// SelectionMode, so a following short-release tap must restart on-screen.
     pub(crate) fn note_successful_selection_mutation(&mut self, clear_scope: bool) {
-        self.selection_mode_is_type_select = false;
+        self.selection_mode = SelectionNavigationMode::Ordinary;
         if clear_scope {
             self.across_map = false;
             self.last_outcome = None;
@@ -116,19 +125,31 @@ impl TypeSelectInputState {
     }
 
     pub(crate) fn prepare_tap_scope(&mut self) {
-        if !self.selection_mode_is_type_select {
+        if self.selection_mode != SelectionNavigationMode::Type {
             self.across_map = false;
         }
     }
 
     pub(crate) fn finish_tap(&mut self, outcome: TypeSelectOutcome, across_map: bool) {
-        self.selection_mode_is_type_select = true;
+        self.selection_mode = SelectionNavigationMode::Type;
         self.across_map = across_map;
         self.last_outcome = Some(outcome);
     }
 
     pub(crate) fn reset_scope(&mut self) {
         self.note_successful_selection_mutation(true);
+    }
+
+    pub(crate) fn health_navigation_continues(&self) -> bool {
+        self.selection_mode == SelectionNavigationMode::Health
+    }
+
+    /// 7335BC..7335D7 restores mode3 after the Select calls reset the mode.
+    pub(crate) fn finish_health_navigation(&mut self, has_candidates: bool) {
+        self.reset_scope();
+        if has_candidates {
+            self.selection_mode = SelectionNavigationMode::Health;
+        }
     }
 }
 
@@ -159,6 +180,21 @@ pub(crate) use crate::render::cursor_atlas::{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn health_and_type_navigation_share_selection_mode_reset() {
+        let mut input = TypeSelectInputState::default();
+        input.finish_health_navigation(true);
+        assert!(input.health_navigation_continues());
+        input.finish_tap(TypeSelectOutcome::Map, true);
+        assert!(!input.health_navigation_continues());
+        input.finish_health_navigation(true);
+        assert!(!input.across_map);
+        input.note_successful_selection_mutation(false);
+        assert!(!input.health_navigation_continues());
+        input.finish_health_navigation(false);
+        assert!(!input.health_navigation_continues());
+    }
 
     #[test]
     fn default_skirmish_speed_uses_verified_yr_stored_speed_one() {

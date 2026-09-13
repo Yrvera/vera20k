@@ -113,7 +113,7 @@ impl App {
         startup_options: RetailStartupOptions,
     ) -> Result<AppState> {
         // One parsed retail profile snapshot yields two ordered products: the
-        // early Video/fallback pair that selects the window, and the later
+        // independent frontend size selected after the early Video read, and the later
         // full-read profile retained by persistence. Capture is a sealed
         // automation lane, so it uses exact defaults and its explicit
         // dimensions instead of ingesting operator argv/profile screen state.
@@ -126,7 +126,7 @@ impl App {
                 .map(|config| config.paths.ra2_dir.as_path()),
             RetailOptionsLoad::from_ra2md,
         );
-        let profile_screen = options_load.startup_screen;
+        let profile_screen = options_load.startup_shell_screen;
         let options_profile = options_load.retained_profile;
         let (window_width, window_height, window_visible) =
             startup_window_projection(profile_screen, capture_dimensions);
@@ -482,7 +482,12 @@ impl App {
         }
 
         let mut state = AppState {
-            platform: PlatformState::new(window, game_config, shell_client_size),
+            platform: PlatformState::new(
+                window,
+                game_config,
+                shell_client_size,
+                capture_dimensions.map(|(w, h)| PhysicalSize::new(w, h)),
+            ),
             match_state: crate::app::match_runtime::state::MatchState {
                 startup: Default::default(),
                 sim_runtime: None,
@@ -514,6 +519,8 @@ impl App {
                     hotkey_bindings,
                     hotkey_modifiers: ModifiersState::empty(),
                     type_select: crate::app::types::TypeSelectInputState::default(),
+                    health_navigation: Default::default(),
+                    cursor_coordinates: false,
                     retail_screenshot_requested: false,
                 },
                 match_presentation: crate::app::presentation::state::MatchPresentationState {
@@ -537,6 +544,11 @@ impl App {
                     ),
                     message_clock: crate::ui::messages::PauseAwareClock::default(),
                     in_game_menu: crate::ui::pause_menu::InGameMenuState::default(),
+                    pause_menu_has_saves: false,
+                    pause_menu_interaction: Default::default(),
+                    sound_dialog: None,
+                    abort_buttons: Default::default(),
+                    saved_game_browser: None,
                     in_game_options: startup_in_game_options,
                     in_game_options_anchor: None,
                     show_hotkey_help: false,
@@ -617,6 +629,7 @@ impl App {
                 skirmish_settings,
                 loading_session: None,
                 frontend_main_rng: crate::sim::rng::SimRng::new(u64::from(frontend_seed.value)),
+                legacy_crt_rng: crate::util::legacy_crt_rng::LegacyCrtRng::default(),
                 next_match_correlation: 1,
                 random_map_generation: None,
                 random_map_retention: RandomMapGenerationRetention::default(),
@@ -648,6 +661,8 @@ impl App {
                 startup_splash,
                 exit_confirm_modal: None,
                 options_dialog: None,
+                keyboard_dialog: None,
+                launcher_options_presentation: Default::default(),
                 movies_credits_dialog: None,
                 campaign_select: None,
                 score_screen: None,
@@ -1023,7 +1038,7 @@ mod tests {
                 score_volume: 0.3,
                 ..Default::default()
             },
-            startup_screen: ScreenSize {
+            startup_shell_screen: ScreenSize {
                 width: 640,
                 height: 480,
             },
@@ -1045,11 +1060,11 @@ mod tests {
             RetailOptionsLoad::without_ra2md(&RetailStartupOptions::default())
         );
         assert_eq!(
-            startup_window_projection(options_load.startup_screen, capture_dimensions),
+            startup_window_projection(options_load.startup_shell_screen, capture_dimensions),
             (1024, 768, false)
         );
         assert_eq!(
-            options_load.startup_screen,
+            options_load.startup_shell_screen,
             ScreenSize {
                 width: 800,
                 height: 600,

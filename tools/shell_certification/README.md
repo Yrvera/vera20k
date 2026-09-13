@@ -133,3 +133,36 @@ Focused tests:
 ```powershell
 python -m unittest discover -s tools/shell_certification/tests -p 'test_*.py' -v
 ```
+
+## Diagnostic skirmish capture
+
+`skirmish-0x102-steady` is a separate, unenrolled diagnostic checkpoint. It
+follows ordinary Main Menu → Single Player → Skirmish action handlers, waits
+for the slide and three text reveals, observes a steady frame, then records the
+next final swapchain frame. It does not synthesize desktop input. The existing
+main-menu guard, schemas and comparison commands do not accept this checkpoint.
+
+Run from the intended resource directory containing `config.toml`, using an
+absolute executable path and a new absolute output directory:
+
+```powershell
+& C:\path\to\vera20k.exe --shell-capture skirmish-0x102-steady `
+  --width 800 --height 600 --cursor-x 400 --cursor-y 300 `
+  --output C:\path\to\new-skirmish-capture
+python -m tools.shell_certification.skirmish C:\path\to\new-skirmish-capture
+```
+
+The hidden process has a 60-second capture budget after initialization. As with
+other capture modes, startup options use deterministic defaults rather than
+loading the physical RA2MD.INI options profile; skirmish selections still follow
+their production initialization. Record executable, config, asset and selection
+identity for any comparison. The built-in command records selection state but
+does not itself enroll or hash all external inputs.
+
+The validator checks the two-file inventory, route ordering, selection shape,
+dimensions and frame digest. Exit 0 means a valid diagnostic bundle; exit 2
+means invalid input. Every result explicitly says `parity_certification: NONE`.
+The parsed-map digest hashes a Rust Debug representation solely to detect a
+selection change within this capture. It is not a stable asset fingerprint.
+Native input enrollment, reference capture and pixel comparison remain separate
+work. See the [bounded capture evidence](../../docs/research/skirmish-ui/2026-09-12-production-capture.md).

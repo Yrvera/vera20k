@@ -900,9 +900,9 @@ impl SavedSeedMode {
     /// Caption key and fallback for the top-right title.
     pub const fn title_label(self) -> (&'static str, &'static str) {
         match self {
-            Self::Load => ("GUI:LoadMissionMenu", "Load Mission"),
-            Self::Save => ("GUI:SaveMissionMenu", "Save Mission"),
-            Self::Delete => ("GUI:DeleteMissionMenu", "Delete Mission"),
+            Self::Load => ("GUI:LoadMapMenu", "Load Map"),
+            Self::Save => ("GUI:SaveMapMenu", "Save Map"),
+            Self::Delete => ("GUI:DeleteMapMenu", "Delete Map"),
         }
     }
 
@@ -927,6 +927,10 @@ pub enum SavedSeedControl {
     List,
     /// The file-name edit 0x526; Save only.
     NameEdit0x526,
+    ScrollUp,
+    ScrollDown,
+    ScrollThumb,
+    ScrollTrack,
 }
 
 #[derive(Debug, Clone, Copy)]

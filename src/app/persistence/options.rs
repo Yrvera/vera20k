@@ -13,6 +13,7 @@ use crate::ui::shell::modal::ModalResult;
 use crate::ui::tooltips::TooltipService;
 
 pub(crate) mod launcher;
+pub(crate) mod audio;
 
 /// Normal Back result. Native result 1 applies then writes; result 2 performs
 /// neither operation.
@@ -212,6 +213,11 @@ fn finish_in_game_options_close(state: &mut AppState) {
 ///
 /// Retail provenance: `OptionsClass__ShowInGameDialog @ 0x004E1D00` and
 /// `OptionsClass__ApplyFromInGameDialog @ 0x004E1DE0`.
+pub(crate) fn accept_in_game_options(state: &mut AppState) {
+    let mut operations = AppStateOptionsTransaction { state };
+    dispatch_in_game_options_transaction(&mut operations, IN_GAME_OPTIONS_RESULT_BACK);
+}
+
 fn in_game_options_close_with_result(state: &mut AppState, result: i32) {
     {
         let mut operations = AppStateOptionsTransaction { state };

@@ -12,7 +12,19 @@ pub mod descriptor;
 pub mod geom;
 pub mod in_game_options;
 pub mod in_game_options_state;
+pub mod in_game_shell;
+pub mod pause_menu;
+pub mod saved_games;
+pub mod saved_file_input;
 pub mod layout;
 pub mod modal;
 pub mod slide;
 pub mod static_reveal;
+pub mod abort;
+pub mod button;
+
+pub mod sound;
+
+pub mod list;
+
+pub mod keyboard;

@@ -74,6 +74,12 @@ pub(crate) struct ThemeEntry {
     pub(crate) key: String,
     /// `Sound=` with leading `$`/`#` stripped (+0x100); `.WAV` appended at play.
     pub(crate) sound: String,
+    /// `Name=` CSF key for the native localized +0x200 display name. B8's
+    /// projection resolves it using the process CSF, with a 63-UTF16-unit cap.
+    pub(crate) name_key: String,
+    /// Whole seconds from native WAV metadata scan `7207F0`; independent of
+    /// physical playback length (especially for IMA ADPCM music).
+    pub(crate) duration_seconds: u32,
     /// `Scenario=` (+0x280, default 0).
     pub(crate) scenario: i32,
     /// `Normal=` (+0x288, default yes).
@@ -211,8 +217,14 @@ impl ThemeRuntime {
             self.entries = catalog_from_ini(&ini);
         }
         for entry in &mut self.entries {
-            entry.available = !entry.sound.is_empty()
-                && assets.get_ref(&format!("{}.wav", entry.sound)).is_some();
+            let wav = (!entry.sound.is_empty())
+                .then(|| assets.get_ref(&format!("{}.wav", entry.sound)))
+                .flatten();
+            entry.available = wav.is_some();
+            entry.duration_seconds = wav
+                .and_then(crate::assets::wav_file::WavFile::parse)
+                .and_then(|wav| wav.native_duration_seconds())
+                .unwrap_or(0);
         }
         self.catalog_loaded = true;
     }
@@ -233,6 +245,16 @@ impl ThemeRuntime {
     #[cfg(test)]
     pub(crate) fn slots(&self) -> ThemeSlots {
         self.slots
+    }
+
+    /// Native current query: retained (+4), or pending (+8) when retained is
+    /// -1. B8 `6B65CE`, `6B67F8`, `6B6918`; launcher zero-volume `55FBE5`.
+    pub(crate) fn current_song(&self) -> i32 {
+        if self.slots.retained == THEME_NONE {
+            self.slots.pending
+        } else {
+            self.slots.retained
+        }
     }
 
     /// `OptionsClass__ReadFromINI @ 0x005FA620` writes `IsScoreRepeat` to
@@ -415,11 +437,7 @@ impl ThemeRuntime {
         if !self.admitted(gates) || !physical.stream_exists() {
             return ThemeAction::default();
         }
-        let current = if self.slots.retained == THEME_NONE {
-            self.slots.pending
-        } else {
-            self.slots.retained
-        };
+        let current = self.current_song();
         if !in_game_music {
             if current != THEME_HOLD {
                 let stopped = self.stop(gates, true, physical, wall_ms);
@@ -491,8 +509,8 @@ impl ThemeRuntime {
         action
     }
 
-    /// Launcher ScoreVolume zero (`0x0055FAA0`): `Queue(active, else retained)`
-    /// followed immediately by `Stop(0)`.
+    /// Launcher `55FBE5..55FC06` and B8 `6B6918..6B6939` ScoreVolume zero:
+    /// `Queue(retained, else pending)` followed immediately by `Stop(0)`.
     pub(crate) fn queue_then_stop_score_zero(
         &mut self,
         gates: ThemeGates,
@@ -502,13 +520,42 @@ impl ThemeRuntime {
         if !self.admitted(gates) {
             return ThemeAction::default();
         }
-        let request = if self.slots.active != THEME_NONE {
-            self.slots.active
-        } else {
-            self.slots.retained
-        };
+        let request = self.current_song();
         let queued = self.queue_song(request, gates, physical, wall_ms);
         queued.then(self.stop(gates, false, physical, wall_ms))
+    }
+
+    /// B8 Play `6B67B1..6B6828`: an admitted list identity different from
+    /// retained-or-pending requests Stop(1), then Queue(index). The app owns
+    /// the preceding Options.IsScore=true write; Theme never owns the profile.
+    pub(crate) fn play_selection(
+        &mut self,
+        index: i32,
+        gates: ThemeGates,
+        physical: MusicOutputState,
+        wall_ms: u64,
+    ) -> ThemeAction {
+        if !self.admitted(gates)
+            || index < 0
+            || !self.is_allowed(index)
+            || self.current_song() == index
+        {
+            return ThemeAction::default();
+        }
+        let stopped = self.stop(gates, true, physical, wall_ms);
+        stopped.then(self.queue_song(index, gates, physical, wall_ms))
+    }
+
+    /// B8 Stop `6B69C8..6B69E5`: fade the stream, then queue the hold sentinel.
+    /// The app applies the following Options.IsScore=false write separately.
+    pub(crate) fn stop_selection(
+        &mut self,
+        gates: ThemeGates,
+        physical: MusicOutputState,
+        wall_ms: u64,
+    ) -> ThemeAction {
+        let stopped = self.stop(gates, true, physical, wall_ms);
+        stopped.then(self.queue_song(THEME_HOLD, gates, physical, wall_ms))
     }
 
     /// `ThemeClass__Stop @ 0x00720EA0`. `fade` while playing starts the
@@ -762,6 +809,8 @@ pub(crate) fn catalog_from_ini(ini: &IniFile) -> Vec<ThemeEntry> {
                 entries.push(ThemeEntry {
                     key: key.to_string(),
                     sound: String::new(),
+                    name_key: String::new(),
+                    duration_seconds: 0,
                     scenario: 0,
                     normal: true,
                     repeat: false,
@@ -784,6 +833,9 @@ pub(crate) fn catalog_from_ini(ini: &IniFile) -> Vec<ThemeEntry> {
         }
         if let Some(normal) = section.get_bool("Normal") {
             entry.normal = normal;
+        }
+        if entry.normal {
+            entry.name_key = section.get("Name").unwrap_or("").to_owned();
         }
         if let Some(repeat) = section.get_bool("Repeat") {
             entry.repeat = repeat;
@@ -893,10 +945,26 @@ mod tests {
         std::fs::write(
             dir.join("thememd.ini"),
             "[Themes]\n1=INTRO\n2=Drok\n[INTRO]\nSound=Drok\nNormal=no\nRepeat=yes\n\
-             [Drok]\nSound=Drok\nNormal=yes\n",
+             [Drok]\nSound=Drok\nName=THEME:Drok\nNormal=yes\n",
         )
         .expect("write thememd.ini");
-        std::fs::write(dir.join("DROK.WAV"), b"RIFF").expect("write wav");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/storage_oracle/sound_theme_metadata.json"
+        ))
+        .unwrap();
+        let drok = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["name"] == "Drok")
+            .unwrap();
+        let hex = drok["header_hex"].as_str().unwrap();
+        let mut wav: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        wav.resize(wav.len() + drok["data_bytes"].as_u64().unwrap() as usize, 0);
+        std::fs::write(dir.join("DROK.WAV"), wav).expect("write wav");
         std::fs::write(dir.join("GRINDER.WAV"), b"RIFF").expect("write wav");
         let assets = AssetManager::from_loose_root_for_test(&dir);
 
@@ -911,6 +979,15 @@ mod tests {
             "theme.ini's [Drok] Repeat=yes must not leak in"
         );
         assert!(theme.entries().iter().all(|entry| entry.available));
+        assert_eq!(theme.entries()[1].name_key, "THEME:Drok");
+        assert_eq!(
+            theme.entries()[1].duration_seconds,
+            drok["seconds"].as_u64().unwrap() as u32
+        );
+        assert!(
+            theme.entries()[0].name_key.is_empty(),
+            "Normal=no omits Name lookup"
+        );
 
         // Missing THEMEMD.INI leaves an empty catalog even with theme.ini present.
         std::fs::remove_file(dir.join("thememd.ini")).expect("remove thememd.ini");
@@ -1007,6 +1084,8 @@ mod tests {
         let mut none = ThemeRuntime::with_entries(vec![ThemeEntry {
             key: "X".into(),
             sound: "X".into(),
+            name_key: String::new(),
+            duration_seconds: 0,
             scenario: 0,
             normal: false,
             repeat: false,
@@ -1288,6 +1367,82 @@ mod tests {
                 retained: 6,
                 pending: 6
             }
+        );
+    }
+
+    #[test]
+    fn current_song_matches_both_original_callers() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/storage_oracle/sound_theme_metadata.json"
+        ))
+        .unwrap();
+        let cases = fixture["current_song_cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 4);
+        let mut theme = stock_runtime();
+        for case in cases {
+            theme.slots = ThemeSlots {
+                active: case["active"].as_i64().unwrap() as i32,
+                retained: case["retained"].as_i64().unwrap() as i32,
+                pending: case["pending"].as_i64().unwrap() as i32,
+            };
+            let current = theme.current_song();
+            assert_eq!(current, case["launcher"].as_i64().unwrap() as i32);
+            assert_eq!(current, case["sound"].as_i64().unwrap() as i32);
+        }
+    }
+
+    #[test]
+    fn score_zero_preserves_pending_request_when_nothing_is_retained_or_active() {
+        let mut theme = stock_runtime();
+        theme.slots.pending = 7;
+        let action = theme.queue_then_stop_score_zero(gates(true), MusicOutputState::Idle, 0);
+        assert!(!action.stop_output);
+        assert_eq!(
+            theme.slots.pending, 7,
+            "native Stop has no active track to clear"
+        );
+    }
+
+    #[test]
+    fn sound_play_and_stop_preserve_theme_queue_and_fade_authority() {
+        let mut theme = stock_runtime();
+        let mut prepare = prepared;
+        theme.play_song(5, gates(true), MusicOutputState::Idle, 0, &mut prepare);
+        let same = theme.play_selection(5, gates(true), MusicOutputState::Playing, 50);
+        assert!(same.start.is_none() && !same.stop_output && !theme.fading);
+        assert_eq!(theme.slots.active, 5);
+
+        let next = theme.play_selection(6, gates(true), MusicOutputState::Playing, 100);
+        assert!(next.start.is_none() && !next.stop_output);
+        assert!(theme.fading);
+        assert_eq!(
+            theme.slots,
+            ThemeSlots {
+                active: -1,
+                retained: -1,
+                pending: 6
+            }
+        );
+        let during = theme.ai(gates(true), MusicOutputState::Playing, 600, &mut prepare);
+        assert_eq!(during.theme_scale, Some(0.5));
+        assert!(during.start.is_none());
+        let finished = theme.ai(gates(true), MusicOutputState::Playing, 1100, &mut prepare);
+        assert!(finished.stop_output);
+        assert_eq!(
+            finished.start.as_ref().map(|track| track.stem.as_str()),
+            Some("Drok")
+        );
+        assert_eq!(theme.current_song(), 6);
+
+        let stopped = theme.stop_selection(gates(true), MusicOutputState::Playing, 1200);
+        assert!(!stopped.stop_output && stopped.start.is_none());
+        assert_eq!(theme.current_song(), THEME_HOLD);
+        theme.main_tick(false, gates(true), MusicOutputState::Playing, 1300);
+        let finished = theme.ai(gates(true), MusicOutputState::Playing, 2200, &mut prepare);
+        assert!(finished.stop_output && finished.start.is_none());
+        assert_eq!(
+            theme.slots.pending, THEME_HOLD,
+            "Stop must not auto-restart music"
         );
     }
 

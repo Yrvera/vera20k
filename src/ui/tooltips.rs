@@ -138,6 +138,20 @@ impl TooltipService {
         }
     }
 
+    /// CursorCheat's 724251 -> 72429E branch bypasses the show delay and
+    /// refreshes an already visible tip on every move. Button dismissal and
+    /// the ordinary duration timer still belong to this same service.
+    pub fn on_mouse_move_immediate(&mut self, x: i32, y: i32, now_ms: u64) {
+        if !self.enabled {
+            return;
+        }
+        self.mouse_x = x;
+        self.mouse_y = y;
+        self.active = None;
+        self.timer_deadline_ms = Some(now_ms);
+        self.poll(now_ms);
+    }
+
     /// Any mouse button press/release (all 6 native button messages,
     /// including middle): kill the timer + hide.
     pub fn on_button(&mut self, _now_ms: u64) {
@@ -237,6 +251,33 @@ mod tests {
         assert_eq!(tip.id, 1);
         assert_eq!(tip.shown_at_ms, 1000);
         assert_eq!((tip.x, tip.y), (5, 5), "cursor captured at show");
+    }
+
+    #[test]
+    fn coordinates_refresh_visible_tip_and_restore_ordinary_delay() {
+        let mut s = service_with(&[region(500, 0, 0, 100, 100, "(10,20)")]);
+        s.on_mouse_move_immediate(5, 6, 100);
+        assert_eq!(s.active().unwrap().text, "(10,20)");
+        s.sync_regions(&[region(500, 0, 0, 100, 100, "(11,20)")]);
+        s.on_mouse_move_immediate(7, 6, 200);
+        let tip = s.active().unwrap();
+        assert_eq!((&*tip.text, tip.x, tip.shown_at_ms), ("(11,20)", 7, 200));
+        s.poll(10_199);
+        assert!(s.active().is_some());
+        s.poll(10_200);
+        assert!(s.active().is_none());
+        s.on_mouse_move_immediate(8, 6, 11_000);
+        s.on_button(11_001);
+        s.poll(30_000);
+        assert!(s.active().is_none());
+        s.on_mouse_move(9, 6, 31_000);
+        s.poll(31_999);
+        assert!(s.active().is_none());
+        s.poll(32_000);
+        assert!(s.active().is_some());
+        s.set_enabled(false);
+        s.on_mouse_move_immediate(10, 6, 33_000);
+        assert!(s.active().is_none());
     }
 
     #[test]

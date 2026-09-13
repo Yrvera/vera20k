@@ -7,6 +7,7 @@
 //! There is no `IniFile::get(section, key)` and no `IniFile::parse`; construct
 //! with `IniFile::from_bytes` or `IniFile::from_str`.
 
+use super::description::{SeedDescription, read_description};
 use crate::rules::ini_parser::IniFile;
 use crate::util::ini_writer::set_ini_values;
 
@@ -34,7 +35,7 @@ pub struct RmgOptions {
     pub seed: i32,
     /// Display description. Stored in `.SED` as comma-separated hex UTF-16 code
     /// units, and used as the random-map row's displayed name.
-    pub description: String,
+    pub description: SeedDescription,
 }
 
 impl Default for RmgOptions {
@@ -58,35 +59,20 @@ impl Default for RmgOptions {
             accessibility: 0,
             region_size: 0,
             seed: -1,
-            description: String::new(),
+            description: SeedDescription::default(),
         }
     }
 }
 
 /// Encode a description the way the original writes it: each UTF-16 code unit
 /// as lowercase hex followed by a comma, including a trailing one.
-fn encode_description(text: &str) -> String {
+fn encode_description(text: &SeedDescription) -> String {
     let mut out = String::new();
-    for unit in text.encode_utf16() {
+    for unit in text.units() {
         out.push_str(&format!("{unit:x}"));
         out.push(',');
     }
     out
-}
-
-/// Decode the comma-separated hex UTF-16 form. Unparsable tokens are skipped,
-/// matching the original's tolerant tokenizer.
-fn decode_description(raw: &str) -> String {
-    let units: Vec<u16> = raw
-        .split(',')
-        .filter_map(|token| {
-            let token = token.trim();
-            (!token.is_empty())
-                .then(|| u16::from_str_radix(token, 16).ok())
-                .flatten()
-        })
-        .collect();
-    String::from_utf16_lossy(&units)
 }
 
 impl RmgOptions {
@@ -129,7 +115,7 @@ impl RmgOptions {
             return;
         };
         if let Some(raw) = section.get("Description") {
-            self.description = decode_description(raw);
+            self.description = read_description(Some(raw), &self.description);
         }
         let read = |key: &str, field: &mut i32| {
             if let Some(value) = section.get_i32(key) {
@@ -224,7 +210,7 @@ mod tests {
             accessibility: 101,
             region_size: -1,
             seed: 0x1_0000,
-            description: String::new(),
+            description: SeedDescription::default(),
         };
         options.normalize();
 
@@ -312,7 +298,7 @@ mod tests {
             accessibility: 60,
             region_size: 45,
             seed: 4321,
-            description: "Round Trip".to_string(),
+            description: "Round Trip".into(),
         };
         original.normalize();
 
@@ -336,7 +322,7 @@ mod tests {
         // The trailing comma is not a typo: the original appends the delimiter
         // after every code unit, including the last.
         assert_eq!(
-            encode_description("Random Map"),
+            encode_description(&"Random Map".into()),
             "52,61,6e,64,6f,6d,20,4d,61,70,"
         );
     }
@@ -344,7 +330,10 @@ mod tests {
     #[test]
     fn description_decodes_the_native_form() {
         assert_eq!(
-            decode_description("52,61,6e,64,6f,6d,20,4d,61,70,"),
+            read_description(
+                Some("52,61,6e,64,6f,6d,20,4d,61,70,"),
+                &SeedDescription::default()
+            ),
             "Random Map"
         );
     }
@@ -352,7 +341,7 @@ mod tests {
     #[test]
     fn description_round_trips_through_sed() {
         let mut original = RmgOptions {
-            description: "Random Map".to_string(),
+            description: "Random Map".into(),
             seed: 1234,
             ..Default::default()
         };
@@ -380,7 +369,31 @@ mod tests {
     }
 
     #[test]
-    fn malformed_description_tokens_are_skipped() {
-        assert_eq!(decode_description("52,zz,61,"), "Ra");
+    fn malformed_description_tokens_repeat_the_previous_conversion() {
+        assert_eq!(
+            read_description(Some("52,zz,61,"), &SeedDescription::default()),
+            "RRa"
+        );
+    }
+
+    #[test]
+    fn seed_persistence_preserves_unpaired_utf16_units() {
+        // NewEdit Delete/Backspace works in UTF-16 units and can leave a high
+        // surrogate without its low half. Display conversion is not storage.
+        let original = RmgOptions {
+            description: SeedDescription::from_units([0xd83d, 0x41]),
+            ..RmgOptions::default()
+        };
+        assert_eq!(original.description.display_text(), "\u{fffd}A");
+        let bytes = original.to_sed_bytes();
+        let mut loaded = RmgOptions::default();
+        loaded.apply_sed(&IniFile::from_bytes(&bytes).unwrap());
+        assert_eq!(loaded.description.units(), [0xd83d, 0x41]);
+        assert_eq!(loaded.description, original.description);
+        assert!(
+            String::from_utf8(bytes)
+                .unwrap()
+                .contains("Description=d83d,41,")
+        );
     }
 }
