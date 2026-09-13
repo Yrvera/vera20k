@@ -69,7 +69,7 @@ The archived **Phase 3 integration goal** task
 #173–#193 at `5062bcea`. That completed recovery of eligible slices, not Phase 3.
 Current source has subsequently changed; use Git and the actual consumers.
 
-[PR #172](https://github.com/Yrvera/vera20k/pull/172) remains an open, conflicting
+[PR #172](https://github.com/YuriPlanet/vera20k/pull/172) remains an open, conflicting
 mixed-history archive at `49f7707f`. Recover individual evidence and coherent
 changes only. Its rejected animation shadow/layer and lowercase atlas work,
 partial Railgun/AI/trigger/crate/capture work, and Explodes/Temporal research are

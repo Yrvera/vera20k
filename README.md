@@ -63,7 +63,7 @@ run original game code under Unicorn and compare its outputs with production Rus
 
 1. Clone the repo:
    ```
-   git clone https://github.com/yrvera/vera20k.git
+   git clone https://github.com/YuriPlanet/vera20k.git
    cd vera20k
    ```
 
@@ -80,7 +80,7 @@ run original game code under Unicorn and compare its outputs with production Rus
 
 ## Contributing
 
-Read the [architecture overview](https://yrvera.github.io/vera20k/) before diving in.
+Read the [architecture overview](https://yuriplanet.github.io/vera20k/) before diving in.
 
 1. Fork the repo
 2. Create a feature branch (`git checkout -b feature/my-feature`)
