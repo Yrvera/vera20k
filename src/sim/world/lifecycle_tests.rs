@@ -1093,7 +1093,7 @@ fn gsi_04_12_common_raw_occupation_structural_deck_unit_tracks_production_collap
     assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
 
     {
-        let terrain = sim.resolved_terrain.as_ref().expect("resolved terrain");
+        let terrain = sim.resolved_terrain.as_mut().expect("resolved terrain");
         let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
         assert!(matches!(
             bridge_state.body_cell_advance_state(3, 4, true, terrain),
@@ -1502,7 +1502,7 @@ fn gsi_04_12_object_raw_occupation_deck_clear_rechecks_live_structural_state() {
     assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0x40);
 
     {
-        let terrain = sim.resolved_terrain.as_ref().expect("resolved terrain");
+        let terrain = sim.resolved_terrain.as_mut().expect("resolved terrain");
         let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
         assert!(matches!(
             bridge_state.body_cell_advance_state(3, 4, true, terrain),
@@ -5037,7 +5037,7 @@ fn gsi_04_01_cell_target_uses_live_structural_bit_when_runtime_unwalkable() {
         center
     );
     {
-        let terrain = sim.resolved_terrain.as_ref().expect("resolved terrain");
+        let terrain = sim.resolved_terrain.as_mut().expect("resolved terrain");
         let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
         assert!(matches!(
             bridge_state.body_cell_advance_state(6, 7, true, terrain),

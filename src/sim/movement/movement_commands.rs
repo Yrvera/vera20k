@@ -13,7 +13,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::GeneralRules;
-use crate::sim::components::{DriveCoord, DriveOccupationFootprint, MovementTarget};
+use crate::sim::components::{DriveOccupationFootprint, MovementTarget};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
@@ -32,30 +32,6 @@ use crate::sim::game_entity::GameEntity;
 
 use super::drive_track;
 use super::teleport_movement;
-
-/// Z of a freshly accepted track endpoint, in the native height model.
-///
-/// Same rule as the twin in `movement_step`: terrain level of the endpoint cell
-/// plus the deck delta exactly when the mover's own OnBridge state is set
-/// (`DriveLocomotionClass::ComputeBridgeZOffset` `0x004AF4A0` →
-/// `g_BridgeZOffset_Drive` `[0x008A07C4]`, folded in at `0x004B2196`). The A*
-/// layer is not an input to height in gamemd and must not be one here.
-fn resolved_track_endpoint(
-    grid: &PathGrid,
-    cell: (u16, u16),
-    on_bridge: bool,
-    fallback_z: u8,
-) -> DriveCoord {
-    let z = grid.cell(cell.0, cell.1).map_or(fallback_z, |path_cell| {
-        (path_cell.signed_level()
-            + if on_bridge {
-                super::movement_occupancy::BRIDGE_DECK_LEVEL_DELTA
-            } else {
-                0
-            }) as u8
-    });
-    DriveCoord::cell(cell.0, cell.1, i32::from(z as i8))
-}
 
 /// Check if an entity can accept a new movement destination.
 ///
@@ -109,6 +85,18 @@ pub fn stop_navigation_at_committed_head(e: &mut GameEntity) {
             Some((head_cell, target.layer_at(head_index)))
         });
     clear_navigation_for_entity(e);
+    // Chain selection consumes the remaining native direction queue, which is
+    // independent of the physical A* cursor. Stop must retire that abandoned
+    // suffix as well as truncate MovementTarget below. Keep the committed
+    // curve/head and replay reference intact until the segment finishes.
+    let remaining_path = match e.locomotor.as_ref().map(|loco| loco.active_kind()) {
+        Some(LocomotorKind::Drive) => e.drive_locomotion.as_mut().map(|drive| &mut drive.path),
+        Some(LocomotorKind::Ship) => e.ship_locomotion.as_mut().map(|ship| &mut ship.path),
+        _ => None,
+    };
+    if let Some(path) = remaining_path {
+        path.cursor = path.directions.len().min(u16::MAX as usize) as u16;
+    }
     // Stop clears the owner destination immediately, but an
     // already committed Drive/Ship curve keeps only the
     // current-to-head step. Removing every trailing A* entry
@@ -243,10 +231,8 @@ pub fn set_destination_for_teleporter_entity(
         let Some(grid) = grid else {
             return false;
         };
-        if let Some(entity) = entities.get_mut(entity_id)
-            && let Some(ref mut loco) = entity.locomotor
-        {
-            loco.begin_drive_piggyback_for_teleporter(binary_frame);
+        if let Some(entity) = entities.get_mut(entity_id) {
+            super::locomotor_owner::begin_drive_for_teleporter(entity, binary_frame);
         }
         return issue_move_command_with_layered(
             entities,
@@ -267,7 +253,7 @@ pub fn set_destination_for_teleporter_entity(
         );
     }
 
-    if let Some(entity) = entities.get(entity_id) {
+    if let Some(entity) = entities.get_mut(entity_id) {
         let should_restore = entity.locomotor.as_ref().is_some_and(|loco| {
             loco.effective_kind() == LocomotorKind::Teleport
                 && loco.active_kind() != LocomotorKind::Teleport
@@ -281,20 +267,8 @@ pub fn set_destination_for_teleporter_entity(
         // nevertheless part of a *swap*. Here the gated form is the right one:
         // a Chrono Miner still driving keeps Drive installed and the per-tick
         // restore picks it up on the frame the drive actually stops.
-        let gate = super::locomotor_end_gate_context(entity);
-        let may_end = entity.locomotor.as_ref().is_some_and(|loco| {
-            loco.can_restore_primary_from_piggyback(
-                gate.owner_moving,
-                gate.owner_teleporting,
-                gate.owner_deploying,
-            )
-        });
-        if should_restore
-            && may_end
-            && let Some(entity) = entities.get_mut(entity_id)
-            && let Some(ref mut loco) = entity.locomotor
-        {
-            loco.restore_primary_from_piggyback();
+        if should_restore {
+            super::locomotor_owner::try_restore_primary(entity);
         }
     }
 
@@ -793,6 +767,7 @@ pub(crate) fn issue_move_command_with_layered(
         let mut drive_track_started = false;
         let mut track_occupation_target: Option<DriveOccupationFootprint> = None;
         let mut accepted_path_reference: Option<(i16, i16)> = None;
+        let mut accepted_head = None;
         let mut accepted_path_nodes: usize = 1;
         // Set when the body is not yet on the head path node's octant: gamemd
         // commands that turn and installs no curve until the body reaches it.
@@ -822,8 +797,19 @@ pub(crate) fn issue_move_command_with_layered(
                         turn_first = Some(desired_facing);
                     }
                     drive_track::DriveTrackDecision::Select(plan) => {
-                        entity_mut.drive_track = drive_track::begin_selected_drive_track(&plan);
-                        drive_track_started = entity_mut.drive_track.is_some();
+                        if let Some((head, curve)) =
+                            super::track_head::begin_fresh(&plan, &entity_mut.position)
+                        {
+                            super::track_head::accept_fresh_progress(
+                                locomotor_kind.expect("shared track kind"),
+                                &mut entity_mut.drive_locomotion,
+                                &mut entity_mut.ship_locomotion,
+                                plan.selection.turn_track_index,
+                            );
+                            entity_mut.drive_track = Some(curve);
+                            accepted_head = Some(head);
+                            drive_track_started = true;
+                        }
                         if drive_track_started {
                             // `next_index` starts at 1, so the head node index is
                             // exactly the number of nodes the curve spans.
@@ -878,6 +864,7 @@ pub(crate) fn issue_move_command_with_layered(
                 .occupancy_list_layer()
                 .unwrap_or(crate::sim::movement::locomotor::MovementLayer::Ground);
             if let Some(drive) = entity_mut.drive_locomotion.as_mut() {
+                drive.head_to = accepted_head;
                 if let Some(reference) = accepted_path_reference {
                     super::path_markers::accept_path_replay(
                         &mut drive.path,
@@ -934,24 +921,14 @@ pub(crate) fn issue_move_command_with_layered(
                 }
             }
         } else if uses_ship_locomotor && !keep_in_flight_curve {
-            let fallback_z = entity_mut.position.z;
-            let mover_on_bridge = entity_mut.on_bridge;
             if let Some(ship) = entity_mut.ship_locomotion.as_mut() {
+                ship.head_to = accepted_head;
                 if let Some(reference) = accepted_path_reference {
                     super::path_markers::accept_path_replay(
                         &mut ship.path,
                         reference,
                         accepted_path_nodes,
                     );
-                    let endpoint = (reference.0 as u16, reference.1 as u16);
-                    ship.head_to = Some(resolved_track_endpoint(
-                        grid,
-                        endpoint,
-                        mover_on_bridge,
-                        fallback_z,
-                    ));
-                } else {
-                    ship.head_to = None;
                 }
             }
         }

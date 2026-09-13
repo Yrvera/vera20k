@@ -52,9 +52,11 @@ use crate::util::fixed_math::{SIM_ONE, SimFixed, facing_from_delta_int};
 use crate::util::fixed_math::SIM_ZERO;
 
 // --- Internal submodules ---
+pub(crate) mod at_coord;
 mod cell_arrival;
 mod drive_locomotion;
 pub(crate) mod ground_pose;
+pub(crate) mod locomotor_owner;
 pub(crate) mod locomotor_ready;
 mod movement_blocked;
 pub(crate) mod movement_bridge;
@@ -67,6 +69,8 @@ mod navcom;
 mod path_markers;
 pub(crate) mod ready_producer;
 pub(crate) mod slope_transition;
+mod track_head;
+pub(crate) mod track_process;
 
 // --- Movement-related modules (public API) ---
 pub mod air_movement;
@@ -121,11 +125,13 @@ pub(crate) use movement_tick::tick_movement_with_grids;
 
 /// Install the active-YR `DriveLocomotion::Force_Track` state for a flat-ground
 /// unit. The caller supplies head offsets from the unit's current cell origin;
-/// the stored head itself is an exact absolute lepton coordinate.
+/// and the caller's raw Z (native Force_Track4B0C40 copies the full XYZ).
+/// The stored head is an exact absolute lepton coordinate.
 pub(crate) fn install_forced_drive_track(
     entity: &mut crate::sim::game_entity::GameEntity,
     cell_occupation: &mut crate::sim::occupancy::CellOccupationGrid,
     mut forced: drive_track::ForcedDriveTrackState,
+    head_z_leptons: i32,
 ) -> bool {
     if entity.occupancy_list_layer() != Some(locomotor::MovementLayer::Ground) {
         return false;
@@ -143,7 +149,7 @@ pub(crate) fn install_forced_drive_track(
     let head = crate::sim::components::DriveCoord {
         x: absolute_x,
         y: absolute_y,
-        z: i32::from(entity.position.z),
+        z: head_z_leptons,
     };
     let footprint = crate::sim::components::DriveOccupationFootprint {
         rx: target_rx,
@@ -162,11 +168,10 @@ pub(crate) fn install_forced_drive_track(
         .get_or_insert_with(crate::sim::components::DriveLocomotionRuntime::default);
     // Force_Track preserves DriveLocomotion's integer movement residual. The
     // detached forced cursor mirrors that canonical owner field for snapshots.
-    forced.track.residual = drive.residual_budget;
+    forced.track.residual = drive.track.residual;
     drive.destination = Some(head);
     drive.head_to = Some(head);
-    drive.track_index = i16::from(forced.turn_track_index);
-    drive.point_index = forced.track.point_index;
+    drive.track.select_forced(i32::from(forced.turn_track_index));
     drive.track_valid = true;
     drive.target_speed_fraction = SIM_ONE;
     drive.current_speed_fraction = SIM_ONE;
@@ -432,32 +437,10 @@ pub(crate) fn locomotor_end_gate_context(
 }
 
 pub(crate) fn tick_locomotor_piggyback_restore_one(entities: &mut EntityStore, id: u64) -> bool {
-    let Some(entity) = entities.get(id) else {
-        return false;
-    };
-    let gate = locomotor_end_gate_context(entity);
     let Some(entity) = entities.get_mut(id) else {
         return false;
     };
-    let owner_moving = gate.owner_moving;
-    let owner_teleporting = gate.owner_teleporting;
-    let owner_deploying = gate.owner_deploying;
-    let mut retired_drive = false;
-    let restored_now = if let Some(ref mut loco) = entity.locomotor {
-        retired_drive = loco.active_kind() == crate::rules::locomotor_type::LocomotorKind::Drive;
-        loco.can_restore_primary_from_piggyback(owner_moving, owner_teleporting, owner_deploying)
-            && loco.restore_primary_from_piggyback()
-    } else {
-        false
-    };
-    if restored_now && retired_drive {
-        // Native FootClass::AI releases the old active locomotor before
-        // installing the stored primary. Do not retain hashed Drive
-        // state after primary Teleport is active again.
-        entity.drive_locomotion = None;
-        entity.drive_track = None;
-    }
-    restored_now
+    locomotor_owner::try_restore_primary(entity)
 }
 
 // ---------------------------------------------------------------------------
@@ -544,7 +527,7 @@ pub(crate) fn tick_movement_with_grid(
 // ---------------------------------------------------------------------------
 
 /// Returns true if the entity has a within-cell destination it hasn't reached yet.
-/// Used for both infantry (sub-cell corners) and vehicles (cell center).
+/// Generic sub-cell arrival for locomotors without a retained Drive/Ship head.
 /// The locomotor's `subcell_dest` field stores the target lepton coordinates.
 ///
 /// Takes individual fields to avoid borrow conflicts with `entity.movement_target`.
@@ -556,6 +539,12 @@ fn walking_to_subcell_dest(
     let Some(loco) = locomotor else {
         return false;
     };
+    // Drive/Ship terminate at their retained raw head. CellArrival's legacy
+    // center projection must not start a second generic movement afterward.
+    if matches!(loco.kind, crate::rules::locomotor_type::LocomotorKind::Drive
+        | crate::rules::locomotor_type::LocomotorKind::Ship) {
+        return false;
+    }
     let Some((dest_x, dest_y)) = loco.subcell_dest else {
         return false;
     };

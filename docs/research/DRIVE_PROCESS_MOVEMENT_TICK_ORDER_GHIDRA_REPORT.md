@@ -1,5 +1,36 @@
 # Drive Process / Movement / Track Tick Order - Ghidra Research Report
 
+**2026-09-13 call-site correction:** original bytes place the active-track
+`Process_Movement` call at `4B0647`, followed by retry argument `1` at `4B0665`
+and the track retry at `4B0AAA`. The no-active call is `4B0A79`; this report
+previously reversed those movement call sites. Direction `8` returns from
+movement selection at `4B3298/4B3A4D`; the track retry's tube gate at
+`4B1297/4B12AE` runs before the paid-point gate at `4B150D`.
+
+**2026-09-13 callback/state correction:** the paid loop retains its raw array,
+raw metadata and chain-direction descriptor across owner callbacks
+(`4B1542/154C`, resume `4B158F/1596`; Ship `6A0C08/0C14`, resume `6A0C52`).
+Accepted chaining explicitly replaces those caches before its callback
+(`4B1C78..1CF9` / `6A12C2..133C`). Coordinate transformation instead reads
+the current selector's flags and current head (`4B4780` / `6A3DB0`), and the
+residual branch reselects the raw array from current selector/short fields
+(`4B1F6D..4B22E2` / `6A15B0..6A1924`). The saved
+[`locomotor_track_callback` oracle](../../tools/spatial_oracle/locomotor_track_callback.py)
+compares 54 supplied-mutation cases against original instructions, including
+original facing loads and complete transform helpers. It does not execute
+gameplay callback bodies or prove that each supplied mutation occurs in retail.
+
+Geometric list crossing is separate from `PerCellProcess(2)`: the two explicit
+Drive calls are `4B1CFD` (accepted chain) and `4B220F` (paid terminal), with
+Ship counterparts `6A1340/6A1852`. During accepted-chain `PerCellProcess`, the
+head is full Null and valid is true; the saved candidate head is installed
+only after the callback and owner lifecycle checks. Those checks are alive
+`+90`, not-in-limbo `+81`, and not-falling `+8D`, not an off-map check. Native
+continuation retains the invoked locomotor, without an active-slot equality
+guard. Rust's `track_process` tests cover the bounded retained/call-local state
+semantics; canonical production stepping and the synchronous world callback
+host remain required. The old batch stepper is still active.
+
 **Address(es):** `0x004B0500` (`DriveLocomotionClass::Process`), `0x004B2630` (`Process_Movement`), `0x004B0F20` (`Process_Drive_Track`)
 **Investigation Mode:** exhaustive-slice
 **Claimed Scope:** call/order relationship among the three DriveLocomotion functions for speed/timing-visible state: slope sampling, active-track processing, path/track selection, speed fraction update, residual consumption, arrival stop, and state clears.
@@ -53,12 +84,12 @@ Order verified from decompile and call-site byte scan:
 3. If `track_index == -1` or head-to valid byte is clear, enters no-active-track path:
    - arrival/NavCom/mission/delay checks run before movement;
    - may call NavCom vtable `+0x4C` then Drive vtable `+0x44` to re-aim destination before movement;
-   - calls `Process_Movement(..., 1, 0)` at `0x004B0647`;
+   - calls `Process_Movement(..., 1, 0)` at `0x004B0A79`;
    - if the out byte is clear and owner is still alive, calls `Process_Drive_Track(0)` at `0x004B0AAA`.
 4. Else, enters active-track path:
    - calls `Process_Drive_Track(0)` at `0x004B0576`;
    - if it returns nonzero, or owner is no longer alive, exits before `Process_Movement`;
-   - if track was cleared but destination/path conditions still need work, may re-aim NavCom then calls `Process_Movement(..., 1, 0)` at `0x004B0A79`;
+   - if track was cleared but destination/path conditions still need work, may re-aim NavCom then calls `Process_Movement(..., 1, 0)` at `0x004B0647`;
    - if `Process_Movement` does not set the caller out byte and owner is still alive, calls `Process_Drive_Track(1)` at `0x004B0AAA`.
 5. Post-movement ambient/side effects such as tiberium spill animation and final `Is_Moving` return happen after the movement/track chain.
 
@@ -110,8 +141,8 @@ Active in YR: Yes. Evidence: decompile of `0x004B2630`; direct callers from `Pro
 | Ordered point | Evidence | Consequence |
 |---|---|---|
 | Slope sample is first inside Drive `Process` | decompile `0x004B0500` before any movement calls | visual slope transition can start before the same tick's movement/track work |
-| Active track is processed before new movement/path work | `0x004B0576 -> 0x004B0F20`, then later `0x004B0A79 -> 0x004B2630` | an existing curve may consume movement and clear state before `Process_Movement` chooses the next path step |
-| No-active-track path runs arrival/delay/NavCom gates before movement | decompile `0x004B0500`, call `0x004B0647` after those branches | queued/arrival state is not a post-loop generic cleanup in gamemd |
+| Active track is processed before new movement/path work | `0x004B0576 -> 0x004B0F20`, then later `0x004B0647 -> 0x004B2630` | an existing curve may consume movement and clear state before `Process_Movement` chooses the next path step |
+| No-active-track path runs arrival/delay/NavCom gates before movement | decompile `0x004B0500`, call `0x004B0A79` after those branches | queued/arrival state is not a post-loop generic cleanup in gamemd |
 | Same-tick second track call is possible after movement | `0x004B0AAA -> 0x004B0F20` after `Process_Movement` | newly selected track can start in the same Process call |
 | Second track call uses residual only | `Process_Drive_Track` budget uses `(~-(param_2 != 0) & speed) + residual` | prevents double speed budget in same tick |
 | Arrival stop can happen from `Process_Drive_Track` track-end branch before top-level no-track arrival gate | decompile `0x004B0F20` track-end branch; arrival report | do not model arrival solely as a generic end-of-`MovementTarget` finalizer |
@@ -135,7 +166,7 @@ Rust currently has useful scaffolding but does not match this exact order:
 |---|---|---|---|
 | `Process @ 0x004B0500` slope-before-movement order | verified | decompile `0x004B0500` | none for ordering |
 | Active-track top-level branch | verified | decompile `0x004B0500`; call `0x004B0576` | full mission side effects out of scope |
-| No-active-track top-level branch | verified | decompile `0x004B0500`; call `0x004B0647` | full mission-id taxonomy out of scope |
+| No-active-track top-level branch | verified | decompile `0x004B0500`; call `0x004B0A79` | full mission-id taxonomy out of scope |
 | Same-tick second `Process_Drive_Track` call | verified | call `0x004B0AAA`; decompile control flow | none |
 | `Process_Movement` call sites from `Process` | verified | byte scan and assembly context `0x004B0647`, `0x004B0A79` | exact argument semantic names remain decompiler-noisy but order is proven |
 | `Process_Drive_Track` speed update before budget | verified | decompile; assembly `0x004B1261..0x004B1274` | formulas in ramp branch deferred |
@@ -147,8 +178,8 @@ Rust currently has useful scaffolding but does not match this exact order:
 
 - `[RESOLVED] OQ1 - Does slope sampling occur before path/track movement? -> Yes, `Process` samples occupied cell slope and starts a 3-frame timer before any movement call.` (evidence: `0x004B0500` decompile)
 - `[RESOLVED] OQ2 - When active track exists, what runs first? -> `Process_Drive_Track(0)` runs before `Process_Movement`.` (evidence: `0x004B0576 -> 0x004B0F20`; decompile branch)
-- `[RESOLVED] OQ3 - When no active track exists, what runs first? -> arrival/delay/NavCom gates run before `Process_Movement`; track processing comes only after movement succeeds.` (evidence: `0x004B0500`, call `0x004B0647`)
-- `[RESOLVED] OQ4 - Is there a same-tick `Process_Movement -> Process_Drive_Track` chain? -> Yes, `0x004B0A79` can be followed by `0x004B0AAA`.` (evidence: decompile and call byte scan)
+- `[RESOLVED] OQ3 - When no active track exists, what runs first? -> arrival/delay/NavCom gates run before `Process_Movement`; track processing comes only after movement succeeds.` (evidence: `0x004B0500`, call `0x004B0A79`)
+- `[RESOLVED] OQ4 - Is there a same-tick `Process_Movement -> Process_Drive_Track` chain? -> Yes, active-track `0x004B0647` is followed by retry `0x004B0AAA`; no-active `0x004B0A79` is followed by a fresh call there.` (evidence: original call and argument bytes)
 - `[RESOLVED] OQ5 - Does the second track call add fresh speed again? -> No, nonzero `param_2` masks speed to zero and uses only residual.` (evidence: `0x004B0F20` budget expression)
 - `[RESOLVED] OQ6 - Is speed fraction updated before budget consumption? -> Yes, `SetSpeedFraction`/ramp branch precedes `GetCurrentSpeed`.` (evidence: `0x004B1261..0x004B1274`)
 - `[RESOLVED] OQ7 - Does `Process_Movement` write Drive target speed fraction before selecting the next track? -> Yes, it writes `Drive+0x50` or calls owner `+0x544` before track-index assignment and point-index reset.` (evidence: `0x004B2630` decompile)
@@ -165,13 +196,13 @@ Rust currently has useful scaffolding but does not match this exact order:
 | Verified behavior | Evidence | Current Rust delta | Affected Rust surface | Required implementation effect | Acceptance scenario | Risk / do-not-do |
 |---|---|---|---|---|---|---|
 | Drive `Process` samples slope before movement/track work. | `0x004B0500` decompile | partial/missing for Drive-owned order | `src/sim/movement/movement_tick.rs`, slope/rocking integration | Slope transition state must be sampled at the Drive process entry point before any track/path advancement for that entity. | Moving vehicle enters a ramp cell: slope timer/state changes before same-tick DriveTrack advancement is observed. Proposed test: `drive_process_samples_slope_before_track_budget`. | Do not update slope only after generic movement finalizes cell crossing. |
-| Active-track path runs `Process_Drive_Track(0)`, then possibly `Process_Movement`, then `Process_Drive_Track(1)`. | calls `0x004B0576`, `0x004B0A79`, `0x004B0AAA`; decompile | missing; Rust advances track inside generic movement and finalizes later | `src/sim/movement/movement_tick.rs`, `src/sim/movement/movement_step.rs`, `src/sim/movement/drive_track.rs` | Drive tick must allow same-tick continuation from completed/current track to movement/path selection and a residual-only second track call. | A Drive unit whose current track completes and has a next path direction starts the next track in the same tick without receiving a second fresh speed budget. Proposed test: `drive_track_completion_chains_same_tick_with_retry_budget`. | Do not wait one full Rust tick after track completion; do not call the second track with a full speed budget. |
+| Active-track path runs `Process_Drive_Track(0)`, then possibly `Process_Movement`, then `Process_Drive_Track(1)`. | calls `0x004B0576`, `0x004B0647`, `0x004B0AAA`; retry argument at `0x004B0665` | missing; Rust advances track inside generic movement and finalizes later | `src/sim/movement/movement_tick.rs`, `src/sim/movement/movement_step.rs`, `src/sim/movement/drive_track.rs` | Drive tick must allow same-tick continuation from completed/current track to movement/path selection and a residual-only second track call. | A Drive unit whose current track completes and has a next path direction starts the next track in the same tick without receiving a second fresh speed budget. Proposed test: `drive_track_completion_chains_same_tick_with_retry_budget`. | Do not wait one full Rust tick after track completion; do not call the second track with a full speed budget. |
 | `Process_Drive_Track` updates current speed fraction before calling `GetCurrentSpeed`, then consumes `speed + residual` or `residual` for retry. | `0x004B0F69..0x004B1274`; budget expression in `0x004B0F20` | missing/partial; Rust stores Drive fraction but movement still uses `MovementTarget.current_speed * cell_speed_mod` | `src/sim/movement/drive_locomotion.rs`, `src/sim/movement/movement_tick.rs`, `src/sim/movement/drive_track.rs` | Drive runtime speed fraction must be the authority before integer speed budget is computed; residual must persist in Drive runtime and retry call must mask fresh speed. | `Accelerates=false` MTNK uses target fraction on first DriveTrack budget, while same-tick retry consumes only saved residual. Proposed test: `drive_speed_fraction_before_budget_and_retry_masks_speed`. | Do not model `Accelerates=false` by changing generic acceleration factors; do not leave residual only inside `DriveTrackState` if retry semantics need Drive `+0x4C`. |
 | Arrival/stop can be reached inside `Process_Drive_Track` and top-level no-track gates; empty/non-empty queue split is not a generic after-loop-only cleanup. | `0x004B0500`, `0x004B0F20`, arrival queue report | partial; recent Rust has delayed NavCom clear but still generic finalizer shape | `src/sim/movement/navcom.rs`, `src/sim/movement/movement_tick.rs` | Arrival clear/queue dispatch must be embedded in Drive process order so the next path/track selection sees gamemd state. | Empty queue arrival clears via `Set_Destination(NULL)` path, queued cell arrival starts a next destination without an extra unrelated movement tick. Proposed test: `drive_arrival_queue_processed_in_process_order`. | Do not infer arrival solely from `MovementTarget` exhaustion. |
 
 ## 10. Negative Facts / Do Not Do
 
-- Do not summarize Drive order as simply "`Process` calls `Process_Drive_Track` then `Process_Movement`." Active in YR: Yes. Evidence: no-active-track path calls `Process_Movement` at `0x004B0647` before the later `Process_Drive_Track` call at `0x004B0AAA`.
+- Do not summarize Drive order as simply "`Process` calls `Process_Drive_Track` then `Process_Movement`." Active in YR: Yes. Evidence: no-active-track path calls `Process_Movement` at `0x004B0A79` before the later `Process_Drive_Track` call at `0x004B0AAA`.
 - Do not give the same-tick second `Process_Drive_Track` a full speed budget. Active in YR: Yes. Evidence: nonzero `param_2` masks fresh speed to zero in `0x004B0F20`.
 - Do not compute Drive track budget before speed fraction update. Active in YR: Yes. Evidence: `SetSpeedFraction` call at `0x004B1269` precedes `GetCurrentSpeed` call at `0x004B1274`.
 - Do not put residual interpolation in the same path as facing update. Active in YR: Yes. Evidence: facing update call `0x004B1AC1` is in consumed-point body; residual branch follows stored leftover and lacks that call.

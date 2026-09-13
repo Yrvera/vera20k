@@ -322,13 +322,14 @@ fn start_install_force_track(
     building_id: u64,
     unit_id: u64,
 ) -> bool {
-    let Some((bx, by, building_sub_x, building_sub_y)) =
+    let Some((bx, by, building_sub_x, building_sub_y, building_z)) =
         sim.substrate.entities.get(building_id).map(|b| {
             (
                 b.position.rx,
                 b.position.ry,
                 b.position.sub_x.to_num::<i32>(),
                 b.position.sub_y.to_num::<i32>(),
+                movement::ground_pose::position_world_coord(&b.position).z,
             )
         })
     else {
@@ -380,7 +381,7 @@ fn start_install_force_track(
     let Some(unit) = entities.get_mut(unit_id) else {
         return false;
     };
-    movement::install_forced_drive_track(unit, cell_occupation, forced)
+    movement::install_forced_drive_track(unit, cell_occupation, forced, building_z)
 }
 
 #[cfg(test)]

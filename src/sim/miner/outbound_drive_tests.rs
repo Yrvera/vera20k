@@ -477,7 +477,19 @@ fn assert_command_state(
     let expected_coord = DriveCoord::cell(target.0, target.1, 0);
     let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
     assert_eq!(drive.destination, Some(expected_coord));
-    assert_eq!(drive.head_to, Some(expected_coord));
+    // These fixtures depart north from START. Native Drive4B32AF commits
+    // current XYZ + one direction offset, independently of the ore destination
+    // (saved locomotor_head_coordinates corpus; production coverage in track_head_tests).
+    let expected_head = DriveCoord::cell(START.0, START.1 - 1, 0);
+    assert_eq!(drive.head_to, Some(expected_head));
+    let curve = entity.drive_track.as_ref().expect("accepted first curve");
+    assert_eq!(
+        (
+            curve.head_offset_x + i32::from(entity.position.rx) * 256,
+            curve.head_offset_y + i32::from(entity.position.ry) * 256
+        ),
+        (expected_head.x, expected_head.y),
+    );
     assert_eq!(
         drive.path.directions.len(),
         movement.path.len().saturating_sub(1),

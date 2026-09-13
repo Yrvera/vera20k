@@ -314,7 +314,7 @@ impl Simulation {
         }
 
         if let Some(zone_grid) = self.zone_grid.as_mut() {
-            let _ = zone_grid.refresh_base_movement_class_at(terrain, rx, ry);
+            let _ = zone_grid.refresh_base_cell_attributes_at(terrain, rx, ry);
         }
     }
 
@@ -348,7 +348,7 @@ impl Simulation {
             PackedZoneCoord::new(repair_cell.0 as i16, repair_cell.1 as i16),
             repair,
             tail_grid,
-            &self.terrain_costs,
+            self.playfield_bounds,
             terrain,
             bridge_records,
         );
@@ -456,6 +456,7 @@ impl Simulation {
                     zone_grid: &mut self.zone_grid,
                     path_grid: &mut self.path_grid,
                     bridge_state: self.bridge_state.as_ref(),
+                    playfield_bounds: self.playfield_bounds,
                 };
                 self.overlay_grid.as_mut().and_then(|grid| {
                     runtime_wall_cleanup_visit_at(
@@ -852,39 +853,17 @@ impl Simulation {
                     e.c4_plant = None;
                 }
                 // Cancel any special locomotor states in progress.
-                // The END gate, read before the mutable borrow. gamemd has five
-                // END callsites. Three run behind `IPiggyback::Is_Ok_To_End`
-                // (`+0x14`): `FootClass::AI` @ `0x004DAEC3` and
-                // `TechnoClass::Set_Destination` @ `0x00742587` and
-                // `0x00742681`. Two run behind `Is_Piggybacking` (`+0x1C`,
-                // `0x004B4CD0` — a bare `slot != 0` test) alone: `0x00742A7C`
-                // and the war-factory-exit fragment at `0x0044E014`. So "no
-                // ungated END" is not true; what IS true is that **every**
-                // native END is immediately followed by `CoCreateInstance` +
-                // `Link_To_Object` + `Begin_Piggyback` — always a *swap*, never
-                // a bare unwind.
-                //
-                // **VERA-internal, gamemd has no counterpart for this site.**
-                // Stop performs a bare unwind. Gating it on `Is_Ok_To_End`
-                // narrows it to the conservative subset rather than inventing a
-                // swap, and stops a Chrono Miner that is still driving from
-                // losing its Drive a tick early. Trigger: Stop on a unit with a
-                // live piggyback. Player effect: retail's Stop leaves the
-                // installed locomotor alone. Frequency: Chrono Miners are the
-                // only stock piggybacking unit, so a handful of times a match
-                // for an Allied player who micros them. Downstream risk: the
-                // gate is read after `clear_navigation_for_entity` has already
-                // run `drive_stop_moving`, so `owner_moving` degrades to
-                // `head_to != position` where native evaluates it with the
-                // destination still live.
-                //
-                // Pinned only at the predicate level, by
-                // `drive_piggyback_restores_primary_teleport_only_after_not_moving`
-                // in `locomotor_tests`. No fixture drives a Stop command at a
-                // Teleport-primary mover with Drive piggybacked and `head_to`
-                // ahead of the position, so nothing pins that this site
-                // consults the gate at all — every existing `Command::Stop`
-                // fixture uses a mover for which `is_overridden()` is false.
+                // **VERA-internal: retail Stop leaves the installed locomotor
+                // alone.** This existing unwind policy uses the same END gate
+                // as FootAI4DAEC3 / SetDestination742587, after navigation is
+                // cleared but before teleport/layer cleanup. A live Drive head
+                // still refuses it. Keep that timing while centralizing the
+                // actual instance transfer/retirement in locomotor_owner.
+                // Trigger: Stop on a piggybacked Chrono Miner, a few times per
+                // ordinary Allied match; a premature unwind can change the next
+                // command's locomotor. Native Stop parity remains open. The
+                // production command's admitted/refused lifetime is covered by
+                // locomotor_owner_tests::stop_command_retires_only_the_drive_admitted_by_its_existing_gate.
                 let may_end = self.substrate.entities.get(*entity_id).is_some_and(|e| {
                     let gate = crate::sim::movement::locomotor_end_gate_context(e);
                     e.locomotor.as_ref().is_some_and(|loco| {
@@ -899,13 +878,13 @@ impl Simulation {
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.teleport_state = None;
                     // Restore ground layer and base locomotor if overridden.
-                    if let Some(ref mut loco) = e.locomotor {
-                        if loco.layer == MovementLayer::Underground {
-                            loco.layer = MovementLayer::Ground;
-                        }
-                        if may_end {
-                            loco.end_piggyback();
-                        }
+                    if let Some(ref mut loco) = e.locomotor
+                        && loco.layer == MovementLayer::Underground
+                    {
+                        loco.layer = MovementLayer::Ground;
+                    }
+                    if may_end {
+                        crate::sim::movement::locomotor_owner::restore_admitted_primary(e);
                     }
                 }
                 // Ore-miner arm, last — retail runs it after the radio break,

@@ -248,7 +248,6 @@ fn seed_bridge_with_state(sim: &mut Simulation, state: DamageState) {
                 role,
                 anchor_span_id: Some(1),
                 overlay_byte,
-                damaged_variant: false,
                 bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
@@ -301,7 +300,6 @@ fn seed_low_bridge_with_state(sim: &mut Simulation, state: DamageState) {
                 role,
                 anchor_span_id: Some(1),
                 overlay_byte,
-                damaged_variant: false,
                 bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
@@ -334,7 +332,6 @@ fn seed_hut_fallback_bridgehead_layout(sim: &mut Simulation) {
             role: BridgeCellRole::Bridgehead,
             anchor_span_id: None,
             overlay_byte: 0,
-            damaged_variant: false,
             bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         },
     );
@@ -351,7 +348,6 @@ fn seed_hut_fallback_bridgehead_layout(sim: &mut Simulation) {
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 0,
-            damaged_variant: false,
             bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         },
     );
@@ -402,7 +398,6 @@ fn seed_hut_pure_bridgehead_fallback_layout(sim: &mut Simulation) {
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 0,
-            damaged_variant: false,
             bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         },
     );
@@ -437,7 +432,6 @@ fn seed_terminal_overlay_with_fallback_trap(sim: &mut Simulation, overlay_byte: 
             role: BridgeCellRole::Body,
             anchor_span_id: None,
             overlay_byte,
-            damaged_variant: false,
             bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         },
     );
@@ -1439,7 +1433,6 @@ fn seed_isolated_anchor(
     pos: (u16, u16),
     span_id: u16,
     state: DamageState,
-    damaged_variant: bool,
 ) {
     let span = AnchorSpan {
         id: span_id,
@@ -1464,7 +1457,6 @@ fn seed_isolated_anchor(
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(span_id),
             overlay_byte: 0,
-            damaged_variant,
             bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         },
     );
@@ -1480,25 +1472,25 @@ fn g4_damage_path_sets_damaged_variant_at_perpendicular_target() {
         (10, 10),
         1,
         DamageState::Healthy { variant: 0 },
-        false,
     );
     seed_isolated_anchor(
         &mut bs,
         (11, 10),
         2,
         DamageState::Healthy { variant: 0 },
-        false,
     );
-    let terrain = damaged_data_resolved_terrain(42);
+    let mut terrain = damaged_data_resolved_terrain(42);
+    terrain.test_set_high_bridge_rim_tiles(crate::map::bridge_rim_tiles::HighBridgeRimTiles::from_ini(
+        40, b"[General]\nBridgeBottomRight1=3\nBridgeBottomRight2=3\nBridgeTopLeft1=1\nBridgeTopLeft2=2\nBridgeMiddle1=7\nBridgeMiddle2=12\n"));
 
-    let _ = bs.body_cell_advance_state(10, 10, true, &terrain);
+    let _ = bs.body_cell_advance_state(10, 10, true, &mut terrain);
 
     assert!(
-        bs.cell(11, 10).unwrap().damaged_variant,
+        terrain.pavement_damaged_at(11, 10),
         "perpendicular target must acquire damaged_variant after DamageA write"
     );
     assert!(
-        bs.cell(10, 10).unwrap().damaged_variant,
+        terrain.pavement_damaged_at(10, 10),
         "same-tile_id seed neighbor must acquire damaged_variant via flood-fill propagation"
     );
 }
@@ -1508,33 +1500,37 @@ fn g4_collapse_path_keeps_damaged_variant_set() {
     let mut bs = BridgeRuntimeState::default();
     // Pre-damaged anchor + perpendicular target, both already flagged
     // damaged_variant=true. The collapse step must NOT clear the bit.
-    seed_isolated_anchor(&mut bs, (10, 10), 1, DamageState::Damaged, true);
+    seed_isolated_anchor(&mut bs, (10, 10), 1, DamageState::Damaged);
     seed_isolated_anchor(
         &mut bs,
         (11, 10),
         2,
         DamageState::Healthy { variant: 0 },
-        true,
     );
-    let terrain = damaged_data_resolved_terrain(42);
+    let mut terrain = damaged_data_resolved_terrain(42);
+    terrain.test_set_high_bridge_rim_tiles(crate::map::bridge_rim_tiles::HighBridgeRimTiles::from_ini(
+        40, b"[General]\nBridgeBottomRight1=3\nBridgeBottomRight2=3\nBridgeTopLeft1=1\nBridgeTopLeft2=2\nBridgeMiddle1=7\nBridgeMiddle2=12\n"));
 
-    let _ = bs.body_cell_advance_state(10, 10, true, &terrain);
+    for (rx, ry) in [(10, 10), (11, 10)] {
+        terrain.cell_mut(rx, ry).unwrap().bridge_facts.raw_flags |= 0x2000;
+    }
+    let _ = bs.body_cell_advance_state(10, 10, true, &mut terrain);
 
     assert!(
-        bs.cell(10, 10).unwrap().damaged_variant,
+        terrain.pavement_damaged_at(10, 10),
         "collapse must preserve damaged_variant on seed cell (state=true from collapse callers)"
     );
     assert!(
-        bs.cell(11, 10).unwrap().damaged_variant,
+        terrain.pavement_damaged_at(11, 10),
         "collapse must preserve damaged_variant on perpendicular target"
     );
 }
 
 #[test]
-fn g4_repair_clears_damaged_variant_on_repaired_cells() {
+fn ordinary_engineer_overlay_repair_preserves_pavement_damage() {
     let (mut sim, rules, heights) = build_sim();
-    // Replace dummy terrain with one that allows the flood-fill clear to
-    // actually fire (has_damaged_data=true).
+    // Admit damaged-data tiles so an accidental pavement clear would
+    // affect this fixture; native ordinary overlay repair must preserve it.
     sim.resolved_terrain = Some(damaged_data_resolved_terrain(42));
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let engineer = spawn_engineer(&mut sim, 9, 10);
@@ -1546,25 +1542,24 @@ fn g4_repair_clears_damaged_variant_on_repaired_cells() {
     seed_destroyed_bridge(&mut sim);
     // Pre-flag every bridge cell as damaged-variant.
     {
-        let bs = sim.bridge_state.as_mut().unwrap();
         for &(rx, ry) in BRIDGE_CELLS {
-            bs.cell_mut(rx, ry).unwrap().damaged_variant = true;
+            sim.resolved_terrain.as_mut().unwrap().cell_mut(rx, ry).unwrap().bridge_facts.raw_flags |= 0x2000;
         }
     }
 
     step(&mut sim, &rules, &heights);
 
-    let bs = sim.bridge_state.as_ref().unwrap();
+    let terrain = sim.resolved_terrain.as_ref().unwrap();
     for &(rx, ry) in BRIDGE_CELLS {
         assert!(
-            !bs.cell(rx, ry).unwrap().damaged_variant,
-            "cell ({rx},{ry}) damaged_variant must be cleared after engineer-CABHUT repair"
+            terrain.pavement_damaged_at(rx, ry),
+            "cell ({rx},{ry}) pavement damage must survive native ordinary overlay repair"
         );
     }
 }
 
 #[test]
-fn g4_repair_flood_fill_propagates_clear_to_same_tile_id_bridge_neighbor() {
+fn ordinary_engineer_overlay_repair_does_not_clear_neighbor_pavement() {
     let (mut sim, rules, heights) = build_sim();
     sim.resolved_terrain = Some(damaged_data_resolved_terrain(42));
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
@@ -1578,8 +1573,8 @@ fn g4_repair_flood_fill_propagates_clear_to_same_tile_id_bridge_neighbor() {
 
     // Add an off-span bridge cell at (10, 14): same tile_id as BRIDGE_CELLS,
     // adjacent to (10, 13). NOT a member of anchor_span 1, so it is NOT
-    // visited by body_cell_repair_state's per-cell walk. It can only get
-    // cleared via flood-fill propagation from a same-tile_id neighbor.
+    // visited by the ordinary overlay repair walk. An erroneous connected
+    // pavement clear would reach it from the adjacent span cell.
     {
         let bs = sim.bridge_state.as_mut().unwrap();
         bs.test_seed_cell(
@@ -1595,21 +1590,21 @@ fn g4_repair_flood_fill_propagates_clear_to_same_tile_id_bridge_neighbor() {
                 role: BridgeCellRole::Body,
                 anchor_span_id: None,
                 overlay_byte: 0,
-                damaged_variant: true,
                 bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
         for &(rx, ry) in BRIDGE_CELLS {
-            bs.cell_mut(rx, ry).unwrap().damaged_variant = true;
+            sim.resolved_terrain.as_mut().unwrap().cell_mut(rx, ry).unwrap().bridge_facts.raw_flags |= 0x2000;
         }
     }
 
+    sim.resolved_terrain.as_mut().unwrap().cell_mut(10, 14).unwrap().bridge_facts.raw_flags |= 0x2000;
     step(&mut sim, &rules, &heights);
 
-    let bs = sim.bridge_state.as_ref().unwrap();
+    let terrain = sim.resolved_terrain.as_ref().unwrap();
     assert!(
-        !bs.cell(10, 14).unwrap().damaged_variant,
-        "off-span neighbor with matching tile_id must clear via flood-fill propagation"
+        terrain.pavement_damaged_at(10, 14),
+        "ordinary overlay repair must not flood-clear off-span pavement"
     );
 }
 
@@ -1718,7 +1713,6 @@ fn build_ns_bridge_with_bridgehead_for_dispatch() -> (
             role: BridgeCellRole::Bridgehead,
             anchor_span_id: None,
             overlay_byte: 0x18,
-            damaged_variant: false,
             bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
         },
     );
@@ -1735,7 +1729,6 @@ fn build_ns_bridge_with_bridgehead_for_dispatch() -> (
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 0x20,
-            damaged_variant: false,
             bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
         },
     );
@@ -1752,7 +1745,6 @@ fn build_ns_bridge_with_bridgehead_for_dispatch() -> (
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 0x21,
-            damaged_variant: false,
             bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
         },
     );
@@ -1769,7 +1761,6 @@ fn build_ns_bridge_with_bridgehead_for_dispatch() -> (
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 0x22,
-            damaged_variant: false,
             bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
         },
     );

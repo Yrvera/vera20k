@@ -1,0 +1,7349 @@
+{
+  "groups": [
+    {
+      "cases": [
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              40,
+              60,
+              70,
+              80,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 0,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 0,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            20,
+            40,
+            60,
+            70,
+            80,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              40,
+              60,
+              70,
+              80,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 0,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 0,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            20,
+            40,
+            60,
+            70,
+            80,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 1,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 1,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              42,
+              60,
+              71,
+              82,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 2,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 2,
+          "tactical_raw_origin": [
+            13,
+            -5
+          ],
+          "tactical_rgb": [
+            21,
+            42,
+            60,
+            71,
+            82,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              42,
+              60,
+              71,
+              82,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 2,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 2,
+          "tactical_raw_origin": [
+            13,
+            -5
+          ],
+          "tactical_rgb": [
+            21,
+            42,
+            60,
+            71,
+            82,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              43,
+              60,
+              70,
+              83,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 3,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 3,
+          "tactical_raw_origin": [
+            3,
+            3
+          ],
+          "tactical_rgb": [
+            20,
+            43,
+            60,
+            70,
+            83,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              43,
+              60,
+              70,
+              83,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 3,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 3,
+          "tactical_raw_origin": [
+            3,
+            3
+          ],
+          "tactical_rgb": [
+            20,
+            43,
+            60,
+            70,
+            83,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 4,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 4,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              45,
+              60,
+              71,
+              85,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 5,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 5,
+          "tactical_raw_origin": [
+            16,
+            -2
+          ],
+          "tactical_rgb": [
+            21,
+            45,
+            60,
+            71,
+            85,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              45,
+              60,
+              71,
+              85,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 5,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 5,
+          "tactical_raw_origin": [
+            16,
+            -2
+          ],
+          "tactical_rgb": [
+            21,
+            45,
+            60,
+            71,
+            85,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              46,
+              60,
+              71,
+              86,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 6,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 6,
+          "tactical_raw_origin": [
+            17,
+            -1
+          ],
+          "tactical_rgb": [
+            21,
+            46,
+            60,
+            71,
+            86,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              46,
+              60,
+              71,
+              86,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 6,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 6,
+          "tactical_raw_origin": [
+            17,
+            -1
+          ],
+          "tactical_rgb": [
+            21,
+            46,
+            60,
+            71,
+            86,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              47,
+              60,
+              71,
+              87,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 7,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 7,
+          "tactical_raw_origin": [
+            18,
+            0
+          ],
+          "tactical_rgb": [
+            21,
+            47,
+            60,
+            71,
+            87,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              47,
+              60,
+              71,
+              87,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 7,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 7,
+          "tactical_raw_origin": [
+            18,
+            0
+          ],
+          "tactical_rgb": [
+            21,
+            47,
+            60,
+            71,
+            87,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              48,
+              60,
+              70,
+              88,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 8,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 8,
+          "tactical_raw_origin": [
+            8,
+            8
+          ],
+          "tactical_rgb": [
+            20,
+            48,
+            60,
+            70,
+            88,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              48,
+              60,
+              70,
+              88,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 8,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 8,
+          "tactical_raw_origin": [
+            8,
+            8
+          ],
+          "tactical_rgb": [
+            20,
+            48,
+            60,
+            70,
+            88,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              49,
+              60,
+              71,
+              89,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 9,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 9,
+          "tactical_raw_origin": [
+            20,
+            2
+          ],
+          "tactical_rgb": [
+            21,
+            49,
+            60,
+            71,
+            89,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              49,
+              60,
+              71,
+              89,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 9,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 9,
+          "tactical_raw_origin": [
+            20,
+            2
+          ],
+          "tactical_rgb": [
+            21,
+            49,
+            60,
+            71,
+            89,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 10,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 10,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            21,
+            40,
+            60,
+            71,
+            80,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 10,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 10,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            21,
+            40,
+            60,
+            71,
+            80,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              51,
+              60,
+              70,
+              91,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 11,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 11,
+          "tactical_raw_origin": [
+            11,
+            11
+          ],
+          "tactical_rgb": [
+            20,
+            51,
+            60,
+            70,
+            91,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              51,
+              60,
+              70,
+              91,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 11,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 11,
+          "tactical_raw_origin": [
+            11,
+            11
+          ],
+          "tactical_rgb": [
+            20,
+            51,
+            60,
+            70,
+            91,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 12,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 12,
+          "tactical_raw_origin": [
+            13,
+            -5
+          ],
+          "tactical_rgb": [
+            21,
+            42,
+            60,
+            71,
+            82,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 12,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 12,
+          "tactical_raw_origin": [
+            13,
+            -5
+          ],
+          "tactical_rgb": [
+            21,
+            42,
+            60,
+            71,
+            82,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 13,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 13,
+          "tactical_raw_origin": [
+            14,
+            -4
+          ],
+          "tactical_rgb": [
+            21,
+            43,
+            60,
+            71,
+            83,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 13,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 13,
+          "tactical_raw_origin": [
+            14,
+            -4
+          ],
+          "tactical_rgb": [
+            21,
+            43,
+            60,
+            71,
+            83,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              54,
+              60,
+              70,
+              94,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 14,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 14,
+          "tactical_raw_origin": [
+            14,
+            14
+          ],
+          "tactical_rgb": [
+            20,
+            54,
+            60,
+            70,
+            94,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              54,
+              60,
+              70,
+              94,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 14,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 14,
+          "tactical_raw_origin": [
+            14,
+            14
+          ],
+          "tactical_rgb": [
+            20,
+            54,
+            60,
+            70,
+            94,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            -32768
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              41,
+              60,
+              71,
+              81,
+              90
+            ]
+          },
+          "selected": 1,
+          "sub": 1,
+          "tactical_raw_origin": [
+            12,
+            -6
+          ],
+          "tactical_rgb": [
+            21,
+            41,
+            60,
+            71,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            -32768
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              44,
+              60,
+              71,
+              84,
+              90
+            ]
+          },
+          "selected": 1,
+          "sub": 4,
+          "tactical_raw_origin": [
+            15,
+            -3
+          ],
+          "tactical_rgb": [
+            21,
+            44,
+            60,
+            71,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            0
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            0
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            511,
+            511
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            511,
+            511
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        }
+      ],
+      "files_hex": [
+        "030000000500000008000000040000004c00000090000000d4000000180100005c010000a0010000e4010000280200006c020000b0020000f4020000380300007c030000c00300000404000000000000000000000000000000000000000000000000000000000000000000000000000000000000030b0014283c46505a0000000101010101010101010101010101010101000000010000000000000000000000000000000000000000000000000000000000000000000000030b0014293c46515a0000000101010101010101010101010101010102000000020000000000000000000000000000000000000000000000000000000000000000000000030b00142a3c46525a0000000101010101010101010101010101010103000000030000000000000000000000000000000000000000000000000000000000000000000000030b00142b3c46535a0000000101010101010101010101010101010104000000040000000000000000000000000000000000000000000000000000000000000000000000030b00142c3c46545a0000000101010101010101010101010101010105000000050000000000000000000000000000000000000000000000000000000000000000000000030b00142d3c46555a0000000101010101010101010101010101010106000000060000000000000000000000000000000000000000000000000000000000000000000000030b00142e3c46565a0000000101010101010101010101010101010107000000070000000000000000000000000000000000000000000000000000000000000000000000030b00142f3c46575a0000000101010101010101010101010101010108000000080000000000000000000000000000000000000000000000000000000000000000000000030b0014303c46585a0000000101010101010101010101010101010109000000090000000000000000000000000000000000000000000000000000000000000000000000030b0014313c46595a000000010101010101010101010101010101010a0000000a0000000000000000000000000000000000000000000000000000000000000000000000030b0014323c465a5a000000010101010101010101010101010101010b0000000b0000000000000000000000000000000000000000000000000000000000000000000000030b0014333c465b5a000000010101010101010101010101010101010c0000000c0000000000000000000000000000000000000000000000000000000000000000000000030b0014343c465c5a000000010101010101010101010101010101010d0000000d0000000000000000000000000000000000000000000000000000000000000000000000030b0014353c465d5a000000010101010101010101010101010101010e0000000e0000000000000000000000000000000000000000000000000000000000000000000000030b0014363c465e5a00000001010101010101010101010101010101",
+        "05000000020000000800000004000000380000007c000000c000000004010000480100008c010000d001000014020000580200009c02000000000000000000000000000000000000000000000000000000000000000000000000000000000000040f0115283c47505a000000010101010101010101010101010101010c000000faffffff0000000000000000000000000000000000000000000000000000000000000000040f0115293c47515a000000010101010101010101010101010101010d000000fbffffff0000000000000000000000000000000000000000000000000000000000000000040f01152a3c47525a000000010101010101010101010101010101010e000000fcffffff0000000000000000000000000000000000000000000000000000000000000000040f01152b3c47535a000000010101010101010101010101010101010f000000fdffffff0000000000000000000000000000000000000000000000000000000000000000040f01152c3c47545a0000000101010101010101010101010101010110000000feffffff0000000000000000000000000000000000000000000000000000000000000000040f01152d3c47555a0000000101010101010101010101010101010111000000ffffffff0000000000000000000000000000000000000000000000000000000000000000040f01152e3c47565a0000000101010101010101010101010101010112000000000000000000000000000000000000000000000000000000000000000000000000000000040f01152f3c47575a0000000101010101010101010101010101010113000000010000000000000000000000000000000000000000000000000000000000000000000000040f0115303c47585a0000000101010101010101010101010101010114000000020000000000000000000000000000000000000000000000000000000000000000000000040f0115313c47595a00000001010101010101010101010101010101"
+      ],
+      "name": "ordinary2"
+    },
+    {
+      "cases": [
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              40,
+              60,
+              70,
+              80,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 0,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 0,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            20,
+            40,
+            60,
+            70,
+            80,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              40,
+              60,
+              71,
+              80,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 0,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 0,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            21,
+            40,
+            60,
+            71,
+            80,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 1,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              41,
+              60,
+              71,
+              81,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 1,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 1,
+          "tactical_raw_origin": [
+            12,
+            -6
+          ],
+          "tactical_rgb": [
+            21,
+            41,
+            60,
+            71,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              42,
+              60,
+              70,
+              82,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 2,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 2,
+          "tactical_raw_origin": [
+            2,
+            2
+          ],
+          "tactical_rgb": [
+            20,
+            42,
+            60,
+            70,
+            82,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              42,
+              60,
+              71,
+              82,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 2,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 2,
+          "tactical_raw_origin": [
+            13,
+            -5
+          ],
+          "tactical_rgb": [
+            21,
+            42,
+            60,
+            71,
+            82,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              43,
+              60,
+              70,
+              83,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 3,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 3,
+          "tactical_raw_origin": [
+            3,
+            3
+          ],
+          "tactical_rgb": [
+            20,
+            43,
+            60,
+            70,
+            83,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              43,
+              60,
+              71,
+              83,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 3,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 3,
+          "tactical_raw_origin": [
+            14,
+            -4
+          ],
+          "tactical_rgb": [
+            21,
+            43,
+            60,
+            71,
+            83,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 4,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              44,
+              60,
+              71,
+              84,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 4,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 4,
+          "tactical_raw_origin": [
+            15,
+            -3
+          ],
+          "tactical_rgb": [
+            21,
+            44,
+            60,
+            71,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              45,
+              60,
+              70,
+              85,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 5,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 5,
+          "tactical_raw_origin": [
+            5,
+            5
+          ],
+          "tactical_rgb": [
+            20,
+            45,
+            60,
+            70,
+            85,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              45,
+              60,
+              71,
+              85,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 5,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 5,
+          "tactical_raw_origin": [
+            16,
+            -2
+          ],
+          "tactical_rgb": [
+            21,
+            45,
+            60,
+            71,
+            85,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              46,
+              60,
+              70,
+              86,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 6,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 6,
+          "tactical_raw_origin": [
+            6,
+            6
+          ],
+          "tactical_rgb": [
+            20,
+            46,
+            60,
+            70,
+            86,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              46,
+              60,
+              71,
+              86,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 6,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 6,
+          "tactical_raw_origin": [
+            17,
+            -1
+          ],
+          "tactical_rgb": [
+            21,
+            46,
+            60,
+            71,
+            86,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              47,
+              60,
+              70,
+              87,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 7,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 7,
+          "tactical_raw_origin": [
+            7,
+            7
+          ],
+          "tactical_rgb": [
+            20,
+            47,
+            60,
+            70,
+            87,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              47,
+              60,
+              71,
+              87,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 7,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 7,
+          "tactical_raw_origin": [
+            18,
+            0
+          ],
+          "tactical_rgb": [
+            21,
+            47,
+            60,
+            71,
+            87,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              48,
+              60,
+              70,
+              88,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 8,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 8,
+          "tactical_raw_origin": [
+            8,
+            8
+          ],
+          "tactical_rgb": [
+            20,
+            48,
+            60,
+            70,
+            88,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              48,
+              60,
+              71,
+              88,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 8,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 8,
+          "tactical_raw_origin": [
+            19,
+            1
+          ],
+          "tactical_rgb": [
+            21,
+            48,
+            60,
+            71,
+            88,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              49,
+              60,
+              70,
+              89,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 9,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 9,
+          "tactical_raw_origin": [
+            9,
+            9
+          ],
+          "tactical_rgb": [
+            20,
+            49,
+            60,
+            70,
+            89,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              49,
+              60,
+              71,
+              89,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 9,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 9,
+          "tactical_raw_origin": [
+            20,
+            2
+          ],
+          "tactical_rgb": [
+            21,
+            49,
+            60,
+            71,
+            89,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              50,
+              60,
+              70,
+              90,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 10,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 10,
+          "tactical_raw_origin": [
+            10,
+            10
+          ],
+          "tactical_rgb": [
+            20,
+            50,
+            60,
+            70,
+            90,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 10,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 10,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            21,
+            40,
+            60,
+            71,
+            80,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              51,
+              60,
+              70,
+              91,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 11,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 11,
+          "tactical_raw_origin": [
+            11,
+            11
+          ],
+          "tactical_rgb": [
+            20,
+            51,
+            60,
+            70,
+            91,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 11,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 11,
+          "tactical_raw_origin": [
+            12,
+            -6
+          ],
+          "tactical_rgb": [
+            21,
+            41,
+            60,
+            71,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              52,
+              60,
+              70,
+              92,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 12,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 12,
+          "tactical_raw_origin": [
+            12,
+            12
+          ],
+          "tactical_rgb": [
+            20,
+            52,
+            60,
+            70,
+            92,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 12,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 12,
+          "tactical_raw_origin": [
+            13,
+            -5
+          ],
+          "tactical_rgb": [
+            21,
+            42,
+            60,
+            71,
+            82,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              53,
+              60,
+              70,
+              93,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 13,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 13,
+          "tactical_raw_origin": [
+            13,
+            13
+          ],
+          "tactical_rgb": [
+            20,
+            53,
+            60,
+            70,
+            93,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 13,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 13,
+          "tactical_raw_origin": [
+            14,
+            -4
+          ],
+          "tactical_rgb": [
+            21,
+            43,
+            60,
+            71,
+            83,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              54,
+              60,
+              70,
+              94,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 14,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 14,
+          "tactical_raw_origin": [
+            14,
+            14
+          ],
+          "tactical_rgb": [
+            20,
+            54,
+            60,
+            70,
+            94,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 14,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 14,
+          "tactical_raw_origin": [
+            15,
+            -3
+          ],
+          "tactical_rgb": [
+            21,
+            44,
+            60,
+            71,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            -32768
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            -32768
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            0
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            0
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            511,
+            511
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            511,
+            511
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            4,
+            4
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 65535,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              41,
+              60,
+              71,
+              81,
+              90
+            ]
+          },
+          "selected": 1,
+          "sub": 1,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            21,
+            40,
+            60,
+            71,
+            80,
+            90
+          ]
+        },
+        {
+          "coord": [
+            4,
+            4
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 65535,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              21,
+              41,
+              60,
+              71,
+              81,
+              90
+            ]
+          },
+          "selected": 1,
+          "sub": 1,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            21,
+            40,
+            60,
+            71,
+            80,
+            90
+          ]
+        }
+      ],
+      "files_hex": [
+        "030000000500000008000000040000004c00000090000000d4000000180100005c010000a0010000e4010000280200006c020000b0020000f4020000380300007c030000c00300000404000000000000000000000000000000000000000000000000000000000000000000000000000004000000030b0014283c46505a0000000101010101010101010101010101010101000000010000000000000000000000000000000000000000000000000000000000000004000000030b0014293c46515a0000000101010101010101010101010101010102000000020000000000000000000000000000000000000000000000000000000000000004000000030b00142a3c46525a0000000101010101010101010101010101010103000000030000000000000000000000000000000000000000000000000000000000000004000000030b00142b3c46535a0000000101010101010101010101010101010104000000040000000000000000000000000000000000000000000000000000000000000004000000030b00142c3c46545a0000000101010101010101010101010101010105000000050000000000000000000000000000000000000000000000000000000000000004000000030b00142d3c46555a0000000101010101010101010101010101010106000000060000000000000000000000000000000000000000000000000000000000000004000000030b00142e3c46565a0000000101010101010101010101010101010107000000070000000000000000000000000000000000000000000000000000000000000004000000030b00142f3c46575a0000000101010101010101010101010101010108000000080000000000000000000000000000000000000000000000000000000000000004000000030b0014303c46585a0000000101010101010101010101010101010109000000090000000000000000000000000000000000000000000000000000000000000004000000030b0014313c46595a000000010101010101010101010101010101010a0000000a0000000000000000000000000000000000000000000000000000000000000004000000030b0014323c465a5a000000010101010101010101010101010101010b0000000b0000000000000000000000000000000000000000000000000000000000000004000000030b0014333c465b5a000000010101010101010101010101010101010c0000000c0000000000000000000000000000000000000000000000000000000000000004000000030b0014343c465c5a000000010101010101010101010101010101010d0000000d0000000000000000000000000000000000000000000000000000000000000004000000030b0014353c465d5a000000010101010101010101010101010101010e0000000e0000000000000000000000000000000000000000000000000000000000000004000000030b0014363c465e5a00000001010101010101010101010101010101",
+        "05000000020000000800000004000000380000007c000000c000000004010000480100008c010000d001000014020000580200009c02000000000000000000000000000000000000000000000000000000000000000000000000000000000000040f0115283c47505a000000010101010101010101010101010101010c000000faffffff0000000000000000000000000000000000000000000000000000000000000000040f0115293c47515a000000010101010101010101010101010101010d000000fbffffff0000000000000000000000000000000000000000000000000000000000000000040f01152a3c47525a000000010101010101010101010101010101010e000000fcffffff0000000000000000000000000000000000000000000000000000000000000000040f01152b3c47535a000000010101010101010101010101010101010f000000fdffffff0000000000000000000000000000000000000000000000000000000000000000040f01152c3c47545a0000000101010101010101010101010101010110000000feffffff0000000000000000000000000000000000000000000000000000000000000000040f01152d3c47555a0000000101010101010101010101010101010111000000ffffffff0000000000000000000000000000000000000000000000000000000000000000040f01152e3c47565a0000000101010101010101010101010101010112000000000000000000000000000000000000000000000000000000000000000000000000000000040f01152f3c47575a0000000101010101010101010101010101010113000000010000000000000000000000000000000000000000000000000000000000000000000000040f0115303c47585a0000000101010101010101010101010101010114000000020000000000000000000000000000000000000000000000000000000000000000000000040f0115313c47595a00000001010101010101010101010101010101"
+      ],
+      "name": "damaged2"
+    },
+    {
+      "cases": [
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              40,
+              60,
+              70,
+              80,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 0,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 0,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            20,
+            40,
+            60,
+            70,
+            80,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              40,
+              60,
+              70,
+              80,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 0,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 0,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            20,
+            40,
+            60,
+            70,
+            80,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              26,
+              41,
+              60,
+              76,
+              81,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 1,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 6,
+          "sub": 1,
+          "tactical_raw_origin": [
+            67,
+            -41
+          ],
+          "tactical_rgb": [
+            26,
+            41,
+            60,
+            76,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              26,
+              41,
+              60,
+              76,
+              81,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 1,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 6,
+          "sub": 1,
+          "tactical_raw_origin": [
+            67,
+            -41
+          ],
+          "tactical_rgb": [
+            26,
+            41,
+            60,
+            76,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              25,
+              42,
+              60,
+              75,
+              82,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 2,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 5,
+          "sub": 2,
+          "tactical_raw_origin": [
+            57,
+            -33
+          ],
+          "tactical_rgb": [
+            25,
+            42,
+            60,
+            75,
+            82,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              25,
+              42,
+              60,
+              75,
+              82,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 2,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 5,
+          "sub": 2,
+          "tactical_raw_origin": [
+            57,
+            -33
+          ],
+          "tactical_rgb": [
+            25,
+            42,
+            60,
+            75,
+            82,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              26,
+              43,
+              60,
+              76,
+              83,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 3,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 6,
+          "sub": 3,
+          "tactical_raw_origin": [
+            69,
+            -39
+          ],
+          "tactical_rgb": [
+            26,
+            43,
+            60,
+            76,
+            83,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              26,
+              43,
+              60,
+              76,
+              83,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 3,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 6,
+          "sub": 3,
+          "tactical_raw_origin": [
+            69,
+            -39
+          ],
+          "tactical_rgb": [
+            26,
+            43,
+            60,
+            76,
+            83,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              26,
+              44,
+              60,
+              76,
+              84,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 4,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 6,
+          "sub": 4,
+          "tactical_raw_origin": [
+            70,
+            -38
+          ],
+          "tactical_rgb": [
+            26,
+            44,
+            60,
+            76,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              26,
+              44,
+              60,
+              76,
+              84,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 4,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 6,
+          "sub": 4,
+          "tactical_raw_origin": [
+            70,
+            -38
+          ],
+          "tactical_rgb": [
+            26,
+            44,
+            60,
+            76,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              25,
+              45,
+              60,
+              75,
+              85,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 5,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 5,
+          "sub": 5,
+          "tactical_raw_origin": [
+            60,
+            -30
+          ],
+          "tactical_rgb": [
+            25,
+            45,
+            60,
+            75,
+            85,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              25,
+              45,
+              60,
+              75,
+              85,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 5,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 5,
+          "sub": 5,
+          "tactical_raw_origin": [
+            60,
+            -30
+          ],
+          "tactical_rgb": [
+            25,
+            45,
+            60,
+            75,
+            85,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              23,
+              46,
+              60,
+              73,
+              86,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 6,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 3,
+          "sub": 6,
+          "tactical_raw_origin": [
+            39,
+            -15
+          ],
+          "tactical_rgb": [
+            23,
+            46,
+            60,
+            73,
+            86,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              23,
+              46,
+              60,
+              73,
+              86,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 6,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 3,
+          "sub": 6,
+          "tactical_raw_origin": [
+            39,
+            -15
+          ],
+          "tactical_rgb": [
+            23,
+            46,
+            60,
+            73,
+            86,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              23,
+              47,
+              60,
+              73,
+              87,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 7,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 3,
+          "sub": 7,
+          "tactical_raw_origin": [
+            40,
+            -14
+          ],
+          "tactical_rgb": [
+            23,
+            47,
+            60,
+            73,
+            87,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              23,
+              47,
+              60,
+              73,
+              87,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 7,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 3,
+          "sub": 7,
+          "tactical_raw_origin": [
+            40,
+            -14
+          ],
+          "tactical_rgb": [
+            23,
+            47,
+            60,
+            73,
+            87,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              22,
+              48,
+              60,
+              72,
+              88,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 8,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 2,
+          "sub": 8,
+          "tactical_raw_origin": [
+            30,
+            -6
+          ],
+          "tactical_rgb": [
+            22,
+            48,
+            60,
+            72,
+            88,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              22,
+              48,
+              60,
+              72,
+              88,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 8,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 2,
+          "sub": 8,
+          "tactical_raw_origin": [
+            30,
+            -6
+          ],
+          "tactical_rgb": [
+            22,
+            48,
+            60,
+            72,
+            88,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              23,
+              49,
+              60,
+              73,
+              89,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 9,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 3,
+          "sub": 9,
+          "tactical_raw_origin": [
+            42,
+            -12
+          ],
+          "tactical_rgb": [
+            23,
+            49,
+            60,
+            73,
+            89,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              23,
+              49,
+              60,
+              73,
+              89,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 9,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 3,
+          "sub": 9,
+          "tactical_raw_origin": [
+            42,
+            -12
+          ],
+          "tactical_rgb": [
+            23,
+            49,
+            60,
+            73,
+            89,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              23,
+              50,
+              60,
+              73,
+              90,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 10,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 3,
+          "sub": 10,
+          "tactical_raw_origin": [
+            43,
+            -11
+          ],
+          "tactical_rgb": [
+            23,
+            50,
+            60,
+            73,
+            90,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              23,
+              50,
+              60,
+              73,
+              90,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 10,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 3,
+          "sub": 10,
+          "tactical_raw_origin": [
+            43,
+            -11
+          ],
+          "tactical_rgb": [
+            23,
+            50,
+            60,
+            73,
+            90,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              22,
+              51,
+              60,
+              72,
+              91,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 11,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 2,
+          "sub": 11,
+          "tactical_raw_origin": [
+            33,
+            -3
+          ],
+          "tactical_rgb": [
+            22,
+            51,
+            60,
+            72,
+            91,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              22,
+              51,
+              60,
+              72,
+              91,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 11,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 2,
+          "sub": 11,
+          "tactical_raw_origin": [
+            33,
+            -3
+          ],
+          "tactical_rgb": [
+            22,
+            51,
+            60,
+            72,
+            91,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              23,
+              52,
+              60,
+              73,
+              92,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 12,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 3,
+          "sub": 12,
+          "tactical_raw_origin": [
+            45,
+            -9
+          ],
+          "tactical_rgb": [
+            23,
+            52,
+            60,
+            73,
+            92,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              23,
+              52,
+              60,
+              73,
+              92,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 12,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 3,
+          "sub": 12,
+          "tactical_raw_origin": [
+            45,
+            -9
+          ],
+          "tactical_rgb": [
+            23,
+            52,
+            60,
+            73,
+            92,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              23,
+              53,
+              60,
+              73,
+              93,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 13,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 3,
+          "sub": 13,
+          "tactical_raw_origin": [
+            46,
+            -8
+          ],
+          "tactical_rgb": [
+            23,
+            53,
+            60,
+            73,
+            93,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              23,
+              53,
+              60,
+              73,
+              93,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 13,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 3,
+          "sub": 13,
+          "tactical_raw_origin": [
+            46,
+            -8
+          ],
+          "tactical_rgb": [
+            23,
+            53,
+            60,
+            73,
+            93,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              22,
+              54,
+              60,
+              72,
+              94,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 14,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 2,
+          "sub": 14,
+          "tactical_raw_origin": [
+            36,
+            0
+          ],
+          "tactical_rgb": [
+            22,
+            54,
+            60,
+            72,
+            94,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              22,
+              54,
+              60,
+              72,
+              94,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 14,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 2,
+          "sub": 14,
+          "tactical_raw_origin": [
+            36,
+            0
+          ],
+          "tactical_rgb": [
+            22,
+            54,
+            60,
+            72,
+            94,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            -32768
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              27,
+              41,
+              60,
+              77,
+              81,
+              90
+            ]
+          },
+          "selected": 7,
+          "sub": 1,
+          "tactical_raw_origin": [
+            78,
+            -48
+          ],
+          "tactical_rgb": [
+            27,
+            41,
+            60,
+            77,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            -32768
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              25,
+              44,
+              60,
+              75,
+              84,
+              90
+            ]
+          },
+          "selected": 5,
+          "sub": 4,
+          "tactical_raw_origin": [
+            59,
+            -31
+          ],
+          "tactical_rgb": [
+            25,
+            44,
+            60,
+            75,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            0
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              22,
+              41,
+              60,
+              72,
+              81,
+              90
+            ]
+          },
+          "selected": 2,
+          "sub": 1,
+          "tactical_raw_origin": [
+            23,
+            -13
+          ],
+          "tactical_rgb": [
+            22,
+            41,
+            60,
+            72,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            0
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              22,
+              44,
+              60,
+              72,
+              84,
+              90
+            ]
+          },
+          "selected": 2,
+          "sub": 4,
+          "tactical_raw_origin": [
+            26,
+            -10
+          ],
+          "tactical_rgb": [
+            22,
+            44,
+            60,
+            72,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            511,
+            511
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              24,
+              41,
+              60,
+              74,
+              81,
+              90
+            ]
+          },
+          "selected": 4,
+          "sub": 1,
+          "tactical_raw_origin": [
+            45,
+            -27
+          ],
+          "tactical_rgb": [
+            24,
+            41,
+            60,
+            74,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            511,
+            511
+          ],
+          "flags": 0,
+          "gate": false,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              24,
+              44,
+              60,
+              74,
+              84,
+              90
+            ]
+          },
+          "selected": 4,
+          "sub": 4,
+          "tactical_raw_origin": [
+            48,
+            -24
+          ],
+          "tactical_rgb": [
+            24,
+            44,
+            60,
+            74,
+            84,
+            90
+          ]
+        }
+      ],
+      "files_hex": [
+        "030000000500000008000000040000004c00000090000000d4000000180100005c010000a0010000e4010000280200006c020000b0020000f4020000380300007c030000c00300000404000000000000000000000000000000000000000000000000000000000000000000000000000000000000030b0014283c46505a0000000101010101010101010101010101010101000000010000000000000000000000000000000000000000000000000000000000000000000000030b0014293c46515a0000000101010101010101010101010101010102000000020000000000000000000000000000000000000000000000000000000000000000000000030b00142a3c46525a0000000101010101010101010101010101010103000000030000000000000000000000000000000000000000000000000000000000000000000000030b00142b3c46535a0000000101010101010101010101010101010104000000040000000000000000000000000000000000000000000000000000000000000000000000030b00142c3c46545a0000000101010101010101010101010101010105000000050000000000000000000000000000000000000000000000000000000000000000000000030b00142d3c46555a0000000101010101010101010101010101010106000000060000000000000000000000000000000000000000000000000000000000000000000000030b00142e3c46565a0000000101010101010101010101010101010107000000070000000000000000000000000000000000000000000000000000000000000000000000030b00142f3c46575a0000000101010101010101010101010101010108000000080000000000000000000000000000000000000000000000000000000000000000000000030b0014303c46585a0000000101010101010101010101010101010109000000090000000000000000000000000000000000000000000000000000000000000000000000030b0014313c46595a000000010101010101010101010101010101010a0000000a0000000000000000000000000000000000000000000000000000000000000000000000030b0014323c465a5a000000010101010101010101010101010101010b0000000b0000000000000000000000000000000000000000000000000000000000000000000000030b0014333c465b5a000000010101010101010101010101010101010c0000000c0000000000000000000000000000000000000000000000000000000000000000000000030b0014343c465c5a000000010101010101010101010101010101010d0000000d0000000000000000000000000000000000000000000000000000000000000000000000030b0014353c465d5a000000010101010101010101010101010101010e0000000e0000000000000000000000000000000000000000000000000000000000000000000000030b0014363c465e5a00000001010101010101010101010101010101",
+        "05000000020000000800000004000000380000007c000000c000000004010000480100008c010000d001000014020000580200009c02000000000000000000000000000000000000000000000000000000000000000000000000000000000000040f0115283c47505a000000010101010101010101010101010101010c000000faffffff0000000000000000000000000000000000000000000000000000000000000000040f0115293c47515a000000010101010101010101010101010101010d000000fbffffff0000000000000000000000000000000000000000000000000000000000000000040f01152a3c47525a000000010101010101010101010101010101010e000000fcffffff0000000000000000000000000000000000000000000000000000000000000000040f01152b3c47535a000000010101010101010101010101010101010f000000fdffffff0000000000000000000000000000000000000000000000000000000000000000040f01152c3c47545a0000000101010101010101010101010101010110000000feffffff0000000000000000000000000000000000000000000000000000000000000000040f01152d3c47555a0000000101010101010101010101010101010111000000ffffffff0000000000000000000000000000000000000000000000000000000000000000040f01152e3c47565a0000000101010101010101010101010101010112000000000000000000000000000000000000000000000000000000000000000000000000000000040f01152f3c47575a0000000101010101010101010101010101010113000000010000000000000000000000000000000000000000000000000000000000000000000000040f0115303c47585a0000000101010101010101010101010101010114000000020000000000000000000000000000000000000000000000000000000000000000000000040f0115313c47595a00000001010101010101010101010101010101",
+        "030000000500000008000000040000004c00000090000000d4000000180100005c010000a0010000e4010000280200006c020000b0020000f4020000380300007c030000c00300000404000000000000000000000000000000000000000000000000000000000000000000000000000000000000050f0216283c48505a0000000101010101010101010101010101010117000000f3ffffff0000000000000000000000000000000000000000000000000000000000000000050f0216293c48515a0000000101010101010101010101010101010118000000f4ffffff0000000000000000000000000000000000000000000000000000000000000000050f02162a3c48525a0000000101010101010101010101010101010119000000f5ffffff0000000000000000000000000000000000000000000000000000000000000000050f02162b3c48535a000000010101010101010101010101010101011a000000f6ffffff0000000000000000000000000000000000000000000000000000000000000000050f02162c3c48545a000000010101010101010101010101010101011b000000f7ffffff0000000000000000000000000000000000000000000000000000000000000000050f02162d3c48555a000000010101010101010101010101010101011c000000f8ffffff0000000000000000000000000000000000000000000000000000000000000000050f02162e3c48565a000000010101010101010101010101010101011d000000f9ffffff0000000000000000000000000000000000000000000000000000000000000000050f02162f3c48575a000000010101010101010101010101010101011e000000faffffff0000000000000000000000000000000000000000000000000000000000000000050f0216303c48585a000000010101010101010101010101010101011f000000fbffffff0000000000000000000000000000000000000000000000000000000000000000050f0216313c48595a0000000101010101010101010101010101010120000000fcffffff0000000000000000000000000000000000000000000000000000000000000000050f0216323c485a5a0000000101010101010101010101010101010121000000fdffffff0000000000000000000000000000000000000000000000000000000000000000050f0216333c485b5a0000000101010101010101010101010101010122000000feffffff0000000000000000000000000000000000000000000000000000000000000000050f0216343c485c5a0000000101010101010101010101010101010123000000ffffffff0000000000000000000000000000000000000000000000000000000000000000050f0216353c485d5a0000000101010101010101010101010101010124000000000000000000000000000000000000000000000000000000000000000000000000000000050f0216363c485e5a00000001010101010101010101010101010101",
+        "030000000500000008000000040000004c00000090000000d4000000180100005c010000a0010000e4010000280200006c020000b0020000f4020000380300007c030000c00300000404000000000000000000000000000000000000000000000000000000000000000000000000000000000000060f0317283c49505a0000000101010101010101010101010101010122000000ecffffff0000000000000000000000000000000000000000000000000000000000000000060f0317293c49515a0000000101010101010101010101010101010123000000edffffff0000000000000000000000000000000000000000000000000000000000000000060f03172a3c49525a0000000101010101010101010101010101010124000000eeffffff0000000000000000000000000000000000000000000000000000000000000000060f03172b3c49535a0000000101010101010101010101010101010125000000efffffff0000000000000000000000000000000000000000000000000000000000000000060f03172c3c49545a0000000101010101010101010101010101010126000000f0ffffff0000000000000000000000000000000000000000000000000000000000000000060f03172d3c49555a0000000101010101010101010101010101010127000000f1ffffff0000000000000000000000000000000000000000000000000000000000000000060f03172e3c49565a0000000101010101010101010101010101010128000000f2ffffff0000000000000000000000000000000000000000000000000000000000000000060f03172f3c49575a0000000101010101010101010101010101010129000000f3ffffff0000000000000000000000000000000000000000000000000000000000000000060f0317303c49585a000000010101010101010101010101010101012a000000f4ffffff0000000000000000000000000000000000000000000000000000000000000000060f0317313c49595a000000010101010101010101010101010101012b000000f5ffffff0000000000000000000000000000000000000000000000000000000000000000060f0317323c495a5a000000010101010101010101010101010101012c000000f6ffffff0000000000000000000000000000000000000000000000000000000000000000060f0317333c495b5a000000010101010101010101010101010101012d000000f7ffffff0000000000000000000000000000000000000000000000000000000000000000060f0317343c495c5a000000010101010101010101010101010101012e000000f8ffffff0000000000000000000000000000000000000000000000000000000000000000060f0317353c495d5a000000010101010101010101010101010101012f000000f9ffffff0000000000000000000000000000000000000000000000000000000000000000060f0317363c495e5a00000001010101010101010101010101010101",
+        "030000000500000008000000040000004c00000090000000d4000000180100005c010000a0010000e4010000280200006c020000b0020000f4020000380300007c030000c00300000404000000000000000000000000000000000000000000000000000000000000000000000000000000000000070f0418283c4a505a000000010101010101010101010101010101012d000000e5ffffff0000000000000000000000000000000000000000000000000000000000000000070f0418293c4a515a000000010101010101010101010101010101012e000000e6ffffff0000000000000000000000000000000000000000000000000000000000000000070f04182a3c4a525a000000010101010101010101010101010101012f000000e7ffffff0000000000000000000000000000000000000000000000000000000000000000070f04182b3c4a535a0000000101010101010101010101010101010130000000e8ffffff0000000000000000000000000000000000000000000000000000000000000000070f04182c3c4a545a0000000101010101010101010101010101010131000000e9ffffff0000000000000000000000000000000000000000000000000000000000000000070f04182d3c4a555a0000000101010101010101010101010101010132000000eaffffff0000000000000000000000000000000000000000000000000000000000000000070f04182e3c4a565a0000000101010101010101010101010101010133000000ebffffff0000000000000000000000000000000000000000000000000000000000000000070f04182f3c4a575a0000000101010101010101010101010101010134000000ecffffff0000000000000000000000000000000000000000000000000000000000000000070f0418303c4a585a0000000101010101010101010101010101010135000000edffffff0000000000000000000000000000000000000000000000000000000000000000070f0418313c4a595a0000000101010101010101010101010101010136000000eeffffff0000000000000000000000000000000000000000000000000000000000000000070f0418323c4a5a5a0000000101010101010101010101010101010137000000efffffff0000000000000000000000000000000000000000000000000000000000000000070f0418333c4a5b5a0000000101010101010101010101010101010138000000f0ffffff0000000000000000000000000000000000000000000000000000000000000000070f0418343c4a5c5a0000000101010101010101010101010101010139000000f1ffffff0000000000000000000000000000000000000000000000000000000000000000070f0418353c4a5d5a000000010101010101010101010101010101013a000000f2ffffff0000000000000000000000000000000000000000000000000000000000000000070f0418363c4a5e5a00000001010101010101010101010101010101",
+        "030000000500000008000000040000004c00000090000000d4000000180100005c010000a0010000e4010000280200006c020000b0020000f4020000380300007c030000c00300000404000000000000000000000000000000000000000000000000000000000000000000000000000000000000080f0019283c4b505a0000000101010101010101010101010101010138000000deffffff0000000000000000000000000000000000000000000000000000000000000000080f0019293c4b515a0000000101010101010101010101010101010139000000dfffffff0000000000000000000000000000000000000000000000000000000000000000080f00192a3c4b525a000000010101010101010101010101010101013a000000e0ffffff0000000000000000000000000000000000000000000000000000000000000000080f00192b3c4b535a000000010101010101010101010101010101013b000000e1ffffff0000000000000000000000000000000000000000000000000000000000000000080f00192c3c4b545a000000010101010101010101010101010101013c000000e2ffffff0000000000000000000000000000000000000000000000000000000000000000080f00192d3c4b555a000000010101010101010101010101010101013d000000e3ffffff0000000000000000000000000000000000000000000000000000000000000000080f00192e3c4b565a000000010101010101010101010101010101013e000000e4ffffff0000000000000000000000000000000000000000000000000000000000000000080f00192f3c4b575a000000010101010101010101010101010101013f000000e5ffffff0000000000000000000000000000000000000000000000000000000000000000080f0019303c4b585a0000000101010101010101010101010101010140000000e6ffffff0000000000000000000000000000000000000000000000000000000000000000080f0019313c4b595a0000000101010101010101010101010101010141000000e7ffffff0000000000000000000000000000000000000000000000000000000000000000080f0019323c4b5a5a0000000101010101010101010101010101010142000000e8ffffff0000000000000000000000000000000000000000000000000000000000000000080f0019333c4b5b5a0000000101010101010101010101010101010143000000e9ffffff0000000000000000000000000000000000000000000000000000000000000000080f0019343c4b5c5a0000000101010101010101010101010101010144000000eaffffff0000000000000000000000000000000000000000000000000000000000000000080f0019353c4b5d5a0000000101010101010101010101010101010145000000ebffffff0000000000000000000000000000000000000000000000000000000000000000080f0019363c4b5e5a00000001010101010101010101010101010101",
+        "030000000500000008000000040000004c00000090000000d4000000180100005c010000a0010000e4010000280200006c020000b0020000f4020000380300007c030000c00300000404000000000000000000000000000000000000000000000000000000000000000000000000000000000000090f011a283c4c505a0000000101010101010101010101010101010143000000d7ffffff0000000000000000000000000000000000000000000000000000000000000000090f011a293c4c515a0000000101010101010101010101010101010144000000d8ffffff0000000000000000000000000000000000000000000000000000000000000000090f011a2a3c4c525a0000000101010101010101010101010101010145000000d9ffffff0000000000000000000000000000000000000000000000000000000000000000090f011a2b3c4c535a0000000101010101010101010101010101010146000000daffffff0000000000000000000000000000000000000000000000000000000000000000090f011a2c3c4c545a0000000101010101010101010101010101010147000000dbffffff0000000000000000000000000000000000000000000000000000000000000000090f011a2d3c4c555a0000000101010101010101010101010101010148000000dcffffff0000000000000000000000000000000000000000000000000000000000000000090f011a2e3c4c565a0000000101010101010101010101010101010149000000ddffffff0000000000000000000000000000000000000000000000000000000000000000090f011a2f3c4c575a000000010101010101010101010101010101014a000000deffffff0000000000000000000000000000000000000000000000000000000000000000090f011a303c4c585a000000010101010101010101010101010101014b000000dfffffff0000000000000000000000000000000000000000000000000000000000000000090f011a313c4c595a000000010101010101010101010101010101014c000000e0ffffff0000000000000000000000000000000000000000000000000000000000000000090f011a323c4c5a5a000000010101010101010101010101010101014d000000e1ffffff0000000000000000000000000000000000000000000000000000000000000000090f011a333c4c5b5a000000010101010101010101010101010101014e000000e2ffffff0000000000000000000000000000000000000000000000000000000000000000090f011a343c4c5c5a000000010101010101010101010101010101014f000000e3ffffff0000000000000000000000000000000000000000000000000000000000000000090f011a353c4c5d5a0000000101010101010101010101010101010150000000e4ffffff0000000000000000000000000000000000000000000000000000000000000000090f011a363c4c5e5a00000001010101010101010101010101010101",
+        "030000000500000008000000040000004c00000090000000d4000000180100005c010000a0010000e4010000280200006c020000b0020000f4020000380300007c030000c003000004040000000000000000000000000000000000000000000000000000000000000000000000000000000000000a0f021b283c4d505a000000010101010101010101010101010101014e000000d0ffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b293c4d515a000000010101010101010101010101010101014f000000d1ffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b2a3c4d525a0000000101010101010101010101010101010150000000d2ffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b2b3c4d535a0000000101010101010101010101010101010151000000d3ffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b2c3c4d545a0000000101010101010101010101010101010152000000d4ffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b2d3c4d555a0000000101010101010101010101010101010153000000d5ffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b2e3c4d565a0000000101010101010101010101010101010154000000d6ffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b2f3c4d575a0000000101010101010101010101010101010155000000d7ffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b303c4d585a0000000101010101010101010101010101010156000000d8ffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b313c4d595a0000000101010101010101010101010101010157000000d9ffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b323c4d5a5a0000000101010101010101010101010101010158000000daffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b333c4d5b5a0000000101010101010101010101010101010159000000dbffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b343c4d5c5a000000010101010101010101010101010101015a000000dcffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b353c4d5d5a000000010101010101010101010101010101015b000000ddffffff00000000000000000000000000000000000000000000000000000000000000000a0f021b363c4d5e5a00000001010101010101010101010101010101"
+      ],
+      "name": "ordinary8"
+    },
+    {
+      "cases": [
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              40,
+              60,
+              70,
+              80,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 0,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 0,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            20,
+            40,
+            60,
+            70,
+            80,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              40,
+              60,
+              70,
+              80,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 0,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 0,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            20,
+            40,
+            60,
+            70,
+            80,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 1,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 1,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              42,
+              60,
+              70,
+              82,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 2,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 2,
+          "tactical_raw_origin": [
+            2,
+            2
+          ],
+          "tactical_rgb": [
+            20,
+            42,
+            60,
+            70,
+            82,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              42,
+              60,
+              70,
+              82,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 2,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 2,
+          "tactical_raw_origin": [
+            2,
+            2
+          ],
+          "tactical_rgb": [
+            20,
+            42,
+            60,
+            70,
+            82,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              43,
+              60,
+              70,
+              83,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 3,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 3,
+          "tactical_raw_origin": [
+            3,
+            3
+          ],
+          "tactical_rgb": [
+            20,
+            43,
+            60,
+            70,
+            83,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              43,
+              60,
+              70,
+              83,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 3,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 3,
+          "tactical_raw_origin": [
+            3,
+            3
+          ],
+          "tactical_rgb": [
+            20,
+            43,
+            60,
+            70,
+            83,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 4,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 4,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              45,
+              60,
+              70,
+              85,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 5,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 5,
+          "tactical_raw_origin": [
+            5,
+            5
+          ],
+          "tactical_rgb": [
+            20,
+            45,
+            60,
+            70,
+            85,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              45,
+              60,
+              70,
+              85,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 5,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 5,
+          "tactical_raw_origin": [
+            5,
+            5
+          ],
+          "tactical_rgb": [
+            20,
+            45,
+            60,
+            70,
+            85,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              46,
+              60,
+              70,
+              86,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 6,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 6,
+          "tactical_raw_origin": [
+            6,
+            6
+          ],
+          "tactical_rgb": [
+            20,
+            46,
+            60,
+            70,
+            86,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              46,
+              60,
+              70,
+              86,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 6,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 6,
+          "tactical_raw_origin": [
+            6,
+            6
+          ],
+          "tactical_rgb": [
+            20,
+            46,
+            60,
+            70,
+            86,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              47,
+              60,
+              70,
+              87,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 7,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 7,
+          "tactical_raw_origin": [
+            7,
+            7
+          ],
+          "tactical_rgb": [
+            20,
+            47,
+            60,
+            70,
+            87,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              47,
+              60,
+              70,
+              87,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 7,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 7,
+          "tactical_raw_origin": [
+            7,
+            7
+          ],
+          "tactical_rgb": [
+            20,
+            47,
+            60,
+            70,
+            87,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              48,
+              60,
+              70,
+              88,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 8,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 8,
+          "tactical_raw_origin": [
+            8,
+            8
+          ],
+          "tactical_rgb": [
+            20,
+            48,
+            60,
+            70,
+            88,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              48,
+              60,
+              70,
+              88,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 8,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 8,
+          "tactical_raw_origin": [
+            8,
+            8
+          ],
+          "tactical_rgb": [
+            20,
+            48,
+            60,
+            70,
+            88,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              49,
+              60,
+              70,
+              89,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 9,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 9,
+          "tactical_raw_origin": [
+            9,
+            9
+          ],
+          "tactical_rgb": [
+            20,
+            49,
+            60,
+            70,
+            89,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              49,
+              60,
+              70,
+              89,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 9,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 9,
+          "tactical_raw_origin": [
+            9,
+            9
+          ],
+          "tactical_rgb": [
+            20,
+            49,
+            60,
+            70,
+            89,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              50,
+              60,
+              70,
+              90,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 10,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 10,
+          "tactical_raw_origin": [
+            10,
+            10
+          ],
+          "tactical_rgb": [
+            20,
+            50,
+            60,
+            70,
+            90,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              50,
+              60,
+              70,
+              90,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 10,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 10,
+          "tactical_raw_origin": [
+            10,
+            10
+          ],
+          "tactical_rgb": [
+            20,
+            50,
+            60,
+            70,
+            90,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              51,
+              60,
+              70,
+              91,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 11,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 11,
+          "tactical_raw_origin": [
+            11,
+            11
+          ],
+          "tactical_rgb": [
+            20,
+            51,
+            60,
+            70,
+            91,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              51,
+              60,
+              70,
+              91,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 11,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 11,
+          "tactical_raw_origin": [
+            11,
+            11
+          ],
+          "tactical_rgb": [
+            20,
+            51,
+            60,
+            70,
+            91,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              52,
+              60,
+              70,
+              92,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 12,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 12,
+          "tactical_raw_origin": [
+            12,
+            12
+          ],
+          "tactical_rgb": [
+            20,
+            52,
+            60,
+            70,
+            92,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              52,
+              60,
+              70,
+              92,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 12,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 12,
+          "tactical_raw_origin": [
+            12,
+            12
+          ],
+          "tactical_rgb": [
+            20,
+            52,
+            60,
+            70,
+            92,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              53,
+              60,
+              70,
+              93,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 13,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 13,
+          "tactical_raw_origin": [
+            13,
+            13
+          ],
+          "tactical_rgb": [
+            20,
+            53,
+            60,
+            70,
+            93,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              53,
+              60,
+              70,
+              93,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 13,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 13,
+          "tactical_raw_origin": [
+            13,
+            13
+          ],
+          "tactical_rgb": [
+            20,
+            53,
+            60,
+            70,
+            93,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              54,
+              60,
+              70,
+              94,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 14,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 14,
+          "tactical_raw_origin": [
+            14,
+            14
+          ],
+          "tactical_rgb": [
+            20,
+            54,
+            60,
+            70,
+            94,
+            90
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              54,
+              60,
+              70,
+              94,
+              90
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": -1,
+            "slope": 0,
+            "sub": 14,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 14,
+          "tactical_raw_origin": [
+            14,
+            14
+          ],
+          "tactical_rgb": [
+            20,
+            54,
+            60,
+            70,
+            94,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            -32768
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            -32768
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            0
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            -32768,
+            0
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        },
+        {
+          "coord": [
+            511,
+            511
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              41,
+              60,
+              70,
+              81,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            1,
+            1
+          ],
+          "tactical_rgb": [
+            20,
+            41,
+            60,
+            70,
+            81,
+            90
+          ]
+        },
+        {
+          "coord": [
+            511,
+            511
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              20,
+              44,
+              60,
+              70,
+              84,
+              90
+            ]
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            4,
+            4
+          ],
+          "tactical_rgb": [
+            20,
+            44,
+            60,
+            70,
+            84,
+            90
+          ]
+        }
+      ],
+      "files_hex": [
+        "030000000500000008000000040000004c00000090000000d4000000180100005c010000a0010000e4010000280200006c020000b0020000f4020000380300007c030000c00300000404000000000000000000000000000000000000000000000000000000000000000000000000000004000000030b0014283c46505a0000000101010101010101010101010101010101000000010000000000000000000000000000000000000000000000000000000000000004000000030b0014293c46515a0000000101010101010101010101010101010102000000020000000000000000000000000000000000000000000000000000000000000004000000030b00142a3c46525a0000000101010101010101010101010101010103000000030000000000000000000000000000000000000000000000000000000000000004000000030b00142b3c46535a0000000101010101010101010101010101010104000000040000000000000000000000000000000000000000000000000000000000000004000000030b00142c3c46545a0000000101010101010101010101010101010105000000050000000000000000000000000000000000000000000000000000000000000004000000030b00142d3c46555a0000000101010101010101010101010101010106000000060000000000000000000000000000000000000000000000000000000000000004000000030b00142e3c46565a0000000101010101010101010101010101010107000000070000000000000000000000000000000000000000000000000000000000000004000000030b00142f3c46575a0000000101010101010101010101010101010108000000080000000000000000000000000000000000000000000000000000000000000004000000030b0014303c46585a0000000101010101010101010101010101010109000000090000000000000000000000000000000000000000000000000000000000000004000000030b0014313c46595a000000010101010101010101010101010101010a0000000a0000000000000000000000000000000000000000000000000000000000000004000000030b0014323c465a5a000000010101010101010101010101010101010b0000000b0000000000000000000000000000000000000000000000000000000000000004000000030b0014333c465b5a000000010101010101010101010101010101010c0000000c0000000000000000000000000000000000000000000000000000000000000004000000030b0014343c465c5a000000010101010101010101010101010101010d0000000d0000000000000000000000000000000000000000000000000000000000000004000000030b0014353c465d5a000000010101010101010101010101010101010e0000000e0000000000000000000000000000000000000000000000000000000000000004000000030b0014363c465e5a00000001010101010101010101010101010101"
+      ],
+      "name": "single_damaged"
+    },
+    {
+      "cases": [
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              106,
+              94,
+              83,
+              90,
+              71,
+              55
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 0,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 0,
+          "sub": 0,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            106,
+            94,
+            83,
+            90,
+            71,
+            55
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 0,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 1,
+          "sub": 0,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              92,
+              64,
+              43,
+              59,
+              40,
+              26
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 1,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 1,
+          "tactical_raw_origin": [
+            30,
+            15
+          ],
+          "tactical_rgb": [
+            92,
+            64,
+            43,
+            59,
+            40,
+            26
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              84,
+              60,
+              41,
+              71,
+              55,
+              40
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 1,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 1,
+          "tactical_raw_origin": [
+            30,
+            15
+          ],
+          "tactical_rgb": [
+            84,
+            60,
+            41,
+            71,
+            55,
+            40
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              89,
+              63,
+              42,
+              69,
+              47,
+              31
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 2,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 2,
+          "tactical_raw_origin": [
+            60,
+            30
+          ],
+          "tactical_rgb": [
+            89,
+            63,
+            42,
+            69,
+            47,
+            31
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              83,
+              59,
+              40,
+              85,
+              63,
+              44
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 2,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 2,
+          "tactical_raw_origin": [
+            60,
+            30
+          ],
+          "tactical_rgb": [
+            83,
+            59,
+            40,
+            85,
+            63,
+            44
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              81,
+              58,
+              40,
+              76,
+              54,
+              36
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 3,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 3,
+          "tactical_raw_origin": [
+            90,
+            45
+          ],
+          "tactical_rgb": [
+            81,
+            58,
+            40,
+            76,
+            54,
+            36
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              80,
+              60,
+              43,
+              93,
+              72,
+              50
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 3,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 3,
+          "tactical_raw_origin": [
+            90,
+            45
+          ],
+          "tactical_rgb": [
+            80,
+            60,
+            43,
+            93,
+            72,
+            50
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              75,
+              62,
+              52,
+              122,
+              113,
+              103
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 4,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 0,
+          "sub": 4,
+          "tactical_raw_origin": [
+            120,
+            60
+          ],
+          "tactical_rgb": [
+            75,
+            62,
+            52,
+            122,
+            113,
+            103
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              108,
+              95,
+              83,
+              94,
+              78,
+              64
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 4,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 1,
+          "sub": 4,
+          "tactical_raw_origin": [
+            120,
+            60
+          ],
+          "tactical_rgb": [
+            108,
+            95,
+            83,
+            94,
+            78,
+            64
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              63,
+              65,
+              87,
+              61,
+              48,
+              33
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 3,
+            "slope": 0,
+            "sub": 5,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 0,
+          "sub": 5,
+          "tactical_raw_origin": [
+            -30,
+            15
+          ],
+          "tactical_rgb": [
+            63,
+            65,
+            87,
+            61,
+            48,
+            33
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              131,
+              122,
+              111,
+              86,
+              67,
+              51
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 3,
+            "slope": 0,
+            "sub": 5,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 1,
+          "sub": 5,
+          "tactical_raw_origin": [
+            -30,
+            15
+          ],
+          "tactical_rgb": [
+            131,
+            122,
+            111,
+            86,
+            67,
+            51
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              83,
+              61,
+              43,
+              67,
+              53,
+              41
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": 1,
+            "slope": 0,
+            "sub": 6,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 6,
+          "tactical_raw_origin": [
+            0,
+            30
+          ],
+          "tactical_rgb": [
+            83,
+            61,
+            43,
+            67,
+            53,
+            41
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              88,
+              60,
+              40,
+              59,
+              38,
+              24
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": 1,
+            "slope": 0,
+            "sub": 6,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 6,
+          "tactical_raw_origin": [
+            0,
+            30
+          ],
+          "tactical_rgb": [
+            88,
+            60,
+            40,
+            59,
+            38,
+            24
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              88,
+              65,
+              46,
+              79,
+              58,
+              42
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 7,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 7,
+          "tactical_raw_origin": [
+            30,
+            45
+          ],
+          "tactical_rgb": [
+            88,
+            65,
+            46,
+            79,
+            58,
+            42
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              86,
+              59,
+              39,
+              74,
+              49,
+              32
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 7,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 7,
+          "tactical_raw_origin": [
+            30,
+            45
+          ],
+          "tactical_rgb": [
+            86,
+            59,
+            39,
+            74,
+            49,
+            32
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              80,
+              62,
+              46,
+              84,
+              65,
+              46
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 8,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 0,
+          "sub": 8,
+          "tactical_raw_origin": [
+            60,
+            60
+          ],
+          "tactical_rgb": [
+            80,
+            62,
+            46,
+            84,
+            65,
+            46
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              71,
+              48,
+              32,
+              74,
+              50,
+              32
+            ]
+          },
+          "recalc": {
+            "land": 1,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 8,
+            "tile": 100,
+            "zone": 0
+          },
+          "selected": 1,
+          "sub": 8,
+          "tactical_raw_origin": [
+            60,
+            60
+          ],
+          "tactical_rgb": [
+            71,
+            48,
+            32,
+            74,
+            50,
+            32
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              32,
+              31,
+              32,
+              59,
+              51,
+              39
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 4,
+            "slope": 0,
+            "sub": 9,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 0,
+          "sub": 9,
+          "tactical_raw_origin": [
+            90,
+            75
+          ],
+          "tactical_rgb": [
+            32,
+            31,
+            32,
+            59,
+            51,
+            39
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              101,
+              81,
+              64,
+              85,
+              75,
+              66
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 4,
+            "slope": 0,
+            "sub": 9,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 1,
+          "sub": 9,
+          "tactical_raw_origin": [
+            90,
+            75
+          ],
+          "tactical_rgb": [
+            101,
+            81,
+            64,
+            85,
+            75,
+            66
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              64,
+              67,
+              88,
+              64,
+              67,
+              88
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 10,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 0,
+          "sub": 10,
+          "tactical_raw_origin": [
+            -60,
+            30
+          ],
+          "tactical_rgb": [
+            64,
+            67,
+            88,
+            64,
+            67,
+            88
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 10,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 1,
+          "sub": 10,
+          "tactical_raw_origin": [
+            0,
+            0
+          ],
+          "tactical_rgb": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              64,
+              67,
+              88,
+              48,
+              51,
+              64
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 1,
+            "slope": 0,
+            "sub": 11,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 0,
+          "sub": 11,
+          "tactical_raw_origin": [
+            -30,
+            45
+          ],
+          "tactical_rgb": [
+            64,
+            67,
+            88,
+            48,
+            51,
+            64
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "gray"
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 1,
+            "slope": 0,
+            "sub": 11,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 1,
+          "sub": 11,
+          "tactical_raw_origin": [
+            30,
+            15
+          ],
+          "tactical_rgb": [
+            84,
+            60,
+            41,
+            71,
+            55,
+            40
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              64,
+              67,
+              88,
+              45,
+              42,
+              41
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 4,
+            "slope": 0,
+            "sub": 12,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 0,
+          "sub": 12,
+          "tactical_raw_origin": [
+            0,
+            60
+          ],
+          "tactical_rgb": [
+            64,
+            67,
+            88,
+            45,
+            42,
+            41
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "unmapped",
+            "fault_eip": 4702951,
+            "pointer": 1852
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 4,
+            "slope": 0,
+            "sub": 12,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 1,
+          "sub": 12,
+          "tactical_raw_origin": [
+            60,
+            30
+          ],
+          "tactical_rgb": [
+            83,
+            59,
+            40,
+            85,
+            63,
+            44
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              64,
+              66,
+              87,
+              47,
+              44,
+              42
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 4,
+            "slope": 0,
+            "sub": 13,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 0,
+          "sub": 13,
+          "tactical_raw_origin": [
+            30,
+            75
+          ],
+          "tactical_rgb": [
+            64,
+            66,
+            87,
+            47,
+            44,
+            42
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "unmapped",
+            "fault_eip": 4702951,
+            "pointer": 952
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 4,
+            "slope": 0,
+            "sub": 13,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 1,
+          "sub": 13,
+          "tactical_raw_origin": [
+            90,
+            45
+          ],
+          "tactical_rgb": [
+            80,
+            60,
+            43,
+            93,
+            72,
+            50
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 0,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "color",
+            "rgb": [
+              63,
+              66,
+              87,
+              63,
+              66,
+              85
+            ]
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 14,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 0,
+          "sub": 14,
+          "tactical_raw_origin": [
+            60,
+            90
+          ],
+          "tactical_rgb": [
+            63,
+            66,
+            87,
+            63,
+            66,
+            85
+          ]
+        },
+        {
+          "coord": [
+            16,
+            16
+          ],
+          "flags": 8192,
+          "gate": true,
+          "input_tile": 100,
+          "radar": {
+            "branch": "unmapped",
+            "fault_eip": 4702951,
+            "pointer": 3452816845
+          },
+          "recalc": {
+            "land": 3,
+            "level": 6,
+            "pixel_height": 0,
+            "slope": 0,
+            "sub": 14,
+            "tile": 100,
+            "zone": 6
+          },
+          "selected": 1,
+          "sub": 14,
+          "tactical_raw_origin": [
+            120,
+            60
+          ],
+          "tactical_rgb": [
+            108,
+            95,
+            83,
+            94,
+            78,
+            64
+          ]
+        }
+      ],
+      "files": [
+        {
+          "name": "Ovrpsb03.ubn",
+          "sha256": "b6b910c9ab9b06d3dee1c431ec156a453f47a4d8f048a1bb5535a4183adcede6"
+        },
+        {
+          "name": "Ovrpsb03a.ubn",
+          "sha256": "57010fecd440308bd9a6e96f9de5656a733cc5cfbb5a6ce33be3c6a51f3858a1"
+        }
+      ],
+      "name": "retail_ubn_wood03"
+    }
+  ],
+  "process_table": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    3,
+    4,
+    5,
+    6,
+    7,
+    0,
+    1,
+    2,
+    6,
+    7,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    0,
+    4,
+    5,
+    6,
+    7,
+    0,
+    1,
+    2,
+    3,
+    7,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    0,
+    1,
+    5,
+    6,
+    7,
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "wheel_values": [
+    1.0,
+    1.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    1.0,
+    0.5,
+    1.0
+  ]
+}

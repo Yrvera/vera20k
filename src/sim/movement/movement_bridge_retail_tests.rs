@@ -42,6 +42,8 @@ const MAX_TICKS: u64 = 2000;
 
 #[path = "bridge_restamp_retail_probe.rs"]
 mod bridge_restamp_retail_probe;
+#[path = "bridge_tile_retail_probe.rs"]
+mod bridge_tile_retail_probe;
 
 /// Retail install root, or `None` to skip.
 fn retail_dir() -> Option<PathBuf> {

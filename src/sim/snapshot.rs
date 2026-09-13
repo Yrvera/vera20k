@@ -457,7 +457,18 @@ use crate::sim::world::Simulation;
 // Restoring cannot reclassify power or replay a fresh gap event.
 // v145 adds literal CellClass+2C allocation identities to dynamic terrain facts.
 // The self relation cannot reconstruct pointers preserved by overlapping stamps.
-const SNAPSHOT_VERSION: u32 = 145;
+// v146 removes the duplicate BridgeRuntimeCell pavement Boolean. CellClass
+// raw flags in dynamic terrain retain bit0x2000 for every allocated cell.
+// v147 persists the Scenario+214 native numeric-ID cursor. A v146 save has no
+// continuation for live constructors; the missing mid-record field cannot be
+// defaulted safely by bincode. Original689310/689470 evidence: native_id_snapshot.
+// v148 stores ordinary Drive/Ship destination/head Z in raw world leptons.
+// v147 mixed level indices and raw ForceTrack/Tube coordinates; the lost
+// original head heights cannot be reconstructed from a later terrain snapshot.
+// v149 gives Drive and Ship the same retained signed track state. The prior
+// Drive cursor was u16 and Ship had no independent residual/selector fields;
+// bincode cannot infer those records across this ownership migration.
+const SNAPSHOT_VERSION: u32 = 149;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3282,8 +3293,9 @@ mod tests {
         // 141 -> 142: sustained sight and pending 120-frame gap conceal.
         // 142 -> 143: MCV pending and Drive previous-rotation latches.
         // 143 -> 144: per-Building operational edge and retained gap deposit.
-        // 144 -> 145: literal native bridge anchor pointers in dynamic terrain.
-        assert_eq!(super::SNAPSHOT_VERSION, 145);
+        // 145 -> 146: pavement is owned by raw terrain flags, not bridge cells.
+        // 146 -> 147: retain Scenario+214 for subsequent native constructors.
+        assert_eq!(super::SNAPSHOT_VERSION, 149);
     }
 
     #[test]

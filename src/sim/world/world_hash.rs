@@ -1195,7 +1195,6 @@ impl Simulation {
             cell.role.hash(hasher);
             cell.anchor_span_id.hash(hasher);
             cell.overlay_byte.hash(hasher);
-            cell.damaged_variant.hash(hasher);
             cell.bridgehead_anchor_class.hash(hasher);
         }
         // Hash AnchorSpan registry (Task 7 added this field). BTreeMap iterates
@@ -2888,7 +2887,7 @@ mod rally_hash_tests {
         let mut drive = DriveLocomotionRuntime::default();
         drive.destination = Some(DriveCoord::cell(45, 40, 0));
         drive.path.directions = vec![2, 2, 2, 2, 2];
-        drive.residual_budget = 3;
+        drive.track.residual = 3;
         entity_b.drive_locomotion = Some(drive);
         sim_a.substrate.entities.insert(entity_a);
         sim_b.substrate.entities.insert(entity_b);
@@ -4202,7 +4201,6 @@ mod bridge_overlay_hash_tests {
                 role: BridgeCellRole::Anchor,
                 anchor_span_id: None,
                 overlay_byte: byte,
-                damaged_variant: false,
                 bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );

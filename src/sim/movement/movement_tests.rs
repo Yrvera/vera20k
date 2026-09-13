@@ -20,6 +20,147 @@ use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed};
 // Computed deltas use the high byte of the active-retail 65,534-scale word.
 
 #[test]
+fn ordinary_drive_retires_selector_before_entering_an_explicit_tube() {
+    use crate::map::resolved_terrain::YR_CELL_LAND_TUNNEL;
+    use crate::map::tube_facts::{TubeFact, TubeId};
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+
+    let mut cells: Vec<_> = (0..6).map(|x| slope_cell_at(x, 0, 0)).collect();
+    cells[1].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+    cells[1].tube_index = Some(TubeId(0));
+    for cell in &mut cells[2..5] {
+        cell.ground_walk_blocked = true;
+        cell.base_ground_walk_blocked = true;
+    }
+    let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+        6,
+        1,
+        cells,
+        vec![TubeFact::explicit((1, 0), (5, 0), 2, vec![2, 2, 2, 2])],
+    );
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    let zones = ZoneGrid::build(&grid, &Default::default(), 6, 1);
+    let mut sim = Simulation::with_seed(71);
+    let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 0, 0);
+    entity.owner = sim.intern("Americans");
+    entity.type_ref = sim.intern("MTNK");
+    entity.category = EntityCategory::Unit;
+    entity.facing = 64;
+    entity.locomotor = Some(make_drive_loco_for_test());
+    entity.drive_locomotion = Some(Default::default());
+    // Retail [MTNK] Accelerates=false; this command fixture loads no rules.
+    entity.drive_accelerates = false;
+    sim.substrate.entities.insert(entity);
+    assert!(matches!(
+        sim.reveal(1),
+        crate::sim::world::RevealOutcome::Revealed { .. }
+    ));
+    assert!(issue_move_command_with_layered(
+        &mut sim.substrate.entities,
+        &grid,
+        1,
+        (5, 0),
+        SimFixed::from_num(256),
+        false,
+        None,
+        None,
+        Some(&terrain),
+        Some(&zones),
+        None,
+        false,
+        None,
+        None,
+        Some(&mut sim.substrate.cell_occupation),
+    ));
+    let accepted = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        accepted.movement_target.as_ref().unwrap().path,
+        [(0, 0), (1, 0), (5, 0)]
+    );
+    assert!(accepted.drive_track.is_some());
+    assert!(accepted.drive_locomotion.as_ref().unwrap().track.turn_index >= 0);
+
+    for frame in 0..160 {
+        super::movement_tick::tick_movement_object_with_grids(
+            &mut sim.substrate.entities,
+            1,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut sim.substrate.occupancy,
+            &mut sim.substrate.cell_occupation,
+            &mut sim.substrate.raw_cell_occupation,
+            &mut sim.substrate.next_occupancy_enter_order,
+            &mut sim.scenario_rng,
+            u64::from(frame),
+            frame,
+            Some(&zones),
+            Some(&terrain),
+            None,
+            None,
+            None,
+            &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            SIM_ZERO,
+            9,
+            60,
+            &mut sim.interner,
+            None,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        let entity = sim.substrate.entities.get(1).unwrap();
+        if entity.low_bridge_tube_state.is_some() {
+            assert!(
+                entity.drive_track.is_none(),
+                "ordinary curve retires before tube ownership"
+            );
+            assert_eq!(
+                entity.drive_locomotion.as_ref().unwrap().track.turn_index,
+                -1
+            );
+            assert_eq!((entity.position.rx, entity.position.ry), (1, 0));
+            assert_eq!(entity.low_bridge_tube_state.unwrap().cursor, 0);
+            assert_eq!(entity.drive_locomotion.as_ref().unwrap().path.cursor, 2);
+            assert_eq!(
+                entity
+                    .drive_locomotion
+                    .as_ref()
+                    .unwrap()
+                    .path
+                    .reference_cell,
+                Some((1, 0))
+            );
+            assert_eq!(
+                entity.drive_locomotion.as_ref().unwrap().head_to,
+                Some(DriveCoord {
+                    x: 1408,
+                    y: 128,
+                    z: 0
+                })
+            );
+            assert!(entity.drive_locomotion.as_ref().unwrap().track_valid);
+            assert_eq!(entity.movement_target.as_ref().unwrap().next_index, 3);
+            assert!(!entity.lifecycle.cell_marked);
+            assert!(!sim.substrate.occupancy.contains_entity(1, 0, 1));
+            return;
+        }
+        assert!(
+            entity.drive_track.is_some(),
+            "the approach must hand off in the tick that retires its curve"
+        );
+        assert!(
+            entity.position.rx <= 1,
+            "tube steps cannot become ordinary ground curves"
+        );
+    }
+    let entity = sim.substrate.entities.get(1).unwrap();
+    panic!(
+        "ordinary move did not hand movement to the tube: position={:?}, track={:?}, runtime={:?}",
+        entity.position, entity.drive_track, entity.drive_locomotion
+    );
+}
+
+#[test]
 fn test_facing_iso_north() {
     // (0,-1) = north on screen → facing 0.
     let f: u8 = facing_from_delta(0, -1);
@@ -146,8 +287,11 @@ fn test_drive_arrival_clears_navcom_same_tick() {
         destination: Some(crate::sim::components::DriveCoord::cell(0, 0, 0)),
         head_to: Some(crate::sim::components::DriveCoord::cell(0, 0, 0)),
         track_valid: true,
-        track_index: 1,
-        point_index: 2,
+        track: crate::sim::components::TrackProgress {
+            turn_index: 1,
+            cursor: 2,
+            ..Default::default()
+        },
         ..Default::default()
     });
     e.movement_target = Some(MovementTarget {
@@ -170,8 +314,8 @@ fn test_drive_arrival_clears_navcom_same_tick() {
     let drive = entity.drive_locomotion.as_ref().expect("drive state");
     assert_eq!(drive.head_to, None);
     assert!(!drive.track_valid);
-    assert_eq!(drive.track_index, -1);
-    assert_eq!(drive.point_index, 0);
+    assert_eq!(drive.track.turn_index, -1);
+    assert_eq!(drive.track.cursor, 0);
     assert_eq!(drive.destination, None);
 }
 
@@ -473,6 +617,7 @@ fn drive_slope_boundary_is_detected_on_process_after_forced_track_crossing() {
             entities.get_mut(1).unwrap(),
             cell_occupation,
             forced,
+            0,
         ));
     }
 
@@ -966,7 +1111,10 @@ fn gsi_04_05_forced_refinery_exit_preserves_lists_until_terminal_relink() {
     entity.category = EntityCategory::Unit;
     entity.locomotor = Some(make_drive_loco_for_test());
     entity.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
-        residual_budget: 5,
+        track: crate::sim::components::TrackProgress {
+            residual: 5,
+            ..Default::default()
+        },
         ..Default::default()
     });
     sim.substrate.entities.insert(entity);
@@ -985,6 +1133,7 @@ fn gsi_04_05_forced_refinery_exit_preserves_lists_until_terminal_relink() {
             entities.get_mut(1).unwrap(),
             cell_occupation,
             forced,
+            0,
         ));
     }
 
@@ -1003,10 +1152,10 @@ fn gsi_04_05_forced_refinery_exit_preserves_lists_until_terminal_relink() {
         .unwrap();
     assert_eq!(drive.destination, Some(head));
     assert_eq!(drive.head_to, Some(head));
-    assert_eq!(drive.track_index, 0x47);
+    assert_eq!(drive.track.turn_index, 0x47);
     assert!(drive.track_valid);
     assert_eq!(drive.owner_current_speed, 8);
-    assert_eq!(drive.residual_budget, 5);
+    assert_eq!(drive.track.residual, 5);
     assert_eq!(
         sim.substrate
             .entities
@@ -1041,7 +1190,8 @@ fn gsi_04_05_forced_refinery_exit_preserves_lists_until_terminal_relink() {
         .drive_locomotion
         .as_ref()
         .unwrap()
-        .residual_budget;
+        .track
+        .residual;
     let detached_residual = after_paid_point
         .forced_drive_track
         .as_ref()
@@ -1097,10 +1247,10 @@ fn gsi_04_05_forced_refinery_exit_preserves_lists_until_terminal_relink() {
     assert_eq!(drive.head_to, None);
     assert_eq!(drive.occupation_head_to, None);
     assert!(!drive.track_valid);
-    assert_eq!(drive.track_index, -1);
-    assert_eq!(drive.point_index, 0);
+    assert_eq!(drive.track.turn_index, -1);
+    assert_eq!(drive.track.cursor, 0);
     assert_ne!(
-        drive.residual_budget, 0,
+        drive.track.residual, 0,
         "immediate forced terminal must not unconditionally zero the owner residual"
     );
     assert_eq!(
@@ -1434,8 +1584,11 @@ fn test_drive_queued_arrival_pops_navqueue_and_reissues_destination() {
         destination: Some(crate::sim::components::DriveCoord::cell(0, 0, 0)),
         head_to: Some(crate::sim::components::DriveCoord::cell(0, 0, 0)),
         track_valid: true,
-        track_index: 1,
-        point_index: 2,
+        track: crate::sim::components::TrackProgress {
+            turn_index: 1,
+            cursor: 2,
+            ..Default::default()
+        },
         ..Default::default()
     });
     e.movement_target = Some(MovementTarget {
@@ -1511,8 +1664,11 @@ fn test_drive_off_destination_finish_defers_then_resumes_toward_navcom() {
         destination: Some(DriveCoord::cell(3, 0, 0)),
         head_to: Some(DriveCoord::cell(1, 0, 0)),
         track_valid: true,
-        track_index: 1,
-        point_index: 2,
+        track: crate::sim::components::TrackProgress {
+            turn_index: 1,
+            cursor: 2,
+            ..Default::default()
+        },
         ..Default::default()
     });
     e.movement_target = Some(MovementTarget {
@@ -1768,7 +1924,7 @@ fn test_issue_move_command_starts_drive_track_for_drive_locomotor() {
         "Drive Head_To_Coord should write Drive destination state"
     );
     let drive = entity.drive_locomotion.as_ref().expect("drive state");
-    assert_eq!(drive.head_to, Some(DriveCoord::cell(7, 3, 0)));
+    assert_eq!(drive.head_to, Some(DriveCoord::cell(3, 3, 0)));
     assert_eq!(drive.path.directions, vec![2, 2, 2, 2, 2]);
     assert_eq!(drive.path.cursor, 1);
     assert_eq!(drive.path.reference_cell, Some((3, 3)));
@@ -4816,6 +4972,9 @@ fn on_bridge_clears_at_ramp_to_ground_only() {
     // The mover is already driving east along the deck; the hull has to be on
     // the head node's octant or selection stops to turn it there first.
     e.facing = 0x40;
+    // Retail [HTNK] Accelerates=false. This transition fixture loads no
+    // acceleration rules, including after fresh selection creates its runtime.
+    e.drive_accelerates = false;
     e.bridge_occupancy = Some(BridgeOccupancy { deck_level: 4 });
     e.locomotor = Some(make_drive_loco(MovementLayer::Bridge));
     e.movement_target = Some(MovementTarget {
@@ -5409,11 +5568,14 @@ fn sharp_turn_preserves_path_node_count() {
         &mut facing_target,
         EntityCategory::Unit,
         0,
-        (10, 10),
-        (SIM_ZERO, SIM_ZERO),
-        None,
-        0,
-        false,
+        &crate::sim::components::Position {
+            rx: 10,
+            ry: 10,
+            sub_x: SimFixed::from_num(128),
+            sub_y: SimFixed::from_num(128),
+            z: 0,
+            exact_z_leptons: None,
+        },
     );
 
     assert!(
@@ -5464,11 +5626,14 @@ fn off_octant_hull_turns_before_any_curve_is_selected() {
         &mut facing_target,
         EntityCategory::Unit,
         5, // ROT=5, the stock ground-vehicle rate
-        (10, 10),
-        (SIM_ZERO, SIM_ZERO),
-        None,
-        0,
-        false,
+        &crate::sim::components::Position {
+            rx: 10,
+            ry: 10,
+            sub_x: SimFixed::from_num(128),
+            sub_y: SimFixed::from_num(128),
+            z: 0,
+            exact_z_leptons: None,
+        },
     );
 
     assert!(
@@ -5751,11 +5916,11 @@ fn drive_track_ne_diagonal_world_position_never_teleports() {
 
 /// NE diagonals must not run at double speed.
 ///
-/// The NE straight curve reports two coordinate crossings for one path step.
-/// When each crossing consumed a path node, a single 31-point curve ate two
-/// nodes, so NE and SW legs covered two cells in the time the other six
-/// directions covered one. The mover also skipped the node it was supposed to
-/// arrive at. SE is the clean orientation of the same curve and is the control.
+/// Both orientations must visit every queued cell without skipping a node.
+/// Retail Raw2 skips the exact corner; residual interpolation can cross into
+/// the queued cell before paid-point bookkeeping consumes it. Drive4B253F..
+/// 4B25C3 performs that residual transfer without consuming a path step. The
+/// next paid point must catch up once. SE uses the same raw curve as a control.
 #[test]
 fn drive_track_ne_diagonal_costs_the_same_ticks_per_cell_as_se() {
     fn run(path: Vec<(u16, u16)>, facing: u8, dir: u8) -> (u64, Vec<(u16, u16)>) {
@@ -5783,7 +5948,8 @@ fn drive_track_ne_diagonal_costs_the_same_ticks_per_cell_as_se() {
             CellListInsertion::PrependNonBuilding,
         );
         let mut visited: Vec<(u16, u16)> = vec![start];
-        let mut intermediate_crossings = 0;
+        let mut residual_crossings = 0;
+        let mut pending_consumption = None;
         let mut ticks = 0u64;
         for tick in 0..400u64 {
             let before = entities.get(1).unwrap();
@@ -5804,35 +5970,49 @@ fn drive_track_ne_diagonal_costs_the_same_ticks_per_cell_as_se() {
             );
             let Some(entity) = entities.get(1) else { break };
             let cell = (entity.position.rx, entity.position.ry);
+            let next_index = entity
+                .movement_target
+                .as_ref()
+                .map_or(steps + 1, |target| target.next_index);
+            if let Some(expected) = pending_consumption.take() {
+                // This fixture's speed pays points every tick. A residual
+                // crossing may defer this bookkeeping only until that payment.
+                assert_eq!(
+                    next_index, expected,
+                    "the next paid tick consumes the residual-reached node once"
+                );
+            }
+            assert!(
+                next_index >= prior_index && next_index <= prior_index + 1,
+                "one diagonal cell must not skip path nodes"
+            );
             if visited.last() != Some(&cell) {
                 assert!(!occupancy.contains_entity(prior_cell.0, prior_cell.1, 1));
                 assert!(occupancy.contains_entity(cell.0, cell.1, 1));
-                if let Some(target) = entity.movement_target.as_ref() {
-                    if Some(cell) == queued_cell {
-                        assert_eq!(
-                            target.next_index,
-                            prior_index + 1,
-                            "reaching the queued cell consumes it once"
-                        );
-                    } else {
-                        intermediate_crossings += 1;
-                        assert_eq!(
-                            target.next_index, prior_index,
-                            "an intermediate track cell must not consume the queued destination"
-                        );
+                if Some(cell) == queued_cell {
+                    if next_index == prior_index {
+                        residual_crossings += 1;
+                        pending_consumption = Some(prior_index + 1);
                     }
+                } else {
+                    assert_eq!(
+                        next_index, prior_index,
+                        "an intermediate track cell must not consume the queued destination"
+                    );
                 }
                 visited.push(cell);
             }
             ticks = tick + 1;
-            if cell == goal {
+            if cell == goal && pending_consumption.is_none() {
                 break;
             }
         }
+        assert_eq!(visited.last(), Some(&goal), "the mover reaches its goal");
+        assert!(pending_consumption.is_none());
         if dir == 1 {
             assert!(
-                intermediate_crossings > 0,
-                "NE fixture must exercise an intermediate corner crossing"
+                residual_crossings > 0,
+                "NE fixture exercises a residual crossing followed by paid bookkeeping"
             );
         }
         (ticks, visited)

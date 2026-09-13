@@ -119,7 +119,6 @@ fn build_single_ns_span(state: DamageState) -> BridgeRuntimeState {
                 role,
                 anchor_span_id: Some(1),
                 overlay_byte: 0,
-                damaged_variant: false,
                 bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
@@ -331,7 +330,6 @@ fn repair_two_overlapping_spans_processed_in_btreeset_order() {
                 role: BridgeCellRole::Body,
                 anchor_span_id: Some(2),
                 overlay_byte: 0,
-                damaged_variant: false,
                 bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
