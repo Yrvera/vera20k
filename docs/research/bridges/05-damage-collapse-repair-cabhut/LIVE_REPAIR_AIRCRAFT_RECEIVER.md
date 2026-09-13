@@ -133,3 +133,25 @@ or certify a Rust implementation. Missing/dummy projected identities, unresolved
 waypoint effects and other locomotor histories remain outside the reduction.
 Unresolved reachable cases keep the repair mechanism open. Full Rust integration,
 regression checks and final independent source review are separate requirements.
+
+## Nonzero session mode excludes the downstream shroud lookup
+
+The original `419764` reads the session mode at `A8B238`. `419769` tests that
+value and `41976B` jumps to the return-0 path at `4197AA` when it is nonzero.
+This skips both the selected Cell's `+48` coordinate query and the shroud query
+`586360` at `419793`. The subsequent local-owner `+41A` and suppression `+3D4`
+tests are reached only in mode zero; they are not needed for this mode bound.
+
+Therefore an authoritative nonzero session mode discharges the downstream
+projected-cell/dummy requirements described above. It does not discharge the
+earlier Team query at `4196C6`, including its possible waypoint lookup, or
+establish the other locomotor histories. The repair caller's kind-2 damage
+continuation remains independent of this predicate's result.
+
+Rust already retains the native zero/nonzero classification in
+`ScenarioDescriptor::game_mode_nonzero`, copies it into `ScenarioSession`, and
+includes it in session persistence and identity hashing. Both current skirmish
+loading paths supply true. The receiver can use this existing authority; no
+viewer-local flag or additional session state is required. The native gate and
+state ownership were independently reviewed. This is a bounded effects proof,
+not acceptance of the implementing Rust change or the complete repair mechanism.
