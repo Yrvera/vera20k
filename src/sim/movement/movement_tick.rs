@@ -5,11 +5,10 @@
 //! cell boundary crossings, bridge transitions, deferred occupancy checks,
 //! formation sync, and bump/crush resolution.
 //!
-//! This is the largest single function in the codebase (~1,300 lines) because
-//! ground movement is irreducibly complex — the borrow checker constrains how
-//! the per-entity loop can be decomposed, and the function already delegates to
-//! 6 private submodules (movement_path, movement_blocked, movement_bridge,
-//! movement_step, cell_arrival, movement_occupancy).
+//! Pass preparation is separate from ordinary mover advancement: entry work
+//! executes once and returns owned scheduling/cache state. Point callbacks need
+//! their own continuation inside the movement call, without repeating entry work.
+//! Geometry, admission and occupation remain with their dedicated modules.
 //!
 //! ## Dependency rules
 //! - Internal to sim/movement — called via re-export in mod.rs.
@@ -1431,6 +1430,232 @@ fn handle_deferred_drive_track_chain(
     true
 }
 
+/// Owned results of the one-time pass preparation. No entity, terrain or map
+/// borrows escape into this state. Pending arrivals can change which objects
+/// are movers, and entry-active Tube objects remain excluded after completion.
+///
+/// This extraction preserves the existing dispatch order; ordinary stepping
+/// below still needs the native synchronous callback continuation.
+struct PreparedMovementPass {
+    movers: Vec<u64>,
+    tube_processed: BTreeSet<u64>,
+    entity_block_sets: BTreeMap<
+        crate::sim::intern::InternedId,
+        (
+            BTreeSet<(u16, u16)>,
+            crate::sim::pathfinding::LayeredEntityBlockMap,
+        ),
+    >,
+    block_set_built_at_gen: BTreeMap<crate::sim::intern::InternedId, u64>,
+}
+
+/// Perform the entry work once, before ordinary movers advance. In particular,
+/// resuming a point after a world callback must not call this again: it samples
+/// slope, reaims destinations and runs Tube/forced movement and pending arrivals.
+#[allow(clippy::too_many_arguments)]
+fn prepare_movement_pass(
+    entities: &mut EntityStore,
+    entity_order: &[u64],
+    ctx: PathfindingContext<'_>,
+    terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
+    alliances: &HouseAllianceMap,
+    occupancy: &mut OccupancyGrid,
+    cell_occupation: &mut CellOccupationGrid,
+    raw_cell_occupation: &mut RawCellOccupationGrid,
+    next_occupancy_enter_order: &mut EnterOrderCounter,
+    rng: &mut SimRng,
+    native_frame: u32,
+    dt: SimFixed,
+    interner: &mut crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    stats: &mut MovementTickStats,
+) -> PreparedMovementPass {
+    let path_grid = ctx.path_grid;
+    let resolved_terrain = ctx.resolved_terrain;
+    for &entity_id in entity_order {
+        if let Some(entity) = entities.get(entity_id) {
+            cell_occupation.reconcile_entity(entity);
+        }
+    }
+    // Active TubeMovement owns the entire object turn. Capture this before any
+    // helper can mutate navigation state, because a successful final clears
+    // the payload but still must not resume ordinary processing this tick.
+    let tube_active_at_start: BTreeSet<u64> = entity_order
+        .iter()
+        .copied()
+        .filter(|&entity_id| {
+            entities
+                .get(entity_id)
+                .is_some_and(|entity| entity.low_bridge_tube_state.is_some())
+        })
+        .collect();
+
+    // DriveLocomotionClass::Process @ 0x004B0500 samples CellClass+0x11C at
+    // 0x004B050B..0x004B0557 before its first track/movement branch;
+    // ShipLocomotionClass::Process @ 0x0069FC10 does the same at
+    // 0x0069FC1B..0x0069FC67. Entry-active Tube owns the whole object turn and
+    // is the only exclusion here. Stationary eligible objects still Process.
+    if let Some(terrain) = resolved_terrain {
+        for &entity_id in entity_order {
+            if tube_active_at_start.contains(&entity_id) {
+                continue;
+            }
+            let sampled_slope = entities.get(entity_id).and_then(|entity| {
+                terrain
+                    .cell(entity.position.rx, entity.position.ry)
+                    .map(|cell| cell.slope_type)
+            });
+            if let Some(sampled_slope) = sampled_slope
+                && let Some(entity) = entities.get_mut(entity_id)
+            {
+                super::slope_transition::sample_process_entry(entity, sampled_slope, native_frame);
+            }
+        }
+    }
+
+    let drive_reaims: Vec<(u64, crate::sim::components::DriveCoord)> =
+        drive_locomotion::drive_entity_nav_targets(entities)
+            .into_iter()
+            .filter(|(mover_id, _)| entity_order.contains(mover_id))
+            .filter(|(mover_id, _)| !tube_active_at_start.contains(mover_id))
+            .filter_map(|(mover_id, target)| {
+                super::navcom::resolve_entity_nav_target_drive_coord(target, entities)
+                    .map(|coord| (mover_id, coord))
+            })
+            .collect();
+    for (mover_id, coord) in drive_reaims {
+        if let Some(entity) = entities.get_mut(mover_id) {
+            super::navcom::refresh_drive_destination_coord(entity, coord, resolved_terrain);
+        }
+    }
+
+    let mut tube_processed = tube_active_at_start;
+    if let Some(terrain) = resolved_terrain {
+        for &entity_id in entity_order {
+            if tube_movement::tick_active_tube_object(
+                entities,
+                entity_id,
+                terrain,
+                path_grid,
+                occupancy,
+                cell_occupation,
+                raw_cell_occupation,
+                next_occupancy_enter_order,
+                rules,
+                interner,
+                rng,
+                native_frame,
+            ) {
+                tube_processed.insert(entity_id);
+                stats.movers_total = stats.movers_total.saturating_add(1);
+            }
+        }
+    }
+    let forced_drive_processed = tick_forced_drive_tracks(
+        entities,
+        entity_order,
+        &tube_processed,
+        occupancy,
+        cell_occupation,
+        next_occupancy_enter_order,
+        dt,
+        stats,
+        resolved_terrain,
+        path_grid,
+    );
+    let ordinary_entry_order: Vec<u64> = entity_order
+        .iter()
+        .copied()
+        .filter(|entity_id| !tube_processed.contains(entity_id))
+        .collect();
+
+    // Collect movers in live object order: ground/bridge entities with a movement_target.
+    let mut movers: Vec<u64> = Vec::new();
+    let mut mover_owners: BTreeSet<crate::sim::intern::InternedId> = BTreeSet::new();
+    for &id in entity_order {
+        if let Some(entity) = entities.get(id) {
+            let _ = drive_locomotion::process_drive_locomotion_shell(entity);
+            if entity.navigation.pending_arrival_clear {
+                mover_owners.insert(entity.owner());
+            }
+            if forced_drive_processed.contains(&id)
+                || tube_processed.contains(&id)
+                || entity.movement_target.is_none()
+                || entity.low_bridge_tube_state.is_some()
+            {
+                continue;
+            }
+            let layer = entity.movement_layer_or_ground();
+            if !matches!(layer, MovementLayer::Air | MovementLayer::Underground) {
+                movers.push(id);
+                mover_owners.insert(entity.owner());
+            }
+        }
+    }
+    // Pre-build entity block sets per owner for friendly-passable pathfinding during repath.
+    // RA2 optimization: moving friendly units are passable (code-2 dynamic cost);
+    // only stationary/enemy units hard-block. InternedId is Copy, so keys are cheap.
+    let entity_block_sets: BTreeMap<
+        crate::sim::intern::InternedId,
+        (
+            BTreeSet<(u16, u16)>,
+            crate::sim::pathfinding::LayeredEntityBlockMap,
+        ),
+    > = mover_owners
+        .iter()
+        .map(|&owner_id| {
+            let owner_str = interner.resolve(owner_id);
+            let pair =
+                bump_crush::build_entity_block_set(entities, owner_str, alliances, interner, rules);
+            (owner_id, pair)
+        })
+        .collect();
+    // Occupancy generation these snapshots reflect. Captured before
+    // process_pending_drive_arrivals so any move it makes advances the generation
+    // and forces the first consuming mover to rebuild. Each owner's snapshot is
+    // lazily refreshed in the mover loop below whenever occupancy changed since it
+    // was last built (gamemd processes movers in live object order).
+    let block_set_build_gen = occupancy.generation();
+    let block_set_built_at_gen: BTreeMap<crate::sim::intern::InternedId, u64> = entity_block_sets
+        .keys()
+        .map(|&owner| (owner, block_set_build_gen))
+        .collect();
+
+    process_pending_drive_arrivals(
+        entities,
+        &ordinary_entry_order,
+        ctx,
+        terrain_costs,
+        &entity_block_sets,
+        interner,
+        rules,
+        cell_occupation,
+    );
+    movers.clear();
+    for &id in entity_order {
+        if let Some(entity) = entities.get(id) {
+            if forced_drive_processed.contains(&id)
+                || tube_processed.contains(&id)
+                || entity.movement_target.is_none()
+                || entity.low_bridge_tube_state.is_some()
+            {
+                continue;
+            }
+            let layer = entity.movement_layer_or_ground();
+            if !matches!(layer, MovementLayer::Air | MovementLayer::Underground) {
+                movers.push(id);
+            }
+        }
+    }
+
+    PreparedMovementPass {
+        movers,
+        tube_processed,
+        entity_block_sets,
+        block_set_built_at_gen,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tick_movement_with_grids(
@@ -1614,11 +1839,29 @@ fn tick_movement_with_grids_scoped(
             &fallback_order
         }
     };
-    for &entity_id in entity_order {
-        if let Some(entity) = entities.get(entity_id) {
-            cell_occupation.reconcile_entity(entity);
-        }
-    }
+    let PreparedMovementPass {
+        movers,
+        mut tube_processed,
+        mut entity_block_sets,
+        mut block_set_built_at_gen,
+    } = prepare_movement_pass(
+        entities,
+        entity_order,
+        ctx,
+        terrain_costs,
+        alliances,
+        occupancy,
+        cell_occupation,
+        raw_cell_occupation,
+        next_occupancy_enter_order,
+        rng,
+        native_frame,
+        dt,
+        interner,
+        rules,
+        &mut stats,
+    );
+
     // Collect entities that have finished their paths (need movement_target removal after loop).
     let mut finished_entities: Vec<u64> = Vec::new();
     // Deferred effects — applied after the movement loop to avoid borrow conflicts.
@@ -1626,178 +1869,6 @@ fn tick_movement_with_grids_scoped(
     // Track which blockers have already been told to scatter this tick,
     // preventing duplicate scatter commands from multiple movers.
     let mut already_scattered: BTreeSet<u64> = BTreeSet::new();
-
-    // Active TubeMovement owns the entire object turn. Capture this before any
-    // helper can mutate navigation state, because a successful final clears
-    // the payload but still must not resume ordinary processing this tick.
-    let tube_active_at_start: BTreeSet<u64> = entity_order
-        .iter()
-        .copied()
-        .filter(|&entity_id| {
-            entities
-                .get(entity_id)
-                .is_some_and(|entity| entity.low_bridge_tube_state.is_some())
-        })
-        .collect();
-
-    // DriveLocomotionClass::Process @ 0x004B0500 samples CellClass+0x11C at
-    // 0x004B050B..0x004B0557 before its first track/movement branch;
-    // ShipLocomotionClass::Process @ 0x0069FC10 does the same at
-    // 0x0069FC1B..0x0069FC67. Entry-active Tube owns the whole object turn and
-    // is the only exclusion here. Stationary eligible objects still Process.
-    if let Some(terrain) = resolved_terrain {
-        for &entity_id in entity_order {
-            if tube_active_at_start.contains(&entity_id) {
-                continue;
-            }
-            let sampled_slope = entities.get(entity_id).and_then(|entity| {
-                terrain
-                    .cell(entity.position.rx, entity.position.ry)
-                    .map(|cell| cell.slope_type)
-            });
-            if let Some(sampled_slope) = sampled_slope
-                && let Some(entity) = entities.get_mut(entity_id)
-            {
-                super::slope_transition::sample_process_entry(entity, sampled_slope, native_frame);
-            }
-        }
-    }
-
-    let drive_reaims: Vec<(u64, crate::sim::components::DriveCoord)> =
-        drive_locomotion::drive_entity_nav_targets(entities)
-            .into_iter()
-            .filter(|(mover_id, _)| entity_order.contains(mover_id))
-            .filter(|(mover_id, _)| !tube_active_at_start.contains(mover_id))
-            .filter_map(|(mover_id, target)| {
-                super::navcom::resolve_entity_nav_target_drive_coord(target, entities)
-                    .map(|coord| (mover_id, coord))
-            })
-            .collect();
-    for (mover_id, coord) in drive_reaims {
-        if let Some(entity) = entities.get_mut(mover_id) {
-            super::navcom::refresh_drive_destination_coord(entity, coord, resolved_terrain);
-        }
-    }
-
-    let mut tube_processed = tube_active_at_start;
-    if let Some(terrain) = resolved_terrain {
-        for &entity_id in entity_order {
-            if tube_movement::tick_active_tube_object(
-                entities,
-                entity_id,
-                terrain,
-                path_grid,
-                occupancy,
-                cell_occupation,
-                raw_cell_occupation,
-                next_occupancy_enter_order,
-                rules,
-                interner,
-                rng,
-                native_frame,
-            ) {
-                tube_processed.insert(entity_id);
-                stats.movers_total = stats.movers_total.saturating_add(1);
-            }
-        }
-    }
-    let forced_drive_processed = tick_forced_drive_tracks(
-        entities,
-        entity_order,
-        &tube_processed,
-        occupancy,
-        cell_occupation,
-        next_occupancy_enter_order,
-        dt,
-        &mut stats,
-        resolved_terrain,
-        path_grid,
-    );
-    let ordinary_entry_order: Vec<u64> = entity_order
-        .iter()
-        .copied()
-        .filter(|entity_id| !tube_processed.contains(entity_id))
-        .collect();
-
-    // Collect movers in live object order: ground/bridge entities with a movement_target.
-    let mut movers: Vec<u64> = Vec::new();
-    let mut mover_owners: BTreeSet<crate::sim::intern::InternedId> = BTreeSet::new();
-    for &id in entity_order {
-        if let Some(entity) = entities.get(id) {
-            let _ = drive_locomotion::process_drive_locomotion_shell(entity);
-            if entity.navigation.pending_arrival_clear {
-                mover_owners.insert(entity.owner());
-            }
-            if forced_drive_processed.contains(&id)
-                || tube_processed.contains(&id)
-                || entity.movement_target.is_none()
-                || entity.low_bridge_tube_state.is_some()
-            {
-                continue;
-            }
-            let layer = entity.movement_layer_or_ground();
-            if !matches!(layer, MovementLayer::Air | MovementLayer::Underground) {
-                movers.push(id);
-                mover_owners.insert(entity.owner());
-            }
-        }
-    }
-    // Pre-build entity block sets per owner for friendly-passable pathfinding during repath.
-    // RA2 optimization: moving friendly units are passable (code-2 dynamic cost);
-    // only stationary/enemy units hard-block. InternedId is Copy, so keys are cheap.
-    let mut entity_block_sets: BTreeMap<
-        crate::sim::intern::InternedId,
-        (
-            BTreeSet<(u16, u16)>,
-            crate::sim::pathfinding::LayeredEntityBlockMap,
-        ),
-    > = mover_owners
-        .iter()
-        .map(|&owner_id| {
-            let owner_str = interner.resolve(owner_id);
-            let pair =
-                bump_crush::build_entity_block_set(entities, owner_str, alliances, interner, rules);
-            (owner_id, pair)
-        })
-        .collect();
-    // Occupancy generation these snapshots reflect. Captured before
-    // process_pending_drive_arrivals so any move it makes advances the generation
-    // and forces the first consuming mover to rebuild. Each owner's snapshot is
-    // lazily refreshed in the mover loop below whenever occupancy changed since it
-    // was last built (gamemd processes movers in live object order).
-    let block_set_build_gen = occupancy.generation();
-    let mut block_set_built_at_gen: BTreeMap<crate::sim::intern::InternedId, u64> =
-        entity_block_sets
-            .keys()
-            .map(|&owner| (owner, block_set_build_gen))
-            .collect();
-
-    process_pending_drive_arrivals(
-        entities,
-        &ordinary_entry_order,
-        ctx,
-        terrain_costs,
-        &entity_block_sets,
-        interner,
-        rules,
-        cell_occupation,
-    );
-    movers.clear();
-    for &id in entity_order {
-        if let Some(entity) = entities.get(id) {
-            if forced_drive_processed.contains(&id)
-                || tube_processed.contains(&id)
-                || entity.movement_target.is_none()
-                || entity.low_bridge_tube_state.is_some()
-            {
-                continue;
-            }
-            let layer = entity.movement_layer_or_ground();
-            if !matches!(layer, MovementLayer::Air | MovementLayer::Underground) {
-                movers.push(id);
-            }
-        }
-    }
 
     for entity_id in movers {
         if contains_crush_victim(&crush_kills, entity_id) {
