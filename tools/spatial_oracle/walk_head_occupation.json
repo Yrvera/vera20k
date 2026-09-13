@@ -1,4 +1,600 @@
 {
+  "moving": [
+    {
+      "actions": [],
+      "output": {
+        "events": [],
+        "trace": [
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": false
+          }
+        ]
+      }
+    },
+    {
+      "actions": [
+        "move"
+      ],
+      "output": {
+        "events": [],
+        "trace": [
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": false
+          },
+          {
+            "destination": [
+              2752,
+              2624,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": true
+          }
+        ]
+      }
+    },
+    {
+      "actions": [
+        "move",
+        "stop"
+      ],
+      "output": {
+        "events": [
+          "stopped"
+        ],
+        "trace": [
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": false
+          },
+          {
+            "destination": [
+              2752,
+              2624,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": true
+          },
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": false
+          }
+        ]
+      }
+    },
+    {
+      "actions": [
+        "move",
+        "head",
+        "stop"
+      ],
+      "output": {
+        "events": [
+          [
+            "ground_input",
+            [
+              2496,
+              2624,
+              0
+            ]
+          ],
+          [
+            "ground_input",
+            [
+              2752,
+              2624,
+              0
+            ]
+          ],
+          [
+            "ground_input",
+            [
+              2752,
+              2624,
+              0
+            ]
+          ],
+          "owner"
+        ],
+        "trace": [
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": false
+          },
+          {
+            "destination": [
+              2752,
+              2624,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": true
+          },
+          {
+            "destination": [
+              2752,
+              2624,
+              0
+            ],
+            "head": [
+              2752,
+              2624,
+              0
+            ],
+            "moving": true
+          },
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              2752,
+              2624,
+              0
+            ],
+            "moving": true
+          }
+        ]
+      }
+    },
+    {
+      "actions": [
+        "move",
+        "head",
+        "stop",
+        "retire"
+      ],
+      "output": {
+        "events": [
+          [
+            "ground_input",
+            [
+              2496,
+              2624,
+              0
+            ]
+          ],
+          [
+            "ground_input",
+            [
+              2752,
+              2624,
+              0
+            ]
+          ],
+          [
+            "ground_input",
+            [
+              2752,
+              2624,
+              0
+            ]
+          ],
+          "owner",
+          [
+            "ground_input",
+            [
+              2752,
+              2624,
+              0
+            ]
+          ],
+          [
+            "ground_input",
+            [
+              2496,
+              2624,
+              0
+            ]
+          ],
+          "owner"
+        ],
+        "trace": [
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": false
+          },
+          {
+            "destination": [
+              2752,
+              2624,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": true
+          },
+          {
+            "destination": [
+              2752,
+              2624,
+              0
+            ],
+            "head": [
+              2752,
+              2624,
+              0
+            ],
+            "moving": true
+          },
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              2752,
+              2624,
+              0
+            ],
+            "moving": true
+          },
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": true
+          }
+        ]
+      }
+    },
+    {
+      "actions": [
+        "move",
+        "head",
+        "stop",
+        "retire",
+        "stop"
+      ],
+      "output": {
+        "events": [
+          [
+            "ground_input",
+            [
+              2496,
+              2624,
+              0
+            ]
+          ],
+          [
+            "ground_input",
+            [
+              2752,
+              2624,
+              0
+            ]
+          ],
+          [
+            "ground_input",
+            [
+              2752,
+              2624,
+              0
+            ]
+          ],
+          "owner",
+          [
+            "ground_input",
+            [
+              2752,
+              2624,
+              0
+            ]
+          ],
+          [
+            "ground_input",
+            [
+              2496,
+              2624,
+              0
+            ]
+          ],
+          "owner",
+          "stopped"
+        ],
+        "trace": [
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": false
+          },
+          {
+            "destination": [
+              2752,
+              2624,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": true
+          },
+          {
+            "destination": [
+              2752,
+              2624,
+              0
+            ],
+            "head": [
+              2752,
+              2624,
+              0
+            ],
+            "moving": true
+          },
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              2752,
+              2624,
+              0
+            ],
+            "moving": true
+          },
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": true
+          },
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": false
+          }
+        ]
+      }
+    },
+    {
+      "actions": [
+        "head"
+      ],
+      "output": {
+        "events": [
+          [
+            "ground_input",
+            [
+              2496,
+              2624,
+              0
+            ]
+          ],
+          [
+            "ground_input",
+            [
+              2752,
+              2624,
+              0
+            ]
+          ],
+          [
+            "ground_input",
+            [
+              2752,
+              2624,
+              0
+            ]
+          ],
+          "owner"
+        ],
+        "trace": [
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": false
+          },
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              2752,
+              2624,
+              0
+            ],
+            "moving": false
+          }
+        ]
+      }
+    },
+    {
+      "actions": [
+        "head",
+        "move"
+      ],
+      "output": {
+        "events": [
+          [
+            "ground_input",
+            [
+              2496,
+              2624,
+              0
+            ]
+          ],
+          [
+            "ground_input",
+            [
+              2752,
+              2624,
+              0
+            ]
+          ],
+          [
+            "ground_input",
+            [
+              2752,
+              2624,
+              0
+            ]
+          ],
+          "owner"
+        ],
+        "trace": [
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              0,
+              0,
+              0
+            ],
+            "moving": false
+          },
+          {
+            "destination": [
+              0,
+              0,
+              0
+            ],
+            "head": [
+              2752,
+              2624,
+              0
+            ],
+            "moving": false
+          },
+          {
+            "destination": [
+              2752,
+              2624,
+              0
+            ],
+            "head": [
+              2752,
+              2624,
+              0
+            ],
+            "moving": true
+          }
+        ]
+      }
+    }
+  ],
   "producer": [
     {
       "input": {

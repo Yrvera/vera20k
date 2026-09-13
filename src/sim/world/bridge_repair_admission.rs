@@ -156,57 +156,104 @@ mod tests {
 
     #[test]
     fn aircraft_nonzero_mode_skips_shroud_requirements_after_team_effects() {
+        for kind in [
+            LocomotorKind::Fly,
+            LocomotorKind::Jumpjet,
+            LocomotorKind::Rocket,
+            LocomotorKind::Teleport,
+        ] {
+            let (mut sim, rules, _) = super::super::super::tests::fixture();
+            let id = sim
+                .spawn_object(
+                    "HORNET",
+                    "Americans",
+                    17,
+                    15,
+                    0,
+                    &rules,
+                    &std::collections::BTreeMap::new(),
+                )
+                .unwrap();
+            let mut entity = sim.substrate.entities.get(id).unwrap().clone();
+            let mut object = rules.object("HORNET").unwrap().clone();
+            object.locomotor = kind;
+            entity.locomotor = Some(
+                crate::sim::movement::locomotor::LocomotorState::from_object_type(&object, 0, 0),
+            );
+            // A shared dummy cannot satisfy mode0's all-real projection proof.
+            let probe = |sim: &mut Simulation| {
+                aircraft_effect_quotient(
+                    &LivePublication {
+                        sim,
+                        rules: &rules,
+                        registry: None,
+                        collapsed: false,
+                    },
+                    &entity,
+                    Cell::Dummy,
+                )
+            };
+            sim.session.game_mode_nonzero = false;
+            assert!(probe(&mut sim).unwrap_err().contains("shared-dummy"));
+            sim.session.game_mode_nonzero = true;
+            assert_eq!(probe(&mut sim), Ok(false));
+            let script_id = sim.intern("REPAIR_WAYPOINT_EFFECT");
+            sim.team_script_vm
+                .register_script(crate::sim::team_script_vm::TeamScriptDefinition {
+                    id: script_id,
+                    actions: vec![crate::sim::team_script_vm::TeamScriptAction {
+                        action_id: 3,
+                        argument: 0,
+                    }],
+                    source: crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd,
+                });
+            sim.team_script_vm.create_team(
+                entity.owner(),
+                script_id,
+                vec![id],
+                None,
+                sim.session.binary_frame as i32,
+            );
+            assert!(
+                probe(&mut sim).unwrap_err().contains("action3"),
+                "mode cannot bypass the earlier Team receiver"
+            );
+        }
+    }
+
+    #[test]
+    fn aircraft_quotient_requires_one_of_the_four_proved_interfaces() {
         let (mut sim, rules, _) = super::super::super::tests::fixture();
-        let id = sim
-            .spawn_object(
-                "HORNET",
-                "Americans",
-                17,
-                15,
-                0,
-                &rules,
-                &std::collections::BTreeMap::new(),
-            )
-            .unwrap();
-        let entity = sim.substrate.entities.get(id).unwrap().clone();
-        // A shared dummy cannot satisfy mode0's all-real projection proof.
-        let probe = |sim: &mut Simulation| {
-            aircraft_effect_quotient(
+        sim.session.game_mode_nonzero = true;
+        for kind in [
+            None,
+            Some(LocomotorKind::Walk),
+            Some(LocomotorKind::Drive),
+            Some(LocomotorKind::Ship),
+            Some(LocomotorKind::Hover),
+            Some(LocomotorKind::Mech),
+        ] {
+            let mut entity = GameEntity::test_default(90, "HORNET", "Americans", 17, 15);
+            entity.locomotor = kind.map(|kind| {
+                let mut object = rules.object("HORNET").unwrap().clone();
+                object.locomotor = kind;
+                crate::sim::movement::locomotor::LocomotorState::from_object_type(&object, 0, 0)
+            });
+            let result = aircraft_effect_quotient(
                 &LivePublication {
-                    sim,
+                    sim: &mut sim,
                     rules: &rules,
                     registry: None,
                     collapsed: false,
                 },
                 &entity,
                 Cell::Dummy,
-            )
-        };
-        sim.session.game_mode_nonzero = false;
-        assert!(probe(&mut sim).unwrap_err().contains("shared-dummy"));
-        sim.session.game_mode_nonzero = true;
-        assert_eq!(probe(&mut sim), Ok(false));
-        let script_id = sim.intern("REPAIR_WAYPOINT_EFFECT");
-        sim.team_script_vm
-            .register_script(crate::sim::team_script_vm::TeamScriptDefinition {
-                id: script_id,
-                actions: vec![crate::sim::team_script_vm::TeamScriptAction {
-                    action_id: 3,
-                    argument: 0,
-                }],
-                source: crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd,
-            });
-        sim.team_script_vm.create_team(
-            entity.owner(),
-            script_id,
-            vec![id],
-            None,
-            sim.session.binary_frame as i32,
-        );
-        assert!(
-            probe(&mut sim).unwrap_err().contains("action3"),
-            "mode cannot bypass the earlier Team receiver"
-        );
+            );
+            assert!(
+                result.unwrap_err().contains("constant-false AtCoord"),
+                "{kind:?}"
+            );
+        }
     }
 
     fn unit_fixture(flags: &str, blocker_category: EntityCategory) -> (Simulation, RuleSet, Cell) {
@@ -1318,7 +1365,9 @@ pub(super) fn impassable(
 }
 
 /// Aircraft4196B0's answer is ignored by the first487A3B pass (kind2 damage).
-/// The neighbor pass cannot query active Fly: its+A0 is constantfalse4B6630.
+/// Fly, Jumpjet, Rocket and Teleport have constantfalse+A0 (4B6630), so
+/// their neighbor pass skips admission. See LIVE_REPAIR_AIRCRAFT_RECEIVER.md
+/// and the eight original false-query cases in locomotor_at_coord.json.
 /// With no possible Team waypoint lookup, nonzero GameMode skips586360.
 /// In mode0, every potential586360 lookup must be real so both client-local
 /// predicate outcomes have the same gameplay effects. Never stamp a dummy
@@ -1328,12 +1377,16 @@ fn aircraft_effect_quotient(
     entity: &GameEntity,
     cell: Cell,
 ) -> Result<bool, String> {
-    if entity
-        .locomotor
-        .as_ref()
-        .is_none_or(|l| l.kind != LocomotorKind::Fly)
-    {
-        return Err("repair Aircraft requires active Fly".into());
+    if entity.locomotor.as_ref().is_none_or(|l| {
+        !matches!(
+            l.kind,
+            LocomotorKind::Fly
+                | LocomotorKind::Jumpjet
+                | LocomotorKind::Rocket
+                | LocomotorKind::Teleport
+        )
+    }) {
+        return Err("repair Aircraft requires a proved constant-false AtCoord family".into());
     }
     //Team6EC300 only invokes waypoint578460 for action3 at the raw cursor.
     //Do not use completed/refusal/advance_pending to skip that native read.

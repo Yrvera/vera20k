@@ -491,7 +491,15 @@ impl LocomotorState {
         }
     }
 
-    /// MoveTo/Stop change destination only; a paid head survives either call.
+    pub(crate) fn walk_is_moving(&self) -> Option<bool> {
+        match (self.kind, &self.runtime_payload) {
+            (LocomotorKind::Walk, LocomotorRuntimePayload::Walk(state)) => Some(state.moving),
+            _ => None,
+        }
+    }
+
+    /// MoveTo/Stop keep a paid head. Their IsMoving byte survives a null
+    ///destination while that head exists (75AD77 /75ADE9).
     pub(crate) fn set_walk_destination(
         &mut self,
         coord: Option<crate::sim::components::DriveCoord>,
@@ -500,6 +508,11 @@ impl LocomotorState {
             (self.kind, &mut self.runtime_payload)
         {
             state.destination = coord.filter(|c| c.x != 0 || c.y != 0 || c.z != 0);
+            if state.destination.is_some() {
+                state.moving = true;
+            } else if state.head.is_none() {
+                state.moving = false;
+            }
         }
     }
 

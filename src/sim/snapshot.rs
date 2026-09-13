@@ -477,7 +477,9 @@ use crate::sim::world::Simulation;
 // v153 retains full Walk/Hover committed head XYZ on the locomotor instance.
 // Raw Infantry owner slots now retain the mark-time house index, not entity IDs.
 // Walk also retains the order-time destination XYZ independently of the A* endpoint.
-const SNAPSHOT_VERSION: u32 = 153;
+// v154 retains Walk's independent IsMoving byte through head retirement,
+// callbacks and saved locomotor instances (75AB30 /75AD5A /75ADE9).
+const SNAPSHOT_VERSION: u32 = 154;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3306,7 +3308,7 @@ mod tests {
         // 146 -> 147: retain Scenario+214 for subsequent native constructors.
         // 150 -> 151: Foot also owns applied speed independently of its locomotor.
         // 151 -> 152: Foot occupation enable and pending fresh Apply1 obligation.
-        assert_eq!(super::SNAPSHOT_VERSION, 153);
+        assert_eq!(super::SNAPSHOT_VERSION, 154);
     }
 
     #[test]

@@ -7,6 +7,60 @@ use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::object_type::{ObjectCategory, ObjectType, PipScale};
 use crate::util::fixed_math::{SIM_ONE, SimFixed, sim_from_f32};
 
+#[test]
+fn walk_moving_byte_matches_original_setter_and_head_lifetime_traces() {
+    use crate::sim::components::DriveCoord;
+    let native: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/walk_head_occupation.json"
+    ))
+    .unwrap();
+    let cases = native["moving"].as_array().unwrap();
+    assert_eq!(cases.len(), 8);
+    let coord = DriveCoord {
+        x: 2752,
+        y: 2624,
+        z: 0,
+    };
+    let xyz = |value: Option<DriveCoord>| value.map_or([0, 0, 0], |c| [c.x, c.y, c.z]);
+    for case in cases {
+        let mut loco = LocomotorState::from_object_type(
+            &make_obj(LocomotorKind::Walk, ObjectCategory::Infantry),
+            0,
+            0,
+        );
+        let actions = case["actions"].as_array().unwrap();
+        let trace = case["output"]["trace"].as_array().unwrap();
+        assert_eq!(trace.len(), actions.len() + 1);
+        for (index, expected) in trace.iter().enumerate() {
+            if index > 0 {
+                match actions[index - 1].as_str().unwrap() {
+                    "move" => loco.set_walk_destination(Some(coord)),
+                    "stop" => loco.set_walk_destination(None),
+                    // Supplied private-head transitions isolate this byte's
+                    // lifetime; production placement/raw has its own corpus.
+                    "head" => loco.set_step_head(Some(coord)),
+                    "retire" => loco.set_step_head(None),
+                    action => panic!("unknown original action {action}"),
+                }
+            }
+            assert_eq!(
+                serde_json::json!({
+                    "moving": loco.walk_is_moving().unwrap(),
+                    "destination": xyz(loco.walk_destination()),
+                    "head": xyz(loco.step_head()),
+                }),
+                *expected,
+                "{case} at {index}"
+            );
+            // A null destination/head with moving=true is a real callback
+            // state, so persistence must not infer this byte from either.
+            let restored: LocomotorState =
+                serde_json::from_str(&serde_json::to_string(&loco).unwrap()).unwrap();
+            assert_eq!(restored.walk_is_moving(), loco.walk_is_moving());
+        }
+    }
+}
+
 /// Helper to create a minimal ObjectType with the given locomotor.
 fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
     ObjectType {

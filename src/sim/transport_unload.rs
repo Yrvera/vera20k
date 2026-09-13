@@ -401,6 +401,7 @@ fn find_nearby_passable_for(
             .map_or(obj.speed_type, |loco| loco.speed_type)
     });
     let query = NearbyQuery {
+        raw_occupation: None,
         passability: PassabilityArgs {
             speed_type,
             required_zone_id: None,

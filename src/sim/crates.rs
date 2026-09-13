@@ -1159,6 +1159,7 @@ fn snap_to_passable_with_radius(
     radius_cap: u16,
 ) -> Option<(u16, u16)> {
     let query = NearbyQuery {
+        raw_occupation: None,
         passability: PassabilityArgs {
             // Verified: the placer passes native speed type 5 (float) when the
             // drawn cell is water and 1 (track) otherwise.

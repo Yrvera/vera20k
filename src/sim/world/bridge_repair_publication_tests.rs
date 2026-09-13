@@ -854,6 +854,10 @@ fn ready_engineer(
     e.navigation.nav_com = Some(NavTargetRef::Building { id: hut });
     e.capture_target = Some(hut);
     let head = DriveCoord::cell(16, 15, 0);
+    e.locomotor
+        .as_mut()
+        .unwrap()
+        .set_walk_destination(Some(head));
     sim.run_walk_boundary(id, head, Some(rules), None, Some(registry));
     sim.substrate
         .entities

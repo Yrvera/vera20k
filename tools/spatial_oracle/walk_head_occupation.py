@@ -15,6 +15,7 @@ from tools.spatial_oracle.map_queries import dwords, packed
 
 CELL, INPUT, OUTPUT, OWNER, VTABLE, OWNER_GET, BUILDING, TYPE, SCENARIO = [SCRATCH+i*0x1000 for i in range(9)]
 CURRENT,LOCO,MISSION_GET=SCRATCH+9*0x1000,SCRATCH+10*0x1000,SCRATCH+11*0x1000
+FALSE_GET,STOP_EVENT=SCRATCH+12*0x1000,SCRATCH+13*0x1000
 MAP,TABLE,DUMMY=0x87F7E8,0xC00000,0xABDC50
 OFFSETS=[(128,128,0),(64,64,0),(192,64,0),(64,192,0),(192,192,0)]
 
@@ -46,6 +47,10 @@ class Original:
         u.mem_write(VTABLE+0x184,dwords(MISSION_GET))
         u.mem_write(VTABLE+0xf0,dwords(0x5217C0))
         u.mem_write(VTABLE+0xf4,dwords(0x521850))
+        u.mem_write(VTABLE+0x1d4,dwords(FALSE_GET))
+        u.mem_write(VTABLE+0x1d8,dwords(FALSE_GET))
+        u.mem_write(VTABLE+0x37c,dwords(FALSE_GET))
+        u.mem_write(VTABLE+0x54c,dwords(STOP_EVENT))
         u.mem_write(LOCO+0xc,dwords(OWNER))
         u.mem_write(0xB45BE8,dwords(0,0,0))
         u.mem_write(0xB45C28,dwords(104))
@@ -66,6 +71,11 @@ class Original:
     def observe(self,u,address,size,data):
         sp=u.reg_read(UC_X86_REG_ESP)
         if address==MISSION_GET:
+            self.ret(0,0)
+        elif address==FALSE_GET:
+            self.ret(0,0)
+        elif address==STOP_EVENT:
+            self.events.append('stopped')
             self.ret(0,0)
         elif address==OWNER_GET:
             self.events.append('owner')
@@ -127,6 +137,33 @@ class Original:
             ground=self.read32(CELL+0x124)&255,deck=self.read32(CELL+0x128)&255,
             owners=[self.read32(CELL+0x54),self.read32(CELL+0x58)],events=self.events)
 
+    def moving(self,actions):
+        u=self.uc
+        self.setup(dict(input=[2752,2624,0],ground=0,deck=0,level=0,slope=0))
+        self.call(0x75AA90,LOCO,[])
+        u.mem_write(LOCO+0xc,dwords(OWNER))
+        u.mem_write(OWNER+0x9c,dwords(2496,2624,0))
+        u.mem_write(OWNER+0x81,b'\0');u.mem_write(OWNER+0x90,b'\1')
+        u.mem_write(OWNER+0x2dc,dwords(0));u.mem_write(OWNER+0x5a4,dwords(0))
+        u.mem_write(CURRENT+0x11b,b'\0\0')
+        trace=[]
+        def snapshot():
+            self.call(0x75AB30,0,[LOCO+4])
+            result=bool(u.reg_read(UC_X86_REG_EAX)&255)
+            assert result==bool(u.mem_read(LOCO+0x34,1)[0])
+            return dict(moving=result,
+                destination=list(struct.unpack('<iii',u.mem_read(LOCO+0x1c,12))),
+                head=list(struct.unpack('<iii',u.mem_read(LOCO+0x28,12))))
+        trace.append(snapshot())
+        for action in actions:
+            if action=='move': self.call(0x75ACB0,0,[LOCO+4,2752,2624,0])
+            elif action=='stop': self.call(0x75ADA0,0,[LOCO+4])
+            elif action=='head': self.call(0x75C240,LOCO,[INPUT])
+            elif action=='retire': self.call(0x75C240,LOCO,[0xB45BE8])
+            else: raise AssertionError(action)
+            trace.append(snapshot())
+        return dict(trace=trace,events=self.events)
+
 def generate():
     native=Original();selection=[];raw=[];producer=[]
     for xy in [(128,128),(192,64),(64,192),(192,192)]:
@@ -149,19 +186,26 @@ def generate():
         row=dict(input=[2752,2624,260],current=[2496,2624,260],
             ground=ground,deck=0,structural=False,owner=99,seed=31,level=2,slope=1)
         producer.append(dict(input=row,output=native.producer(row)))
-    return dict(selection=selection,raw=raw,producer=producer)
+    moving=[]
+    for actions in [[],['move'],['move','stop'],['move','head','stop'],
+        ['move','head','stop','retire'],['move','head','stop','retire','stop'],
+        ['head'],['head','move']]:
+        moving.append(dict(actions=actions,output=Original().moving(actions)))
+    return dict(selection=selection,raw=raw,producer=producer,moving=moving)
 
 if __name__=='__main__':
     finish_vectors(generate,Path(__file__).with_suffix('.json'),provenance=lambda:provenance(
         scope='Bounded original infantry placement/raw leaves and no-target Walk75C240 producer, not complete Walk movement or repair admission',
         assumptions=['Allocated destination Cell(10,10) and producer current Cell(9,10) with supplied signed level/slope and raw bytes/house indices',
-        'Supplied initialized subcell offsets and height steps104/416; runtime constructors are excluded',
+        'Supplied initialized subcell offsets and height steps104/416; map/owner constructors are excluded',
         '75C240 producer uses no-target/no-slave owner, no crate overlays and original raw/placement callees',
         '481180 receives final argument0 (use incoming coordinate); both priority and plane choices are supplied',
         'Original map lookup,578080/47B3A0 ground calculation and seeded Scenario Random execute',
-        'Sloped input and selected XY intentionally differ; returned Z comes from actual original body'],
+        'Sloped input and selected XY intentionally differ; returned Z comes from actual original body',
+        'Moving traces execute original Walk constructor75AA90, MoveTo75ACB0, Stop75ADA0 and FindSubCellDest75C240 on a flat nonstructural cell; private head calls are supplied states, not whole movement execution'],
         substitutions=['47C4D0 ground building lookup supplies missing or Gate object;4525F0 supplies closed/open result',
         'Producer Infantry+184 supplies mission0 (Sleep); no target/slave pointer is installed',
+        'Moving traces supply false owner+37C/+1D4/+1D8 predicates and observe owner+54C as a no-op callback; no claim for those receiver side effects',
         'Events observe gate/owner/ground seams only; inline RandomRanged65C7E0 is verified by random_indices, not an event marker',
         'Infantry+38 supplies mark-time owner index; raw bitmap and owner writes execute unmodified'],
-        entry_points={'producer':0x75C240,'placement':0x481180,'raw_mark':0x5217C0,'raw_clear':0x521850,'random_seed':0x65C6D0,'ground':0x578080}))
+        entry_points={'producer':0x75C240,'placement':0x481180,'raw_mark':0x5217C0,'raw_clear':0x521850,'random_seed':0x65C6D0,'ground':0x578080,'walk_constructor':0x75AA90,'walk_move_to':0x75ACB0,'walk_stop':0x75ADA0,'walk_is_moving':0x75AB30}))

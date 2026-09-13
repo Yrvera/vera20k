@@ -508,6 +508,7 @@ fn nearby_query_for_naval_unit_delivery<'a>(
     };
     let (size_width, size_height) = map_size?;
     Some(NearbyQuery {
+        raw_occupation: None,
         passability: PassabilityArgs {
             // Unit vtable +0x84 -> +0x88 -> UnitType+0x67C.
             speed_type,
@@ -1185,6 +1186,7 @@ fn nearby_query_for_spawn<'a>(
         movement_profile.movement_zone
     };
     Some(NearbyQuery {
+        raw_occupation: None,
         passability: PassabilityArgs {
             speed_type: movement_profile.speed_type,
             required_zone_id: None,
@@ -3383,6 +3385,7 @@ mod tests {
         };
 
         let q = NearbyQuery {
+            raw_occupation: None,
             passability: PassabilityArgs {
                 speed_type: movement_profile.speed_type,
                 required_zone_id: None,

@@ -75,6 +75,10 @@ pub struct LocomotorCommonRuntime {
 pub struct WalkRuntime {
     pub head: Option<crate::sim::components::DriveCoord>,
     pub destination: Option<crate::sim::components::DriveCoord>,
+    /// Full object+34 / interface+30, read by IsMoving75AB30. Constructor
+    ///75AAD3 clears; MoveTo75AD5A sets; null MoveTo/Stop clear only with no
+    ///head. FindSubCellDest's head retirement does not change this byte.
+    pub moving: bool,
 }
 
 /// Class-local state that travels with the locomotor object.
