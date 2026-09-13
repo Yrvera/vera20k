@@ -1,6 +1,7 @@
 // Original gamemd582D70, full581F90 / local584550 callers, path walk429780.
 // Evidence: PHASE3_TUBE_HIERARCHY_20260910.md and spatial_oracle/tube_hierarchy.
 
+#[cfg(test)]
 fn register_high_bridge_hierarchy_edges(
     edge_buckets: &mut HierarchyEdgeBuckets,
     zone_ids: &[ZoneId],
@@ -25,6 +26,7 @@ fn register_high_bridge_hierarchy_edges(
     }
 }
 
+#[cfg(test)]
 fn register_bridge_hierarchy_edges_for_record(
     edge_buckets: &mut HierarchyEdgeBuckets,
     zone_ids: &[ZoneId],
@@ -33,6 +35,18 @@ fn register_bridge_hierarchy_edges_for_record(
     width: u16,
     height: u16,
     source_size: Option<(i32, i32)>,
+) {
+    debug_assert_eq!(zone_ids.len(), usize::from(width) * usize::from(height));
+    register_bridge_hierarchy_edges_with_lookup(edge_buckets, terrain, record, &mut |coord| {
+        bridge_endpoint_base_zone(zone_ids, width, source_size, coord).unwrap_or(0)
+    });
+}
+
+fn register_bridge_hierarchy_edges_with_lookup(
+    edge_buckets: &mut HierarchyEdgeBuckets,
+    terrain: &ResolvedTerrainGrid,
+    record: &BridgeEndpointRecord,
+    zone_at: &mut impl FnMut((u16, u16)) -> ZoneId,
 ) {
     use crate::sim::cell_rect::{CellRef, get_cellclass_fallback};
     let a = record.endpoint_a;
@@ -81,10 +95,9 @@ fn register_bridge_hierarchy_edges_for_record(
         };
         (side, opposite, far_side, far_opposite)
     };
-    debug_assert_eq!(zone_ids.len(), usize::from(width) * usize::from(height));
     for (from, to) in [(a, b), (side_a, side_b), (opposite_a, opposite_b)] {
-        let from = bridge_endpoint_base_zone(zone_ids, width, source_size, from).unwrap_or(0);
-        let to = bridge_endpoint_base_zone(zone_ids, width, source_size, to).unwrap_or(0);
+        let from = zone_at(from);
+        let to = zone_at(to);
         register_native_hierarchy_pair(edge_buckets, from, to, 0);
     }
 }

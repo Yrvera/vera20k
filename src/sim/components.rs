@@ -304,6 +304,11 @@ impl NavTargetRef {
 /// `MovementTarget`, which is only the active execution path.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct NavigationState {
+    /// Foot-owned direction replay and reference cell (+5E0/+558), shared by
+    /// every locomotor instance. Retirement must not discard the owner queue.
+    /// Native chain tails reload the owner at Drive4B1DF7 / Ship6A143A.
+    #[serde(default)]
+    pub path_replay: FootPathQueue,
     #[serde(default)]
     pub nav_com_aux: Option<NavTargetRef>,
     #[serde(default)]
@@ -339,49 +344,66 @@ impl DriveCoord {
     }
 }
 
-/// DriveLocomotion-owned path direction cursor.
+/// Foot-owned path replay. Native shifts a 24-dword queue on consumption;
+/// Rust retains the consumed prefix with an explicit cursor. Consumers must
+/// interpret the remaining suffix, not vector emptiness, as the native queue.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct DrivePathQueue {
-    /// Native `Foot+0x5E0`: a 24-entry direction array, codes 0..=7 plus the
-    /// tube sentinel 8, terminated by `-1`. `FootClass::Find_Path` @ `0x004D3920`
-    /// copies `min(count, 0x18 - prefix)` dwords into it at `0x004D3E98`, and
-    /// `AStar_reconstruct_path` @ `0x0042AA90` is what produces the codes —
-    /// octant from the 3×3 delta table for an adjacent hop, literal `8` for any
-    /// non-adjacent one.
+pub struct FootPathQueue {
+    /// Foot+5E0: octants0..7, explicit tube direction8, native -1 terminator.
+    /// Find_Path4D3E98 writes it; Drive/Ship movement consumes the same owner
+    /// memory, independently of which locomotor is currently installed.
     #[serde(default)]
     pub directions: Vec<u8>,
-    /// **VERA-internal representation, gamemd equivalent UNCHECKED.** Native has
-    /// no cursor: each locomotor's `Process_Movement` pops by `REP MOVSD`
-    /// (`0x004B45F6` for one entry, `0x004B45CB` for two) and writes `-1` into
-    /// the freed tail slots, so "queue exhausted" is literally `[+0x5E0] == -1`.
-    /// This advances an index and leaves the consumed prefix in place, so
-    /// `directions.is_empty()` is **not** the native predicate. Trigger: a
-    /// fully-consumed queue. Player effect: none today — `movement_step` clears
-    /// the queue on `next_index >= path.len()` before either reader sees it.
-    /// Frequency: zero while that clear holds. Downstream risk: the two
-    /// `!directions.is_empty()` readers diverge the moment the queue and
-    /// `MovementTarget` are allowed to disagree — which for **Ship** has
-    /// already happened: `navcom` marks ship exhaustion by setting
-    /// `cursor = directions.len()` and deliberately leaving `directions`
-    /// populated, and the drive-side clear in `movement_step` never touches
-    /// `ship_locomotion.path`. Trigger: an exhausted ship path. Player effect:
-    /// unmeasured — the branch's first act is the `next_index >= path.len()`
-    /// return, so no naval symptom is traced. Frequency: every ship that
-    /// finishes a path. Downstream risk: the predicate is wrong today and only
-    /// a later guard keeps it harmless.
     #[serde(default)]
     pub cursor: u16,
-    /// Native FootClass path-reference cell (`+0x558`). Drive advances this
-    /// when it accepts a path direction, before the curve physically crosses
-    /// into the destination cell.
+    /// Foot+558. Fresh acceptance writes this reference (4B4618/6A3C47);
+    /// chain consumption preserves it (4B1DF7/6A143A).
     #[serde(default)]
     pub reference_cell: Option<(i16, i16)>,
 }
 
-/// ShipLocomotion-owned destination, committed head, speed, and path replay state.
+impl FootPathQueue {
+    /// Native queue emptiness tests the unconsumed head, not retained history.
+    pub(crate) fn remaining_directions(&self) -> &[u8] {
+        let suffix = &self.directions[usize::from(self.cursor).min(self.directions.len())..];
+        &suffix[..suffix
+            .iter()
+            .position(|&direction| direction == u8::MAX)
+            .unwrap_or(suffix.len())]
+    }
+
+    /// Drive4B224F/Ship6A1899 overwrites the live queue head with -1 after
+    /// terminal PerCell2, preserving the backing suffix and reference cell.
+    pub(crate) fn clear_live_head(&mut self) {
+        let cursor = usize::from(self.cursor).min(self.directions.len());
+        if cursor == self.directions.len() {
+            self.directions.push(u8::MAX);
+        } else {
+            self.directions[cursor] = u8::MAX;
+        }
+    }
+}
+
+/// Foot-owned applied speed, shared by every installed locomotor instance.
 ///
-/// Ships share the ordinary TurnTrack/RawTrack curves, target/applied speed
-/// fractions, and cached owner-speed result with Drive, but do not own Drive's
+/// SetSpeedFraction4D3710 writes Foot+578/+57C; GetCurrentSpeed4DB1A0 reads
+/// that fraction. Drive4AF540/Ship69EC50 constructors and DriveEND4AF930 do
+/// not own or reset it. Keep this outside both class payloads so a synchronous
+/// callback can replace a locomotor without replacing the owner's speed.
+/// Original executable witnesses: tools/spatial_oracle/foot_speed_owner.json.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct FootSpeedState {
+    pub applied_fraction: SimFixed,
+    /// Existing Rust adapter cache of GetCurrentSpeed, not a native field.
+    /// Its producers use the movement request's adjusted type speed. The full
+    /// Process host must query live owner/type modifiers at native call sites.
+    pub cached_current_speed: i32,
+}
+
+/// ShipLocomotion-owned destination, committed head, and target speed state.
+///
+/// Ships share the ordinary TurnTrack/RawTrack curves and target fraction
+/// with Drive, but do not own Drive's
 /// tube, forced-track, or raw-occupation state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ShipLocomotionRuntime {
@@ -390,14 +412,17 @@ pub struct ShipLocomotionRuntime {
     #[serde(default)]
     pub head_to: Option<DriveCoord>,
     #[serde(default)]
-    pub path: DrivePathQueue,
+    pub track: TrackProgress,
+    /// Accepted fresh head awaits its Process-owned Apply1 receiver. Persist
+    /// this obligation across save/rollback; cursor zero cannot infer it.
+    #[serde(default)]
+    pub pending_track_occupation: bool,
     #[serde(default)]
     pub target_speed_fraction: SimFixed,
     #[serde(default)]
-    pub current_speed_fraction: SimFixed,
-    /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
+    pub occupation_head_to: Option<DriveOccupationFootprint>,
     #[serde(default)]
-    pub owner_current_speed: i32,
+    pub occupation_handoff: Option<DriveOccupationFootprint>,
 }
 
 /// Drive-owned 16-bit facing target and first-movement gate.
@@ -415,8 +440,30 @@ pub struct DriveTurnState {
     pub first_movement_allowed: bool,
 }
 
-fn default_drive_track_index() -> i16 {
-    -1
+/// One active Drive/Ship locomotor's retained track selector, signed cursor,
+/// short-track choice and residual (+58/+5C/+60/+4C). Curve geometry and a
+/// temporary Process_Track call must not own serialized copies of this state.
+/// Native evidence: tools/spatial_oracle/locomotor_track_cursor.json.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct TrackProgress {
+    pub turn_index: i32,
+    /// Next-to-consume cursor. Drive constructor4AF5A6/4AF5A9 and Ship
+    /// constructor69ECB6/69ECB9 initialize selector/cursor to -1;
+    /// fresh/forced acceptance and completion retirement instead store zero.
+    pub cursor: i32,
+    pub reversed: bool,
+    pub residual: i32,
+}
+
+impl Default for TrackProgress {
+    fn default() -> Self {
+        Self {
+            turn_index: -1,
+            cursor: -1,
+            reversed: false,
+            residual: 0,
+        }
+    }
 }
 
 /// Drive-owned occupation mark installed ahead of the live object-list cell.
@@ -442,26 +489,22 @@ pub struct DriveLocomotionRuntime {
     #[serde(default)]
     pub head_to: Option<DriveCoord>,
     #[serde(default)]
-    pub path: DrivePathQueue,
-    #[serde(default)]
     pub turn: DriveTurnState,
-    #[serde(default = "default_drive_track_index")]
-    pub track_index: i16,
     #[serde(default)]
-    pub point_index: u16,
+    pub track: TrackProgress,
+    /// Accepted fresh head awaits its Process-owned Apply1 receiver. Persist
+    /// this obligation across save/rollback; cursor zero cannot infer it.
+    #[serde(default)]
+    pub pending_track_occupation: bool,
+    /// Drive+65, seeded true at constructor4AF5BB. Native4B4BE0/4B4BF0
+    /// disable/enable END while Foot Find_Path removes a Team membership.
+    /// No production Rust writer models that synchronous pair yet.
+    #[serde(default = "drive_end_permitted_default")]
+    pub end_permitted: bool,
     #[serde(default)]
     pub track_valid: bool,
     #[serde(default)]
-    pub is_reversed: bool,
-    #[serde(default)]
     pub target_speed_fraction: SimFixed,
-    #[serde(default)]
-    pub current_speed_fraction: SimFixed,
-    /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
-    #[serde(default)]
-    pub owner_current_speed: i32,
-    #[serde(default)]
-    pub residual_budget: i32,
     /// Head-to vehicle-occupation mark, independent from CellClass object-list
     /// membership. Ordinary flat Drive installs one mark for its accepted next
     /// cell before any paid track point is consumed.
@@ -475,10 +518,10 @@ pub struct DriveLocomotionRuntime {
     /// turning mover is about to drive through looks free to every other mover.
     #[serde(default)]
     pub occupation_handoff: Option<DriveOccupationFootprint>,
-    /// A paid within-cell Drive point clears the current-coordinate occupation
-    /// bit before committing coordinates. Entering a new cell marks it again.
-    #[serde(default)]
-    pub current_occupation_cleared: bool,
+}
+
+fn drive_end_permitted_default() -> bool {
+    true
 }
 
 impl Default for DriveLocomotionRuntime {
@@ -486,19 +529,14 @@ impl Default for DriveLocomotionRuntime {
         Self {
             destination: None,
             head_to: None,
-            path: DrivePathQueue::default(),
             turn: DriveTurnState::default(),
-            track_index: -1,
-            point_index: 0,
+            track: TrackProgress::default(),
+            pending_track_occupation: false,
+            end_permitted: true,
             track_valid: false,
-            is_reversed: false,
             target_speed_fraction: SIM_ZERO,
-            current_speed_fraction: SIM_ZERO,
-            owner_current_speed: 0,
-            residual_budget: 0,
             occupation_head_to: None,
             occupation_handoff: None,
-            current_occupation_cleared: false,
         }
     }
 }
@@ -1229,17 +1267,19 @@ mod tests {
         let drive = DriveLocomotionRuntime::default();
         assert_eq!(drive.destination, None);
         assert_eq!(drive.head_to, None);
-        assert!(drive.path.directions.is_empty());
-        assert_eq!(drive.path.cursor, 0);
+        let navigation = NavigationState::default();
+        assert!(navigation.path_replay.directions.is_empty());
+        assert_eq!(navigation.path_replay.cursor, 0);
         assert_eq!(drive.turn.target_direction, None);
-        assert_eq!(drive.track_index, -1);
-        assert_eq!(drive.point_index, 0);
+        assert_eq!(drive.track.turn_index, -1);
+        assert_eq!(drive.track.cursor, -1);
         assert!(!drive.track_valid);
-        assert!(!drive.is_reversed);
+        assert!(!drive.track.reversed);
         assert_eq!(drive.target_speed_fraction, SIM_ZERO);
-        assert_eq!(drive.current_speed_fraction, SIM_ZERO);
-        assert_eq!(drive.owner_current_speed, 0);
-        assert_eq!(drive.residual_budget, 0);
+        let owner_speed = FootSpeedState::default();
+        assert_eq!(owner_speed.applied_fraction, SIM_ZERO);
+        assert_eq!(owner_speed.cached_current_speed, 0);
+        assert_eq!(drive.track.residual, 0);
     }
 
     #[test]
@@ -1261,9 +1301,8 @@ mod tests {
         let drive_a = DriveLocomotionRuntime::default();
         let mut drive_b = DriveLocomotionRuntime::default();
         drive_b.destination = Some(DriveCoord::cell(45, 40, 0));
-        drive_b.path.directions = vec![2, 2, 2];
         drive_b.turn.target_facing_16 = Some(0x4000);
-        drive_b.residual_budget = 6;
+        drive_b.track.residual = 6;
 
         assert_ne!(hash_drive(&drive_a), hash_drive(&drive_b));
     }

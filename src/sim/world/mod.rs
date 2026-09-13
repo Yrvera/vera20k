@@ -29,6 +29,7 @@ mod lifecycle;
 mod load_object_lifecycle;
 mod logic_vector;
 mod navigation;
+mod track_cell_recalc;
 mod object_turn;
 mod shroud_refresh;
 #[cfg(test)]
@@ -84,6 +85,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::events::EventMap;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::overlay::OverlayEntry;
+use crate::map::playfield::PlayfieldBounds;
 use crate::map::resolved_terrain::{
     RealCellBridgeFlags0x1180, ResolvedTerrainGrid, SharedCellDummy,
 };
@@ -798,10 +800,11 @@ pub struct Simulation {
     /// retention remains UNCHECKED.
     #[serde(skip, default = "deserialized_process_rng_placeholder")]
     pub(crate) mapgen_rng: SimRng,
-    /// Independent wrapping `AbstractClass+0x10` identity during fresh load.
+    /// Independent wrapping `AbstractClass+0x10` identity cursor, Scenario+214.
     /// Native numeric IDs may duplicate and are neither stable handles nor RNG.
-    /// They are load-transient until persistence behavior is separately proved.
-    #[serde(skip, default)]
+    /// Original689310/689470 preserve the cursor across save/load, including
+    ///683560's post-read Scenario reinitialization. See native_id_snapshot.
+    /// Runtime constructors still need to consume this shared continuation.
     pub(crate) native_unique_ids: Option<crate::sim::native_identity::NativeUniqueIdCursor>,
     /// `MapClass+0x134` (`0x0087F91C`) analogue: the wrapping signed total that
     /// authored `ScenarioClass::Full_Init @ 0x00686B20` stores from
@@ -822,7 +825,7 @@ pub struct Simulation {
     /// can consume the already-assigned IDs without recounting filtered facts.
     #[serde(skip, default)]
     pub(crate) native_map_tubes: crate::map::tubes::NativeMapTubesState,
-    /// Fresh-map-only OverlayClass registry/deferred-delete owner. These
+    /// Shared authored/runtime OverlayClass registry/deferred-delete owner. These
     /// ephemeral objects are neither gameplay objects nor snapshot/hash state.
     #[serde(skip, default)]
     pub(crate) load_objects: LoadObjectLifecycle,
@@ -1180,6 +1183,7 @@ pub(crate) struct SimulationAreaDamageCellPrelude<'a> {
     zone_grid: &'a mut Option<ZoneGrid>,
     path_grid: &'a mut Option<Arc<PathGrid>>,
     bridge_state: Option<&'a BridgeRuntimeState>,
+    playfield_bounds: Option<PlayfieldBounds>,
 }
 
 impl crate::sim::combat::combat_aoe::AoECellPrelude for SimulationAreaDamageCellPrelude<'_> {
@@ -1255,6 +1259,7 @@ impl crate::sim::combat::combat_aoe::AoECellPrelude for SimulationAreaDamageCell
             self.path_grid,
             terrain,
             self.bridge_state,
+            self.playfield_bounds,
             cell,
             navigation_changed,
             repair,
@@ -1282,6 +1287,7 @@ pub(crate) fn simulation_area_damage_cell_prelude<'a>(
     zone_grid: &'a mut Option<ZoneGrid>,
     path_grid: &'a mut Option<Arc<PathGrid>>,
     bridge_state: Option<&'a BridgeRuntimeState>,
+    playfield_bounds: Option<PlayfieldBounds>,
 ) -> SimulationAreaDamageCellPrelude<'a> {
     let amount = base_damage / 10;
     let tiberium_amount = (!scenario_no_damage
@@ -1305,6 +1311,7 @@ pub(crate) fn simulation_area_damage_cell_prelude<'a>(
         zone_grid,
         path_grid,
         bridge_state,
+        playfield_bounds,
     }
 }
 
@@ -1315,6 +1322,7 @@ pub(crate) fn repair_wall_damage_navigation_authorities(
     path_grid: &mut Option<Arc<PathGrid>>,
     terrain: &ResolvedTerrainGrid,
     bridge_state: Option<&BridgeRuntimeState>,
+    playfield_bounds: Option<PlayfieldBounds>,
     cell: (u16, u16),
     navigation_changed: bool,
     repair: WallZoneRepairKind,
@@ -1345,7 +1353,7 @@ pub(crate) fn repair_wall_damage_navigation_authorities(
         *zone_grid = None;
     }
     if let Some(zone_grid) = zone_grid.as_mut() {
-        let _ = zone_grid.refresh_base_movement_class_at(terrain, cell.0, cell.1);
+        let _ = zone_grid.refresh_base_cell_attributes_at(terrain, cell.0, cell.1);
         let bridge_records = bridge_state
             .map(BridgeRuntimeState::endpoint_records)
             .unwrap_or(&[]);
@@ -1358,21 +1366,20 @@ pub(crate) fn repair_wall_damage_navigation_authorities(
             PackedZoneCoord::new(cell.0 as i16, cell.1 as i16),
             repair,
             &tail_path_grid,
-            terrain_costs,
+            playfield_bounds,
             terrain,
             bridge_records,
         );
     } else {
-        *zone_grid = Some(ZoneGrid::build_with_native_bridge_geometry(
+        *zone_grid = Some(ZoneGrid::build_with_native_map_context(
             &tail_path_grid,
             terrain_costs,
-            Some(terrain),
+            terrain,
             bridge_state
                 .map(BridgeRuntimeState::endpoint_records)
                 .unwrap_or(&[]),
-            terrain.width(),
-            terrain.height(),
             bridge_geometry,
+            playfield_bounds,
         ));
     }
     *path_grid = Some(Arc::new(tail_path_grid));
@@ -1393,6 +1400,7 @@ pub(crate) struct SimulationWallRuntimeHost<'a> {
     pub(crate) zone_grid: &'a mut Option<ZoneGrid>,
     pub(crate) path_grid: &'a mut Option<Arc<PathGrid>>,
     pub(crate) bridge_state: Option<&'a BridgeRuntimeState>,
+    pub(crate) playfield_bounds: Option<PlayfieldBounds>,
 }
 
 impl WallDamageTransactionHost for SimulationWallRuntimeHost<'_> {
@@ -1420,6 +1428,7 @@ impl WallDamageTransactionHost for SimulationWallRuntimeHost<'_> {
             self.path_grid,
             terrain,
             self.bridge_state,
+            self.playfield_bounds,
             cell,
             navigation_changed,
             repair,
@@ -2049,6 +2058,7 @@ impl Simulation {
                                 zone_grid: &mut self.zone_grid,
                                 path_grid: &mut self.path_grid,
                                 bridge_state: self.bridge_state.as_ref(),
+                                playfield_bounds: self.playfield_bounds,
                             };
                             crate::sim::overlay_grid::damage_wall_overlay_with_runtime_host(
                                 grid,
@@ -3114,7 +3124,10 @@ impl Simulation {
                 .movement_target
                 .as_ref()
                 .map(|target| target.next_index),
-            track_point: entity.drive_track.as_ref().map(|track| track.point_index),
+            track_point: entity.drive_locomotion.as_ref().map(|state| &state.track)
+                .or_else(|| entity.ship_locomotion.as_ref().map(|state| &state.track))
+                .filter(|track| track.turn_index >= 0)
+                .and_then(|track| u16::try_from(track.cursor).ok()),
         })
     }
 
@@ -3579,7 +3592,7 @@ impl Simulation {
     /// Ordinary per-cell movement writer (`0x006F511A..0x006F5139`): only
     /// promote 0 -> 1. A unit that walks back outside retains membership until
     /// an exact writer (teleport or Set_Clipped_LocalSize) clears it.
-    fn promote_entity_playfield_membership_after_move(&mut self, stable_id: u64) {
+    pub(crate) fn promote_entity_playfield_membership_after_move(&mut self, stable_id: u64) {
         if self
             .substrate
             .entities
@@ -4795,6 +4808,7 @@ impl Simulation {
             terrain_costs: &mut self.terrain_costs,
             zones: &mut self.zone_grid,
             path: &mut self.path_grid,
+            playfield_bounds: self.playfield_bounds,
         }
         .rebuild_dynamic(
             terrain,
@@ -4871,6 +4885,7 @@ impl Simulation {
             terrain_costs: &mut self.terrain_costs,
             zones: &mut self.zone_grid,
             path: &mut self.path_grid,
+            playfield_bounds: self.playfield_bounds,
         }
         .rebuild_zones(path_grid, terrain, self.bridge_state.as_ref());
     }
@@ -4886,6 +4901,7 @@ impl Simulation {
             terrain_costs: &mut self.terrain_costs,
             zones: &mut self.zone_grid,
             path: &mut self.path_grid,
+            playfield_bounds: self.playfield_bounds,
         }
         .rebuild_zones_full(path_grid, terrain, self.bridge_state.as_ref());
     }
@@ -4967,6 +4983,7 @@ impl Simulation {
             &mut self.path_grid,
             terrain,
             bridge_state,
+            self.playfield_bounds,
             cell,
             navigation_changed,
             repair,
@@ -5025,6 +5042,7 @@ impl Simulation {
             zone_grid: &mut self.zone_grid,
             path_grid: &mut self.path_grid,
             bridge_state: self.bridge_state.as_ref(),
+            playfield_bounds: self.playfield_bounds,
         };
         for event in events {
             let _ = damage_wall_overlay_with_runtime_host(
@@ -5684,6 +5702,14 @@ impl Simulation {
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::PendingDelete);
         self.process_pending_delete();
+
+        // Original55DE9F calls725C70 at this admitted late-frame boundary.
+        // Stock bridge Overlay objects publish only Cell state; their isolated
+        // destructor has no gameplay-object callback effects and cannot allocate
+        // IDs. Drain the shared authored/runtime owner after gameplay objects.
+        self.load_objects
+            .drain_deferred()
+            .expect("live Overlay deferred queue must contain its owned objects");
 
         // Debug-mode safety net: rebuild occupancy after the drain so dead
         // structures are not reconstructed into the comparison.

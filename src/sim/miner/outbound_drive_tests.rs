@@ -477,16 +477,28 @@ fn assert_command_state(
     let expected_coord = DriveCoord::cell(target.0, target.1, 0);
     let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
     assert_eq!(drive.destination, Some(expected_coord));
-    assert_eq!(drive.head_to, Some(expected_coord));
+    // These fixtures depart north from START. Native Drive4B32AF commits
+    // current XYZ + one direction offset, independently of the ore destination
+    // (saved locomotor_head_coordinates corpus; production coverage in track_head_tests).
+    let expected_head = DriveCoord::cell(START.0, START.1 - 1, 0);
+    assert_eq!(drive.head_to, Some(expected_head));
+    let curve = entity.drive_track.as_ref().expect("accepted first curve");
     assert_eq!(
-        drive.path.directions.len(),
+        (
+            curve.head_offset_x + i32::from(entity.position.rx) * 256,
+            curve.head_offset_y + i32::from(entity.position.ry) * 256
+        ),
+        (expected_head.x, expected_head.y),
+    );
+    assert_eq!(
+        entity.navigation.path_replay.directions.len(),
         movement.path.len().saturating_sub(1),
     );
-    assert!(!drive.path.directions.is_empty());
+    assert!(!entity.navigation.path_replay.directions.is_empty());
     // The Harvest handler dispatches BEFORE Phase-1 ground movement (the
     // native handler→locomotion order), so by observation time the drive has
     // already begun accelerating in the same tick the command was issued.
-    assert!(drive.current_speed_fraction > SIM_ZERO);
+    assert!(entity.foot_speed.applied_fraction > SIM_ZERO);
     assert_eq!(
         entity.locomotor.as_ref().expect("active locomotor").kind,
         LocomotorKind::Drive,
@@ -630,11 +642,11 @@ fn production_stock_miners_use_drive_command_for_adjacent_ore() {
         );
         {
             let entity = sim.substrate.entities.get(entity_id).expect("miner");
-            let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
+            assert!(entity.drive_locomotion.is_some());
             let movement = entity.movement_target.as_ref().expect("movement");
             // One cell out is inside `SlowdownDistance=500`, so the ramp opens on
             // the destination brake floor and holds there for the whole hop.
-            assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.3"));
+            assert_eq!(entity.foot_speed.applied_fraction, SimFixed::lit("0.3"));
             assert_eq!(
                 movement.current_speed,
                 movement.speed * SimFixed::lit("0.3"),
@@ -669,7 +681,16 @@ fn production_stock_miners_use_drive_command_for_adjacent_ore() {
         assert!(!entity.navigation.pending_arrival_clear);
         if type_id == "CMIN" {
             let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
-            assert_eq!(locomotor.kind, LocomotorKind::Teleport);
+            assert_eq!(
+                locomotor.kind,
+                LocomotorKind::Teleport,
+                "Drive={:?}; Foot={:?}; position={:?}; Nav={:?}; mission={:?}",
+                entity.drive_locomotion,
+                entity.foot_speed,
+                entity.position,
+                entity.navigation,
+                entity.mission
+            );
             assert_eq!(
                 locomotor.slot,
                 LocomotorSlot::from_kind(LocomotorKind::Teleport)
@@ -726,10 +747,8 @@ fn production_harv_outbound_drive_uses_rule_profile() {
             .entities
             .get(entity_id)
             .expect("HARV")
-            .drive_locomotion
-            .as_ref()
-            .expect("Drive runtime")
-            .current_speed_fraction,
+            .foot_speed
+            .applied_fraction,
         acceleration,
     );
 
@@ -737,9 +756,12 @@ fn production_harv_outbound_drive_uses_rule_profile() {
     // the hull one more accel step without running a Harvest dispatch at all.
     advance(&mut sim, &oracle, &grid);
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
-    let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
+    assert!(entity.drive_locomotion.is_some());
     let movement = entity.movement_target.as_ref().expect("movement");
-    assert_eq!(drive.current_speed_fraction, acceleration + acceleration);
+    assert_eq!(
+        entity.foot_speed.applied_fraction,
+        acceleration + acceleration
+    );
     assert_eq!(
         movement.current_speed,
         movement.speed * (acceleration + acceleration)
@@ -818,7 +840,7 @@ fn production_stock_harv_far_return_drive_uses_rule_profile() {
     // the first path node's octant, and a frame spent rotating carries no speed
     // ramp — so the issuing tick leaves the drive fraction at zero and the ramp
     // only starts once the turn has finished.
-    assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+    assert_eq!(entity.foot_speed.applied_fraction, SIM_ZERO);
     assert!(
         entity.facing_target.is_some(),
         "the hull is commanded onto the head path node's octant first"
@@ -835,15 +857,15 @@ fn production_stock_harv_far_return_drive_uses_rule_profile() {
     assert!(departed, "stock HARV must physically leave {start:?}");
 
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
-    let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
+    assert!(entity.drive_locomotion.is_some());
     let movement = entity.movement_target.as_ref().expect("movement target");
     assert!(
-        drive.current_speed_fraction >= harv.accel_factor,
+        entity.foot_speed.applied_fraction >= harv.accel_factor,
         "the rules accel profile ramps once the hull is under way"
     );
     assert_eq!(
         movement.current_speed,
-        movement.speed * drive.current_speed_fraction,
+        movement.speed * entity.foot_speed.applied_fraction,
     );
     assert!(movement.current_speed > SIM_ZERO);
 }
@@ -1186,7 +1208,16 @@ fn production_cmin_outbound_drive_keeps_teleport_primary() {
         if entity.miner_state().expect("miner") == MinerState::Harvest {
             assert!(entity.movement_target.is_none());
             let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
-            assert_eq!(locomotor.kind, LocomotorKind::Teleport);
+            assert_eq!(
+                locomotor.kind,
+                LocomotorKind::Teleport,
+                "Drive={:?}; Foot={:?}; position={:?}; Nav={:?}; mission={:?}",
+                entity.drive_locomotion,
+                entity.foot_speed,
+                entity.position,
+                entity.navigation,
+                entity.mission
+            );
             assert_eq!(
                 locomotor.slot,
                 LocomotorSlot::from_kind(LocomotorKind::Teleport)
@@ -1430,7 +1461,16 @@ fn production_cmin_arrival_clears_navcom_same_tick_and_releases_drive() {
             assert_eq!(entity.navigation.nav_com, None);
             assert!(!entity.navigation.pending_arrival_clear);
             let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
-            assert_eq!(locomotor.kind, LocomotorKind::Teleport);
+            assert_eq!(
+                locomotor.kind,
+                LocomotorKind::Teleport,
+                "Drive={:?}; Foot={:?}; position={:?}; Nav={:?}; mission={:?}",
+                entity.drive_locomotion,
+                entity.foot_speed,
+                entity.position,
+                entity.navigation,
+                entity.mission
+            );
             assert_eq!(
                 locomotor.slot,
                 LocomotorSlot::from_kind(LocomotorKind::Teleport)

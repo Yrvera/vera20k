@@ -1068,6 +1068,7 @@ pub fn scatter_blocker(
     entities: &mut EntityStore,
     blocker_id: u64,
     path_grid: Option<&PathGrid>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
     occupancy: &OccupancyGrid,
     layer: MovementLayer,
     rng: &mut SimRng,
@@ -1094,6 +1095,23 @@ pub fn scatter_blocker(
     }
     let bpos = (blocker.position.rx, blocker.position.ry);
     let speed = scatter_movement_speed(blocker, rules, interner);
+    let ordinary_track = blocker.locomotor.as_ref().is_some_and(|locomotor| {
+        matches!(
+            locomotor.kind,
+            crate::rules::locomotor_type::LocomotorKind::Drive
+                | crate::rules::locomotor_type::LocomotorKind::Ship
+        )
+    });
+    let config = rules
+        .and_then(|rules| rules.object(interner.resolve(blocker.type_ref())))
+        .map(|object| {
+            (
+                object.accel_factor,
+                object.decel_factor,
+                SimFixed::from_num(object.slowdown_distance),
+                object.crusher,
+            )
+        });
 
     // Find a valid adjacent cell. Random start direction matches Branch A.
     let start_dir = rng.next_range_u32(8) as usize;
@@ -1129,9 +1147,56 @@ pub fn scatter_blocker(
         return false;
     };
 
-    // Issue a 1-cell movement command. The blocker walks there via normal
-    // locomotor processing — no teleport.
-    crate::sim::movement::movement_commands::issue_direct_move(entities, blocker_id, dest, speed)
+    // Unit Scatter744063..744070 converts the chosen coord to Cell* and
+    // dispatches ordinary SetDestination741970 (+480); it writes no speed.
+    // Use the same shared-track destination/head acceptance and type ramp
+    // configuration as a normal command. Scripted direct-move users remain
+    // independent of this receiver, as do the other locomotor adapters.
+    let accepted = if ordinary_track {
+        if let Some(grid) = path_grid {
+            super::movement_commands::issue_move_command_with_layered(
+                entities,
+                grid,
+                blocker_id,
+                dest,
+                speed,
+                false,
+                None,
+                None,
+                resolved_terrain,
+                None,
+                None,
+                config.is_some_and(|config| config.3),
+                None,
+                None,
+                None,
+            )
+        } else {
+            let accepted =
+                super::movement_commands::issue_direct_move(entities, blocker_id, dest, speed);
+            if accepted {
+                if let Some(entity) = entities.get_mut(blocker_id) {
+                    super::navcom::set_destination_internal_cell(entity, dest, resolved_terrain);
+                }
+            }
+            accepted
+        }
+    } else {
+        super::movement_commands::issue_direct_move(entities, blocker_id, dest, speed)
+    };
+    if accepted && ordinary_track {
+        if let Some((accel, decel, slowdown, _)) = config {
+            if let Some(target) = entities
+                .get_mut(blocker_id)
+                .and_then(|entity| entity.movement_target.as_mut())
+            {
+                target.accel_factor = accel;
+                target.decel_factor = decel;
+                target.slowdown_distance = slowdown;
+            }
+        }
+    }
+    accepted
 }
 
 /// Normal speed shared by blocked-cell and damage-triggered displacement.
@@ -2461,6 +2526,7 @@ mod tests {
             &mut store,
             1,
             Some(&grid),
+            None,
             &occupancy,
             MovementLayer::Ground,
             &mut rng,
@@ -2506,6 +2572,7 @@ mod tests {
             &mut store,
             1,
             Some(&grid),
+            None,
             &occupancy,
             MovementLayer::Ground,
             &mut rng,
@@ -2569,6 +2636,7 @@ mod tests {
                 &mut store,
                 1,
                 Some(&grid),
+                None,
                 &occupancy,
                 MovementLayer::Ground,
                 &mut rng,
@@ -2602,6 +2670,7 @@ mod tests {
                 &mut store,
                 1,
                 Some(&grid),
+                None,
                 &occupancy,
                 MovementLayer::Ground,
                 &mut rng,
@@ -2624,6 +2693,7 @@ mod tests {
                 &mut store,
                 1,
                 Some(&grid),
+                None,
                 &occupancy,
                 MovementLayer::Ground,
                 &mut rng,
@@ -2654,6 +2724,7 @@ mod tests {
             &mut store,
             1,
             Some(&grid),
+            None,
             &occupancy,
             MovementLayer::Ground,
             &mut rng,
@@ -2693,6 +2764,7 @@ mod tests {
                 &mut store,
                 1,
                 Some(&grid),
+                None,
                 &occupancy,
                 MovementLayer::Ground,
                 &mut rng,
@@ -2722,6 +2794,7 @@ mod tests {
                 &mut store,
                 1,
                 Some(&grid),
+                None,
                 &occupancy,
                 MovementLayer::Ground,
                 &mut rng,
@@ -2756,6 +2829,7 @@ mod tests {
             &mut store,
             100,
             Some(&grid),
+            None,
             &occupancy,
             MovementLayer::Ground,
             &mut rng,
@@ -2798,6 +2872,7 @@ mod tests {
             &mut store1,
             1,
             Some(&grid),
+            None,
             &occupancy,
             MovementLayer::Ground,
             &mut rng1,
@@ -2812,6 +2887,7 @@ mod tests {
             &mut store2,
             1,
             Some(&grid),
+            None,
             &occupancy,
             MovementLayer::Ground,
             &mut rng2,

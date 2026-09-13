@@ -211,8 +211,16 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // Clearing ONLY that value recovers every parent (588f4079) probe, with identical
 // final entity state otherwise and equal full RNG states. No schema fold changed.
 // See RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md, replay provenance.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x0BE9_BCB6_553A_FFB4;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x011D_0DC1_170F_D42C;
+// 2026-09-12: raw Drive/Ship head delivery intentionally changes these
+// current-state projections, which all fold Drive runtime even under older
+// hash schemas. Against exact6580e4c8, replacing only the measured mover leaves
+// reproduced all ten new hashes; every original baseline pin also passed.
+// Slice6 changes only entity1's committed headXY (6272,640 -> 1408,1152)
+// and Stop's abandoned direction cursor (0 -> 19). Retasking no longer replaces
+// the in-flight head with the latest destination. This is a behavior ratchet,
+// not a native whole-movement golden; see the bridge walker report's raw-head section.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x07B6_BCD8_C452_F7B5;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x3D4A_CFCA_A931_0BD2;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -355,18 +363,18 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x011D_0DC1_170F_D42C;
 // deposit radius. The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved.
-const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0x2338_F419_C4B7_2E54;
-const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x0218_0E5F_55E2_5D18;
-const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xBC7E_9E9E_B0E7_E5B7;
-const SLICE6_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x1B22_7781_2679_7BB6;
+const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0xC6FC_9C61_8A09_2DBA;
+const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x92AF_F401_0154_CD1B;
+const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xF627_7ED4_3A1F_0552;
+const SLICE6_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xECA1_BD3E_0D29_0BAD;
 // Re-baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): the
 // `BuildingClass+0x6D0` ProduceCash timer and the `TechnoClass+0x1CC/+0x1D0`
 // drain link pair join the per-entity fold. The dedicated pre-v135 probe
 // reproduces the prior current baseline exactly and every older probe holds;
 // this script has no derrick, DrainWeapon or capture, so only composition
 // moved (each object folds its dead constructor timer and two `None`s).
-const SLICE6_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xAB86_7AE4_CD6A_1874;
-const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x34D6_7612_D63B_1A87;
+const SLICE6_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xC5E0_D10F_E68D_A7CB;
+const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0xA2D7_54E3_B51E_5E3E;
 // v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
 // reproduces the ramp branch's current baseline exactly; older probes and RNG pins
 // are unchanged. This is Rust hash-composition provenance, not native parity.
@@ -377,7 +385,11 @@ const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x34D6_7612_D63B_1A87;
 // The dedicated pre-v142 assertion below retains this fixture's prior current
 // pin; older probes and existing replay/stream checks remain unchanged.
 // Receipt: .local/shroud-current-sight-full-v1.log (composition-only candidates).
-const SLICE6_BASELINE_HASH: u64 = 0x9CDA_1908_000F_0176;
+// 2026-09-13 ordinary TrackProcess host: reviewed current-cursor payment,
+// residual and synchronous arrival timing; historical projections also include
+// migrated Foot owners. See docs/research/TRACK_PROCESS_REPLAY_REGRESSION_NOTES.md
+// for baseline/candidate observations and native scope. These are Rust pins.
+const SLICE6_BASELINE_HASH: u64 = 0x7637_05BF_7622_B9E4;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -454,8 +466,8 @@ fn replay_hash_stable_through_slice6() {
 
     assert_eq!(
         sim.state_hash_without_sustained_gap_sight_v142(),
-        0xBD1A_450A_FE28_594E,
-        "pre-v142 composition must reproduce this fixture's prior current baseline"
+        0x2F38_0309_E6D7_C17C,
+        "committed pre-v142 Slice6 projection changed"
     );
     let pre_lifecycle_hash = sim.state_hash_before_lifecycle_v28_and_mission_v29();
     let pre_mission_hash = sim.state_hash_without_mission_v29();
@@ -467,7 +479,7 @@ fn replay_hash_stable_through_slice6() {
     assert_eq!(
         sim.state_hash_without_infantry_terminal_v136(),
         SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH,
-        "pre-v136 composition must reproduce the prior Slice 6 baseline"
+        "committed pre-v136 Slice6 projection changed"
     );
     let hash = sim.state_hash();
     println!(
@@ -475,37 +487,37 @@ fn replay_hash_stable_through_slice6() {
     );
     assert_eq!(
         pre_credit_income_hash, SLICE6_PRE_CREDIT_INCOME_V135_HASH,
-        "the dedicated pre-v135 probe must reproduce the prior Slice 6 current baseline"
+        "committed pre-v135 projection changed"
     );
     assert_eq!(
         pre_lifecycle_hash, SLICE6_PRE_LIFECYCLE_V28_HASH,
-        "pre-v28/pre-v29 schema probe must reproduce the historical baseline"
+        "committed pre-v28/pre-v29 projection changed"
     );
     assert_eq!(
         pre_mission_hash, SLICE6_PRE_MISSION_V29_HASH,
-        "v29 provenance probe must reproduce the prior live v28 baseline; otherwise this is behavior drift"
+        "committed pre-v29 projection changed; trace any behavior or composition drift"
     );
     assert_eq!(
         pre_base_plan_hash, SLICE6_PRE_BASE_PLAN_V110_HASH,
-        "the dedicated pre-v110 probe must reproduce the prior Slice 6 baseline"
+        "committed pre-v110 projection changed"
     );
     assert_eq!(
         pre_crate_authority_hash, SLICE6_PRE_CRATE_AUTHORITY_V114_HASH,
-        "the dedicated pre-v114 probe must reproduce the prior Slice 6 current baseline"
+        "committed pre-v114 projection changed"
     );
     assert_eq!(
         pre_wall_runtime_hash, SLICE6_PRE_WALL_RUNTIME_V115_HASH,
-        "the dedicated pre-v115 probe must reproduce the prior Slice 6 current baseline"
+        "committed pre-v115 projection changed"
     );
     assert_eq!(
         pre_disguise_detect_hash, SLICE6_PRE_DISGUISE_DETECT_V117_HASH,
-        "the dedicated pre-v117 probe must reproduce the prior Slice 6 current baseline"
+        "committed pre-v117 projection changed"
     );
     assert_eq!(
         hash, SLICE6_BASELINE_HASH,
         "Slice 6 scripted-retask state hash drifted. Treat this as behavior drift \
-         unless a documented legacy-schema or equivalent provenance check proves \
-         that an intentional hash-composition change is solely responsible"
+         unless a documented native behavior change or hash-composition change \
+         is causally demonstrated"
     );
 }
 

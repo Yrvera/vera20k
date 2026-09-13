@@ -2850,21 +2850,11 @@ fn issue_stock_miner_drive_move_with_overlay_registry(
     };
 
     let activation_snapshot = if info.is_teleporter && info.is_harvester {
-        sim.substrate
-            .entities
-            .get_mut(entity_id)
-            .and_then(|entity| entity.locomotor.as_mut())
-            .map(|locomotor| {
-                let snapshot = (
-                    locomotor.kind,
-                    locomotor.slot,
-                    locomotor.piggyback.clone(),
-                    locomotor.layer,
-                    locomotor.phase,
-                );
-                let _ = locomotor.begin_drive_piggyback_for_teleporter(sim.session.binary_frame);
-                snapshot
-            })
+        sim.substrate.entities.get_mut(entity_id).map(|entity| {
+            let snapshot = movement::locomotor_owner::DriveActivationSnapshot::capture(entity);
+            movement::locomotor_owner::begin_drive_for_teleporter(entity, sim.session.binary_frame);
+            snapshot
+        })
     } else {
         None
     };
@@ -2898,18 +2888,10 @@ fn issue_stock_miner_drive_move_with_overlay_registry(
         Some(&mut sim.substrate.cell_occupation),
     );
     if !issued {
-        if let Some((kind, slot, piggyback, layer, phase)) = activation_snapshot
-            && let Some(locomotor) = sim
-                .substrate
-                .entities
-                .get_mut(entity_id)
-                .and_then(|entity| entity.locomotor.as_mut())
+        if let Some(snapshot) = activation_snapshot
+            && let Some(entity) = sim.substrate.entities.get_mut(entity_id)
         {
-            locomotor.kind = kind;
-            locomotor.slot = slot;
-            locomotor.piggyback = piggyback;
-            locomotor.layer = layer;
-            locomotor.phase = phase;
+            snapshot.restore(entity);
         }
         return false;
     }

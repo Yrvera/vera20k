@@ -569,9 +569,9 @@ impl Simulation {
                 outcome.zones_dirty,
             );
 
-            // Step C: terrain/radar dirty propagation. The walker emits each
-            // `ToggleBridgePavement @ 0x0056E990` damage-selector clear in
-            // native traversal order, followed by destroyed-anchor restores.
+            // Step C: publish destroyed-anchor radar restores. Ordinary
+            // overlay repair does not clear pavement; the native ramp/span
+            // restoration entry owns its separate56E990 clear call sites.
             self.mark_radar_terrain_dirty_cells(outcome.radar_cells.iter().copied());
 
             // Step D: engineer consumed.

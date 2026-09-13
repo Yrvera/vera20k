@@ -62,6 +62,15 @@ impl TmpFile {
     /// is set; sparse slots use header height. Consumers apply subtile modulo
     /// to this type-owned table. No canvas union or extra bottom participates.
     pub(crate) fn draw_heights_from_bytes(data: &[u8]) -> Result<Vec<i32>, AssetError> {
+        Self::pristine_header_fields_from_bytes(data)
+            .map(|rows| rows.into_iter().map(|row| row.0).collect())
+    }
+
+    /// Native547150 dimensions and5471F0 damaged-data gate share the pristine
+    /// subimage table. Read both without decoding color/depth planes.
+    pub(crate) fn pristine_header_fields_from_bytes(
+        data: &[u8],
+    ) -> Result<Vec<(i32, bool)>, AssetError> {
         let invalid = || AssetError::InvalidTmpFile {
             reason: "Invalid TMP header/offset table for native draw dimensions".to_owned(),
         };
@@ -82,17 +91,19 @@ impl TmpFile {
             .map(|index| {
                 let offset = read_u32_le(data, TMP_HEADER_SIZE + index * 4) as usize;
                 if offset == 0 {
-                    return Ok(base);
+                    return Ok((base, false));
                 }
                 if offset.checked_add(52).is_none_or(|end| end > data.len()) {
                     return Err(invalid());
                 }
-                if read_u32_le(data, offset + 36) & 1 == 0 {
-                    return Ok(base);
-                }
-                Ok(base
-                    .wrapping_add(read_u32_le(data, offset + 4) as i32)
-                    .wrapping_sub(read_u32_le(data, offset + 24) as i32))
+                let flags = read_u32_le(data, offset + 36);
+                let height = if flags & 1 == 0 {
+                    base
+                } else {
+                    base.wrapping_add(read_u32_le(data, offset + 4) as i32)
+                        .wrapping_sub(read_u32_le(data, offset + 24) as i32)
+                };
+                Ok((height, flags & 4 != 0))
             })
             .collect()
     }

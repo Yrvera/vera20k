@@ -6,7 +6,7 @@
 //! not call this setter and retains the last raw coordinate Z.
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::sim::components::Position;
+use crate::sim::components::{DriveCoord, Position};
 use crate::sim::pathfinding::PathGrid;
 use crate::util::lepton::{BRIDGE_HEIGHT_DELTA_LEPTONS, ground_height_leptons};
 
@@ -19,6 +19,20 @@ pub(crate) fn position_world_xy(position: &Position) -> [i32; 2] {
             .wrapping_mul(256)
             .wrapping_add(position.sub_y.to_num::<i32>()),
     ]
+}
+
+/// Read retained ObjectClass coordinates without resampling changed terrain.
+/// Legacy positions without an exact Z use their stored signed level until a
+/// real coordinate writer supplies raw leptons.
+pub(crate) fn position_world_coord(position: &Position) -> DriveCoord {
+    let [x, y] = position_world_xy(position);
+    DriveCoord {
+        x,
+        y,
+        z: position.exact_z_leptons.unwrap_or_else(|| {
+            i32::from(position.z as i8) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS
+        }),
+    }
 }
 
 /// Sample the live surface at full world XY. A PathGrid supplies the same

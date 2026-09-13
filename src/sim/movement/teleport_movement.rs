@@ -431,9 +431,9 @@ pub fn tick_teleport_movement(
             }
             entity.push_debug_event(sim_tick as u32, DebugEventKind::SpecialMovementEnd);
         }
-        // Every END in gamemd runs behind `Is_Ok_To_End`; the Teleport gate is
-        // the six-clause predicate that hands a warped unit back to its own
-        // locomotor. The warp state was cleared just above, so the ordinary
+        // This finished-warp path uses the existing `Is_Ok_To_End` gate before
+        // handing the warped unit back to its suspended locomotor. The warp
+        // state was cleared just above, so the ordinary
         // finished warp still ends here — a unit that is simultaneously
         // deploying (or otherwise gated) keeps the stash and unwinds on the
         // per-tick restore instead, as FootClass::AI does.
@@ -449,11 +449,8 @@ pub fn tick_teleport_movement(
                     gate.owner_deploying,
                 )
         });
-        if may_end
-            && let Some(entity) = entities.get_mut(id)
-            && let Some(ref mut loco) = entity.locomotor
-        {
-            loco.end_piggyback();
+        if may_end && let Some(entity) = entities.get_mut(id) {
+            super::locomotor_owner::restore_admitted_primary(entity);
         }
     }
     outcomes
@@ -498,6 +495,7 @@ mod tests {
             accel_factor: SimFixed::lit("0.03"),
             decel_factor: SimFixed::lit("0.02"),
             accelerates: true,
+            passive: false,
             slowdown_distance: 512,
             sight: 5,
             tech_level: -1,

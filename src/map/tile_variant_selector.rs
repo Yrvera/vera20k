@@ -129,37 +129,20 @@ impl TileVariantSelectionContext<'_, '_> {
     ) -> u8 {
         self.ensure_table();
 
-        let Ok(template_width) = i32::try_from(template_width) else {
-            return 0;
-        };
-        let Ok(template_height) = i32::try_from(template_height) else {
-            return 0;
-        };
-        if total_file_count == 0 || template_width == 0 || template_height == 0 {
-            // Retail inputs never reach this malformed boundary. Safe Rust keeps
-            // the pristine image instead of reproducing native divide-by-zero.
-            return 0;
-        }
+        select_from_initialized_table(
+            &self.cache.table8.expect("selector table initialized"),
+            cell_x,
+            cell_y,
+            sub_tile,
+            template_width,
+            template_height,
+            total_file_count,
+        )
+    }
 
-        let (template_x, template_y) = if sub_tile == 0 {
-            (cell_x, cell_y)
-        } else {
-            let sub_tile = i32::from(sub_tile);
-            (
-                (cell_x - sub_tile % template_width) / template_width,
-                (cell_y - sub_tile / template_width) / template_height,
-            )
-        };
-        let raw = if total_file_count <= 4 {
-            let x = (template_x & 3) as usize;
-            let y = (template_y & 3) as usize;
-            FIXED_TABLE_4[y * 4 + x]
-        } else {
-            let x = (template_x & 7) as usize;
-            let y = (template_y & 7) as usize;
-            self.cache.table8.expect("selector table initialized")[y * TABLE_SIDE + x]
-        };
-        raw % total_file_count
+    /// Copy the existing process table without initializing it or drawing RNG.
+    pub(crate) fn initialized_table(&self) -> Option<[u8; TABLE_LEN]> {
+        self.cache.table8
     }
 
     /// True only for the load that performed the process-global table build.
@@ -329,4 +312,48 @@ mod tests {
         );
         assert_eq!(water_main_rng.logical_state(), main_before);
     }
+}
+
+/// Native4814F0 coordinate arithmetic after one-time process initialization.
+/// Loading and runtime terrain presentation share this operation and table.
+pub(crate) fn select_from_initialized_table(
+    table8: &[u8; TABLE_LEN],
+    cell_x: i32,
+    cell_y: i32,
+    sub_tile: u8,
+    template_width: u32,
+    template_height: u32,
+    total_file_count: u8,
+) -> u8 {
+    let Ok(template_width) = i32::try_from(template_width) else {
+        return 0;
+    };
+    let Ok(template_height) = i32::try_from(template_height) else {
+        return 0;
+    };
+    if total_file_count == 0 || template_width == 0 || template_height == 0 {
+        // Retail inputs never reach this malformed boundary. Safe Rust keeps
+        // the pristine image instead of reproducing native divide-by-zero.
+        return 0;
+    }
+
+    let (template_x, template_y) = if sub_tile == 0 {
+        (i32::from(cell_x as i16), i32::from(cell_y as i16))
+    } else {
+        let sub_tile = i32::from(sub_tile);
+        (
+            i32::from(cell_x.wrapping_sub(sub_tile % template_width) as i16) / template_width,
+            i32::from(cell_y.wrapping_sub(sub_tile / template_width) as i16) / template_height,
+        )
+    };
+    let raw = if total_file_count <= 4 {
+        let x = (template_x & 3) as usize;
+        let y = (template_y & 3) as usize;
+        FIXED_TABLE_4[y * 4 + x]
+    } else {
+        let x = (template_x & 7) as usize;
+        let y = (template_y & 7) as usize;
+        table8[y * TABLE_SIDE + x]
+    };
+    raw % total_file_count
 }

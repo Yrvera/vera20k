@@ -48,11 +48,11 @@ fn driving_unit_reports_moving() {
         y: 5 * 256 + 128,
         z: 0,
     };
+    entity.foot_speed.applied_fraction = SIM_ONE;
+    entity.foot_speed.cached_current_speed = 25;
     entity.drive_locomotion = Some(DriveLocomotionRuntime {
         destination: Some(head),
         head_to: Some(head),
-        current_speed_fraction: SIM_ONE,
-        owner_current_speed: 25,
         ..DriveLocomotionRuntime::default()
     });
 
@@ -85,11 +85,11 @@ fn unit_parked_on_its_head_to_reports_not_moving() {
 fn ship_mirrors_drive_but_keeps_its_own_variant() {
     let mut entity = entity_with(LocomotorKind::Ship);
     let head = DriveCoord::cell(6, 5, 0);
+    entity.foot_speed.applied_fraction = SIM_ONE;
+    entity.foot_speed.cached_current_speed = 20;
     entity.ship_locomotion = Some(ShipLocomotionRuntime {
         destination: Some(head),
         head_to: Some(head),
-        current_speed_fraction: SIM_ONE,
-        owner_current_speed: 20,
         ..Default::default()
     });
     let state = ready_state_for(&entity, 100).expect("Ship has a producer");

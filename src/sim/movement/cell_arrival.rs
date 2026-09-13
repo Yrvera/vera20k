@@ -30,6 +30,7 @@ pub(super) struct CellArrival<'a> {
     pub position: &'a Position,
     pub locomotor: &'a mut Option<LocomotorState>,
     pub drive_locomotion: &'a mut Option<DriveLocomotionRuntime>,
+    pub foot_occupation_enabled: &'a mut bool,
     pub sub_cell: &'a mut Option<u8>,
     pub occupancy_enter_order: &'a mut u64,
     pub next_occupancy_enter_order: &'a mut EnterOrderCounter,
@@ -73,6 +74,7 @@ impl CellArrival<'_> {
             && let Some(drive) = self.drive_locomotion.as_mut()
         {
             crate::sim::occupancy::mark_current_drive_occupation_after_crossing(
+                self.foot_occupation_enabled,
                 drive,
                 self.cell_occupation,
                 self.entity_id,

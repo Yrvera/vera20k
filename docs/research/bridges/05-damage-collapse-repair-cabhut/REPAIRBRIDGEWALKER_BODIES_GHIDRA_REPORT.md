@@ -1,8 +1,322 @@
 # RepairBridgeWalker_*_* Bodies — Per-Cell State Writes
 
-**Status:** Verified from binary (Ghidra MCP, read-only). All four walker
-addresses, byte-level write maps, jump-table contents, and caller chains
-re-read from gamemd.exe in this session.
+**Status:** Historical body decode, corrected by current active-retail body and
+caller reads on 2026-09-12. The scalar overlay transitions do not establish
+complete repair delivery; the occupant callback below is required gameplay work.
+
+## 2026-09-12 correction: synchronous occupant checks are required
+
+Original `0x00487A10` is a gameplay admission/damage callback, not a drawing or
+flag-only helper. For each changed strip the four ordinary repair walkers retain
+center and perpendicular neighbor Cell identities, write all three overlay fields,
+call Recalc on those identities, then invoke `0x00487A10(0)` three times. The call
+sites are Low NS `0x0057FB28/31/3A`, Low EW `0x0058003C/45/4E`, High NS
+`0x00580564/6D/76`, and High EW `0x00580A88/91/9A`.
+
+The callback first walks the Cell's ground-content list (`+0xE4`). It captures
+each member's successor before calling its `+0x1AC` admission slot with
+`(cell,-1,-1,null,1)`. Admission result 7 or abstract kind 2 (Aircraft, original
+leaf `0x0041C180`) triggers synchronous `+0x16C` damage with a local copy of current
+health, distance 0, Rules C4Warhead (`+0xFA8`), null attacker, both force flags set,
+and null source house. The nonzero-argument extra branch is bypassed by these
+repair callers.
+
+It then builds a probe at the current Cell center and original ground height
+`0x0047B3A0(128,128)`, including signed level and slope. The neighboring 5x5 scan
+is X-major, re-reads the retained Cell coordinate for each lookup, and excludes
+the selected Cell identity. For ground-list Foot members (`AbstractFlags & 4`),
+it calls locomotor `Is_At_Coord` (`+0xA0`) with that probe, then the same admission
+and damage sequence if the probe matches and admission returns 7. This pass
+reads the successor after callbacks, unlike the first pass. Missing-cell dummy
+aliasing and callback reentrancy therefore affect traversal.
+
+Current stock locomotor slot owners are Drive `0x004B4920`, Ship `0x006A3F50`,
+Hover `0x00517210`, Walk `0x0075CA80`; Fly/Teleport/Jumpjet/Rocket use false stub
+`0x004B6630`. Live receiver plumbing in `src/sim/world/bridge_ground.rs` can be
+reused, but unconditional collapse damage and snapshot path markers do not
+implement this selection/lifecycle behavior. Its Rust delivery remains open.
+
+Active reachability is ordinary engineer arrival in `InfantryClass::PerCellProcess`
+`0x00519630`, then `0x00573540/0x00570050`, then `0x0057F440/0x0057F200` and the
+four walkers. The engineer's outer family scan always visits all 25 Y-major cells,
+with two fresh coordinate getters/lookups per cell and no early exit after finding
+Low. It checks signed `wood_base <= tile < wood_base + 16` or overlay 74..101.
+The chosen family entry independently scans X-major and returns on its first
+matching overlay. The existing runtime-only/deferred Rust repair path does not
+deliver these callbacks, and missing runtime entries can conceal live map cells.
+No TS-only behavior is required for these findings.
+
+The reproducible `tools/spatial_oracle/bridge_occupants.{py,json,meta.json}`
+comparison executes the complete zero-argument controller, native cell lookup,
+coordinate construction and signed/slope ground-height evaluation. Its 19 cases
+cover both successor orders, an unlinked captured successor revisited with zero
+health, neighbor unlinking, health changed by admission/kind callbacks, exact-seven
+selection, Aircraft fallback, fresh selected-cell coordinates, retained probes,
+and shared-dummy coordinate wrapping. Admission, abstract kind, IsAtCoord and
+direct damage remain declared virtual seams. The Rust controller in
+`src/sim/bridge_state/repair_occupants.rs` preserves this ordering; the concrete
+world host and ordinary-walker connection remain required delivery work.
+
+Current native receiver review establishes these host prerequisites:
+
+- The sentinel direction `-1` takes the special arm in `0x004D9C60`
+  (`0x004D9CBC` through `0x004D9E3E`), selecting structural deck level and
+  bypassing the normal neighboring traversal comparison. An ordinary path-step
+  admission adapter cannot substitute unchanged. The subsequent stock Unit
+  locomotor `+0x1C` call is simpler: all eleven interface-table references point
+  to unconditional-zero `0x0055ABF0` (`xor eax,eax; ret 8`).
+- Terrain admission `0x0071C4D0` walks its type occupation offsets through cell
+  lookup and `0x0047C620`, passing null type/owner. Building admission `0x00449440`
+  wraps its foundation-placement checks. Both need their own concrete receivers.
+- Aircraft's primary table is `0x007E22A4`; its `+0x1AC` slot at `0x007E2450`
+  points to `0x004196B0`. Historical identification of `0x00415B10` as Aircraft
+  admission used a wrong table base; that function is passenger ejection at
+  `+0x100`. The first pass still invokes admission before its Aircraft fallback.
+- IsAtCoord uses the active locomotor interface, including a Drive piggyback,
+  and full raw-lepton coordinates. Its Head_To owners are Drive `0x004AFCC0`,
+  Ship `0x0069F3D0`, Walk `0x0075AC00`, and Hover `0x00514D10`. Stored Head_To Z
+  must survive changes to the destination terrain. Current Rust
+  `Position.exact_z_leptons` can supply current raw Z, but ordinary
+  `movement_step::resolved_track_endpoint` still stores coarse level Z, and the
+  path-marker snapshot drops slope/stored endpoint Z. Those inputs must be
+  corrected before claiming live repair-occupant delivery.
+
+### Original locomotor query comparison and retained-head producers
+
+`tools/spatial_oracle/locomotor_at_coord.{py,json,meta.json}` now preserves
+336 supplied locomotor states and 4,164 recorded coordinate probes, plus eight
+queries of the active Fly/Jumpjet/Rocket/Teleport false leaf. Both Head_To and
+Is_At_Coord execute original instructions through verified original interface
+slots. Drive/Ship also execute original transforms `0x004B4780`/`0x006A3DB0`
+and retain the original TurnTrack/RawTrack/point tables. The cases cover all
+72 Drive and 64 ordinary Ship descriptors, handoff/reverse gates, separate head
+and current heights, complete/partial NullCoord, signed XY truncation, low-word
+cell aliases, inclusive height tolerance and wrapping signed-Z boundaries.
+
+All four Head_To owners return retained XYZ unless the complete triple equals
+NullCoord; only then do they return current Foot XYZ. Drive/Ship additionally
+reject a returned NullCoord. Walk/Hover do not. XY cell comparisons use signed
+division by 256 truncated toward zero followed by 16-bit comparison. Height
+uses wrapping subtraction and x86 signed absolute value, with inclusive
+`<= height_step`; the INT_MIN absolute-value overflow remains negative.
+
+Drive/Ship first consider a track candidate only when the reversed byte is zero,
+the TurnTrack index is not -1, its **normal** raw-track byte is nonzero, its
+handoff index is nonnegative, and the signed cursor is before that index. The
+normal-track handoff point is transformed around the **stored** head XY, even
+when Head_To itself fell back from NullCoord to current Foot XYZ. This candidate
+uses current Foot Z; the ordinary fallback uses the returned Head_To Z. Using
+the selected short raw track or one shared height for both candidates is wrong.
+Drive tables are `0x007E7B28`/`0x007E7A28`; Ship tables are
+`0x007F2A40`/`0x007F2960`. The TurnTrack stride is 12 and RawTrack stride is 16.
+Hover interface `0x007EACFC` binds Head_To at +0x18 and Is_At_Coord at +0xA0.
+Drive's Ghidra decompile has a truncated/overlapping boundary; the original
+query ends at `0x004B4AF4`, as executed by this comparison.
+
+Independent current-body reads also correct the required head producers:
+
+- Ordinary Drive forms the next coordinate from current Foot **XYZ** at
+  `0x004B32AF..0x004B32EC`: add the direction's lepton delta to X/Y and retain Z.
+  The accepted head stores are `0x004B46A7/0x004B46D7`. Ship equivalents are
+  `0x006A28FF..0x006A293B` and `0x006A3CD6/0x006A3D06`. These producers preserve
+  the current subcell offset as well as height; constructing a destination cell
+  center with current Z would still be wrong. A second-node addition preserves
+  that XYZ origin. A chained successor instead starts from the **previous
+  retained head**, including its old Z, as detailed below.
+- Walk `0x0075C240` stores full XYZ returned by subcell selection `0x00481180`
+  at `0x0075C546..0x0075C562`. Its deck request needs the target structural
+  flag and current Foot Z **strictly greater than** requested ground Z plus
+  three steps (`0x0075C4CD..0x0075C51A`). The returned coordinate includes
+  ground slope at the final selected subcell and its requested deck plane.
+- Hover `0x0051533C..0x005153D8` obtains the new cell center and samples ground
+  height through `0x00578080`. It adds the bridge offset only when current Foot
+  Z is **greater than or equal to** that ground Z plus three steps. OnBridge
+  and the accepted path layer do not select this branch.
+- The existing Rust endpoint comment citing `0x004B2196` as a bridge-offset
+  write is incorrect: it loads the height step for an absolute destination-Z
+  comparison. Drive destination setter `0x004AFD40` writes destination XYZ;
+  it does not simultaneously replace the separate retained head.
+
+This corpus supplies initialized NullCoord=(0,0,0) and per-family height step104;
+it does not execute startup, movement producers, object admission or repair
+lifecycle. Scalar boundary states are branch witnesses, not stock-map reachability
+claims. Mech's separate query `0x005B1AA0` is dormant TS behavior (its retail
+RULESMD locomotor GUID appears only in comments) and is excluded, as are dormant
+Tunnel/DropPod behaviors. The prepared shared Rust projection in
+`src/sim/movement/at_coord.rs` now matches all 4,172 recorded query answers and
+the original head/track candidates; its regression also compares all 136 saved
+TurnTrack records and referenced handoff points against Rust's shared catalog.
+It consumes raw retained/current coordinates and independent native selectors,
+without deriving them from a path or terrain. Exact producer state,
+save/hash/piggyback handling and live repair/marker consumers remain required
+integration work; this prepared projection does not establish gameplay delivery.
+
+### Original head-coordinate expression comparison
+
+`tools/spatial_oracle/locomotor_head_coordinates.{py,json,meta.json}` records
+288 original-execution cases: Drive and Ship, fresh/second-node/chain expressions,
+six supplied XYZ origins and all eight native directions. Each case first runs
+the complete original direction initializer `0x0049F3A0..0x0049F413`; the BSS table
+at `0x0089F6D8` is zero in the file and must not be read as initialized data.
+Its output matches the existing `src/util/direction_tables/lepton.rs` table:
+cardinal/diagonal components are exactly 0 or +/-256 leptons. The original startup
+pointer at `0x00812BB0` lies in constructor span `[0x00812000,0x00815DA4)` consumed
+by `0x007CBED3`, called through `0x007CBDAF` before WinMain. The corpus executes
+the initializer directly, not that complete startup traversal.
+
+Fresh blocks are Drive `[0x004B32AF,0x004B32F0)` and Ship
+`[0x006A28FF,0x006A293F)`, including the original XYZ copy constructor
+`0x0041C230`. Second-node additions are `[0x004B40B0,0x004B40D9)` and
+`[0x006A36E0,0x006A3705)`, with the caller's post-PUSH stack layout supplied.
+Chain expressions `[0x004B1BC4,0x004B1BF4)` and `[0x006A120A,0x006A123A)` read
+the previous stored head; they do not substitute the current Foot coordinates.
+The accepted Drive chain separately stores the new TurnTrack index, clears
+reversed and seeds cursor to the new RawTrack entry minus one at
+`0x004B1C78..0x004B1CA4`. These selector stores are body evidence, outside this
+coordinate-expression corpus.
+
+The cases retain noncentered XY, signed height and prior-head height even when
+the supplied Foot has moved or changed height. They include signed overflow and
+NullCoord scalar cases without claiming stock-map reachability. No movement
+admission, intermediate callbacks, final head stores, complete chain scheduling,
+ForceTrack caller or Rust production delivery is executed by this corpus. The
+Rust migration must update head state and the actual curve anchor together,
+covering command installation, deferred repath, fresh selection after a terminal,
+accepted chain, refusal/terminal clears, forced installation and save/hash.
+Destination setters and entity-target refresh must cease overwriting the head.
+Their complete native owner-guard lifecycle remains a separately open behavior;
+the head/query migration does not establish that lifecycle.
+
+### Raw head delivery and remaining native state (2026-09-12)
+
+Fresh Rust command, deferred repath and subsequent segment selection now share
+`movement/track_head.rs`: one current raw XYZ produces both the retained head
+and the actual curve anchor. Chaining instead adds the remaining native queue
+direction to the old head. Native fresh acceptance writes Foot+558 at
+`0x004B4618..0x004B4649` / `0x006A3C47..0x006A3C78`; accepted chain only pops
+one direction at `0x004B1DF7..0x004B1E10` / `0x006A143A..0x006A1453`.
+It does not rewrite that replay reference.
+
+Ordinary chain admission rejects zero RawTrack entry at
+`0x004B1B93..0x004B1B9B` / `0x006A11D4..0x006A11DC`.
+Its stored entry-minus-one is incremented by the common tail
+`0x004B1F48..0x004B1F53` / `0x006A158B..0x006A1596`. Native retained cursor
+means next to consume; Rust's curve cursor still means last consumed. Native
+raw1 includes a zero sentinel after its last real point (0,3); Rust currently
+terminates on that last real point. Copying exact Head_To fixes terminal XYZ,
+not this paid-point timing. Boundary-head transfers still use Rust's deferred
+cell transaction. Native cursor/selector publication and same-pass scheduling
+remain required before live Is_At_Coord delivery can pass.
+
+Destination setters now preserve the head and apply their structural +416
+adjustment to raw caller XYZ. Cell GetCoords `0x00486840 -> 0x0047B3A0` uses
+the retained Cell receiver for ground/slope height, then the destination setter
+looks up the resulting coordinate separately. For signed Cell(-1,-1), level-3
+and slope0, the original returns (-128,-128,-311), including its +0.5 then
+truncation rule; relooking up XY prematurely would sample a different cell.
+ForceTrack copies caller Z: the bunker caller now supplies the building's exact Z.
+The refinery-exit adapter remains explicitly unproven.
+
+The current-coordinate fallback for moving Infantry reaim is still incomplete:
+Foot `0x004DBDF0`, especially `0x004DBE46..0x004DBECB`, first asks the target's
+active locomotor for non-null Head_To. Retained Walk/Hover heads, the four native
+destination guards and the live repair/marker query adapters remain open.
+Snapshot148 rejects older mixed-unit retained coordinates. Production command,
+chain, terminal, forced-height and signed-dummy regressions exercise the changed
+Rust paths; the 288-case scalar comparison does not certify complete movement.
+
+Chain selection now reads the native replay queue. The existing Rust Stop/MCV
+handoff also retires its remaining directions while retaining the committed
+curve, raw head and replay reference, so an abandoned successor cannot chain.
+This preserves the existing current-to-head Stop contract; it does not prove
+the complete native user-Stop owner cascade.
+
+The Rust replay rebaseline was causally checked against exact `6580e4c8`.
+Both old fixtures passed all ten of their existing hash projections. Replacing
+only the measured candidate mover state in those baseline simulations reproduced
+all twenty new hashes; only nine individual leaves differed. Slice6 changes
+entity1's retained head XY `(6272,640) -> (1408,1152)` and Stop's replay cursor
+`0 -> 19`. Global changes entity4's head X `2176 -> 2432`, Drive/curve point
+`5 -> 4`, Drive/curve residual `6 -> 7`, and subcell X `53 -> 62` leptons.
+
+The two 600-tick global traces first differ in curve selection at tick352.
+Raw5/flags6 reaches point45 in cell(34,9). The old physical-path reader sees
+NW toward(33,8), equal to the current curve's exit direction, and declines the
+successor. The remaining queue actually holds W: TurnTrack62 selects Raw6,
+entry16, normalized transform flags2. Rust adopts point15, budget15, head
+`(8320,2176,0)` and retains replay reference(33,8). Raw5[45] and Raw6[16]
+both transform to world `(8705,2305)`, preserving junction continuity. Tick353
+consumes entries16 and17; position first differs at354 and facing at355.
+Navigation, locomotor state and all three actual Drive speed fields agree at
+every tick. All600 record/replay hashes and all three RNG fingerprints agree.
+This explains the changed trajectory and remaining six-budget-unit difference;
+it does not close the separately open native same-pass/paid-cursor timing.
+
+| Current-schema Rust fixture | Prior `6580e4c8` | Raw-head delivery |
+| --- | --- | --- |
+| Slice6 | `9CDA1908000F0176` | `4A23C8ADF513F9D2` |
+| Global | `C9FF66052C998226` | `7F4BC14E8F100A83` |
+
+These are Rust regression ratchets, not native whole-movement goldens. The
+fresh independent critic separately checked all twenty projections, the nine
+leaves and both traces before passing this rebaseline's causal attribution.
+
+### Retained cursor and paid terminal evidence (2026-09-12)
+
+`tools/spatial_oracle/locomotor_track_cursor.{py,json,meta.json}` preserves
+3,540 original point-read/budget probes, 128 fresh selections, 128 admitted
+chain/tail cases and 45 terminal-expression cases. The saved original tables
+contain all 72 Drive and 64 ordinary Ship descriptors, and every point through
+the first noninitial XY-zero sentinel of their 15/10 referenced raw tracks.
+Point probes use one representative descriptor/normal-or-short selection per
+raw track; they do not exhaust every descriptor/selector combination.
+
+Fresh selection clears the short/reversed byte and stores the selected descriptor
+at `0x004B4016..0x004B4034` / `0x006A3642..0x006A3660`, falling back to the
+straight descriptor when its normal track is zero. The later accepted-head
+tail resets the cursor at `0x004B4659` / `0x006A3C88`. These are separate
+executed blocks with their intervening admission/occupation callbacks excluded.
+
+The process admits a paid sample only with budget **greater than seven**. It
+subtracts seven, reads the point at the retained cursor, then its common tail
+increments the cursor and tests that strict budget gate again. For raw1, an
+initial budget of eight consumes `(0,245)`, retains cursor1 and leaves budget1.
+The last real `(0,3)` is followed by a separate `(0,0)` terminal sample. Rust's
+current cursor starts at zero but increments before reading, and its extracted
+arrays omit the terminal sample. Consequently its first paid point and terminal
+timing are both different. Original admitted chain stores entry-minus-one;
+the common tail produces entry as the next point to consume and can immediately
+continue within the same pass. That tail is conditional on surviving the
+intervening callbacks: owner death, limbo or off-map exits at
+`0x004B1D12/20/2E` / `0x006A1355/63/71` can preserve entry-minus-one and
+the prior object residual without reaching it (see section6.2 of the
+[metadata reconciliation report](../../DRIVE_RAWTRACK_METADATA_INITIALIZER_RECONCILIATION_GHIDRA_REPORT.md)).
+The body/selector offsets here are object-base
+`+0x58/+0x5C/+0x60`, four bytes beyond the ILocomotion-relative query offsets.
+
+The terminal expression `0x004B1F97..0x004B2006` /
+`0x006A15DA..0x006A1649` also adjusts the local remaining budget. Original
+instructions form the wrapping signed Manhattan XY distance from current Foot
+coordinates to the retained head, multiply by the original binary64 `1/11`
+constant, subtract from one, multiply by seven, then run x87 `ftol` before
+adding the result. The operation order and binary64 constants are part of the
+evidence. With
+supplied budget1, distances0/3/16 produce budgets8/6/-2. This is an adjustment,
+not an unconditional seven-unit refund or a clamped result. The witnesses use
+supplied `0xE7F` x87/ftol state, consistent with the separately saved startup
+capture; they do not prove runtime control-word immutability. Terminal poses
+include the last real point of every referenced raw track, including distances
+9, 20 and 21 from short/special curves, plus separate scalar boundary cases.
+Later selector
+clear blocks set descriptor=-1 and cursor=0 while retaining the reversed byte.
+
+The harness executes original blocks without instruction patches or substituted
+call results, including original `ftol`. It deliberately composes across the
+unexecuted movement, occupation, chain-admission, coordinate-commit and arrival
+callbacks. It therefore establishes these scalar/table/state transitions, not a
+complete process pass. Residual interpolation, callback order, selector lifecycle
+outside these blocks, and Rust production delivery of the corrected stepping
+remain open prerequisites for the live repair/query host.
 
 ## 0. TL;DR
 
@@ -24,7 +338,7 @@ The walker's per-cell logic for each input overlay is dispatched via a
 
 After all cells are written, the walker conditionally calls
 `MapClass__UpdateBridgeZonesHelper` (only if any case-0 repair happened) and
-`FUN_005868a0` (rect-region helper, probably bridge-rebuild relayer).
+`FUN_005868a0` (X-major rectangle enumeration into two-pass batch `0x00586990`).
 
 ## 1. Walker inventory (address + dispatcher + role)
 
@@ -158,15 +472,15 @@ After the writes the walker calls, for each of the 3 modified cells:
   AND the new overlay type has flag at `OverlayTypeClass+0x2a9 != 0` (the
   bridge-overlay-clears-overlay-on-slope branch). This is the indirect path
   by which damage-state `+0x11E` is reset to 0 on repair.
-- `FUN_00487a10(0)` — flag-setter on cell (does not touch `+0x11E`; appears
-  to be a draw-state helper; out of scope to fully decompile).
+- `FUN_00487a10(0)` — synchronous occupant admission and damage; see the dated
+  correction above. It is required simulation behavior.
 
 After all iterations:
 - If `bVar1` (any case-0 repair fired) → call `MapClass__UpdateBridgeZonesHelper @ 0x0056C510`.
 - If the damaged-cell rect accumulator (`local_ec`, `local_e8`) is non-empty
-  → call `FUN_005868a0` with the rect (a region-iterator that walks all
-  cells in the rect and calls a member function — likely re-layers objects
-  on the now-repaired span).
+  → call `FUN_005868a0` with the rect. It enumerates X outer/Y inner, then calls
+  `0x00586990` even for an empty vector; the batch preserves reverse query/Recalc
+  and local hierarchy-patch order. It does not itself replace base connectivity.
 
 ## 3. Neighbor-step pattern
 
@@ -222,7 +536,7 @@ The only callees (verified by inspecting the disassembly) are:
 - `FUN_00598030` (RNG-bounded; 0x00598030 in NS_Low / 0x00598030 in NS_High
   etc.) at the case-0 site
 - `CellClass__RecalcAttributes @ 0x0047D2B0` ×3 (post-write)
-- `FUN_00487a10` ×3 (draw/redraw helper)
+- `FUN_00487a10` ×3 (live occupant admission/damage; see dated correction above)
 - `MapClass__UpdateBridgeZonesHelper @ 0x0056C510` (conditional; post-loop)
 - `FUN_005868a0` (conditional; post-loop)
 - `FUN_00580B20` (NS_Low/EW_Low) / `FUN_00580B70` (NS_High/EW_High) — loop
@@ -285,16 +599,15 @@ reachable from YR-live overlay states during a normal damaged-bridge state.
    `g_OverlayTypeClass_Array[0x4A].+0x2a9` (and a few neighbours) in a
    separate investigation.
 
-2. **`FUN_005868a0` semantics.** Called after the walk if a damaged-rect
-   accumulator is non-empty. Appears to be a region-iterator that invokes a
-   member function (vtable slot at PTR_FUN_007e3890) on each cell in the
-   rect. Likely a per-object relayer for things sitting on the now-repaired
-   span (so they re-attach to the OnBridge layer). Not decompiled in detail
-   here.
+2. **`FUN_005868a0` delivery.** The original body collects the rectangle's
+   cells in X-major order and calls `0x00586990` even for an empty collection.
+   Its zone-batch semantics are now captured in
+   `tools/spatial_oracle/bridge_hierarchy.{py,json}`. Wiring the rectangle
+   callers into the prepared live Rust batch owner remains open.
 
-3. **`FUN_00487a10(0)` semantics.** Called 3× per iteration on the modified
-   cells. Probably a draw/dirty helper, not a state-write. Not decompiled
-   in detail.
+3. **`FUN_00487a10(0)` delivery.** The dated correction above establishes
+   live occupant admission and direct damage. This remains a required Rust
+   ordinary-repair integration prerequisite.
 
 4. **NS/EW span-axis naming.** The walker iterates **across** the bridge,
    not along it (NS walker iterates X; EW walker iterates Y), with the

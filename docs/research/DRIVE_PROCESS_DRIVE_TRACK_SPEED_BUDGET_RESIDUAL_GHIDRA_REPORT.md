@@ -1,5 +1,12 @@
 # Drive Process Drive Track Speed Budget / Residual - Ghidra Research Report
 
+**2026-09-12 correction:** original executable witnesses supersede the older
+two-way residual-gate interpretation and Rust-status recommendations here.
+[Residual cases](../../tools/spatial_oracle/locomotor_track_residual.json) cover
+84 scalar and 32 supplied Cell-identity cases; [cursor cases](../../tools/spatial_oracle/locomotor_track_cursor.json)
+cover current-cursor reads, survivor increments and paid terminal expressions.
+Complete movement callbacks and Rust production integration remain open.
+
 **Address(es):** `0x004B0F20` primary; caller `0x004B0500`; speed helpers `0x004DB1A0`, `0x004D3710`
 **Investigation Mode:** exhaustive-slice
 **Claimed Scope:** `DriveLocomotionClass::Process_Drive_Track @ 0x004B0F20` speed-fraction consumer, per-tick movement budget, residual carry, and point-step consumption.
@@ -101,13 +108,25 @@ Active in YR: Yes. Evidence: primary decompile residual branch after `0x004B1F64
 If the stored residual is `< 1`, the function returns. If the track index is negative, it returns. Otherwise, it re-reads the current track point and computes an interpolated coordinate toward the next point:
 
 ```text
-interp_delta = Transform(next_point_delta) * (residual * (1/7))
-candidate = saved_position + interp_delta
-use candidate if candidate cell is saved cell or full-step cell, or residual > 3
-else use full-step coordinate
+saved = current owner XYZ after the paid loop and its callbacks
+full.xy = retained head.xy + Transform(raw[next-to-consume cursor]).xy
+full.z = saved.z
+delta = wrapping_sub(full, saved)
+factor = reload_f32(chopped_f32(chop53(residual * original_binary64(1/7))))
+candidate = wrapping_add(saved, ftol(chop53(delta * factor)))
+if candidate Cell identity matches saved or full Cell identity: use candidate
+else if residual > 3: use full
+else: keep saved
 ```
 
-The constant is `_DAT_007E7FA8 = 1/7`. The safety gate includes a strict `residual > 3` trust window. Active in YR: Yes. Evidence: decompile calls `CoordStruct__ScaleByFactor(&delta, (float)*(this+0x4C) * _DAT_007e7fa8)` and tests `3 < *(int *)(this+0x4C)`.
+The original binary64 constant at `007E7FA8` has bits `3FC2492492492492`.
+Drive `4B23B2..23EE` / Ship `6A19FA..1A36` execute the original scalar helper
+`75F540` and `Math::ftol7C5F00`, including the f32 argument store/reload.
+Drive `4B2452..24AD` / Ship `6A1AA3..1AFE` execute the three-way identity gate.
+For delta `(7,-7,0)` and residual `1..7`, original output is `(0,0,0)` through
+`(6,-6,0)`, demonstrating why ordinary integer division is wrong. Lookup identity
+(including shared dummy identity) differs from the later signed coordinate-cell
+comparison; the supplied-identity witnesses do not prove map lookup delivery.
 
 This interpolation updates position/cell marking as needed, but it does not increment `+0x5C` again and does not spend another `7` budget units. Active in YR: Yes.
 
@@ -149,7 +168,7 @@ This is not a full miss: Rust now models the `7` point cost and residual interpo
 | retry mask / no double-speed contribution | verified | assembly `0x004B127A..0x004B128D`; caller `0x004B0500` | none |
 | residual add and writeback | verified | assembly `0x004B1284..0x004B1295`, `0x004B1F50..0x004B1F64` | none |
 | point cost and loop bound | verified | `SUB ...,0x7`; `CMP ...,0x7; JG` at `0x004B159D`, `0x004B1F50..0x004B1F56` | none |
-| residual interpolation safety gate | verified | decompile residual branch; `_DAT_007E7FA8`; `residual > 3` | none for branch shape |
+| residual interpolation safety gate | original interior execution established | `locomotor_track_residual` scalar and three-way identity witnesses | actual Cell lookups and production callback delivery remain open |
 | full `GetCurrentSpeed @ 0x004DB1A0` internals | touched-not-exhausted | decompile and assembly `0x004DB1A0..0x004DB240` | dedicated speed helper slice for exact rounding/bonus inputs |
 | upstream `Process_Movement` target-speed producer | touched-not-exhausted | `DRIVE_PROCESS_MOVEMENT_GHIDRA_REPORT.md`; decompile context | sibling swarm slots |
 | NavCom/arrival/queue behavior | deferred | out of scope | already covered by sibling docs/current implementation |
@@ -179,7 +198,7 @@ This is not a full miss: Rust now models the `7` point cost and residual interpo
 | Drive budget is `(retry ? 0 : owner.GetCurrentSpeed()) + DriveLocomotion+0x4C`, and retry calls do not add a fresh speed contribution. | `0x004B126F..0x004B1295`; caller `0x004B0500` | mismatch/partial: Rust feeds `effective_speed = MovementTarget.current_speed * cell_speed_mod` into `DriveTrackState` | `src/sim/movement/movement_tick.rs`, `src/sim/movement/drive_track.rs`, `src/sim/components.rs` | Make normal Drive movement budget derive from DriveLocomotion-owned current speed fraction and residual, with a same-tick retry/no-double-count path. | Two same-tick Drive passes with residual 6 and speed contribution 4 consume at most one point, not two fresh-speed budgets -> `drive_track_retry_call_uses_residual_without_new_speed` | Do not add `speed * dt` twice when `Process` calls track before and after movement selection. |
 | Each consumed drive-track point costs exactly `7`; loop is strict `budget > 7`; residual `7` is carried. | `0x004B159D`, `0x004B1F50..0x004B1F64` | partial: Rust uses `TRACK_STEP_COST`, but budget lives on `DriveTrackState`, not `DriveLocomotionRuntime` | `src/sim/movement/drive_track.rs`, `src/sim/components.rs` | Preserve strict `> 7` semantics and store leftover in DriveLocomotion-owned residual for normal Drive. | Starting residual 7 with zero fresh speed does not advance point_index; residual remains 7 -> `drive_track_budget_equal_seven_does_not_consume_point` | Do not convert this to `>= 7`; it creates one-point cadence drift. |
 | `Accelerates=false` assigns `loco+0x50` to owner current speed fraction immediately; `Accelerates=true` runs ramp/brake before budget. | `0x004B0F74..0x004B1269`; `0x004D3710..0x004D3768`; `0x00715402..0x00715416` | mismatch: Rust parses/stores `accelerates`, but true-ramp branch in `DriveLocomotionRuntime` is not implemented and generic ramp still controls movement | `src/sim/movement/drive_locomotion.rs`, `src/sim/movement/movement_tick.rs`, `src/rules/object_type.rs` | Drive runtime should own `target_speed_fraction` and `current_speed_fraction`; false copies target to current before budget; true applies verified ramp/clamps before budget. | MTNK/Grizzly (`Accelerates=false`) starts at computed target fraction on first Drive tick, while AMCV default true starts below target and ramps -> `drive_accelerates_false_assigns_target_before_budget` / `drive_accelerates_true_ramps_before_budget` | Do not model the flag by zeroing `AccelerationFactor`; the binary uses a distinct bool at `+0xDBD`. |
-| Residual interpolation uses `residual * 1/7` with a saved/full-cell safety gate and `residual > 3` trust window. | primary decompile residual branch; `_DAT_007E7FA8`; `3 < residual` test | mostly implemented in `interp_sub_step`; needs ownership reconciliation after Drive runtime owns residual | `src/sim/movement/drive_track.rs`, render-visible position update callers | Keep existing interpolation shape while moving the residual source to DriveLocomotion ownership; do not drop the `>3` gate. | Residual 3 outside saved/full cell falls back to full step, residual 4 uses interpolation -> `drive_residual_interp_trust_window_matches_gt_three` | Do not make interpolation purely `residual / 7` without the cell membership fallback. |
+| Residual interpolation starts from current XYZ, uses chopped f32 scaling and a three-way Cell-identity gate. | original `locomotor_track_residual` executable witnesses | prior `interp_sub_step` arithmetic and fallback are incorrect; migration open | `src/sim/movement/track_process.rs` and production movement host | Preserve native floating-point operations and actual lookup identity. | Saved corpus: matching identity selects interpolation; unmatched residual3 keeps current; unmatched residual4 chooses full. | Do not retain the former two-way trust-window behavior or reconstruct current pose from the previous raw point. |
 
 ## Negative Facts / Do Not Do
 

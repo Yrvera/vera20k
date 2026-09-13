@@ -331,7 +331,7 @@ impl BridgeRuntimeState {
         triple: [Option<(u16, u16)>; 3],
         family: RepairFamily,
         rng: &mut SimRng,
-        terrain: &ResolvedTerrainGrid,
+        _terrain: &ResolvedTerrainGrid,
         outcome: &mut RepairOutcome,
     ) {
         let Some((crx, cry)) = triple[0] else {
@@ -363,8 +363,7 @@ impl BridgeRuntimeState {
             let overlay_changed =
                 self.write_overlay_byte_deferred_recalc(pos.0, pos.1, new_overlay);
             if let Some(cell) = self.cell_mut(pos.0, pos.1) {
-                let changed = overlay_changed || cell.damaged_variant;
-                if changed {
+                if overlay_changed {
                     outcome.repaired_cells += 1;
                 }
                 if let Some(span_id) = cell.anchor_span_id {
@@ -377,11 +376,9 @@ impl BridgeRuntimeState {
             self.queue_overlay_recalc(rx, ry);
         }
 
-        for &(rx, ry) in &touched {
-            let damaged_variant_cells =
-                self.apply_damaged_variant_flood_fill(rx, ry, false, terrain);
-            super::extend_unique_cells(&mut outcome.radar_cells, damaged_variant_cells);
-        }
+        // Original ordinary repair walkers rewrite overlay/Recalc only. They
+        // do not call56E990; pavement clearing belongs to repair-or-ramp's
+        // fallback and the pavement span walker, at their own call sites.
         if matches!(prior_overlay, 0x64 | 0x65 | 0xE7 | 0xE8) {
             super::extend_unique_cells(&mut outcome.radar_cells, touched.iter().copied());
         }
@@ -1647,7 +1644,6 @@ mod tests {
                 role: BridgeCellRole::Body,
                 anchor_span_id: Some(1),
                 overlay_byte: overlay,
-                damaged_variant: false,
                 bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
@@ -2044,7 +2040,6 @@ mod tests {
                     role: BridgeCellRole::Body,
                     anchor_span_id: Some(1),
                     overlay_byte: 0xDD,
-                    damaged_variant: false,
                     bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
                 },
             );
@@ -2086,7 +2081,6 @@ mod tests {
                     role: BridgeCellRole::Body,
                     anchor_span_id: Some(1),
                     overlay_byte: 0xE3,
-                    damaged_variant: false,
                     bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
                 },
             );
@@ -2168,7 +2162,6 @@ mod tests {
                 role: BridgeCellRole::Body,
                 anchor_span_id: Some(2),
                 overlay_byte: overlay,
-                damaged_variant: false,
                 bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );

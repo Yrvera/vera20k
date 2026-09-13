@@ -181,6 +181,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             sh,
             uv_fn,
             bridge_state,
+            state.match_state.sim_runtime.as_ref().and_then(|rt| rt.view().resolved_terrain()),
         )
     } else {
         crate::render::terrain_instances::TerrainInstances { normal: Vec::new() }

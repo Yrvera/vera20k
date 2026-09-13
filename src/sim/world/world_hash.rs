@@ -220,7 +220,11 @@ mod shared_dummy_bridge_hash_tests {
         let retained = sim.state_hash();
         assert_ne!(side_flag, retained);
         dummy.stamp_coord(7, -3);
-        assert_ne!(retained, sim.state_hash(), "retained bridge pointer makes dummy coordinate future-affecting");
+        assert_ne!(
+            retained,
+            sim.state_hash(),
+            "retained bridge pointer makes dummy coordinate future-affecting"
+        );
         dummy.write_native_anchor(None);
         assert_eq!(side_flag, sim.state_hash());
     }
@@ -644,10 +648,14 @@ impl Simulation {
             let shared_dummy = shared_dummy_handle.snapshot();
             let gap_flags = shared_dummy_handle.retained_bridge_flags() & 0xC00;
             let bridge_keeps_dummy = schema.includes(HashFeature::BridgePublication)
-                && (shared_dummy_handle.native_anchor() == Some(crate::map::cell_index::NativeCellIdentity::Dummy)
-                    || self.resolved_terrain.as_ref().is_some_and(|terrain| terrain.iter().any(|cell| {
-                        cell.bridge_facts.native_anchor == Some(crate::map::cell_index::NativeCellIdentity::Dummy)
-                    })));
+                && (shared_dummy_handle.native_anchor()
+                    == Some(crate::map::cell_index::NativeCellIdentity::Dummy)
+                    || self.resolved_terrain.as_ref().is_some_and(|terrain| {
+                        terrain.iter().any(|cell| {
+                            cell.bridge_facts.native_anchor
+                                == Some(crate::map::cell_index::NativeCellIdentity::Dummy)
+                        })
+                    }));
             if schema.includes(HashFeature::BridgePublication) {
                 let extra_flags = shared_dummy_handle.raw_flags()
                     & !crate::map::bridge_facts::RETAINED_CELLCLASS_BRIDGE_FLAG_MASK;
@@ -688,9 +696,11 @@ impl Simulation {
                 b"shared-cell-dummy-overlay-v1".hash(&mut hasher);
                 shared_dummy_overlay.hash(&mut hasher);
             }
-            if bridge_keeps_dummy || self.projectiles.iter().any(|(_, projectile)| {
-                projectile.target == crate::sim::projectile::ProjectileTarget::DummyCell
-            }) {
+            if bridge_keeps_dummy
+                || self.projectiles.iter().any(|(_, projectile)| {
+                    projectile.target == crate::sim::projectile::ProjectileTarget::DummyCell
+                })
+            {
                 // A retained Bullet pointer additionally makes coordinate
                 // deterministic future behavior. Preserve the complete v106
                 // field/tag order for historical provenance probes.
@@ -1195,7 +1205,6 @@ impl Simulation {
             cell.role.hash(hasher);
             cell.anchor_span_id.hash(hasher);
             cell.overlay_byte.hash(hasher);
-            cell.damaged_variant.hash(hasher);
             cell.bridgehead_anchor_class.hash(hasher);
         }
         // Hash AnchorSpan registry (Task 7 added this field). BTreeMap iterates
@@ -1536,6 +1545,9 @@ impl Simulation {
 
             entity.drive_locomotion.hash(hasher);
             entity.ship_locomotion.hash(hasher);
+            entity.foot_speed.hash(hasher);
+            entity.foot_occupation_enabled.hash(hasher);
+            entity.foot_locomotor_swap_active.hash(hasher);
 
             if let Some(ref forced) = entity.forced_drive_track {
                 1u8.hash(hasher);
@@ -2887,8 +2899,8 @@ mod rally_hash_tests {
         let mut entity_b = entity_a.clone();
         let mut drive = DriveLocomotionRuntime::default();
         drive.destination = Some(DriveCoord::cell(45, 40, 0));
-        drive.path.directions = vec![2, 2, 2, 2, 2];
-        drive.residual_budget = 3;
+        entity_b.navigation.path_replay.directions = vec![2, 2, 2, 2, 2];
+        drive.track.residual = 3;
         entity_b.drive_locomotion = Some(drive);
         sim_a.substrate.entities.insert(entity_a);
         sim_b.substrate.entities.insert(entity_b);
@@ -4202,7 +4214,6 @@ mod bridge_overlay_hash_tests {
                 role: BridgeCellRole::Anchor,
                 anchor_span_id: None,
                 overlay_byte: byte,
-                damaged_variant: false,
                 bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );

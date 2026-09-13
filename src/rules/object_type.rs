@@ -284,6 +284,9 @@ pub struct ObjectType {
     /// Defaults to true; `Accelerates=false` is handled by locomotor speed
     /// fraction ownership, not by mutating raw `Speed=`.
     pub accelerates: bool,
+    /// UnitType+E0C: ctor747103=false, ReadINI747829/74783D reads Passive.
+    /// Ordinary Drive4B1C59..1C72/Ship6A12A3..12BC chain admission requires it.
+    pub passive: bool,
     /// Lepton distance from destination at which braking begins (SlowdownDistance=).
     /// Default 512 (~2 cells). Original engine default is 500.
     pub slowdown_distance: i32,
@@ -1609,6 +1612,7 @@ impl ObjectType {
                 .map(sim_from_f32)
                 .unwrap_or(SimFixed::lit("0.002")),
             accelerates: section.get_bool("Accelerates").unwrap_or(true),
+            passive: section.get_bool("Passive").unwrap_or(false),
             slowdown_distance: section.get_i32("SlowdownDistance").unwrap_or(500),
             sight: section.get_i32("Sight").unwrap_or(0),
             // TechnoTypeClass ctor @ gamemd.exe 0x00711082 initializes

@@ -680,6 +680,7 @@ pub(super) fn handle_deferred_occupancy(
                 if let Some(ref mut target) = entity.movement_target {
                     let mut aborted_for_stuck = false;
                     let evts = handle_blocked_tick(
+                        &mut entity.navigation.path_replay,
                         target,
                         &mut entity.facing,
                         body_facing,
@@ -762,6 +763,7 @@ pub(super) fn handle_deferred_occupancy(
                             entities,
                             blocker_id,
                             path_grid,
+                            resolved_terrain,
                             occupancy,
                             object_list_layer,
                             rng,
@@ -832,6 +834,7 @@ pub(super) fn handle_deferred_occupancy(
                     entities,
                     blocker_id,
                     path_grid,
+                    resolved_terrain,
                     occupancy,
                     object_list_layer,
                     rng,
@@ -865,6 +868,7 @@ pub(super) fn handle_deferred_occupancy(
                     } else {
                         let mut aborted_for_stuck = false;
                         let evts = handle_blocked_tick(
+                            &mut entity.navigation.path_replay,
                             target,
                             &mut entity.facing,
                             body_facing,
@@ -1022,6 +1026,7 @@ pub(super) fn handle_deferred_occupancy(
                 if let Some(ref mut target) = entity.movement_target {
                     let mut aborted_for_stuck = false;
                     let evts = handle_blocked_tick(
+                        &mut entity.navigation.path_replay,
                         target,
                         &mut entity.facing,
                         body_facing,
@@ -1110,6 +1115,7 @@ pub(super) fn handle_deferred_occupancy(
                             entities,
                             blocker_id,
                             path_grid,
+                            resolved_terrain,
                             occupancy,
                             object_list_layer,
                             rng,
@@ -1160,6 +1166,7 @@ pub(super) fn handle_deferred_occupancy(
                     if let Some(ref mut target) = entity.movement_target {
                         let mut aborted_for_stuck = false;
                         let evts = handle_blocked_tick(
+                            &mut entity.navigation.path_replay,
                             target,
                             &mut entity.facing,
                             body_facing,
@@ -1207,6 +1214,7 @@ pub(super) fn handle_deferred_occupancy(
                 if let Some(ref mut target) = entity.movement_target {
                     let mut aborted_for_stuck = false;
                     let evts = handle_blocked_tick(
+                        &mut entity.navigation.path_replay,
                         target,
                         &mut entity.facing,
                         body_facing,

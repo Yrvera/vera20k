@@ -181,12 +181,12 @@ fn tube_hierarchy_generated_records_connect_full_and_local_precheck() {
             &ZonePrecheckExclusions::default(),
         )
     };
-    let mut hierarchy = build_zone_hierarchy(&base, &path, Some(&terrain), &[], width, height);
+    let mut hierarchy = build_zone_hierarchy(&base, Some(&terrain), &[], width, height);
     assert!(
         matches!(precheck(&hierarchy), ZonePrecheckOutcome::Failed),
         "the class barrier separates the hierarchy without Tube pairs"
     );
-    let full = build_zone_hierarchy(&base, &path, Some(&terrain), records, width, height);
+    let full = build_zone_hierarchy(&base, Some(&terrain), records, width, height);
     assert!(
         matches!(precheck(&full), ZonePrecheckOutcome::Passed(_)),
         "generated records connect the live three-level precheck"
@@ -241,7 +241,6 @@ fn tube_hierarchy_generated_records_connect_full_and_local_precheck() {
         incremental_rebuild_zone_hierarchy_around_cell(
             &mut hierarchy,
             &base,
-            &path,
             &terrain,
             records,
             (16, 32),

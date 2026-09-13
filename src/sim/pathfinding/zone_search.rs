@@ -417,8 +417,8 @@ fn find_path_zoned_marker_inner(
         if !zones_match {
             return None;
         }
-        let hierarchy_start_zone = level0_zones.zone_at(hierarchy_start.0, hierarchy_start.1);
-        let hierarchy_goal_zone = level0_zones.zone_at(hierarchy_goal.0, hierarchy_goal.1);
+        let hierarchy_start_zone = zg.hierarchy_zone_at_native(0, hierarchy_start)?;
+        let hierarchy_goal_zone = zg.hierarchy_zone_at_native(0, hierarchy_goal)?;
         match zone_precheck_flat(
             hierarchy,
             hierarchy_start_zone,
@@ -742,8 +742,8 @@ pub(crate) fn find_layered_path_zoned_marker(
             }
             match zone_precheck_flat(
                 hierarchy,
-                level0_zones.zone_at(hierarchy_start.0, hierarchy_start.1),
-                level0_zones.zone_at(hierarchy_goal.0, hierarchy_goal.1),
+                zg.hierarchy_zone_at_native(0, hierarchy_start)?,
+                zg.hierarchy_zone_at_native(0, hierarchy_goal)?,
                 movement_zone.unwrap_or(mz),
                 &ZonePrecheckExclusions::default(),
             ) {

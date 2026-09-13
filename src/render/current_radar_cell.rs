@@ -72,13 +72,9 @@ impl<'a> CurrentRadarCellAuthority<'a> {
         ry: u16,
         terrain_brightness: f32,
     ) -> Option<([u8; 3], [u8; 3])> {
-        let damaged_variant = self
-            .bridge_state
-            .and_then(|state| state.cell(rx, ry))
-            .is_some_and(|cell| cell.damaged_variant);
         let metadata = self
             .resolved_terrain?
-            .current_tile_radar_metadata(rx, ry, damaged_variant)?;
+            .current_tile_radar_metadata(rx, ry)?;
         Some(radar_colors_for_tmp_metadata(
             metadata.left,
             metadata.right,

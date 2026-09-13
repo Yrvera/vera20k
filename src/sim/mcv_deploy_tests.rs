@@ -64,7 +64,25 @@ fn finish(sim: &mut Simulation, rules: &RuleSet, id: u64) -> usize {
             break;
         }
     }
-    assert_eq!(yards(sim), 1);
+    assert_eq!(
+        yards(sim),
+        1,
+        "retained MCV: {:?}",
+        sim.substrate.entities.get(id).map(|e| (
+            &e.position,
+            &e.navigation,
+            &e.drive_locomotion,
+            &e.drive_track,
+            &e.movement_target,
+            &e.body_facing,
+            e.facing,
+            e.facing_target,
+            e.mcv_deploy_pending,
+            e.mcv_drive_was_rotating,
+            &e.mission,
+            &e.foot_speed
+        ))
+    );
     receipts
 }
 #[test]
@@ -394,8 +412,12 @@ fn active_track_and_same_cell_destination_preserve_the_rotation_latch() {
     e.mcv_deploy_pending = true;
     e.mcv_drive_was_rotating = true;
     let drive = e.drive_locomotion.get_or_insert_with(Default::default);
-    drive.track_index = 3;
+    drive.track.turn_index = 3;
     drive.track_valid = true;
+    assert!(
+        e.drive_track.is_none(),
+        "native progress owns the active gate"
+    );
     drive_process_prelude(&mut sim, id, &rules);
     assert!(
         sim.substrate
@@ -417,12 +439,12 @@ fn active_track_and_same_cell_destination_preserve_the_rotation_latch() {
             .mcv_drive_was_rotating
     );
     assert_eq!(yards(&sim), 0);
-    sim.substrate
-        .entities
-        .get_mut(id)
-        .unwrap()
-        .navigation
-        .nav_com = None;
+    let e = sim.substrate.entities.get_mut(id).unwrap();
+    e.navigation.nav_com = None;
+    // Retained legacy geometry cannot override cleared +63 authority.
+    e.drive_track =
+        crate::sim::movement::drive_track::begin_drive_track_with_head_offset(1, 0, 128, -128, 0);
+    assert!(e.drive_track.is_some());
     drive_process_prelude(&mut sim, id, &rules);
     assert_eq!(yards(&sim), 1);
 }

@@ -137,7 +137,6 @@ fn bridge_state_at(cell: (u16, u16), intact: bool) -> BridgeRuntimeState {
             role: BridgeCellRole::Body,
             anchor_span_id: Some(1),
             overlay_byte: if intact { 0xCD } else { 0xE7 },
-            damaged_variant: false,
             bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
         },
     );
@@ -540,15 +539,18 @@ fn gsi_04_01_damaged_tmp_pair_rebuilds_and_repairs_in_full_and_incremental_paths
             valid: true,
         },
     );
+    resolved.cell_mut(cell.0, cell.1).unwrap().final_tile_index = 42;
+    resolved.cell_mut(cell.0, cell.1).unwrap().bridge_facts.raw_flags |= 0x2000;
     assert_eq!(
         resolved
-            .current_tile_radar_metadata(cell.0, cell.1, true)
+            .current_tile_radar_metadata(cell.0, cell.1)
             .unwrap()
             .right,
         DAMAGED_RAW_RIGHT,
         "the independent damaged TMP's exact right metadata remains retained",
     );
 
+    resolved.cell_mut(cell.0, cell.1).unwrap().bridge_facts.raw_flags &= !0x2000;
     let colors = colors();
     let pristine_state = bridge_state_at(cell, true);
     let pristine = live_runtime(
@@ -561,7 +563,7 @@ fn gsi_04_01_damaged_tmp_pair_rebuilds_and_repairs_in_full_and_incremental_paths
 
     let mut damaged_state = pristine_state;
     assert_eq!(
-        damaged_state.apply_damaged_variant_flood_fill(cell.0, cell.1, true, &resolved),
+        damaged_state.apply_damaged_variant_flood_fill(cell.0, cell.1, true, &mut resolved),
         vec![cell],
     );
     let damaged = live_runtime(
@@ -577,7 +579,7 @@ fn gsi_04_01_damaged_tmp_pair_rebuilds_and_repairs_in_full_and_incremental_paths
     assert_eq!(raw_pair(&incremental, cell), [DAMAGED_COLOR; 2]);
 
     assert_eq!(
-        damaged_state.apply_damaged_variant_flood_fill(cell.0, cell.1, false, &resolved),
+        damaged_state.apply_damaged_variant_flood_fill(cell.0, cell.1, false, &mut resolved),
         vec![cell],
     );
     let repaired = live_runtime(

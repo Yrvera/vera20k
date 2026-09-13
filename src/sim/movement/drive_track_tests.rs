@@ -114,13 +114,18 @@ fn raw_track_2_is_straight_ne_diagonal() {
     for (i, p) in points.iter().enumerate() {
         assert_eq!(p.facing, 32, "Track2 point {} should face NE (32)", i);
     }
-    // X increases by 8 per point (from -248 toward 0)
-    // Y decreases by 8 per point (from 248 toward 0)
+    // Retail Raw2 has (-129,129) at point15, not a uniform (-128,128)
+    // midpoint. Saved original points: locomotor_track_cursor.json raw_tracks.
     for i in 1..points.len() {
         let dx = points[i].x - points[i - 1].x;
         let dy = points[i - 1].y - points[i].y;
-        assert_eq!(dx, 8, "Track2 point {} X step should be +8, got {}", i, dx);
-        assert_eq!(dy, 8, "Track2 point {} Y step should be -8, got {}", i, dy);
+        let step = match i {
+            15 => 7,
+            16 => 9,
+            _ => 8,
+        };
+        assert_eq!(dx, step, "Track2 point {i} X step");
+        assert_eq!(dy, step, "Track2 point {i} Y step");
     }
     assert_eq!(points[0].x, -248);
     assert_eq!(points[0].y, 248);
@@ -1185,20 +1190,14 @@ fn gsi_06_13_selected_curve_starts_at_the_movers_own_cell_centre() {
     assert_eq!(lf, FACE_S, "and on the table's target facing");
 }
 
-/// Retail contract pin: the NE straight curve crosses TWO cell boundaries.
-///
-/// RawTrack 2 point 15 transforms to `(-128, +128)`, which against the NE head
-/// reference `(384, -128)` lands on sub `(256, 0)` — exactly the shared corner
-/// of four cells. Floor-dividing that coordinate puts the mover one cell east;
-/// the next point moves it one cell north. gamemd sees the same two transitions
-/// because it derives the cell by arithmetic-shifting its single absolute
-/// coordinate. The SE orientation of the same curve crosses both axes on one
-/// point and therefore reports a single boundary.
-///
-/// This pins the *coordinate* behaviour. The path node is consumed once for
-/// either orientation — that is the caller's job, covered in movement_tests.
+/// Retail Raw2 point15 is (-129,129), so its NE projection about head
+/// (384,-128) is (255,1). Point16 is (264,-8): both cell axes change together.
+/// The former Rust (-128,128) transcription invented an exact-corner sample
+/// and split that crossing. Exercise all four orientations of the corrected
+/// catalog through the existing geometric adapter; this is not a full native
+/// Process_Track comparison.
 #[test]
-fn advance_drive_track_2_ne_crosses_two_boundaries_se_crosses_one() {
+fn advance_drive_track_2_diagonals_cross_both_axes_together() {
     fn count_boundaries(transform_flags: u8, head_dx: i32, head_dy: i32, facing: u8) -> u32 {
         let mut state = begin_drive_track(2, transform_flags, head_dx, head_dy, facing).unwrap();
         let dt = SimFixed::lit("0.066");
@@ -1218,13 +1217,13 @@ fn advance_drive_track_2_ne_crosses_two_boundaries_se_crosses_one() {
 
     assert_eq!(
         count_boundaries(0, 1, -1, 0x20),
-        2,
-        "NE straight passes exactly through a cell corner, so it reports east then north"
+        1,
+        "NE retail points skip the exact cell corner"
     );
     assert_eq!(
         count_boundaries(1, -1, 1, 0xA0),
-        2,
-        "SW straight is the mirrored split of the same curve"
+        1,
+        "SW mirrors the same combined crossing"
     );
     assert_eq!(
         count_boundaries(4, 1, 1, 0x60),
@@ -1243,8 +1242,7 @@ fn advance_drive_track_2_ne_crosses_two_boundaries_se_crosses_one() {
 ///
 /// This is the contract the caller relies on: moving the mover's cell by the
 /// reported delta keeps `cell * 256 + sub` continuous, because the same delta
-/// is what shifted `cell_offset_*` inside the stepping loop. Split diagonals
-/// report one axis at a time; the sum is still the single path step.
+/// is what shifted `cell_offset_*` inside the stepping loop.
 #[test]
 fn advance_drive_track_reported_cell_deltas_sum_to_the_head_delta() {
     fn deltas(
@@ -1276,10 +1274,9 @@ fn advance_drive_track_reported_cell_deltas_sum_to_the_head_delta() {
         out
     }
 
-    // NE and SW split across two consecutive points; the sum is one diagonal step.
-    assert_eq!(deltas(2, 0, 1, -1, 0x20), vec![(1, 0), (0, -1)]);
-    assert_eq!(deltas(2, 1, -1, 1, 0xA0), vec![(0, 1), (-1, 0)]);
-    // SE and NW cross both axes on a single point.
+    // All orientations of retail Raw2 cross both axes on a single point.
+    assert_eq!(deltas(2, 0, 1, -1, 0x20), vec![(1, -1)]);
+    assert_eq!(deltas(2, 1, -1, 1, 0xA0), vec![(-1, 1)]);
     assert_eq!(deltas(2, 4, 1, 1, 0x60), vec![(1, 1)]);
     assert_eq!(deltas(2, 2, -1, -1, 0xE0), vec![(-1, -1)]);
     // The cardinals are single-axis by construction.

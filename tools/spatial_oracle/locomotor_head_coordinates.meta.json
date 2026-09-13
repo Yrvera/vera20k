@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "Original Drive/Ship fresh, second-node and chain coordinate-producing expressions",
+  "assumptions": [
+    "All six interior blocks use supplied live register/stack frames; movement admission and final head/selector stores are excluded",
+    "Original 49F3A0 initializer writes the direction table before each case; no direction deltas are supplied",
+    "Original first-node expressions call XYZ copy constructor41C230; no code or calls are substituted",
+    "Second-node source is supplied at the post-PUSH1/PUSH0 frame offsets; no intervening first-node admission is executed",
+    "Chain source is the prior retained head, with distinct supplied current Foot XYZ; callbacks and complete chaining are excluded",
+    "Signed/overflow/NullCoord inputs bound scalar behavior, not active stock-map reachability",
+    "288 cases cover two active-retail families, three expressions, six supplied poses and all eight initialized directions"
+  ],
+  "substitutions": [],
+  "entry_points": {
+    "direction_initializer": "0x0049F3A0",
+    "coordinate_copy_constructor": "0x0041C230",
+    "drive_fresh": "0x004B32AF",
+    "ship_fresh": "0x006A28FF",
+    "drive_second_node": "0x004B40B0",
+    "ship_second_node": "0x006A36E0",
+    "drive_chain": "0x004B1BC4",
+    "ship_chain": "0x006A120A"
+  },
+  "payload_sha256": "9ddfec39c92e33a6ef76814da6731278ae03e16d7f0a68574b9a34062510583a"
+}

@@ -404,6 +404,7 @@ fn spawn_bolt(
             &mut sim.zone_grid,
             &mut sim.path_grid,
             sim.bridge_state.as_ref(),
+            sim.playfield_bounds,
         );
         let terrain_objects = TerrainCollectionView {
             objects: &sim.production.terrain_objects,

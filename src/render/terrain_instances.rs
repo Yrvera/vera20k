@@ -46,6 +46,7 @@ pub fn build_visible_instances(
     screen_height: f32,
     uv_fn: UvLookupFn<'_>,
     bridge_state: Option<&crate::sim::bridge_state::BridgeRuntimeState>,
+    live_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
 ) -> TerrainInstances {
     let view_left: f32 = camera_x - CULL_MARGIN;
     let view_right: f32 = camera_x + screen_width + CULL_MARGIN;
@@ -92,29 +93,12 @@ pub fn build_visible_instances(
                 - ((native_z::TILE_HEIGHT_ROWS * i32::from(cell.z as i8)) / 2) as f32
         };
 
-        // Bridge cells with baked damaged-variant TMP data ignore the
-        // map-load PRNG variant and instead route to the per-frame
-        // damaged_variant bool from the sim's BridgeRuntimeState. Variant 1
-        // is the damaged baked art; variant 0 is the pristine art.
-        //
-        // Native ordering (verified from the tile draw entry point): the engine
-        // tests the tile's chain length FIRST — `total_file_count < 2` pins the
-        // variant to 0 and skips the damaged check entirely — and only then asks
-        // whether the sub-tile has damaged data. Every other case agrees with the
-        // branch below, so the single divergent input is a tile that advertises
-        // damaged data while owning exactly one TMP file: gamemd draws variant 0,
-        // VERA asks the atlas for variant 1 and the exact-key lookup drops the
-        // cell. Reachability in stock data is UNCHECKED — damaged art ships as a
-        // sibling file, so such a tile should not exist. Closing it needs the
-        // chain length at draw time, which this struct does not carry.
-        let damaged_variant_swap: u8 = if cell.has_damaged_data {
-            bridge_state
-                .and_then(|bs| bs.cell(cell.rx, cell.ry))
-                .map(|bc| bc.damaged_variant as u8)
-                .unwrap_or(0)
-        } else {
-            cell.variant
-        };
+        // Native480350 uses current terrain flags for every pavement cell,
+        // even when the cell has no structural bridge-runtime entry. The
+        // resident file-count check precedes the pristine damaged-data gate.
+        let damaged_variant_swap = live_terrain
+            .and_then(|terrain| terrain.pavement_draw_variant(cell.rx, cell.ry))
+            .unwrap_or(cell.variant);
 
         // Bridge anchor tile_id override. Fires when sim reports a
         // non-Variant0 bridgehead_anchor_class AND the theater carries
@@ -126,6 +110,15 @@ pub fn build_visible_instances(
         let anchor_override = grid.anchor_variant_table.and_then(|table| {
             let bc = bridge_state?.cell(cell.rx, cell.ry)?;
             let axis = bc.axis?;
+            if live_terrain.is_some_and(|terrain| {
+                !terrain.is_current_bridge_middle(
+                    cell.rx,
+                    cell.ry,
+                    usize::from(axis == crate::sim::bridge_state::Axis::EW),
+                )
+            }) {
+                return None;
+            }
             table.tile_id_for(axis, bc.bridgehead_anchor_class)
         });
 
@@ -180,3 +173,7 @@ pub fn build_visible_instances(
 
     instances
 }
+
+#[cfg(test)]
+#[path = "bridge_pavement_caller_tests.rs"]
+mod pavement_caller_tests;

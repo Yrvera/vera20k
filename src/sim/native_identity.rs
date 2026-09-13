@@ -1,4 +1,4 @@
-//! Active-YR numeric `AbstractClass` identity during fresh map construction.
+//! Active-YR numeric `AbstractClass` identity and Scenario-owned continuation.
 //!
 //! This wrapping signed-32-bit namespace is independent of Rust's monotonic
 //! collision-free stable handles and of every RNG stream. Constructors
@@ -14,14 +14,16 @@ use crate::sim::world::Simulation;
 pub(crate) const FRESH_SCENARIO_NATIVE_ID_SEED: u32 = 1_000_000;
 pub(crate) const MAP_READ_NATIVE_ID_RESERVATION: u32 = 0x2710;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum NativeFreshIdPhase {
     PrefixSaved,
     MapReadReserved,
 }
 
-/// One fresh Scenario's wrapping numeric-ID cursor.
-#[derive(Debug)]
+/// One Scenario's wrapping numeric-ID cursor. Original689310/689470 save/load
+/// +214 as part of the raw Scenario block;683560 preserves it while resetting
+/// the adjacent RNG. Evidence: tools/spatial_oracle/native_id_snapshot.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NativeUniqueIdCursor {
     value: u32,
     saved_after_fresh_prefix: u32,
@@ -29,6 +31,15 @@ pub(crate) struct NativeUniqueIdCursor {
 }
 
 impl NativeUniqueIdCursor {
+    #[cfg(test)]
+    pub(crate) fn test_at_current_value(value: u32) -> Self {
+        Self {
+            value,
+            saved_after_fresh_prefix: value.wrapping_sub(MAP_READ_NATIVE_ID_RESERVATION),
+            phase: NativeFreshIdPhase::MapReadReserved,
+        }
+    }
+
     fn from_saved_prefix(saved_after_fresh_prefix: u32) -> Self {
         Self {
             value: saved_after_fresh_prefix,
@@ -95,9 +106,7 @@ impl Simulation {
     /// Assign one native numeric identity for an actual fresh-map constructor.
     /// Stable Rust handles remain independent; callers must invoke this only
     /// after the native-equivalent allocation/type gate has succeeded.
-    pub(crate) fn next_native_load_id(
-        &mut self,
-    ) -> Result<i32, NativeMapTubeConstructionError> {
+    pub(crate) fn next_native_load_id(&mut self) -> Result<i32, NativeMapTubeConstructionError> {
         self.native_unique_ids
             .as_mut()
             .map(NativeUniqueIdCursor::next_id)
@@ -129,18 +138,12 @@ impl Simulation {
         cursor.reserve_map_read_from_saved()?;
 
         let raw_section = RawTubeSection::from_ini(map_ini);
-        self.native_map_tubes =
-            NativeMapTubesState::Pending(NativeMapTubeReceipt::default());
+        self.native_map_tubes = NativeMapTubesState::Pending(NativeMapTubeReceipt::default());
         let NativeMapTubesState::Pending(receipt) = &mut self.native_map_tubes else {
             unreachable!("fresh Tube receipt was installed immediately above")
         };
         let mut assign_native_id = || cursor.next_id();
-        construct_raw_tube_section(
-            raw_section,
-            receipt,
-            &mut allocate,
-            &mut assign_native_id,
-        )?;
+        construct_raw_tube_section(raw_section, receipt, &mut allocate, &mut assign_native_id)?;
         Ok(())
     }
 
@@ -262,8 +265,7 @@ fn resize_constructor_count(map_width: u32, map_height: u32) -> u32 {
 mod tests {
     use super::{
         MAP_READ_NATIVE_ID_RESERVATION, NativeFreshIdPrefixCheckpoints,
-        NativeMapTubeConstructionError, NativeUniqueIdCursor,
-        build_noncampaign_fresh_id_prefix,
+        NativeMapTubeConstructionError, NativeUniqueIdCursor, build_noncampaign_fresh_id_prefix,
     };
     use crate::map::tubes::{AllocatedTubeParseError, TubeConstructionError};
     use crate::rules::ini_parser::IniFile;
@@ -276,10 +278,39 @@ mod tests {
     }
 
     #[test]
+    fn native_id_continuation_survives_production_snapshot_envelope() {
+        use crate::sim::snapshot::GameSnapshot;
+        let corpus: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/spatial_oracle/native_id_snapshot.json"
+        ))
+        .unwrap();
+        for case in corpus["cases"].as_array().unwrap() {
+            let input = case["input"].as_u64().unwrap() as u32;
+            let mut sim =
+                simulation_with_saved_prefix(input.wrapping_sub(MAP_READ_NATIVE_ID_RESERVATION));
+            sim.session.map_name = "native-id-continuation".into();
+            let cursor = sim.native_unique_ids.as_mut().unwrap();
+            cursor.reserve_map_read_from_saved().unwrap();
+            assert_eq!(cursor.current_raw(), case["saved"].as_u64().unwrap() as u32);
+            let bytes = GameSnapshot::save_validated(&sim, 17, 23, "native ID continuation", 0);
+            let mut restored =
+                GameSnapshot::load_validated(&bytes, 17, 23, "native-id-continuation").unwrap();
+            let restored_cursor = restored.sim.native_unique_ids.as_mut().unwrap();
+            assert_eq!(
+                restored_cursor.current_raw(),
+                case["loaded"].as_u64().unwrap() as u32
+            );
+            assert_eq!(
+                restored_cursor.next_id() as u32,
+                case["next"].as_u64().unwrap() as u32
+            );
+            assert!(restored_cursor.reserve_map_read_from_saved().is_err());
+        }
+    }
+
+    #[test]
     fn fixture_b_folds_both_house_and_resize_generations_in_order() {
-        let receipt = build_noncampaign_fresh_id_prefix(
-            0, 2, 2, 5, 2, 2, 2, 3,
-        );
+        let receipt = build_noncampaign_fresh_id_prefix(0, 2, 2, 5, 2, 2, 2, 3);
         assert_eq!(
             receipt.checkpoints(),
             NativeFreshIdPrefixCheckpoints {
@@ -323,23 +354,11 @@ mod tests {
         );
         let receipt = simulation.native_map_tubes.as_ref().unwrap();
         assert_eq!(receipt.entries.len(), 2);
-        assert_eq!(
-            receipt.entries[0].native_init.source_entry_ordinal,
-            0
-        );
-        assert_eq!(
-            receipt.entries[0].native_init.native_unique_id,
-            1_010_038
-        );
+        assert_eq!(receipt.entries[0].native_init.source_entry_ordinal, 0);
+        assert_eq!(receipt.entries[0].native_init.native_unique_id, 1_010_038);
         assert_eq!(receipt.entries[0].fact.entry, (7, 0));
-        assert_eq!(
-            receipt.entries[1].native_init.source_entry_ordinal,
-            1
-        );
-        assert_eq!(
-            receipt.entries[1].native_init.native_unique_id,
-            1_010_039
-        );
+        assert_eq!(receipt.entries[1].native_init.source_entry_ordinal, 1);
+        assert_eq!(receipt.entries[1].native_init.native_unique_id, 1_010_039);
         assert_eq!(receipt.entries[1].fact.entry, (2, 0));
     }
 
@@ -364,13 +383,11 @@ mod tests {
         assert_eq!(allocation_visits, vec![0, 1]);
         assert_eq!(
             error,
-            NativeMapTubeConstructionError::Tube(
-                TubeConstructionError::AllocatedRowMalformed {
-                    ordinal: 1,
-                    native_unique_id: 1_010_039,
-                    error: AllocatedTubeParseError::PathRunsOutBeforeNativeStop,
-                }
-            )
+            NativeMapTubeConstructionError::Tube(TubeConstructionError::AllocatedRowMalformed {
+                ordinal: 1,
+                native_unique_id: 1_010_039,
+                error: AllocatedTubeParseError::PathRunsOutBeforeNativeStop,
+            })
         );
         assert_eq!(
             simulation.native_unique_ids.as_ref().unwrap().current_raw(),
@@ -379,10 +396,7 @@ mod tests {
         let receipt = simulation.native_map_tubes.as_ref().unwrap();
         assert_eq!(receipt.entries.len(), 1);
         assert_eq!(receipt.entries[0].native_init.source_entry_ordinal, 0);
-        assert_eq!(
-            receipt.entries[0].native_init.native_unique_id,
-            1_010_038
-        );
+        assert_eq!(receipt.entries[0].native_init.native_unique_id, 1_010_038);
     }
 
     #[test]
@@ -437,13 +451,11 @@ mod tests {
 
         assert_eq!(
             error,
-            NativeMapTubeConstructionError::Tube(
-                TubeConstructionError::AllocatedRowMalformed {
-                    ordinal: 0,
-                    native_unique_id: 1_010_019,
-                    error: AllocatedTubeParseError::PathRunsOutBeforeNativeStop,
-                }
-            )
+            NativeMapTubeConstructionError::Tube(TubeConstructionError::AllocatedRowMalformed {
+                ordinal: 0,
+                native_unique_id: 1_010_019,
+                error: AllocatedTubeParseError::PathRunsOutBeforeNativeStop,
+            })
         );
         assert_eq!(
             simulation.native_unique_ids.as_ref().unwrap().current_raw(),

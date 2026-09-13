@@ -6,8 +6,10 @@
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
+#[cfg(test)]
+use crate::sim::components::DriveCoord;
 use crate::sim::components::{
-    DriveCoord, DriveLocomotionRuntime, NavTargetRef, ShipLocomotionRuntime,
+    DriveLocomotionRuntime, FootSpeedState, NavTargetRef, ShipLocomotionRuntime,
 };
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
@@ -29,8 +31,11 @@ pub(crate) fn process_drive_locomotion_shell(entity: &GameEntity) -> DriveProces
     DriveProcessOutcome::Processed
 }
 
-pub(super) fn drive_requires_native_step(drive: &DriveLocomotionRuntime) -> bool {
-    !drive.path.directions.is_empty() || drive.residual_budget != 0
+pub(super) fn drive_requires_native_step(
+    drive: &DriveLocomotionRuntime,
+    path_replay: &crate::sim::components::FootPathQueue,
+) -> bool {
+    !path_replay.remaining_directions().is_empty() || drive.track.residual != 0
 }
 
 /// `ILocomotion::Is_Moving` (slot 4) for the Drive locomotor.
@@ -59,17 +64,6 @@ pub(crate) fn drive_locomotor_is_moving(entity: &GameEntity) -> bool {
     head.x != owner_x || head.y != owner_y
 }
 
-pub(super) fn refresh_drive_head_to_coord(entity: &mut GameEntity, coord: DriveCoord) -> bool {
-    let Some(drive) = entity.drive_locomotion.as_mut() else {
-        return false;
-    };
-    if drive.head_to == Some(coord) {
-        return false;
-    }
-    drive.head_to = Some(coord);
-    true
-}
-
 pub(super) fn drive_entity_nav_targets(entities: &EntityStore) -> Vec<(u64, NavTargetRef)> {
     entities
         .keys_sorted()
@@ -77,7 +71,19 @@ pub(super) fn drive_entity_nav_targets(entities: &EntityStore) -> Vec<(u64, NavT
         .filter_map(|id| {
             let entity = entities.get(id)?;
             let target = entity.navigation.nav_com?;
-            matches!(target, NavTargetRef::Entity { .. }).then_some((id, target))
+            let NavTargetRef::Entity { id: target_id } = target else {
+                return None;
+            };
+            // Native4B05D0: only Unit -> Infantry, on the active Drive instance.
+            (entity.category == crate::map::entities::EntityCategory::Unit
+                && entity
+                    .locomotor
+                    .as_ref()
+                    .is_some_and(|l| l.kind == LocomotorKind::Drive)
+                && entities.get(target_id).is_some_and(|target| {
+                    target.category == crate::map::entities::EntityCategory::Infantry
+                }))
+            .then_some((id, target))
         })
         .collect()
 }
@@ -113,10 +119,11 @@ pub(super) fn compute_drive_target_speed_fraction(
 /// Update Drive target/current speed fractions before budget consumption.
 ///
 /// Gamemd keeps the target fraction on DriveLocomotion and the applied/current
-/// fraction on the owner through `SetSpeedFraction`. Rust stores both in the
-/// runtime for now, but `current_speed_fraction` is the movement authority.
+/// fraction on the owner through `SetSpeedFraction`4D3710. A controller swap
+/// must leave that live owner value available to the retained invocation.
 pub(super) fn update_drive_speed_fraction(
     drive: &mut DriveLocomotionRuntime,
+    owner_speed: &mut FootSpeedState,
     target_fraction: SimFixed,
     accelerates: bool,
     raw_speed_per_frame: SimFixed,
@@ -127,7 +134,7 @@ pub(super) fn update_drive_speed_fraction(
 ) {
     update_vehicle_speed_fraction(
         &mut drive.target_speed_fraction,
-        &mut drive.current_speed_fraction,
+        &mut owner_speed.applied_fraction,
         target_fraction,
         accelerates,
         raw_speed_per_frame,
@@ -141,12 +148,12 @@ pub(super) fn update_drive_speed_fraction(
 /// Update Ship's class-owned target fraction and owner-applied fraction.
 ///
 /// The active Ship `Process_Drive_Track` body uses these same transitions
-/// before calling the owner's `SetSpeedFraction` slot. Keeping both values on
-/// Ship runtime gives `Is_Moving_Now` its native source without consulting the
-/// path-execution adapter.
+/// before calling the owner's `SetSpeedFraction` slot. The target belongs to
+/// Ship; the applied value belongs to the live Foot owner.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update_ship_speed_fraction(
     ship: &mut ShipLocomotionRuntime,
+    owner_speed: &mut FootSpeedState,
     target_fraction: SimFixed,
     accelerates: bool,
     raw_speed_per_frame: SimFixed,
@@ -157,7 +164,7 @@ pub(super) fn update_ship_speed_fraction(
 ) {
     update_vehicle_speed_fraction(
         &mut ship.target_speed_fraction,
-        &mut ship.current_speed_fraction,
+        &mut owner_speed.applied_fraction,
         target_fraction,
         accelerates,
         raw_speed_per_frame,
@@ -299,7 +306,7 @@ fn update_vehicle_speed_fraction(
 /// `FootClass::GetCurrentSpeed` first truncates the type/owner-adjusted raw
 /// speed, then multiplies by owner `+0x578` and truncates again. Rust keeps the
 /// adjusted speed in leptons/second, so dividing by the 15-Hz native baseline
-/// recovers the first integer before applying the locomotor-owned fraction.
+/// recovers the first integer before applying the Foot-owned fraction.
 ///
 /// Two native terms are **not** modelled, recorded rather than guessed:
 /// - the elite multiply, `HasWeaponAbility(0)` -> `x Rules+0x678`, which sits
@@ -309,10 +316,10 @@ fn update_vehicle_speed_fraction(
 ///   accumulates over a long match. Downstream risk: none - one factor in the
 ///   middle of a chain VERA already reproduces exactly.
 /// - the halving at `0x004DB226`: RTTI 1 (UnitClass) with `owner+0x6CC != -1`
-///   -> `speed / 2` via `CDQ/SUB/SAR 1`. `+0x6CC` is UNCHECKED, so this
-///   carries no frequency clause - naming that field is the prerequisite, and
-///   a factor of two on a vehicle's per-frame speed is first-order if it
-///   fires.
+///   -> `speed / 2` via `CDQ/SUB/SAR 1`. This is the active-YR CTF flag owner
+///   index, normally inactive in stock multiplayer; it is not a TS-only gate.
+///   See FOOTCLASS_GET_CURRENT_SPEED_EXACT_GHIDRA_REPORT.md for the retained
+///   speed-crate input and staged getter proof needed by the live Process host.
 pub(crate) fn owner_current_speed_from_fraction(
     adjusted_speed_per_second: SimFixed,
     current_speed_fraction: SimFixed,
@@ -330,10 +337,12 @@ mod tests {
 
     #[test]
     fn gsi_13_06_ship_speed_fraction_uses_locomotor_owned_state() {
+        let mut owner_speed = FootSpeedState::default();
         let mut ship = ShipLocomotionRuntime::default();
 
         update_ship_speed_fraction(
             &mut ship,
+            &mut owner_speed,
             SIM_HALF,
             false,
             SimFixed::from_num(10),
@@ -343,11 +352,12 @@ mod tests {
             SimFixed::from_num(1000),
         );
         assert_eq!(ship.target_speed_fraction, SIM_HALF);
-        assert_eq!(ship.current_speed_fraction, SIM_HALF);
+        assert_eq!(owner_speed.applied_fraction, SIM_HALF);
 
-        ship.current_speed_fraction = SIM_ZERO;
+        owner_speed.applied_fraction = SIM_ZERO;
         update_ship_speed_fraction(
             &mut ship,
+            &mut owner_speed,
             SIM_ONE,
             true,
             SimFixed::from_num(10),
@@ -357,7 +367,7 @@ mod tests {
             SimFixed::from_num(1000),
         );
         assert_eq!(ship.target_speed_fraction, SIM_ONE);
-        assert_eq!(ship.current_speed_fraction, SimFixed::lit("0.03"));
+        assert_eq!(owner_speed.applied_fraction, SimFixed::lit("0.03"));
     }
 
     #[test]
@@ -392,12 +402,14 @@ mod tests {
         use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 
         let speed = ra2_speed_to_leptons_per_second(8);
+        let mut owner_speed = FootSpeedState {
+            applied_fraction: SIM_HALF,
+            cached_current_speed: 10,
+        };
         let mut ship = ShipLocomotionRuntime {
             destination: None,
             head_to: Some(DriveCoord::cell(4, 3, 0)),
             target_speed_fraction: SimFixed::lit("0.3"),
-            current_speed_fraction: SIM_HALF,
-            owner_current_speed: 10,
             ..Default::default()
         };
 
@@ -406,6 +418,7 @@ mod tests {
             assert_eq!(requested, SimFixed::lit("0.3"));
             update_ship_speed_fraction(
                 &mut ship,
+                &mut owner_speed,
                 requested,
                 true,
                 speed / SimFixed::from_num(15),
@@ -414,16 +427,16 @@ mod tests {
                 SIM_ZERO,
                 SimFixed::from_num(256),
             );
-            ship.owner_current_speed =
-                owner_current_speed_from_fraction(speed, ship.current_speed_fraction);
+            owner_speed.cached_current_speed =
+                owner_current_speed_from_fraction(speed, owner_speed.applied_fraction);
             assert_eq!(ship.target_speed_fraction, SimFixed::lit("0.3"));
-            assert!(ship.owner_current_speed > 0);
+            assert!(owner_speed.cached_current_speed > 0);
         }
 
         assert_eq!(ship.destination, None);
         assert_eq!(ship.head_to, Some(DriveCoord::cell(4, 3, 0)));
-        assert_eq!(ship.current_speed_fraction, SimFixed::lit("0.3"));
-        assert_eq!(ship.owner_current_speed, 6);
+        assert_eq!(owner_speed.applied_fraction, SimFixed::lit("0.3"));
+        assert_eq!(owner_speed.cached_current_speed, 6);
     }
 
     fn terrain_cell(rx: u16, ry: u16, speed_costs: SpeedCostProfile) -> ResolvedTerrainCell {
@@ -712,13 +725,15 @@ mod tests {
         // native clamp is `TechnoClass::SetSpeedFraction` @ 0x004D3710, which
         // every arm of `Process_Drive_Track` reaches, so the owner's fraction
         // never exceeds 1.
-        let mut drive = DriveLocomotionRuntime {
-            current_speed_fraction: SIM_ZERO,
+        let mut owner_speed = FootSpeedState {
+            applied_fraction: SIM_ZERO,
             ..Default::default()
         };
+        let mut drive = DriveLocomotionRuntime::default();
 
         update_drive_speed_fraction(
             &mut drive,
+            &mut owner_speed,
             SimFixed::lit("1.2"),
             false,
             SimFixed::from_num(10),
@@ -729,18 +744,20 @@ mod tests {
         );
 
         assert_eq!(drive.target_speed_fraction, SimFixed::lit("1.2"));
-        assert_eq!(drive.current_speed_fraction, SIM_ONE);
+        assert_eq!(owner_speed.applied_fraction, SIM_ONE);
     }
 
     #[test]
     fn accelerates_false_assigns_current_fraction_directly() {
-        let mut drive = DriveLocomotionRuntime {
-            current_speed_fraction: SIM_ZERO,
+        let mut owner_speed = FootSpeedState {
+            applied_fraction: SIM_ZERO,
             ..Default::default()
         };
+        let mut drive = DriveLocomotionRuntime::default();
 
         update_drive_speed_fraction(
             &mut drive,
+            &mut owner_speed,
             SIM_HALF,
             false,
             SimFixed::from_num(10),
@@ -751,18 +768,20 @@ mod tests {
         );
 
         assert_eq!(drive.target_speed_fraction, SIM_HALF);
-        assert_eq!(drive.current_speed_fraction, SIM_HALF);
+        assert_eq!(owner_speed.applied_fraction, SIM_HALF);
     }
 
     #[test]
     fn accelerates_true_ramps_current_fraction_upward() {
-        let mut drive = DriveLocomotionRuntime {
-            current_speed_fraction: SIM_ZERO,
+        let mut owner_speed = FootSpeedState {
+            applied_fraction: SIM_ZERO,
             ..Default::default()
         };
+        let mut drive = DriveLocomotionRuntime::default();
 
         update_drive_speed_fraction(
             &mut drive,
+            &mut owner_speed,
             SIM_ONE,
             true,
             SimFixed::from_num(10),
@@ -773,18 +792,20 @@ mod tests {
         );
 
         assert_eq!(drive.target_speed_fraction, SIM_ONE);
-        assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.03"));
+        assert_eq!(owner_speed.applied_fraction, SimFixed::lit("0.03"));
     }
 
     #[test]
     fn accelerates_true_brakes_by_raw_speed_scaled_decel_with_floor() {
-        let mut drive = DriveLocomotionRuntime {
-            current_speed_fraction: SIM_HALF,
+        let mut owner_speed = FootSpeedState {
+            applied_fraction: SIM_HALF,
             ..Default::default()
         };
+        let mut drive = DriveLocomotionRuntime::default();
 
         update_drive_speed_fraction(
             &mut drive,
+            &mut owner_speed,
             SIM_ONE,
             true,
             SimFixed::from_num(10),
@@ -795,20 +816,22 @@ mod tests {
         );
 
         assert_eq!(
-            drive.current_speed_fraction,
+            owner_speed.applied_fraction,
             SIM_HALF - SimFixed::from_num(10) * SimFixed::lit("0.002")
         );
     }
 
     #[test]
     fn accelerates_true_braking_uses_strict_slowdown_distance() {
-        let mut drive = DriveLocomotionRuntime {
-            current_speed_fraction: SIM_HALF,
+        let mut owner_speed = FootSpeedState {
+            applied_fraction: SIM_HALF,
             ..Default::default()
         };
+        let mut drive = DriveLocomotionRuntime::default();
 
         update_drive_speed_fraction(
             &mut drive,
+            &mut owner_speed,
             SIM_ONE,
             true,
             SimFixed::from_num(10),
@@ -818,6 +841,6 @@ mod tests {
             SimFixed::from_num(500),
         );
 
-        assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.53"));
+        assert_eq!(owner_speed.applied_fraction, SimFixed::lit("0.53"));
     }
 }

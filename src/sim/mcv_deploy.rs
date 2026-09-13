@@ -102,9 +102,12 @@ pub(crate) fn mission_unload(sim: &mut Simulation, id: u64, rules: &RuleSet) -> 
         .map(|e| e.mission.handler_state());
     if state == Some(0) {
         let e = sim.substrate.entities.get_mut(id).unwrap();
-        if let Some(drive) = e.drive_locomotion.as_mut() {
-            drive.path.cursor = drive.path.directions.len().min(u16::MAX as usize) as u16;
-        }
+        e.navigation.path_replay.cursor = e
+            .navigation
+            .path_replay
+            .directions
+            .len()
+            .min(u16::MAX as usize) as u16;
         e.mission.set_handler_state(1);
         // Native state 0 falls through to state 1 in this same invocation.
     }
@@ -193,9 +196,8 @@ pub(crate) fn drive_process_prelude(sim: &mut Simulation, id: u64, rules: &RuleS
         !e.dying
             // 0x4B055A..0x4B056D: active track owns Process and must leave
             // the previous-rotation latch alone until the track is finished.
-            && e.drive_track.is_none()
             && e.forced_drive_track.is_none()
-            && !e.drive_locomotion.as_ref().is_some_and(|d| d.track_valid && d.track_index != -1)
+            && !e.drive_locomotion.as_ref().is_some_and(|d| d.track_valid && d.track.turn_index != -1)
             // 0x4B066C..0x4B06C3: same-cell NavCom is handled by the
             // destination/waypoint owner before the rotation branch.
             && !matches!(e.navigation.nav_com, Some(crate::sim::components::NavTargetRef::Cell { rx, ry })

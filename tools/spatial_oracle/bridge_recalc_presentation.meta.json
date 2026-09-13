@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "Original pristine Recalc plus independent radar file/pointer and tactical selected-entry lookup; synthetic sources and NewUrban Wood03 retail bytes",
+  "assumptions": [
+    "Registered tile100, supplied relocated TMP heads and variant chain; original TMP loader excluded",
+    "Existing process selector table supplied with initialization flag set; table generation/RNG lifetime excluded",
+    "Recalc cases use real16,16 in16x16 map, level6, no overlay/objects, CliffBack0 and supplied Wheel/LAT policies",
+    "Radar runs original47C24A prefix,5471F0,4814F0,544E00; no brightness/minimap composition claim",
+    "Tactical runs original547F9D selected-template division/table fetch; raw RGB identifies selected entry, stored origin is not decoded canvas offset; no full drawing/GPU claim",
+    "Two sentinelFFFF cases retain Cell subtile1 for radar/coordinate selection and use tactical subtile0; supplied ClearTile100 has damaged gate true",
+    "Retail NewUrban Wood damaged OOB pointers fault in original RGB read; no authored retail-map reachability claim"
+  ],
+  "substitutions": [],
+  "entry_points": {
+    "recalc": "0x0047D2B0",
+    "radar_prefix": "0x0047C24A",
+    "damaged_gate": "0x005471F0",
+    "selector": "0x004814F0",
+    "file_chain": "0x00544E00",
+    "tactical_entry": "0x00547F9D"
+  },
+  "payload_sha256": "8f3c8b889831c47bbba30bc30e734d573828d25e919793da0c1980d0d0465915"
+}

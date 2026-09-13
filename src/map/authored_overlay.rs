@@ -288,6 +288,7 @@ pub(crate) enum AuthoredOverlayFinalizeError<E> {
     RecalcMalformedOverlayIdentity { identity: i32 },
     RecalcMissingOverlayType { overlay_id: u8 },
     RecalcCellIndexOutOfBounds { index: usize },
+    RecalcResidentInput { reason: String },
     Host(E),
 }
 
@@ -316,6 +317,9 @@ impl<E: std::fmt::Display> std::fmt::Display for AuthoredOverlayFinalizeError<E>
             }
             Self::RecalcCellIndexOutOfBounds { index } => {
                 write!(f, "authored Recalc cell index {index} is out of bounds")
+            }
+            Self::RecalcResidentInput { reason } => {
+                write!(f, "authored Recalc received invalid resident inputs: {reason}")
             }
             Self::Host(error) => std::fmt::Display::fmt(error, f),
         }
@@ -400,6 +404,14 @@ pub(crate) fn recalc_final_authored_overlay_cell<H: AuthoredOverlayLoadHost>(
 
 fn map_recalc_error<E>(error: LoadCellRecalcError<E>) -> AuthoredOverlayFinalizeError<E> {
     match error {
+        LoadCellRecalcError::MissingResidentInputs => {
+            AuthoredOverlayFinalizeError::RecalcResidentInput {
+                reason: "missing resident catalog".into(),
+            }
+        }
+        LoadCellRecalcError::ResidentInput(error) => AuthoredOverlayFinalizeError::RecalcResidentInput {
+            reason: error.to_string(),
+        },
         LoadCellRecalcError::MalformedOverlayIdentity { identity } => {
             AuthoredOverlayFinalizeError::RecalcMalformedOverlayIdentity { identity }
         }

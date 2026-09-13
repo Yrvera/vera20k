@@ -558,6 +558,17 @@ pub struct GameEntity {
     /// remain visible after a `MovementTarget` or DriveTrack segment has cleared.
     #[serde(default)]
     pub navigation: NavigationState,
+    /// Live Foot-owned applied speed; survives active locomotor replacement.
+    #[serde(default)]
+    pub foot_speed: crate::sim::components::FootSpeedState,
+    /// Foot+6B6 raw occupation enable; shared by Drive/Ship and world Mark.
+    /// Foot ctor4D344A initializes1; Unit7353CE invokes that base ctor.
+    pub(crate) foot_occupation_enabled: bool,
+    /// Foot+6AD, constructor4D3414=0. PerformDeploy710352 sets it after a
+    /// forced locomotor swap; that producer is still an unimplemented receiver.
+    /// This is independent from MCV Unit+68C and infantry deploy animation.
+    #[serde(default)]
+    pub(crate) foot_locomotor_swap_active: bool,
     /// Active attack target — present when entity is firing at something.
     pub attack_target: Option<AttackTarget>,
     /// Generic non-Prism Building delayed-fire latch.
@@ -742,7 +753,7 @@ pub struct GameEntity {
     /// DriveLocomotion destination/head-to state separate from curve stepping.
     #[serde(default)]
     pub drive_locomotion: Option<DriveLocomotionRuntime>,
-    /// ShipLocomotion destination/head-to, speed state, and path replay.
+    /// ShipLocomotion destination/head-to and target speed state.
     #[serde(default)]
     pub ship_locomotion: Option<ShipLocomotionRuntime>,
     /// One-shot forced drive track, independent of normal path movement.
@@ -1241,6 +1252,9 @@ impl GameEntity {
             locomotor: None,
             movement_target: None,
             navigation: NavigationState::default(),
+            foot_speed: crate::sim::components::FootSpeedState::default(),
+            foot_occupation_enabled: true,
+            foot_locomotor_swap_active: false,
             attack_target: None,
             pending_building_fire: None,
             current_weapon_index: 0,

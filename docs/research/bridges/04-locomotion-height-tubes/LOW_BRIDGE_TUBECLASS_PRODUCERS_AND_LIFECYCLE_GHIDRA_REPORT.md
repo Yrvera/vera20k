@@ -69,7 +69,7 @@ The verified behavior is:
 2. Read `s16 tube_index = *(cell+0x116)`.
 3. Require `0 <= tube_index < g_TubeCount`.
 4. Load `tube = g_TubeArray[tube_index]`.
-5. Set the locomotor destination to the tube exit coord `tube+0x28`, converted to world center `(x*256+128, y*256+128, z=0)`.
+5. Store the tube exit in **Head_To**, not destination: `ESI=&loco+0x40` at `4B12C8`; writes `4B1352/1357/135A` store `(sign_extend_i16(x)*256+128, sign_extend_i16(y)*256+128, 0)`. This corrects the prior destination label (original-byte recheck, 2026-09-13).
 6. Copy `object+0x5E4..` to `object+0x5E0..` for `0x17` dwords.
 7. Write `object+0x63C = -1`.
 8. Write `object+0x684 = (byte)tube_index` and `object+0x685 = 0`.
@@ -84,6 +84,12 @@ object+0x570 = (exit_ground_height - current_ground_height) / tube.path_len
 where `tube.path_len` is `*(int *)(tube+0x1C0)`.
 
 There is no zero guard before the division by `tube+0x1C0` in this branch.
+
+The successful Drive branch preserves destination `+0x34..0x3C`, residual
+`+0x4C`, cursor `+0x5C` and short selection `+0x60`. It stores valid `+0x63=1`
+at `4B1480` and selector `+0x58=-1` at `4B1484`. The queue shift at
+`4B1362..136E` does not write the path reference `Foot+0x558`. These are body
+effects assuming intervening callbacks return to the same locomotor instance.
 
 ## Walk Locomotion Producer
 

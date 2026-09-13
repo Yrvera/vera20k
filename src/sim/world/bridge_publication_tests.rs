@@ -6,6 +6,9 @@ use crate::sim::overlay_grid::OverlayGrid;
 #[path = "bridge_rim_publication_tests.rs"]
 mod rim;
 
+#[path = "bridge_middle_publication_tests.rs"]
+mod middle;
+
 fn rules() -> RuleSet {
     RuleSet::from_ini(&IniFile::from_str(
         "[VehicleTypes]\n0=MTNK\n[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n\
@@ -300,11 +303,17 @@ fn bridge_publication_reentrant_cleared_slot_cannot_reenter_through_old_topology
 }
 
 #[test]
-fn bridge_publication_repeated_perpendicular_callbacks_keep_effective_class_progression() {
+fn bridge_publication_perpendicular_uses_raw_tile_instead_of_runtime_class() {
     let rules = rules();
     let mut sim = world(&rules, 9);
-    // Legacy tile projection remains a separate callback. Its raw tile stays
-    // unchanged, while subsequent calls must read the updated effective class.
+    // Native572C90 gates on raw +38. A legacy Bridgehead runtime entry cannot
+    // turn this unrelated raw tile into a middle-family tile.
+    sim.resolved_terrain.as_mut().unwrap().test_set_high_bridge_rim_tiles(
+        crate::map::bridge_rim_tiles::HighBridgeRimTiles::from_ini(
+            0,
+            b"[General]\nBridgeMiddle1=7\nBridgeMiddle2=12\n",
+        ),
+    );
     let mut cell = super::super::tests::seed_bridge_cell(0);
     cell.role = BridgeCellRole::Bridgehead;
     sim.bridge_state
@@ -320,15 +329,14 @@ fn bridge_publication_repeated_perpendicular_callbacks_keep_effective_class_prog
         .final_tile_index;
     let mut host = host(&mut sim, &rules);
     host.perpendicular((4, 4), Axis::EW, Phase::DamageB, 0);
-    let target = host.lookup((4, 3));
     assert_eq!(
-        host.legacy_tile_class(target),
-        Some(BridgeheadAnchorClass::Variant1)
+        host.sim.bridge_state.as_ref().unwrap().cell(4, 3).unwrap().bridgehead_anchor_class,
+        crate::sim::bridge_state::BridgeheadAnchorClass::Variant0
     );
     host.perpendicular((4, 4), Axis::EW, Phase::DamageB, 0);
     assert_eq!(
-        host.legacy_tile_class(target),
-        Some(BridgeheadAnchorClass::Damaged)
+        host.sim.bridge_state.as_ref().unwrap().cell(4, 3).unwrap().bridgehead_anchor_class,
+        crate::sim::bridge_state::BridgeheadAnchorClass::Variant0
     );
     assert_eq!(
         host.terrain().cell(4, 3).unwrap().final_tile_index,

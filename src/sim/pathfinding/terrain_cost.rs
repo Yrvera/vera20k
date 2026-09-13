@@ -65,6 +65,58 @@ pub(crate) fn build_canonical_terrain_cost_grids(
         .collect()
 }
 
+fn resolved_cell_cost(
+    cell: &crate::map::resolved_terrain::ResolvedTerrainCell,
+    speed_type: SpeedType,
+) -> u8 {
+    let ramp_passable = cell.canonical_ramp.is_some();
+    // Retail terrain-object occupation is a sub-cell mask on the ground
+    // occupation plane, and only the infantry entry gate reads it: the
+    // cell closes to infantry only when every functional sub-cell bit is
+    // set. Vehicles keep the whole-cell block, so the relaxation is
+    // scoped to the Foot row.
+    let terrain_object_blocked = if speed_type == SpeedType::Foot {
+        cell.terrain_object_occupation.is_some_and(|ini_bits| {
+            super::core::terrain_object_blocks_infantry(
+                super::core::terrain_object_cell_bits_from_ini(ini_bits),
+            )
+        })
+    } else {
+        cell.terrain_object_blocks
+    };
+    let hard_blocked =
+        (cell.is_cliff_like && !ramp_passable) || cell.overlay_blocks || terrain_object_blocked;
+    // Bridge deck overrides underlying terrain (water/cliff) for ground units.
+    // Units walk on the bridge surface, not the terrain below.
+    let cost = if cell.is_elevated_bridge_cell() && !cell.overlay_blocks {
+        COST_NORMAL
+    } else if hard_blocked {
+        COST_BLOCKED
+    } else if ramp_passable {
+        COST_NORMAL
+    } else if let Some(resolved) = cell.speed_costs.cost_for_speed_type(speed_type) {
+        // The parsed land row is the primary source — rules.ini's
+        // [Clear], [Rough], [Tiberium] … sections, one whole-percent
+        // value per SpeedType. 0 = impassable, >0 = passable.
+        resolved
+    } else {
+        classify_terrain_cost(
+            speed_type,
+            cell.is_water,
+            // `ground_walk_blocked` folds in the terrain object; for the
+            // Foot row the sub-cell rule above already decided that.
+            if speed_type == SpeedType::Foot {
+                cell.base_ground_walk_blocked || cell.overlay_blocks
+            } else {
+                cell.ground_walk_blocked
+            },
+            cell.is_rough,
+            cell.is_road,
+        )
+    };
+    cost
+}
+
 impl TerrainCostGrid {
     /// Build a terrain cost grid from resolved terrain metadata.
     ///
@@ -81,52 +133,7 @@ impl TerrainCostGrid {
             if idx >= costs.len() {
                 continue;
             }
-            let ramp_passable = cell.canonical_ramp.is_some();
-            // Retail terrain-object occupation is a sub-cell mask on the ground
-            // occupation plane, and only the infantry entry gate reads it: the
-            // cell closes to infantry only when every functional sub-cell bit is
-            // set. Vehicles keep the whole-cell block, so the relaxation is
-            // scoped to the Foot row.
-            let terrain_object_blocked = if speed_type == SpeedType::Foot {
-                cell.terrain_object_occupation.is_some_and(|ini_bits| {
-                    super::core::terrain_object_blocks_infantry(
-                        super::core::terrain_object_cell_bits_from_ini(ini_bits),
-                    )
-                })
-            } else {
-                cell.terrain_object_blocks
-            };
-            let hard_blocked = (cell.is_cliff_like && !ramp_passable)
-                || cell.overlay_blocks
-                || terrain_object_blocked;
-            // Bridge deck overrides underlying terrain (water/cliff) for ground units.
-            // Units walk on the bridge surface, not the terrain below.
-            let cost = if cell.is_elevated_bridge_cell() && !cell.overlay_blocks {
-                COST_NORMAL
-            } else if hard_blocked {
-                COST_BLOCKED
-            } else if ramp_passable {
-                COST_NORMAL
-            } else if let Some(resolved) = cell.speed_costs.cost_for_speed_type(speed_type) {
-                // The parsed land row is the primary source — rules.ini's
-                // [Clear], [Rough], [Tiberium] … sections, one whole-percent
-                // value per SpeedType. 0 = impassable, >0 = passable.
-                resolved
-            } else {
-                classify_terrain_cost(
-                    speed_type,
-                    cell.is_water,
-                    // `ground_walk_blocked` folds in the terrain object; for the
-                    // Foot row the sub-cell rule above already decided that.
-                    if speed_type == SpeedType::Foot {
-                        cell.base_ground_walk_blocked || cell.overlay_blocks
-                    } else {
-                        cell.ground_walk_blocked
-                    },
-                    cell.is_rough,
-                    cell.is_road,
-                )
-            };
+            let cost = resolved_cell_cost(cell, speed_type);
             costs[idx] = cost;
         }
 
@@ -135,6 +142,20 @@ impl TerrainCostGrid {
             width: terrain.width(),
             height: terrain.height(),
         }
+    }
+
+    /// Project one live Recalc cell without refreshing unrelated cached rows.
+    pub(crate) fn refresh_resolved_cell(
+        &mut self,
+        cell: &crate::map::resolved_terrain::ResolvedTerrainCell,
+        speed_type: SpeedType,
+    ) -> bool {
+        if cell.rx >= self.width || cell.ry >= self.height {
+            return false;
+        }
+        let index = usize::from(cell.ry) * usize::from(self.width) + usize::from(cell.rx);
+        self.costs[index] = resolved_cell_cost(cell, speed_type);
+        true
     }
 
     /// Get the speed modifier for a cell (0 = blocked, 100 = normal).

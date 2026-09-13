@@ -1,0 +1,60 @@
+{
+  "cases": [
+    {
+      "input": 0,
+      "loaded": 0,
+      "next": 1,
+      "read_bytes": 14156,
+      "saved": 0,
+      "stream_bytes": 14156
+    },
+    {
+      "input": 1,
+      "loaded": 1,
+      "next": 2,
+      "read_bytes": 14156,
+      "saved": 1,
+      "stream_bytes": 14156
+    },
+    {
+      "input": 1010038,
+      "loaded": 1010038,
+      "next": 1010039,
+      "read_bytes": 14156,
+      "saved": 1010038,
+      "stream_bytes": 14156
+    },
+    {
+      "input": 2147483646,
+      "loaded": 2147483646,
+      "next": 2147483647,
+      "read_bytes": 14156,
+      "saved": 2147483646,
+      "stream_bytes": 14156
+    },
+    {
+      "input": 2147483647,
+      "loaded": 2147483647,
+      "next": 2147483648,
+      "read_bytes": 14156,
+      "saved": 2147483647,
+      "stream_bytes": 14156
+    },
+    {
+      "input": 4294967294,
+      "loaded": 4294967294,
+      "next": 4294967295,
+      "read_bytes": 14156,
+      "saved": 4294967294,
+      "stream_bytes": 14156
+    },
+    {
+      "input": 4294967295,
+      "loaded": 4294967295,
+      "next": 0,
+      "read_bytes": 14156,
+      "saved": 4294967295,
+      "stream_bytes": 14156
+    }
+  ]
+}

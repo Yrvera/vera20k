@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "Original active-YR locomotor Head_To and Is_At_Coord with original Drive/Ship transforms",
+  "assumptions": [
+    "Supplied live interface/Foot/raw-head/turn/cursor states; no movement producers or lifecycle",
+    "NullCoord=(0,0,0) and per-family height step104 explicitly supplied; startup is not executed",
+    "Original vtable slots, TurnTrack descriptors, RawTrack metadata and point arrays are retained",
+    "Drive72 and ordinary Ship64 TurnTrack descriptors; inputs are bounded branch witnesses",
+    "Mech, Tunnel and DropPod dormant TS behavior is excluded; active false families use original leaf",
+    "Signed/overflow cases describe native scalar behavior, not reachability on stock maps"
+  ],
+  "substitutions": [],
+  "entry_points": {
+    "drive_head": "0x004AFCC0",
+    "ship_head": "0x0069F3D0",
+    "walk_head": "0x0075AC00",
+    "hover_head": "0x00514D10",
+    "drive_query": "0x004B4920",
+    "ship_query": "0x006A3F50",
+    "walk_query": "0x0075CA80",
+    "hover_query": "0x00517210",
+    "drive_transform": "0x004B4780",
+    "ship_transform": "0x006A3DB0",
+    "false_query": "0x004B6630"
+  },
+  "payload_sha256": "a04c47978aa54163172fb6c132a6ec5cefd5ec2d45bfb38f72458704e688e792"
+}

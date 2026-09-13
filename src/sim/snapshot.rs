@@ -457,7 +457,24 @@ use crate::sim::world::Simulation;
 // Restoring cannot reclassify power or replay a fresh gap event.
 // v145 adds literal CellClass+2C allocation identities to dynamic terrain facts.
 // The self relation cannot reconstruct pointers preserved by overlapping stamps.
-const SNAPSHOT_VERSION: u32 = 145;
+// v146 removes the duplicate BridgeRuntimeCell pavement Boolean. CellClass
+// raw flags in dynamic terrain retain bit0x2000 for every allocated cell.
+// v147 persists the Scenario+214 native numeric-ID cursor. A v146 save has no
+// continuation for live constructors; the missing mid-record field cannot be
+// defaulted safely by bincode. Original689310/689470 evidence: native_id_snapshot.
+// v148 stores ordinary Drive/Ship destination/head Z in raw world leptons.
+// v147 mixed level indices and raw ForceTrack/Tube coordinates; the lost
+// original head heights cannot be reconstructed from a later terrain snapshot.
+// v149 gives Drive and Ship the same retained signed track state. The prior
+// Drive cursor was u16 and Ship had no independent residual/selector fields;
+// bincode cannot infer those records across this ownership migration.
+// v150 moves Foot+5E0/+558 replay from class payloads to NavigationState.
+// Bincode field order changes even for owners without Drive/Ship instances.
+// v151 moves applied speed and its existing query cache to the live Foot owner.
+// v152 stores Foot occupation enable, pending fresh Apply1, and Ship head/handoff
+// projection metadata alongside the existing serialized raw occupation plane.
+// Drive END permission and the distinct Foot forced-swap gate are retained too.
+const SNAPSHOT_VERSION: u32 = 152;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3282,8 +3299,11 @@ mod tests {
         // 141 -> 142: sustained sight and pending 120-frame gap conceal.
         // 142 -> 143: MCV pending and Drive previous-rotation latches.
         // 143 -> 144: per-Building operational edge and retained gap deposit.
-        // 144 -> 145: literal native bridge anchor pointers in dynamic terrain.
-        assert_eq!(super::SNAPSHOT_VERSION, 145);
+        // 145 -> 146: pavement is owned by raw terrain flags, not bridge cells.
+        // 146 -> 147: retain Scenario+214 for subsequent native constructors.
+        // 150 -> 151: Foot also owns applied speed independently of its locomotor.
+        // 151 -> 152: Foot occupation enable and pending fresh Apply1 obligation.
+        assert_eq!(super::SNAPSHOT_VERSION, 152);
     }
 
     #[test]
@@ -4372,16 +4392,13 @@ mod tests {
         assert_ne!(populated_counter_hash, zero_counter_hash);
 
         let ship_head = DriveCoord::cell(6, 5, 0);
-        sim.substrate
-            .entities
-            .get_mut(1)
-            .expect("SHP unit")
-            .ship_locomotion = Some(ShipLocomotionRuntime {
+        let entity = sim.substrate.entities.get_mut(1).expect("SHP unit");
+        entity.foot_speed.applied_fraction = SIM_HALF;
+        entity.foot_speed.cached_current_speed = 10;
+        entity.ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(ship_head),
             head_to: Some(ship_head),
             target_speed_fraction: SIM_ONE,
-            current_speed_fraction: SIM_HALF,
-            owner_current_speed: 10,
             ..Default::default()
         });
         let populated_shp_state_hash = sim.state_hash();
@@ -4411,8 +4428,9 @@ mod tests {
         assert_eq!(restored_ship.destination, Some(ship_head));
         assert_eq!(restored_ship.head_to, Some(ship_head));
         assert_eq!(restored_ship.target_speed_fraction, SIM_ONE);
-        assert_eq!(restored_ship.current_speed_fraction, SIM_HALF);
-        assert_eq!(restored_ship.owner_current_speed, 10);
+        let restored_owner_speed = &restored.substrate.entities.get(1).unwrap().foot_speed;
+        assert_eq!(restored_owner_speed.applied_fraction, SIM_HALF);
+        assert_eq!(restored_owner_speed.cached_current_speed, 10);
         assert_eq!(restored.state_hash(), populated_shp_state_hash);
     }
 
@@ -5572,9 +5590,13 @@ mod tests {
             .expect("Drive unit")
             .drive_locomotion = Some(DriveLocomotionRuntime {
             occupation_head_to: Some(footprint),
-            current_occupation_cleared: true,
             ..Default::default()
         });
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .foot_occupation_enabled = false;
         sim.substrate.cell_occupation = CellOccupationGrid::rebuild(&sim.substrate.entities);
         // Native in-scenario load restarts Scenario RNG from Seed0; isolate
         // Drive footprint persistence on that same post-load cursor.
@@ -5608,7 +5630,14 @@ mod tests {
                 .as_ref()
                 .expect("restored Drive runtime");
             assert_eq!(drive.occupation_head_to, Some(footprint));
-            assert!(drive.current_occupation_cleared);
+            assert!(
+                !restored
+                    .substrate
+                    .entities
+                    .get(entity_id)
+                    .unwrap()
+                    .foot_occupation_enabled
+            );
             assert_eq!(restored.state_hash(), expected_hash);
             assert_eq!(
                 restored

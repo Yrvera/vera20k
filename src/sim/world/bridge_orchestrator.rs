@@ -253,7 +253,7 @@ pub(crate) fn dispatch_bridge_collapse_from_hut_with_overlay_registry(
     let mut fallback_zones_dirty = false;
     let mut fallback_adjacent_dirty_anchor = None;
     {
-        let Some(terrain) = sim.resolved_terrain.as_ref() else {
+        let Some(terrain) = sim.resolved_terrain.as_mut() else {
             return false;
         };
         let Some(bs) = sim.bridge_state.as_mut() else {
@@ -872,7 +872,7 @@ fn hut_fallback_flags(sim: &Simulation, pos: (u16, u16)) -> u32 {
 
 fn run_hut_fallback_plan(
     bridge_state: &mut BridgeRuntimeState,
-    terrain: &ResolvedTerrainGrid,
+    terrain: &mut ResolvedTerrainGrid,
     plan: HutFallbackPlan,
 ) -> HutFallbackExecution {
     let HutFallbackPlan::RampWalk { starter, anchor } = plan else {
@@ -970,7 +970,7 @@ fn hut_endpoint_needs_beyond_damage(terrain: &ResolvedTerrainGrid, endpoint: (u1
 
 fn apply_hut_damage_retries(
     bridge_state: &mut BridgeRuntimeState,
-    terrain: &ResolvedTerrainGrid,
+    terrain: &mut ResolvedTerrainGrid,
     target: (u16, u16),
     live_flags: &mut crate::map::resolved_terrain::CellClassBridgeFlagState,
 ) -> Vec<StateOutcome> {
@@ -1247,7 +1247,7 @@ fn step_axis_by(pos: (u16, u16), axis: Axis, delta: i32) -> Option<(u16, u16)> {
 
 fn apply_hut_damage_to_cell(
     bridge_state: &mut BridgeRuntimeState,
-    terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    terrain: &mut crate::map::resolved_terrain::ResolvedTerrainGrid,
     rx: u16,
     ry: u16,
     live_flags: &mut crate::map::resolved_terrain::CellClassBridgeFlagState,
@@ -1842,7 +1842,7 @@ fn run_dispatch_loop(
                 let outcome = {
                     let terrain = sim
                         .resolved_terrain
-                        .as_ref()
+                        .as_mut()
                         .expect("terrain presence checked before dispatch");
                     let bridge_state = sim
                         .bridge_state
@@ -1898,6 +1898,16 @@ fn apply_runtime_bridge_flag_transcript_from_outcome(sim: &mut Simulation, outco
     for &stamp in outcome.setter_transcript() {
         sim.apply_planned_bridge_flag_stamp_to_real_cells(stamp);
     }
+    // The legacy caller has already executed56E990 synchronously on the live
+    // grid. Retain plain pavement cells too, before fallout/another dispatch.
+    if let Some(terrain) = sim.resolved_terrain.as_ref() {
+        for &(rx, ry) in outcome.damaged_variant_cells() {
+            if let Some(cell) = terrain.cell(rx, ry) {
+                sim.dynamic_terrain_cells.insert((rx, ry),
+                    crate::map::resolved_terrain::DynamicTerrainCellState::capture(cell));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1929,7 +1939,6 @@ mod tests {
             role: BridgeCellRole::Body,
             anchor_span_id: None,
             overlay_byte,
-            damaged_variant: false,
             bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         }
     }
@@ -2839,7 +2848,7 @@ mod tests {
         sim.bridge_state = Some(bridge_state);
 
         let outcome = {
-            let terrain = sim.resolved_terrain.as_ref().unwrap();
+            let terrain = sim.resolved_terrain.as_mut().unwrap();
             sim.bridge_state
                 .as_mut()
                 .unwrap()
@@ -2861,7 +2870,7 @@ mod tests {
         );
         apply_runtime_bridge_flag_transcript_from_outcome(&mut sim, &outcome);
 
-        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        let terrain = sim.resolved_terrain.as_mut().unwrap();
         assert_eq!(
             terrain.cell(3, 2).unwrap().bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
             0,
@@ -2920,7 +2929,7 @@ mod tests {
         sim.bridge_state = Some(bridge_state);
 
         let outcome = {
-            let terrain = sim.resolved_terrain.as_ref().unwrap();
+            let terrain = sim.resolved_terrain.as_mut().unwrap();
             crate::sim::bridge_specs::update_ramp_perpendicular(
                 sim.bridge_state.as_mut().unwrap(),
                 (2, 2),
@@ -2942,7 +2951,7 @@ mod tests {
             sim.apply_planned_bridge_flag_stamp_to_real_cells(stamp);
         }
 
-        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        let terrain = sim.resolved_terrain.as_mut().unwrap();
         for x in 3..=5 {
             assert_eq!(
                 terrain.cell(x, 2).unwrap().bridge_facts.raw_flags
@@ -2979,6 +2988,10 @@ mod tests {
         let mut terrain = water_below_bridge_terrain(4);
         terrain.test_set_native_allocated_cells(&[(3, 2)]);
         terrain.cell_mut(3, 2).unwrap().bridge_facts.raw_flags = MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+        // AboutToFall recursion is a raw middle-tile branch, not a role gate.
+        terrain.cell_mut(3,2).unwrap().final_tile_index = 9;
+        terrain.test_set_high_bridge_rim_tiles(crate::map::bridge_rim_tiles::HighBridgeRimTiles::from_ini(
+            0,b"[General]\nBridgeMiddle1=7\nBridgeMiddle2=12\nBridgeBottomRight1=3\nBridgeBottomRight2=3\n"));
         terrain.test_set_dummy_cell_level_slope(2, 0);
         let dummy = terrain.shared_cell_dummy();
         dummy.set_bridge_flags_0x1180(MODELED_CELLCLASS_BRIDGE_FLAG_MASK);
@@ -2994,7 +3007,7 @@ mod tests {
         sim.bridge_state = Some(bridge_state);
 
         let outcome = {
-            let terrain = sim.resolved_terrain.as_ref().unwrap();
+            let terrain = sim.resolved_terrain.as_mut().unwrap();
             crate::sim::bridge_specs::update_ramp_perpendicular(
                 sim.bridge_state.as_mut().unwrap(),
                 (2, 2),
@@ -3038,7 +3051,7 @@ mod tests {
             dummy_after_planning,
             "deferred real-only commit must not overwrite the later live GetCell coordinate"
         );
-        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        let terrain = sim.resolved_terrain.as_mut().unwrap();
         assert_eq!(
             terrain.cell(3, 2).unwrap().bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
             0
@@ -3080,7 +3093,7 @@ mod tests {
         sim.bridge_state = Some(bridge_state);
 
         let outcome = {
-            let terrain = sim.resolved_terrain.as_ref().unwrap();
+            let terrain = sim.resolved_terrain.as_mut().unwrap();
             sim.bridge_state
                 .as_mut()
                 .unwrap()
@@ -3173,7 +3186,7 @@ mod tests {
         sim.bridge_state = Some(bridge_state);
 
         let outcomes = {
-            let terrain = sim.resolved_terrain.as_ref().unwrap();
+            let terrain = sim.resolved_terrain.as_mut().unwrap();
             let mut live_flags = terrain.bridge_flag_execution_state();
             let outcomes = apply_hut_damage_retries(
                 sim.bridge_state.as_mut().unwrap(),
@@ -3242,7 +3255,7 @@ mod tests {
             &mut sim, &rules, &outcomes, false, None, None,
         ));
 
-        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        let terrain = sim.resolved_terrain.as_mut().unwrap();
         assert_eq!(
             terrain.cell(3, 2).unwrap().bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
             0,
@@ -3376,7 +3389,6 @@ mod tests {
                 role: BridgeCellRole::Body,
                 anchor_span_id: Some(99),
                 overlay_byte: 0xE8,
-                damaged_variant: false,
                 bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
@@ -3394,7 +3406,6 @@ mod tests {
                 role: BridgeCellRole::Body,
                 anchor_span_id: Some(99),
                 overlay_byte: 0xDC,
-                damaged_variant: false,
                 bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );

@@ -150,6 +150,7 @@ pub(super) fn stamp_wall(
         zone_grid: &mut sim.zone_grid,
         path_grid: &mut sim.path_grid,
         bridge_state: sim.bridge_state.as_ref(),
+        playfield_bounds: sim.playfield_bounds,
     };
     let grid = sim.overlay_grid.as_mut().expect("validated wall grid");
     stamp_wall_transaction(

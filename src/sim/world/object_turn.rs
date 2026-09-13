@@ -25,6 +25,10 @@ pub(super) fn shp_vehicle_counter_admitted(tube_active_at_entry: bool) -> bool {
     !tube_active_at_entry
 }
 
+#[cfg(test)]
+#[path = "track_object_turn_tests.rs"]
+mod track_object_turn_tests;
+
 #[derive(Default)]
 pub(super) struct LiveObjectPassOutcome {
     pub movement: movement::MovementTickStats,
@@ -153,12 +157,12 @@ impl Simulation {
             .get(stable_id)
             .map(|entity| (entity.position.rx, entity.position.ry));
         let one = [stable_id];
-        outcome
-            .movement
-            .merge(movement::tick_movement_object_with_grids(
+        let mut pending_movement = {
+            let current_grid = sim.path_grid_snapshot();
+            movement::movement_tick::begin_movement_with_grids_scoped(
                 &mut sim.substrate.entities,
-                stable_id,
-                path_grid,
+                Some(&one),
+                current_grid.as_deref().or(path_grid),
                 &sim.terrain_costs,
                 &sim.house_alliances,
                 &mut sim.substrate.occupancy,
@@ -181,6 +185,34 @@ impl Simulation {
                 rules,
                 &mut sim.sound_events,
                 &mut sim.pending_lifecycle_requests,
+                true,
+                true,
+            )
+        };
+        let ordinary_track_owned = pending_movement
+            .take_native_track()
+            .map(|invocation| {
+                let moved =
+                    sim.run_ordinary_track_process(invocation, rules, path_grid, overlay_registry);
+                pending_movement.record_track_movement(moved);
+            })
+            .is_some();
+        outcome
+            .movement
+            .merge(movement::movement_tick::finish_movement_pass(
+                pending_movement,
+                &mut sim.substrate.entities,
+                &sim.house_alliances,
+                &mut sim.substrate.cell_occupation,
+                sim.session.tick,
+                sim.session.binary_frame,
+                sim.resolved_terrain.as_ref(),
+                sim.path_grid.as_deref().or(path_grid),
+                &mut sim.interner,
+                rules,
+                &mut sim.sound_events,
+                &mut sim.pending_lifecycle_requests,
+                true,
             ));
 
         // FootClass advances the SHP Unit body counter immediately after
@@ -290,7 +322,7 @@ impl Simulation {
             .entities
             .get(stable_id)
             .map(|entity| (entity.position.rx, entity.position.ry));
-        if let Some(rules) = rules {
+        if !ordinary_track_owned && let Some(rules) = rules {
             sim.move_unit_sensor_after_cell_change(
                 stable_id,
                 cell_before_movement,
@@ -303,7 +335,7 @@ impl Simulation {
             // outside clear at 0x00719A99; it must not flow through the
             // ordinary promote-only per-cell writer.
             sim.clear_entity_playfield_membership_after_teleport(stable_id);
-        } else if cell_before_movement != cell_after_movement {
+        } else if !ordinary_track_owned && cell_before_movement != cell_after_movement {
             // `FootClass::PerCellProcess @ 0x004D85D0` runs the `Sensors=`
             // neighbour scan on its cell-enter arm, after the sensor
             // deposit has moved (`0x004D8611`/`0x004D8621`, issued just
@@ -330,7 +362,8 @@ impl Simulation {
         debug_assert!(lifecycle_requests.is_empty());
         sim.pending_lifecycle_requests = lifecycle_requests;
 
-        if mcv_retry_after_track
+        if !ordinary_track_owned
+            && mcv_retry_after_track
             && sim
                 .substrate
                 .entities

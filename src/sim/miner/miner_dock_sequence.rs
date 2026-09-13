@@ -559,7 +559,10 @@ fn start_refinery_exit_force_track(
     ) else {
         return false;
     };
-    movement::install_forced_drive_track(entity, cell_occupation, forced)
+    // This VERA refinery-exit adapter retains the current raw height; its
+    // caller policy remains unproven against retail.
+    let head_z = movement::ground_pose::position_world_coord(&entity.position).z;
+    movement::install_forced_drive_track(entity, cell_occupation, forced, head_z)
 }
 
 /// `FootClass::GetCurrentSpeed @ 0x004DB1A0`: the dock/exit drive tracks run on

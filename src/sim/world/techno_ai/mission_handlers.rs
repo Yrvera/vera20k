@@ -758,11 +758,11 @@ fn harvester_enter_idle_mode_evaluation(
 /// Body, decompiled 2026-09-06:
 /// - `RadioClass::In_Radio_Contact` ⇒ return (nothing assigned);
 /// - current (`+0xAC`) or queued (`+0xB4`) == Harvest(10) ⇒ return;
-/// - selector = Harvest; when `param_2 == 0` AND the OWNER passes
+/// - selector = Harvest; when the FIRST explicit argument is 0 AND the OWNER passes
 ///   `HouseClass::IsControlledByHuman @ 0x0050B730`: the cell under the unit
 ///   (`MapClass::Get_CellClass_At_Coord`) has `LandType` (`CellClass+0xEC`)
 ///   ≠ 5 (Tiberium; 0xB Weeds for a Weeder) ⇒ selector = Guard(5). An AI
-///   house always takes Harvest; so does every caller passing `param_2 = 1`
+///   house always takes Harvest; so does every caller passing first explicit argument 1
 ///   (`TechnoClass::Unlimbo @ 0x006F6E2A` calls `+0x484(1, 1)`, which is why
 ///   a freshly built miner always leaves the factory on Harvest);
 /// - `Assign_Target(0)` (`+0x3C8`), `Assign_Destination(0, 1)` (`+0x480`) —
@@ -779,7 +779,10 @@ fn harvester_enter_idle_mode_evaluation(
 /// branch (`NavCom != 0 ⇒ Move`) is not modelled here: every VERA caller
 /// reaches the selector with the destination already cleared.
 ///
-/// `skip_human_land_check` is native `param_2 != 0`.
+/// `skip_human_land_check` is the FIRST explicit argument != 0.
+/// Original738970 loads caller arg1 into BL; miner gate738C0A tests BL.
+/// Decompiler parameter numbering included implicit this. Terminal +484(0,1)
+/// therefore retains the human land check.
 pub(crate) fn harvester_enter_idle_mode_selector(
     sim: &Simulation,
     id: u64,

@@ -48,7 +48,7 @@ const TRACK_STEP_COST: i32 = 7;
 /// These are the lower 3 bits of the TurnTrack flags field. Applied in order:
 /// first swap, then negate-x, then negate-y. Facing is adjusted to match.
 /// Matches the original Transform_Track_Coords algorithm.
-fn transform_track_point(x: i16, y: i16, facing: u8, flags: u8) -> (i16, i16, u8) {
+pub(super) fn transform_track_point(x: i16, y: i16, facing: u8, flags: u8) -> (i16, i16, u8) {
     let mut tx = x;
     let mut ty = y;
     let mut tf = facing;
@@ -185,16 +185,16 @@ pub struct DriveTrackState {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ForcedDriveTrackState {
     /// Index into TURN_TRACKS. `0x47` is the **Tank Bunker eject**, not a refinery
-/// exit: `BuildingClass::UndockUnit` @ `0x004593A0` and
-/// `BuildingClass::ReleaseDockedHarvester` @ `0x004595C0` both push it, and
-/// both early-return unless the building's `+0x2E4` dock link is set, which
-/// only the bunker installer @ `0x00458E50` sets. VERA nevertheless uses it on
-/// the refinery interrupt path — VERA-internal, gamemd equivalent UNCHECKED.
-/// Trigger: a refinery sold or destroyed with a miner on the pad. Player
-/// effect: VERA runs a forced curve gamemd may not run there at all.
-/// Frequency: a handful of visible moments per ordinary match. Downstream
-/// risk: `sell_refinery_interrupts_docked_miner_with_force_track_0x47` pins
-/// the VERA behaviour, so settling this means re-reading that gate first.
+    /// exit: `BuildingClass::UndockUnit` @ `0x004593A0` and
+    /// `BuildingClass::ReleaseDockedHarvester` @ `0x004595C0` both push it, and
+    /// both early-return unless the building's `+0x2E4` dock link is set, which
+    /// only the bunker installer @ `0x00458E50` sets. VERA nevertheless uses it on
+    /// the refinery interrupt path — VERA-internal, gamemd equivalent UNCHECKED.
+    /// Trigger: a refinery sold or destroyed with a miner on the pad. Player
+    /// effect: VERA runs a forced curve gamemd may not run there at all.
+    /// Frequency: a handful of visible moments per ordinary match. Downstream
+    /// risk: `sell_refinery_interrupts_docked_miner_with_force_track_0x47` pins
+    /// the VERA behaviour, so settling this means re-reading that gate first.
     pub turn_track_index: u8,
     /// Runtime RawTrack progress.
     pub track: DriveTrackState,
@@ -979,7 +979,8 @@ const TRACK1_POINTS: [TrackPoint; 23] = [
 ];
 
 /// Track 2 points (straight NE diagonal movement). Extracted from the original engine.
-/// X decreases by 8, Y decreases by 8 per point, Face=0x20 (NE) throughout.
+/// X increases and Y decreases toward zero, usually by8 (point15/16 use7/9).
+/// Face=0x20 (NE) throughout.
 /// 32 points x 12 bytes = 384 bytes.
 const TRACK2_POINTS: [TrackPoint; 31] = [
     TrackPoint {
@@ -1058,8 +1059,10 @@ const TRACK2_POINTS: [TrackPoint; 31] = [
         facing: 32,
     },
     TrackPoint {
-        x: -128,
-        y: 128,
+        // Retail RawTrack2[15] is deliberately one lepton past -128/128.
+        // Original read-only point array; locomotor_track_cursor corpus.
+        x: -129,
+        y: 129,
         facing: 32,
     },
     TrackPoint {

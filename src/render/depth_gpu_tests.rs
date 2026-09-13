@@ -927,6 +927,7 @@ fn stock_cliff_decoder_and_terrain_instances_occlude_shp_and_indexed_voxels() {
         60.0,
         Some(&lookup),
         None,
+        None,
     )
     .normal;
     assert_eq!(instances.len(), 1);

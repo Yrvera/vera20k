@@ -91,6 +91,7 @@ fn collect_area(
         &mut world.zone_grid,
         &mut world.path_grid,
         world.bridge_state.as_ref(),
+        world.playfield_bounds,
     );
     #[cfg(test)]
     let mut deferred_prelude = world.receiver_fixture.as_mut().map(|fixture| {

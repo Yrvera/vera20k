@@ -1,9 +1,10 @@
-//! Fresh-map OverlayClass constructor, registry, and deferred-destruction state.
+//! Authored and runtime OverlayClass registry and deferred-destruction owner.
 //!
 //! Active YR temporarily keeps authored OverlayClass objects in five registries
 //! while their synchronous Mark effects mutate CellClass state. Ordinary and
-//! wall paths die and enter the reader-owned deferred queue; steep-slope rejects
-//! remain registered until scene teardown. None of these records are gameplay
+//! wall paths die and enter the deferred queue; Terrain and steep-slope rejects
+//! remain registered until scene teardown. The authored reader and admitted
+//! Main_Tick tail drain this same owner. None of these records are gameplay
 //! entities, LogicClass objects, serialized state, or checksum authority.
 
 use std::collections::BTreeMap;
@@ -36,6 +37,7 @@ pub(crate) enum LoadObjectRegistryKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoadOverlayTerminalPath {
     Constructed,
+    UnrevealedSurvivor,
     CommonQueued,
     WallQueued,
     SlopeSurvivor,
@@ -45,6 +47,7 @@ enum LoadOverlayTerminalPath {
 struct LoadOverlayObject {
     overlay_id: u8,
     cell: (u16, u16),
+    world: [i32; 3],
     native_id: Option<i32>,
     alive: bool,
     limbo: bool,
@@ -59,6 +62,7 @@ pub(crate) struct LoadOverlayObjectSnapshot {
     pub(crate) stable_id: u64,
     pub(crate) overlay_id: u8,
     pub(crate) cell: (u16, u16),
+    pub(crate) world: [i32; 3],
     pub(crate) native_id: Option<i32>,
     pub(crate) alive: bool,
     pub(crate) limbo: bool,
@@ -95,16 +99,19 @@ pub(crate) enum LoadOverlayLifecycleError {
     #[error("load Overlay handle {0} does not exist")]
     UnknownHandle(u64),
     #[error("load Overlay registry {registry:?} could not grow")]
-    RegistryCapacity {
-        registry: LoadObjectRegistryKind,
-    },
+    RegistryCapacity { registry: LoadObjectRegistryKind },
     #[error("load Overlay deferred-finalization queue could not grow")]
     DeferredQueueCapacity,
     #[error("load Overlay handle {0} crossed an invalid lifecycle transition")]
     InvalidTransition(u64),
 }
 
-/// Dedicated load-only owner for native OverlayClass registry membership.
+/// Shared owner for native OverlayClass registry membership. The historical
+/// load-prefixed handle names do not restrict the lifetime to map reading.
+/// Stock runtime bridge constructors publish only Cell state, not references
+/// to these objects; their partitioned destruction commutes with gameplay
+/// finalization at the same admitted725C70 boundary. Revisit that separation
+/// before publishing Overlay handles or adding cross-owner destructor effects.
 #[derive(Debug)]
 pub(crate) struct LoadObjectLifecycle {
     objects: BTreeMap<LoadOverlayHandle, LoadOverlayObject>,
@@ -164,6 +171,7 @@ impl LoadObjectLifecycle {
             LoadOverlayObject {
                 overlay_id,
                 cell,
+                world: [0; 3],
                 native_id: None,
                 alive: true,
                 limbo: true,
@@ -189,9 +197,7 @@ impl LoadObjectLifecycle {
             .get_mut(&handle)
             .expect("new load Overlay object exists")
             .native_id = Some(native_id);
-        self.record(LoadObjectLifecycleEvent::AssignNativeId(
-            handle, native_id,
-        ));
+        self.record(LoadObjectLifecycleEvent::AssignNativeId(handle, native_id));
         self.try_join(LoadObjectRegistryKind::Overlay, handle)?;
         Ok(handle)
     }
@@ -207,6 +213,13 @@ impl LoadObjectLifecycle {
             return Err(LoadOverlayLifecycleError::InvalidTransition(handle.0));
         }
         object.limbo = false;
+        //5FC380 supplies the requested signed CellStruct center to5F4EC0.
+        // A Terrain/EmptyCell rejection never reaches this world-position store.
+        object.world = [
+            i32::from(object.cell.0 as i16) * 256 + 128,
+            i32::from(object.cell.1 as i16) * 256 + 128,
+            0,
+        ];
         object.on_map = true;
         object.redraw = true;
         let cell = object.cell;
@@ -215,8 +228,23 @@ impl LoadObjectLifecycle {
         Ok(cell)
     }
 
+    /// Constructor5FC380 returns without Unlimbo for EmptyCell or Terrain.
+    /// Allocation, native ID and registry membership survive; position remains
+    /// ObjectClass's zero initialization. Evidence: bridge_constructor corpus.
+    pub(crate) fn finish_unrevealed_survivor(
+        &mut self,
+        handle: LoadOverlayHandle,
+    ) -> Result<(), LoadOverlayLifecycleError> {
+        let object = self.object_mut_for_transition(handle)?;
+        if object.terminal_path != LoadOverlayTerminalPath::Constructed || !object.limbo {
+            return Err(LoadOverlayLifecycleError::InvalidTransition(handle.0));
+        }
+        object.terminal_path = LoadOverlayTerminalPath::UnrevealedSurvivor;
+        Ok(())
+    }
+
     /// Common successful Mark tail: one UnInit broadcast, alive clear, and
-    /// append to the reader-owned deferred queue while all registries remain.
+    /// append to the shared deferred queue while all registries remain.
     pub(crate) fn finish_common(
         &mut self,
         handle: LoadOverlayHandle,
@@ -249,7 +277,8 @@ impl LoadObjectLifecycle {
         Ok(())
     }
 
-    /// Native's reader-epilogue forward scan. Alive queued entries advance;
+    /// Native725C70's reader-epilogue or admitted late-frame forward scan.
+    /// Alive queued entries advance;
     /// a dead entry is destroyed, all duplicate queue entries are removed
     /// stably, and the same live index is examined again.
     pub(crate) fn drain_deferred(&mut self) -> Result<(), LoadOverlayLifecycleError> {
@@ -270,17 +299,19 @@ impl LoadObjectLifecycle {
         Ok(())
     }
 
-    /// Release the registered steep-slope survivors when the staged scene is
+    /// Release the registered constructor survivors when the scene is
     /// torn down. Iteration order is intentionally not claimed as native parity.
-    pub(crate) fn release_scene_survivors(
-        &mut self,
-    ) -> Result<usize, LoadOverlayLifecycleError> {
+    pub(crate) fn release_scene_survivors(&mut self) -> Result<usize, LoadOverlayLifecycleError> {
         let survivors: Vec<_> = self
             .objects
             .iter()
             .filter_map(|(&handle, object)| {
-                (object.terminal_path == LoadOverlayTerminalPath::SlopeSurvivor)
-                    .then_some(handle)
+                matches!(
+                    object.terminal_path,
+                    LoadOverlayTerminalPath::SlopeSurvivor
+                        | LoadOverlayTerminalPath::UnrevealedSurvivor
+                )
+                .then_some(handle)
             })
             .collect();
         for handle in &survivors {
@@ -290,15 +321,13 @@ impl LoadObjectLifecycle {
     }
 
     #[cfg(test)]
-    pub(crate) fn snapshot(
-        &self,
-        handle: LoadOverlayHandle,
-    ) -> Option<LoadOverlayObjectSnapshot> {
+    pub(crate) fn snapshot(&self, handle: LoadOverlayHandle) -> Option<LoadOverlayObjectSnapshot> {
         let object = self.objects.get(&handle)?;
         Some(LoadOverlayObjectSnapshot {
             stable_id: handle.0,
             overlay_id: object.overlay_id,
             cell: object.cell,
+            world: object.world,
             native_id: object.native_id,
             alive: object.alive,
             limbo: object.limbo,
@@ -312,6 +341,22 @@ impl LoadObjectLifecycle {
 
     pub(crate) fn object_count(&self) -> usize {
         self.objects.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registry_counts(&self) -> [usize; 5] {
+        [
+            self.object_registry.len(),
+            self.pointer_expiration_registry.len(),
+            self.all_abstract_registry.len(),
+            self.tag_removal_registry.len(),
+            self.overlay_registry.len(),
+        ]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_count(&self) -> usize {
+        self.deferred.len()
     }
 
     fn finish_queued(
@@ -360,9 +405,7 @@ impl LoadObjectLifecycle {
 
         let entries = match registry {
             LoadObjectRegistryKind::Object => &mut self.object_registry,
-            LoadObjectRegistryKind::PointerExpiration => {
-                &mut self.pointer_expiration_registry
-            }
+            LoadObjectRegistryKind::PointerExpiration => &mut self.pointer_expiration_registry,
             LoadObjectRegistryKind::AllAbstract => &mut self.all_abstract_registry,
             LoadObjectRegistryKind::TagRemoval => &mut self.tag_removal_registry,
             LoadObjectRegistryKind::Overlay => &mut self.overlay_registry,
@@ -375,10 +418,7 @@ impl LoadObjectLifecycle {
         Ok(())
     }
 
-    fn try_queue(
-        &mut self,
-        handle: LoadOverlayHandle,
-    ) -> Result<(), LoadOverlayLifecycleError> {
+    fn try_queue(&mut self, handle: LoadOverlayHandle) -> Result<(), LoadOverlayLifecycleError> {
         #[cfg(test)]
         if std::mem::take(&mut self.fail_next_queue) {
             return Err(LoadOverlayLifecycleError::DeferredQueueCapacity);
@@ -390,10 +430,7 @@ impl LoadObjectLifecycle {
         Ok(())
     }
 
-    fn destroy(
-        &mut self,
-        handle: LoadOverlayHandle,
-    ) -> Result<(), LoadOverlayLifecycleError> {
+    fn destroy(&mut self, handle: LoadOverlayHandle) -> Result<(), LoadOverlayLifecycleError> {
         let object = self
             .objects
             .get_mut(&handle)
@@ -407,7 +444,10 @@ impl LoadObjectLifecycle {
             .get(&handle)
             .is_some_and(|object| !object.limbo);
         if needs_limbo {
-            let object = self.objects.get_mut(&handle).expect("destroyed object exists");
+            let object = self
+                .objects
+                .get_mut(&handle)
+                .expect("destroyed object exists");
             object.limbo = true;
             object.on_map = false;
             object.expiration_broadcasts = object.expiration_broadcasts.saturating_add(1);
@@ -438,9 +478,7 @@ impl LoadObjectLifecycle {
     ) {
         let entries = match registry {
             LoadObjectRegistryKind::Object => &mut self.object_registry,
-            LoadObjectRegistryKind::PointerExpiration => {
-                &mut self.pointer_expiration_registry
-            }
+            LoadObjectRegistryKind::PointerExpiration => &mut self.pointer_expiration_registry,
             LoadObjectRegistryKind::AllAbstract => &mut self.all_abstract_registry,
             LoadObjectRegistryKind::TagRemoval => &mut self.tag_removal_registry,
             LoadObjectRegistryKind::Overlay => &mut self.overlay_registry,
@@ -506,21 +544,18 @@ mod tests {
         let handle = construct(&mut lifecycle, 7, 1_010_038);
 
         assert_eq!(handle.stable_id(), 7);
-        assert_eq!(lifecycle.snapshot(handle).unwrap().native_id, Some(1_010_038));
+        assert_eq!(
+            lifecycle.snapshot(handle).unwrap().native_id,
+            Some(1_010_038)
+        );
         assert_eq!(
             lifecycle.events(),
             &[
                 LoadObjectLifecycleEvent::Allocate(handle),
                 LoadObjectLifecycleEvent::BaseConstruct(handle),
                 LoadObjectLifecycleEvent::Join(LoadObjectRegistryKind::Object, handle),
-                LoadObjectLifecycleEvent::Join(
-                    LoadObjectRegistryKind::PointerExpiration,
-                    handle,
-                ),
-                LoadObjectLifecycleEvent::Join(
-                    LoadObjectRegistryKind::AllAbstract,
-                    handle,
-                ),
+                LoadObjectLifecycleEvent::Join(LoadObjectRegistryKind::PointerExpiration, handle,),
+                LoadObjectLifecycleEvent::Join(LoadObjectRegistryKind::AllAbstract, handle,),
                 LoadObjectLifecycleEvent::Join(LoadObjectRegistryKind::TagRemoval, handle),
                 LoadObjectLifecycleEvent::AssignNativeId(handle, 1_010_038),
                 LoadObjectLifecycleEvent::Join(LoadObjectRegistryKind::Overlay, handle),
