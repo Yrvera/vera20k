@@ -183,6 +183,9 @@ pub(crate) struct AttackerFacts {
 /// Target-side facts read by the ladder and the GetFireError subset.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum TargetFacts<'a> {
+    /// Real TerrainClass Object target: neither CellClass nor TechnoClass.
+    /// Used by Unit73FBAC ->746CD0/6F3330 for repair's Wood-warhead query.
+    Terrain,
     /// `CellClass` target (force-fire on terrain).
     Cell {
         /// `CellClass+0xEC LandType`.
@@ -217,7 +220,7 @@ impl TargetFacts<'_> {
     fn techno(&self) -> Option<&Self> {
         match self {
             TargetFacts::Techno { .. } => Some(self),
-            TargetFacts::Cell { .. } => None,
+            TargetFacts::Cell { .. } | TargetFacts::Terrain => None,
         }
     }
 
@@ -225,14 +228,14 @@ impl TargetFacts<'_> {
         match self {
             TargetFacts::Techno { is_high_flying, .. } => *is_high_flying,
             // `CellClass` vtable `+0x54` @ `0x00410530` returns 0.
-            TargetFacts::Cell { .. } => false,
+            TargetFacts::Cell { .. } | TargetFacts::Terrain => false,
         }
     }
 
     fn kind(&self) -> Option<TechnoKind> {
         match self {
             TargetFacts::Techno { kind, .. } => Some(*kind),
-            TargetFacts::Cell { .. } => None,
+            TargetFacts::Cell { .. } | TargetFacts::Terrain => None,
         }
     }
 }
@@ -682,6 +685,10 @@ fn targeting_fire_error_blocks(
 ) -> bool {
     let aa = projectile_aa(rules, weapon);
     match *target {
+        // Terrain is admitted only to the index-selection owner above. No
+        // Terrain firing caller is delivered by the repair query; retain an
+        // explicit unsupported legality result instead of treating it as Cell.
+        TargetFacts::Terrain => true,
         TargetFacts::Cell { land_type, .. } => {
             // 0x006FC7EB..0x006FC812: a non-Techno target that is not
             // high-flying needs an AG projectile. `CellClass` vtable `+0x54`
@@ -803,7 +810,7 @@ fn resolve_index<'a>(
             .get(armor_index(&target_obj.armor))
             .copied()
             .unwrap_or(100),
-        TargetFacts::Cell { .. } => 100,
+        TargetFacts::Cell { .. } | TargetFacts::Terrain => 100,
     };
     Some(SelectedWeapon {
         weapon_id,
@@ -2673,6 +2680,43 @@ IsLocomotor=yes
         siege.deploy_fire_active = true;
         assert_eq!(slot(&rules, "SIEGE", &siege, Some(&target)), 1);
         assert_eq!(slot(&rules, "PLAIN", &siege, Some(&target)), 0);
+    }
+
+    /// Unit746CD0 deploy override precedes Techno6F3330; a real Terrain
+    /// target skips the Cell LandTargeting arm and keeps nonnull-target arms.
+    #[test]
+    fn terrain_index_query_preserves_deploy_and_non_techno_branches() {
+        let rules=RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=SIEGE\n[SIEGE]\nPrimary=A\nSecondary=B\nDeployFire=yes\nLandTargeting=2\n[A]\nDamage=10\nProjectile=Inv\nWarhead=SA\n[B]\nDamage=20\nProjectile=Inv\nWarhead=WOOD\n[Inv]\nAG=yes\n[SA]\nWood=no\n[WOOD]\nWood=yes\n"
+        )).unwrap();
+        let mut attacker = facts(TechnoKind::Unit);
+        let terrain = TargetFacts::Terrain;
+        let cell = TargetFacts::Cell {
+            land_type: 0,
+            tile_in_water_set: false,
+            bridge_flag: false,
+        };
+        assert_eq!(slot(&rules, "SIEGE", &attacker, Some(&terrain)), 0);
+        assert_eq!(slot(&rules, "SIEGE", &attacker, Some(&cell)), 1);
+        attacker.deploy_fire_active = true;
+        assert_eq!(slot(&rules, "SIEGE", &attacker, Some(&terrain)), 1);
+        let obj = rules.object("SIEGE").unwrap();
+        let (weapon, _) = weapon_for_index(
+            obj,
+            0,
+            what_weapon_should_i_use(&rules, obj, &attacker, Some(&terrain)),
+        )
+        .unwrap();
+        assert!(
+            rules
+                .warhead(rules.weapon(weapon).unwrap().warhead.as_deref().unwrap())
+                .unwrap()
+                .wood
+        );
+        attacker.deploy_fire_active = false;
+        attacker.open_transport_weapon = Some(1);
+        assert_eq!(slot(&rules, "SIEGE", &attacker, Some(&terrain)), 1);
+        assert_eq!(slot(&rules, "SIEGE", &attacker, None), 0);
     }
 
     // ---- GetFireError subset ----------------------------------------------
