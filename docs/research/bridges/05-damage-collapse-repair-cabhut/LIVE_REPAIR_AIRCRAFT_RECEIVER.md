@@ -155,3 +155,33 @@ loading paths supply true. The receiver can use this existing authority; no
 viewer-local flag or additional session state is required. The native gate and
 state ownership were independently reviewed. This is a bounded effects proof,
 not acceptance of the implementing Rust change or the complete repair mechanism.
+
+## The same reduction covers four explicit active locomotor kinds
+
+The Fly-only bound above can be extended to active Rocket, Jumpjet, and Teleport
+interfaces. Their `+A0` slots at `7F0BBC`, `7ECE08`, and `7F50A0`, together with
+Fly's `7E8A94`, all resolve to `4B6630`: `XOR AL,AL; RET 0x10`. This leaf does
+not inspect the Foot, coordinates, or movement state and has no gameplay writes.
+Rocket's constructor installs its interface table `7F0B1C` at `661F1F`.
+
+The first repair pass still invokes Aircraft `+1AC` at `487A3B`. The kind check
+at `487A70..78` forces damage at `487A9E` independently of that predicate's
+answer. The neighbor pass tests
+`+A0` at `487B88` and its false branch skips admission at `487BD6`. Aircraft
+`4196B0` itself does not inspect the locomotor. The same effects proof therefore
+applies to these four explicit kinds, retaining every Team, mode, and projected
+lookup requirement already described. A missing locomotor or another kind is
+not established by this extension.
+
+The committed `tools/spatial_oracle/locomotor_at_coord.py` reads all four original
+slots and executes the unchanged leaf with a null Foot and two coordinate probes
+per kind; all eight native rows return false. The two-instruction body establishes
+the input-independent result; the samples also check the harness invocation.
+Winning RULESMD declares V3ROCKET, DMISL, and CMISL with the Rocket locomotor,
+`Landable=yes`, and `Spawned=yes`. These declarations do not prove a complete
+stock rocket arrival or repair scene.
+
+This caller/leaf extension was independently reviewed. Do not infer its kind
+set from a generic absent coordinate query, which can also represent unsupported
+or dormant TS classes. Rust implementation and production regression acceptance
+remain separate requirements.
