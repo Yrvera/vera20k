@@ -2516,6 +2516,52 @@ impl Simulation {
             })
     }
 
+    /// Infantry PerCell repair519D17..519D36 calls each registered Infantry
+    /// +28(hut,false) in descending construction order. The hut survives;
+    /// this is not the global ObjectClass removal broadcast. Actual Infantry
+    /// +28 is51AA10 -> Foot4D9960 -> Techno7077C0. Its extra +6C0 clear
+    /// compares an InfantryType pointer with the hut and cannot match.
+    pub(crate) fn expire_infantry_bridge_hut_targets(&mut self, hut_id: u64) {
+        // Infantry ctor517B34 appends to its type registry. Represented
+        // PointerExpired receivers do not construct/delete registry entries;
+        // stable construction IDs therefore preserve its descending cursor.
+        let mut listeners = self.substrate.entities.keys_sorted();
+        listeners.reverse();
+        for listener_id in listeners {
+            if !self
+                .substrate
+                .entities
+                .get(listener_id)
+                .is_some_and(|e| e.category == EntityCategory::Infantry)
+            {
+                continue;
+            }
+            let Some(hut) = self.substrate.entities.get(hut_id) else {
+                return;
+            };
+            let facts = (
+                object_get_coords_cell(hut),
+                hut.lifecycle.object_alive,
+                hut.health.current,
+                hut.mission.current().known() == Some(crate::sim::mission::MissionType::Selling),
+                hut.owner(),
+            );
+            self.notify_entity_pointer_expired(
+                listener_id,
+                hut_id,
+                facts.0,
+                false,
+                facts.1,
+                facts.2,
+                facts.3,
+                Some(facts.4),
+                PointerExpiryControl::DetachAll,
+            );
+            // Techno707B24 forwards this manager independently of control.
+            crate::sim::spawn_manager::notify_pointer_expired(self, listener_id, hut_id);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn notify_entity_pointer_expired(
         &mut self,
@@ -2667,18 +2713,11 @@ impl Simulation {
             && expired_object_alive
             && expired_health > 0
             && !expired_is_selling;
-        if !retain_capture_nav && allow_clear {
-            if listener
-                .navigation
-                .nav_com_aux
-                .as_ref()
-                .is_some_and(|target| Self::nav_ref_targets_expired(target, expired_id))
-            {
-                listener.navigation.nav_com_aux = None;
-            }
-            if current_nav_matches {
-                listener.navigation.nav_com = None;
-            }
+        //4D9A0F gates the pair on current NavCom identity;4D9ABD then
+        //clears both fields, irrespective of the auxiliary pointer's value.
+        if current_nav_matches && !retain_capture_nav && allow_clear {
+            listener.navigation.nav_com_aux = None;
+            listener.navigation.nav_com = None;
         }
         listener
             .navigation

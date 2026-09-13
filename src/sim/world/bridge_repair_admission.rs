@@ -154,6 +154,61 @@ fn infantry_target_admission(
 mod tests {
     use super::*;
 
+    #[test]
+    fn aircraft_nonzero_mode_skips_shroud_requirements_after_team_effects() {
+        let (mut sim, rules, _) = super::super::super::tests::fixture();
+        let id = sim
+            .spawn_object(
+                "HORNET",
+                "Americans",
+                17,
+                15,
+                0,
+                &rules,
+                &std::collections::BTreeMap::new(),
+            )
+            .unwrap();
+        let entity = sim.substrate.entities.get(id).unwrap().clone();
+        // A shared dummy cannot satisfy mode0's all-real projection proof.
+        let probe = |sim: &mut Simulation| {
+            aircraft_effect_quotient(
+                &LivePublication {
+                    sim,
+                    rules: &rules,
+                    registry: None,
+                    collapsed: false,
+                },
+                &entity,
+                Cell::Dummy,
+            )
+        };
+        sim.session.game_mode_nonzero = false;
+        assert!(probe(&mut sim).unwrap_err().contains("shared-dummy"));
+        sim.session.game_mode_nonzero = true;
+        assert_eq!(probe(&mut sim), Ok(false));
+        let script_id = sim.intern("REPAIR_WAYPOINT_EFFECT");
+        sim.team_script_vm
+            .register_script(crate::sim::team_script_vm::TeamScriptDefinition {
+                id: script_id,
+                actions: vec![crate::sim::team_script_vm::TeamScriptAction {
+                    action_id: 3,
+                    argument: 0,
+                }],
+                source: crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd,
+            });
+        sim.team_script_vm.create_team(
+            entity.owner(),
+            script_id,
+            vec![id],
+            None,
+            sim.session.binary_frame as i32,
+        );
+        assert!(
+            probe(&mut sim).unwrap_err().contains("action3"),
+            "mode cannot bypass the earlier Team receiver"
+        );
+    }
+
     fn unit_fixture(flags: &str, blocker_category: EntityCategory) -> (Simulation, RuleSet, Cell) {
         let (mut sim, _, _) = super::super::super::tests::fixture();
         let rules=RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(&format!(
@@ -1264,9 +1319,10 @@ pub(super) fn impassable(
 
 /// Aircraft4196B0's answer is ignored by the first487A3B pass (kind2 damage).
 /// The neighbor pass cannot query active Fly: its+A0 is constantfalse4B6630.
-/// With no possible Team waypoint lookup and every potential586360 lookup real, both client-local
+/// With no possible Team waypoint lookup, nonzero GameMode skips586360.
+/// In mode0, every potential586360 lookup must be real so both client-local
 /// predicate outcomes have the same gameplay effects. Never stamp a dummy
-/// during this proof: a missing slot makes the quotient inadmissible.
+/// during this proof: a missing slot makes that quotient inadmissible.
 fn aircraft_effect_quotient(
     live: &LivePublication<'_>,
     entity: &GameEntity,
@@ -1302,6 +1358,12 @@ fn aircraft_effect_quotient(
                 "repair Aircraft Team action3 has unresolved waypoint lookup effects".into(),
             );
         }
+    }
+    //419764..41976B reads GameMode only AFTER4196C6's Team receiver.
+    //Nonzero jumps4197AA, bypassing Cell+48 and all586360 shroud effects.
+    //ScenarioSession owns the serialized/hashed native zero/nonzero mode.
+    if live.sim.session.game_mode_nonzero {
+        return Ok(false);
     }
     let Cell::Real(index) = cell else {
         return Err("repair Aircraft shared-dummy receiver has observable lookup effects".into());

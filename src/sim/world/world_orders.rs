@@ -542,8 +542,11 @@ impl Simulation {
                 false
             }
         };
-        // Native attached-tag/observer trigger callbacks remain in their
-        // unparsed map-trigger owner. The ordinary engineer lifecycle is live.
+        //519D17..519D36 descends Infantry's registry with +28(hut,false).
+        //Clearing NavCom does not stop a retained Walk head/destination.
+        self.expire_infantry_bridge_hut_targets(building_id);
+        // Hut4576F0 Scatter and attached Tag6E53A0 callbacks still require
+        // production delivery before this mechanism can be accepted in full.
         self.uninit_with_rules(engineer_id, rules);
         changed
     }

@@ -963,7 +963,7 @@ fn bridge_repair_preserves_unrelated_foundation_before_next_reader() {
 }
 
 #[test]
-fn consecutive_engineers_second_bridge_repair_waits_for_next_tick() {
+fn consecutive_engineers_cancel_the_successors_hut_target_before_its_next_turn() {
     let (mut sim, rules, registry, hut) = ready_repair_fixture(Some(231));
     let a = ready_engineer(&mut sim, &rules, &registry, hut);
     let b = ready_engineer(&mut sim, &rules, &registry, hut);
@@ -973,6 +973,9 @@ fn consecutive_engineers_second_bridge_repair_waits_for_next_tick() {
         sim.substrate.entities.get(b).is_some(),
         "live vector removal skips its immediate successor"
     );
+    let successor = sim.substrate.entities.get(b).unwrap();
+    assert_eq!(successor.navigation.nav_com, None);
+    assert!(successor.locomotor.as_ref().unwrap().step_head().is_some());
     assert_eq!(repair_sounds(&sim), [true]);
     assert_eq!(sim.radar_events.len(), 1);
     assert!(sim.radar_terrain_dirty_generation > 0);
@@ -980,12 +983,15 @@ fn consecutive_engineers_second_bridge_repair_waits_for_next_tick() {
         assert!(sim.radar_terrain_dirty_cells.contains(&p));
     }
     repair_frame(&mut sim, &rules, &registry);
-    assert!(sim.substrate.entities.get(b).is_none());
-    assert_eq!(repair_sounds(&sim).len(), 2);
+    let successor = sim.substrate.entities.get(b).unwrap();
+    assert!(successor.lifecycle.object_alive);
+    assert_eq!(successor.navigation.nav_com, None);
+    assert_eq!(successor.locomotor.as_ref().unwrap().step_head(), None);
+    assert_eq!(repair_sounds(&sim), [true]);
 }
 
 #[test]
-fn nonconsecutive_engineers_both_repair_same_tick_with_radar_eva_gate() {
+fn nonconsecutive_engineer_finishes_its_head_without_repeating_cancelled_repair() {
     let (mut sim, rules, registry, hut) = ready_repair_fixture(Some(231));
     let a = ready_engineer(&mut sim, &rules, &registry, hut);
     let separator = sim
@@ -995,9 +1001,107 @@ fn nonconsecutive_engineers_both_repair_same_tick_with_radar_eva_gate() {
     repair_frame(&mut sim, &rules, &registry);
     assert!(sim.substrate.entities.get(a).is_none());
     assert!(sim.substrate.entities.get(separator).is_some());
-    assert!(sim.substrate.entities.get(b).is_none());
-    assert_eq!(repair_sounds(&sim), [true, false]);
+    let successor = sim.substrate.entities.get(b).unwrap();
+    assert!(successor.lifecycle.object_alive);
+    assert_eq!(successor.navigation.nav_com, None);
+    assert_eq!(successor.locomotor.as_ref().unwrap().step_head(), None);
+    assert_eq!(repair_sounds(&sim), [true]);
     assert_eq!(sim.radar_events.len(), 1);
+}
+
+#[test]
+fn repair_pointer_expiry_uses_descending_infantry_registry_and_preserves_paid_heads() {
+    use crate::sim::components::NavTargetRef;
+    let (mut sim, rules, registry, hut) = ready_repair_fixture(None);
+    let a = ready_engineer(&mut sim, &rules, &registry, hut);
+    let b = ready_engineer(&mut sim, &rules, &registry, hut);
+    let c = ready_engineer(&mut sim, &rules, &registry, hut);
+    let mut expected = sim.scenario_rng.clone();
+    let mut delays = BTreeMap::new();
+    let mut locomotors = BTreeMap::new();
+    for id in [c, b, a] {
+        delays.insert(id, expected.next_range_u32_inclusive(4, 8));
+        let e = sim.substrate.entities.get_mut(id).unwrap();
+        e.attack_target = Some(crate::sim::combat::AttackTarget::new(hut));
+        e.passive_scan_timer.arm(sim.session.binary_frame, 30);
+        e.navigation.nav_com_aux = Some(NavTargetRef::Cell { rx: 19, ry: 19 });
+        e.navigation
+            .nav_queue
+            .push(NavTargetRef::Building { id: hut });
+        e.navigation
+            .nav_queue
+            .push(NavTargetRef::Cell { rx: 16, ry: 15 });
+        e.mark_live_contact_with(hut);
+        locomotors.insert(id, serde_json::to_value(&e.locomotor).unwrap());
+    }
+    // Registry membership survives Limbo and is independent of Logic's list.
+    sim.substrate
+        .entities
+        .get_mut(c)
+        .unwrap()
+        .lifecycle
+        .in_limbo = true;
+    // The hut itself is not an Infantry receiver even if it holds the pointer.
+    sim.substrate
+        .entities
+        .get_mut(hut)
+        .unwrap()
+        .navigation
+        .nav_com = Some(NavTargetRef::Building { id: hut });
+    sim.expire_infantry_bridge_hut_targets(hut);
+    assert_eq!(sim.scenario_rng.state(), expected.state());
+    for id in [a, b, c] {
+        let e = sim.substrate.entities.get(id).unwrap();
+        assert_eq!(e.passive_scan_timer.duration, delays[&id]);
+        assert!(e.attack_target.is_none());
+        assert_eq!(e.navigation.nav_com, None);
+        assert_eq!(e.navigation.nav_com_aux, None, "native clears the pair");
+        assert_eq!(
+            e.navigation.nav_queue,
+            [NavTargetRef::Cell { rx: 16, ry: 15 }]
+        );
+        assert_eq!(serde_json::to_value(&e.locomotor).unwrap(), locomotors[&id]);
+        assert!(
+            e.has_live_contact_with(hut),
+            "control0 keeps radio contacts"
+        );
+    }
+    assert_eq!(
+        sim.substrate.entities.get(hut).unwrap().navigation.nav_com,
+        Some(NavTargetRef::Building { id: hut })
+    );
+}
+
+#[test]
+fn repair_pointer_expiry_keeps_sensor_and_occupier_exceptions_and_current_nav_gate() {
+    use crate::sim::components::NavTargetRef;
+    for exception in 0..3 {
+        let (mut sim, rules, registry, hut) = ready_repair_fixture(None);
+        let id = ready_engineer(&mut sim, &rules, &registry, hut);
+        let owner = sim.substrate.entities.get(id).unwrap().owner();
+        if exception == 0 {
+            sim.fog.width = 33;
+            sim.fog.height = 33;
+            sim.fog.increment_sensor_at(owner, 16, 15);
+        }
+        let e = sim.substrate.entities.get_mut(id).unwrap();
+        e.occupier = exception == 1;
+        if exception == 2 {
+            e.navigation.nav_com = Some(NavTargetRef::Cell { rx: 16, ry: 15 });
+        }
+        e.navigation.nav_com_aux = Some(NavTargetRef::Building { id: hut });
+        let before = e.navigation.clone();
+        sim.expire_infantry_bridge_hut_targets(hut);
+        let e = sim.substrate.entities.get(id).unwrap();
+        assert_eq!(
+            e.navigation.nav_com, before.nav_com,
+            "exception {exception}"
+        );
+        assert_eq!(
+            e.navigation.nav_com_aux, before.nav_com_aux,
+            "exception {exception}"
+        );
+    }
 }
 
 #[test]
