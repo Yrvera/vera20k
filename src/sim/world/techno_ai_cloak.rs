@@ -6,7 +6,6 @@ use crate::sim::combat::TargetKind;
 use crate::sim::intern::InternedId;
 use crate::sim::mission::concrete_effects::represented_assign_target;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 
 use super::Simulation;
 
@@ -417,7 +416,7 @@ fn find_nearest_object_in_cell(sim: &Simulation, cell: (u16, u16)) -> Option<u64
         let Some(other) = sim.substrate.entities.get(occupant.entity_id) else {
             continue;
         };
-        let distance = native_subcell_distance_from_cell_origin(
+        let distance = crate::sim::cell_kernel::native_xy_distance(
             other.position.sub_x.to_num::<i32>(),
             other.position.sub_y.to_num::<i32>(),
         );
@@ -426,22 +425,6 @@ fn find_nearest_object_in_cell(sim: &Simulation, cell: (u16, u16)) -> Option<u64
         }
     }
     best.map(|(entity_id, _)| entity_id)
-}
-
-/// The x87 half of `Find_Nearest_Object`: `FILD` both signed deltas, square and
-/// sum them in `(dx*dx) + (dy*dy)` order, run the retail `Sqrt_Approx @
-/// 0x004CAC40` LUT, then `Math__ftol @ 0x007C5F00`.
-fn native_subcell_distance_from_cell_origin(sub_x: i32, sub_y: i32) -> i32 {
-    let dx = X87Chop53::load_i32(sub_x);
-    let dy = X87Chop53::load_i32(sub_y);
-    let squared = X87Chop53::add(X87Chop53::mul(dx, dx), X87Chop53::mul(dy, dy));
-    let Ok(root_bits) = sqrt_approx_f32(squared) else {
-        return i32::MAX;
-    };
-    let Ok(root) = X87Chop53::load_f32(root_bits) else {
-        return i32::MAX;
-    };
-    X87Chop53::ftol_i64(root).map_or(i32::MAX, |distance| distance as i32)
 }
 
 /// `FootClass::PerCellProcess @ 0x004D85D0`, the cell-enter (`param_2 == 2`)
