@@ -64,11 +64,9 @@ App code orchestrates without owning duplicate gameplay. Current module contract
 and `advance_tick` phases describe the architecture. Name coordinate frames/units;
 consult the [coordinate reference](docs/research/coordinate-reference-frames.md).
 
-Use relevant rows in the [module dependency map](docs/module-map.md) to locate
-unfamiliar modules and trace dependencies or dependents; verify connections against
-current source. It is not a runtime call graph. Refresh with
-`python tools/module_map.py` when module dependencies, layout, visibility or build
-configuration change.
+Use relevant rows in the [dependency map](docs/module-map.md); verify against source.
+Refresh with `python tools/module_map.py` after dependency, layout, visibility or
+build configuration changes.
 
 One owner follows a complete mechanism through evidence, implementation, production
 integration and review. Consider the surrounding architecture and affected consumers,
