@@ -48,6 +48,8 @@ must cite saved evidence and actual validation results.
 
 Each cohesive gamemd-derived Rust behavior carries nearby native identity/address
 and source; sim-behavior commits cite their evidence.
+Consult the [Ghidra reference](docs/research/ghidra-workflow.md) for access,
+interpretation pitfalls and shared-database edits.
 
 ## Architecture and delivery
 
@@ -120,8 +122,6 @@ color/palette math, projection/sampling, GPU execution and performance. Cite
 consequential findings near the implementation or review. Validate affected production
 output and performance with appropriate captures, GPU readbacks or profiling;
 documentation and CPU-only tests alone do not establish rendered gamemd parity.
-
-Avoid unsolicited reports or permanent completion ledgers.
 
 Resolve `<main-checkout>` with `git worktree list`; its `ini/`, config and `LOCAL.md`
 are machine-local. Read retail data before selecting constants.
