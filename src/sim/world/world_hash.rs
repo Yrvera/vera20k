@@ -2106,7 +2106,10 @@ fn hash_locomotor_payload(
             hash_slope_transition_state(state, hasher);
         }
         LocomotorRuntimePayload::Fly => 9u8.hash(hasher),
-        LocomotorRuntimePayload::Jumpjet => 10u8.hash(hasher),
+        LocomotorRuntimePayload::Jumpjet(state) => {
+            10u8.hash(hasher);
+            state.hash(hasher);
+        }
         LocomotorRuntimePayload::Parachute => 11u8.hash(hasher),
     }
 }

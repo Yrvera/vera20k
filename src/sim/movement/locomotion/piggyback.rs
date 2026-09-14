@@ -97,7 +97,7 @@ pub enum LocomotorRuntimePayload {
     Mech,
     Ship(SlopeTransitionState),
     Fly,
-    Jumpjet,
+    Jumpjet(super::super::jumpjet_movement::JumpjetRuntime),
     Parachute,
 }
 
@@ -116,7 +116,7 @@ impl LocomotorRuntimePayload {
             LocomotorKind::Mech => Self::Mech,
             LocomotorKind::Ship => Self::Ship(SlopeTransitionState::at_binary_frame(binary_frame)),
             LocomotorKind::Fly => Self::Fly,
-            LocomotorKind::Jumpjet => Self::Jumpjet,
+            LocomotorKind::Jumpjet => Self::Jumpjet(Default::default()),
             LocomotorKind::Parachute => Self::Parachute,
         }
     }

@@ -24,7 +24,6 @@
 //! - Part of sim/ — depends on sim/components, sim/locomotor, map/terrain.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::components::MovementTarget;
 use crate::sim::debug_event_log::DebugEventKind;
@@ -232,6 +231,11 @@ pub fn tick_air_movement(
 
         let air_phase_before = loco.air_phase;
         let is_jumpjet: bool = loco.kind == LocomotorKind::Jumpjet;
+        // Original Process54AEC0 state0 calls54B980 only for IsMoving.
+        // The independent retained query state never comes from AirMovePhase.
+        if let Some(state) = loco.jumpjet_runtime_mut() {
+            state.activate();
+        }
         if is_jumpjet {
             jumpjet_movement::tick_jumpjet_altitude(loco, dt);
             let has_mt: bool = entity.movement_target.is_some();

@@ -15,7 +15,6 @@ use crate::sim::components::OrderIntent;
 use crate::sim::intern::InternedId;
 use crate::sim::mission::MissionType;
 use crate::sim::movement;
-use crate::sim::movement::air_movement;
 use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::PathGrid;
@@ -241,12 +240,8 @@ impl Simulation {
             let speed: SimFixed = (base_speed * loco_multiplier).max(SimFixed::lit("25"));
 
             if is_air {
-                let _ = air_movement::issue_air_move_command(
-                    &mut self.substrate.entities,
-                    stable_id,
-                    (goal_rx, goal_ry),
-                    speed,
-                );
+                let _ =
+                    self.issue_air_cell_destination(stable_id, (goal_rx, goal_ry), speed, rules);
             } else {
                 let blocker_neighbor_counts =
                     bump_crush::build_blocker_neighbor_counts_with_overlays(

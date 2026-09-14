@@ -28,7 +28,6 @@ use crate::sim::components::OrderIntent;
 use crate::sim::docking::building_dock::{self, DockState};
 use crate::sim::mission::{DockTeardown, MissionType};
 use crate::sim::movement;
-use crate::sim::movement::air_movement;
 use crate::sim::movement::bump_crush;
 use crate::sim::movement::jumpjet_movement;
 use crate::sim::movement::locomotor::MovementLayer;
@@ -748,11 +747,11 @@ impl Simulation {
                         }
                     }
                     // Air units fly in straight lines — no A* pathfinding needed.
-                    let ok = air_movement::issue_air_move_command(
-                        &mut self.substrate.entities,
+                    let ok = self.issue_air_cell_destination(
                         *entity_id,
                         (*target_rx, *target_ry),
                         info.speed,
+                        rules,
                     );
                     // Set Move mission so the aircraft flies to destination
                     // before the Idle handler can redirect it to RTB.
@@ -851,6 +850,9 @@ impl Simulation {
                     e.order_intent = None;
                     e.dock_state = None;
                     e.c4_plant = None;
+                }
+                if !self.stop_jumpjet_infantry_destination(*entity_id, rules, overlay_registry) {
+                    return false;
                 }
                 // Cancel any special locomotor states in progress.
                 // **VERA-internal: retail Stop leaves the installed locomotor
@@ -1071,11 +1073,11 @@ impl Simulation {
                     )
                 } else if info.loco_layer == MovementLayer::Air {
                     // Air units fly in straight lines.
-                    let ok = air_movement::issue_air_move_command(
-                        &mut self.substrate.entities,
+                    let ok = self.issue_air_cell_destination(
                         *entity_id,
                         (*target_rx, *target_ry),
                         info.speed,
+                        rules,
                     );
                     if ok {
                         if let Some(e) = self.substrate.entities.get_mut(*entity_id) {

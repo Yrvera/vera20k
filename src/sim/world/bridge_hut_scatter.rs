@@ -119,6 +119,19 @@ impl Simulation {
             LocomotorKind::Walk => Ok(loco.step_head().unwrap_or(raw)),
             // Teleport+18/55ACA0 copies linked owner+9C exactly.
             LocomotorKind::Teleport => Ok(raw),
+            LocomotorKind::Jumpjet => {
+                let state = loco
+                    .jumpjet_runtime()
+                    .ok_or("Jumpjet payload does not match active class")?;
+                let coordinate = state.coordinate(raw);
+                Ok(
+                    if coordinate == crate::sim::movement::jumpjet_movement::JumpjetRuntime::NULL {
+                        raw
+                    } else {
+                        coordinate
+                    },
+                )
+            }
             other => Err(format!(
                 "hut coordinate requires the {other:?} +18 receiver"
             )),
@@ -216,7 +229,10 @@ impl Simulation {
         let moving = e
             .locomotor
             .as_ref()
-            .and_then(|loco| loco.walk_is_moving())
+            .and_then(|loco| {
+                loco.walk_is_moving()
+                    .or_else(|| loco.jumpjet_runtime().map(|state| state.moving))
+            })
             .ok_or_else(|| {
                 self.hut_callback_error(
                     id,
@@ -250,6 +266,17 @@ impl Simulation {
         .ok_or_else(|| self.hut_callback_error(id, "hut Scatter has invalid Doing".into()))?
         {
             return Ok(false);
+        }
+        if !e
+            .locomotor
+            .as_ref()
+            .is_some_and(|loco| loco.active_kind() == LocomotorKind::Walk)
+        {
+            return Err(self.hut_callback_error(
+                id,
+                "admitted hut Scatter requires its non-Walk destination/Process continuation"
+                    .into(),
+            ));
         }
         let speed_type = object.speed_type;
         let on_bridge = e.on_bridge;

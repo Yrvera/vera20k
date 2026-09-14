@@ -491,6 +491,22 @@ impl LocomotorState {
         }
     }
 
+    pub(crate) fn jumpjet_runtime(&self) -> Option<&super::jumpjet_movement::JumpjetRuntime> {
+        match (self.active_kind(), &self.runtime_payload) {
+            (LocomotorKind::Jumpjet, LocomotorRuntimePayload::Jumpjet(state)) => Some(state),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn jumpjet_runtime_mut(
+        &mut self,
+    ) -> Option<&mut super::jumpjet_movement::JumpjetRuntime> {
+        match (self.kind, &mut self.runtime_payload) {
+            (LocomotorKind::Jumpjet, LocomotorRuntimePayload::Jumpjet(state)) => Some(state),
+            _ => None,
+        }
+    }
+
     pub(crate) fn walk_is_moving(&self) -> Option<bool> {
         match (self.kind, &self.runtime_payload) {
             (LocomotorKind::Walk, LocomotorRuntimePayload::Walk(state)) => Some(state.moving),

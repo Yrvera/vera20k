@@ -15,7 +15,7 @@ pub(super) fn fixture() -> (
     crate::map::overlay_types::OverlayTypeRegistry,
 ) {
     let mut text = String::from(
-        "[InfantryTypes]\n0=ENGINEER\n[AircraftTypes]\n0=HORNET\n[HORNET]\nLandable=yes\nSpeed=12\nSpeedType=Winged\nStrength=75\nLocomotor={4A582746-9839-11d1-B709-00A024DDAFD1}\n[BuildingTypes]\n0=CABHUT\n[ENGINEER]\nEngineer=yes\nSpeed=4\nSpeedType=Foot\nStrength=75\nLocomotor={4A582744-9839-11d1-B709-00A024DDAFD1}\n[CABHUT]\nBridgeRepairHut=yes\nFoundation=1x1\nStrength=200\n[CombatDamage]\nC4Warhead=SA\n[SA]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n[OverlayTypes]\n",
+        "[InfantryTypes]\n0=ENGINEER\n1=JUMPJET\n[JUMPJET]\nStrength=125\nSpeed=9\nSpeedType=Hover\nMovementZone=Fly\nJumpjetSpeed=30\nJumpjetHeight=500\nJumpjetClimb=20\nJumpJet=yes\nBalloonHover=yes\nHoverAttack=yes\nLocomotor={92612C46-F71F-11d1-AC9F-006008055BB5}\n[AircraftTypes]\n0=HORNET\n[HORNET]\nLandable=yes\nSpeed=12\nSpeedType=Winged\nStrength=75\nLocomotor={4A582746-9839-11d1-B709-00A024DDAFD1}\n[BuildingTypes]\n0=CABHUT\n[ENGINEER]\nEngineer=yes\nSpeed=4\nSpeedType=Foot\nStrength=75\nLocomotor={4A582744-9839-11d1-B709-00A024DDAFD1}\n[CABHUT]\nBridgeRepairHut=yes\nFoundation=1x1\nStrength=200\n[Warheads]\n0=SA\n1=Super\n[Super]\nInfDeath=2\nPenetratesBunker=yes\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n[CombatDamage]\nC4Warhead=SA\n[SA]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n[OverlayTypes]\n",
     );
     for id in 0..=238 {
         text.push_str(&format!("{id}=O{id}\n"));
@@ -72,6 +72,9 @@ pub(super) fn fixture() -> (
     );
     assert!(zones.hierarchy_for(MovementZone::Normal).is_some());
     let mut sim = Simulation::with_seed(31);
+    // Match production initialization: every registered type exists before
+    // building the derived table, including types first spawned after load.
+    sim.intern_rule_type_ids(&rules);
     sim.resolve_type_handles(&rules);
     sim.playfield_bounds = Some(bounds);
     sim.session.map_width = 33;
@@ -1527,4 +1530,438 @@ fn hut_queries_pending_uninit_and_active_tube_exit_before_other_gates() {
         serde_json::json!([coord.x, coord.y, coord.z]),
         rows[11]["output"]["coordinates"][0]
     );
+}
+
+/// An unrelated stock-kind Rocketeer still receives +4C before the hut gate.
+/// Covers production construction/order and native phase0 activation; full
+/// Jumpjet flight/landing and a Rocketeer actually occupying the hut are separate.
+#[test]
+fn repair_queries_unrelated_rocketeer_after_move_and_snapshot_restore() {
+    use crate::sim::{components::DriveCoord, snapshot::GameSnapshot};
+    for ordered in [false, true] {
+        let (mut sim, rules, registry, hut) = ready_repair_fixture(Some(231));
+        let rocketeer = sim
+            .spawn_object("JUMPJET", "Americans", 19, 15, 0, &rules, &BTreeMap::new())
+            .unwrap();
+        let current = crate::sim::movement::ground_pose::position_world_coord(
+            &sim.substrate.entities.get(rocketeer).unwrap().position,
+        );
+        assert_eq!(sim.hut_infantry_coordinate(rocketeer).unwrap(), current);
+        if ordered {
+            let grid = sim.path_grid_snapshot();
+            assert!(sim.apply_command_with_overlays(
+                "Americans",
+                &Command::Move {
+                    entity_id: rocketeer,
+                    target_rx: 20,
+                    target_ry: 15,
+                    queue: false,
+                    group_id: None
+                },
+                Some(&rules),
+                grid.as_deref(),
+                &BTreeMap::new(),
+                Some(&registry)
+            ));
+            drop(grid);
+            let state = sim
+                .substrate
+                .entities
+                .get(rocketeer)
+                .unwrap()
+                .locomotor
+                .as_ref()
+                .unwrap()
+                .jumpjet_runtime()
+                .unwrap();
+            assert!(state.moving);
+            assert_eq!(state.phase, 0, "MoveTo does not activate phase0");
+            assert_ne!(
+                state.destination,
+                DriveCoord::cell(20, 15, 0),
+                "Infantry keeps the selected subcell"
+            );
+            crate::sim::movement::air_movement::tick_air_movement(
+                &mut sim.substrate.entities,
+                &[rocketeer],
+                sim.session.tick,
+            );
+            assert_eq!(
+                sim.substrate
+                    .entities
+                    .get(rocketeer)
+                    .unwrap()
+                    .locomotor
+                    .as_ref()
+                    .unwrap()
+                    .jumpjet_runtime()
+                    .unwrap()
+                    .phase,
+                1
+            );
+        }
+        let state = sim
+            .substrate
+            .entities
+            .get(rocketeer)
+            .unwrap()
+            .locomotor
+            .as_ref()
+            .unwrap()
+            .jumpjet_runtime()
+            .unwrap()
+            .clone();
+        let coordinate = sim.hut_infantry_coordinate(rocketeer).unwrap();
+        // Map assets are deliberately skipped by the snapshot envelope.
+        // Supply the same map-load grid and run the production restore owners
+        // before resuming repair; this fixture has no wall contributions.
+        sim.overlay_grid
+            .as_mut()
+            .unwrap()
+            .retain_zero_wall_plane_for_tests();
+        let map_terrain = sim.resolved_terrain.as_ref().unwrap().clone();
+        let saved = GameSnapshot::save(&sim, 0, 0, "jumpjet", 0);
+        let mut restored = GameSnapshot::load(&saved).unwrap().sim;
+        restored.retain_in_scenario_process_state_from(&sim);
+        restored.restore_after_snapshot_load().unwrap();
+        restored.resolve_type_handles(&rules);
+        restored.rebuild_caches_after_load(
+            map_terrain,
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+        );
+        restored
+            .restore_map_authority_after_snapshot_load(&rules, &registry)
+            .unwrap();
+        assert_eq!(
+            restored.hut_infantry_coordinate(rocketeer).unwrap(),
+            coordinate
+        );
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(rocketeer)
+                .unwrap()
+                .locomotor
+                .as_ref()
+                .unwrap()
+                .jumpjet_runtime(),
+            Some(&state)
+        );
+        let engineer = ready_engineer(&mut restored, &rules, &registry, hut);
+        assert!(
+            restored
+                .object_type(
+                    restored
+                        .substrate
+                        .entities
+                        .get(engineer)
+                        .unwrap()
+                        .type_ref(),
+                    &rules
+                )
+                .is_some_and(|t| t.engineer)
+        );
+        assert!(
+            restored
+                .object_type(
+                    restored.substrate.entities.get(hut).unwrap().type_ref(),
+                    &rules
+                )
+                .is_some_and(|t| t.bridge_repair_hut)
+        );
+        let describe = |world: &Simulation| {
+            let e = world.substrate.entities.get(engineer);
+            format!(
+                "actor={:?}; first_hut={:?}; overlay={:?}; wood={}; sounds={:?}",
+                e.map(|e| (
+                    crate::sim::movement::ground_pose::position_world_coord(&e.position),
+                    e.mission.current(),
+                    e.navigation.nav_com,
+                    e.locomotor.as_ref().and_then(|l| l.step_head()),
+                    e.lifecycle.clone(),
+                    e.movement_target.clone()
+                )),
+                world.substrate.occupancy.first_building_on_layer(
+                    16,
+                    15,
+                    crate::sim::movement::locomotor::MovementLayer::Ground
+                ),
+                [(17, 14), (17, 15), (17, 16)].map(|(x, y)| world
+                    .resolved_terrain
+                    .as_ref()
+                    .unwrap()
+                    .cell(x, y)
+                    .unwrap()
+                    .bridge_facts
+                    .overlay_id),
+                world
+                    .resolved_terrain
+                    .as_ref()
+                    .unwrap()
+                    .wood_bridge_set_base(),
+                repair_sounds(world)
+            )
+        };
+        let before = describe(&restored);
+        let result = repair_frame(&mut restored, &rules, &registry);
+        assert!(
+            result.bridge_state_changed,
+            "ordered={ordered}; before={before}; after={}",
+            describe(&restored)
+        );
+        assert!(restored.substrate.entities.get(engineer).is_none());
+        assert!(
+            restored
+                .substrate
+                .entities
+                .get(rocketeer)
+                .unwrap()
+                .is_alive()
+        );
+        assert_eq!(repair_sounds(&restored), [true]);
+    }
+}
+
+#[test]
+fn jumpjet_query_fields_hash_and_restore_as_one_suspended_instance() {
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::movement::locomotion::piggyback;
+    use crate::sim::movement::locomotor::MovementLayer;
+    use crate::sim::{components::DriveCoord, snapshot::GameSnapshot};
+    let (mut sim, rules, _) = fixture();
+    let id = sim
+        .spawn_object("JUMPJET", "Americans", 19, 15, 0, &rules, &BTreeMap::new())
+        .unwrap();
+    let initial = sim.state_hash();
+    sim.substrate
+        .entities
+        .get_mut(id)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .jumpjet_runtime_mut()
+        .unwrap()
+        .destination = DriveCoord {
+        x: 5312,
+        y: 3904,
+        z: 208,
+    };
+    let coordinate_hash = sim.state_hash();
+    assert_ne!(initial, coordinate_hash);
+    sim.substrate
+        .entities
+        .get_mut(id)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .jumpjet_runtime_mut()
+        .unwrap()
+        .moving = true;
+    let moving_hash = sim.state_hash();
+    assert_ne!(coordinate_hash, moving_hash);
+    sim.substrate
+        .entities
+        .get_mut(id)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .jumpjet_runtime_mut()
+        .unwrap()
+        .phase = 3;
+    assert_ne!(moving_hash, sim.state_hash());
+    let retained = sim
+        .substrate
+        .entities
+        .get(id)
+        .unwrap()
+        .locomotor
+        .as_ref()
+        .unwrap()
+        .jumpjet_runtime()
+        .unwrap()
+        .clone();
+    let loco = sim
+        .substrate
+        .entities
+        .get_mut(id)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap();
+    assert_eq!(
+        piggyback::begin(loco, LocomotorKind::Walk, MovementLayer::Ground, 0),
+        piggyback::BeginOutcome::Installed
+    );
+    let saved = GameSnapshot::save(&sim, 0, 0, "jumpjet stash", 0);
+    let mut restored = GameSnapshot::load(&saved).unwrap().sim;
+    restored.restore_after_snapshot_load().unwrap();
+    let before = restored.state_hash();
+    // The suspended payload is hashed too; active Walk is unchanged.
+    let loco = restored
+        .substrate
+        .entities
+        .get_mut(id)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap();
+    let original = serde_json::to_string(&loco.piggyback).unwrap();
+    let mut changed = original.clone();
+    assert!(changed.contains("5312"));
+    changed = changed.replacen("5312", "5313", 1);
+    loco.piggyback = serde_json::from_str(&changed).unwrap();
+    assert_ne!(before, restored.state_hash());
+    let loco = restored
+        .substrate
+        .entities
+        .get_mut(id)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap();
+    loco.piggyback = serde_json::from_str(&original).unwrap();
+    assert!(piggyback::end(loco).is_some());
+    assert_eq!(loco.jumpjet_runtime(), Some(&retained));
+}
+
+#[test]
+fn jumpjet_stop_command_keeps_native_moving_and_selected_coordinate() {
+    use crate::util::fixed_math::SimFixed;
+    let (mut sim, rules, registry, _) = ready_repair_fixture(None);
+    let id = sim
+        .spawn_object("JUMPJET", "Americans", 19, 15, 0, &rules, &BTreeMap::new())
+        .unwrap();
+    assert!(sim.issue_air_cell_destination(id, (20, 15), SimFixed::from_num(9), Some(&rules)));
+    crate::sim::movement::air_movement::tick_air_movement(
+        &mut sim.substrate.entities,
+        &[id],
+        sim.session.tick,
+    );
+    let before = sim
+        .substrate
+        .entities
+        .get(id)
+        .unwrap()
+        .locomotor
+        .as_ref()
+        .unwrap()
+        .jumpjet_runtime()
+        .unwrap()
+        .clone();
+    let grid = sim.path_grid_snapshot();
+    assert!(sim.apply_command_with_overlays(
+        "Americans",
+        &Command::Stop { entity_id: id },
+        Some(&rules),
+        grid.as_deref(),
+        &BTreeMap::new(),
+        Some(&registry)
+    ));
+    let state = sim
+        .substrate
+        .entities
+        .get(id)
+        .unwrap()
+        .locomotor
+        .as_ref()
+        .unwrap()
+        .jumpjet_runtime()
+        .unwrap();
+    assert!(
+        state.moving,
+        "Stop is a new selected destination, not a null MoveTo"
+    );
+    assert_eq!(state.phase, before.phase);
+    assert_ne!(state.destination, before.destination);
+    assert!(
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .movement_target
+            .is_some()
+    );
+}
+
+#[test]
+fn failed_jumpjet_stop_stock_fatal_receiver_precedes_cache_retirement() {
+    use crate::sim::{components::DriveCoord, movement::jumpjet_movement::JumpjetRuntime};
+    use serde_json::json;
+    let rows: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/jumpjet_stop_damage.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        rows[0]["output"], rows[1]["output"],
+        "original alias/copied fatal core controls"
+    );
+    for row in [&rows[0], &rows[2]] {
+        let (mut sim, mut rules, registry) = fixture();
+        rules.bridge_warheads.c4_name = "Super".into();
+        let id = sim
+            .spawn_object("JUMPJET", "Americans", 19, 15, 0, &rules, &BTreeMap::new())
+            .unwrap();
+        // Supplied failed-search terrain exercises the real FNPC receiver;
+        // it is not a claim that every stock map can strand a Rocketeer.
+        for y in 0..33 {
+            for x in 0..33 {
+                sim.resolved_terrain
+                    .as_mut()
+                    .unwrap()
+                    .cell_mut(x, y)
+                    .unwrap()
+                    .speed_costs
+                    .hover = Some(0);
+            }
+        }
+        let e = sim.substrate.entities.get_mut(id).unwrap();
+        e.health.current = row["input"]["health"].as_u64().unwrap() as u16;
+        *e.locomotor.as_mut().unwrap().jumpjet_runtime_mut().unwrap() = JumpjetRuntime {
+            destination: DriveCoord {
+                x: 2752,
+                y: 2752,
+                z: 208,
+            },
+            moving: true,
+            phase: 1,
+        };
+        assert!(sim.stop_jumpjet_infantry_destination(id, Some(&rules), Some(&registry)));
+        let e = sim.substrate.entities.get(id).unwrap();
+        let state = e.locomotor.as_ref().unwrap().jumpjet_runtime().unwrap();
+        assert_eq!(
+            u64::from(e.health.current),
+            row["output"]["health"].as_u64().unwrap()
+        );
+        assert_eq!(
+            json!([
+                state.destination.x,
+                state.destination.y,
+                state.destination.z
+            ]),
+            row["output"]["state"]["destination"]
+        );
+        assert_eq!(json!(state.moving), row["output"]["state"]["moving"]);
+        assert_eq!(json!(state.phase), row["output"]["state"]["phase"]);
+        if row["input"]["health"] == 100 {
+            assert!(
+                e.dying || !e.is_alive(),
+                "fatal receiver/lifecycle completed before Stop returns"
+            );
+            assert_eq!(row["output"]["damage_trace"][1]["health"], 0);
+            assert_ne!(
+                row["output"]["damage_trace"][1]["destination"],
+                json!([0, 0, 0]),
+                "native HP0 precedes callback and cache clear"
+            );
+        } else {
+            assert!(!e.dying, "zero-health Stop never dispatches damage");
+        }
+    }
 }
