@@ -22,11 +22,10 @@ Be brief, plain and result-first.
 
 ## Exactness and evidence
 
-Establish gamemd behavior from original instructions, active callers, retail data
-and reproducible native comparisons. Inspect current Rust for implementation state.
-Ghidra annotations are interpretations, not proof. Confirm active-YR reachability;
-unreachable claims need a breakpoint or flag-to-leaf trace. Never invent offsets,
-identities or behavior.
+Confirm gamemd-derived changes against original instructions, active callers, and
+retail data. Ghidra annotations are often wrong; treat them as
+leads, not proof. Confirm active-YR reachability; unreachable claims need a breakpoint or
+flag-to-leaf trace. Never invent offsets, identities or behavior.
 
 Priority follows player visibility and frequency; it does not establish equivalence.
 Missing or unproven required behavior keeps an exhaustive task open.
@@ -49,8 +48,6 @@ must cite saved evidence and actual validation results.
 
 Each cohesive gamemd-derived Rust behavior carries nearby native identity/address
 and source; sim-behavior commits cite their evidence.
-Consult the [Ghidra reference](docs/research/ghidra-workflow.md) for access,
-interpretation pitfalls and shared-database edits.
 
 ## Architecture and delivery
 
@@ -62,8 +59,7 @@ active-object order are distinct.
 
 `sim/` never depends on `render/`, `ui/`, `sidebar/`, `audio/` or `net/`.
 App code orchestrates without owning duplicate gameplay. Current module contracts
-and `advance_tick` phases describe the architecture. Name coordinate frames/units
-and establish conversions from current source and native evidence.
+and `advance_tick` phases describe the architecture. Name coordinate frames/units.
 
 Use relevant rows in the [dependency map](docs/module-map.md); verify against source.
 Refresh with `python tools/module_map.py` after dependency, layout, visibility or
@@ -125,8 +121,7 @@ consequential findings near the implementation or review. Validate affected prod
 output and performance with appropriate captures, GPU readbacks or profiling;
 documentation and CPU-only tests alone do not establish rendered gamemd parity.
 
-Tracked research/plans belong in the task checkout; requested research documents
-need no accompanying code. Avoid unsolicited reports or permanent completion ledgers.
+Avoid unsolicited reports or permanent completion ledgers.
 
 Resolve `<main-checkout>` with `git worktree list`; its `ini/`, config and `LOCAL.md`
 are machine-local. Read retail data before selecting constants.
