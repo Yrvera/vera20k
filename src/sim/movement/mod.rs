@@ -66,12 +66,15 @@ mod movement_path;
 mod movement_step;
 pub(crate) mod movement_tick;
 mod navcom;
+pub(crate) use navcom::set_walk_destination_coord;
 mod path_markers;
 pub(crate) mod ready_producer;
 pub(crate) mod slope_transition;
 mod track_head;
 mod track_host;
 pub(crate) mod track_process;
+pub(crate) mod walk_head;
+mod walk_host;
 
 // --- Movement-related modules (public API) ---
 pub mod air_movement;
@@ -108,10 +111,13 @@ pub(crate) use drive_locomotion::drive_locomotor_is_moving;
 pub(crate) use drive_locomotion::{DriveProcessOutcome, process_drive_locomotion_shell};
 
 // Re-export command functions so callers can use `movement::issue_move_command` etc.
-pub(crate) use movement_commands::issue_move_command_with_layered;
 pub use movement_commands::{
     clear_navigation_for_entity, issue_direct_move, issue_move_command,
     set_destination_for_teleporter_entity, stop_navigation_at_committed_head,
+};
+pub(crate) use movement_commands::{
+    issue_move_command_with_destination, issue_move_command_with_layered,
+    prepare_walk_cell_destination,
 };
 #[cfg(test)]
 pub(crate) use movement_path::{

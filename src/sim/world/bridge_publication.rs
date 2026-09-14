@@ -9,8 +9,8 @@
 use super::*;
 use crate::map::cell_index::NativeCellIdentity as Cell;
 use crate::map::resolved_terrain::DynamicTerrainCellState;
-use crate::sim::bridge_state::publication::{self, BridgePublicationHost, CellCoord};
 use crate::sim::bridge_state::Phase;
+use crate::sim::bridge_state::publication::{self, BridgePublicationHost, CellCoord};
 
 #[path = "bridge_rim_publication.rs"]
 mod rim_publication;
@@ -26,6 +26,11 @@ mod pavement_publication;
 
 #[path = "bridge_zone_publication.rs"]
 mod zone_publication;
+
+#[path = "bridge_repair_publication.rs"]
+mod repair_publication;
+
+pub(crate) use repair_publication::repair_from_engineer;
 
 #[cfg(test)]
 #[path = "bridge_pavement_publication_tests.rs"]
@@ -152,7 +157,6 @@ impl LivePublication<'_> {
             .dynamic_terrain_cells
             .insert(coord, DynamicTerrainCellState::capture(resolved));
     }
-
 }
 
 impl BridgePublicationHost for LivePublication<'_> {
@@ -305,7 +309,9 @@ impl BridgePublicationHost for LivePublication<'_> {
                 self.radar(target);
             }
         }
-        if let Err(error) = self.perpendicular_tile_tail(target_coord, target, axis, phase, direction) {
+        if let Err(error) =
+            self.perpendicular_tile_tail(target_coord, target, axis, phase, direction)
+        {
             // An unavailable/unadmitted input is not a successful native
             // sparse fallback. Preserve completed writes and report the gap.
             log::error!("bridge tile update at {target_coord:?} failed: {error}");

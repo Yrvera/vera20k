@@ -25,8 +25,8 @@
 mod runtime;
 mod state;
 
-pub use state::{CrateAuthority, CrateSlot};
 pub(crate) use runtime::tick_crate_regeneration;
+pub use state::{CrateAuthority, CrateSlot};
 
 use crate::map::bridge_facts::{
     BRIDGE_FLAG_STRUCTURAL, BridgeFlagStamp, BridgeStampFamily, BridgeStampSlot,
@@ -293,13 +293,9 @@ fn place_one_random_crate(
         // native fallback cell.
         let movement_surface = crate_surface_at_packed(sim, drawn);
 
-        let Some(cell) = snap_to_passable_with_radius(
-            sim,
-            path_grid,
-            drawn,
-            movement_surface,
-            frame.radius_cap,
-        ) else {
+        let Some(cell) =
+            snap_to_passable_with_radius(sim, path_grid, drawn, movement_surface, frame.radius_cap)
+        else {
             continue;
         };
         if cell == (0, 0)
@@ -378,11 +374,7 @@ fn crate_random_frame(sim: &Simulation) -> Option<CrateRandomFrame> {
 /// Signed `Random__RandomRanged` projection used by the crate rectangle.
 /// Reversed endpoints are compared and swapped as signed dwords before the
 /// shared native mask/rejection sampler sees their nonnegative span.
-fn crate_random_ranged_i32(
-    rng: &mut crate::sim::rng::SimRng,
-    low: i32,
-    high: i32,
-) -> i32 {
+fn crate_random_ranged_i32(rng: &mut crate::sim::rng::SimRng, low: i32, high: i32) -> i32 {
     let (lo, hi) = if low <= high {
         (low, high)
     } else {
@@ -395,15 +387,10 @@ fn crate_random_ranged_i32(
 /// `MapClass__PlaceCrateAtRandomCell @ 0x0056BD8B..0x0056BDD3` always draws
 /// X then Y, adds the signed rectangle origin with dword wrapping, and stores
 /// each result through a 16-bit word before the later MOVSX reads it back.
-fn draw_crate_candidate(
-    rng: &mut crate::sim::rng::SimRng,
-    frame: CrateRandomFrame,
-) -> (i32, i32) {
-    let x = frame.left.wrapping_add(crate_random_ranged_i32(
-        rng,
-        0,
-        frame.width.wrapping_sub(1),
-    ));
+fn draw_crate_candidate(rng: &mut crate::sim::rng::SimRng, frame: CrateRandomFrame) -> (i32, i32) {
+    let x = frame
+        .left
+        .wrapping_add(crate_random_ranged_i32(rng, 0, frame.width.wrapping_sub(1)));
     let y = frame.top.wrapping_add(crate_random_ranged_i32(
         rng,
         0,
@@ -1110,9 +1097,7 @@ fn spawn_crate_cell_anim(
             },
         )
         .unwrap_or_else(|error| {
-            panic!(
-                "crate CellAnim [{cell_anim}] must be bound before OverlayClass::Mark: {error}"
-            )
+            panic!("crate CellAnim [{cell_anim}] must be bound before OverlayClass::Mark: {error}")
         });
     assert!(
         sim.set_cell_anim_draw_authority(anim_id, remap_color, z_adjust),
@@ -1159,6 +1144,7 @@ fn snap_to_passable_with_radius(
     radius_cap: u16,
 ) -> Option<(u16, u16)> {
     let query = NearbyQuery {
+        raw_occupation: None,
         passability: PassabilityArgs {
             // Verified: the placer passes native speed type 5 (float) when the
             // drawn cell is water and 1 (track) otherwise.
@@ -1191,11 +1177,7 @@ fn snap_to_passable_with_radius(
         zone_grid: sim.zone_grid.as_ref(),
         playfield_bounds: sim.playfield_bounds,
     };
-    find_nearby_passable_cell(
-        drawn,
-        &query,
-        sim.session.binary_frame,
-    )
+    find_nearby_passable_cell(drawn, &query, sim.session.binary_frame)
 }
 
 #[cfg(test)]
@@ -1676,11 +1658,9 @@ pub(crate) mod tests {
         let rx = replay.next_range_u32_inclusive(1, u32::from(MAP - 1)) as u16;
         let ry = replay.next_range_u32_inclusive(1, u32::from(MAP - 1)) as u16;
         replay.next_range_u32_inclusive(0, 0x7fff_fffe);
-        sim.substrate.raw_cell_occupation.mark_ground(
-            rx,
-            ry,
-            OBJECT_OCCUPATION_BIT,
-        );
+        sim.substrate
+            .raw_cell_occupation
+            .mark_ground(rx, ry, OBJECT_OCCUPATION_BIT);
 
         let result = place_scenario_start_crates(&mut sim, &rules, &registry, Some(&grid), 1);
 
@@ -2195,15 +2175,17 @@ pub(crate) mod tests {
             "next-reader settlement does not consume presentation dirtiness or the frame signal"
         );
         let settled = sim.path_grid_snapshot().unwrap();
-        let first = sim.advance_app_frame(
-            &[],
-            Some(&rules),
-            &std::collections::BTreeMap::new(),
-            Some(&registry),
-            67,
-            TickLane::Ordinary,
-            None,
-        );
+        let first = sim
+            .advance_app_frame(
+                &[],
+                Some(&rules),
+                &std::collections::BTreeMap::new(),
+                Some(&registry),
+                67,
+                TickLane::Ordinary,
+                None,
+            )
+            .expect("fixture frame must complete");
         assert_eq!(
             first
                 .overlay_updates
@@ -2218,15 +2200,17 @@ pub(crate) mod tests {
             !Arc::ptr_eq(&settled, &published),
             "the independent frame signal also publishes"
         );
-        let second = sim.advance_app_frame(
-            &[],
-            Some(&rules),
-            &std::collections::BTreeMap::new(),
-            Some(&registry),
-            67,
-            TickLane::Ordinary,
-            None,
-        );
+        let second = sim
+            .advance_app_frame(
+                &[],
+                Some(&rules),
+                &std::collections::BTreeMap::new(),
+                Some(&registry),
+                67,
+                TickLane::Ordinary,
+                None,
+            )
+            .expect("fixture frame must complete");
         assert!(second.overlay_updates.is_empty());
         assert!(Arc::ptr_eq(&published, &sim.path_grid_snapshot().unwrap()));
         assert_eq!(second.tick.state_hash, sim.state_hash());
@@ -2714,7 +2698,10 @@ pub(crate) mod tests {
         assert!(!origin_terrain.bridge_walkable);
         assert!(origin_terrain.build_blocked);
         assert_eq!(
-            origin_terrain.bridge_layer.as_ref().map(|layer| layer.direction),
+            origin_terrain
+                .bridge_layer
+                .as_ref()
+                .map(|layer| layer.direction),
             Some(crate::map::resolved_terrain::BridgeDirection::Low)
         );
 
@@ -2851,11 +2838,9 @@ pub(crate) mod tests {
         };
         let negative_cell = draw_crate_candidate(&mut negative, negative_frame);
         let expected_negative = (
-            i32::MAX
-                .wrapping_add(-3 + negative_expected.next_range_u32_inclusive(0, 3) as i32)
+            i32::MAX.wrapping_add(-3 + negative_expected.next_range_u32_inclusive(0, 3) as i32)
                 as i16 as i32,
-            i32::MIN
-                .wrapping_add(-3 + negative_expected.next_range_u32_inclusive(0, 3) as i32)
+            i32::MIN.wrapping_add(-3 + negative_expected.next_range_u32_inclusive(0, 3) as i32)
                 as i16 as i32,
         );
         assert_eq!(negative_cell, expected_negative);
@@ -2872,11 +2857,9 @@ pub(crate) mod tests {
         };
         let wide_cell = draw_crate_candidate(&mut wide, wide_frame);
         let expected_wide = (
-            30_000i32
-                .wrapping_add(wide_expected.next_range_u32_inclusive(0, 69_999) as i32)
-                as i16 as i32,
-            (-30_000i32)
-                .wrapping_add(wide_expected.next_range_u32_inclusive(0, 69_999) as i32)
+            30_000i32.wrapping_add(wide_expected.next_range_u32_inclusive(0, 69_999) as i32) as i16
+                as i32,
+            (-30_000i32).wrapping_add(wide_expected.next_range_u32_inclusive(0, 69_999) as i32)
                 as i16 as i32,
         );
         assert_eq!(wide_cell, expected_wide);

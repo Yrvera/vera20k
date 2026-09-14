@@ -407,15 +407,17 @@ fn infantry_terminal_same_frame_firer_death_keeps_electric_consequences() {
                 &sim.interner
             ));
         }
-        let frame = sim.advance_app_frame(
-            &[],
-            Some(&rules),
-            &BTreeMap::new(),
-            None,
-            67,
-            crate::sim::world::TickLane::Ordinary,
-            None,
-        );
+        let frame = sim
+            .advance_app_frame(
+                &[],
+                Some(&rules),
+                &BTreeMap::new(),
+                None,
+                67,
+                crate::sim::world::TickLane::Ordinary,
+                None,
+            )
+            .expect("fixture frame must complete");
         assert_eq!(
             frame
                 .fire_events

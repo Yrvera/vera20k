@@ -123,9 +123,7 @@ pub fn get_cellclass_fallback_leptons<'a>(
 ) -> CellRef<'a> {
     let x = x_leptons / 256;
     let y = y_leptons / 256;
-    let index = y
-        .wrapping_mul(CELL_ROW_STRIDE as i32)
-        .wrapping_add(x);
+    let index = y.wrapping_mul(CELL_ROW_STRIDE as i32).wrapping_add(x);
     if (0..=MAX_CELL_INDEX as i32).contains(&index) {
         let rx = (index % CELL_ROW_STRIDE as i32) as u16;
         let ry = (index / CELL_ROW_STRIDE as i32) as u16;
@@ -431,7 +429,9 @@ enum ReservationCellSelection {
     SharedDummy(SharedCellDummy),
     /// Unit-level/detached callers have no persistent shared dummy coordinate,
     /// but retain the existing real fixed-stride versus fallback mask split.
-    DetachedDummy { requested: (i32, i32) },
+    DetachedDummy {
+        requested: (i32, i32),
+    },
 }
 
 impl ReservationCellSelection {
@@ -542,11 +542,7 @@ impl CellReservationGrid {
 
     pub(crate) fn raw_mask_for_cell_ref(&self, cell: &CellRef<'_>) -> u32 {
         match cell {
-            CellRef::Real(cell) => self
-                .masks
-                .get(&(cell.rx, cell.ry))
-                .copied()
-                .unwrap_or(0),
+            CellRef::Real(cell) => self.masks.get(&(cell.rx, cell.ry)).copied().unwrap_or(0),
             CellRef::Dummy { .. } => self.dummy_mask,
         }
     }
@@ -712,7 +708,16 @@ pub struct CellRectOccupancyContext<'a> {
 }
 
 pub fn check_passability_rect(ctx: CellRectPassabilityContext<'_>) -> bool {
-    scan_cell_rect(ctx.rect, |x, y| check_cell_passability(&ctx, x, y))
+    check_passability_rect_with_raw_occupation(ctx, None)
+}
+
+/// Native rectangle query with the caller's live +124/+128 planes. Legacy
+/// callers without this authority retain their declared list projection.
+pub(crate) fn check_passability_rect_with_raw_occupation(
+    ctx: CellRectPassabilityContext<'_>,
+    raw: Option<&RawCellOccupationGrid>,
+) -> bool {
+    scan_cell_rect(ctx.rect, |x, y| check_cell_passability(&ctx, raw, x, y))
 }
 
 pub fn check_occupancy_rect(ctx: CellRectOccupancyContext<'_>) -> bool {
@@ -796,7 +801,12 @@ fn occupancy_blocker_at(
     None
 }
 
-fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) -> bool {
+fn check_cell_passability(
+    ctx: &CellRectPassabilityContext<'_>,
+    raw: Option<&RawCellOccupationGrid>,
+    x: i32,
+    y: i32,
+) -> bool {
     // Native `CellRect::CheckPassability @ 0x0056E7C0` calls packed
     // `MapClass::GetCellClass @ 0x005657A0` before the optional overlay column
     // and before `CellClass::CheckCellPassability @ 0x004834A0`. In particular,
@@ -811,9 +821,8 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
     // carry PathGrid without a resolved CellClass array. Keep their former
     // checked-u16 cache projection, but never let it replace a terrain-backed
     // native dummy or the canonical coordinates of a packed real alias.
-    let path_only_projection = canonical.is_none()
-        && ctx.resolved_terrain.is_none()
-        && ctx.path_grid.is_some();
+    let path_only_projection =
+        canonical.is_none() && ctx.resolved_terrain.is_none() && ctx.path_grid.is_some();
     let projection_coord = canonical.or_else(|| {
         if path_only_projection {
             checked_u16_cell_coord(x, y)
@@ -884,7 +893,12 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
         }
     }
 
-    let base_level = if path_only_projection {
+    let base_level = if raw.is_some() && ctx.resolved_terrain.is_some() {
+        match &cell {
+            CellRef::Real(cell) => i16::from(cell.level as i8),
+            CellRef::Dummy { cell } => i16::from(cell.snapshot().level),
+        }
+    } else if path_only_projection {
         path_cell.map(|cell| cell.signed_level()).unwrap_or(0)
     } else {
         match &cell {
@@ -895,13 +909,15 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
             CellRef::Dummy { cell } => i16::from(cell.snapshot().level),
         }
     };
-    let structural_bridge = path_cell.is_some_and(|cell| cell.has_structural_bridge())
-        || terrain_cell.is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
+    let structural_bridge = if raw.is_some() && ctx.resolved_terrain.is_some() {
+        cell.bridge_flags_0x1180() & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL != 0
+    } else {
+        path_cell.is_some_and(|cell| cell.has_structural_bridge())
+            || terrain_cell.is_some_and(|cell| cell.bridge_facts.has_structural_bridge())
+    };
 
-    // Native location: `CellClass::IsClearToMove` (YR 1.001). CellRect callers
-    // do not yet carry the raw occupation grid, so their existing object-list
-    // blocker projection is kept explicit here. World/movement callers with raw
-    // bytes must construct `IsClearToMoveRequest` directly rather than infer bits.
+    //Compatibility for callers that still omit raw occupation. Exact callers
+    //below select their live plane instead of this older list projection.
     let projected_ground_bits = u8::from(projection_coord.is_some_and(|(rx, ry)| {
         ctx.occupancy
             .is_some_and(|grid| grid.count_on_layer(rx, ry, MovementLayer::Ground) > 0)
@@ -910,6 +926,19 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
         ctx.occupancy
             .is_some_and(|grid| grid.count_on_layer(rx, ry, MovementLayer::Bridge) > 0)
     })) * 0x40;
+    //4834A0 consumes the selected raw plane, including reservations whose
+    //owners are not yet listed here (Walk75C240). Never combine the planes.
+    let (ground_bits, deck_bits) = if let Some(raw) = raw {
+        let key = canonical.map_or(crate::sim::occupancy::RawCellKey::Dummy, |(x, y)| {
+            crate::sim::occupancy::RawCellKey::Real(x, y)
+        });
+        (
+            raw.bits_at(key, MovementLayer::Ground),
+            raw.bits_at(key, MovementLayer::Bridge),
+        )
+    } else {
+        (projected_ground_bits, projected_deck_bits)
+    };
     let is_wall_overlay = terrain_cell.is_some_and(|cell| cell.zone_type == zone_class::WALL);
     let land_passable = terrain_cell.map_or_else(
         || {
@@ -930,8 +959,8 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
             has_bridge: structural_bridge,
             requested_level: ctx.required_height_or_level,
             is_bridge: ctx.bridge_aware_zone,
-            ground_occupation_bits: projected_ground_bits,
-            deck_occupation_bits: projected_deck_bits,
+            ground_occupation_bits: ground_bits,
+            deck_occupation_bits: deck_bits,
             ignore_infantry: false,
             ignore_vehicles: false,
             land_passable,
@@ -1005,10 +1034,7 @@ fn rect_is_in_playfield_height_aware(
 
 /// Explicit mode-zero `MapClass::IsCellInPlayfield @ 0x00578460` seam.
 /// No CellClass lookup or dummy state is touched.
-pub fn cell_is_in_playfield_geometry_only(
-    cell: (i32, i32),
-    bounds: PlayfieldBounds,
-) -> bool {
+pub fn cell_is_in_playfield_geometry_only(cell: (i32, i32), bounds: PlayfieldBounds) -> bool {
     bounds.contains_geometry_packed(cell.0, cell.1)
 }
 
@@ -1401,12 +1427,7 @@ mod tests {
         ResolvedTerrainGrid::from_cells(width, height, cells)
     }
 
-    fn assert_dummy(
-        cell: CellRef<'_>,
-        coord: (i32, i32),
-        level: i8,
-        slope_type: u8,
-    ) {
+    fn assert_dummy(cell: CellRef<'_>, coord: (i32, i32), level: i8, slope_type: u8) {
         assert_eq!(
             cell.dummy_snapshot(),
             Some(SharedCellDummySnapshot {
@@ -1501,8 +1522,7 @@ mod tests {
             ((2, 0), false),
             ((-1, 0), false),
         ] {
-            let mut ctx =
-                clear_passability_context(CellRect::new(cell.0, cell.1, 1, 1), None);
+            let mut ctx = clear_passability_context(CellRect::new(cell.0, cell.1, 1, 1), None);
             ctx.path_grid = Some(&path_grid);
             assert_eq!(
                 check_passability_rect(ctx),
@@ -2042,12 +2062,7 @@ mod tests {
             CellRef::Real(terrain.cell(0, 1).expect("canonical index 512"))
         );
 
-        assert_dummy(
-            get_cellclass_fallback(Some(&terrain), -1, 0),
-            (-1, 0),
-            0,
-            0,
-        );
+        assert_dummy(get_cellclass_fallback(Some(&terrain), -1, 0), (-1, 0), 0, 0);
         let missing_canonical_cell = flat_terrain(2, 1);
         assert_dummy(
             get_cellclass_fallback(Some(&missing_canonical_cell), 512, 0),
@@ -2094,20 +2109,23 @@ mod tests {
     #[test]
     fn gsi_04_01_lookup_world_leptons_truncate_before_fallback() {
         let terrain = flat_terrain(1, 1);
-        assert_dummy(
-            get_cellclass_fallback(Some(&terrain), -2, 0),
-            (-2, 0),
-            0,
-            0,
-        );
+        assert_dummy(get_cellclass_fallback(Some(&terrain), -2, 0), (-2, 0), 0, 0);
 
         assert_eq!(
             get_cellclass_fallback_leptons(Some(&terrain), -1, -255),
-            CellRef::Real(terrain.cell(0, 0).expect("negative fractions truncate to zero"))
+            CellRef::Real(
+                terrain
+                    .cell(0, 0)
+                    .expect("negative fractions truncate to zero")
+            )
         );
         assert_eq!(
             get_cellclass_fallback_leptons(Some(&terrain), -255, -1),
-            CellRef::Real(terrain.cell(0, 0).expect("negative fractions truncate to zero"))
+            CellRef::Real(
+                terrain
+                    .cell(0, 0)
+                    .expect("negative fractions truncate to zero")
+            )
         );
         assert_eq!(terrain.dummy_cell_requested_coord(), (-2, 0));
 
@@ -2115,7 +2133,11 @@ mod tests {
         // component is narrowed to its dummy-cell word.
         assert_eq!(
             get_cellclass_fallback_leptons(Some(&terrain), 8_388_608, -16_384),
-            CellRef::Real(terrain.cell(0, 0).expect("full-i32 quotient index cancellation"))
+            CellRef::Real(
+                terrain
+                    .cell(0, 0)
+                    .expect("full-i32 quotient index cancellation")
+            )
         );
         assert_eq!(terrain.dummy_cell_requested_coord(), (-2, 0));
 
@@ -2176,9 +2198,11 @@ mod tests {
         );
 
         let reconstructed = flat_terrain(1, 1);
-        assert!(!terrain
-            .shared_cell_dummy()
-            .same_identity(&reconstructed.shared_cell_dummy()));
+        assert!(
+            !terrain
+                .shared_cell_dummy()
+                .same_identity(&reconstructed.shared_cell_dummy())
+        );
         assert_eq!(reconstructed.dummy_cell_requested_coord(), (0, 0));
         assert_eq!(reconstructed.dummy_cell_level_slope(), (0, 0));
     }

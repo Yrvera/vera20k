@@ -235,6 +235,10 @@ impl ObjectSubstrate {
     /// bytes, preserving established hashes while every modeled zero remains
     /// represented canonically by the absence of a sparse entry.
     pub(crate) fn fold_raw_cell_occupation(&self, hasher: &mut impl std::hash::Hasher) {
+        if let Some(dummy) = self.raw_cell_occupation.dummy_for_hash() {
+            b"raw-dummy-occupation-v1".hash(hasher);
+            dummy.hash(hasher);
+        }
         let entry_count = self.raw_cell_occupation.entry_count();
         if entry_count == 0 {
             return;
@@ -242,9 +246,7 @@ impl ObjectSubstrate {
 
         b"raw-cell-occupation-v2".hash(hasher);
         entry_count.hash(hasher);
-        for (rx, ry, ground, deck, ground_owner, deck_owner) in
-            self.raw_cell_occupation.entries()
-        {
+        for (rx, ry, ground, deck, ground_owner, deck_owner) in self.raw_cell_occupation.entries() {
             0xC1u8.hash(hasher); // entry delimiter
             rx.hash(hasher);
             ry.hash(hasher);

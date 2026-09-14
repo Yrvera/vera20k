@@ -33,23 +33,115 @@ mod track_object_turn_tests;
 pub(super) struct LiveObjectPassOutcome {
     pub movement: movement::MovementTickStats,
     pub destroyed_structure: bool,
+    pub bridge_state_changed: bool,
     pub tube_turn_owned_ids: BTreeSet<u64>,
+}
+
+#[derive(Default)]
+pub(super) struct GroundLocomotorOutcome {
+    pub(super) movement: movement::MovementTickStats,
+    pub(super) bridge_state_changed: bool,
+    ordinary_track_owned: bool,
 }
 
 #[derive(Default)]
 struct ObjectTurnOutcome {
     movement: movement::MovementTickStats,
     destroyed_structure: bool,
+    bridge_state_changed: bool,
     tube_owned: bool,
 }
 
 impl Simulation {
+    /// The ordinary ground locomotor Process corridor, without Object/Techno AI.
+    /// Infantry Scatter51D478 calls the active locomotor synchronously; its
+    /// PerCell and boundary receivers must finish before Scatter returns.
+    pub(super) fn process_ground_locomotor_one(
+        &mut self,
+        stable_id: u64,
+        rules: Option<&RuleSet>,
+        path_grid: Option<&PathGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> Result<GroundLocomotorOutcome, super::FrameAdvanceError> {
+        let sim = self;
+        let one = [stable_id];
+        let mut outcome = GroundLocomotorOutcome::default();
+        let mut pending_movement = {
+            let current_grid = sim.path_grid_snapshot();
+            movement::movement_tick::begin_movement_with_grids_scoped(
+                &mut sim.substrate.entities,
+                Some(&one),
+                current_grid.as_deref().or(path_grid),
+                &sim.terrain_costs,
+                &sim.house_alliances,
+                &mut sim.substrate.occupancy,
+                &mut sim.substrate.cell_occupation,
+                &mut sim.substrate.raw_cell_occupation,
+                &mut sim.substrate.next_occupancy_enter_order,
+                &mut sim.scenario_rng,
+                sim.session.tick,
+                sim.session.binary_frame,
+                sim.zone_grid.as_ref(),
+                sim.resolved_terrain.as_ref(),
+                sim.overlay_grid.as_ref(),
+                overlay_registry,
+                sim.playfield_bounds,
+                &sim.terrain_speed_config,
+                sim.close_enough,
+                sim.path_delay_ticks,
+                sim.blockage_path_delay_ticks,
+                &mut sim.interner,
+                rules,
+                &mut sim.sound_events,
+                &mut sim.pending_lifecycle_requests,
+                true,
+                true,
+                Some(&sim.production.slave_bindings),
+            )
+        };
+        outcome.ordinary_track_owned = pending_movement
+            .take_native_track()
+            .map(|invocation| {
+                let moved =
+                    sim.run_ordinary_track_process(invocation, rules, path_grid, overlay_registry);
+                pending_movement.record_track_movement(moved);
+            })
+            .is_some();
+        if let Some((id, head)) = pending_movement.take_walk_per_cell() {
+            outcome.bridge_state_changed |=
+                sim.run_completed_walk_step(id, head, rules, path_grid, overlay_registry)?;
+            pending_movement.retain_walk_completion(id, &sim.substrate.entities);
+        }
+        if let Some((id, coord)) = pending_movement.take_walk_boundary() {
+            sim.run_walk_boundary(id, coord, rules, path_grid, overlay_registry);
+            pending_movement.record_track_movement(1);
+        }
+
+        outcome
+            .movement
+            .merge(movement::movement_tick::finish_movement_pass(
+                pending_movement,
+                &mut sim.substrate.entities,
+                &sim.house_alliances,
+                &mut sim.substrate.cell_occupation,
+                sim.session.tick,
+                sim.session.binary_frame,
+                sim.resolved_terrain.as_ref(),
+                sim.path_grid.as_deref().or(path_grid),
+                &mut sim.interner,
+                rules,
+                &mut sim.sound_events,
+                &mut sim.pending_lifecycle_requests,
+                true,
+            ));
+        Ok(outcome)
+    }
     pub(super) fn advance_live_object_pass(
         &mut self,
         rules: Option<&RuleSet>,
         path_grid: Option<&PathGrid>,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    ) -> LiveObjectPassOutcome {
+    ) -> Result<LiveObjectPassOutcome, super::FrameAdvanceError> {
         let miner_config = rules.map(crate::sim::miner::MinerConfig::from_rules);
         let terrain_spawner_cells = self
             .production
@@ -65,15 +157,17 @@ impl Simulation {
         };
 
         let mut outcome = LiveObjectPassOutcome::default();
-        self.for_each_live_object(|sim, stable_id| {
-            let turn = sim.advance_live_object_turn(stable_id, rules, object_ctx);
+        self.try_for_each_live_object::<super::FrameAdvanceError>(|sim, stable_id| {
+            let turn = sim.advance_live_object_turn(stable_id, rules, object_ctx)?;
             outcome.movement.merge(turn.movement);
             outcome.destroyed_structure |= turn.destroyed_structure;
+            outcome.bridge_state_changed |= turn.bridge_state_changed;
             if turn.tube_owned {
                 outcome.tube_turn_owned_ids.insert(stable_id);
             }
-        });
-        outcome
+            Ok(())
+        })?;
+        Ok(outcome)
     }
 
     fn advance_live_object_turn(
@@ -81,7 +175,7 @@ impl Simulation {
         stable_id: u64,
         rules: Option<&RuleSet>,
         object_ctx: techno_ai::ObjectAiCtx<'_>,
-    ) -> ObjectTurnOutcome {
+    ) -> Result<ObjectTurnOutcome, super::FrameAdvanceError> {
         let sim = self;
         let path_grid = object_ctx.path_grid;
         let overlay_registry = object_ctx.overlay_registry;
@@ -119,7 +213,7 @@ impl Simulation {
             .get(stable_id)
             .is_none_or(|entity| entity.dying)
         {
-            return outcome;
+            return Ok(outcome);
         }
 
         if !tube_active_at_entry
@@ -137,7 +231,7 @@ impl Simulation {
                 .get(stable_id)
                 .is_none_or(|e| e.dying)
             {
-                return outcome;
+                return Ok(outcome);
             }
         }
         // Drive endpoint PerCellProcess(2) precedes FootStop's NavCom clear.
@@ -156,64 +250,18 @@ impl Simulation {
             .entities
             .get(stable_id)
             .map(|entity| (entity.position.rx, entity.position.ry));
+        let walk_process_owned = sim
+            .substrate
+            .entities
+            .get(stable_id)
+            .and_then(|e| e.locomotor.as_ref())
+            .is_some_and(|l| l.kind == crate::rules::locomotor_type::LocomotorKind::Walk);
         let one = [stable_id];
-        let mut pending_movement = {
-            let current_grid = sim.path_grid_snapshot();
-            movement::movement_tick::begin_movement_with_grids_scoped(
-                &mut sim.substrate.entities,
-                Some(&one),
-                current_grid.as_deref().or(path_grid),
-                &sim.terrain_costs,
-                &sim.house_alliances,
-                &mut sim.substrate.occupancy,
-                &mut sim.substrate.cell_occupation,
-                &mut sim.substrate.raw_cell_occupation,
-                &mut sim.substrate.next_occupancy_enter_order,
-                &mut sim.scenario_rng,
-                sim.session.tick,
-                sim.session.binary_frame,
-                sim.zone_grid.as_ref(),
-                sim.resolved_terrain.as_ref(),
-                sim.overlay_grid.as_ref(),
-                overlay_registry,
-                sim.playfield_bounds,
-                &sim.terrain_speed_config,
-                sim.close_enough,
-                sim.path_delay_ticks,
-                sim.blockage_path_delay_ticks,
-                &mut sim.interner,
-                rules,
-                &mut sim.sound_events,
-                &mut sim.pending_lifecycle_requests,
-                true,
-                true,
-            )
-        };
-        let ordinary_track_owned = pending_movement
-            .take_native_track()
-            .map(|invocation| {
-                let moved =
-                    sim.run_ordinary_track_process(invocation, rules, path_grid, overlay_registry);
-                pending_movement.record_track_movement(moved);
-            })
-            .is_some();
-        outcome
-            .movement
-            .merge(movement::movement_tick::finish_movement_pass(
-                pending_movement,
-                &mut sim.substrate.entities,
-                &sim.house_alliances,
-                &mut sim.substrate.cell_occupation,
-                sim.session.tick,
-                sim.session.binary_frame,
-                sim.resolved_terrain.as_ref(),
-                sim.path_grid.as_deref().or(path_grid),
-                &mut sim.interner,
-                rules,
-                &mut sim.sound_events,
-                &mut sim.pending_lifecycle_requests,
-                true,
-            ));
+        let ground =
+            sim.process_ground_locomotor_one(stable_id, rules, path_grid, overlay_registry)?;
+        let ordinary_track_owned = ground.ordinary_track_owned;
+        outcome.movement.merge(ground.movement);
+        outcome.bridge_state_changed |= ground.bridge_state_changed;
 
         // FootClass advances the SHP Unit body counter immediately after
         // this object's locomotor Process, against the still-current
@@ -255,7 +303,7 @@ impl Simulation {
             });
         if tube_owns_whole_turn {
             outcome.tube_owned = true;
-            return outcome;
+            return Ok(outcome);
         }
 
         sim.tick_air_movement_with_cell_lists_one(stable_id);
@@ -322,7 +370,10 @@ impl Simulation {
             .entities
             .get(stable_id)
             .map(|entity| (entity.position.rx, entity.position.ry));
-        if !ordinary_track_owned && let Some(rules) = rules {
+        if !ordinary_track_owned
+            && !walk_process_owned
+            && let Some(rules) = rules
+        {
             sim.move_unit_sensor_after_cell_change(
                 stable_id,
                 cell_before_movement,
@@ -335,7 +386,10 @@ impl Simulation {
             // outside clear at 0x00719A99; it must not flow through the
             // ordinary promote-only per-cell writer.
             sim.clear_entity_playfield_membership_after_teleport(stable_id);
-        } else if !ordinary_track_owned && cell_before_movement != cell_after_movement {
+        } else if !ordinary_track_owned
+            && !walk_process_owned
+            && cell_before_movement != cell_after_movement
+        {
             // `FootClass::PerCellProcess @ 0x004D85D0` runs the `Sensors=`
             // neighbour scan on its cell-enter arm, after the sensor
             // deposit has moved (`0x004D8611`/`0x004D8621`, issued just
@@ -375,6 +429,6 @@ impl Simulation {
         }
         sim.tick_move_sound_after_process(stable_id, before_movement, rules);
         sim.object_ai_post_movement_promote_one(stable_id, rules);
-        outcome
+        Ok(outcome)
     }
 }

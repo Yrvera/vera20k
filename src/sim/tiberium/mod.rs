@@ -1393,10 +1393,7 @@ SpreadPercentage=.06
         assert_eq!(outcome.removed_amount, 11);
         assert!(!outcome.fully_removed);
         assert_eq!(overlay.cell(4, 4).overlay_data, 0);
-        assert!(
-            growth.native_tiberium_state().classes[0]
-                .growth.is_empty()
-        );
+        assert!(growth.native_tiberium_state().classes[0].growth.is_empty());
         assert!(
             growth.native_tiberium_state().classes[0]
                 .growth_bitmap
@@ -1476,15 +1473,17 @@ SpreadPercentage=.06
         );
         assert!(!repeated.navigation_changed);
 
-        let deferred = sim.advance_app_frame(
-            &[],
-            Some(&rules),
-            &BTreeMap::new(),
-            None,
-            67,
-            TickLane::Ordinary,
-            None,
-        );
+        let deferred = sim
+            .advance_app_frame(
+                &[],
+                Some(&rules),
+                &BTreeMap::new(),
+                None,
+                67,
+                TickLane::Ordinary,
+                None,
+            )
+            .expect("fixture frame must complete");
         assert!(deferred.overlay_updates.is_empty());
         assert!(Arc::ptr_eq(&before, &sim.path_grid_snapshot().unwrap()));
         assert_eq!(
@@ -1497,15 +1496,17 @@ SpreadPercentage=.06
             "missing registry retains the first true result despite the false repeat"
         );
 
-        let first = sim.advance_app_frame(
-            &[],
-            Some(&rules),
-            &BTreeMap::new(),
-            Some(&overlay_registry),
-            67,
-            TickLane::Ordinary,
-            None,
-        );
+        let first = sim
+            .advance_app_frame(
+                &[],
+                Some(&rules),
+                &BTreeMap::new(),
+                Some(&overlay_registry),
+                67,
+                TickLane::Ordinary,
+                None,
+            )
+            .expect("fixture frame must complete");
         assert_eq!(sim.terrain_costs[&SpeedType::Foot].cost_at(0, 0), 37);
         assert!(sim.zone_grid.is_some());
         assert!(
@@ -1523,15 +1524,17 @@ SpreadPercentage=.06
                 .take_dirty_cells_with_passability_signal(),
             (Vec::new(), false)
         );
-        let second = sim.advance_app_frame(
-            &[],
-            Some(&rules),
-            &BTreeMap::new(),
-            Some(&overlay_registry),
-            67,
-            TickLane::Ordinary,
-            None,
-        );
+        let second = sim
+            .advance_app_frame(
+                &[],
+                Some(&rules),
+                &BTreeMap::new(),
+                Some(&overlay_registry),
+                67,
+                TickLane::Ordinary,
+                None,
+            )
+            .expect("fixture frame must complete");
         assert!(second.overlay_updates.is_empty());
         assert!(
             Arc::ptr_eq(&published, &sim.path_grid_snapshot().unwrap()),

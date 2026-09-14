@@ -107,6 +107,7 @@ fn naval_query<'a>(
     footprint_height: i32,
 ) -> NearbyQuery<'a> {
     NearbyQuery {
+        raw_occupation: None,
         passability: PassabilityArgs {
             speed_type: SpeedType::Float,
             required_zone_id: None,

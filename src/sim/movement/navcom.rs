@@ -15,6 +15,35 @@ use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 const SHIP_STOP_TARGET_FRACTION: SimFixed = SimFixed::lit("0.3");
 
+/// Accepted Walk75ACB0 destination store. This conversion is independent of
+/// HeadTo/OnBridge's416: original6D1830,6D18C0,6D1BF0 initialize the scale for
+/// 6D2120(60), whose result is414 under captured startup FPCW0E7F and027F.
+/// See walk_head_occupation.json destination rows, including actual Cell+4C.
+pub(crate) fn set_walk_destination_coord(
+    entity: &mut GameEntity,
+    coord: DriveCoord,
+    terrain: Option<&ResolvedTerrainGrid>,
+) {
+    let Some(loco) = entity
+        .locomotor
+        .as_mut()
+        .filter(|l| l.kind == LocomotorKind::Walk)
+    else {
+        return;
+    };
+    let mut coord = coord;
+    if coord != (DriveCoord { x: 0, y: 0, z: 0 }) {
+        if let Some(terrain) = terrain {
+            let cell =
+                terrain.native_cell_identity(((coord.x / 256) as i16, (coord.y / 256) as i16));
+            if terrain.native_cell_flags(cell) & 0x100 != 0 {
+                coord.z = coord.z.wrapping_add(414);
+            }
+        }
+    }
+    loco.set_walk_destination(Some(coord));
+}
+
 fn is_drive_locomotor(entity: &GameEntity) -> bool {
     entity
         .locomotor
@@ -146,6 +175,12 @@ pub(super) fn set_destination_internal_cell(
             target_cell_coord(target.0, target.1, resolved_terrain),
             resolved_terrain,
         );
+    } else {
+        set_walk_destination_coord(
+            entity,
+            target_cell_coord(target.0, target.1, resolved_terrain),
+            resolved_terrain,
+        );
     }
 }
 
@@ -159,7 +194,37 @@ pub(super) fn set_destination_internal_null(entity: &mut GameEntity) {
         drive_stop_moving(entity);
     } else if is_ship_locomotor(entity) {
         ship_stop_moving(entity);
+    } else if let Some(loco) = entity.locomotor.as_mut() {
+        loco.set_walk_destination(None);
     }
+}
+
+/// Walk75BE6F..75BF29 reloads the persistent destination AFTER PerCell and
+/// survival. Only null or matching signed cell + |dz| < 2*B45C28 retires NavCom.
+/// An A* approach endpoint has no independent destination authority.
+pub(super) fn finish_walk_navigation(entity: &mut GameEntity) -> bool {
+    let Some(loco) = entity.locomotor.as_ref() else {
+        return false;
+    };
+    if loco.kind != LocomotorKind::Walk
+        || loco.step_head().is_some()
+        || !entity.lifecycle.object_alive
+        || entity.lifecycle.in_limbo
+        || entity.object_is_falling_down != 0
+    {
+        return false;
+    }
+    let current = super::ground_pose::position_world_coord(&entity.position);
+    let arrived = loco.walk_destination().is_none_or(|dest| {
+        (current.x / 256) as i16 == (dest.x / 256) as i16
+            && (current.y / 256) as i16 == (dest.y / 256) as i16
+            && current.z.wrapping_sub(dest.z).wrapping_abs()
+                < 2 * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS
+    });
+    if arrived {
+        set_destination_internal_null(entity);
+    }
+    arrived
 }
 
 /// FootClass::Stop_Moving-equivalent owner clear: zeroes only the owner
@@ -193,6 +258,15 @@ pub(super) fn finish_drive_navigation(
     entity: &mut GameEntity,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
 ) {
+    // Walk's PerCell completion owns its cell/height destination test. Reaching
+    // an A* approach endpoint does not authorize Foot SetDestination(NULL).
+    if entity
+        .locomotor
+        .as_ref()
+        .is_some_and(|l| l.kind == LocomotorKind::Walk)
+    {
+        return;
+    }
     if is_drive_locomotor(entity) && entity.navigation.nav_com.is_some() {
         if entity.dying {
             // Native liveness gate: no owner clear for a dying object; the

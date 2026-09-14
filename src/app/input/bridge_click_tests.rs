@@ -309,11 +309,14 @@ fn follow_clicked_goal(
         // production sim_tick::advance_one_simulation_frame path). Preserve
         // that ingress here so the Move actually reaches command execution.
         let due = scenario.runtime.simulation.take_due_commands();
-        let output = scenario.runtime.advance_frame(
-            &due,
-            crate::headless_scenario::SIM_TICK_MS,
-            crate::sim::world::TickLane::Ordinary,
-        );
+        let output = scenario
+            .runtime
+            .advance_frame(
+                &due,
+                crate::headless_scenario::SIM_TICK_MS,
+                crate::sim::world::TickLane::Ordinary,
+            )
+            .expect("fixture frame must complete");
         assert!(output.tick.frame_committed, "the retail frame must commit");
         let entity = scenario
             .sim()

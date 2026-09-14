@@ -69,6 +69,18 @@ pub struct LocomotorCommonRuntime {
     pub hover_bob_offset: SimFixed,
 }
 
+/// Walk MoveTo75ACB0 / Stop75ADA0 retain destination independently of the
+/// committed head. Both XYZ values belong to this complete locomotor instance.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct WalkRuntime {
+    pub head: Option<crate::sim::components::DriveCoord>,
+    pub destination: Option<crate::sim::components::DriveCoord>,
+    /// Full object+34 / interface+30, read by IsMoving75AB30. Constructor
+    ///75AAD3 clears; MoveTo75AD5A sets; null MoveTo/Stop clear only with no
+    ///head. FindSubCellDest's head retirement does not change this byte.
+    pub moving: bool,
+}
+
 /// Class-local state that travels with the locomotor object.
 ///
 /// Special process state is carried here rather than reconstructed from a phase
@@ -76,16 +88,16 @@ pub struct LocomotorCommonRuntime {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LocomotorRuntimePayload {
     Drive(SlopeTransitionState),
-    Walk,
+    Walk(WalkRuntime),
     Teleport(Option<TeleportState>),
     Tunnel(Option<TunnelState>),
     Rocket(Option<RocketState>),
     DropPod(Option<DropPodState>),
-    Hover,
+    Hover(Option<crate::sim::components::DriveCoord>),
     Mech,
     Ship(SlopeTransitionState),
     Fly,
-    Jumpjet,
+    Jumpjet(super::super::jumpjet_movement::JumpjetRuntime),
     Parachute,
 }
 
@@ -95,18 +107,16 @@ impl LocomotorRuntimePayload {
             LocomotorKind::Drive => {
                 Self::Drive(SlopeTransitionState::at_binary_frame(binary_frame))
             }
-            LocomotorKind::Walk => Self::Walk,
+            LocomotorKind::Walk => Self::Walk(WalkRuntime::default()),
             LocomotorKind::Teleport => Self::Teleport(None),
             LocomotorKind::Tunnel => Self::Tunnel(None),
             LocomotorKind::Rocket => Self::Rocket(None),
             LocomotorKind::DropPod => Self::DropPod(None),
-            LocomotorKind::Hover => Self::Hover,
+            LocomotorKind::Hover => Self::Hover(None),
             LocomotorKind::Mech => Self::Mech,
-            LocomotorKind::Ship => {
-                Self::Ship(SlopeTransitionState::at_binary_frame(binary_frame))
-            }
+            LocomotorKind::Ship => Self::Ship(SlopeTransitionState::at_binary_frame(binary_frame)),
             LocomotorKind::Fly => Self::Fly,
-            LocomotorKind::Jumpjet => Self::Jumpjet,
+            LocomotorKind::Jumpjet => Self::Jumpjet(Default::default()),
             LocomotorKind::Parachute => Self::Parachute,
         }
     }
@@ -425,22 +435,12 @@ mod tests {
         let before = state.clone();
 
         assert_eq!(
-            begin(
-                &mut state,
-                LocomotorKind::Drive,
-                MovementLayer::Ground,
-                0,
-            ),
+            begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground, 0,),
             BeginOutcome::Installed
         );
         let nested_before = state.clone();
         assert_eq!(
-            begin(
-                &mut state,
-                LocomotorKind::Ship,
-                MovementLayer::Ground,
-                0,
-            ),
+            begin(&mut state, LocomotorKind::Ship, MovementLayer::Ground, 0,),
             BeginOutcome::RefusedNested
         );
         assert_eq!(state.piggyback, nested_before.piggyback);
@@ -455,12 +455,7 @@ mod tests {
         let installed = state.slot;
 
         assert_eq!(
-            begin(
-                &mut state,
-                LocomotorKind::Drive,
-                MovementLayer::Ground,
-                0,
-            ),
+            begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground, 0,),
             BeginOutcome::Installed
         );
         assert_eq!(state.kind, LocomotorKind::Drive);
@@ -486,12 +481,7 @@ mod tests {
         }));
 
         assert_eq!(
-            begin(
-                &mut state,
-                LocomotorKind::Drive,
-                MovementLayer::Ground,
-                0,
-            ),
+            begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground, 0,),
             BeginOutcome::Installed
         );
         assert_eq!(
@@ -521,12 +511,7 @@ mod tests {
             phase: TunnelPhase::Digging,
         }));
         assert_eq!(
-            begin(
-                &mut state,
-                LocomotorKind::DropPod,
-                MovementLayer::Air,
-                0,
-            ),
+            begin(&mut state, LocomotorKind::DropPod, MovementLayer::Air, 0,),
             BeginOutcome::Installed
         );
         state.runtime_payload = LocomotorRuntimePayload::DropPod(None);
@@ -553,12 +538,7 @@ mod tests {
         let mut output = None;
         assert_eq!(end_into(&mut state, Some(&mut output)), EndOutcome::Empty);
 
-        begin(
-            &mut state,
-            LocomotorKind::Drive,
-            MovementLayer::Ground,
-            0,
-        );
+        begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground, 0);
         assert_eq!(
             end_into(&mut state, Some(&mut output)),
             EndOutcome::Restored
@@ -574,12 +554,7 @@ mod tests {
     #[test]
     fn ordinary_and_special_end_gates_are_distinct() {
         let mut state = teleporter();
-        begin(
-            &mut state,
-            LocomotorKind::Drive,
-            MovementLayer::Ground,
-            0,
-        );
+        begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground, 0);
         let ready = EndGateContext {
             owner_moving: false,
             owner_teleporting: false,
@@ -619,12 +594,7 @@ mod tests {
     fn serialized_presence_matches_the_single_suspended_runtime() {
         let mut state = teleporter();
         assert_eq!(serialized_presence(&state), 0);
-        begin(
-            &mut state,
-            LocomotorKind::Drive,
-            MovementLayer::Ground,
-            0,
-        );
+        begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground, 0);
         assert_eq!(serialized_presence(&state), 1);
     }
 }

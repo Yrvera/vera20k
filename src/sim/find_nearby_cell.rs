@@ -22,10 +22,11 @@ use crate::map::resolved_terrain::{CellClassProjectionView, ResolvedTerrainGrid}
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::cell_rect::{
     CellRect, CellRectOccupancyContext, CellRectPassabilityContext,
-    cell_is_in_playfield_height_aware, check_occupancy_rect, check_passability_rect,
+    cell_is_in_playfield_height_aware, check_occupancy_rect,
+    check_passability_rect_with_raw_occupation,
 };
 use crate::sim::entity_store::EntityStore;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{OccupancyGrid, RawCellOccupationGrid};
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::zone_map::{ZoneGrid, ZoneId};
@@ -141,6 +142,9 @@ pub struct NearbySearchOptions {
 
 /// FNPC query — mirrors the engine `Find_Nearby_Passable_Cell` caller args.
 pub struct NearbyQuery<'a> {
+    /// Live CellClass occupation, including retained heads not in Cell lists.
+    /// None preserves the older caller's explicit list-only projection.
+    pub raw_occupation: Option<&'a RawCellOccupationGrid>,
     /// Per-candidate passability config.
     pub passability: PassabilityArgs,
     /// Top-left rectangle dimensions forwarded to passability and, when enabled,
@@ -322,8 +326,33 @@ where
     let mut out: Vec<Candidate> = Vec::new();
     let cap = q.radius_cap.min(RADIUS_HARD_CAP) as i32;
     let mut direct_found = false;
-    // The height gate's reference level is read once, from the seed cell.
-    let seed_level = q.check_height.then(|| cell_level(q, seed.0, seed.1));
+    //56DC6B..56DC92 always performs the seed lookup, even with height gate
+    //disabled. The bridge-aware second lookup56DCA8..56DCDC adds four to
+    //this retained level when the seed has structural bit100.
+    let mut level = q.resolved_terrain.map_or_else(
+        || cell_level(q, seed.0, seed.1),
+        |terrain| {
+            terrain
+                .cellclass_projection_view(seed.0, seed.1)
+                .signed_level as i16
+        },
+    );
+    if q.passability.bridge_aware_zone {
+        let structural = q.resolved_terrain.map_or_else(
+            || candidate_is_bridge_cell(q, seed.0, seed.1),
+            |terrain| {
+                terrain
+                    .cellclass_projection_view(seed.0, seed.1)
+                    .raw_flags_0x1180
+                    & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL
+                    != 0
+            },
+        );
+        if structural {
+            level = level.wrapping_add(BRIDGE_LEVEL_RISE);
+        }
+    }
+    let seed_level = q.check_height.then_some(level);
 
     let mut r = 0;
     while r < cap {
@@ -482,8 +511,8 @@ fn native_lepton_to_cell(leptons: i32) -> i32 {
 
 /// Run the per-candidate predicates in engine order: the independent height-aware
 /// anchor diamond, rectangle passability (`required_height_or_level = -1`,
-/// caller-supplied overlay rejection), optional occupancy with reservations SKIPPED
-/// (`-1`), the caller's height gate, then the bridge filter last.
+/// caller-supplied overlay rejection), the caller's height gate, bridge filter,
+/// then optional occupancy with reservations SKIPPED (`-1`).
 // gamemd-derived: `MapClass::Find_Nearby_Passable_Cell @ 0x0056DC20`; anchor
 // calls `0x0056DDC0/0x0056DFD6/0x0056E217/0x0056E419` dispatch to
 // `MapClass::Is_Cell_In_Playfield_CellClass @ 0x00578540` immediately before
@@ -507,39 +536,26 @@ fn candidate_passes(
 
     let rect = CellRect::new(cx, cy, q.footprint.width, q.footprint.height);
 
-    let passable = check_passability_rect(CellRectPassabilityContext {
-        rect,
-        speed_type: q.passability.speed_type,
-        required_zone_id: q.passability.required_zone_id,
-        movement_zone: q.passability.movement_zone,
-        required_height_or_level: None, // the search always passes -1 (L21)
-        bridge_aware_zone: q.passability.bridge_aware_zone,
-        // Caller argument, forwarded verbatim: the engine's two free-unit attempts
-        // differ in this one value and nothing else.
-        reject_any_overlay: options.reject_any_overlay,
-        path_grid: q.path_grid,
-        resolved_terrain: q.resolved_terrain,
-        overlay_grid: q.overlay_grid,
-        occupancy: q.occupancy,
-        zone_grid: q.zone_grid,
-    });
-    if !passable {
-        return false;
-    }
-
-    if q.check_occupancy
-        && !check_occupancy_rect(CellRectOccupancyContext {
+    let passable = check_passability_rect_with_raw_occupation(
+        CellRectPassabilityContext {
             rect,
-            reservation_arg: -1, // FNPC always SKIPS reservation (never a house index)
-            reservations: None,
-            occupancy: q.occupancy,
-            entities: q.entities,
-            terrain_object_cells: None,
+            speed_type: q.passability.speed_type,
+            required_zone_id: q.passability.required_zone_id,
+            movement_zone: q.passability.movement_zone,
+            required_height_or_level: None, // the search always passes -1 (L21)
+            bridge_aware_zone: q.passability.bridge_aware_zone,
+            // Caller argument, forwarded verbatim: the engine's two free-unit attempts
+            // differ in this one value and nothing else.
+            reject_any_overlay: options.reject_any_overlay,
+            path_grid: q.path_grid,
             resolved_terrain: q.resolved_terrain,
             overlay_grid: q.overlay_grid,
-            playfield_bounds: q.playfield_bounds,
-        })
-    {
+            occupancy: q.occupancy,
+            zone_grid: q.zone_grid,
+        },
+        q.raw_occupation,
+    );
+    if !passable {
         return false;
     }
 
@@ -549,12 +565,23 @@ fn candidate_passes(
         return false;
     }
 
-    // Bridge filter applied AFTER passability/occupancy/height.
+    //56DE6C bridge filter follows height; final occupancy56DE9D is last.
     if !q.allow_bridge_cells && candidate_is_bridge_cell(q, cx, cy) {
         return false;
     }
 
-    true
+    !q.check_occupancy
+        || check_occupancy_rect(CellRectOccupancyContext {
+            rect,
+            reservation_arg: -1,
+            reservations: None,
+            occupancy: q.occupancy,
+            entities: q.entities,
+            terrain_object_cells: None,
+            resolved_terrain: q.resolved_terrain,
+            overlay_grid: q.overlay_grid,
+            playfield_bounds: q.playfield_bounds,
+        })
 }
 
 /// The caller's height gate: `abs(seedLevel - bridgeRise - candidateLevel) < 2`,
@@ -574,14 +601,8 @@ fn candidate_passes(
 /// those callsites also set `allow_bridge_cells = false`, so a bridge candidate is
 /// dropped by the bridge filter whatever this gate says.
 ///
-/// RESIDUAL, recorded not fixed (out of scope for the direct/indirect work): the engine
-/// also ADDS [`BRIDGE_LEVEL_RISE`] to the SEED level when the bridge-aware zone flag is
-/// set and the seed cell itself carries a bridge; this port reads the seed level raw.
-/// *Trigger:* a search whose seed is a bridge cell, run with `bridge_aware_zone` — today
-/// only the movement reroute helper sets that flag, and only for a goal on a bridge
-/// deck, so it fires when a unit is ordered onto an unreachable bridge cell. *Effect:*
-/// a four-level shift in which candidates the gate admits around such a seed. Both
-/// free-unit placement callsites clear the flag, so it is inert there.
+/// The seed is independently raised by four at56DCDC when the caller is
+/// bridge-aware and that seed is structural; collection retains that value.
 fn candidate_height_ok(q: &NearbyQuery<'_>, seed_level: i16, cx: i32, cy: i32) -> bool {
     let bridge_rise = if candidate_is_bridge_cell(q, cx, cy) {
         BRIDGE_LEVEL_RISE
@@ -594,39 +615,47 @@ fn candidate_height_ok(q: &NearbyQuery<'_>, seed_level: i16, cx: i32, cy: i32) -
     delta.abs() < MAX_SEED_LEVEL_DELTA_EXCLUSIVE
 }
 
-/// A cell's terrain level, read from the path grid first and the resolved terrain
-/// second — the same order and the same "missing reads as 0" default the passability
-/// facade uses for its own level term, so the two never disagree about a cell.
+/// Read the selected Cell's live level without another map lookup. Native
+/// retains that identity across rectangle checks. PathGrid is only the
+/// terrain-less compatibility fallback, never an override of a resident Cell.
 fn cell_level(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> i16 {
+    if let Some(terrain) = q.resolved_terrain {
+        return terrain
+            .native_fixed_cell_index(cx as i16, cy as i16)
+            .map_or_else(
+                || i16::from(terrain.shared_cell_dummy().snapshot().level),
+                |index| i16::from(terrain.cells()[index].level as i8),
+            );
+    }
     let (Ok(rx), Ok(ry)) = (u16::try_from(cx), u16::try_from(cy)) else {
         return 0;
     };
     q.path_grid
         .and_then(|grid| grid.cell(rx, ry))
         .map(|cell| cell.signed_level())
-        .or_else(|| {
-            q.resolved_terrain
-                .and_then(|terrain| terrain.cell(rx, ry))
-                .map(|cell| cell.level as i8 as i16)
-        })
         .unwrap_or(0)
 }
 
-/// Whether a candidate cell is a structural-bridge cell (filtered out when bridges
-/// are disallowed). Reads both the terrain bridge facts and the path-grid bridge bit.
+/// Read the retained real/dummy structural bit; do not merge a stale PathGrid.
 fn candidate_is_bridge_cell(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> bool {
+    if let Some(terrain) = q.resolved_terrain {
+        return terrain
+            .native_fixed_cell_index(cx as i16, cy as i16)
+            .map_or_else(
+                || {
+                    terrain.shared_cell_dummy().bridge_flags_0x1180()
+                        & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL
+                        != 0
+                },
+                |index| terrain.cells()[index].bridge_facts.has_structural_bridge(),
+            );
+    }
     let (Ok(rx), Ok(ry)) = (u16::try_from(cx), u16::try_from(cy)) else {
         return false;
     };
-    let terrain_bridge = q
-        .resolved_terrain
-        .and_then(|t| t.cell(rx, ry))
-        .is_some_and(|c| c.bridge_facts.has_structural_bridge());
-    let path_bridge = q
-        .path_grid
+    q.path_grid
         .and_then(|g| g.cell(rx, ry))
-        .is_some_and(|c| c.has_structural_bridge());
-    terrain_bridge || path_bridge
+        .is_some_and(|c| c.has_structural_bridge())
 }
 
 fn cell_to_u16(cell: (i32, i32)) -> Option<(u16, u16)> {
@@ -751,6 +780,7 @@ mod tests {
         path_grid: &'a PathGrid,
     ) -> NearbyQuery<'a> {
         NearbyQuery {
+            raw_occupation: None,
             passability: track_args(),
             footprint: NearbyFootprint::SINGLE,
             anchor_gate: NearbyAnchorGate::UnverifiedCompatibilityBypass,
@@ -767,6 +797,188 @@ mod tests {
             zone_grid: None,
             playfield_bounds: None,
         }
+    }
+
+    #[test]
+    fn nearby_raw_and_retained_seed_match_original_bounded_queries() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tools/spatial_oracle/nearby_raw_occupation.json"
+        ))
+        .unwrap();
+        let cases = cases.as_array().unwrap();
+        assert_eq!(cases.len(), 8);
+        for case in cases {
+            let input = &case["input"];
+            let output = &case["output"];
+            let mut terrain = flat_terrain(21, 21);
+            // Leave the cache at its initial level/flags to ensure the exact
+            // query uses the live CellClass fields sampled by original code.
+            let grid = PathGrid::from_resolved_terrain(&terrain);
+            let cell = &mut terrain.cells[10 * 21 + 10];
+            cell.level = input["level"].as_u64().unwrap() as u8;
+            cell.bridge_facts.raw_flags = if input["structural"].as_bool().unwrap() {
+                BRIDGE_FLAG_STRUCTURAL
+            } else {
+                0
+            };
+            terrain.shared_cell_dummy().stamp_coord(0, 0);
+            let mut raw = RawCellOccupationGrid::default();
+            raw.mark_ground(10, 10, input["ground"].as_u64().unwrap() as u8);
+            raw.mark_deck(10, 10, input["deck"].as_u64().unwrap() as u8);
+            if let Some(actions) = input["dummy_actions"].as_array() {
+                for action in actions {
+                    let c = &action["coord"];
+                    crate::sim::movement::walk_head::raw_at(
+                        &mut raw,
+                        crate::sim::intern::InternedId::from_index(
+                            action["owner"].as_u64().unwrap() as u32,
+                        ),
+                        crate::sim::components::DriveCoord {
+                            x: c[0].as_i64().unwrap() as i32,
+                            y: c[1].as_i64().unwrap() as i32,
+                            z: c[2].as_i64().unwrap() as i32,
+                        },
+                        action["put"].as_bool().unwrap(),
+                        Some(&terrain),
+                        None,
+                    );
+                }
+            }
+            let seed = (
+                input["seed"][0].as_i64().unwrap() as i32,
+                input["seed"][1].as_i64().unwrap() as i32,
+            );
+            let mut q = base_query(&terrain, &grid);
+            q.raw_occupation = Some(&raw);
+            q.passability.speed_type = SpeedType::Foot;
+            q.passability.bridge_aware_zone = input["bridge_aware"].as_bool().unwrap();
+            q.check_height = input["height"].as_bool().unwrap();
+            q.radius_cap = input["cap"].as_u64().unwrap() as u16;
+            q.target_cell = Some(seed);
+            // Match the native corpus's declared playfield/direct-projection
+            // substitutions; the live query/rectangle/raw bodies stay shared.
+            let mut projections = 0;
+            let mut project = |_, _, _| {
+                projections += 1;
+                true
+            };
+            let result = find_nearby_passable_cell_with_projection(
+                seed,
+                &q,
+                NearbySearchOptions::default(),
+                0,
+                &mut project,
+            )
+            .unwrap_or((0, 0));
+            assert_eq!(
+                serde_json::json!([result.0, result.1]),
+                output["cell"],
+                "{case}"
+            );
+            let dummy = terrain.shared_cell_dummy().snapshot().coord;
+            assert_eq!(
+                serde_json::json!([dummy.0, dummy.1]),
+                output["dummy"],
+                "{case}"
+            );
+            assert_eq!(
+                projections,
+                output["events"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|event| event.as_str() == Some("projection"))
+                    .count(),
+                "{case}"
+            );
+            if !output["dummy_raw"].is_null() {
+                use crate::sim::{movement::locomotor::MovementLayer, occupancy::RawCellKey};
+                for (index, layer) in [MovementLayer::Ground, MovementLayer::Bridge]
+                    .into_iter()
+                    .enumerate()
+                {
+                    assert_eq!(
+                        raw.bits_at(RawCellKey::Dummy, layer),
+                        output["dummy_raw"][index].as_u64().unwrap() as u8,
+                        "{case}"
+                    );
+                    assert_eq!(
+                        raw.owner_at(RawCellKey::Dummy, layer)
+                            .map_or(u32::MAX, |owner| owner.index()),
+                        output["dummy_owners"][index].as_u64().unwrap() as u32,
+                        "{case}"
+                    );
+                }
+                assert_eq!(
+                    raw.entry_count(),
+                    0,
+                    "missing lookups must not create coordinate-key entries"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nearby_live_raw_reservation_selects_the_actual_structural_plane() {
+        let mut terrain = flat_terrain(7, 7);
+        // Intentionally pin the old cache before a structural repair changes
+        // the resident cell. The raw query must observe the new Cell authority.
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let mut raw = RawCellOccupationGrid::default();
+        raw.mark_ground(3, 3, 4);
+        let selected = |terrain: &ResolvedTerrainGrid, raw: &RawCellOccupationGrid| {
+            let mut q = base_query(terrain, &path_grid);
+            q.raw_occupation = Some(raw);
+            q.target_cell = Some((3, 3));
+            find_nearby_passable_cell((3, 3), &q, 0)
+        };
+        assert_ne!(
+            selected(&terrain, &raw),
+            Some((3, 3)),
+            "an unlisted retained head blocks the ground plane"
+        );
+        terrain.cells[3 * 7 + 3].bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
+        assert_eq!(
+            selected(&terrain, &raw),
+            Some((3, 3)),
+            "structural Cell selects its clear deck despite the stale ground cache"
+        );
+        raw.mark_deck(3, 3, 8);
+        assert_ne!(
+            selected(&terrain, &raw),
+            Some((3, 3)),
+            "the selected deck reservation blocks independently"
+        );
+    }
+
+    #[test]
+    fn nearby_seed_height_uses_live_cell_and_bridge_aware_rise() {
+        let mut terrain = flat_terrain(7, 7);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        terrain.cells[3 * 7 + 3].level = 2;
+        terrain.cells[3 * 7 + 3].bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
+        let mut q = base_query(&terrain, &path_grid);
+        q.check_height = true;
+        q.radius_cap = 1;
+        assert!(collect_candidates((3, 3), &q, NearbySearchOptions::default()).is_empty());
+        q.passability.bridge_aware_zone = true;
+        let candidates = collect_candidates((3, 3), &q, NearbySearchOptions::default());
+        assert_eq!(candidates.len(), 2);
+        assert!(
+            candidates.iter().all(|c| c.cell == (3, 3)),
+            "retained seed6 minus candidate deck rise4 and live level2 is zero"
+        );
+    }
+
+    #[test]
+    fn nearby_seed_lookup_occurs_even_without_height_gate_or_search_rings() {
+        let terrain = flat_terrain(3, 3);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let mut q = base_query(&terrain, &path_grid);
+        q.radius_cap = 0;
+        assert!(!q.check_height);
+        assert!(collect_candidates((40, 41), &q, NearbySearchOptions::default()).is_empty());
+        assert_eq!(terrain.shared_cell_dummy().snapshot().coord, (40, 41));
     }
 
     #[test]

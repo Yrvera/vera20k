@@ -389,7 +389,9 @@ fn gsi_04_01_production_tick_keeps_pavement_damage_through_ordinary_overlay_repa
     runtime.resources.rules = rules;
     let mut fire_count = 0;
     for _ in 0..32 {
-        let output = runtime.advance_frame(&[], 67, TickLane::Ordinary);
+        let output = runtime
+            .advance_frame(&[], 67, TickLane::Ordinary)
+            .expect("fixture frame must complete");
         fire_count += output.fire_events.len();
         if runtime.simulation.radar_terrain_dirty_generation != 0 {
             break;
@@ -472,7 +474,9 @@ fn gsi_04_01_production_tick_keeps_pavement_damage_through_ordinary_overlay_repa
         None,
         &BTreeMap::new(),
     ));
-    let _ = runtime.advance_frame(&[], 67, TickLane::Ordinary);
+    let _ = runtime
+        .advance_frame(&[], 67, TickLane::Ordinary)
+        .expect("fixture frame must complete");
 
     assert!(
         runtime

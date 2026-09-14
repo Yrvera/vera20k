@@ -805,6 +805,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
     for _ in 0..1 {
         // Compute local owner before mutable borrow of simulation.
         let local_owner_for_fog = preferred_local_owner_name(state);
+        let notification_local_owner = state.match_state.local_player_owner.clone();
         // Cache local owner name before mutable sim borrow (avoids borrow conflict).
         let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
         let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
@@ -817,6 +818,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         let mut census_tick: Option<u64> = None;
         if let Some(rt) = state.match_state.sim_runtime.as_mut() {
             let sim = &mut rt.simulation;
+            sim.bind_notification_local_owner(notification_local_owner.as_deref());
             // Delay-zero AnimClass construction can emit StartSound during the
             // final map-load sweep. Keep it until this first tactical drain;
             // `drain(..)` below still consumes every event exactly once.
@@ -837,7 +839,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 fire_events: frame_fire_events,
                 invulnerability_impacts,
                 lighting_events,
-            } = rt.advance_frame(&due_commands, SIM_TICK_MS, tick_lane);
+            } = rt
+                .advance_frame(&due_commands, SIM_TICK_MS, tick_lane)
+                .expect("simulation frame failed; prior world mutations remain");
             let resources = &rt.resources;
             if let Some(terrain) = resources.terrain_template.as_ref() {
                 state
