@@ -100,6 +100,20 @@ Repeat mode 2 permits latching, including event 29. In `all04dmd.map`, the two
 known Engineer death Tags use event 29 and their action lists disable their own
 Trigger. Prior latches and subsequent enabling still require lifetime reasoning.
 
+The enable entry `0x007268F0` sets `+0x44` and tail-jumps to `0x00726400`.
+That reset selects timer events 13 and 51 for latch-bit clearing; the
+single-event-29 lists used by these two Triggers retain their latch. This
+does not exclude bit aliasing in larger mixed lists: the native 32-bit shift
+wraps event indices modulo 32. The disable entry `0x00726900` only clears
+`+0x44`. Thus disabling and enabling are not a general latch reset.
+
+A literal census of all 142 `all04dmd.map` action lists, validating each
+declared count against eight-token action records, finds three references to
+the two Engineer death Trigger IDs: all are self-disable actions 54. No
+authored action directly enables either ID. This narrows the authored
+re-enabling path; it does not establish all runtime attachment, construction
+or latch lifetimes.
+
 Trigger's main table `0x007F5858` binds Load to `0x00726860`, Save to
 `0x007268D0`, and object size to `0x00726930`, which returns `0x48`.
 The base stream routines `0x00410320` and `0x00410380` request that whole object,
