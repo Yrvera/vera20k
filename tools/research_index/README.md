@@ -3,6 +3,10 @@
 Local evidence index for VERA20k research docs. This is a small, repo-specific
 retrieval tool for turning research files into cited implementation evidence.
 
+Use these optional tools alongside current source; ranked results are not exhaustive.
+Verify which checkout the index covers. A fresh index of another checkout can still
+miss your task's research. The generated index cache is machine-local.
+
 V1 is deliberately simple:
 
 - SQLite FTS5 full-text search.

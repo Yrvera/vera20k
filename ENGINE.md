@@ -124,13 +124,11 @@ consequential findings near the implementation or review. Validate affected prod
 output and performance with appropriate captures, GPU readbacks or profiling;
 documentation and CPU-only tests alone do not establish rendered gamemd parity.
 
-Use source and `research-index`; ranked results are not exhaustive. Verify index
-worktree provenance. Tracked research/plans belong in the task checkout; requested
-research documents need no accompanying code. Avoid unsolicited reports or permanent
-completion ledgers.
+Tracked research/plans belong in the task checkout; requested research documents
+need no accompanying code. Avoid unsolicited reports or permanent completion ledgers.
 
-Resolve `<main-checkout>` with `git worktree list`; its `ini/`, config, index cache
-and `LOCAL.md` are machine-local. Read retail data before selecting constants.
+Resolve `<main-checkout>` with `git worktree list`; its `ini/`, config and `LOCAL.md`
+are machine-local. Read retail data before selecting constants.
 YR loads standalone `RULESMD.INI`/`ARTMD.INI`/`AIMD.INI`, then applicable language,
 mode and map overrides—no underlying RA2 INI merge. Use `asset`/`asset-browser`;
 a successful parse or plausible render is not correctness proof.
