@@ -54,6 +54,384 @@ fn install_american_house(sim: &mut Simulation) {
 }
 
 #[test]
+fn discovery_owner_entry_and_lifetime_match_original_history_blocks() {
+    use crate::sim::snapshot::GameSnapshot;
+    let native: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../tools/spatial_oracle/jumpjet_entry_discovery.json"
+    ))
+    .unwrap();
+    let bytes = |history: crate::sim::game_entity::TechnoDiscoveryHistory| {
+        [
+            u8::from(history.owned_by_current_house),
+            u8::from(history.discovered_by_current_house),
+            u8::from(history.discovered_by_other_house),
+        ]
+    };
+    for sight in [8, 0] {
+        let rules = RuleSet::from_ini(&IniFile::from_str(&format!(
+            "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\nSpeed=4\nSight={sight}\n"
+        )))
+        .unwrap();
+        let mut sim = Simulation::with_seed(17);
+        install_constructor_test_playfield(&mut sim);
+        install_constructor_flat_terrain(&mut sim);
+        install_american_house(&mut sim);
+        let owner = sim.interner.get("Americans").unwrap();
+        let other = sim.interner.intern("Other");
+        sim.houses.insert(
+            other,
+            crate::sim::house_state::HouseState::new(other, 0, None, false, 0, 10),
+        );
+        sim.session.house_order = vec![owner, other];
+        sim.session.current_house = Some(owner);
+        sim.session.game_mode_nonzero = true;
+        let entity = sim
+            .construct_runtime_techno(
+                "E1",
+                "Americans",
+                6,
+                5,
+                0,
+                0,
+                &rules,
+                TechnoConstructorInit::FreshScenario,
+            )
+            .unwrap()
+            .unwrap();
+        let row = if sight == 0 { &native[2] } else { &native[1] };
+        assert_eq!(
+            serde_json::json!(bytes(entity.discovery)),
+            row["output"]["constructor"]["object"]
+        );
+        let (id, outcome) = sim.unlimbo_after_constructor_managers(entity, Some(&rules), None);
+        assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+        assert!(sim.substrate.occupancy.contains_entity(6, 5, id));
+        assert_eq!(
+            serde_json::json!(bytes(sim.substrate.entities.get(id).unwrap().discovery)),
+            row["output"]["sight"]["object"]
+        );
+        if sight == 0 {
+            continue;
+        }
+
+        sim.object_conceal(id);
+        assert!(
+            sim.substrate
+                .entities
+                .get(id)
+                .unwrap()
+                .discovery
+                .discovered_by_current_house,
+            "human Conceal retains the actual observation"
+        );
+        assert!(
+            sim.reveal_constructed_object_at_height(
+                id,
+                6,
+                5,
+                0,
+                0,
+                PlacementEvidence::EvaluateMark,
+                &rules
+            )
+            .is_some()
+        );
+        sim.change_owner(id, other);
+        let transferred = sim.substrate.entities.get(id).unwrap().discovery;
+        assert_eq!(bytes(transferred), [0, 1, 0]);
+        // Snapshot deserialization intentionally executes native Scenario Seed0.
+        // Compare this state-only roundtrip on that same admitted RNG cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let hash = sim.state_hash();
+        let saved = GameSnapshot::save(&sim, 0, 0, "discovery", 0);
+        let mut restored = GameSnapshot::load(&saved).unwrap().sim;
+        restored.restore_after_snapshot_load().unwrap();
+        assert_eq!(
+            restored.substrate.entities.get(id).unwrap().discovery,
+            transferred
+        );
+        assert_eq!(restored.state_hash(), hash);
+        restored.object_conceal(id);
+        assert_eq!(
+            bytes(restored.substrate.entities.get(id).unwrap().discovery),
+            [0, 0, 0]
+        );
+        assert!(
+            restored
+                .reveal_constructed_object_at_height(
+                    id,
+                    6,
+                    5,
+                    0,
+                    0,
+                    PlacementEvidence::MarkSucceeded,
+                    &rules
+                )
+                .is_some()
+        );
+        assert_eq!(
+            bytes(restored.substrate.entities.get(id).unwrap().discovery),
+            [0, 0, 1]
+        );
+    }
+}
+
+#[test]
+fn outside_reentry_clears_current_discovery_only_after_successful_alive_mark() {
+    for (placement, alive, expected_b, expected_c) in [
+        (PlacementEvidence::MarkFailed, true, true, false),
+        (PlacementEvidence::MarkSucceeded, true, false, true),
+        (PlacementEvidence::MarkSucceeded, false, true, true),
+    ] {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\nSpeed=4\nSight=8\n",
+        ))
+        .unwrap();
+        let mut sim = Simulation::with_seed(0);
+        install_constructor_test_playfield(&mut sim);
+        install_constructor_flat_terrain(&mut sim);
+        install_american_house(&mut sim);
+        let owner = sim.interner.get("Americans").unwrap();
+        let other = sim.interner.intern("OtherHuman");
+        sim.houses.insert(
+            other,
+            crate::sim::house_state::HouseState::new(other, 0, None, true, 0, 10),
+        );
+        sim.session.house_order = vec![owner, other];
+        sim.session.current_house = Some(owner);
+        sim.session.game_mode_nonzero = true;
+        let id = sim
+            .spawn_object_at_height("E1", "Americans", 6, 5, 0, 0, &rules)
+            .unwrap();
+        assert!(
+            sim.substrate
+                .entities
+                .get(id)
+                .unwrap()
+                .discovery
+                .discovered_by_current_house
+        );
+        sim.change_owner(id, other);
+        sim.object_conceal(id);
+        assert!(
+            sim.substrate
+                .entities
+                .get(id)
+                .unwrap()
+                .discovery
+                .discovered_by_current_house,
+            "other human Conceal retains historical B"
+        );
+        sim.substrate
+            .entities
+            .get_mut(id)
+            .unwrap()
+            .lifecycle
+            .object_alive = alive;
+        // Caller-supplied successful Mark admits an outside cell, as existing
+        // release callers can. The mode-one query is owned by shared Unlimbo.
+        let result = sim.reveal_constructed_object_at_height(id, 5, 5, 0, 0, placement, &rules);
+        assert_eq!(result.is_some(), placement != PlacementEvidence::MarkFailed);
+        let entity = sim.substrate.entities.get(id).unwrap();
+        assert!(!entity.in_playfield);
+        assert!(!entity.discovery.owned_by_current_house);
+        assert_eq!(entity.discovery.discovered_by_current_house, expected_b);
+        assert_eq!(entity.discovery.discovered_by_other_house, expected_c);
+        assert_eq!(
+            sim.substrate.occupancy.contains_entity(5, 5, id),
+            placement != PlacementEvidence::MarkFailed
+        );
+    }
+}
+
+#[test]
+fn first_nonhuman_owner_entry_queues_hunt_from_ambush_but_repeat_does_not() {
+    use crate::sim::mission::{MissionId, MissionType};
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\nSpeed=4\nSight=8\n",
+    ))
+    .unwrap();
+    let mut sim = Simulation::with_seed(0);
+    install_constructor_test_playfield(&mut sim);
+    install_constructor_flat_terrain(&mut sim);
+    install_american_house(&mut sim);
+    let current = sim.interner.get("Americans").unwrap();
+    let other = sim.interner.intern("Computer1");
+    sim.houses.insert(
+        other,
+        crate::sim::house_state::HouseState::new(other, 0, None, false, 0, 10),
+    );
+    sim.session.house_order = vec![current, other];
+    sim.session.current_house = Some(current);
+    sim.session.game_mode_nonzero = true;
+    let id = sim
+        .construct_object_limbo_at_height("E1", "Computer1", 6, 5, 0, 0, &rules)
+        .unwrap();
+    let ambush = MissionId::from_known(MissionType::Ambush);
+    let hunt = MissionId::from_known(MissionType::Hunt);
+    for first in [true, false] {
+        let entity = sim.substrate.entities.get_mut(id).unwrap();
+        // No current mission: native +184 observes the queued Ambush.
+        crate::sim::mission::authority::queue_entity_mission_deferred(entity, ambush);
+        assert_eq!(entity.mission.effective(), ambush);
+        assert!(
+            sim.reveal_constructed_object_at_height(
+                id,
+                6,
+                5,
+                0,
+                0,
+                PlacementEvidence::MarkSucceeded,
+                &rules
+            )
+            .is_some()
+        );
+        let entity = sim.substrate.entities.get(id).unwrap();
+        assert!(entity.discovery.discovered_by_other_house);
+        assert_eq!(entity.mission.queued(), if first { hunt } else { ambush });
+        assert_eq!(
+            entity.mission.current(),
+            MissionId::NONE,
+            "Queue(false) does not commence"
+        );
+        sim.object_conceal(id);
+    }
+}
+
+#[test]
+fn exact_sight_zero_survives_save_and_rules_less_reentry() {
+    use crate::sim::snapshot::GameSnapshot;
+    for sight in [0, -1, 65536] {
+        let rules = RuleSet::from_ini(&IniFile::from_str(&format!(
+            "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\nSpeed=4\nSight={sight}\n"
+        )))
+        .unwrap();
+        let mut sim = Simulation::with_seed(19);
+        install_constructor_test_playfield(&mut sim);
+        install_constructor_flat_terrain(&mut sim);
+        install_american_house(&mut sim);
+        let owner = sim.interner.get("Americans").unwrap();
+        sim.session.house_order = vec![owner];
+        sim.session.current_house = Some(owner);
+        sim.session.game_mode_nonzero = true;
+        let entity = sim
+            .construct_runtime_techno(
+                "E1",
+                "Americans",
+                6,
+                5,
+                0,
+                0,
+                &rules,
+                TechnoConstructorInit::FreshScenario,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            entity.vision_range, 0,
+            "all three inputs lose information in fog range"
+        );
+        assert_eq!(entity.sight_is_zero, sight == 0);
+        let (id, outcome) = sim.unlimbo_after_constructor_managers(entity, Some(&rules), None);
+        assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+        sim.object_conceal(id);
+        let saved = GameSnapshot::save(&sim, 0, 0, "exact Sight predicate", 0);
+        let mut restored = GameSnapshot::load(&saved).unwrap().sim;
+        restored.restore_after_snapshot_load().unwrap();
+        assert_eq!(
+            restored.substrate.entities.get(id).unwrap().sight_is_zero,
+            sight == 0
+        );
+        let hash = restored.state_hash();
+        let mut changed_type_predicate = GameSnapshot::load(&saved).unwrap().sim;
+        changed_type_predicate
+            .restore_after_snapshot_load()
+            .unwrap();
+        changed_type_predicate
+            .substrate
+            .entities
+            .get_mut(id)
+            .unwrap()
+            .sight_is_zero = sight != 0;
+        assert_ne!(
+            changed_type_predicate.state_hash(),
+            hash,
+            "type predicate is shared input"
+        );
+        // The same rules-less transaction used by admitted passenger/re-entry
+        // callers must run +198(owner) and then the exact raw-Type zero gate.
+        assert!(matches!(
+            restored.reveal(id),
+            RevealOutcome::Revealed { .. }
+        ));
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(id)
+                .unwrap()
+                .discovery
+                .discovered_by_current_house,
+            sight != 0,
+            "raw Sight={sight}"
+        );
+    }
+}
+
+#[test]
+fn infantry_owner_discovery_leaves_building_power_radar_and_spysat_inputs_unchanged() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n[BuildingTypes]\n0=OBS\n\
+         [E1]\nStrength=100\nSpeed=4\nSight=8\n\
+         [OBS]\nStrength=500\nFoundation=1x1\nPower=100\nRadar=yes\nSpySat=yes\nSight=8\n",
+    ))
+    .unwrap();
+    let mut sim = Simulation::with_seed(18);
+    install_constructor_test_playfield(&mut sim);
+    install_constructor_flat_terrain(&mut sim);
+    install_american_house(&mut sim);
+    let owner = sim.interner.get("Americans").unwrap();
+    sim.session.house_order = vec![owner];
+    sim.session.current_house = Some(owner);
+    sim.session.game_mode_nonzero = true;
+    assert_eq!(
+        sim.spawn_from_map(
+            &[map_entity("OBS", EntityCategory::Structure, (6, 5))],
+            Some(&rules),
+            &BTreeMap::new()
+        ),
+        1
+    );
+    sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), None, None, 66);
+    let before = (
+        sim.power_states[&owner].total_output,
+        sim.power_states[&owner].total_drain,
+        crate::sim::radar::has_radar_for_owner(&sim, &rules, "Americans"),
+        sim.houses[&owner].spy_sat_active,
+    );
+    let id = sim
+        .spawn_object("E1", "Americans", 7, 5, 0, &rules, &BTreeMap::new())
+        .unwrap();
+    assert!(
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .discovery
+            .discovered_by_current_house
+    );
+    sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), None, None, 66);
+    let after = (
+        sim.power_states[&owner].total_output,
+        sim.power_states[&owner].total_drain,
+        crate::sim::radar::has_radar_for_owner(&sim, &rules, "Americans"),
+        sim.houses[&owner].spy_sat_active,
+    );
+    assert_eq!(before, (100, 0, true, true));
+    assert_eq!(after, before);
+}
+
+#[test]
 fn building_light_allocates_only_after_authored_or_held_placement_succeeds() {
     // Retail Building440DFD/446767 allocate a nullable614 only after successful
     // placement. Exercise both actual Unlimbo paths, including failed marks.

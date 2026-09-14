@@ -2369,9 +2369,11 @@ fn gsi_04_15_active_tube_leaf_preempts_unit_and_infantry_mission_host() {
         });
         sim.substrate.entities.insert(entity);
         let original_building_owner = sim.interner.intern("Russians");
+        // Keep the later combat/capture target adjacent to the Tube exit.
+        // A marked building on the exit itself correctly blocks finalization.
         let mut building = GameEntity::new_at_frame_zero_for_test(
             2,
-            1,
+            2,
             0,
             0,
             0,
@@ -2388,6 +2390,7 @@ fn gsi_04_15_active_tube_leaf_preempts_unit_and_infantry_mission_host() {
         );
         building.lifecycle.in_limbo = false;
         sim.substrate.entities.insert(building);
+        sim.add_entity_occupancy(2);
         sim.fog = crate::sim::vision::FogState {
             width: 3,
             height: 1,
@@ -2444,6 +2447,10 @@ fn gsi_04_15_active_tube_leaf_preempts_unit_and_infantry_mission_host() {
                 ));
                 assert_eq!(entity.capture_target, Some(2));
                 assert!(entity.c4_plant.is_some());
+                assert!(
+                    entity.movement_target.is_none(),
+                    "Tube final skips C4 Mission_Enter, which would move into the adjacent building"
+                );
                 assert_eq!(
                     sim.substrate.entities.get(2).map(|building| building.owner),
                     Some(original_building_owner),
@@ -2454,7 +2461,7 @@ fn gsi_04_15_active_tube_leaf_preempts_unit_and_infantry_mission_host() {
                         .entities
                         .get(2)
                         .is_some_and(|building| building.pending_c4_detonation.is_none()),
-                    "Tube final returns before Mission_Enter; C4 claims on the next visit"
+                    "Tube final returns before Mission_Enter; no C4 claim is made"
                 );
             }
         }

@@ -1324,6 +1324,7 @@ fn passive_target_scan(
     };
     let pick = crate::sim::combat::acquire_best_target_for_entity(
         &sim.substrate.entities,
+        &sim.substrate.occupancy,
         rules,
         &sim.interner,
         id,

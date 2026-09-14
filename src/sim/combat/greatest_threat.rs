@@ -90,11 +90,10 @@
 //!   AI-only ore-cell fallback (`TechnoClass::Cell_Threat_Fallback @
 //!   0x006F8C10`, which returns 0 for every human-controlled house) are not
 //!   represented. Neither is reachable for a human house today.
-//! - The class-bit mask native derives from the attacker's projectile flags
-//!   (`0x00772A90`, AA → `4`, AG → `0xB8`) is not modelled as a mask. It
-//!   resolves to "an AG weapon may take ground classes, an AA weapon may take
-//!   aircraft", which `select_weapon_for_target` already enforces per
-//!   candidate, so the outcome matches without the bit word.
+//! - The ordinary class-mask AA bit (`Weapon772A90`) gates the airborne
+//!   prepass through the resolved native slot choice. The complete mask,
+//!   including Infantry special mission/type rewrites and AG class bits,
+//!   remains unrepresented; per-target weapon selection is still separate.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/, map/ and sim/ only.
@@ -104,7 +103,7 @@ use std::collections::BTreeMap;
 
 use super::combat_targeting::AttackerSnapshot;
 use super::combat_weapon::{
-    attacker_facts, attacker_facts_from_snapshot, is_ally_by_object, is_armed,
+    attacker_facts, attacker_facts_from_snapshot, is_ally_by_object, is_armed, passive_scan_has_aa,
     select_weapon_for_target, techno_target_facts,
 };
 use super::threat_range::{ScanRange, max_weapon_range, scan_range};
@@ -118,7 +117,7 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::StringInterner;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::occupancy::{CellListInsertion, OccupancyGrid, cell_list_layer_for_entity};
+use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::zone_map::{ZoneGrid, ZoneId};
 use crate::sim::vision::FogState;
 use crate::util::fixed_math::SimFixed;
@@ -550,98 +549,52 @@ fn scan_radius_cells(rules: &RuleSet, obj: &ObjectType, veterancy: u16, range: S
     }
 }
 
-/// One cell's selected object list plus the airborne objects over it.
-///
-/// The cell lists are built through [`OccupancyGrid`] itself, so the in-cell
-/// order is the one the maintained index already models: non-buildings
-/// prepended, buildings appended, in `occupancy_enter_order`. That is native's
-/// `CellClass+0xE4`/`+0xE8` insertion contract.
-///
-/// It is rebuilt per scan rather than read from `ObjectSubstrate::occupancy`
-/// because that grid's membership is the `Mark` transaction
-/// (`GameEntity::lifecycle.cell_marked`), which is a different question from
-/// "which objects may this scan see" — the membership this site has always used
-/// is live/represented/not-in-a-transport. Changing membership is a separate
-/// mechanism from changing the walk order, so the order is reused and the
-/// membership is not. Using the maintained grid directly (and dropping the
-/// rebuild) is the follow-up once acquisition and `Mark` agree.
-///
-/// RESIDUAL — cost at charter scale. Native reaches a candidate through
-/// `CellClass+0xE4`, a list the map maintains, so one scan touches only the
-/// cells its rings walk. [`ScanIndex::build`] instead makes one pass over
-/// **every** live entity to find the ones inside the scan's bounding box, then
-/// sorts that box subset and allocates a fresh [`OccupancyGrid`] for it. So per
-/// scan the honest shape is `O(N)` over all entities plus `O(K log K)` and one
-/// allocation over the `K` inside the box — the same `O(N)` order as the
-/// `EntityStore::values()` walk this replaced, with an added sort and
-/// allocation on the small `K`, and no longer doubled now that the coefficient
-/// set is a constant instead of a second full pass.
-/// - Trigger: every passive acquisition, i.e. every object on Guard/Move/
-///   Harvest reaching its scan cadence.
-/// - Player effect: none — this is frame time, not a behavioural difference.
-/// - Frequency: at the charter's 20,000 objects and the stock scan cadence,
-///   roughly 700 scans per frame, each walking all 20,000 entities — about
-///   1.4e7 entity visits per frame, against native's near-zero.
-/// - Downstream risk: the fix is a per-tick shared index, and it cannot simply
-///   be cached across scans within a tick because objects die, spawn and move
-///   between scans in the same tick; it needs the membership question settled
-///   with `Mark` first, which is why it is deferred rather than patched here.
-struct ScanIndex {
-    cells: OccupancyGrid,
-    /// Objects with no cell-list layer at all — airborne aircraft and anything
-    /// else off the ground lists. Native keeps these in the 20x20 airborne
-    /// bucket grid that the pre-pass at `0x006F9169` sweeps, never in
-    /// `CellClass+0xE4`.
+/// A scan borrows the actual Cell lists. Native6F89BF..6F89CB reads the
+/// retained +E8/+E4 head; current position, alive state and virtual +78 cannot
+/// reconstruct that membership. In particular initial Jumpjet Process can
+/// retain a ground-list member independently of its airborne registration.
+/// The air pre-pass still builds its temporary coordinate lookup from the
+/// separately owned registrations; its existing sweep-order residual is below.
+struct ScanIndex<'a> {
+    cells: &'a OccupancyGrid,
     airborne: BTreeMap<(u16, u16), Vec<u64>>,
 }
 
-impl ScanIndex {
-    fn build(entities: &EntityStore, min: (i32, i32), max: (i32, i32)) -> Self {
+impl<'a> ScanIndex<'a> {
+    fn build(
+        entities: &EntityStore,
+        cells: &'a OccupancyGrid,
+        scan_air: bool,
+        min: (i32, i32),
+        max: (i32, i32),
+    ) -> Self {
+        // AG-only scans borrow Cell storage without walking the entity store
+        // or allocating/sorting a temporary air subset.
+        if !scan_air {
+            return Self {
+                cells,
+                airborne: BTreeMap::new(),
+            };
+        }
         let mut ordered: Vec<&GameEntity> = entities
             .values()
             .filter(|entity| {
-                // Native cell-list membership: a dead, limboed or carried
-                // object has been unmarked from its cell and is not walked.
-                entity.health.current > 0
-                    && !entity.dying
-                    && !entity.lifecycle.in_limbo
-                    && !entity.passenger_role.is_inside_transport()
-            })
-            .filter(|entity| {
                 let x = i32::from(entity.position.rx);
                 let y = i32::from(entity.position.ry);
-                // Buildings are indexed on every foundation cell, so admit them
-                // by their own origin plus the widest stock foundation.
-                let slack = if entity.category == EntityCategory::Structure {
-                    STRUCTURE_FOOTPRINT_SLACK_CELLS
-                } else {
-                    0
-                };
-                x + slack >= min.0 && x - slack <= max.0 && y + slack >= min.1 && y - slack <= max.1
+                entity.air_spatial_bucket.is_some()
+                    && x >= min.0
+                    && x <= max.0
+                    && y >= min.1
+                    && y <= max.1
             })
             .collect();
-        ordered.sort_by_key(|entity| (entity.occupancy_enter_order, entity.stable_id()));
-
-        let mut cells = OccupancyGrid::new();
+        ordered.sort_by_key(|entity| (entity.air_spatial_enter_order, entity.stable_id()));
         let mut airborne: BTreeMap<(u16, u16), Vec<u64>> = BTreeMap::new();
         for entity in ordered {
-            let sid = entity.stable_id();
-            let Some(layer) = cell_list_layer_for_entity(entity) else {
-                airborne
-                    .entry((entity.position.rx, entity.position.ry))
-                    .or_default()
-                    .push(sid);
-                continue;
-            };
-            let sub = if entity.category == EntityCategory::Infantry {
-                entity.sub_cell
-            } else {
-                None
-            };
-            let insertion = CellListInsertion::from_category(entity.category);
-            for (rx, ry) in crate::sim::occupancy::entity_occupancy_cells(entity) {
-                cells.add(rx, ry, sid, layer, sub, insertion);
-            }
+            airborne
+                .entry((entity.position.rx, entity.position.ry))
+                .or_default()
+                .push(entity.stable_id());
         }
         Self { cells, airborne }
     }
@@ -662,10 +615,6 @@ impl ScanIndex {
         Some((occupancy, layer))
     }
 }
-
-/// Widest stock building foundation, used only to decide which entities are
-/// worth indexing for a bounded scan.
-const STRUCTURE_FOOTPRINT_SLACK_CELLS: i32 = 8;
 
 /// Everything one scan needs that does not change between candidates.
 struct ScanContext<'a> {
@@ -834,6 +783,7 @@ impl ScanContext<'_> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn greatest_threat(
     entities: &EntityStore,
+    occupancy: &OccupancyGrid,
     rules: &RuleSet,
     interner: &StringInterner,
     attacker: &AttackerSnapshot,
@@ -931,8 +881,21 @@ pub(crate) fn greatest_threat(
 
     let cx = i32::from(attacker.pos_rx);
     let cy = i32::from(attacker.pos_ry);
+    let facts = entities.get(attacker.stable_id).map_or_else(
+        || attacker_facts_from_snapshot(attacker, attacker_obj),
+        |entity| attacker_facts(entity, attacker_obj),
+    );
+    let garrison = attacker.garrison.as_ref().map(|occupant| {
+        (
+            interner.resolve(occupant.occupant_type_id),
+            occupant.occupant_veterancy,
+        )
+    });
+    let scan_air = passive_scan_has_aa(rules, attacker_obj, facts, garrison);
     let index = ScanIndex::build(
         entities,
+        occupancy,
+        scan_air,
         (cx - radius, cy - radius),
         (cx + radius, cy + radius),
     );
@@ -943,19 +906,21 @@ pub(crate) fn greatest_threat(
     // displace nothing.
     let mut best_score: i32 = -1;
 
-    // Airborne pre-pass. Native gates it on the attacker carrying an AA
-    // projectile (`flags & 4`); here the weapon-selection ladder refuses a
-    // ground-only weapon against a flying candidate anyway, so the gate is
-    // implicit and the outcome is the same. Every aircraft in reach is scored —
-    // there is no one-per-cell rule on this pass — and the ring walk that
-    // follows can only displace an aircraft with a strictly better score.
+    // Airborne prepass: the ordinary wrapper's resolved AA bit gates the
+    // entire pass (6F8F3A -> 6F91A7), independently of target weapon selection.
+    // Actual AirTracker registration alone does not grant eligibility:
+    // 6F9251 requires Object+74, then6F925C rejects live +78 Ground(2).
+    // Ground and Bridge selected-list layers both denote that native Ground.
+    // The existing cell_list_layer_for_entity adapter handles landed Fly here;
+    // its complete Jumpjet54B8D0 query remains a separate unresolved boundary.
+    // Never rewrite stored Cell lists or AirTracker membership from this gate.
     //
     // DRIFT — sweep order. Native iterates a 20x20 bucket grid
     // (`FUN_00412B40`/`FUN_004137A0`); this sweeps the same ring order the
     // ground walk uses. It selects the same aircraft except when two tie on
     // score, where the winner can differ. Frequency: two identical aircraft at
     // the same range and health, on the same tick.
-    for ring in 0..radius {
+    for ring in 0..if scan_air { radius } else { 0 } {
         for (x, y) in ring_cells(cx, cy, ring) {
             let (Ok(rx), Ok(ry)) = (u16::try_from(x), u16::try_from(y)) else {
                 continue;
@@ -970,7 +935,10 @@ pub(crate) fn greatest_threat(
                 let Some(candidate) = entities.get(candidate_id) else {
                     continue;
                 };
-                if ctx.is_ally(candidate) {
+                if !candidate.lifecycle.cell_marked
+                    || crate::sim::occupancy::cell_list_layer_for_entity(candidate).is_some()
+                    || ctx.is_ally(candidate)
+                {
                     continue;
                 }
                 let Some(score) = evaluate_candidate(&ctx, candidate) else {
@@ -1086,9 +1054,9 @@ pub(crate) fn greatest_threat(
 ///
 /// COST — this walks every live entity once per Hunt scan, which is the shape
 /// native has (`[0x00A8EC88]` is the global object count) and is bounded by the
-/// object count rather than by the map. It is strictly cheaper than the ring
-/// path, which makes the same full pass inside [`ScanIndex::build`] and then
-/// sorts and allocates on top of it. A hunting object scans only when it holds
+/// object count rather than by the map. The ring path borrows maintained Cell
+/// lists, while its airborne pre-pass still builds a temporary index. A hunting
+/// object scans only when it holds
 /// no target and its `NormalTargetingDelay` timer has expired, so at charter
 /// scale the cost is one N-pass per hunting object per cadence — not per tick,
 /// and not per ring.
@@ -1124,7 +1092,12 @@ fn global_list_scan(ctx: &ScanContext<'_>) -> Option<u64> {
 /// the two infantry specials at `0x006F8A96`. VERA's acquisition entry requires
 /// an armed attacker upstream, and neither infantry flag (`InfantryType+0x6D8`,
 /// `+0xEC3`) is parsed.
-fn scan_cell_for_target(ctx: &ScanContext<'_>, index: &ScanIndex, rx: u16, ry: u16) -> Option<u64> {
+fn scan_cell_for_target(
+    ctx: &ScanContext<'_>,
+    index: &ScanIndex<'_>,
+    rx: u16,
+    ry: u16,
+) -> Option<u64> {
     let (occupancy, layer) = index.cell_list(rx, ry)?;
     for occupant in occupancy.iter_layer(layer) {
         if occupant.entity_id == ctx.attacker.stable_id {
@@ -1154,7 +1127,9 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
     // its armor is at or below the `0.02f` floor. `select_weapon_for_target`
     // is the `SelectWeaponAgainst @ 0x006F3330` ladder and already carries the
     // 0% fallback, so a `None` here is native's `FIRE_ILLEGAL`.
-    let candidate_obj = ctx.rules.object(ctx.interner.resolve(candidate.type_ref()))?;
+    let candidate_obj = ctx
+        .rules
+        .object(ctx.interner.resolve(candidate.type_ref()))?;
     let scanner_facts = ctx
         .entities
         .get(ctx.attacker.stable_id)
@@ -1181,9 +1156,9 @@ fn evaluate_candidate(ctx: &ScanContext<'_>, candidate: &GameEntity) -> Option<i
         return None;
     }
 
-    // G6 — `InLimbo`/`Health == 0`. Already excluded from the cell index, kept
-    // here because the airborne pre-pass and the fixture paths reach this
-    // function with candidates the index did not filter.
+    // G6 — `InLimbo`/`Health == 0`. Actual retained Cell lists and separate
+    // airborne registrations are not filtered or reconstructed from these
+    // facts; eligibility belongs to this receiver.
     if candidate.health.current == 0 || candidate.dying || candidate.lifecycle.in_limbo {
         return None;
     }
@@ -1579,6 +1554,7 @@ mod tests {
         let mut entity = GameEntity::test_default(id, type_id, owner, rx, ry);
         entity.category = category;
         entity.lifecycle.in_limbo = false;
+        entity.lifecycle.cell_marked = true;
         if category == EntityCategory::Structure {
             entity.foundation = "1x1".to_string();
         }
@@ -1587,6 +1563,247 @@ mod tests {
 
     fn pick(entities: &EntityStore, rules: &RuleSet, attacker: u64) -> Option<u64> {
         pick_with_mask(entities, rules, attacker, super::super::ScanMission::Guard)
+    }
+
+    #[test]
+    fn acquisition_reads_retained_cell_order_instead_of_rebuilding_from_entities() {
+        use crate::sim::occupancy::CellListInsertion;
+        let rules = scan_rules();
+        let mut entities = EntityStore::new();
+        place(
+            &mut entities,
+            1,
+            "GRIZZLY",
+            "Americans",
+            5,
+            5,
+            EntityCategory::Unit,
+        );
+        place(
+            &mut entities,
+            2,
+            "SCOUT",
+            "Soviet",
+            6,
+            5,
+            EntityCategory::Unit,
+        );
+        place(
+            &mut entities,
+            3,
+            "PRIZE",
+            "Soviet",
+            6,
+            5,
+            EntityCategory::Unit,
+        );
+        let mut occupancy = OccupancyGrid::new();
+        // The live list was relinked after construction: 2 precedes the more
+        // valuable3. A sorted EntityStore reconstruction puts3 first instead.
+        for id in [3, 2] {
+            occupancy.add(
+                6,
+                5,
+                id,
+                MovementLayer::Ground,
+                None,
+                CellListInsertion::PrependNonBuilding,
+            );
+        }
+        let interner = test_interner();
+        let acquire = |occupancy: &OccupancyGrid| {
+            super::super::acquire_best_target_for_entity(
+                &entities,
+                occupancy,
+                &rules,
+                &interner,
+                1,
+                None,
+                None,
+                false,
+                super::super::ScanMission::Guard,
+                None,
+                crate::sim::combat::line_of_fire::LineOfFireInputs::default(),
+            )
+        };
+        assert_eq!(acquire(&occupancy), Some(2));
+        assert_eq!(acquire(&OccupancyGrid::rebuild(&entities)), Some(3));
+    }
+
+    #[test]
+    fn air_prepass_preserves_landed_fly_cell_order_and_checks_marked_and_aa() {
+        use crate::rules::locomotor_type::LocomotorKind;
+        use crate::sim::movement::locomotor::LocomotorState;
+        use crate::sim::world::Simulation;
+
+        for aa in [false, true] {
+            let rules = RuleSet::from_ini(&IniFile::from_str(&format!(
+                "[VehicleTypes]\n0=TANK\n1=SCOUT\n[AircraftTypes]\n0=PLANE\n\
+                 [TANK]\nStrength=300\nPrimary=GUN\n\
+                 [SCOUT]\nStrength=100\n[PLANE]\nStrength=100\nSpecialThreatValue=10\n\
+                 [WeaponTypes]\n0=GUN\n[GUN]\nDamage=100\nRange=5\nProjectile=SHOT\nWarhead=WH\n\
+                 [SHOT]\nAA={aa}\nAG=yes\n\
+                 [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n"
+            )))
+            .unwrap();
+            for bridge in [false, true] {
+                let mut sim = Simulation::with_seed(0);
+                sim.session.map_width = 30;
+                sim.session.map_height = 30;
+                place(
+                    &mut sim.substrate.entities,
+                    1,
+                    "TANK",
+                    "Americans",
+                    5,
+                    5,
+                    EntityCategory::Unit,
+                );
+                place(
+                    &mut sim.substrate.entities,
+                    2,
+                    "SCOUT",
+                    "Soviet",
+                    6,
+                    5,
+                    EntityCategory::Unit,
+                );
+                place(
+                    &mut sim.substrate.entities,
+                    3,
+                    "PLANE",
+                    "Soviet",
+                    6,
+                    5,
+                    EntityCategory::Aircraft,
+                );
+                sim.interner = test_interner();
+                for id in [3, 2, 1] {
+                    let entity = sim.substrate.entities.get_mut(id).unwrap();
+                    entity.lifecycle.cell_marked = false;
+                    entity.on_bridge = bridge && id != 1;
+                    if id == 3 {
+                        entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Fly));
+                    }
+                    // Actual shared Mark produces BOTH landed-Fly authorities.
+                    sim.add_entity_occupancy(id);
+                }
+                let layer = if bridge {
+                    MovementLayer::Bridge
+                } else {
+                    MovementLayer::Ground
+                };
+                let selected = || {
+                    sim.substrate
+                        .occupancy
+                        .get(6, 5)
+                        .unwrap()
+                        .iter_layer(layer)
+                        .map(|entry| entry.entity_id)
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(selected(), vec![2, 3]);
+                assert!(
+                    sim.substrate
+                        .entities
+                        .get(3)
+                        .unwrap()
+                        .air_spatial_bucket
+                        .is_some()
+                );
+                let acquire = |sim: &Simulation| {
+                    super::super::acquire_best_target_for_entity(
+                        &sim.substrate.entities,
+                        &sim.substrate.occupancy,
+                        &rules,
+                        &sim.interner,
+                        1,
+                        None,
+                        None,
+                        false,
+                        super::super::ScanMission::Guard,
+                        None,
+                        crate::sim::combat::line_of_fire::LineOfFireInputs::default(),
+                    )
+                };
+                assert_eq!(
+                    acquire(&sim),
+                    Some(2),
+                    "landed Fly must respect first hostile; aa={aa}, bridge={bridge}"
+                );
+                // A supplied positive low height changes the existing live query
+                // while retained Cell order and AirTracker registration stay put.
+                // Below target_is_high_flying, weapon selection alone allows AG.
+                sim.substrate
+                    .entities
+                    .get_mut(3)
+                    .unwrap()
+                    .locomotor
+                    .as_mut()
+                    .unwrap()
+                    .altitude = SimFixed::from_num(1);
+                assert_eq!(acquire(&sim), if aa { Some(3) } else { Some(2) });
+                sim.substrate
+                    .entities
+                    .get_mut(3)
+                    .unwrap()
+                    .lifecycle
+                    .cell_marked = false;
+                assert_eq!(
+                    acquire(&sim),
+                    Some(2),
+                    "an unmarked registration is skipped"
+                );
+                assert!(
+                    sim.substrate
+                        .entities
+                        .get(3)
+                        .unwrap()
+                        .air_spatial_bucket
+                        .is_some()
+                );
+                assert_eq!(
+                    sim.substrate
+                        .occupancy
+                        .get(6, 5)
+                        .unwrap()
+                        .iter_layer(layer)
+                        .map(|entry| entry.entity_id)
+                        .collect::<Vec<_>>(),
+                    vec![2, 3]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn air_prepass_mask_uses_resolved_ifv_slot_elite_fallback_and_gattling_pair() {
+        use super::super::combat_weapon::WeaponOverride;
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=FV\n1=GATT\n\
+             [FV]\nTurretCount=4\nWeaponCount=3\nWeapon1=GROUND\nWeapon2=AIR\nWeapon3=GROUND\nEliteWeapon3=AIR\n\
+             [GATT]\nTurretCount=1\nIsGattling=yes\nWeaponCount=3\nWeapon1=GROUND\nWeapon2=AIR\nWeapon3=GROUND\n\
+             [WeaponTypes]\n0=GROUND\n1=AIR\n[GROUND]\nProjectile=AG\n[AIR]\nProjectile=AA\n\
+             [AG]\nAG=yes\nAA=no\n[AA]\nAG=yes\nAA=yes\n"
+        )).unwrap();
+        for (kind, slot, veterancy, expected) in [
+            ("FV", 0, 0, false),
+            ("FV", 1, 0, true),
+            ("FV", 2, 0, false),
+            ("FV", 2, 200, true),
+            ("FV", 0, 200, false),
+            ("GATT", 2, 0, true),
+        ] {
+            let obj = rules.object(kind).unwrap();
+            let mut entity = GameEntity::test_default(1, kind, "Americans", 5, 5);
+            entity.veterancy = veterancy;
+            entity.weapon_override = Some(WeaponOverride::IfvSlot(slot));
+            assert_eq!(
+                passive_scan_has_aa(&rules, obj, attacker_facts(&entity, obj), None),
+                expected,
+                "{kind} slot{slot} veterancy{veterancy}"
+            );
+        }
     }
 
     /// The same acquisition entry, with the threat mask the caller would push.
@@ -1611,6 +1828,7 @@ mod tests {
         let interner = test_interner();
         super::super::acquire_best_target_for_entity(
             entities,
+            &OccupancyGrid::rebuild(entities),
             rules,
             &interner,
             attacker,

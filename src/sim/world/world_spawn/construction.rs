@@ -93,11 +93,16 @@ impl Simulation {
         let category = ge.category;
         let facing = ge.facing;
         let uses_voxel = ge.is_voxel;
+        // InitManagers6F3F40 classifies the owner after construction; it does
+        // not manufacture either discovery-history byte. The launch-owned
+        // current house is distinct from the notification/viewer binding.
+        ge.discovery.owned_by_current_house = self.session.current_house == Some(ge.owner());
         if self.debug_event_logging {
             ge.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
         }
 
         stamp_scoring_flags(ge, obj);
+        ge.sight_is_zero = obj.is_some_and(|object| object.sight == 0);
         if let Some(obj) = obj.filter(|obj| obj.has_turret) {
             let initial = crate::sim::movement::turret::body_facing_to_turret(facing);
             let rot_byte = obj.turret_rot.clamp(0, 0xFF) as u8;

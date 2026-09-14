@@ -476,7 +476,9 @@ use crate::sim::world::Simulation;
 // Drive END permission and the distinct Foot forced-swap gate are retained too.
 // v156 persists current-house process input. Versions153-155 belong to
 // the separate unmerged bridge locomotor layouts; do not accept those saves.
-const SNAPSHOT_VERSION: u32 = 156;
+// v159 persists actual Cell membership/order, discovery history and the exact
+// immutable Sight==0 predicate. Versions157-158 belong to the bridge branch.
+const SNAPSHOT_VERSION: u32 = 159;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -566,6 +568,8 @@ pub enum SnapshotError {
 /// Structural failures found before a deserialized simulation is admitted.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SnapshotRestoreError {
+    #[error("invalid saved Cell list: {reason}")]
+    InvalidCellMembership { reason: String },
     #[error("saved current house {owner} is absent from the HouseClass registry")]
     InvalidCurrentHouse {
         owner: crate::sim::intern::InternedId,
@@ -1722,7 +1726,9 @@ impl Simulation {
 
         // EntityStore already restored its indexes during Deserialize (Clone
         // retains them too). Reference restoration above changes no indexed identity.
-        // Continue with Logic slots (including ParticleSystem), then CellClass lists.
+        // Continue with Logic slots (including ParticleSystem). Actual CellClass
+        // list heads/order were serialized, like483C10/4839F0: validate references
+        // without requerying geometry before map authority is reattached.
         // Bullet Load 46AE9C..46AEB0 starts both embedded timers at the
         // already-restored global frame with duration zero. Only C4/CC gates
         // AI through Check (4E11F0); retain the saved reference/watermark.
@@ -1732,8 +1738,10 @@ impl Simulation {
                 .start(self.session.binary_frame as i32, 0);
         }
         self.rebuild_logic_membership();
-        self.substrate.occupancy =
-            crate::sim::occupancy::OccupancyGrid::rebuild(&self.substrate.entities);
+        self.substrate
+            .occupancy
+            .restore_memberships(&self.substrate.entities)
+            .map_err(|reason| SnapshotRestoreError::InvalidCellMembership { reason })?;
         self.substrate.cell_occupation =
             crate::sim::occupancy::CellOccupationGrid::rebuild(&self.substrate.entities);
         Ok(())
@@ -2205,11 +2213,10 @@ mod tests {
                 true,
             );
             entity.lifecycle.in_limbo = false;
-            entity.lifecycle.cell_marked = true;
             entity.in_logic_vector = true;
             entity.on_bridge = on_bridge;
-            entity.occupancy_enter_order = sim.substrate.next_occupancy_enter_order.next();
             sim.substrate.entities.insert(entity);
+            sim.add_entity_occupancy(stable_id);
             sim.substrate
                 .logic
                 .try_push(stable_id)
@@ -2615,8 +2622,10 @@ mod tests {
         // production path uses `restore_after_snapshot_load`.
         sim.substrate.entities.rebuild_owner_index();
         sim.rebuild_logic_membership();
-        sim.substrate.occupancy =
-            crate::sim::occupancy::OccupancyGrid::rebuild(&sim.substrate.entities);
+        sim.substrate
+            .occupancy
+            .restore_memberships(&sim.substrate.entities)
+            .expect("fixture has valid saved Cell references");
         sim.substrate.cell_occupation =
             crate::sim::occupancy::CellOccupationGrid::rebuild(&sim.substrate.entities);
         sim.rebuild_caches_after_load(
@@ -3314,7 +3323,23 @@ mod tests {
         // 146 -> 147: retain Scenario+214 for subsequent native constructors.
         // 150 -> 151: Foot also owns applied speed independently of its locomotor.
         // 151 -> 152: Foot occupation enable and pending fresh Apply1 obligation.
-        assert_eq!(super::SNAPSHOT_VERSION, 156);
+        assert_eq!(super::SNAPSHOT_VERSION, 159);
+    }
+
+    #[test]
+    fn membership_history_schema_rejects_previous_and_branch_local_layouts() {
+        for version in 153..=158 {
+            let preamble = GameSnapshotPreamble {
+                product_magic: SNAPSHOT_PRODUCT_MAGIC,
+                envelope_version: SNAPSHOT_ENVELOPE_VERSION,
+                version,
+            };
+            let bytes = bincode::serialize(&preamble).expect("previous layout header");
+            assert!(matches!(
+                GameSnapshot::load(&bytes),
+                Err(SnapshotError::VersionMismatch { expected: 159, found }) if found == version
+            ));
+        }
     }
 
     #[test]
@@ -7661,72 +7686,48 @@ mod tests {
         ));
     }
 
-    /// Substrate Slice 5 (#8) re-entry case: when an entity LEAVES a cell and
-    /// re-enters it, it takes a fresh (newest) enter order while keeping its
-    /// (lowest) stable id — the one ordering the base
-    /// `saveload_occupancy_list_order_matches_incremental` fixture cannot
-    /// produce. The post-load rebuild must reproduce the re-entered list
-    /// exactly and deterministically.
+    /// Literal saved Cell lists survive re-entry order and actual restore.
+    /// Restore hydrates metadata; it does not replay the historical enter stamps.
     #[test]
     fn saveload_occupancy_list_order_survives_reentry() {
         use crate::map::entities::EntityCategory;
         use crate::sim::game_entity::GameEntity;
-        use crate::sim::occupancy::OccupancyGrid;
-
         let mut sim = Simulation::new();
-        for id in 1u64..=3 {
-            let mut e = GameEntity::test_default(id, "E1", "Americans", 5, 5);
-            e.category = EntityCategory::Infantry;
-            sim.substrate.entities.insert(e);
+        for _ in 0..3 {
+            let id = sim.allocate_stable_id();
+            let mut entity = GameEntity::test_default(id, "E1", "Americans", 5, 5);
+            entity.category = EntityCategory::Infantry;
+            entity.lifecycle.in_limbo = false;
+            sim.substrate.entities.insert(entity);
             sim.add_entity_occupancy(id);
         }
-        // Re-entry: pop entity 1 out and back in. Its enter order is now the
-        // NEWEST while its stable id stays the LOWEST — an id-sorted rebuild
-        // would produce a different list, so this discriminates the
-        // (enter_order, id) contract from a naive id sort.
+        sim.interner = crate::sim::intern::test_interner();
         sim.remove_entity_occupancy(1);
         sim.add_entity_occupancy(1);
-
-        let live: Vec<(u64, MovementLayer)> = sim
-            .substrate
-            .occupancy
-            .get(5, 5)
-            .expect("occupied cell")
-            .iter_layer(MovementLayer::Ground)
-            .map(|o| (o.entity_id, o.layer))
-            .collect();
-        // Non-buildings PREPEND, so after the re-entry the live list is
-        // [1 (re-entered, newest), 3, 2].
-        assert_eq!(
-            live.iter().map(|(id, _)| *id).collect::<Vec<u64>>(),
-            vec![1, 3, 2],
-            "incremental list order (prepend + re-entry) is the fixture premise"
-        );
-
-        // Serde round trip (the snapshot path), then the post-load rebuild
-        // (`rebuild_caches_after_load` delegates occupancy to exactly this).
-        let bytes = bincode::serialize(&sim).expect("sim serializes");
-        let restored: Simulation = bincode::deserialize(&bytes).expect("sim deserializes");
-        let rebuilt = OccupancyGrid::rebuild(&restored.substrate.entities);
-        let rebuilt_list: Vec<(u64, MovementLayer)> = rebuilt
-            .get(5, 5)
-            .expect("rebuilt cell")
-            .iter_layer(MovementLayer::Ground)
-            .map(|o| (o.entity_id, o.layer))
-            .collect();
-        assert_eq!(
-            rebuilt_list, live,
-            "post-load rebuild must reproduce the incremental occupant list exactly"
-        );
-
-        // Determinism: a second rebuild from the same store is identical.
-        let rebuilt_again = OccupancyGrid::rebuild(&restored.substrate.entities);
-        let rebuilt_again_list: Vec<(u64, MovementLayer)> = rebuilt_again
-            .get(5, 5)
-            .expect("rebuilt cell")
-            .iter_layer(MovementLayer::Ground)
-            .map(|o| (o.entity_id, o.layer))
-            .collect();
-        assert_eq!(rebuilt_again_list, rebuilt_list, "rebuild is deterministic");
+        let list = |sim: &Simulation| -> Vec<u64> {
+            sim.substrate
+                .occupancy
+                .get(5, 5)
+                .unwrap()
+                .iter_layer(MovementLayer::Ground)
+                .map(|o| o.entity_id)
+                .collect()
+        };
+        assert_eq!(list(&sim), vec![1, 3, 2]);
+        // Snapshot deserialization intentionally executes native Scenario Seed0.
+        // Compare this state-only roundtrip on that same admitted RNG cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let hash = sim.state_hash();
+        let saved = GameSnapshot::save(&sim, 0, 0, "re-entry list", 0);
+        let mut restored = GameSnapshot::load(&saved).unwrap().sim;
+        restored.restore_after_snapshot_load().unwrap();
+        assert_eq!(list(&restored), vec![1, 3, 2]);
+        assert_eq!(restored.state_hash(), hash);
+        restored.remove_entity_occupancy(3);
+        assert_eq!(list(&restored), vec![1, 2]);
+        restored.add_entity_occupancy(3);
+        assert_eq!(list(&restored), vec![3, 1, 2]);
+        restored.restore_after_snapshot_load().unwrap();
+        assert_eq!(list(&restored), vec![3, 1, 2], "fixup is idempotent");
     }
 }

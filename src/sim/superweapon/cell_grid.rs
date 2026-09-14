@@ -78,9 +78,16 @@ pub(super) fn live_successor(
         return cell.next_on_layer(visited_layer, current);
     }
     let object = sim.substrate.entities.get(current)?;
-    let layer = crate::sim::occupancy::cell_list_layer_for_entity(object)?;
-    sim.substrate
+    let cell = sim
+        .substrate
         .occupancy
-        .get(object.position.rx, object.position.ry)?
-        .next_on_layer(layer, current)
+        .get(object.position.rx, object.position.ry)?;
+    // PUT may retain a Cell list even though the current virtual layer query
+    // differs. Read the actual replacement list, not a fresh +78 projection.
+    let layer = cell
+        .occupants
+        .iter()
+        .find(|member| member.entity_id == current)?
+        .layer;
+    cell.next_on_layer(layer, current)
 }

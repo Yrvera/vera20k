@@ -463,6 +463,14 @@ impl Simulation {
         self.state_hash_with_schema(HashSchema::Current)
     }
 
+    /// Reproduce the immediately preceding main hash composition: exclude
+    /// only schema159's authoritative Cell lists and exact Sight0 metadata.
+    /// Client-relative discovery history is excluded in both compositions.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_cell_membership_v159(&self) -> u64 {
+        self.state_hash_with_schema(HashSchema::Before(159))
+    }
+
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
     ///
     /// It retains lifecycle-v28 fields and reconstructs the exact prior
@@ -616,6 +624,9 @@ impl Simulation {
         self.substrate.fold_raw_cell_occupation(&mut hasher);
         self.substrate.fold_hidden_occupation(&mut hasher);
         self.substrate.fold_base_reservations(&mut hasher);
+        if schema.includes(HashFeature::CellMembership) {
+            self.substrate.occupancy.hash_memberships(&mut hasher);
+        }
 
         self.session.fold_game_options(&mut hasher);
         self.hash_houses(&mut hasher, schema);
@@ -1510,6 +1521,9 @@ impl Simulation {
             entity.damage_fire_state_active.hash(hasher);
             entity.damage_fire_anim_ids.hash(hasher);
             entity.vision_range.hash(hasher);
+            if schema.includes(HashFeature::CellMembership) {
+                entity.sight_is_zero.hash(hasher);
+            }
             if schema.includes(HashFeature::SustainedGapSight) {
                 entity.sight_refresh_timers.hash(hasher);
             }

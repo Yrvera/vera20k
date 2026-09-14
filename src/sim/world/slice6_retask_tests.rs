@@ -389,7 +389,12 @@ const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0xA2D7_54E3_B51E_5E3E;
 // residual and synchronous arrival timing; historical projections also include
 // migrated Foot owners. See docs/research/TRACK_PROCESS_REPLAY_REGRESSION_NOTES.md
 // for baseline/candidate observations and native scope. These are Rust pins.
-const SLICE6_BASELINE_HASH: u64 = 0x7637_05BF_7622_B9E4;
+const SLICE6_BASELINE_HASH_PRE_CELL_MEMBERSHIP_V159: u64 = 0x7637_05BF_7622_B9E4;
+// Schema159 adds actual ordered Cell membership and exact Sight0 metadata.
+// The immediately preceding composition is asserted below against the old
+// current pin; all historical, replay/path and RNG tripwires remain intact.
+// This is a Rust hash-composition ratchet, not a new native golden.
+const SLICE6_BASELINE_HASH: u64 = 0x03D4_E834_53AE_D084;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -512,6 +517,12 @@ fn replay_hash_stable_through_slice6() {
     assert_eq!(
         pre_disguise_detect_hash, SLICE6_PRE_DISGUISE_DETECT_V117_HASH,
         "committed pre-v117 projection changed"
+    );
+    let pre_membership_hash = sim.state_hash_without_cell_membership_v159();
+    println!("[schema159] pre159={pre_membership_hash:016X} current={hash:016X}");
+    assert_eq!(
+        pre_membership_hash, SLICE6_BASELINE_HASH_PRE_CELL_MEMBERSHIP_V159,
+        "immediately preceding main hash changed beyond schema159 composition"
     );
     assert_eq!(
         hash, SLICE6_BASELINE_HASH,

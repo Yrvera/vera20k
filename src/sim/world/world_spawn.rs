@@ -1053,7 +1053,7 @@ impl Simulation {
             }
             (entity.position.sub_x, entity.position.sub_y)
         };
-        let outcome = self.try_reveal_entity(
+        let outcome = self.try_reveal_entity_with_context(
             stable_id,
             RevealRequest {
                 position: RevealPosition {
@@ -1066,6 +1066,7 @@ impl Simulation {
                 placement,
                 logic_eligible: true,
             },
+            super::lifecycle::UninitContext::with_rules(rules),
         );
         if !matches!(outcome, RevealOutcome::Revealed { .. }) {
             return None;
@@ -1230,13 +1231,17 @@ impl Simulation {
                 entity.on_bridge = layer == MovementLayer::Bridge;
             }
         }
-        let outcome = self.try_reveal_entity(
+        let outcome = self.try_reveal_entity_with_context(
             stable_id,
             RevealRequest {
                 position,
                 placement,
                 logic_eligible: true,
             },
+            rules.map_or_else(
+                super::lifecycle::UninitContext::default,
+                super::lifecycle::UninitContext::with_rules,
+            ),
         );
         if matches!(outcome, RevealOutcome::Revealed { .. }) {
             if let Some(rules) = rules {

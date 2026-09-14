@@ -81,6 +81,7 @@ impl Simulation {
             };
             let Some(target_sid) = combat::acquire_best_target_for_entity(
                 &self.substrate.entities,
+                &self.substrate.occupancy,
                 rules,
                 &self.interner,
                 attacker_id,

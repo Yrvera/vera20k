@@ -628,7 +628,12 @@ const GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x5183_C354_B078_DAA
 // residual and synchronous arrival timing; historical projections also include
 // migrated Foot owners. See docs/research/TRACK_PROCESS_REPLAY_REGRESSION_NOTES.md
 // for baseline/candidate observations and native scope. These are Rust pins.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x2E70_C299_3112_87CA;
+const GLOBAL_HARNESS_FINAL_HASH_PRE_CELL_MEMBERSHIP_V159: u64 = 0x2E70_C299_3112_87CA;
+// Schema159 adds actual ordered Cell membership and exact Sight0 metadata.
+// The immediately preceding composition is asserted below against the old
+// current pin; all historical, replay/path and RNG tripwires remain intact.
+// This is a Rust hash-composition ratchet, not a new native golden.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xB2C9_657E_01DE_8AB1;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -994,6 +999,12 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     assert_eq!(
         pre_disguise_detect_hash, GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH,
         "committed pre-v117 projection changed"
+    );
+    let pre_membership_hash = rep.state_hash_without_cell_membership_v159();
+    println!("[schema159] pre159={pre_membership_hash:016X} current={final_hash:016X}");
+    assert_eq!(
+        pre_membership_hash, GLOBAL_HARNESS_FINAL_HASH_PRE_CELL_MEMBERSHIP_V159,
+        "immediately preceding main hash changed beyond schema159 composition"
     );
     assert_eq!(
         final_hash, GLOBAL_HARNESS_FINAL_HASH,

@@ -189,3 +189,177 @@ fn reserve_destination_after_transition(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::snapshot::GameSnapshot;
+    use crate::sim::world::Simulation;
+
+    #[test]
+    fn restored_retained_list_drives_acquisition_arrival_and_removal() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=TANK\n1=SCOUT\n2=PRIZE\n\
+             [TANK]\nStrength=300\nArmor=heavy\nPrimary=Gun\n\
+             [SCOUT]\nStrength=300\nArmor=heavy\n\
+             [PRIZE]\nStrength=300\nArmor=heavy\nSpecialThreatValue=10\n\
+             [Gun]\nDamage=100\nROF=110\nRange=5\nWarhead=AP\nProjectile=Bullet\n\
+             [Bullet]\nAA=yes\nAG=yes\n\
+             [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ))
+        .unwrap();
+        let mut sim = Simulation::with_seed(20);
+        for (type_name, owner, cell) in [
+            ("TANK", "Americans", (5, 5)),
+            ("SCOUT", "Soviet", (6, 5)),
+            ("PRIZE", "Soviet", (6, 5)),
+            ("SCOUT", "Americans", (8, 5)),
+            ("SCOUT", "Americans", (9, 5)),
+        ] {
+            let id = sim.allocate_stable_id();
+            let mut entity = GameEntity::test_default(id, type_name, owner, cell.0, cell.1);
+            entity.lifecycle.in_limbo = false;
+            sim.substrate.entities.insert(entity);
+            sim.add_entity_occupancy(id);
+        }
+        sim.interner = crate::sim::intern::test_interner();
+        sim.remove_entity_occupancy(2);
+        sim.add_entity_occupancy(2);
+        // Supply the already retained state at this storage boundary. Original
+        // initial Jumpjet Process can leave a ground Cell list after phase0->1;
+        // this test does not pretend to produce that native phase transition.
+        // Both enemies remain outside the old phase-derived list projection.
+        for id in [2, 3] {
+            let entity = sim.substrate.entities.get_mut(id).unwrap();
+            let mut loco = LocomotorState::for_test_kind(LocomotorKind::Jumpjet);
+            loco.layer = MovementLayer::Air;
+            entity.locomotor = Some(loco);
+        }
+        // Independent AirTracker registrations/order are saved as their own
+        // authority; they neither remove nor manufacture a ground list.
+        for id in [5, 4] {
+            let order = sim.substrate.next_occupancy_enter_order.next();
+            let entity = sim.substrate.entities.get_mut(id).unwrap();
+            entity.air_spatial_bucket = Some(7);
+            entity.air_spatial_enter_order = order;
+        }
+        let air_order = |sim: &Simulation| {
+            let mut rows: Vec<_> = sim
+                .substrate
+                .entities
+                .values()
+                .filter_map(|e| {
+                    e.air_spatial_bucket
+                        .map(|bucket| (e.air_spatial_enter_order, e.stable_id(), bucket))
+                })
+                .collect();
+            rows.sort_unstable();
+            rows
+        };
+        let list = |sim: &Simulation, cell: (u16, u16)| -> Vec<u64> {
+            sim.substrate
+                .occupancy
+                .get(cell.0, cell.1)
+                .map(|list| {
+                    list.iter_layer(MovementLayer::Ground)
+                        .map(|o| o.entity_id)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let acquire = |sim: &Simulation, occupancy: &OccupancyGrid| {
+            crate::sim::combat::acquire_best_target_for_entity(
+                &sim.substrate.entities,
+                occupancy,
+                &rules,
+                &sim.interner,
+                1,
+                None,
+                None,
+                false,
+                crate::sim::combat::ScanMission::Guard,
+                None,
+                crate::sim::combat::line_of_fire::LineOfFireInputs::default(),
+            )
+        };
+        assert_eq!(list(&sim, (6, 5)), vec![2, 3]);
+        assert_eq!(acquire(&sim, &sim.substrate.occupancy), Some(2));
+        assert_eq!(
+            acquire(&sim, &OccupancyGrid::rebuild(&sim.substrate.entities)),
+            None
+        );
+        let expected_air = air_order(&sim);
+        assert_eq!(
+            expected_air.iter().map(|row| row.1).collect::<Vec<_>>(),
+            vec![5, 4]
+        );
+        // Snapshot deserialization intentionally executes native Scenario Seed0.
+        // Compare this state-only roundtrip on that same admitted RNG cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let hash = sim.state_hash();
+        let saved = GameSnapshot::save(&sim, 0, 0, "retained Cell membership", 0);
+        let mut restored = GameSnapshot::load(&saved).unwrap().sim;
+        restored.restore_after_snapshot_load().unwrap();
+        assert_eq!(restored.state_hash(), hash);
+        assert_eq!(list(&restored, (6, 5)), vec![2, 3]);
+        assert_eq!(air_order(&restored), expected_air);
+        for id in [2, 3] {
+            assert_eq!(
+                crate::sim::occupancy::cell_list_layer_for_entity(
+                    restored.substrate.entities.get(id).unwrap()
+                ),
+                None
+            );
+        }
+        assert_eq!(acquire(&restored, &restored.substrate.occupancy), Some(2));
+        // Enter the existing production accepted-arrival owner with its
+        // caller-resolved old/new Cell lists; no destination/path admission is
+        // bypassed under a claim of complete Jumpjet movement here.
+        let old_layer = restored
+            .substrate
+            .occupancy
+            .get(6, 5)
+            .unwrap()
+            .occupants
+            .iter()
+            .find(|o| o.entity_id == 2)
+            .unwrap()
+            .layer;
+        let mut stats = MovementTickStats::default();
+        let substrate = &mut restored.substrate;
+        let entity = substrate.entities.get_mut(2).unwrap();
+        entity.position.rx = 7;
+        CellArrival {
+            entity_id: 2,
+            category: entity.category,
+            from: (6, 5),
+            to: (7, 5),
+            old_list_layer: old_layer,
+            new_list_layer: MovementLayer::Ground,
+            position: &entity.position,
+            locomotor: &mut entity.locomotor,
+            drive_locomotion: &mut entity.drive_locomotion,
+            foot_occupation_enabled: &mut entity.foot_occupation_enabled,
+            sub_cell: &mut entity.sub_cell,
+            occupancy_enter_order: &mut entity.occupancy_enter_order,
+            next_occupancy_enter_order: &mut substrate.next_occupancy_enter_order,
+            occupancy: &mut substrate.occupancy,
+            cell_occupation: &mut substrate.cell_occupation,
+            stats: &mut stats,
+            priority: false,
+        }
+        .ordinary(MovementLayer::Ground);
+        assert_eq!(stats.moved_steps, 1);
+        assert_eq!(list(&restored, (6, 5)), vec![3]);
+        assert_eq!(list(&restored, (7, 5)), vec![2]);
+        restored.object_conceal(2);
+        assert_eq!(list(&restored, (7, 5)), Vec::<u64>::new());
+        assert_eq!(list(&restored, (6, 5)), vec![3]);
+        assert_eq!(air_order(&restored), expected_air);
+        assert_eq!(acquire(&restored, &restored.substrate.occupancy), Some(3));
+    }
+}

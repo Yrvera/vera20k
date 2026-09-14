@@ -145,6 +145,7 @@ pub(crate) struct AttackerSnapshot {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn acquire_best_target_for_entity(
     entities: &EntityStore,
+    occupancy: &crate::sim::occupancy::OccupancyGrid,
     rules: &RuleSet,
     interner: &StringInterner,
     attacker_id: u64,
@@ -211,6 +212,7 @@ pub(crate) fn acquire_best_target_for_entity(
     };
     acquire_best_target(
         entities,
+        occupancy,
         rules,
         interner,
         &snapshot,
@@ -247,6 +249,7 @@ pub(crate) fn acquire_best_target_for_entity(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn acquire_best_target(
     entities: &EntityStore,
+    occupancy: &crate::sim::occupancy::OccupancyGrid,
     rules: &RuleSet,
     interner: &StringInterner,
     attacker: &AttackerSnapshot,
@@ -260,6 +263,7 @@ pub(crate) fn acquire_best_target(
 ) -> Option<u64> {
     super::greatest_threat::greatest_threat(
         entities,
+        occupancy,
         rules,
         interner,
         attacker,
@@ -687,11 +691,13 @@ mod tests {
         let mut sref = GameEntity::test_default(1, "SREF", "Americans", 5, 5);
         sref.category = EntityCategory::Unit;
         sref.lifecycle.in_limbo = false;
+        sref.lifecycle.cell_marked = true;
         entities.insert(sref);
 
         let mut enemy = GameEntity::test_default(2, "HTNK", "Russians", 6, 5);
         enemy.category = EntityCategory::Unit;
         enemy.lifecycle.in_limbo = false;
+        enemy.lifecycle.cell_marked = true;
         entities.insert(enemy);
 
         // Snapshot the thread-local test interner only after `test_default`
@@ -701,6 +707,7 @@ mod tests {
         assert_eq!(
             acquire_best_target_for_entity(
                 &entities,
+                &crate::sim::occupancy::OccupancyGrid::rebuild(&entities),
                 &rules,
                 &interner,
                 1,

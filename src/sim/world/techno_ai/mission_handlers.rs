@@ -1084,6 +1084,7 @@ fn retaliate_and_scan(
     }
     let pick = crate::sim::combat::acquire_best_target_for_entity(
         &sim.substrate.entities,
+        &sim.substrate.occupancy,
         rules,
         &sim.interner,
         id,
@@ -1885,6 +1886,7 @@ fn infantry_deployed_attack_reacquire(
     // directly through `[vtable+0x3C4]` without either.
     let pick = crate::sim::combat::acquire_best_target_for_entity(
         &sim.substrate.entities,
+        &sim.substrate.occupancy,
         rules,
         &sim.interner,
         id,

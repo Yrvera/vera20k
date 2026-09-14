@@ -303,8 +303,16 @@ fn unit_authoritative_fire_kills_target_via_advance_tick() {
     let rules = rules_with_mtnk_rot(100);
     sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
 
-    sim.substrate.entities.get_mut(1).unwrap().mark_live_contact_with(2);
-    sim.substrate.entities.get_mut(2).unwrap().mark_live_contact_with(1);
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .mark_live_contact_with(2);
+    sim.substrate
+        .entities
+        .get_mut(2)
+        .unwrap()
+        .mark_live_contact_with(1);
     let start_hp = sim.substrate.entities.get(2).unwrap().health.current;
     let mut fired = false;
     let mut target_gone = false;
@@ -454,6 +462,7 @@ fn retargeted_attacker_aims_new_target_same_tick() {
     alt.barrel_facing = Some(FacingClass::new(body_facing_to_turret(0), 5));
     alt.lifecycle.in_limbo = false;
     sim.substrate.entities.insert(alt);
+    sim.add_entity_occupancy(4);
     use_test_interner(&mut sim);
     let rules = rules_with_mtnk_rot(5);
     sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
@@ -1180,7 +1189,10 @@ fn gsi_08_03_homing_projectile_widens_the_fire_tolerance_to_0x1000() {
             facing_from_5_5_to_5_9().wrapping_add(offset),
             5,
         ));
-        !run_combat_direct(&mut sim, rules).consequences.fire_events().is_empty()
+        !run_combat_direct(&mut sim, rules)
+            .consequences
+            .fire_events()
+            .is_empty()
     }
 
     let straight = rules_with_homing_projectile(0);
@@ -1291,7 +1303,10 @@ TurretAnimIsVoxel={}\n\n\
         sim.reveal(1);
         sim.reveal(2);
         use_test_interner(&mut sim);
-        !run_combat_direct(&mut sim, &rules).consequences.fire_events().is_empty()
+        !run_combat_direct(&mut sim, &rules)
+            .consequences
+            .fire_events()
+            .is_empty()
     }
 
     // ROT=1 means one step is 0x0100.
@@ -1337,7 +1352,10 @@ fn gsi_08_04_rotation_latch_refuses_the_shot_until_the_arc_finishes() {
             5,
         ));
         attacker.turret_rotation_latch = latch;
-        !run_combat_direct(&mut sim, &rules).consequences.fire_events().is_empty()
+        !run_combat_direct(&mut sim, &rules)
+            .consequences
+            .fire_events()
+            .is_empty()
     }
 
     // Exactly on target, so nothing but the latch can be doing the refusing.
@@ -1378,7 +1396,10 @@ fn gsi_08_04_rotation_latch_refuses_the_shot_until_the_arc_finishes() {
             5,
         ));
         attacker.turret_rotation_latch = latch;
-        !run_combat_direct(&mut sim, &rules).consequences.fire_events().is_empty()
+        !run_combat_direct(&mut sim, &rules)
+            .consequences
+            .fire_events()
+            .is_empty()
     }
     assert!(
         fires_with_latch_omni(false),
