@@ -235,6 +235,41 @@ impl SimRuntime {
 mod tests {
     use super::*;
 
+    #[test]
+    fn staged_campaign_selects_current_house_after_roster_construction() {
+        let map = crate::map::map_file::MapFile::from_bytes(
+            b"[Map]\nTheater=TEMPERATE\nSize=0,0,40,40\nLocalSize=2,2,36,32\n[Basic]\nPlayer=Alpha\n[Houses]\n7=Zulu\n2=Alpha\n[Zulu]\n[Alpha]\n[IsoMapPack5]\n1=CAAEABUAAAAAEQAA\n",
+        ).expect("minimal authored map");
+        let roster = crate::map::houses::parse_house_roster(&map.ini, &[], None);
+        let descriptor = crate::sim::scenario_session::ScenarioDescriptor::default();
+        let mut sim = Simulation::new();
+        sim.interner.intern("alpha");
+        let terrain =
+            crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(0, 0, Vec::new());
+        populate_staged_scenario_with_generated_inits(
+            &mut sim,
+            &map,
+            &terrain,
+            "TEMPERATE",
+            None,
+            None,
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            crate::map::basic::BridgeDestroyabilityMode::CampaignOrEditor,
+            &descriptor,
+            None,
+            |sim| crate::sim::scenario_bootstrap::initialize_map_roster_houses(sim, &roster, None),
+        )
+        .expect("staged map-roster construction");
+        let selected = sim.interner.get("Alpha").unwrap();
+        assert_eq!(sim.session.current_house, Some(selected));
+        assert!(sim.houses[&selected].is_human && sim.houses[&selected].player_control);
+        let first = sim.interner.get("Zulu").unwrap();
+        assert_eq!(sim.session.house_order, [first, selected]);
+        assert!(!sim.houses[&first].is_human && !sim.houses[&first].player_control);
+    }
+
     /// F07 matrix: the runtime always uses bound navigation and resources —
     /// both production install paths keep the match resources. The map-load
     /// install binds them from the load result; the in-scenario restore path
@@ -644,6 +679,18 @@ where
     // Keep the app-specific roster construction outside sim while making that
     // order an explicit prerequisite of the shared object-construction funnel.
     initialize_houses_before_objects(sim);
+    if !descriptor.game_mode_nonzero {
+        let roster = crate::map::houses::parse_house_roster(
+            &map_data.ini,
+            rules.map_or(&[], |rules| rules.color_schemes.as_slice()),
+            rules,
+        );
+        crate::sim::scenario_bootstrap::initialize_campaign_current_house(
+            sim,
+            &roster,
+            &map_data.ini,
+        );
+    }
     // Frame tripwire: every MP start waypoint must sit inside the session
     // bounds (= the fog window, cell-array frame). A start outside means the
     // descriptor was fed wrong-frame bounds (e.g. raw [Map] Size=) and the

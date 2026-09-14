@@ -1091,6 +1091,17 @@ pub(crate) fn initialize_skirmish_launch_houses(
         .options
         .to_game_options(session.opponents.len() as i32);
     populate_launch_houses(sim, &slots, rules);
+    // 688109 installs the original participant-array index0. These normalized
+    // slots retain that launch identity; later MCV placement/viewer choice
+    // cannot clear or replace the current house.
+    sim.session.current_house = slots.first().map(|slot| {
+        let id = sim
+            .interner
+            .get(&slot.owner_name)
+            .expect("created launch house");
+        assert!(sim.houses.contains_key(&id));
+        id
+    });
     populate_special_houses(sim, house_roster, rules);
 }
 
@@ -1462,9 +1473,29 @@ fn assign_launch_base_centers(
 pub(crate) fn normalized_launch_slots(
     session: &SkirmishLaunchSession,
 ) -> Vec<NormalizedSkirmishSlot> {
+    // Native 687F10 allocates a distinct House before copying its names;
+    // 688092..6880A4 stores the participant handle separately from +15FF4.
+    // Our shared owner-key projection must likewise avoid merging the local
+    // House with a generated AI or special House. Keep the display handle in
+    // session.player_name and preserve every noncolliding compatibility key.
+    // `Player` cannot match Neutral/Special or any generated ComputerN key.
+    // Evidence: docs/research/PHASE3_CURRENT_HOUSE_IDENTITY_GHIDRA_REPORT.md.
+    let name_collides = ["Neutral", "Special"]
+        .iter()
+        .any(|name| session.player_name.eq_ignore_ascii_case(name))
+        || (1..=session.opponents.len()).any(|index| {
+            session
+                .player_name
+                .eq_ignore_ascii_case(&format!("Computer{index}"))
+        });
+    let local_owner_name = if name_collides {
+        "Player"
+    } else {
+        &session.player_name
+    };
     let mut slots = Vec::with_capacity(1 + session.opponents.len());
     slots.push(NormalizedSkirmishSlot {
-        owner_name: session.player_name.clone(),
+        owner_name: local_owner_name.to_string(),
         country: session.local.country,
         color_index: session.local.color_index,
         start_position: session.local.start_position,
@@ -2487,6 +2518,46 @@ impl Simulation {
     }
 }
 
+/// Campaign68ACAA chooses Basic.Player with a 20-byte ReadString buffer,
+/// byte-exact House name lookup50C170, and index0 fallback on a miss.
+/// Evidence: docs/research/PHASE3_CURRENT_HOUSE_IDENTITY_GHIDRA_REPORT.md.
+/// Empty dev substrates retain unavailable identity; this is not a claim that
+/// native can launch an empty House array.
+pub(crate) fn initialize_campaign_current_house(
+    sim: &mut Simulation,
+    roster: &HouseRoster,
+    ini: &crate::rules::ini_parser::IniFile,
+) {
+    let requested = ini
+        .section("Basic")
+        .map(|section| section.read_string("Player", "", 20))
+        .unwrap_or_default();
+    // Interning folds lookup case and preserves the first spelling it saw.
+    // The native strcmp reads the original House definition instead.
+    sim.session.current_house = sim
+        .session
+        .house_order
+        .iter()
+        .copied()
+        .find(|id| {
+            roster.houses.iter().any(|house| {
+                house.name.as_bytes() == requested.as_bytes()
+                    && sim.interner.get(&house.name) == Some(*id)
+            })
+        })
+        .or_else(|| sim.session.house_order.first().copied());
+    if let Some(owner) = sim.session.current_house {
+        // Original 68AD0C/68AD18 set the selected House's +1EC/+1ED.
+        // This is scenario construction, never a snapshot/viewer rebind.
+        let house = sim
+            .houses
+            .get_mut(&owner)
+            .expect("registered current House");
+        house.is_human = true;
+        house.player_control = true;
+    }
+}
+
 /// Map-roster house construction shared by app and headless (F09):
 /// native order requires houses before every object section.
 pub(crate) fn initialize_map_roster_houses(
@@ -2554,6 +2625,44 @@ pub(crate) fn initialize_map_roster_houses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn campaign_current_house_uses_exact_case_and_registry_fallback() {
+        let mut sim = Simulation::new();
+        // Earlier interning must not become the original House name spelling.
+        sim.interner.intern("alpha");
+        let map = IniFile::from_str(
+            "[Houses]\n7=Zulu\n2=Alpha\n9=1234567890123456789\n[Zulu]\n[Alpha]\n[1234567890123456789]\n",
+        );
+        let roster = crate::map::houses::parse_house_roster(&map, &[], None);
+        initialize_map_roster_houses(&mut sim, &roster, None);
+        let first = sim.interner.get("Zulu").unwrap();
+        let second = sim.interner.get("Alpha").unwrap();
+        let capped = sim.interner.get("1234567890123456789").unwrap();
+        for (input, expected) in [
+            ("", first),
+            ("Player=missing", first),
+            ("Player=alpha", first),
+            ("Player=Alpha", second),
+            ("Player=1234567890123456789suffix", capped),
+            // The first 19 bytes end in whitespace that only the post-copy
+            // trim removes; trimming the uncut source cannot remove it.
+            ("Player=Alpha              suffix", second),
+        ] {
+            initialize_campaign_current_house(
+                &mut sim,
+                &roster,
+                &IniFile::from_str(&format!("[Basic]\n{input}\n")),
+            );
+            assert_eq!(sim.session.current_house, Some(expected));
+            assert!(sim.houses[&expected].is_human);
+            assert!(sim.houses[&expected].player_control);
+        }
+        assert!(
+            sim.houses[&first].is_human && sim.houses[&first].player_control,
+            "selecting another House does not clear previously set flags"
+        );
+    }
 
     /// x87 chop (cw `0x0E7F`) versus f64 round-to-nearest for the AI opening
     /// grant: `3 * 0.01` chops just below `0.03`, `* 100` chops just below `3.0`,
@@ -2674,6 +2783,236 @@ mod tests {
 
     fn one_start_prefix_map(start: Waypoint) -> MapFile {
         prefix_map_with_starts(&[start])
+    }
+
+    #[test]
+    fn current_house_precedes_map_objects_and_survives_failed_starting_mcv() {
+        // Exercise the same staged population and pre-Fill launch projection
+        // used by the offline app. Blocking every candidate after map-object
+        // creation supplies a deterministic total placement failure; it does
+        // not replace the production MCV constructor/search/result branch.
+        let rules_ini = IniFile::from_str(
+            "[General]\nBaseUnit=MTNK\n[VehicleTypes]\n0=MTNK\n\
+             [BuildingTypes]\n0=CABHUT\n\
+             [MTNK]\nStrength=300\nSpeed=6\nCost=100\nOwner=Americans\n\
+             [CABHUT]\nStrength=100\nFoundation=1x1\nOwner=Neutral\n",
+        );
+        let start = Waypoint {
+            index: 0,
+            rx: 40,
+            ry: 40,
+        };
+        let mut map = one_start_prefix_map(start);
+        map.entities = crate::map::entities::parse_map_entities(&IniFile::from_str(
+            "[Structures]\n0=Neutral,CABHUT,256,30,30,0,None\n",
+        ));
+        let roster = HouseRoster::default();
+        let overlays = OverlayTypeRegistry::empty();
+        for (handle, with_ai, owner_key) in [
+            ("Player", false, "Player"),
+            ("Commander", false, "Commander"),
+            ("Neutral", false, "Player"),
+            ("sPeCiAl", true, "Player"),
+            ("COMPUTER1", true, "Player"),
+            ("Computer2", true, "Computer2"),
+            ("Computer01", true, "Computer01"),
+        ] {
+            let mut launch = one_player_battle_launch("current-house.map");
+            launch.session.player_name = handle.to_string();
+            launch.session.options.bases = true;
+            launch.session.options.unit_count = 0;
+            if with_ai {
+                launch
+                    .session
+                    .opponents
+                    .push(crate::skirmish_launch::SkirmishAiSlot {
+                        country: LaunchCountry::Russia,
+                        country_random: false,
+                        color_index: 1,
+                        color_random: false,
+                        start_position: LaunchStartPosition::Auto,
+                        team: LaunchTeam::None,
+                        difficulty: crate::skirmish_launch::AiDifficulty::Easy,
+                    });
+                launch.session.pre_fill_house_roster = PreFillHouseRoster::from_compact_skirmish(1);
+                map.waypoints.insert(
+                    1,
+                    Waypoint {
+                        index: 1,
+                        rx: 50,
+                        ry: 50,
+                    },
+                );
+            } else {
+                map.waypoints.remove(&1);
+            }
+            for block_placement in [false, true] {
+                let mut scenario = descriptor(0xA83D4C);
+                scenario.game_mode_nonzero = true;
+                scenario.map_width = 96;
+                scenario.map_height = 96;
+                scenario.mp_start_waypoints.insert(0, (40, 40));
+                let plan = prepare_stock_offline_scenario_prefix_plan(
+                    &launch,
+                    &map,
+                    &map.waypoints,
+                    scenario.seed,
+                )
+                .expect("admitted offline launch prefix");
+                let mut rules_owner =
+                    crate::rules::process_owner::NativeRulesProcessOwner::from_cold_start_sources(
+                        rules_ini.clone(),
+                        None,
+                        IniFile::from_str(""),
+                    )
+                    .expect("cold process Rules authority");
+                let (rules, _, _, rules_receipt) = rules_owner
+                    .load_noncampaign_scenario(None, &map.ini)
+                    .expect("production noncampaign Rules reset/rebuild")
+                    .into_parts();
+                let bound_prefix = plan.bind_native_rules_receipt(rules_receipt);
+                let (mut sim, projection) = ScenarioBootstrapRng::new(scenario.seed)
+                    .into_stock_offline_staged_simulation(&scenario, bound_prefix)
+                    .expect("production admission installs the paired RNG/native-ID prefix");
+                assert!(sim.native_unique_ids.is_some());
+                let mut terrain = techno_constructor_flat_start_terrain(96);
+                let overlay_grid = crate::sim::overlay_grid::OverlayGrid::new(96, 96);
+                crate::sim::runtime::populate_staged_scenario_with_generated_inits(
+                    &mut sim,
+                    &map,
+                    &terrain,
+                    "TEMPERATE",
+                    Some(&rules),
+                    None,
+                    &BTreeMap::new(),
+                    Some(&overlays),
+                    Some(&overlay_grid),
+                    crate::map::basic::BridgeDestroyabilityMode::SkirmishOrMultiplayer {
+                        bridge_destruction: true,
+                    },
+                    &scenario,
+                    None,
+                    |sim| {
+                        initialize_skirmish_launch_houses(sim, &roster, &rules, &launch);
+                        assert!(
+                            sim.entities().is_empty(),
+                            "binding precedes every map object"
+                        );
+                        let player = sim.interner.get(owner_key).unwrap();
+                        assert_eq!(sim.session.current_house, Some(player));
+                        assert_eq!(sim.session.house_order[0], player);
+                        assert!(sim.houses[&player].is_human && sim.houses[&player].player_control);
+                    },
+                )
+                .expect("shared staged object construction");
+                assert_eq!(sim.entities().len(), 1, "map object actually constructed");
+                let player = sim.interner.get(owner_key).unwrap();
+                assert_eq!(sim.session.current_house, Some(player));
+                if block_placement {
+                    let mut cells = terrain.cells().to_vec();
+                    for cell in &mut cells {
+                        cell.overlay_blocks = true;
+                    }
+                    terrain = ResolvedTerrainGrid::from_cells(96, 96, cells);
+                    sim.install_resolved_terrain_for_new_map(terrain.clone());
+                }
+                let result = apply_pre_fill_scenario_prefix_launch_session_with_overlay_registry(
+                    &mut sim,
+                    &map,
+                    &roster,
+                    &rules,
+                    &BTreeMap::new(),
+                    &terrain,
+                    &launch,
+                    &overlays,
+                    &projection,
+                );
+                assert_eq!(
+                    result.spawned_mcvs,
+                    if block_placement {
+                        0
+                    } else {
+                        1 + u32::from(with_ai)
+                    }
+                );
+                assert_eq!(
+                    result.local_owner.as_deref(),
+                    (!block_placement).then_some(owner_key)
+                );
+                assert_eq!(
+                    sim.entities().len(),
+                    if block_placement {
+                        1
+                    } else {
+                        2 + usize::from(with_ai)
+                    }
+                );
+                assert_eq!(sim.session.current_house, Some(player));
+                assert!(sim.houses[&player].is_human && sim.houses[&player].player_control);
+                assert_eq!(launch.session.player_name, handle);
+                let mut distinct = sim.session.house_order.clone();
+                distinct.sort();
+                distinct.dedup();
+                assert_eq!(distinct.len(), 3 + usize::from(with_ai));
+                assert_eq!(sim.houses.len(), distinct.len());
+                for name in ["Neutral", "Special"]
+                    .into_iter()
+                    .chain(with_ai.then_some("Computer1"))
+                {
+                    let other = sim.interner.get(name).unwrap();
+                    assert_ne!(player, other);
+                    assert!(!sim.houses[&other].is_human && !sim.houses[&other].player_control);
+                }
+                let neutral = sim.interner.get("Neutral").unwrap();
+                let mut expected_mcv_owners = Vec::new();
+                if !block_placement {
+                    expected_mcv_owners.push(player);
+                    if with_ai {
+                        expected_mcv_owners.push(sim.interner.get("Computer1").unwrap());
+                    }
+                }
+                expected_mcv_owners.sort();
+                let assert_entity_owners = |world: &Simulation| {
+                    let hut_owners: Vec<_> = world
+                        .entities()
+                        .values()
+                        .filter(|entity| world.interner.resolve(entity.type_ref) == "CABHUT")
+                        .map(|entity| entity.owner)
+                        .collect();
+                    assert_eq!(
+                        hut_owners,
+                        [neutral],
+                        "authored hut keeps its Neutral owner"
+                    );
+                    let mut mcv_owners: Vec<_> = world
+                        .entities()
+                        .values()
+                        .filter(|entity| world.interner.resolve(entity.type_ref) == "MTNK")
+                        .map(|entity| entity.owner)
+                        .collect();
+                    mcv_owners.sort();
+                    assert_eq!(
+                        mcv_owners, expected_mcv_owners,
+                        "each successful MCV belongs to its distinct participant; failures leave none"
+                    );
+                };
+                assert_entity_owners(&sim);
+                let bytes =
+                    crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "owner collision", 0);
+                let mut restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
+                    .unwrap()
+                    .sim;
+                restored
+                    .restore_after_snapshot_load()
+                    .expect("valid distinct House registry");
+                assert_eq!(restored.session.current_house, Some(player));
+                assert_eq!(restored.session.house_order, sim.session.house_order);
+                assert!(
+                    restored.houses[&player].is_human && restored.houses[&player].player_control
+                );
+                assert_entity_owners(&restored);
+            }
+        }
     }
 
     fn techno_constructor_start_rules() -> RuleSet {
@@ -3557,6 +3896,7 @@ mod tests {
         let mut sim = owner.into_simulation(&descriptor(seed));
         let rules = techno_constructor_start_rules();
         initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &launch);
+        assert_eq!(sim.session.current_house, Some(sim.session.house_order[0]));
         let before = sim.scenario_rng.logical_state();
         let slots = normalized_launch_slots(launch.session());
         project_pre_fill_start_assignment(&mut sim, &slots, projection.assignment());
