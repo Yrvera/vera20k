@@ -508,6 +508,8 @@ fn nearby_query_for_naval_unit_delivery<'a>(
     };
     let (size_width, size_height) = map_size?;
     Some(NearbyQuery {
+        native_cells: None,
+        raw_occupation: None,
         passability: PassabilityArgs {
             // Unit vtable +0x84 -> +0x88 -> UnitType+0x67C.
             speed_type,
@@ -951,21 +953,15 @@ pub(in crate::sim) fn produced_unit_unlimbo_entry_at_resolved_cell(
                     layer,
                 );
             }
-            if let Some(infantry_id) = sim
+            if let Some(infantry_owner) = sim
                 .substrate
                 .raw_cell_occupation
                 .infantry_owner(cell.0, cell.1, layer)
-                && sim
-                    .substrate
-                    .entities
-                    .get(infantry_id)
-                    .is_some_and(|infantry| {
-                        crate::map::houses::are_houses_friendly(
-                            &sim.house_alliances,
-                            owner,
-                            sim.interner.resolve(infantry.owner()),
-                        )
-                    })
+                && crate::map::houses::are_houses_friendly(
+                    &sim.house_alliances,
+                    owner,
+                    sim.interner.resolve(infantry_owner),
+                )
             {
                 return ProductionUnitAdmission::nonzero(2, layer);
             }
@@ -1191,6 +1187,8 @@ fn nearby_query_for_spawn<'a>(
         movement_profile.movement_zone
     };
     Some(NearbyQuery {
+        native_cells: None,
+        raw_occupation: None,
         passability: PassabilityArgs {
             speed_type: movement_profile.speed_type,
             required_zone_id: None,
@@ -1459,6 +1457,7 @@ fn spawn_fallback_candidate_passable(
     }
     let rect = CellRect::single(cell.0, cell.1);
     check_passability_rect(CellRectPassabilityContext {
+        native_cells: None,
         rect,
         speed_type: movement_profile.speed_type,
         required_zone_id: None,
@@ -1472,6 +1471,7 @@ fn spawn_fallback_candidate_passable(
         occupancy: Some(occupancy),
         zone_grid,
     }) && check_occupancy_rect(CellRectOccupancyContext {
+        native_cells: None,
         rect,
         reservation_arg: -1,
         reservations: None,
@@ -2700,7 +2700,12 @@ mod tests {
         enemy_infantry
             .substrate
             .raw_cell_occupation
-            .mark_ground_infantry(cell.0, cell.1, 0x04, 70);
+            .mark_ground_infantry(
+                cell.0,
+                cell.1,
+                0x04,
+                enemy_infantry.interner.get("Russians").unwrap(),
+            );
         assert!(admission(&enemy_infantry, "SAPC").exact_zero());
         assert!(
             !admission(&enemy_infantry, "DEST").exact_zero(),
@@ -3384,6 +3389,8 @@ mod tests {
         };
 
         let q = NearbyQuery {
+            native_cells: None,
+            raw_occupation: None,
             passability: PassabilityArgs {
                 speed_type: movement_profile.speed_type,
                 required_zone_id: None,
@@ -3465,6 +3472,7 @@ mod tests {
 
         // The facade occupancy predicate matches the helper: both agree the cell is free.
         let facade_ok = check_occupancy_rect(CellRectOccupancyContext {
+            native_cells: None,
             rect: CellRect::single(1, 1),
             reservation_arg: -1,
             reservations: None,

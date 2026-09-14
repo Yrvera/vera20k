@@ -18,8 +18,10 @@
 
 use std::collections::HashMap;
 
+use crate::rules::animation_sequence::{
+    FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet,
+};
 use crate::rules::ini_parser::IniFile;
-use crate::rules::animation_sequence::{FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet};
 
 /// Native action-record delay byte for all 42 infantry actions.
 const ACTION_FRAME_DELAYS: [u8; 42] = [
@@ -378,3 +380,44 @@ pub fn build_sequence_set(def: &InfantrySequenceDef) -> SequenceSet {
 #[cfg(test)]
 #[path = "infantry_sequence_tests.rs"]
 mod tests;
+
+/// Infantry Scatter51D1AA..51D1C3 reads byte0 of the original42 Doing
+/// records at7EAF7C. The two sentinel/action bypasses precede that lookup.
+/// This is only the immutable permission leaf; each caller owns Doing's producer.
+pub(crate) fn scatter_allowed_by_doing(doing: i32) -> Option<bool> {
+    if doing == -1 || doing == 31 {
+        return Some(true);
+    }
+    if !(0..42).contains(&doing) {
+        return None;
+    }
+    Some(matches!(
+        doing,
+        0 | 1
+            | 2
+            | 3
+            | 4
+            | 6
+            | 8
+            | 9
+            | 10
+            | 16
+            | 17
+            | 18
+            | 19
+            | 22
+            | 23
+            | 24
+            | 25
+            | 26
+            | 28
+            | 29
+            | 30
+            | 33
+            | 37
+            | 38
+            | 39
+            | 40
+            | 41
+    ))
+}

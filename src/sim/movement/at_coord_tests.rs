@@ -2,6 +2,36 @@ use super::*;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
+#[test]
+fn active_walk_and_hover_queries_retain_committed_xyz_after_other_coordinate_writes() {
+    for family in [LocomotorKind::Walk, LocomotorKind::Hover] {
+        let mut e = crate::sim::game_entity::GameEntity::test_default(1, "E1", "Americans", 5, 5);
+        let mut loco = crate::sim::movement::locomotor::LocomotorState::for_test_kind(family);
+        let head = DriveCoord {
+            x: 6 * 256 + 128,
+            y: 5 * 256 + 128,
+            z: 416,
+        };
+        loco.set_step_head(Some(head));
+        e.locomotor = Some(loco);
+        e.position.exact_z_leptons = Some(0);
+        assert!(AtCoordQuery::from_entity(&e).unwrap().matches(head));
+        assert!(
+            !AtCoordQuery::from_entity(&e)
+                .unwrap()
+                .matches(DriveCoord { z: 0, ..head })
+        );
+        e.position.exact_z_leptons = Some(832);
+        e.movement_target = None;
+        assert!(
+            AtCoordQuery::from_entity(&e).unwrap().matches(head),
+            "Stop/path retirement must not reconstruct Head_To"
+        );
+        e.locomotor.as_mut().unwrap().set_step_head(None);
+        assert_eq!(AtCoordQuery::from_entity(&e).unwrap().head.z, 832);
+    }
+}
+
 fn coord(value: &Value) -> DriveCoord {
     DriveCoord {
         x: value[0].as_i64().unwrap() as i32,

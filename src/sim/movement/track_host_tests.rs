@@ -569,6 +569,7 @@ fn terminal_retires_only_completed_adapter_before_callback() {
             super::super::drive_track::raw_track_points(1).len() as i32;
         entity.movement_target = Some(MovementTarget {
             path: vec![(10, 10), (10, 9)],
+            path_layers: vec![MovementLayer::Ground; 2],
             next_index: 1,
             ..Default::default()
         });
@@ -587,6 +588,7 @@ fn terminal_retires_only_completed_adapter_before_callback() {
                         entity.navigation.nav_com = Some(NavTargetRef::cell(12, 9));
                         entity.movement_target = Some(MovementTarget {
                             path: vec![(10, 9), (11, 9), (12, 9)],
+                            path_layers: vec![MovementLayer::Ground; 3],
                             next_index: 1,
                             ..Default::default()
                         });

@@ -487,7 +487,7 @@ pub(super) fn dispatch_sim_sound_events(
             SimSoundEvent::BridgeRepaired {
                 rx,
                 ry,
-                owner,
+                owner: _,
                 eva_allowed,
             } => {
                 // Spatial SFX gated on rules.bridge_rules.repair_sound
@@ -501,13 +501,10 @@ pub(super) fn dispatch_sim_sound_events(
                 } else {
                     Some(sound_source_at_cell(rx, ry))
                 };
-                // EVA cue gated on local-human owner and the radar
-                // dedupe result (`InfantryClass::PerCellProcess
-                // 0x00519BC9`, `PlayEVA` type -1).
-                let owner_str = sim.interner.resolve(owner);
-                let eva_event = (eva_allowed
-                    && local_owner_name.is_some_and(|l| l.eq_ignore_ascii_case(owner_str)))
-                .then(|| "EVA_BridgeRepaired".to_string());
+                // Infantry519BC9 calls EVA only after House50B6F0 and
+                // radar insertion admitted it. A second owner filter here
+                // would incorrectly suppress mode-0 PlayerControl output.
+                let eva_event = eva_allowed.then(|| "EVA_BridgeRepaired".to_string());
                 if sound_id.is_empty() && eva_event.is_none() {
                     continue;
                 }

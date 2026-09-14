@@ -464,6 +464,105 @@ impl LocomotorState {
         self.kind
     }
 
+    /// Walk interface+24 / Hover+24 retained full XYZ head. This belongs to
+    /// the active instance and survives Stop/piggyback/save without sampling
+    /// a newly changed ground surface. Native producers75C240/514F70; query
+    /// receivers75CA80/517210, tools/spatial_oracle/locomotor_at_coord.
+    pub(crate) fn step_head(&self) -> Option<crate::sim::components::DriveCoord> {
+        match (self.kind, &self.runtime_payload) {
+            (LocomotorKind::Walk, LocomotorRuntimePayload::Walk(state)) => state.head,
+            (LocomotorKind::Hover, LocomotorRuntimePayload::Hover(head)) => *head,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn set_step_head(&mut self, head: Option<crate::sim::components::DriveCoord>) {
+        match (self.kind, &mut self.runtime_payload) {
+            (LocomotorKind::Walk, LocomotorRuntimePayload::Walk(state)) => state.head = head,
+            (LocomotorKind::Hover, LocomotorRuntimePayload::Hover(stored)) => *stored = head,
+            _ => {}
+        }
+    }
+
+    pub(crate) fn walk_destination(&self) -> Option<crate::sim::components::DriveCoord> {
+        match (self.kind, &self.runtime_payload) {
+            (LocomotorKind::Walk, LocomotorRuntimePayload::Walk(state)) => state.destination,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn jumpjet_runtime(&self) -> Option<&super::jumpjet_movement::JumpjetRuntime> {
+        match (self.active_kind(), &self.runtime_payload) {
+            (LocomotorKind::Jumpjet, LocomotorRuntimePayload::Jumpjet(state)) => Some(state),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn jumpjet_runtime_mut(
+        &mut self,
+    ) -> Option<&mut super::jumpjet_movement::JumpjetRuntime> {
+        match (self.kind, &mut self.runtime_payload) {
+            (LocomotorKind::Jumpjet, LocomotorRuntimePayload::Jumpjet(state)) => Some(state),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn walk_is_moving(&self) -> Option<bool> {
+        match (self.kind, &self.runtime_payload) {
+            (LocomotorKind::Walk, LocomotorRuntimePayload::Walk(state)) => Some(state.moving),
+            _ => None,
+        }
+    }
+
+    /// MoveTo/Stop keep a paid head. Their IsMoving byte survives a null
+    ///destination while that head exists (75AD77 /75ADE9).
+    pub(crate) fn set_walk_destination(
+        &mut self,
+        coord: Option<crate::sim::components::DriveCoord>,
+    ) {
+        if let (LocomotorKind::Walk, LocomotorRuntimePayload::Walk(state)) =
+            (self.kind, &mut self.runtime_payload)
+        {
+            state.destination = coord.filter(|c| c.x != 0 || c.y != 0 || c.z != 0);
+            if state.destination.is_some() {
+                state.moving = true;
+            } else if state.head.is_none() {
+                state.moving = false;
+            }
+        }
+    }
+
+    pub(crate) fn walk_animation_moving(&self) -> Option<bool> {
+        match (self.kind, &self.runtime_payload) {
+            (LocomotorKind::Walk, LocomotorRuntimePayload::Walk(state)) => {
+                Some(state.animation_moving)
+            }
+            _ => None,
+        }
+    }
+
+    /// Original Process75BD25, after a nonnull head is admitted and before
+    /// testing its remaining distance. Does not stand for the whole Process.
+    pub(crate) fn begin_walk_motion(&mut self) {
+        if let (LocomotorKind::Walk, LocomotorRuntimePayload::Walk(state)) =
+            (self.kind, &mut self.runtime_payload)
+            && state.head.is_some()
+        {
+            state.animation_moving = true;
+        }
+    }
+
+    /// Stop75ADA0 differs from null MoveTo: no-head Stop also clears +36.
+    pub(crate) fn stop_walk(&mut self) {
+        self.set_walk_destination(None);
+        if let (LocomotorKind::Walk, LocomotorRuntimePayload::Walk(state)) =
+            (self.kind, &mut self.runtime_payload)
+            && state.head.is_none()
+        {
+            state.animation_moving = false;
+        }
+    }
+
     pub(crate) fn active_slope_transition(&self) -> Option<&SlopeTransitionState> {
         match (self.active_kind(), &self.runtime_payload) {
             (LocomotorKind::Drive, LocomotorRuntimePayload::Drive(state))
@@ -472,9 +571,7 @@ impl LocomotorState {
         }
     }
 
-    pub(crate) fn active_slope_transition_mut(
-        &mut self,
-    ) -> Option<&mut SlopeTransitionState> {
+    pub(crate) fn active_slope_transition_mut(&mut self) -> Option<&mut SlopeTransitionState> {
         match (self.kind, &mut self.runtime_payload) {
             (LocomotorKind::Drive, LocomotorRuntimePayload::Drive(state))
             | (LocomotorKind::Ship, LocomotorRuntimePayload::Ship(state)) => Some(state),
@@ -509,11 +606,7 @@ impl LocomotorState {
             // ownership; it never reconstructs a missing Teleport COM object.
             return self.piggyback.is_some();
         }
-        self.begin_piggyback(
-            LocomotorKind::Drive,
-            MovementLayer::Ground,
-            binary_frame,
-        )
+        self.begin_piggyback(LocomotorKind::Drive, MovementLayer::Ground, binary_frame)
     }
 
     /// Return from an active piggyback to the stashed locomotor.

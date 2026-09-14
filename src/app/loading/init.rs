@@ -988,7 +988,9 @@ mod map_wall_owner_candidate_tests {
         sim.publish_global_lighting();
         let mut rt = crate::sim::runtime::SimRuntime::from_simulation(sim);
         rt.resources.rules = rules;
-        let frame = rt.advance_frame(&[], 16, crate::sim::world::TickLane::Ordinary);
+        let frame = rt
+            .advance_frame(&[], 16, crate::sim::world::TickLane::Ordinary)
+            .expect("fixture frame must complete");
         assert!(matches!(frame.lighting_events.as_slice(),
             [LightingEvent::Building { id: 41, source: Some(source) },
              LightingEvent::Global(_)] if !source.active));
@@ -1010,7 +1012,9 @@ mod map_wall_owner_candidate_tests {
             final_rebuild.cell_light_at((4, 5)).unwrap().common_scalar,
             0
         );
-        let next = rt.advance_frame(&[], 16, crate::sim::world::TickLane::Ordinary);
+        let next = rt
+            .advance_frame(&[], 16, crate::sim::world::TickLane::Ordinary)
+            .expect("fixture frame must complete");
         assert!(
             next.lighting_events.is_empty(),
             "outgoing history is consumed once"

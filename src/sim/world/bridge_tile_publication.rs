@@ -52,7 +52,7 @@ impl LivePublication<'_> {
         LiveTileFlood { publication: self }.recalc(cell, level)
     }
 
-    fn tile(&self, cell: Cell) -> i32 {
+    pub(super) fn tile(&self, cell: Cell) -> i32 {
         match cell {
             Cell::Real(index) => self.terrain().cells()[index].final_tile_index,
             // Constructor47BBF0. No middle-family caller writes the dummy from
@@ -61,21 +61,21 @@ impl LivePublication<'_> {
         }
     }
 
-    fn subtile(&self, cell: Cell) -> u8 {
+    pub(super) fn subtile(&self, cell: Cell) -> u8 {
         match cell {
             Cell::Real(index) => self.terrain().cells()[index].final_sub_tile,
             Cell::Dummy => 0,
         }
     }
 
-    fn level(&self, cell: Cell) -> i8 {
+    pub(super) fn level(&self, cell: Cell) -> i8 {
         match cell {
             Cell::Real(index) => self.terrain().cells()[index].level as i8,
             Cell::Dummy => self.terrain().shared_cell_dummy().snapshot().level,
         }
     }
 
-    fn replace_tiles(
+    pub(super) fn replace_tiles(
         &mut self,
         requested: CellCoord,
         replacement: i32,

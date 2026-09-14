@@ -272,8 +272,15 @@ fn walking_subcell_motion_refreshes_exact_ramp_height() {
     let grid = PathGrid::from_resolved_terrain(&terrain);
     let mut sim = Simulation::with_seed(3);
     let entity = mover(&mut sim, LocomotorKind::Walk);
+    let before = ground_pose::position_world_coord(&entity.position);
     insert(&mut sim, entity);
-    for frame in 0..3 {
+    // Native fresh-head Process75BCBD returns before numeric movement. The
+    // subsequent paid-head turns own this test's surface-height writes.
+    tick(&mut sim, &terrain, &grid, 0);
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(ground_pose::position_world_coord(&entity.position), before);
+    assert!(entity.locomotor.as_ref().unwrap().step_head().is_some());
+    for frame in 1..4 {
         tick(&mut sim, &terrain, &grid, frame);
         let entity = sim.substrate.entities.get(1).unwrap();
         let xy = ground_pose::position_world_xy(&entity.position);
@@ -449,8 +456,14 @@ fn walking_bridge_entry_commits_new_surface_and_object_list_plane() {
         MovementLayer::Bridge,
         MovementLayer::Bridge,
     ];
+    let before = ground_pose::position_world_coord(&entity.position);
     insert(&mut sim, entity);
     tick(&mut sim, &terrain, &grid, 0);
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(ground_pose::position_world_coord(&entity.position), before);
+    assert!(entity.locomotor.as_ref().unwrap().step_head().is_some());
+    // The next Process advances the paid step across the bridge boundary.
+    tick(&mut sim, &terrain, &grid, 1);
     let entity = sim.substrate.entities.get(1).unwrap();
     assert_eq!((entity.position.rx, entity.position.ry), (3, 2));
     assert!(entity.on_bridge);
@@ -474,7 +487,7 @@ fn walking_bridge_entry_commits_new_surface_and_object_list_plane() {
 }
 
 #[test]
-fn deferred_blocker_centre_recovery_samples_old_cell_not_rejected_xy() {
+fn fresh_walk_refusal_preserves_xyz_before_head_selection() {
     let mut terrain = terrain();
     terrain.cell_mut(3, 3).unwrap().slope_type = 2;
     terrain.cell_mut(3, 2).unwrap().level = 2;
@@ -511,9 +524,11 @@ fn deferred_blocker_centre_recovery_samples_old_cell_not_rejected_xy() {
     );
     assert_eq!(
         (entity.position.sub_x, entity.position.sub_y),
-        (SimFixed::from_num(128), SimFixed::from_num(128))
+        (SimFixed::from_num(128), SimFixed::from_num(2)),
+        "75B690 admission precedes paid SetCoords; a refusal does not take a provisional step"
     );
-    assert_eq!(entity.position.exact_z_leptons, Some(52));
+    assert_eq!(entity.position.exact_z_leptons, Some(731));
+    assert_eq!(entity.locomotor.as_ref().unwrap().step_head(), None);
     assert_eq!(
         sim.substrate
             .occupancy

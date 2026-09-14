@@ -21,6 +21,8 @@ mod ground_fallout;
 #[path = "bridge_publication.rs"]
 mod live_publication;
 
+pub(crate) use live_publication::repair_from_engineer;
+
 use crate::map::bridge_facts::{
     BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_DIRECTION_ZERO,
     BRIDGE_FLAG_STRUCTURAL,
@@ -1903,8 +1905,10 @@ fn apply_runtime_bridge_flag_transcript_from_outcome(sim: &mut Simulation, outco
     if let Some(terrain) = sim.resolved_terrain.as_ref() {
         for &(rx, ry) in outcome.damaged_variant_cells() {
             if let Some(cell) = terrain.cell(rx, ry) {
-                sim.dynamic_terrain_cells.insert((rx, ry),
-                    crate::map::resolved_terrain::DynamicTerrainCellState::capture(cell));
+                sim.dynamic_terrain_cells.insert(
+                    (rx, ry),
+                    crate::map::resolved_terrain::DynamicTerrainCellState::capture(cell),
+                );
             }
         }
     }
@@ -2989,7 +2993,7 @@ mod tests {
         terrain.test_set_native_allocated_cells(&[(3, 2)]);
         terrain.cell_mut(3, 2).unwrap().bridge_facts.raw_flags = MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
         // AboutToFall recursion is a raw middle-tile branch, not a role gate.
-        terrain.cell_mut(3,2).unwrap().final_tile_index = 9;
+        terrain.cell_mut(3, 2).unwrap().final_tile_index = 9;
         terrain.test_set_high_bridge_rim_tiles(crate::map::bridge_rim_tiles::HighBridgeRimTiles::from_ini(
             0,b"[General]\nBridgeMiddle1=7\nBridgeMiddle2=12\nBridgeBottomRight1=3\nBridgeBottomRight2=3\n"));
         terrain.test_set_dummy_cell_level_slope(2, 0);

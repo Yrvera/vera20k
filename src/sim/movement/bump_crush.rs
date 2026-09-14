@@ -1295,36 +1295,8 @@ pub(crate) fn select_infantry_damage_scatter(
     // Animation) and action 0x1f are explicit bypasses; every represented
     // SequenceKind maps into the verified 42-entry table.
     if doing.is_some_and(|doing| {
-        doing != 0x1f
-            && !matches!(
-                doing,
-                0 | 1
-                    | 2
-                    | 3
-                    | 4
-                    | 6
-                    | 8
-                    | 9
-                    | 10
-                    | 16
-                    | 17
-                    | 18
-                    | 19
-                    | 22
-                    | 23
-                    | 24
-                    | 25
-                    | 26
-                    | 28
-                    | 29
-                    | 30
-                    | 33
-                    | 37
-                    | 38
-                    | 39
-                    | 40
-                    | 41
-            )
+        !crate::rules::infantry_sequence::scatter_allowed_by_doing(i32::from(doing))
+            .expect("represented sequence has a native Doing record")
     }) {
         return None;
     }

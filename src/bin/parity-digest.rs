@@ -163,7 +163,9 @@ fn main() -> Result<(), String> {
                 resources: vera20k::sim::runtime::SimResources::empty(),
             };
             for _ in 0..args.ticks {
-                runtime.advance_idle_frame_for_tooling(SIM_TICK_MS);
+                runtime
+                    .advance_idle_frame_for_tooling(SIM_TICK_MS)
+                    .map_err(|error| error.to_string())?;
                 let digest = runtime.simulation.parity_digest();
                 sink.write(&digest)
                     .map_err(|error| format!("digest write failed: {error}"))?;

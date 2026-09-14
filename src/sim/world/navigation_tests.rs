@@ -330,15 +330,17 @@ fn held_factory_and_attached_upgrade_stay_off_navigation_through_frame_and_resto
         .as_mut()
         .unwrap()
         .place_overlay(12, 12, 0, 0);
-    let output = sim.advance_app_frame(
-        &[],
-        Some(&rules),
-        &BTreeMap::new(),
-        Some(&overlays),
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let output = sim
+        .advance_app_frame(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            Some(&overlays),
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
     assert_eq!(output.overlay_updates.len(), 1);
     assert_eq!(
         (output.overlay_updates[0].rx, output.overlay_updates[0].ry),

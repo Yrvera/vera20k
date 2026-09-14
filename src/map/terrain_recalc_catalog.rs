@@ -123,6 +123,7 @@ pub(crate) struct BridgeRecalcCatalog {
     files: HashMap<u16, Box<[ResidentTmp]>>,
     selector_table: Option<[u8; 64]>,
     permissions: Vec<(bool, bool)>,
+    registered_names: Vec<Vec<u8>>,
     pub(super) terrain_rules: TerrainRules,
     pub(super) lat_config: Option<lat::LatConfig>,
     pub(super) slope_config: Option<lat::SlopeFixupConfig>,
@@ -272,6 +273,16 @@ impl BridgeRecalcCatalog {
         cliff_back_impassability: u8,
         ids: impl IntoIterator<Item = i32>,
     ) -> Self {
+        //545150 supplies FileName+ordinal before appending the extension;
+        //AbstractType41088D keeps the first24 bytes.544CE0 searches declaration
+        //order with case-insensitive C-string comparison (ToTile465CC0).
+        let registered_names = (0..theater.lookup.len())
+            .map(|id| {
+                let name = theater.lookup.filename(id as i32).unwrap_or("");
+                let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+                stem.as_bytes().iter().copied().take(24).collect()
+            })
+            .collect();
         let permissions = (0..theater.lookup.len())
             .map(|id| {
                 (
@@ -378,6 +389,7 @@ impl BridgeRecalcCatalog {
             files,
             selector_table: None,
             permissions,
+            registered_names,
             terrain_rules: rules.clone(),
             lat_config: lat_enabled
                 .then(|| lat::parse_lat_config(&theater.ini_data, &theater.lookup)),
@@ -441,6 +453,55 @@ struct BridgePresentation {
 }
 
 impl ResolvedTerrainGrid {
+    /// Unit73F12E..73F1D9 reads the CURRENT registered type's pristine
+    /// dimensions, even when that type is not admitted by the runtime Recalc
+    /// effect adapter. Registration546B46/546B50 stores the header low bytes.
+    pub(crate) fn current_tile_dimensions(&self, tile: i32) -> Result<(u8, u8), String> {
+        let catalog = self
+            .bridge_recalc_catalog
+            .as_ref()
+            .ok_or("tile dimensions query has no resident registry")?;
+        let tile = u16::try_from(tile).map_err(|_| "invalid current tile dimensions index")?;
+        let pristine = catalog
+            .file(tile, 0)
+            .map_err(|e| format!("tile dimensions: {e:?}"))?;
+        let metadata = &pristine.invalid_subtile;
+        Ok((
+            metadata.template_width_cells as u8,
+            metadata.template_height_cells as u8,
+        ))
+    }
+
+    /// Original544CE0/465CC0. A missing name is a null ToTile pointer, not an
+    /// invalid tile index; the input itself is never truncated to24 bytes.
+    pub(crate) fn resolve_registered_tile_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<u16>, &'static str> {
+        let catalog = self
+            .bridge_recalc_catalog
+            .as_ref()
+            .ok_or("tile name query has no resident registry")?;
+        Ok(catalog
+            .registered_names
+            .iter()
+            .position(|registered| registered.eq_ignore_ascii_case(name.as_bytes()))
+            .map(|index| index as u16))
+    }
+
+    ///47C76B tests Morphable only for a valid CURRENT tile index. Unlike the
+    ///smudge receiver, invalid indices bypass this gate rather than using tile0.
+    pub(crate) fn tile_allows_morph_placement(&self, tile: i32) -> Result<bool, &'static str> {
+        let catalog = self
+            .bridge_recalc_catalog
+            .as_ref()
+            .ok_or("Morphable query has no resident registry")?;
+        Ok(usize::try_from(tile)
+            .ok()
+            .and_then(|i| catalog.permissions.get(i))
+            .is_none_or(|row| row.0))
+    }
+
     /// The native56EB80 raw +38 store, admitted before changing live state.
     /// This live bridge adapter accepts the stock valid middle entries. The
     /// shared scalar Recalc still models native invalid/sparse branches.

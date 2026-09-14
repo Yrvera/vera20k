@@ -474,11 +474,14 @@ use crate::sim::world::Simulation;
 // v152 stores Foot occupation enable, pending fresh Apply1, and Ship head/handoff
 // projection metadata alongside the existing serialized raw occupation plane.
 // Drive END permission and the distinct Foot forced-swap gate are retained too.
-// v156 persists current-house process input. Versions153-155 belong to
-// the separate unmerged bridge locomotor layouts; do not accept those saves.
-// v159 persists actual Cell membership/order, discovery history and the exact
-// immutable Sight==0 predicate. Versions157-158 belong to the bridge branch.
-const SNAPSHOT_VERSION: u32 = 159;
+// v153-155 introduced bridge Walk/Hover head and destination XYZ, Walk moving,
+// Jumpjet cached XYZ/moving/phase (including stashes), and raw Infantry house IDs.
+// v156 introduced current-house input; v157 combined it with the bridge layout.
+// v158 was an unpublished bridge membership/history layout. Main v159 persists
+// actual Cell membership/order, discovery history and the exact Sight==0 predicate.
+// v160 combines published bridge v157 with all main v159 authorities. None of
+// the earlier branch-local or main layouts can be decoded as this combined schema.
+const SNAPSHOT_VERSION: u32 = 160;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3323,12 +3326,12 @@ mod tests {
         // 146 -> 147: retain Scenario+214 for subsequent native constructors.
         // 150 -> 151: Foot also owns applied speed independently of its locomotor.
         // 151 -> 152: Foot occupation enable and pending fresh Apply1 obligation.
-        assert_eq!(super::SNAPSHOT_VERSION, 159);
+        assert_eq!(super::SNAPSHOT_VERSION, 160);
     }
 
     #[test]
-    fn membership_history_schema_rejects_previous_and_branch_local_layouts() {
-        for version in 153..=158 {
+    fn combined_bridge_membership_history_schema_rejects_separate_layouts() {
+        for version in 153..=159 {
             let preamble = GameSnapshotPreamble {
                 product_magic: SNAPSHOT_PRODUCT_MAGIC,
                 envelope_version: SNAPSHOT_ENVELOPE_VERSION,
@@ -3337,7 +3340,7 @@ mod tests {
             let bytes = bincode::serialize(&preamble).expect("previous layout header");
             assert!(matches!(
                 GameSnapshot::load(&bytes),
-                Err(SnapshotError::VersionMismatch { expected: 159, found }) if found == version
+                Err(SnapshotError::VersionMismatch { expected: 160, found }) if found == version
             ));
         }
     }
@@ -3370,6 +3373,9 @@ mod tests {
             assert_eq!(restored.session.current_house, Some(owner));
             assert_eq!(restored.state_hash(), shared_hash);
             saved_identities.push(restored.session.current_house);
+            assert_eq!(restored.session.current_house, Some(owner));
+            assert_eq!(restored.state_hash(), shared_hash);
+            assert_eq!(restored.rng_state(), rng);
         }
         assert_ne!(saved_identities[0], saved_identities[1]);
 
@@ -5275,14 +5281,16 @@ mod tests {
     #[test]
     fn gsi_04_12_raw_occupation_snapshot_roundtrip_preserves_both_planes() {
         let mut sim = Simulation::new();
+        let ground_owner = sim.interner.intern("Americans");
+        let deck_owner = sim.interner.intern("Russians");
         sim.substrate.raw_cell_occupation.mark_ground(17, 23, 0x23);
         sim.substrate.raw_cell_occupation.mark_deck(17, 23, 0xC4);
         sim.substrate
             .raw_cell_occupation
-            .mark_ground_infantry(17, 23, 0x04, 7001);
+            .mark_ground_infantry(17, 23, 0x04, ground_owner);
         sim.substrate
             .raw_cell_occupation
-            .mark_deck_infantry(17, 23, 0x08, 7002);
+            .mark_deck_infantry(17, 23, 0x08, deck_owner);
         sim.substrate.raw_cell_occupation.mark_ground(2, 31, 0x02);
         // Native in-scenario load restarts Scenario RNG from Seed0; isolate
         // occupation-plane persistence on that same post-load cursor.
@@ -5315,14 +5323,14 @@ mod tests {
                 .substrate
                 .raw_cell_occupation
                 .ground_infantry_owner(17, 23),
-            Some(7001)
+            Some(ground_owner)
         );
         assert_eq!(
             restored
                 .substrate
                 .raw_cell_occupation
                 .deck_infantry_owner(17, 23),
-            Some(7002)
+            Some(deck_owner)
         );
         assert_eq!(
             restored.substrate.raw_cell_occupation.ground_bits(2, 31),
@@ -6265,11 +6273,36 @@ mod tests {
     fn gsi_04_01_snapshot_handoff_retains_live_process_dummy_without_serializing_it() {
         use crate::sim::combat::RAD_NO_ATTACKER;
         use crate::sim::projectile::ProjectileTarget;
+        use crate::sim::{movement::locomotor::MovementLayer, occupancy::RawCellKey};
 
         let mut live = Simulation::new();
         let process_dummy = live.shared_cell_dummy.clone();
         process_dummy.set_level_slope(-7, 11);
         process_dummy.stamp_coord(7, 9);
+
+        let owner = live.intern("DummyOccupationOwner");
+        let hash_before_raw = live.state_hash();
+        live.substrate.raw_cell_occupation.write_infantry(
+            RawCellKey::Dummy,
+            MovementLayer::Ground,
+            4,
+            owner,
+            true,
+        );
+        let ground_hash = live.state_hash();
+        assert_ne!(hash_before_raw, ground_hash);
+        live.substrate.raw_cell_occupation.write_infantry(
+            RawCellKey::Dummy,
+            MovementLayer::Bridge,
+            8,
+            owner,
+            true,
+        );
+        assert_ne!(
+            ground_hash,
+            live.state_hash(),
+            "the fallback cell's two raw planes are future-affecting"
+        );
         let projectile_id = live.allocate_stable_id();
         live.admit_projectile(
             projectile_id,
@@ -6287,6 +6320,13 @@ mod tests {
 
         let bytes = GameSnapshot::save(&live, 0, 0, "shared-dummy.map", 0);
         let cold = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        assert!(
+            cold.substrate
+                .raw_cell_occupation
+                .dummy_for_hash()
+                .is_none(),
+            "process-global occupation is not saved Scenario payload"
+        );
         assert_eq!(
             cold.projectiles.get(projectile_id).unwrap().target,
             ProjectileTarget::DummyCell
@@ -6300,6 +6340,10 @@ mod tests {
 
         let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         restored.retain_in_scenario_process_state_from(&live);
+        assert_eq!(
+            restored.substrate.raw_cell_occupation.dummy_for_hash(),
+            live.substrate.raw_cell_occupation.dummy_for_hash()
+        );
         assert!(restored.shared_cell_dummy.same_identity(&process_dummy));
         assert_eq!(
             restored.shared_cell_dummy.snapshot(),
@@ -6332,6 +6376,14 @@ mod tests {
         assert_eq!(rebuilt_dummy.snapshot().coord, (7, 9));
 
         restored.reconstruct_cellclass_dummy_for_map_resize();
+        assert!(
+            restored
+                .substrate
+                .raw_cell_occupation
+                .dummy_for_hash()
+                .is_none(),
+            "Cell47BBF0 reconstructs both raw bytes and owners"
+        );
         assert_eq!(
             rebuilt_dummy.snapshot(),
             crate::map::resolved_terrain::SharedCellDummySnapshot {

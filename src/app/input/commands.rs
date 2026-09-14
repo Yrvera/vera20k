@@ -825,6 +825,40 @@ fn schedule_command_in_sim(
     Some(execute_tick)
 }
 
+/// Cell-click producer only. The native4DE1D0 resolver precedes event
+/// encoding; synchronized/replay/internal Move payloads are already resolved.
+pub(crate) fn ordinary_cell_move_goal(
+    sim: &crate::sim::world::Simulation,
+    rules: &crate::rules::ruleset::RuleSet,
+    viewer: InternedId,
+    entity_id: u64,
+    clicked: (u16, u16),
+    native_ground_walk: bool,
+) -> Option<(u16, u16)> {
+    if native_ground_walk
+        && let Some(result) = sim.ordinary_ground_walk_cell_input(viewer, entity_id, clicked, rules)
+    {
+        return match result {
+            Ok(cell) => cell,
+            Err(cause) => {
+                log::warn!("ordinary Walk input: {cause}");
+                None
+            }
+        };
+    }
+    //Existing compatibility adapter for other locomotors, high Walk and
+    //attack-move/queued input. Their native caller contracts remain separate.
+    let mut goal = clicked;
+    if let Some(grid) = sim.path_grid()
+        && !crate::app::match_runtime::sim_tick::is_any_layer_walkable(grid, goal.0, goal.1)
+        && let Some(nearest) =
+            crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(grid, goal, 12)
+    {
+        goal = nearest;
+    }
+    Some(goal)
+}
+
 /// Make the verified ordinary local Move bytes authoritative at issue time.
 ///
 /// Active YR routes a cell click through `ClickedAction` (`0x004D7D50`) to

@@ -44,10 +44,8 @@ struct BridgeMarkerPeer {
     path_directions: Vec<u8>,
     is_at_coord_track_cell: Option<(i16, i16)>,
     is_at_coord_head_cell: (i16, i16),
-    /// Hover's non-null Head_To takes its Z from the accepted path cell, not
-    /// from the linked Foot's current coordinate. Other verified receivers
-    /// compare against the linked Foot Z and leave this unset.
-    is_at_coord_head_layer: Option<MovementLayer>,
+    /// Full retained head Z, never resampled from a later terrain state.
+    is_at_coord_head_z: Option<i32>,
     current_height_leptons: i32,
 }
 
@@ -175,6 +173,17 @@ pub(super) fn consume_path_replay(queue: &mut FootPathQueue, consumed_directions
     queue.cursor = cursor.min(u16::MAX as usize) as u16;
 }
 
+/// Walk75BD89..75BDB1 propagates a -1 head into the next word before
+/// shifting. Retargeting an already-paid head must not expose its old suffix.
+/// Original block comparisons: tools/spatial_oracle/walk_first_step.json.
+pub(super) fn consume_walk_path_replay(queue: &mut FootPathQueue) {
+    let invalidated = queue.remaining_directions().is_empty();
+    consume_path_replay(queue, 1);
+    if invalidated {
+        queue.clear_live_head();
+    }
+}
+
 /// Explicit owner abandonment, distinct from FootStop_Moving4DF0D0.
 pub(super) fn exhaust_path_replay(queue: &mut FootPathQueue) {
     queue.cursor = queue.directions.len().min(u16::MAX as usize) as u16;
@@ -202,72 +211,17 @@ fn remaining_path_from_entity(
 
 fn is_at_coord_cells(
     entity: &crate::sim::game_entity::GameEntity,
-) -> (Option<(i16, i16)>, (i16, i16), Option<MovementLayer>) {
-    const CELL_LEPTONS: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
-    let current = (
-        ((i32::from(entity.position.rx) * CELL_LEPTONS + entity.position.sub_x.to_num::<i32>())
-            / CELL_LEPTONS) as i16,
-        ((i32::from(entity.position.ry) * CELL_LEPTONS + entity.position.sub_y.to_num::<i32>())
-            / CELL_LEPTONS) as i16,
-    );
-    let Some(locomotor) = entity.locomotor.as_ref() else {
-        return (None, current, None);
+) -> (Option<(i16, i16)>, (i16, i16), Option<i32>) {
+    let current = super::ground_pose::position_world_coord(&entity.position);
+    let Some(query) = super::at_coord::AtCoordQuery::from_entity(entity) else {
+        return (
+            None,
+            ((current.x / 256) as i16, (current.y / 256) as i16),
+            None,
+        );
     };
-    match locomotor.kind {
-        LocomotorKind::Drive | LocomotorKind::Ship => {
-            // Ordinary and forced selectors are retained on the controller.
-            // The geometry adapter's cursor is not production progress.
-            let (head, track) = if locomotor.kind == LocomotorKind::Drive {
-                entity
-                    .drive_locomotion
-                    .as_ref()
-                    .map(|state| (state.head_to, state.track))
-            } else {
-                entity
-                    .ship_locomotion
-                    .as_ref()
-                    .map(|state| (state.head_to, state.track))
-            }
-            .unwrap_or_default();
-            let query = super::at_coord::AtCoordQuery::from_state(
-                locomotor.kind,
-                super::ground_pose::position_world_coord(&entity.position),
-                head,
-                super::at_coord::AtCoordTrack {
-                    turn_index: track.turn_index,
-                    cursor: track.cursor,
-                    reversed: track.reversed,
-                },
-            )
-            .expect("Drive/Ship have Is_At_Coord receivers");
-            let (handoff, head) = query.cells();
-            (handoff, head, None)
-        }
-        LocomotorKind::Walk => (
-            None,
-            entity
-                .movement_target
-                .as_ref()
-                .and_then(|target| target.path.get(target.next_index).copied())
-                .map_or(current, |cell| (cell.0 as i16, cell.1 as i16)),
-            None,
-        ),
-        LocomotorKind::Hover => {
-            let head_to = entity.movement_target.as_ref().and_then(|target| {
-                let cell = target.path.get(target.next_index).copied()?;
-                let layer = target
-                    .path_layers
-                    .get(target.next_index)
-                    .copied()
-                    .unwrap_or(MovementLayer::Ground);
-                Some(((cell.0 as i16, cell.1 as i16), layer))
-            });
-            head_to.map_or((None, current, None), |(cell, layer)| {
-                (None, cell, Some(layer))
-            })
-        }
-        _ => (None, current, None),
-    }
+    let (handoff, head) = query.cells();
+    (handoff, head, Some(query.head_z()))
 }
 
 pub(super) fn snapshot_bridge_marker_peers(
@@ -279,7 +233,7 @@ pub(super) fn snapshot_bridge_marker_peers(
         .values()
         .map(|entity| {
             let (path_start, path_directions) = remaining_path_from_entity(entity);
-            let (is_at_coord_track_cell, is_at_coord_head_cell, is_at_coord_head_layer) =
+            let (is_at_coord_track_cell, is_at_coord_head_cell, is_at_coord_head_z) =
                 is_at_coord_cells(entity);
             let base_height_leptons =
                 i32::from(entity.position.z as i8).wrapping_mul(GROUND_LEVEL_HEIGHT_LEPTONS);
@@ -309,7 +263,7 @@ pub(super) fn snapshot_bridge_marker_peers(
                     path_directions,
                     is_at_coord_track_cell,
                     is_at_coord_head_cell,
-                    is_at_coord_head_layer,
+                    is_at_coord_head_z,
                     current_height_leptons,
                 },
             )
@@ -396,17 +350,8 @@ fn find_nearby_bridge_peer_suffix(
                     continue;
                 }
                 let receiver_height_leptons = if peer.is_at_coord_head_cell == probe {
-                    match peer.is_at_coord_head_layer {
-                        Some(layer) => {
-                            let cell = unsigned_cell(peer.is_at_coord_head_cell);
-                            let Some(path_cell) = grid.cell(cell.0, cell.1) else {
-                                continue;
-                            };
-                            i32::from(path_cell.effective_cell_z_for_layer(layer) as i8)
-                                .wrapping_mul(GROUND_LEVEL_HEIGHT_LEPTONS)
-                        }
-                        None => peer.current_height_leptons,
-                    }
+                    peer.is_at_coord_head_z
+                        .unwrap_or(peer.current_height_leptons)
                 } else {
                     peer.current_height_leptons
                 };
@@ -583,7 +528,7 @@ mod tests {
             path_directions: directions.to_vec(),
             is_at_coord_track_cell: None,
             is_at_coord_head_cell: start,
-            is_at_coord_head_layer: None,
+            is_at_coord_head_z: None,
             current_height_leptons: 0,
         }
     }
@@ -819,6 +764,10 @@ mod tests {
         peer.locomotor = Some(
             crate::sim::movement::locomotor::LocomotorState::for_test_kind(LocomotorKind::Hover),
         );
+        peer.locomotor
+            .as_mut()
+            .unwrap()
+            .set_step_head(Some(crate::sim::components::DriveCoord::cell(5, 4, 104)));
         peer.movement_target = Some(crate::sim::components::MovementTarget {
             path: vec![(5, 4), (6, 4), (7, 4)],
             path_layers: vec![
@@ -834,7 +783,7 @@ mod tests {
         let peers = snapshot_bridge_marker_peers(&entities, None, &interner);
         let peer = peers.peers.get(&2).expect("Hover peer snapshot");
         assert_eq!(peer.is_at_coord_head_cell, (5, 4));
-        assert_eq!(peer.is_at_coord_head_layer, Some(MovementLayer::Bridge));
+        assert_eq!(peer.is_at_coord_head_z, Some(104));
 
         let mut occupancy = OccupancyGrid::new();
         // The probe itself is empty; only the nearby list can expose Hover.
@@ -917,7 +866,7 @@ mod tests {
         let above_tolerance = snapshot_bridge_marker_peers(&entities, None, &interner);
         let peer = above_tolerance.peers.get(&2).expect("idle Hover snapshot");
         assert_eq!(peer.is_at_coord_head_cell, (5, 4));
-        assert_eq!(peer.is_at_coord_head_layer, None);
+        assert_eq!(peer.is_at_coord_head_z, Some(120));
         assert_eq!(peer.current_height_leptons, 120);
         assert!(
             find_nearby_bridge_peer_suffix(&above_tolerance, &occupancy, &grid, (5, 4), 0,)

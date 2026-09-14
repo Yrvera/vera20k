@@ -7,6 +7,129 @@ use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::object_type::{ObjectCategory, ObjectType, PipScale};
 use crate::util::fixed_math::{SIM_ONE, SimFixed, sim_from_f32};
 
+#[test]
+fn walk_destination_and_cell_producer_match_original_startup_conversion() {
+    use crate::map::resolved_terrain::ResolvedTerrainGrid;
+    use crate::sim::{components::DriveCoord, game_entity::GameEntity};
+    let native: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/walk_head_occupation.json"
+    ))
+    .unwrap();
+    let rows = native["destination"].as_array().unwrap();
+    assert_eq!(rows.len(), 12);
+    for row in rows {
+        let input = &row["input"];
+        let output = &row["output"];
+        let mut terrain = ResolvedTerrainGrid::from_cells(
+            11,
+            11,
+            (0..11)
+                .flat_map(|y| {
+                    (0..11).map(move |x| {
+                        crate::sim::world::common_raw_test_terrain_cell(x, y, 2, false)
+                    })
+                })
+                .collect(),
+        );
+        let c = terrain.cell_mut(10, 10).unwrap();
+        c.slope_type = 1;
+        c.bridge_facts.raw_flags = if input["structural"].as_bool().unwrap() {
+            0x100
+        } else {
+            0
+        };
+        let mut entity = GameEntity::test_default(1, "E1", "Owner", 9, 10);
+        entity.locomotor = Some(LocomotorState::from_object_type(
+            &make_obj(LocomotorKind::Walk, ObjectCategory::Infantry),
+            0,
+            0,
+        ));
+        let coord = if input["cell_target"].as_bool().unwrap() {
+            crate::sim::movement::navcom::target_cell_coord(10, 10, Some(&terrain))
+        } else {
+            let c = &input["coord"];
+            DriveCoord {
+                x: c[0].as_i64().unwrap() as i32,
+                y: c[1].as_i64().unwrap() as i32,
+                z: c[2].as_i64().unwrap() as i32,
+            }
+        };
+        assert_eq!(
+            serde_json::json!([coord.x, coord.y, coord.z]),
+            output["incoming"],
+            "{row}"
+        );
+        crate::sim::movement::set_walk_destination_coord(&mut entity, coord, Some(&terrain));
+        let loco = entity.locomotor.as_ref().unwrap();
+        let dest = loco.walk_destination().unwrap();
+        assert_eq!(
+            serde_json::json!([dest.x, dest.y, dest.z]),
+            output["destination"],
+            "{row}"
+        );
+        assert_eq!(loco.walk_is_moving(), output["moving"].as_bool(), "{row}");
+        assert_eq!(
+            loco.step_head(),
+            None,
+            "the destination setter never accepts a head"
+        );
+    }
+}
+
+#[test]
+fn walk_moving_byte_matches_original_setter_and_head_lifetime_traces() {
+    use crate::sim::components::DriveCoord;
+    let native: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/walk_head_occupation.json"
+    ))
+    .unwrap();
+    let cases = native["moving"].as_array().unwrap();
+    assert_eq!(cases.len(), 8);
+    let coord = DriveCoord {
+        x: 2752,
+        y: 2624,
+        z: 0,
+    };
+    let xyz = |value: Option<DriveCoord>| value.map_or([0, 0, 0], |c| [c.x, c.y, c.z]);
+    for case in cases {
+        let mut loco = LocomotorState::from_object_type(
+            &make_obj(LocomotorKind::Walk, ObjectCategory::Infantry),
+            0,
+            0,
+        );
+        let actions = case["actions"].as_array().unwrap();
+        let trace = case["output"]["trace"].as_array().unwrap();
+        assert_eq!(trace.len(), actions.len() + 1);
+        for (index, expected) in trace.iter().enumerate() {
+            if index > 0 {
+                match actions[index - 1].as_str().unwrap() {
+                    "move" => loco.set_walk_destination(Some(coord)),
+                    "stop" => loco.set_walk_destination(None),
+                    // Supplied private-head transitions isolate this byte's
+                    // lifetime; production placement/raw has its own corpus.
+                    "head" => loco.set_step_head(Some(coord)),
+                    "retire" => loco.set_step_head(None),
+                    action => panic!("unknown original action {action}"),
+                }
+            }
+            assert_eq!(
+                serde_json::json!({
+                    "moving": loco.walk_is_moving().unwrap(),
+                    "destination": xyz(loco.walk_destination()),
+                    "head": xyz(loco.step_head()),
+                }),
+                *expected,
+                "{case} at {index}"
+            );
+            // A null destination/head with moving=true is a real callback
+            // state, so persistence must not infer this byte from either.
+            let restored: LocomotorState =
+                serde_json::from_str(&serde_json::to_string(&loco).unwrap()).unwrap();
+            assert_eq!(restored.walk_is_moving(), loco.walk_is_moving());
+        }
+    }
+}
+
 /// Helper to create a minimal ObjectType with the given locomotor.
 fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
     ObjectType {
@@ -191,6 +314,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         zfudge_bridge: 7,
         too_big_to_fit_under_bridge: false,
         crashable: false,
+        move_to_shroud: true,
         teleporter: false,
         hover_attack: false,
         balloon_hover: false,
@@ -234,6 +358,8 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         can_be_occupied: false,
         can_occupy_fire: false,
         show_occupant_pips: false,
+        place_anywhere: false,
+        to_tile: None,
         bridge_repair_hut: false,
         laser_fence: false,
         passengers: 0,
@@ -254,6 +380,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         pip_scale: PipScale::None,
         infantry_absorb: false,
         unit_absorb: false,
+        grinding: false,
         bunkerable: category == ObjectCategory::Vehicle,
         weapon_list: vec![None; crate::rules::object_type::WEAPON_SLOT_COUNT],
         elite_weapon_list: vec![None; crate::rules::object_type::WEAPON_SLOT_COUNT],
