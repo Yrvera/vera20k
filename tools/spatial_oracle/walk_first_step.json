@@ -184,6 +184,13 @@
         ],
         "owner"
       ],
+      "facing": {
+        "current": 16383,
+        "duration_frames": 0,
+        "prev": 16383,
+        "rot_per_frame": 0,
+        "start_frame": 100
+      },
       "head": [
         2752,
         2624,
@@ -289,6 +296,13 @@
         ],
         "owner"
       ],
+      "facing": {
+        "current": 18395,
+        "duration_frames": 0,
+        "prev": 18395,
+        "rot_per_frame": 0,
+        "start_frame": 100
+      },
       "head": [
         2752,
         2752,
@@ -394,6 +408,13 @@
         ],
         "owner"
       ],
+      "facing": {
+        "current": 19588,
+        "duration_frames": 0,
+        "prev": 19588,
+        "rot_per_frame": 0,
+        "start_frame": 100
+      },
       "head": [
         2752,
         2752,
@@ -499,6 +520,13 @@
         ],
         "owner"
       ],
+      "facing": {
+        "current": 18395,
+        "duration_frames": 0,
+        "prev": 18395,
+        "rot_per_frame": 0,
+        "start_frame": 100
+      },
       "head": [
         2752,
         2752,
@@ -605,6 +633,13 @@
         ],
         "owner"
       ],
+      "facing": {
+        "current": 18395,
+        "duration_frames": 0,
+        "prev": 18395,
+        "rot_per_frame": 0,
+        "start_frame": 100
+      },
       "head": [
         2752,
         2752,
