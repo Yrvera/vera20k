@@ -117,6 +117,7 @@ pub use movement_commands::{
 };
 pub(crate) use movement_commands::{
     issue_move_command_with_destination, issue_move_command_with_layered,
+    prepare_walk_cell_destination,
 };
 #[cfg(test)]
 pub(crate) use movement_path::{

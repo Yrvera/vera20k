@@ -530,7 +530,7 @@ impl Simulation {
         //519BB6 supplies the ENGINEER cell;519C02 supplies building XYZ.
         //519B90/50B6F0 gates insertion itself, including radar dedup state.
         self.announce_bridge_repair(owner, cell, building_cell);
-        let changed = crate::sim::world::bridge_orchestrator::repair_from_engineer(
+        let mut changed = crate::sim::world::bridge_orchestrator::repair_from_engineer(
             self,
             rules,
             registry,
@@ -547,8 +547,8 @@ impl Simulation {
         //519D17..519D36 descends Infantry's registry with +28(hut,false).
         //Clearing NavCom does not stop a retained Walk head/destination.
         self.expire_infantry_bridge_hut_targets(building_id);
-        // Hut4576F0 Scatter and attached Tag6E53A0 callbacks still require
-        // production delivery before this mechanism can be accepted in full.
+        changed |= self.scatter_bridge_hut(building_id, rules, registry)?;
+        // Attached Tag6E53A0 remains a separate synchronous receiver boundary.
         self.uninit_with_rules(engineer_id, rules);
         Ok(changed)
     }

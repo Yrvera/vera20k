@@ -1018,6 +1018,66 @@ fn nonconsecutive_engineer_finishes_its_head_without_repeating_cancelled_repair(
 }
 
 #[test]
+fn later_repair_scatters_stationary_hut_occupant_and_processes_it_synchronously() {
+    use crate::sim::components::{DriveCoord, NavTargetRef};
+    use crate::sim::movement::ground_pose;
+    let (mut sim, rules, registry, hut) = ready_repair_fixture(Some(231));
+    let first = ready_engineer(&mut sim, &rules, &registry, hut);
+    let waiting = ready_engineer(&mut sim, &rules, &registry, hut);
+    repair_frame(&mut sim, &rules, &registry);
+    assert!(sim.substrate.entities.get(first).is_none());
+    repair_frame(&mut sim, &rules, &registry);
+    let e = sim.substrate.entities.get(waiting).unwrap();
+    assert_eq!(e.locomotor.as_ref().unwrap().walk_is_moving(), Some(false));
+    assert_eq!(e.navigation.nav_com, None);
+    let before = ground_pose::position_world_coord(&e.position);
+    let mission = e.mission.current();
+    let ai_counter = e.mission.ai_counter();
+    let frames = (sim.session.tick, sim.session.binary_frame);
+    let rng = sim.scenario_rng.state();
+    let last = ready_engineer(&mut sim, &rules, &registry, hut);
+    sim.run_completed_walk_step(
+        last,
+        DriveCoord::cell(16, 15, 0),
+        Some(&rules),
+        None,
+        Some(&registry),
+    )
+    .expect("hut evacuation finishes within the completion callback");
+    let e = sim.substrate.entities.get(waiting).unwrap();
+    assert!(matches!(
+        e.navigation.nav_com,
+        Some(NavTargetRef::Cell { .. })
+    ));
+    assert!(e.locomotor.as_ref().unwrap().step_head().is_some());
+    assert_ne!(
+        ground_pose::position_world_coord(&e.position),
+        before,
+        "the nested locomotor Process spends its first movement step now"
+    );
+    assert_eq!(
+        e.mission.current(),
+        mission,
+        "FNPC success does not queue Move"
+    );
+    assert_eq!(e.mission.ai_counter(), ai_counter, "no second Object AI");
+    assert_eq!((sim.session.tick, sim.session.binary_frame), frames);
+    assert_ne!(
+        sim.scenario_rng.state(),
+        rng,
+        "Scatter's direction draw precedes FNPC"
+    );
+    assert!(
+        !sim.substrate
+            .entities
+            .get(last)
+            .unwrap()
+            .lifecycle
+            .object_alive
+    );
+}
+
+#[test]
 fn repair_pointer_expiry_uses_descending_infantry_registry_and_preserves_paid_heads() {
     use crate::sim::components::NavTargetRef;
     let (mut sim, rules, registry, hut) = ready_repair_fixture(None);
@@ -1403,5 +1463,68 @@ fn repair_receiver_failure_stops_runtime_before_consumption_or_frame_commit() {
         repair_sounds(sim),
         [true],
         "pre-repair announcement is not rolled back or drained as a completed output"
+    );
+}
+
+#[test]
+fn hut_queries_pending_uninit_and_active_tube_exit_before_other_gates() {
+    use crate::map::resolved_terrain::ResolvedTerrainGrid;
+    use crate::map::tube_facts::{TubeFact, TubeId};
+    use crate::sim::components::DriveCoord;
+    use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
+    use std::collections::BTreeMap;
+    let (mut sim, rules, registry) = fixture();
+    let hut = sim
+        .spawn_object("CABHUT", "Americans", 16, 15, 0, &rules, &BTreeMap::new())
+        .unwrap();
+    let id = sim
+        .spawn_object("ENGINEER", "Americans", 15, 15, 0, &rules, &BTreeMap::new())
+        .unwrap();
+    let rows: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/hut_scatter.json"
+    ))
+    .unwrap();
+    let row = &rows[8];
+    let head = DriveCoord {
+        x: 10368,
+        y: 10624,
+        z: 0,
+    };
+    let e = sim.substrate.entities.get_mut(id).unwrap();
+    e.lifecycle.object_alive = false;
+    e.lifecycle.in_limbo = true;
+    e.locomotor.as_mut().unwrap().set_step_head(Some(head));
+    assert!(
+        !sim.scatter_bridge_hut(hut, &rules, Some(&registry))
+            .unwrap()
+    );
+    let dummy = sim
+        .resolved_terrain
+        .as_ref()
+        .unwrap()
+        .shared_cell_dummy()
+        .snapshot();
+    assert_eq!(
+        serde_json::json!([dummy.coord.0, dummy.coord.1]),
+        row["output"]["dummy"]
+    );
+    let terrain = sim.resolved_terrain.as_ref().unwrap();
+    sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells_with_tubes(
+        33,
+        33,
+        terrain.cells().to_vec(),
+        vec![TubeFact::explicit((15, 15), (u16::MAX, 2), 0, vec![0])],
+    ));
+    let e = sim.substrate.entities.get_mut(id).unwrap();
+    e.low_bridge_tube_state = Some(LowBridgeTubeMovementState {
+        tube_id: TubeId(0),
+        cursor: 0,
+        target: DriveCoord::cell(7, 8, 999),
+    });
+    e.locomotor = None;
+    let coord = sim.hut_infantry_coordinate(id).unwrap();
+    assert_eq!(
+        serde_json::json!([coord.x, coord.y, coord.z]),
+        rows[11]["output"]["coordinates"][0]
     );
 }
