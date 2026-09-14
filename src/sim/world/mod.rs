@@ -4387,6 +4387,11 @@ impl Simulation {
         // shooting at what is now its own structure.
         self.stop_all_targeting_on_detach(stable_id);
         self.substrate.entities.change_owner(stable_id, new_owner);
+        // Techno701735..701751 writes the owner then recomputes only +41A.
+        // A former current-house object's +41B history survives the transfer.
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.discovery.owned_by_current_house = self.session.current_house == Some(new_owner);
+        }
         self.increment_owned_count(&new_owner_name, category);
         if build_const_eligible
             && let Some(house) = self.houses.get_mut(&new_owner)
@@ -5711,12 +5716,13 @@ impl Simulation {
             .drain_deferred()
             .expect("live Overlay deferred queue must contain its owned objects");
 
-        // Debug-mode safety net: rebuild occupancy after the drain so dead
-        // structures are not reconstructed into the comparison.
+        // Validate actual membership after the drain. Rebuilding from current
+        // phase/terrain would erase legitimate retained Cell list history.
         #[cfg(debug_assertions)]
         if std::env::var("OCCUPANCY_DEBUG").is_ok() {
-            let expected = OccupancyGrid::rebuild(&self.substrate.entities);
-            self.substrate.occupancy.debug_assert_matches(&expected);
+            debug_assert!(
+                self.substrate.occupancy.validate_memberships(&self.substrate.entities).is_ok()
+            );
         }
 
         // The separate Rust session tick has no direct native field; preserve

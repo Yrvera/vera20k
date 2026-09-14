@@ -349,7 +349,10 @@ pub(crate) fn secondary_for_tier(obj: &ObjectType, veterancy: u16) -> Option<&st
 /// names an id, so a type naming a weapon absent from `[WeaponTypes]` is armed
 /// here and unarmed in gamemd — a data-error-only divergence.
 pub(crate) fn is_armed(entity: &GameEntity, obj: &ObjectType) -> bool {
-    let facts = attacker_facts(entity, obj);
+    is_armed_from_facts(obj, attacker_facts(entity, obj))
+}
+
+fn is_armed_from_facts(obj: &ObjectType, facts: AttackerFacts) -> bool {
     // `BuildingClass::Is_Armed 0x00458DB0`: `IsOccupied() → 1`.
     if facts.is_occupied_building {
         return true;
@@ -430,6 +433,64 @@ fn projectile_aa(rules: &RuleSet, weapon: &WeaponType) -> bool {
         .as_ref()
         .and_then(|id| rules.projectile(id))
         .is_some_and(|projectile| projectile.aa)
+}
+
+/// Ordinary passive-scan class-mask bit4: Weapon772A90 projectile AA.
+/// Unit7431C9..24D uses only CurrentWeaponNumber when TurretCount>0 and
+/// !IsGattling, otherwise slots0/1; Building445F00 and Infantry51E2C7..319
+/// also union slots0/1. GetWeapon70E140 supplies elite fallback. This does
+/// not port the Infantry wrapper's separate special mission/type masks.
+/// Building4526F0's installed-upgrade substitution remains unrepresented:
+/// the audited184 stock maps have no authored upgrade selectors, and the
+/// existing installer is authored-only. This is not generic upgrade parity.
+pub(crate) fn passive_scan_has_aa(
+    rules: &RuleSet,
+    obj: &ObjectType,
+    attacker: AttackerFacts,
+    garrison: Option<(&str, u16)>,
+) -> bool {
+    if attacker.kind == TechnoKind::Building
+        && let Some((occupant_type, veterancy)) = garrison
+    {
+        // Building4526F0's occupied override returns this same identity for
+        // either index. It does not test target legality or fall back after
+        // refusing a target. Use the actual firing-occupant snapshot.
+        return rules
+            .object(occupant_type)
+            .and_then(|occupant| {
+                let occupy = if veterancy >= ELITE_VETERANCY {
+                    occupant.elite_occupy_weapon.as_deref()
+                } else {
+                    occupant.occupy_weapon.as_deref()
+                };
+                occupy.or_else(|| primary_for_tier(occupant, veterancy))
+            })
+            .and_then(|id| rules.weapon(id))
+            .is_some_and(|weapon| projectile_aa(rules, weapon));
+    }
+    let slot_has_aa = |index| {
+        weapon_for_index(obj, attacker.veterancy, index)
+            .and_then(|(id, _)| rules.weapon(id))
+            .is_some_and(|weapon| projectile_aa(rules, weapon))
+    };
+    let has_aa = if attacker.kind == TechnoKind::Unit && obj.turret_count > 0 && !obj.is_gattling {
+        slot_has_aa(attacker.current_weapon_number)
+    } else {
+        slot_has_aa(0) || slot_has_aa(1)
+    };
+    // Infantry51E31B..347: IsArmed first, then primary GetWeapon(0)'s
+    // Warhead+149 removes AA4. ReadINI75DE5A..9A derives that byte from
+    // exact double Verses[4] and[6] ==0 (finite retail values). DOG's AA
+    // VirtualScanner secondary therefore does not grant an air prepass.
+    if has_aa && attacker.kind == TechnoKind::Infantry && is_armed_from_facts(obj, attacker) {
+        let primary_warhead = primary_for_tier(obj, attacker.veterancy)
+            .and_then(|id| rules.weapon(id))
+            .and_then(|weapon| warhead_of(rules, weapon));
+        if verses_is_zero(primary_warhead, 4) && verses_is_zero(primary_warhead, 6) {
+            return false;
+        }
+    }
+    has_aa
 }
 
 fn projectile_ag(rules: &RuleSet, weapon: &WeaponType) -> bool {
@@ -1141,6 +1202,70 @@ fn try_garrison_weapon<'a>(
 mod tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
+
+    #[test]
+    fn passive_scan_occupied_building_uses_weapon_identity_without_target_fallback() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n0=HOUSE\n[InfantryTypes]\n0=GI\n1=ELITEGI\n\
+             [HOUSE]\nPrimary=AIR\nCanBeOccupied=yes\nCanOccupyFire=yes\n\
+             [GI]\nPrimary=AIR\nElitePrimary=AIR\nOccupyWeapon=GROUND\n\
+             [ELITEGI]\nPrimary=GROUND\nOccupyWeapon=GROUND\nEliteOccupyWeapon=AIR\n\
+             [WeaponTypes]\n0=GROUND\n1=AIR\n[GROUND]\nProjectile=AG\n[AIR]\nProjectile=AA\n\
+             [AG]\nAG=yes\nAA=no\n[AA]\nAG=yes\nAA=yes\n",
+        ))
+        .unwrap();
+        let obj = rules.object("HOUSE").unwrap();
+        let mut building = GameEntity::test_default(1, "HOUSE", "Americans", 5, 5);
+        building.category = EntityCategory::Structure;
+        let facts = attacker_facts(&building, obj);
+        assert!(passive_scan_has_aa(&rules, obj, facts, None));
+        // Normal OccupyWeapon=GROUND overrides AA primary even though an AA
+        // target would be refused. Elite missing EliteOccupyWeapon uses its
+        // resolved elite primary, not the normal OccupyWeapon.
+        for (occupant, veterancy, expected) in [
+            ("GI", 0, false),
+            ("GI", 200, true),
+            ("ELITEGI", 0, false),
+            ("ELITEGI", 200, true),
+        ] {
+            assert_eq!(
+                passive_scan_has_aa(&rules, obj, facts, Some((occupant, veterancy))),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn passive_scan_infantry_primary_warhead_clears_aa_after_resolved_slot_union() {
+        for medium in ["0%", "0.1%", "0.001"] {
+            let rules = RuleSet::from_ini(&IniFile::from_str(&format!(
+                "[InfantryTypes]\n0=DOG\n[DOG]\nPrimary=BITE\nSecondary=SCANNER\nElitePrimary=ELITEBITE\n\
+                 [WeaponTypes]\n0=BITE\n1=SCANNER\n2=ELITEBITE\n\
+                 [BITE]\nProjectile=AG\nWarhead=SOFT\n[ELITEBITE]\nProjectile=AG\nWarhead=FULL\n\
+                 [SCANNER]\nProjectile=AA\nWarhead=FULL\n[AG]\nAA=no\nAG=yes\n[AA]\nAA=yes\nAG=yes\n\
+                 [SOFT]\nVerses=100%,100%,100%,100%,{medium},100%,0%,100%,100%,100%,100%\n\
+                 [FULL]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n"
+            ))).unwrap();
+            let obj = rules.object("DOG").unwrap();
+            let mut dog = GameEntity::test_default(1, "DOG", "Americans", 5, 5);
+            dog.category = EntityCategory::Infantry;
+            assert_eq!(
+                passive_scan_has_aa(&rules, obj, attacker_facts(&dog, obj), None),
+                medium == "0.001"
+            );
+            dog.veterancy = 200;
+            assert!(
+                passive_scan_has_aa(&rules, obj, attacker_facts(&dog, obj), None),
+                "elite primary is resolved first"
+            );
+            dog.veterancy = 0;
+            dog.category = EntityCategory::Unit;
+            assert!(
+                passive_scan_has_aa(&rules, obj, attacker_facts(&dog, obj), None),
+                "the clear belongs to Infantry"
+            );
+        }
+    }
 
     #[test]
     fn test_weapon_override_variants() {

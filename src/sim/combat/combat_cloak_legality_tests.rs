@@ -36,6 +36,7 @@ fn legality_rules() -> RuleSet {
 
 fn live(mut entity: GameEntity) -> GameEntity {
     entity.lifecycle.in_limbo = false;
+    entity.lifecycle.cell_marked = true;
     entity.in_playfield = true;
     entity
 }
@@ -80,6 +81,7 @@ fn acquire(
 ) -> Option<u64> {
     acquire_best_target_for_entity(
         entities,
+        &crate::sim::occupancy::OccupancyGrid::rebuild(entities),
         rules,
         interner,
         attacker,

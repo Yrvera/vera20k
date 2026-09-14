@@ -24,6 +24,25 @@ use crate::sim::projectile::ProjectileDetonationReason;
 use crate::sim::rng::SimRng;
 use crate::sim::vision::FogState;
 
+/// Establish the supplied fixture's Cell lists through shared Mark, in
+/// ascending fixture ID order. Acquisition no longer synthesizes these lists.
+fn mark_fixture_entities(store: &mut EntityStore) -> OccupancyGrid {
+    let mut sim = crate::sim::world::Simulation::new();
+    sim.interner = test_interner();
+    sim.substrate.entities = std::mem::take(store);
+    let ids: Vec<_> = sim
+        .substrate
+        .entities
+        .values()
+        .map(GameEntity::stable_id)
+        .collect();
+    for id in ids {
+        sim.add_entity_occupancy(id);
+    }
+    *store = sim.substrate.entities;
+    sim.substrate.occupancy
+}
+
 /// Build a minimal RuleSet for combat testing.
 fn test_rules() -> RuleSet {
     let ini_str: &str = "\
@@ -1285,10 +1304,14 @@ fn ordinary_infantry_remains_ground_for_projectile_legality() {
 
     assert_eq!(result.consequences.fire_events().len(), 1);
     assert_eq!(
-        sim.interner.resolve(result.consequences.fire_events()[0].weapon_id),
+        sim.interner
+            .resolve(result.consequences.fire_events()[0].weapon_id),
         "GroundGun"
     );
-    assert_eq!(result.consequences.fire_events()[0].weapon_slot, WeaponSlot::Primary);
+    assert_eq!(
+        result.consequences.fire_events()[0].weapon_slot,
+        WeaponSlot::Primary
+    );
 }
 
 #[test]
@@ -1549,7 +1572,11 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         &mut main_rng,
     );
     assert!(
-        result.consequences.effects().bridge_damage_events.is_empty(),
+        result
+            .consequences
+            .effects()
+            .bridge_damage_events
+            .is_empty(),
         "non-wall warheads must not emit bridge damage"
     );
     assert!(
@@ -1675,7 +1702,13 @@ fn gsi_04_07_damage_wad_precedes_wall_and_wood_armor_routing() {
         "WallAbsoluteDestroyer wins and commits forced removal inline"
     );
     assert_eq!(absolute_grid.cell(8, 5).overlay_id, None);
-    assert!(absolute.consequences.effects().bridge_damage_events.is_empty());
+    assert!(
+        absolute
+            .consequences
+            .effects()
+            .bridge_damage_events
+            .is_empty()
+    );
 
     let (wood, wood_grid) = fire("Wood=yes", "wood");
     assert!(!wood.consequences.effects().wall_mutations.is_empty());
@@ -1780,7 +1813,8 @@ fn gsi_04_07_damage_live_order_second_attacker_reads_restored_target() {
     );
     assert_eq!(
         result
-            .consequences.fire_events()
+            .consequences
+            .fire_events()
             .iter()
             .map(|event| (event.attacker_id, event.target))
             .collect::<Vec<_>>(),
@@ -1789,7 +1823,9 @@ fn gsi_04_07_damage_live_order_second_attacker_reads_restored_target() {
     );
     assert_eq!(
         result
-            .consequences.effects().cell_target_detaches
+            .consequences
+            .effects()
+            .cell_target_detaches
             .iter()
             .map(|event| (event.listener_id, event.restored, event.cleared))
             .collect::<Vec<_>>(),
@@ -1921,7 +1957,8 @@ fn gsi_04_07_damage_prior_projectile_fatal_death_weapon_is_inline() {
     assert_eq!(fatal_grid.cell(8, 5).overlay_id, None);
     assert_eq!(
         fatal
-            .consequences.fire_events()
+            .consequences
+            .fire_events()
             .iter()
             .map(|event| (event.attacker_id, event.target))
             .collect::<Vec<_>>(),
@@ -1930,7 +1967,9 @@ fn gsi_04_07_damage_prior_projectile_fatal_death_weapon_is_inline() {
     );
     assert!(
         fatal
-            .consequences.effects().cell_target_detaches
+            .consequences
+            .effects()
+            .cell_target_detaches
             .iter()
             .any(|detach| { detach.listener_id == 20 && detach.restored && detach.cleared })
     );
@@ -1961,12 +2000,25 @@ fn gsi_04_07_damage_prior_projectile_fatal_death_weapon_is_inline() {
     });
     assert_eq!(surviving_grid.cell(8, 5).overlay_id, Some(0));
     assert!(survives.consequences.effects().wall_mutations.is_empty());
-    assert!(survives.consequences.effects().cell_target_detaches.is_empty());
-    assert!(survives.consequences.effects().immediate_uninit_ids.is_empty());
+    assert!(
+        survives
+            .consequences
+            .effects()
+            .cell_target_detaches
+            .is_empty()
+    );
+    assert!(
+        survives
+            .consequences
+            .effects()
+            .immediate_uninit_ids
+            .is_empty()
+    );
     assert_eq!(surviving_entities.get(10).unwrap().health.current, 1);
     assert_eq!(
         survives
-            .consequences.fire_events()
+            .consequences
+            .fire_events()
             .iter()
             .map(|event| (event.attacker_id, event.target))
             .collect::<Vec<_>>(),
@@ -1983,7 +2035,13 @@ fn gsi_04_07_damage_prior_projectile_fatal_death_weapon_is_inline() {
         expected.state()
     });
     assert!(ungated.consequences.effects().wall_mutations.is_empty());
-    assert!(ungated.consequences.effects().cell_target_detaches.is_empty());
+    assert!(
+        ungated
+            .consequences
+            .effects()
+            .cell_target_detaches
+            .is_empty()
+    );
 }
 
 #[test]
@@ -2150,7 +2208,8 @@ fn gsi_04_07_damage_retaliation_is_receiver_synchronous_and_uses_mission_overrid
             has_movement: victim.movement_target.is_some(),
             last_attacker: victim.last_attacker_id,
             fired: result
-                .consequences.fire_events()
+                .consequences
+                .fire_events()
                 .iter()
                 .map(|event| (event.attacker_id, event.target))
                 .collect(),
@@ -5181,10 +5240,11 @@ fn test_tick_combat_visibility_blocks_fire() {
     issue_attack_command(&mut store, 1, 2, None, &interner);
 
     let fog = FogState::default();
+    let mut occupancy = mark_fixture_entities(&mut store);
     let mut main_rng = SimRng::new(1);
     tick_combat_with_fog(
         &mut store,
-        &mut OccupancyGrid::new(),
+        &mut occupancy,
         &rules,
         &mut interner,
         Some(&fog),
@@ -5279,7 +5339,7 @@ fn run_playfield_retarget_branch(
             .insert("AMERICANS".to_string());
     }
 
-    let mut occupancy = OccupancyGrid::new();
+    let mut occupancy = mark_fixture_entities(&mut store);
     let mut resources = BTreeMap::new();
     let mut scenario_rng = SimRng::new(1);
     if require_playfield_membership {
@@ -5400,9 +5460,8 @@ fn techno_playfield_invisible_target_reacquisition_rejects_false_candidate() {
 /// there is no stable-id tie-break anywhere in the native scan.
 ///
 /// The list head is the most recently added non-building
-/// (`CellListInsertion::PrependNonBuilding`), which for entities that have not
-/// moved is the higher `occupancy_enter_order`, seeded from the stable id. So
-/// the scan picks 20, not 3.
+/// (`CellListInsertion::PrependNonBuilding`). This fixture Marks in ascending
+/// ID order, so20 is actually linked ahead of3 and the scan picks20.
 #[test]
 fn gsi_08_01_a_shared_cell_offers_only_its_list_head() {
     let rules: RuleSet = test_rules();
@@ -5416,10 +5475,11 @@ fn gsi_08_01_a_shared_cell_offers_only_its_list_head() {
 
     let mut fog = FogState::default();
     fog.mark_visible_for_owner(test_intern("Americans"), 7, 5);
+    let mut occupancy = mark_fixture_entities(&mut store);
     let mut main_rng = SimRng::new(1);
     tick_combat_with_fog(
         &mut store,
-        &mut OccupancyGrid::new(),
+        &mut occupancy,
         &rules,
         &mut interner,
         Some(&fog),
@@ -5464,10 +5524,11 @@ fn gsi_08_01_unarmed_building_loses_to_a_tank_at_equal_distance() {
 
     let mut fog = FogState::default();
     fog.mark_visible_for_owner(test_intern("Americans"), 7, 5);
+    let mut occupancy = mark_fixture_entities(&mut store);
     let mut main_rng = SimRng::new(1);
     tick_combat_with_fog(
         &mut store,
-        &mut OccupancyGrid::new(),
+        &mut occupancy,
         &rules,
         &mut interner,
         Some(&fog),
@@ -5580,7 +5641,9 @@ fn test_weapon_fire_destroys_ore_in_spread() {
     // CellSpread=2. Both ore cells (8,5) and (9,5) get a reduction request.
     let req_amount = |rx: u16, ry: u16| {
         result
-            .consequences.effects().tiberium_reduction_requests
+            .consequences
+            .effects()
+            .tiberium_reduction_requests
             .iter()
             .find(|r| r.rx == rx && r.ry == ry)
             .map(|r| r.amount)
@@ -5656,7 +5719,9 @@ fn test_direct_hit_weapon_destroys_center_ore() {
     // damage=65 → ore_damage = 65/10 = 6 density levels. CellSpread=0 → only the
     // impact cell (8,5) gets a request; the adjacent cell (9,5) gets none.
     let center = result
-        .consequences.effects().tiberium_reduction_requests
+        .consequences
+        .effects()
+        .tiberium_reduction_requests
         .iter()
         .find(|r| r.rx == 8 && r.ry == 5);
     assert_eq!(
@@ -5666,7 +5731,9 @@ fn test_direct_hit_weapon_destroys_center_ore() {
     );
     assert!(
         !result
-            .consequences.effects().tiberium_reduction_requests
+            .consequences
+            .effects()
+            .tiberium_reduction_requests
             .iter()
             .any(|r| r.rx == 9 && r.ry == 5),
         "adjacent cell should get no request with CellSpread=0"
@@ -5724,7 +5791,9 @@ fn test_weak_weapon_partial_ore_reduction() {
     // Combat emits a TiberiumReductionRequest (applied later by World). M60
     // damage=25 → ore_damage = 25/10 = 2 density levels at the impact cell.
     let req = result
-        .consequences.effects().tiberium_reduction_requests
+        .consequences
+        .effects()
+        .tiberium_reduction_requests
         .iter()
         .find(|r| r.rx == 8 && r.ry == 5);
     assert_eq!(
@@ -6217,7 +6286,9 @@ fn v3_non_killing_aoe_emits_one_smudge_request() {
         "target must survive (test setup invariant)"
     );
     let anim_count = result
-        .consequences.effects().smudge_spawn_requests
+        .consequences
+        .effects()
+        .smudge_spawn_requests
         .iter()
         .filter(|r| matches!(r, SmudgeSpawnRequest::Anim { .. }))
         .count();
@@ -6227,9 +6298,14 @@ fn v3_non_killing_aoe_emits_one_smudge_request() {
     );
     let v3exp = interner.intern("V3EXP");
     assert!(
-        result.consequences.effects().smudge_spawn_requests.iter().any(
-            |r| matches!(r, SmudgeSpawnRequest::Anim { anim_name, .. } if *anim_name == v3exp)
-        ),
+        result
+            .consequences
+            .effects()
+            .smudge_spawn_requests
+            .iter()
+            .any(
+                |r| matches!(r, SmudgeSpawnRequest::Anim { anim_name, .. } if *anim_name == v3exp)
+            ),
         "Anim smudge must reference the V3 warhead's AnimList entry"
     );
 }
@@ -6278,7 +6354,9 @@ fn v3_killing_aoe_emits_exactly_one_smudge_request() {
         "target must die (test setup invariant)"
     );
     let anim_count = result
-        .consequences.effects().smudge_spawn_requests
+        .consequences
+        .effects()
+        .smudge_spawn_requests
         .iter()
         .filter(|r| matches!(r, SmudgeSpawnRequest::Anim { .. }))
         .count();
@@ -6333,7 +6411,9 @@ fn gsi_04_11_death_weapon_anim_precedes_outer_detonation_anim() {
     let tankexp = interner.intern("TANKEXP");
     let ucexplod = interner.intern("UCEXPLOD");
     let ordered_anim_names: Vec<_> = result
-        .consequences.effects().smudge_spawn_requests
+        .consequences
+        .effects()
+        .smudge_spawn_requests
         .iter()
         .filter_map(|request| match request {
             SmudgeSpawnRequest::Anim { anim_name, .. } => Some(*anim_name),
@@ -6343,14 +6423,18 @@ fn gsi_04_11_death_weapon_anim_precedes_outer_detonation_anim() {
     assert_eq!(ordered_anim_names, vec![ucexplod, tankexp]);
     assert_eq!(
         result
-            .consequences.effects().explosion_effects
+            .consequences
+            .effects()
+            .explosion_effects
             .iter()
             .map(|effect| effect.shp_name)
             .collect::<Vec<_>>(),
         vec![ucexplod, tankexp]
     );
     let unique_anim_names: std::collections::BTreeSet<_> = result
-        .consequences.effects().smudge_spawn_requests
+        .consequences
+        .effects()
+        .smudge_spawn_requests
         .iter()
         .filter_map(|r| match r {
             SmudgeSpawnRequest::Anim { anim_name, .. } => Some(*anim_name),
@@ -6599,7 +6683,11 @@ fn inviso_scatter_uses_scenario_rng_only_for_effect_and_paired_smudge() {
     );
     assert_ne!(expected_effect, target_coord);
     assert!(
-        result.consequences.effects().tiberium_reduction_requests.is_empty(),
+        result
+            .consequences
+            .effects()
+            .tiberium_reduction_requests
+            .is_empty(),
         "a non-Tiberium warhead without authoritative overlay context must not reduce ore"
     );
     match &result.consequences.effects().smudge_spawn_requests[0] {
@@ -6643,7 +6731,13 @@ fn inviso_empty_animlist_still_consumes_one_draw() {
 
     assert_eq!(scenario_rng.logical_state(), expected_rng.logical_state());
     assert!(result.consequences.effects().explosion_effects.is_empty());
-    assert!(result.consequences.effects().smudge_spawn_requests.is_empty());
+    assert!(
+        result
+            .consequences
+            .effects()
+            .smudge_spawn_requests
+            .is_empty()
+    );
 }
 
 #[test]
@@ -6756,7 +6850,8 @@ fn two_inviso_attackers_consume_consecutive_draws_in_live_order() {
 
     assert_eq!(
         result
-            .consequences.fire_events()
+            .consequences
+            .fire_events()
             .iter()
             .map(|event| event.attacker_id)
             .collect::<Vec<_>>(),
@@ -6764,8 +6859,14 @@ fn two_inviso_attackers_consume_consecutive_draws_in_live_order() {
     );
     assert_eq!(scenario_rng.logical_state(), expected_rng.logical_state());
     assert_eq!(result.consequences.effects().explosion_effects.len(), 2);
-    assert_eq!(explosion_coord(&result.consequences.effects().explosion_effects[0]), expected[0]);
-    assert_eq!(explosion_coord(&result.consequences.effects().explosion_effects[1]), expected[1]);
+    assert_eq!(
+        explosion_coord(&result.consequences.effects().explosion_effects[0]),
+        expected[0]
+    );
+    assert_eq!(
+        explosion_coord(&result.consequences.effects().explosion_effects[1]),
+        expected[1]
+    );
 }
 
 // --- emit_warhead_detonation_effects helper tests ---------------------------
@@ -6961,7 +7062,8 @@ fn combat_resolves_in_live_object_order_not_stable_id() {
             &mut main_rng,
         );
         assert_eq!(
-            result.consequences.fire_events()[0].attacker_id, 2,
+            result.consequences.fire_events()[0].attacker_id,
+            2,
             "live order [2,1]: B (live-order-first) must fire first"
         );
         assert!(
@@ -6996,7 +7098,8 @@ fn combat_resolves_in_live_object_order_not_stable_id() {
             &mut main_rng,
         );
         assert_eq!(
-            result.consequences.fire_events()[0].attacker_id, 1,
+            result.consequences.fire_events()[0].attacker_id,
+            1,
             "empty live order: stable-id fallback fires A first"
         );
         assert!(
@@ -7521,7 +7624,10 @@ fn deployed_desolator_self_irradiates_and_refires_below_third() {
             .resolve(result.consequences.fire_events()[0].weapon_id),
         "RadEruptionWeapon"
     );
-    assert_eq!(result.consequences.fire_events()[0].target, TargetKind::Cell(10, 10));
+    assert_eq!(
+        result.consequences.fire_events()[0].target,
+        TargetKind::Cell(10, 10)
+    );
     let site = sim
         .radiation
         .site_at((10, 10))
@@ -7532,7 +7638,11 @@ fn deployed_desolator_self_irradiates_and_refires_below_third() {
     // Tick 2: gate closed (effective 500 ≥ 500/3) → no fire, self-target
     // cleared.
     let result = rad_combat_tick(&mut sim, &rules, 2);
-    assert_eq!(result.consequences.fire_events().len(), 0, "gate closed after re-arm");
+    assert_eq!(
+        result.consequences.fire_events().len(),
+        0,
+        "gate closed after re-arm"
+    );
     assert!(
         sim.substrate
             .entities
@@ -7553,7 +7663,11 @@ fn deployed_desolator_self_irradiates_and_refires_below_third() {
 
     // Gate reopens → fires again and merges the site back up.
     let result = rad_combat_tick(&mut sim, &rules, 341);
-    assert_eq!(result.consequences.fire_events().len(), 1, "gate reopens below one third");
+    assert_eq!(
+        result.consequences.fire_events().len(),
+        1,
+        "gate reopens below one third"
+    );
     let site = sim.radiation.site_at((10, 10)).expect("merged site");
     assert!(site.level > 500, "re-detonation merged effective + added");
 }
@@ -7606,7 +7720,11 @@ fn under_attack_events_fire_for_sourced_structures_and_harvester_types() {
     let mut building = make_entity_owned(10, "CAGAS", 8, 5, 800, "Defender");
     building.category = EntityCategory::Structure;
     let result = run_attack(building);
-    assert_eq!(result.consequences.effects().under_attack_events.len(), 1, "structure hit pings");
+    assert_eq!(
+        result.consequences.effects().under_attack_events.len(),
+        1,
+        "structure hit pings"
+    );
     let ev = &result.consequences.effects().under_attack_events[0];
     assert!(!ev.miner);
     assert!(ev.structure);
@@ -7617,7 +7735,11 @@ fn under_attack_events_fire_for_sourced_structures_and_harvester_types() {
     // not the Rust miner component).
     let harv = make_entity_owned(10, "HARV", 8, 5, 1000, "Defender");
     let result = run_attack(harv);
-    assert_eq!(result.consequences.effects().under_attack_events.len(), 1, "harvester hit pings");
+    assert_eq!(
+        result.consequences.effects().under_attack_events.len(),
+        1,
+        "harvester hit pings"
+    );
     assert!(result.consequences.effects().under_attack_events[0].miner);
     assert!(!result.consequences.effects().under_attack_events[0].structure);
 
@@ -7627,8 +7749,15 @@ fn under_attack_events_fire_for_sourced_structures_and_harvester_types() {
     let mut friendly = make_entity_owned(10, "CAGAS", 8, 5, 800, "Attacker");
     friendly.category = EntityCategory::Structure;
     let result = run_attack(friendly);
-    assert_eq!(result.consequences.effects().under_attack_events.len(), 1, "own-fire pings");
-    assert_eq!(result.consequences.effects().under_attack_events[0].owner, test_intern("Attacker"));
+    assert_eq!(
+        result.consequences.effects().under_attack_events.len(),
+        1,
+        "own-fire pings"
+    );
+    assert_eq!(
+        result.consequences.effects().under_attack_events[0].owner,
+        test_intern("Attacker")
+    );
 
     // `Insignificant=yes` building → `BuildingType+0x232` skip.
     let mut prop = make_entity_owned(10, "CATREE", 8, 5, 800, "Defender");
@@ -7777,9 +7906,16 @@ fn harvester_killing_blow_announces_unit_lost_without_the_miner_ping() {
 
     // Non-lethal hit: the `result != 4` arm pings and nothing dies.
     let result = run_attack(make_entity_owned(10, "HARV", 8, 5, 1000, "Defender"));
-    assert_eq!(result.consequences.effects().under_attack_events.len(), 1, "survivor hit pings");
+    assert_eq!(
+        result.consequences.effects().under_attack_events.len(),
+        1,
+        "survivor hit pings"
+    );
     assert!(result.consequences.effects().under_attack_events[0].miner);
-    assert!(result.consequences.effects().unit_lost_events.is_empty(), "nothing died");
+    assert!(
+        result.consequences.effects().unit_lost_events.is_empty(),
+        "nothing died"
+    );
 
     // One-shot kill: result 4 skips the ping; only the death arm speaks.
     let result = run_attack(make_entity_owned(10, "HARV", 8, 5, 10, "Defender"));
@@ -7787,8 +7923,15 @@ fn harvester_killing_blow_announces_unit_lost_without_the_miner_ping() {
         result.consequences.effects().under_attack_events.is_empty(),
         "a killing blow never reaches the miner ping"
     );
-    assert_eq!(result.consequences.effects().unit_lost_events.len(), 1, "the kill announces once");
-    assert_eq!(result.consequences.effects().unit_lost_events[0].owner, test_intern("Defender"));
+    assert_eq!(
+        result.consequences.effects().unit_lost_events.len(),
+        1,
+        "the kill announces once"
+    );
+    assert_eq!(
+        result.consequences.effects().unit_lost_events[0].owner,
+        test_intern("Defender")
+    );
 }
 
 /// Build one ObjectType straight from an INI body, so the `Cost=` parse feeding
@@ -8409,7 +8552,9 @@ fn gsi_08_11_unit_death_plays_type_explosion_then_destroy_anim() {
     );
 
     let names: Vec<&str> = result
-        .consequences.effects().explosion_effects
+        .consequences
+        .effects()
+        .explosion_effects
         .iter()
         .map(|effect| interner.resolve(effect.shp_name))
         .collect();
@@ -8928,7 +9073,9 @@ fn gsi_05_14_a_dying_vehicle_scatters_metallic_debris() {
     );
 
     let names: Vec<&str> = result
-        .consequences.effects().explosion_effects
+        .consequences
+        .effects()
+        .explosion_effects
         .iter()
         .map(|effect| interner.resolve(effect.shp_name))
         .collect();
@@ -8986,7 +9133,9 @@ fn gsi_05_14_a_dying_building_uses_its_own_debris_anims() {
     );
 
     let names: Vec<&str> = result
-        .consequences.effects().explosion_effects
+        .consequences
+        .effects()
+        .explosion_effects
         .iter()
         .map(|effect| interner.resolve(effect.shp_name))
         .collect();
@@ -9051,7 +9200,9 @@ fn gsi_05_14_a_dying_harvester_throws_voxel_tires_and_no_shp_debris() {
     // loop drains exactly that many.
     assert_eq!(result.consequences.effects().voxel_debris.len(), 5);
     let names: Vec<&str> = result
-        .consequences.effects().explosion_effects
+        .consequences
+        .effects()
+        .explosion_effects
         .iter()
         .map(|effect| interner.resolve(effect.shp_name))
         .collect();
@@ -9104,7 +9255,9 @@ fn gsi_05_14_a_type_without_maxdebris_takes_no_draw() {
     );
     assert!(result.consequences.effects().voxel_debris.is_empty());
     let names: Vec<&str> = result
-        .consequences.effects().explosion_effects
+        .consequences
+        .effects()
+        .explosion_effects
         .iter()
         .map(|effect| interner.resolve(effect.shp_name))
         .collect();
@@ -9192,7 +9345,8 @@ fn gsi_08_08_special_arm_suppresses_damage_but_keeps_the_detonation_tail() {
             &mut emitted,
         );
         let anims: Vec<(String, u16, u16, u8)> = emitted
-            .effects.explosion_effects
+            .effects
+            .explosion_effects
             .iter()
             .map(|effect| {
                 (

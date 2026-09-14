@@ -1116,11 +1116,13 @@ pub(crate) fn clear_drive_head_to_occupation_for_remove(
 }
 
 /// Single occupant entry in a cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CellOccupant {
     pub entity_id: u64,
     pub layer: MovementLayer,
     /// Infantry sub-cell (2, 3, or 4). None for vehicles/structures.
+    /// Lookup cache owned by GameEntity::sub_cell; restored after entity fixups.
+    #[serde(skip)]
     pub sub_cell: Option<u8>,
     /// Whether this occupant is a structure, carried over from the insertion
     /// category. gamemd's per-cell building lookup walks the object list and
@@ -1128,6 +1130,7 @@ pub struct CellOccupant {
     /// building in this cell" must not be satisfied by a tank parked on it.
     /// Insertion order alone cannot answer that — a lone occupant carries no
     /// ordering information — so the category is recorded per occupant.
+    #[serde(skip)]
     pub is_building: bool,
 }
 
@@ -1149,7 +1152,7 @@ impl CellListInsertion {
 }
 
 /// All occupants of a single cell.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CellOccupancy {
     /// Occupant list. Common case is 0-3 infantry or 1 vehicle per cell.
     pub occupants: Vec<CellOccupant>,
@@ -1234,10 +1237,13 @@ impl CellOccupancy {
 
 /// Persistent per-cell occupancy index, owned by `ObjectSubstrate`.
 ///
-/// Mirrors entity positions: every entity that occupies a map cell has an entry.
-/// Structures occupy all their foundation cells. Maintained incrementally — add
-/// on spawn/move-in, remove on death/move-out.
-#[derive(Debug, Clone)]
+/// These are actual ordered memberships, not a projection of current position or
+/// locomotor phase. Cell Save483C10 -> Abstract410320 preserves the native heads;
+/// Load4839F0 swizzles +E4/+E8 at483BAB/483BBC without re-running the layer query.
+/// A grounded Jumpjet remains on its Cell list after initial Process changes its
+/// phase to1. Rebuilding from the flight adapter would silently drop that member.
+/// See tools/spatial_oracle/jumpjet_entry_discovery.{py,json,meta.json}.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OccupancyGrid {
     cells: BTreeMap<(u16, u16), CellOccupancy>,
     /// Monotonic counter bumped on every cell-membership mutation. Lets the
@@ -1245,6 +1251,7 @@ pub struct OccupancyGrid {
     /// stale and must be rebuilt before a same-tick repath. Transient scheduling
     /// state only: never serialized, never part of the state hash — it gates
     /// *when* a deterministic rebuild happens, never *what* it produces.
+    #[serde(skip)]
     generation: u64,
 }
 
@@ -1255,8 +1262,105 @@ impl Default for OccupancyGrid {
 }
 
 impl OccupancyGrid {
+    /// Check identity/list invariants without reinterpreting saved membership
+    /// through current terrain, alive state, phase, or a new admission query.
+    /// Buildings may occur in several cells; neither that nor pending Uninit is
+    /// a broken reference. Only the selected list may not repeat a pointer.
+    pub(crate) fn validate_memberships(
+        &self,
+        entities: &crate::sim::entity_store::EntityStore,
+    ) -> Result<(), String> {
+        for (&cell, occupants) in &self.cells {
+            let mut seen = BTreeSet::new();
+            for occupant in &occupants.occupants {
+                if !matches!(
+                    occupant.layer,
+                    MovementLayer::Ground | MovementLayer::Bridge
+                ) {
+                    return Err(format!(
+                        "cell {cell:?} has unsupported list {:?}",
+                        occupant.layer
+                    ));
+                }
+                if !seen.insert((occupant.layer as u8, occupant.entity_id)) {
+                    return Err(format!(
+                        "cell {cell:?} repeats object {} on {:?}",
+                        occupant.entity_id, occupant.layer
+                    ));
+                }
+                let Some(_entity) = entities.get(occupant.entity_id) else {
+                    return Err(format!(
+                        "cell {cell:?} references missing object {}",
+                        occupant.entity_id
+                    ));
+                };
+            }
+        }
+        Ok(())
+    }
+
+    /// Fix up lookup metadata after validating all saved object references.
+    /// This changes neither selected-list membership nor list order. Native
+    /// Cell lists store pointers: category and sub-cell information belong to
+    /// the pointed-to objects, not to a second serialized Cell record.
+    pub(crate) fn restore_memberships(
+        &mut self,
+        entities: &crate::sim::entity_store::EntityStore,
+    ) -> Result<(), String> {
+        self.validate_memberships(entities)?;
+        for occupants in self.cells.values_mut() {
+            for occupant in &mut occupants.occupants {
+                let entity = entities
+                    .get(occupant.entity_id)
+                    .expect("validated reference");
+                occupant.is_building = entity.category == EntityCategory::Structure;
+                occupant.sub_cell = if entity.category == EntityCategory::Infantry {
+                    entity.sub_cell
+                } else {
+                    None
+                };
+            }
+        }
+        Ok(())
+    }
+
+    /// Hash each native ground/deck list independently: the Vec's interleaving
+    /// of the two lists is only Rust storage. Empty retained map buckets and the
+    /// transient generation do not change membership. This stronger Rust peer
+    /// hash is not a claim that native64DAB0 directly folds Cell pointers.
+    pub(crate) fn hash_memberships(&self, hasher: &mut impl std::hash::Hasher) {
+        use std::hash::Hash;
+        b"cell-membership-v1".hash(hasher);
+        let list_count: usize = self
+            .cells
+            .values()
+            .map(|occupants| {
+                [MovementLayer::Ground, MovementLayer::Bridge]
+                    .into_iter()
+                    .filter(|&layer| !occupants.is_empty_on(layer))
+                    .count()
+            })
+            .sum();
+        list_count.hash(hasher);
+        for (&cell, occupants) in &self.cells {
+            for layer in [MovementLayer::Ground, MovementLayer::Bridge] {
+                let count = occupants.iter_layer(layer).count();
+                if count == 0 {
+                    continue;
+                }
+                cell.hash(hasher);
+                layer.hash(hasher);
+                count.hash(hasher);
+                for occupant in occupants.iter_layer(layer) {
+                    occupant.entity_id.hash(hasher);
+                }
+            }
+        }
+    }
+
     /// Rebuild occupancy from scratch by scanning all entities.
-    /// Used at map load (deserialization) and for debug validation.
+    /// Legacy construction/fixture adapter only. Snapshot restoration preserves
+    /// the serialized lists and never calls this lossy phase-based projection.
     pub fn rebuild(entities: &crate::sim::entity_store::EntityStore) -> Self {
         let mut grid = Self::new();
         let mut ordered: Vec<&GameEntity> = entities.values().collect();
@@ -2218,6 +2322,140 @@ mod tests {
         );
         grid.remove_on_layer(5, 5, 7, MovementLayer::Ground);
         assert!(grid.get(5, 5).is_none(), "right-layer remove must hit");
+    }
+
+    #[test]
+    fn saved_memberships_retain_lists_and_derive_only_lookup_metadata() {
+        let mut entities = crate::sim::entity_store::EntityStore::new();
+        let mut infantry = GameEntity::test_default(1, "JUMPJET", "Americans", 5, 5);
+        infantry.category = EntityCategory::Infantry;
+        infantry.sub_cell = Some(3);
+        infantry.lifecycle.cell_marked = true;
+        infantry.locomotor = Some(
+            crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+                crate::rules::locomotor_type::LocomotorKind::Jumpjet,
+            ),
+        );
+        infantry.locomotor.as_mut().unwrap().layer = MovementLayer::Air;
+        entities.insert(infantry);
+        let mut building = GameEntity::test_default(2, "CABHUT", "Neutral", 5, 5);
+        building.category = EntityCategory::Structure;
+        entities.insert(building);
+        let mut grid = OccupancyGrid::new();
+        grid.add(
+            5,
+            5,
+            2,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            Some(3),
+            CellListInsertion::PrependNonBuilding,
+        );
+        let raw = bincode::serialize(&grid).unwrap();
+        let mut restored: OccupancyGrid = bincode::deserialize(&raw).unwrap();
+        restored.restore_memberships(&entities).unwrap();
+        assert_eq!(
+            restored
+                .get(5, 5)
+                .unwrap()
+                .snapshot_layer(MovementLayer::Ground),
+            vec![1, 2]
+        );
+        assert_eq!(
+            restored
+                .get(5, 5)
+                .unwrap()
+                .infantry(MovementLayer::Ground)
+                .collect::<Vec<_>>(),
+            vec![(1, 3)]
+        );
+        assert!(
+            restored
+                .get(5, 5)
+                .unwrap()
+                .has_building_on(MovementLayer::Ground)
+        );
+        assert!(
+            !OccupancyGrid::rebuild(&entities).contains_entity(5, 5, 1),
+            "the legacy live-layer projection loses this saved member"
+        );
+        restored.remove_on_layer(5, 5, 1, MovementLayer::Ground);
+        assert_eq!(
+            restored
+                .get(5, 5)
+                .unwrap()
+                .first_on_layer(MovementLayer::Ground),
+            Some(2)
+        );
+        entities.remove(2);
+        assert!(
+            restored
+                .restore_memberships(&entities)
+                .unwrap_err()
+                .contains("missing object 2")
+        );
+    }
+
+    #[test]
+    fn membership_hash_uses_selected_lists_not_storage_interleaving_or_generation() {
+        let hash = |grid: &OccupancyGrid| {
+            use std::hash::Hasher;
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            grid.hash_memberships(&mut hasher);
+            hasher.finish()
+        };
+        let mut first = OccupancyGrid::new();
+        first.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        first.add(
+            5,
+            5,
+            2,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let mut second = OccupancyGrid::new();
+        second.add(
+            5,
+            5,
+            2,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        second.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        second.remove(9, 9, 99);
+        assert_eq!(hash(&first), hash(&second));
+        second.add(
+            5,
+            5,
+            3,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        assert_ne!(hash(&first), hash(&second));
     }
 
     #[test]

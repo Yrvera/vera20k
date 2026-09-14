@@ -1877,6 +1877,7 @@ pub(super) fn resolve_attacker_fire(
             }
             if let Some(new_target) = acquire_best_target(
                 &mut world.substrate.entities,
+                &world.substrate.occupancy,
                 rules,
                 &mut world.interner,
                 snap,
@@ -2027,6 +2028,7 @@ pub(super) fn resolve_attacker_fire(
             }
             if let Some(new_target) = acquire_best_target(
                 &mut world.substrate.entities,
+                &world.substrate.occupancy,
                 rules,
                 &mut world.interner,
                 snap,
@@ -2059,6 +2061,7 @@ pub(super) fn resolve_attacker_fire(
             }
             if let Some(new_target) = acquire_best_target(
                 &mut world.substrate.entities,
+                &world.substrate.occupancy,
                 rules,
                 &mut world.interner,
                 snap,

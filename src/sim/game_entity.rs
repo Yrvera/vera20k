@@ -328,6 +328,21 @@ pub struct StructureUpgradeLink {
     pub slot: u8,
 }
 
+/// Client-relative Techno discovery history, native +41A/+41B/+41C.
+/// Constructor6F2FB5..6F2FC1 clears all three; InitManagers6F3F40 and
+/// ChangeOwner70173B classify only the current owner. Discovery6F4960 and
+/// Conceal6F4A40 own the two retained observations. Infantry raw Save/Load
+/// preserves the bytes: never reconstruct them from the restored owner.
+/// Native peer CRC64DAB0 omits them; this is also omitted from the shared
+/// Rust peer hash. The separate diagnostic CRC70C270 is not that checksum.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TechnoDiscoveryHistory {
+    pub owned_by_current_house: bool,
+    pub discovered_by_current_house: bool,
+    /// A single historical byte for all other receiver houses, not a house set.
+    pub discovered_by_other_house: bool,
+}
+
 /// Core fields are always present; optional subsystems use `Option<T>`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GameEntity {
@@ -345,6 +360,7 @@ pub struct GameEntity {
     /// Later report-selection consumers read this persistent value; placement
     /// failure never refunds the draw.
     pub techno_ctor_random_word: u16,
+    pub discovery: TechnoDiscoveryHistory,
     /// Authored structure-upgrade identity. `None` for ordinary Technos.
     pub structure_upgrade_link: Option<StructureUpgradeLink>,
     /// World position in isometric cell coordinates + cached screen position.
@@ -481,6 +497,11 @@ pub struct GameEntity {
     pub dont_score: bool,
     /// Fog-of-war sight range in cells.
     pub vision_range: u16,
+    /// Exact immutable Type+5E8 == 0 predicate used by InfantryUnlimbo51E0EF.
+    /// The fog range above clamps/truncates the raw Sight integer and cannot
+    /// answer this query. Construction resolves it once; snapshots preserve
+    /// it for rules-less re-entry, independently of client discovery history.
+    pub(crate) sight_is_zero: bool,
     /// Foot65C/664 high-flying sight refresh timer, virtualized per viewer.
     /// Independent of the retained sight-admission latch and stored footprint.
     pub(crate) sight_refresh_timers: crate::sim::vision::SightRefreshTimers,
@@ -1201,6 +1222,7 @@ impl GameEntity {
             dont_score: false,
             stable_id,
             techno_ctor_random_word,
+            discovery: TechnoDiscoveryHistory::default(),
             structure_upgrade_link: None,
             position: Position {
                 rx,
@@ -1233,6 +1255,7 @@ impl GameEntity {
             elite_flash_frames: 0,
             armor_multiplier: NativeF64Bits::ONE,
             vision_range,
+            sight_is_zero: false,
             sight_refresh_timers: crate::sim::vision::SightRefreshTimers::at_construction(
                 construction_frame,
             ),

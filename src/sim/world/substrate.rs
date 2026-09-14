@@ -88,18 +88,16 @@ pub(crate) struct ObjectSubstrate {
     /// draws the next value; a stale reference degrades to `None` rather than
     /// aliasing a reused slot.
     pub(crate) next_stable_object_id: u64,
-    /// Monotonic source for rebuilt CellClass-style object-list (enter) order.
-    /// See `EnterOrderCounter`. `OccupancyGrid` itself is a skipped cache; each
-    /// entity stores the last order value assigned when it entered a cell list.
+    /// Monotonic source for CellClass-style object-list (enter) order and the
+    /// independently ordered AirTracker. See `EnterOrderCounter`.
     pub(crate) next_occupancy_enter_order: EnterOrderCounter,
     /// LogicClass active-object vector — the single authority on object order.
     /// Tail-append on reveal, compacting-remove on conceal. Serialized verbatim.
     #[serde(default)]
     pub(crate) logic: LogicVector,
-    /// CellClass-style occupancy grid (per-cell object lists). A rebuilt cache:
-    /// `#[serde(skip)]`, reconstructed from the entity store on load, so it never
-    /// appears in the serialized snapshot and does not enter the state hash directly.
-    #[serde(skip)]
+    /// Actual CellClass-style memberships/order, preserved across save/restore.
+    /// Cell483C10/4839F0 saves and swizzles its ground/deck heads; rebuilding
+    /// from current locomotor phase or terrain cannot recover those histories.
     pub(crate) occupancy: OccupancyGrid,
     /// Independent ground/deck vehicle-occupation bit planes. Rebuilt from
     /// entity lifecycle and serialized Drive footprint state after load.

@@ -866,6 +866,24 @@ impl Simulation {
                 });
             }
         }
+        // TechnoUnlimbo6F6E65..AD runs this second mode-one query only
+        // after successful Object Mark and the +90 alive gate. A failed Mark
+        // must retain history. This precedes Foot4D722F's owner observation.
+        // The dead Techno arm still returns success to Foot4D7184, so only
+        // this writer is gated: ForceSlope, owner discovery and Sight follow.
+        if self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|entity| entity.lifecycle.object_alive)
+            && self.entity_playfield_membership_mode_one(
+                stable_id,
+                context.terrain().or(self.resolved_terrain.as_ref()),
+            ) == Some(false)
+            && let Some(entity) = self.substrate.entities.get_mut(stable_id)
+        {
+            entity.discovery.discovered_by_current_house = false;
+        }
         // FootClass::Unlimbo @ 0x004D7170 dispatches active Drive/Ship
         // Force_Slope at 0x004D71A9 only after TechnoClass placement succeeds.
         // This precedes display/Logic exposure and must not run on either
@@ -885,6 +903,16 @@ impl Simulation {
                 sampled_slope,
                 self.session.binary_frame,
             );
+        }
+        // ObjectUnlimbo5F4FB4 Mark/CellPUT has already run. Foot4D722F calls
+        // +198(owner) next; only afterward Infantry51E0EF clears +41B for
+        // exactly Sight=0. Never move these producers before the Mark call.
+        self.record_foot_owner_discovery(stable_id);
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id)
+            && entity.category == EntityCategory::Infantry
+            && entity.sight_is_zero
+        {
+            entity.discovery.discovered_by_current_house = false;
         }
         if !self
             .substrate
@@ -913,6 +941,67 @@ impl Simulation {
             false
         };
         RevealOutcome::Revealed { logic_registered }
+    }
+
+    /// The owner-receiver portion of Foot4D722F -> Techno6F4960. Constructor
+    /// classification makes an admitted current-owner entry +41A=true; another
+    /// owner writes the aggregate +41C. This is not the first foreign-current-
+    /// viewer CellPUT arm: that still requires its Tag4/House1F4 continuation.
+    /// Missing current-house/House state belongs to the admitted headless
+    /// substrate, not an invented native House0 or actor-owner fallback.
+    fn record_foot_owner_discovery(&mut self, stable_id: u64) {
+        let Some(current_house) = self.session.current_house else {
+            return;
+        };
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
+            return;
+        };
+        if entity.category == EntityCategory::Structure {
+            return;
+        }
+        let current = entity.owner() == current_house;
+        let history = entity.discovery;
+        if (current && history.discovered_by_current_house)
+            || (!current && history.discovered_by_other_house)
+        {
+            return;
+        }
+        if current && !history.owned_by_current_house {
+            // The required first-current-viewer receiver is intentionally not
+            // asserted delivered from an unrepresented classification producer.
+            // Initial Jumpjet continuation must not bypass that open boundary.
+            return;
+        }
+        let Some(house) = self.houses.get(&entity.owner()) else {
+            return;
+        };
+        let controlled = house.is_controlled_by_human(self.session.game_mode_nonzero);
+        let entity = self
+            .substrate
+            .entities
+            .get_mut(stable_id)
+            .expect("selected Foot");
+        if !current {
+            // 6F4990 precedes base discovery and the mission inquiry.
+            entity.discovery.discovered_by_other_house = true;
+        }
+        if !controlled
+            && entity.mission.effective().known()
+                == Some(crate::rules::mission_data::MissionType::Ambush)
+        {
+            crate::sim::mission::authority::queue_entity_mission_deferred(
+                entity,
+                crate::sim::mission::MissionId::from_known(
+                    crate::rules::mission_data::MissionType::Hunt,
+                ),
+            );
+        }
+        if current {
+            entity.discovery.discovered_by_current_house = true;
+            // +5778/+5779 invalidate building-derived power/radar/SpySat.
+            // This Foot-only observation changes no building input; existing
+            // normal consumer evaluation is retained, not duplicate dirty bytes.
+        }
     }
 
     /// `BuildingClass::Unlimbo @ 0x00440580` calls
@@ -1010,12 +1099,15 @@ impl Simulation {
     }
 
     fn mark_entity_put(&mut self, stable_id: u64, context: UninitContext<'_>) -> bool {
-        let Some(entity) = self.substrate.entities.get(stable_id) else {
+        let Some(entity) = self.substrate.entities.get_mut(stable_id) else {
             return false;
         };
         if entity.lifecycle.cell_marked {
             return false;
         }
+        // Object5F58F7 publishes +74 before Foot4D37A6 queries virtual +78.
+        // Jumpjet high-flying5F6B90 reads this intermediate value.
+        entity.lifecycle.cell_marked = true;
         let cells = entity_occupancy_cells(entity);
         let layer = cell_list_layer_for_entity(entity);
         let sub_cell = if entity.category == EntityCategory::Infantry {
@@ -1401,12 +1493,14 @@ impl Simulation {
         clear_air_spatial: bool,
         context: UninitContext<'_>,
     ) -> bool {
-        let Some(entity) = self.substrate.entities.get(stable_id) else {
+        let Some(entity) = self.substrate.entities.get_mut(stable_id) else {
             return false;
         };
         if !entity.lifecycle.cell_marked {
             return false;
         }
+        // REMOVE5F5913 clears +74 before the same Foot +78 query.
+        entity.lifecycle.cell_marked = false;
         let cells = entity_occupancy_cells(entity);
         let layer = cell_list_layer_for_entity(entity);
         let category = entity.category;
@@ -2072,7 +2166,18 @@ impl Simulation {
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::ConcealClearDrawnStateBoundary);
 
+        // ObjectConceal5F4E98 invokes Techno6F4A40 here, before +8E Limbo.
+        // Human ownership preserves +41B; +41A/+41C are never cleared here.
+        let owner_controlled_by_human = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .and_then(|entity| self.houses.get(&entity.owner()))
+            .map(|house| house.is_controlled_by_human(self.session.game_mode_nonzero));
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            if owner_controlled_by_human == Some(false) {
+                entity.discovery.discovered_by_current_house = false;
+            }
             entity.lifecycle.in_limbo = true;
             // `BuildingClass::Limbo` destroys its owned BuildingLight before
             // the remaining building-count/base-node teardown.

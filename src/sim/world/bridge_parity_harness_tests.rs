@@ -162,7 +162,12 @@ const BRIDGE_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x3F2E_03F0_293D_036
 // residual and synchronous arrival timing; historical projections also include
 // migrated Foot owners. See docs/research/TRACK_PROCESS_REPLAY_REGRESSION_NOTES.md
 // for baseline/candidate observations and native scope. These are Rust pins.
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x1C9D_C67C_2209_DACC;
+const BRIDGE_HARNESS_FINAL_HASH_PRE_CELL_MEMBERSHIP_V159: u64 = 0x1C9D_C67C_2209_DACC;
+// Schema159 adds actual ordered Cell membership and exact Sight0 metadata.
+// The immediately preceding composition is asserted below against the old
+// current pin; all historical, replay/path and RNG tripwires remain intact.
+// This is a Rust hash-composition ratchet, not a new native golden.
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0xDC4F_664E_8F9F_FD7C;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
@@ -755,6 +760,12 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
     assert_eq!(
         pre_disguise_detect_hash, BRIDGE_HARNESS_PRE_DISGUISE_DETECT_V117_HASH,
         "the dedicated pre-v117 probe must reproduce the prior bridge current baseline"
+    );
+    let pre_membership_hash = rep.state_hash_without_cell_membership_v159();
+    println!("[schema159] pre159={pre_membership_hash:016X} current={final_hash:016X}");
+    assert_eq!(
+        pre_membership_hash, BRIDGE_HARNESS_FINAL_HASH_PRE_CELL_MEMBERSHIP_V159,
+        "immediately preceding main hash changed beyond schema159 composition"
     );
     assert_eq!(
         final_hash, BRIDGE_HARNESS_FINAL_HASH,
