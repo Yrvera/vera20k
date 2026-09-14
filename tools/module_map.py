@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Format cargo-modules output into the generated sections of docs/module-map.md."""
+"""Format cargo-modules dependencies into docs/module-map.md."""
 
 from __future__ import annotations
 
@@ -56,26 +56,6 @@ def dependencies(dot: str) -> dict[str, set[str]]:
     return result
 
 
-def tree_modules(tree: str) -> set[str]:
-    if not tree.startswith("crate vera20k\n"):
-        raise ValueError("Expected the vera20k module structure")
-    modules = {"vera20k"}
-    parents: list[str] = []
-    for line in tree.splitlines()[1:]:
-        match = re.fullmatch(r"([│ ]*)[├└]── mod (\w+): .+", line)
-        if not match or len(match[1]) % 4:
-            raise ValueError(f"Unrecognized module tree line: {line!r}")
-        depth = len(match[1]) // 4
-        if depth > len(parents):
-            raise ValueError("Skipped a level in the module tree")
-        parents = parents[:depth] + [match[2]]
-        name = "::".join(parents)
-        if name in modules:
-            raise ValueError(f"Duplicate module in tree: {name}")
-        modules.add(name)
-    return modules
-
-
 def replace_section(document: str, section: str, value: str) -> str:
     begin = f"<!-- module-map:{section}:begin -->"
     end = f"<!-- module-map:{section}:end -->"
@@ -101,11 +81,8 @@ def main() -> None:
     if not re.search(r"\b0\.26\.0\b", version):
         raise SystemExit("This formatter targets cargo-modules 0.26.0; review its output before upgrading")
 
-    tree = capture(["cargo", "modules", "structure", *COMMON, "--no-fns", "--no-traits", "--no-types"])
     dot = capture(["cargo", "modules", "dependencies", *COMMON, "--no-externs", "--no-sysroot"])
     graph = dependencies(dot)
-    if tree_modules(tree) != set(graph):
-        raise SystemExit("The module tree and dependency graph have different module sets")
     if capture(["git", "rev-parse", "HEAD"]).strip() != revision or capture(
         ["git", "status", "--porcelain", "--untracked-files=all", "--", *inputs]
     ).strip():
@@ -113,12 +90,11 @@ def main() -> None:
 
     document = DOCUMENT.read_text(encoding="utf-8")
     updated = replace_section(document, "dependencies", dependency_text(graph))
-    updated = replace_section(updated, "tree", f"```text\n{tree.rstrip()}\n```")
     if args.check:
         # Documentation-only commits need not change the snapshot's provenance.
         if updated != document:
-            raise SystemExit("Module map differs from the current generated structure/dependencies")
-        print("Module structure and dependencies match the current checkout")
+            raise SystemExit("Module map differs from the current generated dependencies")
+        print("Module dependencies match the current checkout")
         return
     updated = replace_section(updated, "provenance", provenance(revision, graph))
     DOCUMENT.write_text(updated, encoding="utf-8", newline="\n")
