@@ -496,18 +496,28 @@ impl SaveRepository {
     /// the diagnostic panel's embedded-time policy. The shared browser sorts
     /// these records with the established retail comparator after adding New.
     pub(crate) fn browser_entries(&self) -> Vec<(SaveEntry, u64)> {
-        let Ok(directory) = std::fs::read_dir(&self.directory) else { return Vec::new(); };
-        directory.filter_map(|item| {
-            let item = item.ok()?;
-            let path = item.path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("bin") { return None; }
-            let metadata = item.metadata().ok()?;
-            if !metadata.is_file() { return None; }
-            let bytes = self.read(&path).ok()?;
-            let header = GameSnapshot::read_header(&bytes).ok()?;
-            let ticks = crate::map::rmg::saved_seeds::system_time_to_file_time(metadata.modified().ok()?);
-            Some((SaveEntry { path, header }, ticks))
-        }).collect()
+        let Ok(directory) = std::fs::read_dir(&self.directory) else {
+            return Vec::new();
+        };
+        directory
+            .filter_map(|item| {
+                let item = item.ok()?;
+                let path = item.path();
+                if path.extension().and_then(|extension| extension.to_str()) != Some("bin") {
+                    return None;
+                }
+                let metadata = item.metadata().ok()?;
+                if !metadata.is_file() {
+                    return None;
+                }
+                let bytes = self.read(&path).ok()?;
+                let header = GameSnapshot::read_header(&bytes).ok()?;
+                let ticks = crate::map::rmg::saved_seeds::system_time_to_file_time(
+                    metadata.modified().ok()?,
+                );
+                Some((SaveEntry { path, header }, ticks))
+            })
+            .collect()
     }
 
     /// Quickload policy: select the `.bin` file with the newest filesystem
@@ -769,7 +779,8 @@ mod tests {
     fn load_fixture_simulation(with_overlay_grid: bool) -> Simulation {
         let mut simulation = Simulation::with_seed(u64::from(LOAD_FIXTURE_SEED));
         simulation.session.map_name = LOAD_FIXTURE_MAP_NAME.to_string();
-        simulation.overlay_grid = with_overlay_grid.then(|| OverlayGrid::new_with_retained_wall_plane(0, 0));
+        simulation.overlay_grid =
+            with_overlay_grid.then(|| OverlayGrid::new_with_retained_wall_plane(0, 0));
         simulation
     }
 
@@ -1032,14 +1043,8 @@ mod tests {
         let directory = isolated_directory("load-transaction-startup");
         let repository = SaveRepository::at(&directory);
         let mut saved = load_fixture_simulation(true);
-        saved
-            .substrate
-            .base_reservations
-            .reserve(None, 3, 4, 2);
-        saved
-            .substrate
-            .base_reservations
-            .reserve(None, -1, 0, 5);
+        saved.substrate.base_reservations.reserve(None, 3, 4, 2);
+        saved.substrate.base_reservations.reserve(None, -1, 0, 5);
         let path = repository
             .write_named("same-content.bin", &snapshot_bytes(&saved, &rules))
             .expect("write same-content transaction fixture");
@@ -1111,10 +1116,7 @@ mod tests {
             "successful load publishes the prepared post-Resize dummy fields"
         );
         assert_eq!(
-            simulation
-                .substrate
-                .base_reservations
-                .raw_mask(None, 3, 4),
+            simulation.substrate.base_reservations.raw_mask(None, 3, 4),
             1 << 2,
             "the narrow dummy reconstruction leaves real reservation state untouched"
         );
@@ -1134,7 +1136,9 @@ mod tests {
             "with the shared dummy already zero, reconstruction removes only the hashed stale mask"
         );
         let tick_before = runtime.simulation.session.tick;
-        runtime.advance_frame(&[], 33, crate::sim::world::TickLane::Ordinary);
+        runtime
+            .advance_frame(&[], 33, crate::sim::world::TickLane::Ordinary)
+            .expect("fixture frame must complete");
         assert_eq!(runtime.simulation.session.tick, tick_before + 1);
         assert_eq!(state.startup, startup_before);
         assert!(state.startup.admits_exact_step());

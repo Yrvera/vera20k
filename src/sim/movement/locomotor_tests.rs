@@ -8,6 +8,75 @@ use crate::rules::object_type::{ObjectCategory, ObjectType, PipScale};
 use crate::util::fixed_math::{SIM_ONE, SimFixed, sim_from_f32};
 
 #[test]
+fn walk_destination_and_cell_producer_match_original_startup_conversion() {
+    use crate::map::resolved_terrain::ResolvedTerrainGrid;
+    use crate::sim::{components::DriveCoord, game_entity::GameEntity};
+    let native: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/walk_head_occupation.json"
+    ))
+    .unwrap();
+    let rows = native["destination"].as_array().unwrap();
+    assert_eq!(rows.len(), 12);
+    for row in rows {
+        let input = &row["input"];
+        let output = &row["output"];
+        let mut terrain = ResolvedTerrainGrid::from_cells(
+            11,
+            11,
+            (0..11)
+                .flat_map(|y| {
+                    (0..11).map(move |x| {
+                        crate::sim::world::common_raw_test_terrain_cell(x, y, 2, false)
+                    })
+                })
+                .collect(),
+        );
+        let c = terrain.cell_mut(10, 10).unwrap();
+        c.slope_type = 1;
+        c.bridge_facts.raw_flags = if input["structural"].as_bool().unwrap() {
+            0x100
+        } else {
+            0
+        };
+        let mut entity = GameEntity::test_default(1, "E1", "Owner", 9, 10);
+        entity.locomotor = Some(LocomotorState::from_object_type(
+            &make_obj(LocomotorKind::Walk, ObjectCategory::Infantry),
+            0,
+            0,
+        ));
+        let coord = if input["cell_target"].as_bool().unwrap() {
+            crate::sim::movement::navcom::target_cell_coord(10, 10, Some(&terrain))
+        } else {
+            let c = &input["coord"];
+            DriveCoord {
+                x: c[0].as_i64().unwrap() as i32,
+                y: c[1].as_i64().unwrap() as i32,
+                z: c[2].as_i64().unwrap() as i32,
+            }
+        };
+        assert_eq!(
+            serde_json::json!([coord.x, coord.y, coord.z]),
+            output["incoming"],
+            "{row}"
+        );
+        crate::sim::movement::set_walk_destination_coord(&mut entity, coord, Some(&terrain));
+        let loco = entity.locomotor.as_ref().unwrap();
+        let dest = loco.walk_destination().unwrap();
+        assert_eq!(
+            serde_json::json!([dest.x, dest.y, dest.z]),
+            output["destination"],
+            "{row}"
+        );
+        assert_eq!(loco.walk_is_moving(), output["moving"].as_bool(), "{row}");
+        assert_eq!(
+            loco.step_head(),
+            None,
+            "the destination setter never accepts a head"
+        );
+    }
+}
+
+#[test]
 fn walk_moving_byte_matches_original_setter_and_head_lifetime_traces() {
     use crate::sim::components::DriveCoord;
     let native: serde_json::Value = serde_json::from_str(include_str!(

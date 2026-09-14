@@ -180,7 +180,8 @@ fn slave_master_admission_reaches_head_selection_in_the_same_object_turn() {
             );
         }
         let grid = sim.path_grid_snapshot();
-        sim.advance_live_object_pass(Some(&rules), grid.as_deref(), Some(&registry));
+        sim.advance_live_object_pass(Some(&rules), grid.as_deref(), Some(&registry))
+            .expect("fixture frame must complete");
         let e = sim.substrate.entities.get(slave).unwrap();
         let head = e.locomotor.as_ref().unwrap().step_head();
         if later_blocker {
@@ -940,13 +941,16 @@ fn bridge_repair_preserves_unrelated_foundation_before_next_reader() {
     let gameplay = (sim.scenario_rng.state(), sim.main_rng.state());
     let mut mapgen = sim.mapgen_rng.clone();
     mapgen.next_range_u32_inclusive_scaled(0, 3);
-    assert!(sim.run_completed_walk_step(
-        engineer,
-        crate::sim::components::DriveCoord::cell(16, 15, 0),
-        Some(&rules),
-        None,
-        Some(&registry)
-    ));
+    assert!(
+        sim.run_completed_walk_step(
+            engineer,
+            crate::sim::components::DriveCoord::cell(16, 15, 0),
+            Some(&rules),
+            None,
+            Some(&registry)
+        )
+        .expect("fixture frame must complete")
+    );
     assert!(
         !sim.substrate
             .entities
@@ -1303,7 +1307,8 @@ fn walk_completion_uses_retained_destination_and_exact_height_tolerance() {
             .unwrap()
             .set_walk_destination(Some(dest));
         e.locomotor.as_mut().unwrap().set_step_head(Some(head));
-        sim.run_completed_walk_step(id, head, Some(&rules), None, Some(&registry));
+        sim.run_completed_walk_step(id, head, Some(&rules), None, Some(&registry))
+            .expect("fixture frame must complete");
         let e = sim.substrate.entities.get(id).unwrap();
         assert_eq!(e.navigation.nav_com.is_some(), survives);
         assert_eq!(
@@ -1311,4 +1316,92 @@ fn walk_completion_uses_retained_destination_and_exact_height_tolerance() {
             survives
         );
     }
+}
+
+#[test]
+fn repair_receiver_failure_stops_runtime_before_consumption_or_frame_commit() {
+    use crate::sim::runtime::{SimResources, SimRuntime};
+    let (mut sim, rules, registry, hut) = ready_repair_fixture(Some(231));
+    let engineer = ready_engineer(&mut sim, &rules, &registry, hut);
+    let victim = sim
+        .spawn_object("ENGINEER", "Americans", 17, 15, 0, &rules, &BTreeMap::new())
+        .unwrap();
+    let later = sim
+        .spawn_object("ENGINEER", "Americans", 14, 15, 0, &rules, &BTreeMap::new())
+        .unwrap();
+    // An intentionally unavailable receiver input after the ordinary walker
+    // has written its three overlays. This exercises failure delivery, not a
+    // claim that missing retail type data is a native admitted state.
+    let missing = sim.intern("MISSING_REPAIR_RECEIVER_TYPE");
+    sim.substrate.entities.get_mut(victim).unwrap().type_ref = missing;
+    let frame = (sim.session.tick, sim.session.binary_frame);
+    let later_counter = sim
+        .substrate
+        .entities
+        .get(later)
+        .unwrap()
+        .mission
+        .ai_counter();
+    let original_nav = sim
+        .substrate
+        .entities
+        .get(engineer)
+        .unwrap()
+        .navigation
+        .nav_com;
+    let mut runtime = SimRuntime {
+        simulation: sim,
+        resources: SimResources {
+            rules,
+            overlay_registry: registry,
+            ..SimResources::empty()
+        },
+    };
+    let error = runtime
+        .advance_frame(&[], 67, crate::sim::world::TickLane::Ordinary)
+        .err()
+        .expect("missing receiver must fail the actual runtime frame");
+    assert_eq!(error.entity_id, engineer);
+    assert_eq!((error.tick, error.binary_frame), frame);
+    assert!(error.cause.contains("missing ObjectType"), "{error}");
+    assert!(error.to_string().contains("prior world mutations remain"));
+    let sim = &runtime.simulation;
+    assert_eq!((sim.session.tick, sim.session.binary_frame), frame);
+    let e = sim.substrate.entities.get(engineer).unwrap();
+    assert!(e.lifecycle.object_alive && !e.lifecycle.in_limbo && !e.dying);
+    assert_eq!(
+        e.navigation.nav_com, original_nav,
+        "post-repair expiry was not reached"
+    );
+    assert_eq!(
+        e.locomotor.as_ref().unwrap().step_head(),
+        None,
+        "pre-PerCell head retirement remains visible"
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(later)
+            .unwrap()
+            .mission
+            .ai_counter(),
+        later_counter,
+        "the live cursor must stop before the following object"
+    );
+    assert_eq!(
+        sim.resolved_terrain
+            .as_ref()
+            .unwrap()
+            .cell(17, 15)
+            .unwrap()
+            .bridge_facts
+            .overlay_id,
+        Some(206),
+        "already-published repair writes are not rolled back"
+    );
+    assert_eq!(
+        repair_sounds(sim),
+        [true],
+        "pre-repair announcement is not rolled back or drained as a completed output"
+    );
 }

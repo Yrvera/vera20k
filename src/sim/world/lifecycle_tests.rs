@@ -4304,7 +4304,9 @@ fn homing_ground_impact_reaches_damage_and_cleanup_through_runtime_frame() {
         runtime.resources.overlay_registry =
             crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, Some(&art));
 
-        let _ = runtime.advance_frame(&[], 16, super::TickLane::Ordinary);
+        let _ = runtime
+            .advance_frame(&[], 16, super::TickLane::Ordinary)
+            .expect("fixture frame must complete");
         if old_height == 1 {
             let bullet = runtime.simulation.projectiles.get(id).expect(
                 "crossing below ground does not trigger the OLD-height predicate until next visit",
@@ -4321,7 +4323,9 @@ fn homing_ground_impact_reaches_damage_and_cleanup_through_runtime_frame() {
                     .overlay_data,
                 0
             );
-            let _ = runtime.advance_frame(&[], 16, super::TickLane::Ordinary);
+            let _ = runtime
+                .advance_frame(&[], 16, super::TickLane::Ordinary)
+                .expect("fixture frame must complete");
         }
         assert!(runtime.simulation.projectiles.get(id).is_none());
         let hits_target = with_source && !expire_source;

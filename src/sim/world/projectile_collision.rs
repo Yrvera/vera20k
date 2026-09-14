@@ -524,7 +524,9 @@ mod tests {
             runtime.resources.rules = RuleSet::from_ini(&ini).unwrap();
             runtime.resources.overlay_registry =
                 crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, Some(&art));
-            let _ = runtime.advance_frame(&[], 16, crate::sim::world::TickLane::Ordinary);
+            let _ = runtime
+                .advance_frame(&[], 16, crate::sim::world::TickLane::Ordinary)
+                .expect("fixture frame must complete");
             let detonate = !source_present || shared_wall;
             assert_eq!(
                 runtime.simulation.projectiles.get(100).is_none(),
@@ -610,7 +612,9 @@ mod tests {
             runtime.resources.rules = make_rules();
             runtime.resources.overlay_registry =
                 crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, Some(&art));
-            let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+            let _ = runtime
+                .advance_frame(&[], 16, TickLane::Ordinary)
+                .expect("fixture frame must complete");
             let saved = runtime.simulation.projectiles.get(id).unwrap().clone();
             assert_eq!(saved.arm_timer.start_frame(), 100);
             assert_eq!(
@@ -675,8 +679,12 @@ mod tests {
             resumed.resources.rules = make_rules();
             resumed.resources.overlay_registry =
                 crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, Some(&art));
-            let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
-            let _ = resumed.advance_frame(&[], 16, TickLane::Ordinary);
+            let _ = runtime
+                .advance_frame(&[], 16, TickLane::Ordinary)
+                .expect("fixture frame must complete");
+            let _ = resumed
+                .advance_frame(&[], 16, TickLane::Ordinary)
+                .expect("fixture frame must complete");
             assert!(
                 runtime.simulation.projectiles.get(id).is_some(),
                 "unloaded positive Arm still suppresses the near fuse"
@@ -798,7 +806,9 @@ mod tests {
                 sim.session.binary_frame = 100;
                 let mut runtime = SimRuntime::from_simulation(sim);
                 runtime.resources.rules = RuleSet::from_ini(&ini).unwrap();
-                let output = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+                let output = runtime
+                    .advance_frame(&[], 16, TickLane::Ordinary)
+                    .expect("fixture frame must complete");
                 assert_eq!(
                     runtime.simulation.projectiles.len(),
                     1,
@@ -891,7 +901,9 @@ mod tests {
             firer.attack_target = Some(AttackTarget::new(target));
             let mut runtime = SimRuntime::from_simulation(sim);
             runtime.resources.rules = make_rules();
-            let output = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+            let output = runtime
+                .advance_frame(&[], 16, TickLane::Ordinary)
+                .expect("fixture frame must complete");
             assert_eq!(
                 runtime.simulation.projectiles.len(),
                 1,
@@ -954,7 +966,9 @@ mod tests {
                 .get_mut(source)
                 .unwrap()
                 .attack_target = None;
-            let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+            let _ = runtime
+                .advance_frame(&[], 16, TickLane::Ordinary)
+                .expect("fixture frame must complete");
             let snapshot = GameSnapshot::save(&runtime.simulation, 0, 0, "native motion", 0);
             let mut restored = GameSnapshot::load(&snapshot).unwrap().sim;
             let mut serialized_expected = runtime.simulation.projectiles.get(id).unwrap().clone();
@@ -1018,7 +1032,9 @@ mod tests {
                     for runtime in [&mut runtime, &mut resumed] {
                         runtime.resources.rules.general.gravity =
                             row["gravity_sequence"][frame].as_i64().unwrap() as i32;
-                        let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+                        let _ = runtime
+                            .advance_frame(&[], 16, TickLane::Ordinary)
+                            .expect("fixture frame must complete");
                     }
                 }
                 let shot = runtime
@@ -1091,7 +1107,9 @@ mod tests {
             })
             .unwrap();
         for expected in row["frames"].as_array().unwrap().iter().take(3) {
-            let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+            let _ = runtime
+                .advance_frame(&[], 16, TickLane::Ordinary)
+                .expect("fixture frame must complete");
             let projectile = runtime
                 .simulation
                 .projectiles
@@ -1164,7 +1182,9 @@ mod tests {
         runtime.resources.rules = RuleSet::from_ini(&ini).unwrap();
         runtime.resources.overlay_registry =
             crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, Some(&art));
-        let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+        let _ = runtime
+            .advance_frame(&[], 16, TickLane::Ordinary)
+            .expect("fixture frame must complete");
         assert!(runtime.simulation.projectiles.get(100).is_none());
         let overlays = runtime.simulation.overlay_grid.as_ref().unwrap();
         assert_eq!(
@@ -1217,7 +1237,9 @@ mod tests {
         // Native geometry fixtures establish the source-less fractional-below-floor
         // admission and Z=0 selection. Exact reflected stores have their own
         // original-byte comparisons; this checks the real AI-to-damage delivery.
-        let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+        let _ = runtime
+            .advance_frame(&[], 16, TickLane::Ordinary)
+            .expect("fixture frame must complete");
         assert!(runtime.simulation.projectiles.get(100).is_none());
         assert_eq!(
             runtime

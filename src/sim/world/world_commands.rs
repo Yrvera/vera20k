@@ -2058,9 +2058,11 @@ impl Simulation {
                     });
                     e.navigation.nav_com_aux = None;
                     e.navigation.pending_arrival_clear = false;
-                    if let Some(loco) = e.locomotor.as_mut() {
-                        loco.set_walk_destination(Some(target_coord));
-                    }
+                    movement::set_walk_destination_coord(
+                        e,
+                        target_coord,
+                        self.resolved_terrain.as_ref(),
+                    );
                 }
                 // Issue movement toward the building's cell.
                 let info = self.resolve_move_info(*engineer_id, Some(rules));

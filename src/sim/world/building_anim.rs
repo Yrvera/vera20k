@@ -962,15 +962,17 @@ mod tests {
         let mut app_sim = refinery_sim_with_bale();
         let mut headless_sim = refinery_sim_with_bale();
 
-        let app_output = app_sim.advance_app_frame(
-            &[],
-            Some(&rules),
-            &height_map,
-            None,
-            67,
-            crate::sim::world::TickLane::Ordinary,
-            None,
-        );
+        let app_output = app_sim
+            .advance_app_frame(
+                &[],
+                Some(&rules),
+                &height_map,
+                None,
+                67,
+                crate::sim::world::TickLane::Ordinary,
+                None,
+            )
+            .expect("fixture frame must complete");
         let headless_tick =
             headless_sim.advance_tick(&[], Some(&rules), &height_map, None, None, 67);
 
@@ -1010,15 +1012,17 @@ mod tests {
             empty: false,
         });
 
-        let output = sim.advance_app_frame(
-            &[],
-            Some(&rules),
-            &std::collections::BTreeMap::new(),
-            None,
-            67,
-            crate::sim::world::TickLane::Ordinary,
-            None,
-        );
+        let output = sim
+            .advance_app_frame(
+                &[],
+                Some(&rules),
+                &std::collections::BTreeMap::new(),
+                None,
+                67,
+                crate::sim::world::TickLane::Ordinary,
+                None,
+            )
+            .expect("fixture frame must complete");
 
         assert!(output.tick.frame_committed);
         assert!(sim.bale_events.is_empty());

@@ -25,11 +25,13 @@ mod infantry_terminal;
 pub(crate) use infantry_terminal::InfantryDeathSequence;
 pub(crate) use infantry_terminal::{InfantryDeathPostlude, InfantryTerminal};
 pub(crate) mod damage_consequences;
+mod frame_error;
 mod lifecycle;
 mod load_object_lifecycle;
 mod logic_vector;
 mod navigation;
 mod object_turn;
+pub use frame_error::FrameAdvanceError;
 mod shroud_refresh;
 mod track_cell_recalc;
 #[cfg(test)]
@@ -3997,12 +3999,30 @@ impl Simulation {
     /// guard here. `uninit` always conceals before freeing the store
     /// slot, so the order never references a removed entity in practice.
     pub(crate) fn for_each_live_object<F: FnMut(&mut Simulation, u64)>(&mut self, mut body: F) {
+        let result: Result<(), std::convert::Infallible> =
+            self.try_for_each_live_object(|sim, id| {
+                body(sim, id);
+                Ok(())
+            });
+        match result {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
+    }
+
+    /// The same live cursor, with failure stopping before the next object.
+    /// Prior callback writes remain in the world; this is not a rollback.
+    pub(crate) fn try_for_each_live_object<E>(
+        &mut self,
+        mut body: impl FnMut(&mut Simulation, u64) -> Result<(), E>,
+    ) -> Result<(), E> {
         let mut i = 0;
         while i < self.substrate.logic.len() {
             let id = self.substrate.logic.as_slice()[i];
-            body(self, id);
+            body(self, id)?;
             i += 1;
         }
+        Ok(())
     }
 
     /// P1 SHADOW BUILD: mirror each existing house's authoritative `credits` into
@@ -5921,6 +5941,7 @@ impl Simulation {
             TickLane::Ordinary,
             None,
         )
+        .expect("fixture frame must complete")
     }
 
     /// App-facing authoritative frame transaction.
@@ -5939,7 +5960,7 @@ impl Simulation {
         tick_ms: u32,
         lane: TickLane,
         trigger_inputs: Option<TriggerInputs<'_>>,
-    ) -> SimFrameOutput {
+    ) -> Result<SimFrameOutput, FrameAdvanceError> {
         let path_grid = self.path_grid_snapshot();
         let tick = self.advance_master_frame(
             commands,
@@ -5950,8 +5971,8 @@ impl Simulation {
             tick_ms,
             lane,
             trigger_inputs,
-        );
-        self.collect_frame_output(tick)
+        )?;
+        Ok(self.collect_frame_output(tick))
     }
 
     fn collect_frame_output(&mut self, tick: TickResult) -> SimFrameOutput {
@@ -6001,7 +6022,7 @@ impl Simulation {
         tick_ms: u32,
         lane: TickLane,
         trigger_inputs: Option<TriggerInputs<'_>>,
-    ) -> TickResult {
+    ) -> Result<TickResult, FrameAdvanceError> {
         self.invulnerability_impact_effects.clear();
         self.pending_projectile_detonations.clear();
         self.pending_wave_damage_requests.clear();
@@ -6084,7 +6105,7 @@ impl Simulation {
         // before advancing its cursor; later phases need only these outcomes.
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::LogicVector);
-        let object_pass = self.advance_live_object_pass(rules, path_grid, overlay_registry);
+        let object_pass = self.advance_live_object_pass(rules, path_grid, overlay_registry)?;
         spawned_entities |= std::mem::take(&mut self.mission_spawned_entities);
         let movement_stats = object_pass.movement;
         destroyed_structure |= object_pass.destroyed_structure;
@@ -6552,7 +6573,7 @@ impl Simulation {
         let terminal_score_finalized =
             self.natural_outcome_exit_ready() && self.finalize_terminal_score_snapshot();
         let state_hash = self.state_hash();
-        TickResult {
+        Ok(TickResult {
             tick: self.session.tick,
             frame_committed,
             executed_commands,
@@ -6563,7 +6584,7 @@ impl Simulation {
             ownership_changed: passenger_ownership_changed,
             bridge_state_changed,
             movement: movement_stats,
-        }
+        })
     }
 
     /// World owner for the dormant `TunnelLocomotionClass::Process` path.

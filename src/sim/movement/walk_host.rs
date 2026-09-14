@@ -181,10 +181,10 @@ impl Simulation {
         rules: Option<&RuleSet>,
         fallback: Option<&PathGrid>,
         registry: Option<&OverlayTypeRegistry>,
-    ) -> bool {
+    ) -> Result<bool, crate::sim::world::FrameAdvanceError> {
         self.walk_mark_remove(id, rules, fallback, registry);
         let Some(e) = self.substrate.entities.get_mut(id) else {
-            return false;
+            return Ok(false);
         };
         let head = e
             .locomotor
@@ -247,13 +247,16 @@ impl Simulation {
             self.resolved_terrain.as_ref(),
             self.path_grid.as_deref().or(fallback),
         );
-        let changed =
-            rules.is_some_and(|rules| self.infantry_per_cell_bridge_repair(id, rules, registry));
+        let changed = if let Some(rules) = rules {
+            self.infantry_per_cell_bridge_repair(id, rules, registry)?
+        } else {
+            false
+        };
         let survives = self.substrate.entities.get(id).is_some_and(|e| {
             e.lifecycle.object_alive && !e.lifecycle.in_limbo && e.object_is_falling_down == 0
         });
         if !survives {
-            return changed;
+            return Ok(changed);
         }
         if let Some(rules) = rules {
             self.refresh_unit_sensor_at_per_cell(id, rules);
@@ -266,7 +269,7 @@ impl Simulation {
             super::navcom::finish_walk_navigation(e);
         }
         self.walk_mark_put(id, rules, fallback, registry);
-        changed
+        Ok(changed)
     }
 }
 

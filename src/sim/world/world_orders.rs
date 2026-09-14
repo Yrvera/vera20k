@@ -483,11 +483,11 @@ impl Simulation {
         engineer_id: u64,
         rules: &RuleSet,
         registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    ) -> bool {
+    ) -> Result<bool, super::FrameAdvanceError> {
         use crate::rules::mission_data::MissionType;
         use crate::sim::components::NavTargetRef;
         let Some(engineer) = self.substrate.entities.get(engineer_id) else {
-            return false;
+            return Ok(false);
         };
         if engineer.category != EntityCategory::Infantry
             || !matches!(
@@ -498,7 +498,7 @@ impl Simulation {
                 .object_type(engineer.type_ref(), rules)
                 .is_some_and(|t| t.engineer)
         {
-            return false;
+            return Ok(false);
         }
         let cell = (engineer.position.rx, engineer.position.ry);
         let owner = engineer.owner();
@@ -507,7 +507,7 @@ impl Simulation {
             cell.1,
             crate::sim::movement::locomotor::MovementLayer::Ground,
         ) else {
-            return false;
+            return Ok(false);
         };
         let targets = matches!(engineer.navigation.nav_com,
             Some(NavTargetRef::Entity{id}|NavTargetRef::Object{id}|NavTargetRef::Building{id}) if id==building_id)
@@ -515,40 +515,42 @@ impl Simulation {
                 matches!(attack.target, crate::sim::combat::TargetKind::Entity(id) if id == building_id)
             });
         if !targets {
-            return false;
+            return Ok(false);
         }
         let Some(building) = self.substrate.entities.get(building_id) else {
-            return false;
+            return Ok(false);
         };
         if !self
             .object_type(building.type_ref(), rules)
             .is_some_and(|t| t.bridge_repair_hut)
         {
-            return false;
+            return Ok(false);
         }
         let building_cell = (building.position.rx, building.position.ry);
         //519BB6 supplies the ENGINEER cell;519C02 supplies building XYZ.
         //519B90/50B6F0 gates insertion itself, including radar dedup state.
         self.announce_bridge_repair(owner, cell, building_cell);
-        let changed = match crate::sim::world::bridge_orchestrator::repair_from_engineer(
+        let changed = crate::sim::world::bridge_orchestrator::repair_from_engineer(
             self,
             rules,
             registry,
             engineer_id,
-        ) {
-            Ok(changed) => changed,
-            Err(error) => {
-                log::error!("live engineer bridge repair at {cell:?}: {error}");
-                false
-            }
-        };
+        )
+        .map_err(|cause| {
+            super::FrameAdvanceError::bridge_repair(
+                self.session.tick,
+                self.session.binary_frame,
+                engineer_id,
+                cause,
+            )
+        })?;
         //519D17..519D36 descends Infantry's registry with +28(hut,false).
         //Clearing NavCom does not stop a retained Walk head/destination.
         self.expire_infantry_bridge_hut_targets(building_id);
         // Hut4576F0 Scatter and attached Tag6E53A0 callbacks still require
         // production delivery before this mechanism can be accepted in full.
         self.uninit_with_rules(engineer_id, rules);
-        changed
+        Ok(changed)
     }
 
     /// Tick C4 plant orders.

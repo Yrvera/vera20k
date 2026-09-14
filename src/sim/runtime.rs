@@ -190,8 +190,12 @@ impl SimRuntime {
     /// One command-free Ordinary-lane frame for side binaries (parity-digest):
     /// the same bound-resource transaction as `advance_frame`, with the
     /// crate-private frame output discarded so no internal type goes public.
-    pub fn advance_idle_frame_for_tooling(&mut self, tick_ms: u32) {
-        let _ = self.advance_frame(&[], tick_ms, crate::sim::world::TickLane::Ordinary);
+    pub fn advance_idle_frame_for_tooling(
+        &mut self,
+        tick_ms: u32,
+    ) -> Result<(), crate::sim::world::FrameAdvanceError> {
+        self.advance_frame(&[], tick_ms, crate::sim::world::TickLane::Ordinary)
+            .map(|_| ())
     }
 
     /// The production frame transaction: advance one lane-tagged frame using
@@ -203,7 +207,7 @@ impl SimRuntime {
         commands: &[crate::sim::command::CommandEnvelope],
         tick_ms: u32,
         lane: crate::sim::world::TickLane,
-    ) -> crate::sim::world::SimFrameOutput {
+    ) -> Result<crate::sim::world::SimFrameOutput, crate::sim::world::FrameAdvanceError> {
         self.simulation.advance_app_frame(
             commands,
             Some(&self.resources.rules),
@@ -306,7 +310,9 @@ mod tests {
             resources,
         };
 
-        let _ = runtime.advance_frame(&[], 33, crate::sim::world::TickLane::Ordinary);
+        let _ = runtime
+            .advance_frame(&[], 33, crate::sim::world::TickLane::Ordinary)
+            .expect("fixture frame must complete");
 
         assert_ne!(
             runtime.simulation.crate_authority.slots()[0],

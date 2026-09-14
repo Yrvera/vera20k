@@ -2227,7 +2227,9 @@ mod tests {
                     runtime.replace_simulation(restored);
                     assert_eq!(runtime.simulation.state_hash(), before);
                 }
-                let output = runtime.advance_frame(&[], 67, TickLane::Ordinary);
+                let output = runtime
+                    .advance_frame(&[], 67, TickLane::Ordinary)
+                    .expect("fixture frame must complete");
                 assert!(output.tick.frame_committed);
                 if frame < 16 {
                     assert_eq!(

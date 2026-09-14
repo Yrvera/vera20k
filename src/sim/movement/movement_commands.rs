@@ -783,9 +783,7 @@ pub(crate) fn issue_move_command_with_destination(
             entity_mut.navigation.nav_com = Some(reference);
             entity_mut.navigation.nav_com_aux = None;
             entity_mut.navigation.pending_arrival_clear = false;
-            if let Some(loco) = entity_mut.locomotor.as_mut() {
-                loco.set_walk_destination(Some(coord));
-            }
+            super::navcom::set_walk_destination_coord(entity_mut, coord, resolved_terrain);
         } else if uses_shared_tracks || locomotor_kind == Some(LocomotorKind::Walk) {
             super::navcom::set_destination_internal_cell(
                 entity_mut,

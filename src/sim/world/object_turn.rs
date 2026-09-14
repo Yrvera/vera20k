@@ -62,7 +62,7 @@ impl Simulation {
         rules: Option<&RuleSet>,
         path_grid: Option<&PathGrid>,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    ) -> GroundLocomotorOutcome {
+    ) -> Result<GroundLocomotorOutcome, super::FrameAdvanceError> {
         let sim = self;
         let one = [stable_id];
         let mut outcome = GroundLocomotorOutcome::default();
@@ -109,7 +109,7 @@ impl Simulation {
             .is_some();
         if let Some((id, head)) = pending_movement.take_walk_per_cell() {
             outcome.bridge_state_changed |=
-                sim.run_completed_walk_step(id, head, rules, path_grid, overlay_registry);
+                sim.run_completed_walk_step(id, head, rules, path_grid, overlay_registry)?;
             pending_movement.retain_walk_completion(id, &sim.substrate.entities);
         }
         if let Some((id, coord)) = pending_movement.take_walk_boundary() {
@@ -134,14 +134,14 @@ impl Simulation {
                 &mut sim.pending_lifecycle_requests,
                 true,
             ));
-        outcome
+        Ok(outcome)
     }
     pub(super) fn advance_live_object_pass(
         &mut self,
         rules: Option<&RuleSet>,
         path_grid: Option<&PathGrid>,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    ) -> LiveObjectPassOutcome {
+    ) -> Result<LiveObjectPassOutcome, super::FrameAdvanceError> {
         let miner_config = rules.map(crate::sim::miner::MinerConfig::from_rules);
         let terrain_spawner_cells = self
             .production
@@ -157,16 +157,17 @@ impl Simulation {
         };
 
         let mut outcome = LiveObjectPassOutcome::default();
-        self.for_each_live_object(|sim, stable_id| {
-            let turn = sim.advance_live_object_turn(stable_id, rules, object_ctx);
+        self.try_for_each_live_object::<super::FrameAdvanceError>(|sim, stable_id| {
+            let turn = sim.advance_live_object_turn(stable_id, rules, object_ctx)?;
             outcome.movement.merge(turn.movement);
             outcome.destroyed_structure |= turn.destroyed_structure;
             outcome.bridge_state_changed |= turn.bridge_state_changed;
             if turn.tube_owned {
                 outcome.tube_turn_owned_ids.insert(stable_id);
             }
-        });
-        outcome
+            Ok(())
+        })?;
+        Ok(outcome)
     }
 
     fn advance_live_object_turn(
@@ -174,7 +175,7 @@ impl Simulation {
         stable_id: u64,
         rules: Option<&RuleSet>,
         object_ctx: techno_ai::ObjectAiCtx<'_>,
-    ) -> ObjectTurnOutcome {
+    ) -> Result<ObjectTurnOutcome, super::FrameAdvanceError> {
         let sim = self;
         let path_grid = object_ctx.path_grid;
         let overlay_registry = object_ctx.overlay_registry;
@@ -212,7 +213,7 @@ impl Simulation {
             .get(stable_id)
             .is_none_or(|entity| entity.dying)
         {
-            return outcome;
+            return Ok(outcome);
         }
 
         if !tube_active_at_entry
@@ -230,7 +231,7 @@ impl Simulation {
                 .get(stable_id)
                 .is_none_or(|e| e.dying)
             {
-                return outcome;
+                return Ok(outcome);
             }
         }
         // Drive endpoint PerCellProcess(2) precedes FootStop's NavCom clear.
@@ -257,7 +258,7 @@ impl Simulation {
             .is_some_and(|l| l.kind == crate::rules::locomotor_type::LocomotorKind::Walk);
         let one = [stable_id];
         let ground =
-            sim.process_ground_locomotor_one(stable_id, rules, path_grid, overlay_registry);
+            sim.process_ground_locomotor_one(stable_id, rules, path_grid, overlay_registry)?;
         let ordinary_track_owned = ground.ordinary_track_owned;
         outcome.movement.merge(ground.movement);
         outcome.bridge_state_changed |= ground.bridge_state_changed;
@@ -302,7 +303,7 @@ impl Simulation {
             });
         if tube_owns_whole_turn {
             outcome.tube_owned = true;
-            return outcome;
+            return Ok(outcome);
         }
 
         sim.tick_air_movement_with_cell_lists_one(stable_id);
@@ -428,6 +429,6 @@ impl Simulation {
         }
         sim.tick_move_sound_after_process(stable_id, before_movement, rules);
         sim.object_ai_post_movement_promote_one(stable_id, rules);
-        outcome
+        Ok(outcome)
     }
 }

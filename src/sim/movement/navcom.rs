@@ -15,6 +15,35 @@ use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 const SHIP_STOP_TARGET_FRACTION: SimFixed = SimFixed::lit("0.3");
 
+/// Accepted Walk75ACB0 destination store. This conversion is independent of
+/// HeadTo/OnBridge's416: original6D1830,6D18C0,6D1BF0 initialize the scale for
+/// 6D2120(60), whose result is414 under captured startup FPCW0E7F and027F.
+/// See walk_head_occupation.json destination rows, including actual Cell+4C.
+pub(crate) fn set_walk_destination_coord(
+    entity: &mut GameEntity,
+    coord: DriveCoord,
+    terrain: Option<&ResolvedTerrainGrid>,
+) {
+    let Some(loco) = entity
+        .locomotor
+        .as_mut()
+        .filter(|l| l.kind == LocomotorKind::Walk)
+    else {
+        return;
+    };
+    let mut coord = coord;
+    if coord != (DriveCoord { x: 0, y: 0, z: 0 }) {
+        if let Some(terrain) = terrain {
+            let cell =
+                terrain.native_cell_identity(((coord.x / 256) as i16, (coord.y / 256) as i16));
+            if terrain.native_cell_flags(cell) & 0x100 != 0 {
+                coord.z = coord.z.wrapping_add(414);
+            }
+        }
+    }
+    loco.set_walk_destination(Some(coord));
+}
+
 fn is_drive_locomotor(entity: &GameEntity) -> bool {
     entity
         .locomotor
@@ -146,12 +175,12 @@ pub(super) fn set_destination_internal_cell(
             target_cell_coord(target.0, target.1, resolved_terrain),
             resolved_terrain,
         );
-    } else if let Some(loco) = entity.locomotor.as_mut() {
-        loco.set_walk_destination(Some(target_cell_coord(
-            target.0,
-            target.1,
+    } else {
+        set_walk_destination_coord(
+            entity,
+            target_cell_coord(target.0, target.1, resolved_terrain),
             resolved_terrain,
-        )));
+        );
     }
 }
 

@@ -66,6 +66,7 @@ mod movement_path;
 mod movement_step;
 pub(crate) mod movement_tick;
 mod navcom;
+pub(crate) use navcom::set_walk_destination_coord;
 mod path_markers;
 pub(crate) mod ready_producer;
 pub(crate) mod slope_transition;

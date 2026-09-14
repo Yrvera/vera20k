@@ -164,6 +164,28 @@ class Original:
             trace.append(snapshot())
         return dict(trace=trace,events=self.events)
 
+    def destination(self,row):
+        u=self.uc
+        u.reg_write(UC_X86_REG_FPCW,row['control'])
+        # Ordered original CRT entries814E58/814E68/814EA4. No supplied414.
+        for entry in [0x6D1830,0x6D18C0,0x6D1BF0]: self.call(entry,0,[])
+        self.call(0x6D2120,60,[])
+        adjustment=u.reg_read(UC_X86_REG_EAX)
+        self.setup(dict(input=row['coord'],ground=0,deck=0,level=2,slope=1,structural=row['structural']))
+        incoming=row['coord']
+        if row['cell_target']:
+            # Actual Cell+4C4104F0 forwards +48 to486840, which samples the
+            # same receiver's ground through47B3A0 before Walk adjusts it.
+            u.mem_write(CELL,dwords(0x7E4EEC))
+            self.call(0x4104F0,CELL,[OUTPUT,OWNER])
+            incoming=list(struct.unpack('<iii',u.mem_read(OUTPUT,12)))
+        self.call(0x75AA90,LOCO,[])
+        u.mem_write(LOCO+0xc,dwords(OWNER))
+        self.call(0x75ACB0,0,[LOCO+4,*incoming])
+        return dict(adjustment=adjustment,incoming=incoming,
+            destination=list(struct.unpack('<iii',u.mem_read(LOCO+0x1c,12))),
+            moving=bool(u.mem_read(LOCO+0x34,1)[0]))
+
 def generate():
     native=Original();selection=[];raw=[];producer=[]
     for xy in [(128,128),(192,64),(64,192),(192,192)]:
@@ -191,12 +213,20 @@ def generate():
         ['move','head','stop','retire'],['move','head','stop','retire','stop'],
         ['head'],['head','move']]:
         moving.append(dict(actions=actions,output=Original().moving(actions)))
-    return dict(selection=selection,raw=raw,producer=producer,moving=moving)
+    destination=[]
+    for control in [0x027f,0x0e7f]:
+        for structural in [False,True]:
+            for cell_target,z in [(False,0),(False,416),(True,0)]:
+                row=dict(control=control,structural=structural,cell_target=cell_target,coord=[2752,2624,z])
+                destination.append(dict(input=row,output=Original().destination(row)))
+    return dict(selection=selection,raw=raw,producer=producer,moving=moving,destination=destination)
 
 if __name__=='__main__':
     finish_vectors(generate,Path(__file__).with_suffix('.json'),provenance=lambda:provenance(
         scope='Bounded original infantry placement/raw leaves and no-target Walk75C240 producer, not complete Walk movement or repair admission',
         assumptions=['Allocated destination Cell(10,10) and producer current Cell(9,10) with supplied signed level/slope and raw bytes/house indices',
+        'Destination rows execute6D1830/6D18C0/6D1BF0 startup and6D2120(60) under027F and hardware-captured startup0E7F (tube_startup_capture.json); original CRT pointer order814E58/814E68/814EA4 lies in active812000..815DA4 loop7CBED3',
+        'Cell destination rows execute original+4C4104F0 ->+48486840 ->sameCell47B3A0 before75ACB0; non-Cell rows supply literalXYZ, not a claim for arbitrary target+4C producers',
         'Supplied initialized subcell offsets and height steps104/416; map/owner constructors are excluded',
         '75C240 producer uses no-target/no-slave owner, no crate overlays and original raw/placement callees',
         '481180 receives final argument0 (use incoming coordinate); both priority and plane choices are supplied',
@@ -208,4 +238,4 @@ if __name__=='__main__':
         'Moving traces supply false owner+37C/+1D4/+1D8 predicates and observe owner+54C as a no-op callback; no claim for those receiver side effects',
         'Events observe gate/owner/ground seams only; inline RandomRanged65C7E0 is verified by random_indices, not an event marker',
         'Infantry+38 supplies mark-time owner index; raw bitmap and owner writes execute unmodified'],
-        entry_points={'producer':0x75C240,'placement':0x481180,'raw_mark':0x5217C0,'raw_clear':0x521850,'random_seed':0x65C6D0,'ground':0x578080,'walk_constructor':0x75AA90,'walk_move_to':0x75ACB0,'walk_stop':0x75ADA0,'walk_is_moving':0x75AB30}))
+        entry_points={'producer':0x75C240,'placement':0x481180,'raw_mark':0x5217C0,'raw_clear':0x521850,'random_seed':0x65C6D0,'ground':0x578080,'walk_constructor':0x75AA90,'walk_move_to':0x75ACB0,'walk_stop':0x75ADA0,'walk_is_moving':0x75AB30,'height_numerator_init':0x6D1830,'height_angle_init':0x6D18C0,'height_factor_init':0x6D1BF0,'walk_destination_height':0x6D2120,'cell_destination':0x4104F0,'cell_coordinates':0x486840}))
