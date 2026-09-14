@@ -24,7 +24,6 @@ Be brief, plain and result-first.
 
 Establish gamemd behavior from original instructions, active callers, retail data
 and reproducible native comparisons. Inspect current Rust for implementation state.
-Do not use legacy research reports as implementation sources or lookup guides.
 Ghidra annotations are interpretations, not proof. Confirm active-YR reachability;
 unreachable claims need a breakpoint or flag-to-leaf trace. Never invent offsets,
 identities or behavior.
