@@ -66,6 +66,31 @@ at `0x0044A0BE` targets its configured undeployed Unit, created at
 This does not exclude all computed field writes, bulk copies, later type changes,
 Building survivor paths, Team membership changes or Tag attachment lifetimes.
 
+## Building crews and AI Team inputs
+
+Building crews have an additional Engineer producer. Building's `+0x30C` slot
+`0x007E41C8` points to `0x0044EB10`. If instance `+0x6E3` is zero, the selector
+draws from 0 through 99; a result below 25 and BuildingType `+0xEB8 == 7` selects
+Rules `+0xF70`. Other branches use the ordinary crew selector above.
+This is a conditional selector rule, not a universal survivor probability.
+
+ReadINI stores Factory at `+0xEB8` at `0x00460545`. Its text reader and enum table
+map BuildingType to 7 (`0x00474FF0`, `0x0040DCE0`, table entry `0x00816F18`).
+Winning RULESMD gives GACNST, NACNST and YACNST `Factory=BuildingType` and
+`Crewed=yes`, establishing retail instances of that type gate.
+
+The survivor loop calls this selector at `0x004430B6` and constructs the selected
+Infantry with the Building's owner at `0x004430DD`. Placement, Unlimbo and Scatter
+follow conditionally. This caller contains no explicit instance Tag copy or direct
+call to the Tag setter `0x005F5B50`; callee effects and later Team attachment remain
+separate questions. Ordinary Unit crew exclusions cannot exclude these Engineers.
+
+The winning AIMD from `ra2md.mix -> localmd.mix` has 163 named TeamTypes, all with
+present sections, and no Tag assignments anywhere in that file (138,538 bytes;
+asset provenance and an independent raw-input census checked). This bounds that
+authored input only; constructor defaults, map or mode overrides, runtime Team
+changes and attachment lifetimes are not established by absence of those keys.
+
 ## Trigger latch and enabled state survive a complete stream round-trip
 
 A stored event mismatch is insufficient to prove a Tag callback inert:
