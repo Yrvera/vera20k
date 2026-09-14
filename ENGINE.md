@@ -22,10 +22,12 @@ Be brief, plain and result-first.
 
 ## Exactness and evidence
 
-Confirm gamemd-derived changes against original instructions, active callers, and
-retail data. Research docs and Ghidra annotations are often wrong; treat them as
-leads, not proof. Confirm active-YR reachability; unreachable claims need a breakpoint or
-flag-to-leaf trace. Never invent offsets, identities or behavior.
+Establish gamemd behavior from original instructions, active callers, retail data
+and reproducible native comparisons. Inspect current Rust for implementation state.
+Do not use legacy research reports as implementation sources or lookup guides.
+Ghidra annotations are interpretations, not proof. Confirm active-YR reachability;
+unreachable claims need a breakpoint or flag-to-leaf trace. Never invent offsets,
+identities or behavior.
 
 Priority follows player visibility and frequency; it does not establish equivalence.
 Missing or unproven required behavior keeps an exhaustive task open.
@@ -61,8 +63,8 @@ active-object order are distinct.
 
 `sim/` never depends on `render/`, `ui/`, `sidebar/`, `audio/` or `net/`.
 App code orchestrates without owning duplicate gameplay. Current module contracts
-and `advance_tick` phases describe the architecture. Name coordinate frames/units;
-consult the [coordinate reference](docs/research/coordinate-reference-frames.md).
+and `advance_tick` phases describe the architecture. Name coordinate frames/units
+and establish conversions from current source and native evidence.
 
 Use relevant rows in the [dependency map](docs/module-map.md); verify against source.
 Refresh with `python tools/module_map.py` after dependency, layout, visibility or
