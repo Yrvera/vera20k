@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "Original Infantry51AA40 accepted Cell setter then full Walk75AEC0 with supplied FindPath failure; failure/cancellation consequences and connected520F40..520FAF effective-Move restart prefix. No AStar failure production, full InfantryAI/Doing, successful movement or Rust parity claim.",
+  "assumptions": [
+    "Fixture derived from walk_first_path. Original Infantry/Unit/Cell vtable bytes copied; Cell+48 explicitly selects original486840. Supplied ordinary non-Jumpjet Infantry/House/type, human Doing0, alive, no transport/bunker/radio/links, Type+D94false, Type MovementZone4, no TarCom, no paid head. All unused actor/type storage is zero. Foot+684 byte255 matches Foot constructor4D338F and selects ordinary4DBDF0 ILoco destination coordinates; Foot+6B7 supplied true as in accepted setter fixture.",
+    "CurrentXYZ2624,2624,0; destination Cell11,10 has original Cell center2944,2688,0. Two ordinary flat cells; Cell+44=-1, bridge flags0, original Cell vtable,104 level constant and FPCW0E7F. Map width8/height8/bounds0,0,8,8, raw path-group records289 and zone4 lookup[1,2]. Default current/destination group0; different_zone assigns destination group1. Original56D100/56D230 execute; no map loading, zone rebuild or pathfinding-core proof.",
+    "Initial FootNavComNULL; backing path2,3,4,5/reference9,8 and NavQueue count0/storage TARGET,CELL supplied. Actual setter clears first path word. Actual Walk constructor and referencecount1 model owned ILoco. Initial logical movement timer50/5 and blocked timer40/6; frame100, Rules+1768=22, PathDelay double0.01, CloseEnough128 with325/326/327/512 contrasts. Retry counter dword10/1/0/256/FFFFFFFF supplied before setter; no counter-lifetime/domain/load claim beyond these inputs. Raw actor+418 gate false with true contrast; raw+3D5 true with false contrast; +68Afalse avoids exhausted-path sound branch.",
+    "Non-restart rows run Process at frames100,108,109 only. They preserve resulting FootNavCom separately from cleared Walk destination; later direct Process calls are not complete game turns. Mission15/noTarCom contrast executes the original failure callback cancellation; no universal mission claim.",
+    "Restart rows run failed Process then original520F40 until520FAF in the SAME fixture, advancing frames100/101/102. Effective Move2 (including currentNONE/queuedMove2) reaches original same-pointer Infantry/Foot setter and speed1.0; mission1 contrast skips the prefix. No gameplay state injected between Process and prefix. Real caller order: Infantry51BC9F calls Foot4DA530 with Process4DA877, then surviving51BF7B calls520F40. Intervening shooting/animation/alive gates and520FAF onward remain outside this bounded continuation. No unconditional retry or full Doing delivery claim."
+  ],
+  "substitutions": [
+    "FindPath4D3920 returns EAX0 with original stdcall12 cleanup, leaving actor/path/map state unchanged. Every reached caller/zone/receiver/distance/timer/Stop/restart setter remains original. This fixture supplies failure and cannot certify when AStar should fail or its failure side effects.",
+    "OS InterlockedIncrement/Decrement IAT imports update one pointed count and return it with original stdcall4 cleanup; no other callable substituted. Restart prefix ends at520FAF before its next instruction; each subsequent Process gets a fresh ABI call frame."
+  ],
+  "entry_points": {
+    "setter": "0x0051AA40",
+    "foot_setter": "0x004D94B0",
+    "walk_constructor": "0x0075AA90",
+    "process": "0x0075AEC0",
+    "find_path_seam": "0x004D3920",
+    "foot_zone_predicate": "0x004D3810",
+    "can_reach_zone": "0x0056D100",
+    "failure_receiver": "0x00521DD0",
+    "mission_receiver": "0x004DC030",
+    "stop": "0x0075ADA0",
+    "restart_prefix": "0x00520F40",
+    "restart_endpoint": "0x00520FAF"
+  },
+  "payload_sha256": "ba3c033b05758b4104d4a3e6209e7dd72e6b18fbe2583b128eedd121b1d93467"
+}
