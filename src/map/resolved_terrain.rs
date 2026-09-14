@@ -1172,6 +1172,15 @@ pub struct NativeCellQuery<'a> {
 }
 
 impl<'a> NativeCellQuery<'a> {
+    /// Simulation queries retain the map's one live fallback identity. The
+    /// same nested query APIs also serve isolated ordinary input producers.
+    pub(crate) fn canonical(terrain: &'a ResolvedTerrainGrid) -> Self {
+        Self {
+            terrain,
+            dummy: terrain.shared_cell_dummy.clone(),
+        }
+    }
+
     pub(crate) fn isolated(terrain: &'a ResolvedTerrainGrid) -> Self {
         Self {
             terrain,

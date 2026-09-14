@@ -301,6 +301,10 @@ impl Simulation {
             self.zone_grid.as_ref(),
             self.playfield_bounds,
             &mut self.substrate.cell_occupation,
+            crate::sim::movement::DestinationTiming::new(
+                self.session.binary_frame,
+                rules.general.blockage_path_delay_ticks,
+            ),
         );
         // 51D478 is an immediate locomotor invocation, without another object
         // AI, mission timer, global animation tick, or frame-tail deletion.

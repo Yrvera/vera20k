@@ -393,6 +393,7 @@ fn playfield_hierarchy_initial_order_outside_endpoint_uses_flat_astar() {
         None,
         Some(hierarchy_endpoint_bounds()),
         None,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     let target = entities.get(1).unwrap().movement_target.as_ref().unwrap();
     assert_eq!(target.path.first().copied(), Some((6, 6)));
@@ -805,6 +806,7 @@ fn gsi_04_12_layered_production_precheck_projects_only_hierarchy_coordinates() {
         Some(&blocker_counts),
         None,
         Some(&mut cell_occupation),
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     let movement = entities
         .get(1)
@@ -848,6 +850,7 @@ fn gsi_04_12_layered_production_precheck_projects_only_hierarchy_coordinates() {
             Some(&blocker_counts),
             None,
             None,
+            crate::sim::movement::DestinationTiming::new(0, 60),
         ),
         "destination projection must be selected by the destination structural bit"
     );
@@ -1145,10 +1148,59 @@ fn gsi_04_12_interaction_order_entry_threads_exact_blocker_counts() {
 
     let engineer = sim.substrate.entities.get(engineer_id).unwrap();
     assert_eq!(engineer.capture_target, Some(target_id));
+    assert_eq!(
+        engineer.navigation.nav_com,
+        Some(NavTargetRef::building(target_id))
+    );
+    let request = engineer
+        .movement_target
+        .as_ref()
+        .expect("accepted Capture request");
+    assert_eq!(request.final_goal, Some((5, 0)));
+    assert!(
+        request.path.is_empty(),
+        "Walk searches during Process, after order admission"
+    );
+
+    // The command retains the object destination. Execute the real no-head
+    // Process before checking its route, with live blockers and the same grids.
+    crate::sim::movement::movement_tick::tick_movement_object_with_grids(
+        &mut sim.substrate.entities,
+        engineer_id,
+        Some(&path_grid),
+        &sim.terrain_costs,
+        &sim.house_alliances,
+        &mut sim.substrate.occupancy,
+        &mut sim.substrate.cell_occupation,
+        &mut sim.substrate.raw_cell_occupation,
+        &mut sim.substrate.next_occupancy_enter_order,
+        &mut sim.scenario_rng,
+        sim.session.tick,
+        sim.session.binary_frame,
+        sim.zone_grid.as_ref(),
+        sim.resolved_terrain.as_ref(),
+        sim.overlay_grid.as_ref(),
+        None,
+        sim.playfield_bounds,
+        &sim.terrain_speed_config,
+        sim.close_enough,
+        sim.path_delay_ticks,
+        sim.blockage_path_delay_ticks,
+        &mut sim.interner,
+        Some(&rules),
+        &mut Vec::new(),
+        &mut Vec::new(),
+    );
+    let engineer = sim.substrate.entities.get(engineer_id).unwrap();
+    assert_eq!(
+        engineer.navigation.nav_com,
+        Some(NavTargetRef::building(target_id))
+    );
     let movement = engineer
         .movement_target
         .as_ref()
-        .expect("live Capture order should install the hierarchy-backed target route");
+        .expect("live Capture Process should install the hierarchy-backed target route");
+    assert_eq!(movement.final_goal, Some((5, 0)));
     assert_eq!(movement.path.first().copied(), Some((1, 0)));
     assert!(
         movement
@@ -1157,10 +1209,14 @@ fn gsi_04_12_interaction_order_entry_threads_exact_blocker_counts() {
             .any(|layer| *layer == MovementLayer::Bridge),
         "interaction approach must actually traverse the high-bridge layer"
     );
+    // Native Infantry 51C300/51C37D/51C71B admits the matching Building
+    // NavCom. Foot 4D3A92..4D3E0A passes its original Cell to the core;
+    // tools/spatial_oracle/capture_core_goal.py covers that admission/goal
+    // boundary. This Rust route check does not claim full native AStar parity.
     assert_eq!(
         movement.path.last().copied(),
-        Some((5, 1)),
-        "the concrete Capture path should stop adjacent to the occupied building"
+        Some((5, 0)),
+        "Capture must retain the admitted building Cell as its path goal"
     );
 }
 

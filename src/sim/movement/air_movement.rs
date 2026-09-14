@@ -161,6 +161,7 @@ pub fn issue_air_move_command(
     let Some(entity) = entities.get_mut(entity_id) else {
         return false;
     };
+    entity.navigation.path_runtime = crate::sim::components::FootPathRuntime::default();
     entity.movement_target = Some(movement);
 
     // Trigger takeoff if on the ground.

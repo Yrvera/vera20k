@@ -25,6 +25,24 @@ use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::rules::terrain_rules::LandType;
 use crate::sim::movement::locomotor::MovementLayer;
 
+/// A native CellStruct pointer may refer to a copied local (Foot4D3810) or
+/// retained CellClass+24 (Cell-click4DE1D0). Only the latter follows Dummy
+/// coordinate writes performed by intervening map queries.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ZoneQueryCell {
+    Copied((i16, i16)),
+    Retained(crate::map::cell_index::NativeCellIdentity),
+}
+
+impl ZoneQueryCell {
+    fn coord(self, cells: &crate::map::resolved_terrain::NativeCellQuery<'_>) -> (i16, i16) {
+        match self {
+            Self::Copied(coord) => coord,
+            Self::Retained(cell) => cells.coord(cell),
+        }
+    }
+}
+
 #[path = "bridge_repair_zones.rs"]
 mod bridge_repair_zones;
 
@@ -537,6 +555,75 @@ impl ZoneGrid {
             movement_zone,
         )
         .map(u32::from)
+    }
+
+    /// Map56D100: asymmetric playfield/Size shortcuts, then target and source
+    /// raw zone queries in that order. A missing topology is unavailable input,
+    /// not a negative native predicate. Raw WORDFFFF and DWORDFFFFFFFF remain
+    /// distinct. See walk_move_admission and walk_failed_path native corpora.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn can_reach_native(
+        &self,
+        cells: &crate::map::resolved_terrain::NativeCellQuery<'_>,
+        source: ZoneQueryCell,
+        destination: ZoneQueryCell,
+        movement_zone: MovementZone,
+        source_bridge: bool,
+        destination_bridge: bool,
+        allow_destination_fringe: bool,
+        bounds: crate::sim::cell_rect::PlayfieldBounds,
+        size: (i32, i32),
+    ) -> Option<bool> {
+        use crate::sim::cell_rect::cell_is_in_playfield_height_aware_in_query;
+        if movement_zone == MovementZone::Invalid {
+            return Some(true);
+        }
+        let in_playfield = |cell: ZoneQueryCell| {
+            let p = cell.coord(cells);
+            cell_is_in_playfield_height_aware_in_query(
+                (i32::from(p.0), i32::from(p.1)),
+                Some(bounds),
+                Some(cells.terrain()),
+                Some(cells),
+            )
+        };
+        let in_size = |cell: ZoneQueryCell| {
+            let p = cell.coord(cells);
+            cell_is_in_native_map_diamond((i32::from(p.0), i32::from(p.1)), size.0, size.1)
+        };
+        let source_in_playfield = in_playfield(source);
+        //56D12D reloads the pointer after the height-aware query, which may
+        //have stamped an aliased Dummy. Do not keep its pre-query coordinates.
+        if in_size(source) && !source_in_playfield {
+            return Some(true);
+        }
+        //56D187 executes even when argument6 disables this second shortcut.
+        let destination_in_playfield = in_playfield(destination);
+        let destination_in_size = in_size(destination);
+        if allow_destination_fringe
+            && source_in_playfield
+            && !destination_in_playfield
+            && destination_in_size
+        {
+            return Some(true);
+        }
+        let target = destination.coord(cells);
+        let target_zone = self.get_path_zone_id_native_in_query(
+            cells.terrain(),
+            (target.0 as u16, target.1 as u16),
+            movement_zone,
+            destination_bridge,
+            Some(cells),
+        )?;
+        let source = source.coord(cells);
+        let source_zone = self.get_path_zone_id_native_in_query(
+            cells.terrain(),
+            (source.0 as u16, source.1 as u16),
+            movement_zone,
+            source_bridge,
+            Some(cells),
+        )?;
+        Some(source_zone == target_zone)
     }
 
     /// Exact `MapClass::Can_Reach_Zone @ 0x0056D100` surface as the

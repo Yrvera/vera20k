@@ -172,6 +172,40 @@ fn retain_path_to_head(
     }
 }
 
+/// The caller's native frame and configured Foot blocked timer duration.
+/// Passing this context keeps accepted destination timers anchored even when
+/// Scatter and the ordinary object turn both process one actor in a frame.
+#[derive(Debug, Clone, Copy)]
+pub struct DestinationTiming {
+    pub binary_frame: u32,
+    pub blockage_path_delay_ticks: u16,
+}
+
+impl DestinationTiming {
+    pub const fn new(binary_frame: u32, blockage_path_delay_ticks: u16) -> Self {
+        Self {
+            binary_frame,
+            blockage_path_delay_ticks,
+        }
+    }
+
+    pub fn from_rules(binary_frame: u32, rules: Option<&crate::rules::ruleset::RuleSet>) -> Self {
+        Self::new(
+            binary_frame,
+            rules.map_or(60, |r| r.general.blockage_path_delay_ticks),
+        )
+    }
+
+    fn accept_walk(self, entity: &mut crate::sim::game_entity::GameEntity) {
+        // Foot4D96F0..9707 resets these two timers after every accepted setter;
+        // the constructor/success-owned +64C counter is not reset by an order.
+        let path = &mut entity.navigation.path_runtime;
+        path.start_movement(self.binary_frame, 0, true);
+        path.start_blocked(self.binary_frame, self.blockage_path_delay_ticks, true);
+        path.path_blocked = false;
+    }
+}
+
 /// Issue a move command and attach its MovementTarget execution request.
 ///
 /// Ordinary Walk destinations defer path search to Process. Other locomotors
@@ -189,6 +223,7 @@ pub fn issue_move_command(
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
     entity_block_map: Option<&LayeredEntityBlockMap>,
     mover_is_crusher: bool,
+    timing: crate::sim::movement::DestinationTiming,
 ) -> bool {
     issue_move_command_with_layered(
         entities,
@@ -206,6 +241,7 @@ pub fn issue_move_command(
         None,
         None,
         None,
+        timing,
     )
 }
 
@@ -266,6 +302,10 @@ pub fn set_destination_for_teleporter_entity(
             None,
             playfield_bounds,
             None,
+            crate::sim::movement::DestinationTiming::new(
+                binary_frame,
+                rules.blockage_path_delay_ticks,
+            ),
         );
     }
 
@@ -292,6 +332,10 @@ pub fn set_destination_for_teleporter_entity(
             None,
             playfield_bounds,
             None,
+            crate::sim::movement::DestinationTiming::new(
+                binary_frame,
+                rules.blockage_path_delay_ticks,
+            ),
         );
     }
 
@@ -377,6 +421,13 @@ pub fn issue_direct_move(
     };
 
     if let Some(entity_mut) = entities.get_mut(entity_id) {
+        if entity_mut
+            .locomotor
+            .as_ref()
+            .is_none_or(|l| l.active_kind() != LocomotorKind::Walk)
+        {
+            entity_mut.navigation.path_runtime = crate::sim::components::FootPathRuntime::default();
+        }
         entity_mut.movement_target = Some(movement);
         let has_rot = entity_mut.locomotor.as_ref().is_some_and(|l| l.rot > 0);
         if entity_mut.category != EntityCategory::Infantry && has_rot {
@@ -404,6 +455,7 @@ pub(crate) fn issue_move_command_with_layered(
     blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
     playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
     cell_occupation: Option<&mut crate::sim::occupancy::CellOccupationGrid>,
+    timing: crate::sim::movement::DestinationTiming,
 ) -> bool {
     issue_move_command_with_destination(
         entities,
@@ -422,6 +474,7 @@ pub(crate) fn issue_move_command_with_layered(
         playfield_bounds,
         cell_occupation,
         None,
+        timing,
     )
 }
 
@@ -447,6 +500,7 @@ pub(crate) fn issue_move_command_with_destination(
         crate::sim::components::NavTargetRef,
         crate::sim::components::DriveCoord,
     )>,
+    timing: crate::sim::movement::DestinationTiming,
 ) -> bool {
     issue_move_command_with_destination_impl(
         entities,
@@ -466,6 +520,7 @@ pub(crate) fn issue_move_command_with_destination(
         cell_occupation,
         object_destination,
         true,
+        timing,
     )
 }
 
@@ -490,6 +545,7 @@ fn issue_move_command_with_destination_impl(
         crate::sim::components::DriveCoord,
     )>,
     publish_destination: bool,
+    timing: crate::sim::movement::DestinationTiming,
 ) -> bool {
     // Read the entity's current position and locomotor state.
     let Some(entity) = entities.get(entity_id) else {
@@ -598,6 +654,7 @@ fn issue_move_command_with_destination_impl(
         // object turn searches, or the already-paid head until it completes.
         let committed_head = committed_path_head(entity);
         entity.navigation.path_replay.clear_live_head();
+        timing.accept_walk(entity);
         entity.movement_target = Some(MovementTarget {
             speed,
             current_speed: speed,
@@ -703,8 +760,12 @@ fn issue_move_command_with_destination_impl(
                         .path_layers
                         .extend_from_slice(&appended_layers[1..]);
                     movement.speed = speed;
-                    movement.blocked_delay = 0;
-                    movement.path_blocked = false;
+                    entity_mut.navigation.path_runtime.start_blocked(
+                        timing.binary_frame,
+                        0,
+                        locomotor_kind == Some(LocomotorKind::Walk),
+                    );
+                    entity_mut.navigation.path_runtime.path_blocked = false;
                     debug_assert_eq!(
                         movement.path.len(),
                         movement.path_layers.len(),
@@ -1132,6 +1193,13 @@ fn issue_move_command_with_destination_impl(
                 }
             }
         }
+        if entity_mut
+            .locomotor
+            .as_ref()
+            .is_none_or(|l| l.active_kind() != LocomotorKind::Walk)
+        {
+            entity_mut.navigation.path_runtime = crate::sim::components::FootPathRuntime::default();
+        }
         entity_mut.movement_target = Some(movement);
     }
 
@@ -1153,6 +1221,7 @@ pub(crate) fn prepare_walk_cell_destination(
     zone_grid: Option<&ZoneGrid>,
     playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
     cell_occupation: &mut crate::sim::occupancy::CellOccupationGrid,
+    timing: crate::sim::movement::DestinationTiming,
 ) -> bool {
     let Some(entity) = entities.get_mut(entity_id) else {
         return false;
@@ -1179,5 +1248,6 @@ pub(crate) fn prepare_walk_cell_destination(
         Some(cell_occupation),
         None,
         false,
+        timing,
     )
 }

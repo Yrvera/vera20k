@@ -349,6 +349,13 @@ fn failed_miner_path_restores_full_payload_and_external_instance_state() {
         if stale_fields {
             supply_drive_state(entity);
         }
+        let path_runtime = crate::sim::components::FootPathRuntime {
+            movement_timer: crate::sim::timer::CdTimer::from_raw(-1, -7),
+            blocked_timer: crate::sim::timer::CdTimer::from_raw(i32::MAX - 2, 31),
+            path_blocked: true,
+            retries_left: u32::MAX,
+        };
+        entity.navigation.path_runtime = path_runtime;
         let before = owned_state(entity);
         let mut grid = PathGrid::test_all_blocked(16, 16);
         grid.set_blocked(8, 8, false);
@@ -366,6 +373,7 @@ fn failed_miner_path_restores_full_payload_and_external_instance_state() {
 
         let entity = sim.substrate.entities.get(1).unwrap();
         assert_eq!(owned_state(entity), before);
+        assert_eq!(entity.navigation.path_runtime, path_runtime);
         assert!(matches!(
             entity.locomotor.as_ref().unwrap().runtime_payload,
             LocomotorRuntimePayload::Teleport(None)

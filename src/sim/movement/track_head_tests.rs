@@ -83,6 +83,7 @@ fn actual_move_command_publishes_raw_head_and_matching_curve_for_drive_and_ship(
             None,
             None,
             false,
+            crate::sim::movement::DestinationTiming::new(0, 60),
         ));
         let entity = entities.get(1).unwrap();
         let head = match kind {

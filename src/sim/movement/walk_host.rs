@@ -64,13 +64,16 @@ impl Simulation {
             actor.navigation.path_replay.clear_live_head();
         }
         super::navcom::set_destination_internal_null(actor);
-        if let Some(target) = actor.movement_target.as_mut() {
-            target.path_blocked = false;
-            target.blocked_delay = rules.map_or(self.blockage_path_delay_ticks, |rules| {
+        let path = &mut actor.navigation.path_runtime;
+        path.path_blocked = false;
+        path.start_blocked(
+            self.session.binary_frame,
+            rules.map_or(self.blockage_path_delay_ticks, |rules| {
                 rules.general.blockage_path_delay_ticks
-            });
-            target.movement_delay = 0;
-        }
+            }),
+            true,
+        );
+        path.start_movement(self.session.binary_frame, 0, true);
         true
     }
 
@@ -156,8 +159,8 @@ impl Simulation {
         if accepts {
             // The proved null/non-Enter Infantry envelope reaches Foot4D94B0
             // and Walk75ADA0. There is no paid head left at this call site.
-            // Timers keep their existing movement-adapter owner: while an
-            // adapter exists, apply the native reset before its finalization.
+            // The setter already reset persistent Foot timers. Only the
+            // execution adapter is retired at this completion boundary.
             if let Some(target) = actor.movement_target.as_mut() {
                 target.next_index = target.path.len();
             }
@@ -325,10 +328,10 @@ impl Simulation {
                 y: coord.y,
             },
         ));
-        if let Some(t) = e.movement_target.as_mut() {
-            t.path_blocked = false;
-            t.blocked_delay = 0;
-        }
+        e.navigation.path_runtime.path_blocked = false;
+        e.navigation
+            .path_runtime
+            .start_blocked(self.session.binary_frame, 0, true);
         self.walk_mark_put(id, rules, fallback, registry);
     }
 

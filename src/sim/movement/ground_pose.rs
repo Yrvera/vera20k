@@ -5,10 +5,48 @@
 //! OnBridge offset. Callers own cadence: Drive/Ship residual movement does
 //! not call this setter and retains the last raw coordinate Z.
 
-use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::resolved_terrain::{NativeCellQuery, ResolvedTerrainGrid};
 use crate::sim::components::{DriveCoord, Position};
 use crate::sim::pathfinding::PathGrid;
-use crate::util::lepton::{BRIDGE_HEIGHT_DELTA_LEPTONS, ground_height_leptons};
+use crate::util::lepton::{
+    BRIDGE_HEIGHT_DELTA_LEPTONS, GROUND_LEVEL_HEIGHT_LEPTONS, ground_height_leptons,
+};
+
+/// Map578080 through the caller's query identity. Input queries isolate Dummy;
+/// simulation callbacks use the canonical retained Dummy and its lookup order.
+pub(crate) fn query_ground_height(
+    cells: &NativeCellQuery<'_>,
+    point: DriveCoord,
+) -> Result<i32, String> {
+    let cell = cells.lookup_world(point.x, point.y);
+    let (level, slope) = cells.ground_fields(cell);
+    ground_height_leptons(level, slope, point.x, point.y)
+        .map_err(|error| format!("native ground query: {error:?}"))
+}
+
+/// Foot+BC4DDC40(false) -> Object5F6A70. The navigation coordinate can be a
+/// paid head; source bridge selection is independent of the cached path layer.
+/// Both ground samples precede the conditional structural-cell lookup.
+pub(crate) fn navigation_should_be_on_bridge(
+    cells: &NativeCellQuery<'_>,
+    navigation: DriveCoord,
+    current: DriveCoord,
+    on_bridge: bool,
+    in_tube: bool,
+) -> Result<bool, String> {
+    if in_tube {
+        return Ok(false);
+    }
+    let head_ground = query_ground_height(cells, navigation)?;
+    let current_ground = query_ground_height(cells, current)?;
+    if !on_bridge && current_ground.wrapping_sub(head_ground) > 3 * GROUND_LEVEL_HEIGHT_LEPTONS {
+        return Ok(cells.flags(cells.lookup_world(navigation.x, navigation.y)) & 0x100 != 0);
+    }
+    if on_bridge && head_ground.wrapping_sub(current_ground) > 3 * GROUND_LEVEL_HEIGHT_LEPTONS {
+        return Ok(false);
+    }
+    Ok(on_bridge)
+}
 
 pub(crate) fn position_world_xy(position: &Position) -> [i32; 2] {
     [

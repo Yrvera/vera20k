@@ -432,7 +432,60 @@ pub(super) fn find_move_path_with_marker(
     is_infantry: bool,
     allow_zone_hierarchy: bool,
 ) -> Option<(Vec<(u16, u16)>, Vec<MovementLayer>)> {
-    let grid = ctx.path_grid?;
+    find_move_path_with_marker_detailed(
+        ctx,
+        layered_pathing,
+        start,
+        start_layer,
+        goal,
+        terrain_costs,
+        entity_blocks,
+        ground_blocks,
+        bridge_blocks,
+        zone_mz,
+        movement_zone,
+        too_big_to_fit_under_bridge,
+        entity_block_map,
+        marker_overlay,
+        urgency,
+        mover_is_crusher,
+        is_infantry,
+        allow_zone_hierarchy,
+    )
+    .ok()
+}
+
+/// Internal request failures retain the layer where the return originated.
+/// Option callers preserve their established API through the facade below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MovePathFailure {
+    MissingGrid,
+    BridgeOnlyGoal,
+    Search(zone_search::PathSearchFailure),
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn find_move_path_with_marker_detailed(
+    ctx: PathfindingContext<'_>,
+    layered_pathing: bool,
+    start: (u16, u16),
+    start_layer: MovementLayer,
+    goal: (u16, u16),
+    terrain_costs: Option<&TerrainCostGrid>,
+    entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    ground_blocks: Option<&BTreeSet<(u16, u16)>>,
+    bridge_blocks: Option<&BTreeSet<(u16, u16)>>,
+    zone_mz: MovementZone,
+    movement_zone: Option<MovementZone>,
+    too_big_to_fit_under_bridge: bool,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    urgency: u8,
+    mover_is_crusher: bool,
+    is_infantry: bool,
+    allow_zone_hierarchy: bool,
+) -> Result<(Vec<(u16, u16)>, Vec<MovementLayer>), MovePathFailure> {
+    let grid = ctx.path_grid.ok_or(MovePathFailure::MissingGrid)?;
     let zone_grid = ctx.zone_grid;
     #[cfg(test)]
     if zone_grid.is_some() {
@@ -447,7 +500,7 @@ pub(super) fn find_move_path_with_marker(
     );
     let entity_blocks = (!merged_entity_blocks.is_empty()).then_some(&merged_entity_blocks);
     if layered_pathing {
-        let layered_result = zone_search::find_layered_path_zoned_marker(
+        let layered_result = zone_search::find_layered_path_zoned_marker_detailed(
             grid,
             ground_blocks,
             bridge_blocks,
@@ -468,15 +521,8 @@ pub(super) fn find_move_path_with_marker(
             allow_zone_hierarchy,
             ctx.playfield_bounds,
         );
-        let Some(path) = layered_result else {
-            log::trace!(
-                "find_move_path: layered A* failed ({:?} layer={:?} → {:?})",
-                start,
-                start_layer,
-                goal,
-            );
-            return None;
-        };
+        let path = layered_result.map_err(MovePathFailure::Search)?;
+
         log::trace!(
             "find_move_path: layered A* succeeded ({:?}→{:?}), {} steps",
             start,
@@ -487,7 +533,7 @@ pub(super) fn find_move_path_with_marker(
         let layers: Vec<MovementLayer> = path.iter().map(|step| step.layer).collect();
         if contains_non_adjacent_step(&coords) {
             let (coords, layers) = truncate_layered_path(coords, layers, MAX_PATH_SEGMENT_STEPS);
-            return Some((coords, layers));
+            return Ok((coords, layers));
         }
         let layered_smooth_walkable = |x: u16, y: u16, layer: MovementLayer| -> bool {
             if !grid.is_walkable_on_layer(x, y, layer) {
@@ -525,14 +571,14 @@ pub(super) fn find_move_path_with_marker(
         let (coords, layers) =
             path_smooth::optimize_layered_path(coords, layers, &layered_smooth_walkable);
         let (coords, layers) = truncate_layered_path(coords, layers, MAX_PATH_SEGMENT_STEPS);
-        return Some((coords, layers));
+        return Ok((coords, layers));
     }
 
     if is_bridge_only_goal(grid, goal) {
-        return None;
+        return Err(MovePathFailure::BridgeOnlyGoal);
     }
 
-    let path = zone_search::find_path_zoned_marker(
+    let path = zone_search::find_path_zoned_marker_detailed(
         grid,
         start,
         goal,
@@ -550,12 +596,13 @@ pub(super) fn find_move_path_with_marker(
         is_infantry,
         allow_zone_hierarchy,
         ctx.playfield_bounds,
-    )?;
+    )
+    .map_err(MovePathFailure::Search)?;
 
     if contains_non_adjacent_step(&path) {
         let path_layers = build_flat_fallback_layers(&path, start_layer, grid);
         let (path, path_layers) = truncate_layered_path(path, path_layers, MAX_PATH_SEGMENT_STEPS);
-        return Some((path, path_layers));
+        return Ok((path, path_layers));
     }
 
     let smooth_walkable = |x: u16, y: u16| -> bool {
@@ -583,7 +630,7 @@ pub(super) fn find_move_path_with_marker(
     let path = path_smooth::optimize_path(path, &smooth_walkable);
     let path_layers = build_flat_fallback_layers(&path, start_layer, grid);
     let (path, path_layers) = truncate_layered_path(path, path_layers, MAX_PATH_SEGMENT_STEPS);
-    Some((path, path_layers))
+    Ok((path, path_layers))
 }
 
 fn contains_non_adjacent_step(path: &[(u16, u16)]) -> bool {
@@ -623,6 +670,8 @@ fn build_flat_fallback_layers(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn try_repath_after_block(
     target: &mut MovementTarget,
+    path_runtime: &mut crate::sim::components::FootPathRuntime,
+    walk: bool,
     facing: &mut u8,
     current: (u16, u16),
     current_layer: MovementLayer,
@@ -648,7 +697,7 @@ pub(super) fn try_repath_after_block(
         return false;
     }
     let Some(grid) = ctx.path_grid else {
-        target.movement_delay = mcfg.path_delay_ticks;
+        path_runtime.start_movement(mcfg.binary_frame, mcfg.path_delay_ticks, walk);
         return false;
     };
 
@@ -666,7 +715,7 @@ pub(super) fn try_repath_after_block(
         ctx.resolved_terrain,
         NEAREST_REACHABLE_SEARCH_RADIUS,
     ) else {
-        target.movement_delay = mcfg.path_delay_ticks;
+        path_runtime.start_movement(mcfg.binary_frame, mcfg.path_delay_ticks, walk);
         return false;
     };
     if effective_goal != goal {
@@ -710,11 +759,11 @@ pub(super) fn try_repath_after_block(
         allow_zone_hierarchy,
     );
     let Some((new_path, new_layers)) = path_result else {
-        target.movement_delay = mcfg.path_delay_ticks;
+        path_runtime.start_movement(mcfg.binary_frame, mcfg.path_delay_ticks, walk);
         return false;
     };
     if new_path.len() < 2 {
-        target.movement_delay = mcfg.path_delay_ticks;
+        path_runtime.start_movement(mcfg.binary_frame, mcfg.path_delay_ticks, walk);
         return false;
     }
 
@@ -729,8 +778,8 @@ pub(super) fn try_repath_after_block(
     // Infantry: clear blocking state on repath success (fresh grace period).
     // Walk's blocked caller restores its grace until actual paid progress.
     if is_infantry {
-        target.blocked_delay = 0;
-        target.path_blocked = false;
+        path_runtime.start_blocked(mcfg.binary_frame, 0, walk);
+        path_runtime.path_blocked = false;
     }
     // Do NOT set movement_delay on successful repath. gamemd chains
     // Process_Drive_Track(is_retry=1) in the same tick, producing a 0-tick
@@ -814,6 +863,56 @@ mod tests {
             has_damaged_data: false,
             bridgehead_anchor_class_at_load: None,
         }
+    }
+
+    #[test]
+    fn path_failure_detail_distinguishes_missing_grid_from_executed_search() {
+        use crate::sim::pathfinding::zone_search::PathSearchFailure;
+        fn search(
+            grid: Option<&PathGrid>,
+        ) -> Result<(Vec<(u16, u16)>, Vec<MovementLayer>), MovePathFailure> {
+            find_move_path_with_marker_detailed(
+                PathfindingContext {
+                    path_grid: grid,
+                    zone_grid: None,
+                    resolved_terrain: None,
+                    playfield_bounds: None,
+                    blocker_neighbor_counts: None,
+                },
+                false,
+                (0, 1),
+                MovementLayer::Ground,
+                (4, 1),
+                None,
+                None,
+                None,
+                None,
+                MovementZone::Normal,
+                Some(MovementZone::Normal),
+                false,
+                None,
+                None,
+                0,
+                false,
+                true,
+                false,
+            )
+        }
+        assert_eq!(search(None), Err(MovePathFailure::MissingGrid));
+        let mut grid = PathGrid::test_all_passable(5, 3);
+        let (path, layers) = search(Some(&grid)).expect("open cell search");
+        assert_eq!(path.first(), Some(&(0, 1)));
+        assert_eq!(path.last(), Some(&(4, 1)));
+        assert_eq!(layers, vec![MovementLayer::Ground; path.len()]);
+        for y in 0..3 {
+            grid.set_blocked(2, y, true);
+        }
+        assert_eq!(
+            search(Some(&grid)),
+            Err(MovePathFailure::Search(
+                PathSearchFailure::CellSearchExhausted
+            ))
+        );
     }
 
     #[test]
@@ -989,15 +1088,18 @@ mod tests {
             path_layers: vec![MovementLayer::Ground; 3],
             next_index: 1,
             final_goal: Some((8, 6)),
-            path_blocked: true,
-            blocked_delay: 1,
             ..MovementTarget::default()
         };
+        let mut path_runtime = crate::sim::components::FootPathRuntime::default();
+        path_runtime.path_blocked = true;
+        path_runtime.start_blocked(0, 1, false);
         let mut facing = 0;
         let mut rng = SimRng::new(0);
 
         assert!(try_repath_after_block(
             &mut target,
+            &mut path_runtime,
+            false,
             &mut facing,
             (6, 6),
             MovementLayer::Ground,
@@ -1015,6 +1117,7 @@ mod tests {
             Some(MovementZone::Normal),
             false,
             MovementConfig {
+                binary_frame: 0,
                 close_enough: crate::util::fixed_math::SIM_ZERO,
                 path_delay_ticks: 9,
                 blockage_path_delay_ticks: 60,
@@ -1045,11 +1148,14 @@ mod tests {
             final_goal: Some((4, 1)),
             ..MovementTarget::default()
         };
+        let mut path_runtime = crate::sim::components::FootPathRuntime::default();
         let mut facing = 0;
         let mut rng = crate::sim::rng::SimRng::new(0);
 
         assert!(try_repath_after_block(
             &mut target,
+            &mut path_runtime,
+            false,
             &mut facing,
             (0, 1),
             MovementLayer::Ground,
@@ -1067,6 +1173,7 @@ mod tests {
             Some(MovementZone::Normal),
             false,
             MovementConfig {
+                binary_frame: 0,
                 close_enough: crate::util::fixed_math::SIM_ZERO,
                 path_delay_ticks: 9,
                 blockage_path_delay_ticks: 60,

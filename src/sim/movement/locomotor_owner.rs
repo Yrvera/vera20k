@@ -95,6 +95,7 @@ pub(crate) struct DriveActivationSnapshot {
     curve: Option<DriveTrackState>,
     forced: Option<ForcedDriveTrackState>,
     path_replay: crate::sim::components::FootPathQueue,
+    path_runtime: crate::sim::components::FootPathRuntime,
     foot_speed: crate::sim::components::FootSpeedState,
     foot_occupation_enabled: bool,
 }
@@ -107,6 +108,7 @@ impl DriveActivationSnapshot {
             curve: entity.drive_track.clone(),
             forced: entity.forced_drive_track.clone(),
             path_replay: entity.navigation.path_replay.clone(),
+            path_runtime: entity.navigation.path_runtime,
             foot_speed: entity.foot_speed.clone(),
             foot_occupation_enabled: entity.foot_occupation_enabled,
         }
@@ -118,6 +120,7 @@ impl DriveActivationSnapshot {
         entity.drive_track = self.curve;
         entity.forced_drive_track = self.forced;
         entity.navigation.path_replay = self.path_replay;
+        entity.navigation.path_runtime = self.path_runtime;
         entity.foot_speed = self.foot_speed;
         entity.foot_occupation_enabled = self.foot_occupation_enabled;
     }

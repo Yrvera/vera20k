@@ -710,6 +710,7 @@ fn walk_destination_search_observes_route_opened_before_process() {
         sim.zone_grid.as_ref(),
         sim.playfield_bounds,
         &mut sim.substrate.cell_occupation,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     let e = sim.substrate.entities.get(actor).unwrap();
     assert!(e.movement_target.as_ref().unwrap().path.is_empty());
@@ -1028,12 +1029,10 @@ fn walk_null_setter_matches_original_caller_rows() {
         if input["contact"] == true {
             e.radio_contacts.insert(victim);
         }
-        e.movement_target = Some(MovementTarget {
-            movement_delay: 5,
-            blocked_delay: 6,
-            path_blocked: true,
-            ..Default::default()
-        });
+        e.movement_target = Some(MovementTarget::default());
+        e.navigation.path_runtime.start_movement(0, 5, false);
+        e.navigation.path_runtime.start_blocked(0, 6, false);
+        e.navigation.path_runtime.path_blocked = true;
         let loco = e.locomotor.as_mut().unwrap();
         loco.set_walk_destination(Some(DriveCoord {
             x: 7808,
@@ -1086,9 +1085,18 @@ fn walk_null_setter_matches_original_caller_rows() {
             e.navigation.nav_queue.len(),
             row["nav_queue_count"].as_u64().unwrap() as usize
         );
-        let target = e.movement_target.as_ref().unwrap();
-        assert!(!target.path_blocked);
-        assert_eq!(target.movement_delay, 0);
-        assert_eq!(target.blocked_delay, 22);
+        assert!(e.movement_target.is_some());
+        let path = &e.navigation.path_runtime;
+        assert!(!path.path_blocked);
+        assert_eq!(
+            path.movement_timer
+                .remaining(sim.session.binary_frame as i32),
+            0
+        );
+        assert_eq!(
+            path.blocked_timer
+                .remaining(sim.session.binary_frame as i32),
+            22
+        );
     }
 }

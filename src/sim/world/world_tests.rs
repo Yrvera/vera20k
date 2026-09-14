@@ -6435,6 +6435,7 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
             None,
             None,
             Some(cell_occupation),
+            crate::sim::movement::DestinationTiming::new(0, 60),
         )
     };
     assert!(issued);
@@ -6665,6 +6666,7 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
             None,
             None,
             Some(cell_occupation),
+            crate::sim::movement::DestinationTiming::new(0, 60),
         )
     };
     assert!(issued);

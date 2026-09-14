@@ -91,6 +91,7 @@ pub fn tick_idle_scatter(
     rng: &mut SimRng,
     frame_counter: u64,
     interner: &crate::sim::intern::StringInterner,
+    timing: crate::sim::movement::DestinationTiming,
 ) {
     if frame_counter == 0 || !frame_counter.is_multiple_of(IDLE_SCATTER_INTERVAL) {
         return;
@@ -205,6 +206,7 @@ pub fn tick_idle_scatter(
             None,  // no resolved world substrate for exact blocker counts
             None,  // no MapClass authority reaches this isolated helper
             None,  // caller does not own the world occupation grid
+            timing,
         );
     }
 }
@@ -226,6 +228,7 @@ pub fn scatter_units_from_cell(
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
     occupancy: &OccupancyGrid,
     interner: &crate::sim::intern::StringInterner,
+    timing: crate::sim::movement::DestinationTiming,
 ) -> u32 {
     let spiral = generate_spiral_offsets(MAX_SPIRAL_RADIUS, MAX_SCATTER_DIRECTIONS);
 
@@ -314,6 +317,7 @@ pub fn scatter_units_from_cell(
             None,  // no resolved world substrate for exact blocker counts
             None,  // no MapClass authority reaches this isolated helper
             None,  // caller does not own the world occupation grid
+            timing,
         );
 
         if success {

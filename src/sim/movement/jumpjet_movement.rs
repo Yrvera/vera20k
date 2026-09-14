@@ -451,6 +451,9 @@ impl crate::sim::world::Simulation {
         }
         if moving {
             let target = ((destination.x / 256) as u16, (destination.y / 256) as u16);
+            // Preserve this adapter's former default reset. Native Jumpjet
+            // timer producers are outside the Foot/Walk migration here.
+            e.navigation.path_runtime = crate::sim::components::FootPathRuntime::default();
             e.movement_target = Some(MovementTarget {
                 path: vec![target],
                 path_layers: vec![MovementLayer::Air],

@@ -1612,6 +1612,19 @@ fn repair_queries_unrelated_rocketeer_after_move_and_snapshot_restore() {
             current
         );
         if ordered {
+            // This fresh air adapter retains its old default-allocation reset
+            // during the Foot owner migration; it is not a Jumpjet timer oracle.
+            sim.substrate
+                .entities
+                .get_mut(rocketeer)
+                .unwrap()
+                .navigation
+                .path_runtime = crate::sim::components::FootPathRuntime {
+                movement_timer: crate::sim::timer::CdTimer::from_raw(-1, 7),
+                blocked_timer: crate::sim::timer::CdTimer::from_raw(-1, 31),
+                path_blocked: true,
+                retries_left: 256,
+            };
             let grid = sim.path_grid_snapshot();
             assert!(sim.apply_command_with_overlays(
                 "Americans",
@@ -1628,6 +1641,15 @@ fn repair_queries_unrelated_rocketeer_after_move_and_snapshot_restore() {
                 Some(&registry)
             ));
             drop(grid);
+            assert_eq!(
+                sim.substrate
+                    .entities
+                    .get(rocketeer)
+                    .unwrap()
+                    .navigation
+                    .path_runtime,
+                crate::sim::components::FootPathRuntime::default()
+            );
             let state = sim
                 .substrate
                 .entities

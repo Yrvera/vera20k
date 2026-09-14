@@ -489,6 +489,10 @@ fn issue_pathed_move(
         Some(&blocker_neighbor_counts),
         sim.playfield_bounds,
         Some(&mut sim.substrate.cell_occupation),
+        crate::sim::movement::DestinationTiming::new(
+            sim.session.binary_frame,
+            sim.blockage_path_delay_ticks,
+        ),
     );
 }
 

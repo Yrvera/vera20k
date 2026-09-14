@@ -162,8 +162,9 @@ use crate::sim::find_nearby_cell::{
     NearbyAnchorGate, NearbyFootprint, NearbyQuery, PassabilityArgs, find_nearby_passable_cell,
     map_owned_radius_cap,
 };
+use crate::sim::movement::ground_pose::query_ground_height as query_ground;
 use crate::sim::occupancy::RawCellOccupationGrid;
-use crate::sim::pathfinding::zone_map::{ZoneGrid, cell_is_in_native_map_diamond};
+use crate::sim::pathfinding::zone_map::{ZoneGrid, ZoneQueryCell};
 use crate::util::lepton::{BRIDGE_HEIGHT_DELTA_LEPTONS, GROUND_LEVEL_HEIGHT_LEPTONS};
 
 /// Values read by the ordinary Infantry/Walk4DE1D0 input receiver. The +70
@@ -181,13 +182,6 @@ struct WalkCellClick {
     jumpjet_type: bool,
     movement_zone: MovementZone,
     speed_type: SpeedType,
-}
-
-fn query_ground(cells: &NativeCellQuery<'_>, point: DriveCoord) -> Result<i32, String> {
-    let cell = cells.lookup_world(point.x, point.y);
-    let (level, slope) = cells.ground_fields(cell);
-    crate::util::lepton::ground_height_leptons(level, slope, point.x, point.y)
-        .map_err(|error| format!("input ground query: {error:?}"))
 }
 
 fn clicked_coordinate(
@@ -229,83 +223,6 @@ fn coordinate_is_shrouded(
         return open(next).map(|open| !open);
     }
     Ok(true)
-}
-
-fn source_should_be_on_bridge(
-    cells: &NativeCellQuery<'_>,
-    click: &WalkCellClick,
-) -> Result<bool, String> {
-    if click.in_tube {
-        return Ok(false);
-    }
-    //5F6A70 queries +4C/head ground before retained Object XYZ ground.
-    let head_ground = query_ground(cells, click.coordinate)?;
-    let current_ground = query_ground(cells, click.current)?;
-    if !click.on_bridge
-        && current_ground.wrapping_sub(head_ground) > 3 * GROUND_LEVEL_HEIGHT_LEPTONS
-    {
-        return Ok(
-            cells.flags(cells.lookup_world(click.coordinate.x, click.coordinate.y)) & 0x100 != 0,
-        );
-    }
-    if click.on_bridge && head_ground.wrapping_sub(current_ground) > 3 * GROUND_LEVEL_HEIGHT_LEPTONS
-    {
-        return Ok(false);
-    }
-    Ok(click.on_bridge)
-}
-
-fn click_can_reach(
-    cells: &NativeCellQuery<'_>,
-    zones: &ZoneGrid,
-    source: NativeCellIdentity,
-    target: (i16, i16),
-    mz: MovementZone,
-    source_bridge: bool,
-    target_bridge: bool,
-    bounds: PlayfieldBounds,
-    size: (i32, i32),
-) -> Result<bool, String> {
-    let source_coord = cells.coord(source);
-    let source_pair = (i32::from(source_coord.0), i32::from(source_coord.1));
-    if !cell_is_in_playfield_height_aware_in_query(
-        source_pair,
-        Some(bounds),
-        Some(cells.terrain()),
-        Some(cells),
-    ) && cell_is_in_native_map_diamond(source_pair, size.0, size.1)
-    {
-        return Ok(true);
-    }
-    //56D187 still queries destination playfield even when arg6=false makes
-    //the asymmetric destination shortcut unavailable. Preserve lookup effects.
-    let _ = cell_is_in_playfield_height_aware_in_query(
-        (i32::from(target.0), i32::from(target.1)),
-        Some(bounds),
-        Some(cells.terrain()),
-        Some(cells),
-    );
-    //56D1FC resolves target before source. A source Dummy remains live here.
-    let target_zone = zones
-        .get_path_zone_id_native_in_query(
-            cells.terrain(),
-            (target.0 as u16, target.1 as u16),
-            mz,
-            target_bridge,
-            Some(cells),
-        )
-        .ok_or("input target lacks native zone topology")?;
-    let p = cells.coord(source);
-    let source_zone = zones
-        .get_path_zone_id_native_in_query(
-            cells.terrain(),
-            (p.0 as u16, p.1 as u16),
-            mz,
-            source_bridge,
-            Some(cells),
-        )
-        .ok_or("input source lacks native zone topology")?;
-    Ok(source_zone == target_zone)
 }
 
 /// Original4DE1D0 under the ordinary Walk type/actor gates. No A* search and
@@ -353,7 +270,13 @@ fn resolve_walk_cell_click(
         return Err("Subterranean input receiver is outside the ordinary Walk domain".into());
     }
     let special = high_flying || click.jumpjet_type;
-    let source_bridge = source_should_be_on_bridge(cells, click)?;
+    let source_bridge = ground_pose::navigation_should_be_on_bridge(
+        cells,
+        click.coordinate,
+        click.current,
+        click.on_bridge,
+        click.in_tube,
+    )?;
     let point = clicked_coordinate(cells, click.clicked)?;
     let shrouded = coordinate_is_shrouded(cells, point, &open)?;
     let unrestricted = special && click.action == 2;
@@ -363,17 +286,20 @@ fn resolve_walk_cell_click(
                 .then_some((click.clicked.0 as u16, click.clicked.1 as u16)));
         }
         let bridge = cells.flags(cells.lookup(click.clicked)) & 0x100 != 0;
-        if click_can_reach(
-            cells,
-            zones,
-            source,
-            click.clicked,
-            click.movement_zone,
-            source_bridge,
-            bridge,
-            bounds,
-            size,
-        )? {
+        if zones
+            .can_reach_native(
+                cells,
+                ZoneQueryCell::Retained(source),
+                ZoneQueryCell::Copied(click.clicked),
+                click.movement_zone,
+                source_bridge,
+                bridge,
+                false,
+                bounds,
+                size,
+            )
+            .ok_or("input lacks native zone topology")?
+        {
             return Ok((click.clicked != (0, 0))
                 .then_some((click.clicked.0 as u16, click.clicked.1 as u16)));
         }
