@@ -477,6 +477,14 @@ impl Simulation {
         if target.path.get(target.next_index).copied()
             == Some((entity.position.rx, entity.position.ry))
         {
+            // This compatibility cache follows the accepted path node being
+            // consumed. The shared native track host owns XYZ/OnBridge and
+            // list/raw occupation separately; ramps can legitimately disagree
+            // with this path layer. Publish before the last adapter is retired,
+            // because the next order uses this layer when no paid head remains.
+            if let Some(locomotor) = entity.locomotor.as_mut() {
+                locomotor.layer = target.layer_at(target.next_index);
+            }
             target.next_index += 1;
             if let Some(&(x, y)) = target.path.get(target.next_index) {
                 let (dx, dy, length) = crate::util::lepton::cell_delta_to_lepton_dir(

@@ -321,12 +321,38 @@ fn follow_clicked_goal(
             .get(entity_id)
             .expect("mover alive");
         if frame == 0 {
+            assert!(output.tick.executed_commands > 0);
             assert!(
                 entity.movement_target.is_some(),
                 "clicked goal {goal:?} must become a movement target after command admission"
             );
+            assert_eq!(
+                entity
+                    .movement_target
+                    .as_ref()
+                    .and_then(|target| target.final_goal),
+                Some(goal),
+                "each chained retail command must install its exact destination"
+            );
+            // Walk's current command adapter stores its goal in MovementTarget.
+            // The shared Drive/Ship host additionally publishes NavCom.
+            if entity.locomotor.as_ref().is_some_and(|locomotor| {
+                matches!(
+                    locomotor.kind,
+                    crate::rules::locomotor_type::LocomotorKind::Drive
+                        | crate::rules::locomotor_type::LocomotorKind::Ship
+                )
+            }) {
+                assert_eq!(
+                    entity.navigation.nav_com,
+                    Some(crate::sim::components::NavTargetRef::cell(goal.0, goal.1)),
+                    "shared-track commands must also publish their exact NavCom"
+                );
+            }
         }
-        if (entity.position.rx, entity.position.ry) == goal {
+        if (entity.position.rx, entity.position.ry) == goal && entity.movement_target.is_none() {
+            // Body Cell entry can precede paid-head retirement by several
+            // frames. Check the state used by the next actual Move order.
             assert_eq!(
                 entity.on_bridge, expected_on_bridge,
                 "clicked goal {goal:?} must select the intended movement plane"
