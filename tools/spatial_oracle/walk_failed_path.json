@@ -5163,5 +5163,448 @@
         0
       ]
     }
+  },
+  {
+    "initial_movement_timer": {
+      "duration": 5,
+      "start_frame": 50
+    },
+    "input": {
+      "astar_null": true,
+      "destination_x": 11,
+      "frames": [
+        100
+      ],
+      "mission": 2,
+      "native_find_path": true,
+      "retries": 10,
+      "target": false
+    },
+    "phases": [
+      {
+        "events": [
+          "0x4d3920",
+          "0x4d3810",
+          "0x5b3040",
+          "0x56d100",
+          "0x5f65a0",
+          "0x4d3e11",
+          [
+            "astar_null",
+            100,
+            [
+              269479852,
+              269471848,
+              2000,
+              0,
+              0,
+              0
+            ]
+          ],
+          "0x4d3eac",
+          "0x4d4016",
+          "0x4d4044",
+          "0x51daf0",
+          "0x51d6f0",
+          "0x565730",
+          "0x565730",
+          "0x565730",
+          "0x4d55c0",
+          "0x75ada0",
+          "0x521b40",
+          "0x4d41e5",
+          [
+            "find_path_failure_return",
+            {
+              "action_frame": 0,
+              "action_timer_duration": 0,
+              "action_timer_start": 0,
+              "destination": [
+                0,
+                0,
+                0
+              ],
+              "doing": 0,
+              "entry_state": 0,
+              "frame": 100,
+              "head": [
+                0,
+                0,
+                0
+              ],
+              "marked": 1,
+              "mission": 2,
+              "motion": 0,
+              "movement_timer": {
+                "duration": 9,
+                "start_frame": 100
+              },
+              "moving": 0,
+              "nav": 536928768,
+              "nav_queue_count": 0,
+              "nav_queue_entries": [
+                536879104,
+                536928256
+              ],
+              "queue": [
+                -1,
+                3,
+                4,
+                5
+              ],
+              "queued_mission": 4294967295,
+              "reference": [
+                9,
+                8
+              ],
+              "retries": 10,
+              "speed": 0.0,
+              "target": 0,
+              "xyz": [
+                2624,
+                2624,
+                0
+              ]
+            }
+          ],
+          "0x4d3810",
+          "0x75b580",
+          "0x51aa40",
+          "0x5b3040",
+          "0x51ad11",
+          "0x4d94b0",
+          "0x75ada0",
+          "0x521b40"
+        ],
+        "state": {
+          "action_frame": 0,
+          "action_timer_duration": 0,
+          "action_timer_start": 0,
+          "destination": [
+            0,
+            0,
+            0
+          ],
+          "doing": 0,
+          "entry_state": 0,
+          "frame": 100,
+          "head": [
+            0,
+            0,
+            0
+          ],
+          "marked": 1,
+          "mission": 2,
+          "motion": 0,
+          "movement_timer": {
+            "duration": 0,
+            "start_frame": 100
+          },
+          "moving": 0,
+          "nav": 0,
+          "nav_queue_count": 0,
+          "nav_queue_entries": [
+            536879104,
+            536928256
+          ],
+          "queue": [
+            -1,
+            3,
+            4,
+            5
+          ],
+          "queued_mission": 4294967295,
+          "reference": [
+            9,
+            8
+          ],
+          "retries": 10,
+          "speed": 0.0,
+          "target": 0,
+          "xyz": [
+            2624,
+            2624,
+            0
+          ]
+        }
+      }
+    ],
+    "setter": {
+      "action_frame": 0,
+      "action_timer_duration": 0,
+      "action_timer_start": 0,
+      "destination": [
+        2944,
+        2688,
+        0
+      ],
+      "doing": 0,
+      "entry_state": 0,
+      "frame": 100,
+      "head": [
+        0,
+        0,
+        0
+      ],
+      "marked": 0,
+      "mission": 2,
+      "motion": 0,
+      "movement_timer": {
+        "duration": 0,
+        "start_frame": 100
+      },
+      "moving": 1,
+      "nav": 536928768,
+      "nav_queue_count": 0,
+      "nav_queue_entries": [
+        536879104,
+        536928256
+      ],
+      "queue": [
+        -1,
+        3,
+        4,
+        5
+      ],
+      "queued_mission": 4294967295,
+      "reference": [
+        9,
+        8
+      ],
+      "retries": 10,
+      "speed": 0.0,
+      "target": 0,
+      "xyz": [
+        2624,
+        2624,
+        0
+      ]
+    }
+  },
+  {
+    "initial_movement_timer": {
+      "duration": 5,
+      "start_frame": 50
+    },
+    "input": {
+      "astar_null": true,
+      "destination_x": 13,
+      "frames": [
+        100
+      ],
+      "mission": 2,
+      "native_find_path": true,
+      "retries": 10,
+      "target": false
+    },
+    "phases": [
+      {
+        "events": [
+          "0x4d3920",
+          "0x4d3810",
+          "0x5b3040",
+          "0x56d100",
+          "0x5f65a0",
+          "0x4d3e11",
+          [
+            "astar_null",
+            100,
+            [
+              269479852,
+              269471848,
+              2000,
+              0,
+              0,
+              0
+            ]
+          ],
+          "0x4d3eac",
+          "0x4d4016",
+          "0x4d4044",
+          "0x51daf0",
+          "0x51d6f0",
+          "0x565730",
+          "0x565730",
+          "0x565730",
+          "0x4d55c0",
+          "0x75ada0",
+          "0x521b40",
+          "0x4d413a",
+          "0x51aa40",
+          "0x5b3040",
+          "0x51ad11",
+          "0x4d94b0",
+          "0x75ada0",
+          "0x521b40",
+          "0x4d4150",
+          "0x4d41d6",
+          "0x4d41e5",
+          [
+            "find_path_failure_return",
+            {
+              "action_frame": 0,
+              "action_timer_duration": 0,
+              "action_timer_start": 0,
+              "destination": [
+                0,
+                0,
+                0
+              ],
+              "doing": 0,
+              "entry_state": 0,
+              "frame": 100,
+              "head": [
+                0,
+                0,
+                0
+              ],
+              "marked": 1,
+              "mission": 2,
+              "motion": 0,
+              "movement_timer": {
+                "duration": 0,
+                "start_frame": 100
+              },
+              "moving": 0,
+              "nav": 0,
+              "nav_queue_count": 0,
+              "nav_queue_entries": [
+                536879104,
+                536928256
+              ],
+              "queue": [
+                -1,
+                3,
+                4,
+                5
+              ],
+              "queued_mission": 5,
+              "reference": [
+                9,
+                8
+              ],
+              "retries": 10,
+              "speed": 0.0,
+              "target": 0,
+              "xyz": [
+                2624,
+                2624,
+                0
+              ]
+            }
+          ],
+          "0x4d3810",
+          "0x75b580",
+          "0x51aa40",
+          "0x5b3040",
+          "0x51ad11",
+          "0x4d94b0",
+          "0x75ada0",
+          "0x521b40"
+        ],
+        "state": {
+          "action_frame": 0,
+          "action_timer_duration": 0,
+          "action_timer_start": 0,
+          "destination": [
+            0,
+            0,
+            0
+          ],
+          "doing": 0,
+          "entry_state": 0,
+          "frame": 100,
+          "head": [
+            0,
+            0,
+            0
+          ],
+          "marked": 1,
+          "mission": 2,
+          "motion": 0,
+          "movement_timer": {
+            "duration": 0,
+            "start_frame": 100
+          },
+          "moving": 0,
+          "nav": 0,
+          "nav_queue_count": 0,
+          "nav_queue_entries": [
+            536879104,
+            536928256
+          ],
+          "queue": [
+            -1,
+            3,
+            4,
+            5
+          ],
+          "queued_mission": 5,
+          "reference": [
+            9,
+            8
+          ],
+          "retries": 10,
+          "speed": 0.0,
+          "target": 0,
+          "xyz": [
+            2624,
+            2624,
+            0
+          ]
+        }
+      }
+    ],
+    "setter": {
+      "action_frame": 0,
+      "action_timer_duration": 0,
+      "action_timer_start": 0,
+      "destination": [
+        3456,
+        2688,
+        0
+      ],
+      "doing": 0,
+      "entry_state": 0,
+      "frame": 100,
+      "head": [
+        0,
+        0,
+        0
+      ],
+      "marked": 0,
+      "mission": 2,
+      "motion": 0,
+      "movement_timer": {
+        "duration": 0,
+        "start_frame": 100
+      },
+      "moving": 1,
+      "nav": 536928768,
+      "nav_queue_count": 0,
+      "nav_queue_entries": [
+        536879104,
+        536928256
+      ],
+      "queue": [
+        -1,
+        3,
+        4,
+        5
+      ],
+      "queued_mission": 4294967295,
+      "reference": [
+        9,
+        8
+      ],
+      "retries": 10,
+      "speed": 0.0,
+      "target": 0,
+      "xyz": [
+        2624,
+        2624,
+        0
+      ]
+    }
   }
 ]
