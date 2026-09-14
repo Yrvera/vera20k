@@ -45,6 +45,7 @@ pub(super) enum HashFeature {
     GapOperational = 144,
     BridgePublication = 145,
     CellMembership = 159,
+    BridgeLocomotorAndDummy = 160,
 }
 
 impl HashSchema {

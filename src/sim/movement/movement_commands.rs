@@ -59,7 +59,7 @@ pub fn clear_navigation_for_entity(entity: &mut GameEntity) {
 
 /// Head_To and selector remain authoritative after world callbacks; neither
 /// ordinary geometry cursor nor raw occupation metadata can reconstruct them.
-fn committed_track_head(entity: &GameEntity) -> Option<(u16, u16)> {
+fn committed_movement_head(entity: &GameEntity) -> Option<(u16, u16)> {
     let (head, track) = match entity.locomotor.as_ref()?.kind {
         LocomotorKind::Drive => {
             let state = entity.drive_locomotion.as_ref()?;
@@ -69,6 +69,10 @@ fn committed_track_head(entity: &GameEntity) -> Option<(u16, u16)> {
             let state = entity.ship_locomotion.as_ref()?;
             (state.head_to?, state.track)
         }
+        LocomotorKind::Walk => {
+            let head = entity.locomotor.as_ref()?.step_head()?;
+            return Some(((head.x / 256) as u16, (head.y / 256) as u16));
+        }
         _ => return None,
     };
     (track.turn_index >= 0).then_some(((head.x / 256) as u16, (head.y / 256) as u16))
@@ -77,9 +81,18 @@ fn committed_track_head(entity: &GameEntity) -> Option<(u16, u16)> {
 /// Clear a destination while preserving only an already committed Drive/Ship
 /// segment. Shared by Stop and the MCV EventClass deploy handoff.
 pub fn stop_navigation_at_committed_head(e: &mut GameEntity) {
-    let current_cell = (e.position.rx, e.position.ry);
-    let current_layer = e.movement_layer_or_ground();
-    let committed_head = committed_track_head(e).map(|head_cell| {
+    let committed_head = committed_path_head(e);
+    clear_navigation_for_entity(e);
+    // Chain selection consumes the remaining native direction queue, which is
+    // independent of the physical A* cursor. Stop must retire that abandoned
+    // suffix as well as truncate MovementTarget below. Keep the committed
+    // curve/head and replay reference intact until the segment finishes.
+    super::path_markers::exhaust_path_replay(&mut e.navigation.path_replay);
+    retain_path_to_head(e, committed_head);
+}
+
+fn committed_path_head(e: &GameEntity) -> Option<((u16, u16), super::locomotor::MovementLayer)> {
+    committed_movement_head(e).map(|head_cell| {
         let layer = e
             .movement_target
             .as_ref()
@@ -90,15 +103,31 @@ pub fn stop_navigation_at_committed_head(e: &mut GameEntity) {
                     .position(|&cell| cell == head_cell)
                     .map(|index| target.layer_at(index))
             })
-            .unwrap_or(current_layer);
+            .unwrap_or_else(|| e.movement_layer_or_ground());
         (head_cell, layer)
+    })
+}
+
+/// Keep only physical movement already accepted by the locomotor. The caller
+/// owns destination/queue writes: explicit Attack's null setter does not clear
+/// NavQueue, whereas the pre-existing Stop command path does.
+pub(crate) fn retain_committed_movement(e: &mut GameEntity) {
+    let head = committed_path_head(e);
+    retain_path_to_head(e, head);
+}
+
+fn retain_path_to_head(
+    e: &mut GameEntity,
+    committed_head: Option<((u16, u16), super::locomotor::MovementLayer)>,
+) {
+    let current_cell = (e.position.rx, e.position.ry);
+    let current_layer = e.movement_layer_or_ground();
+    let walk_head = e.locomotor.as_ref().and_then(|l| {
+        (l.kind == LocomotorKind::Walk)
+            .then(|| l.step_head())
+            .flatten()
     });
-    clear_navigation_for_entity(e);
-    // Chain selection consumes the remaining native direction queue, which is
-    // independent of the physical A* cursor. Stop must retire that abandoned
-    // suffix as well as truncate MovementTarget below. Keep the committed
-    // curve/head and replay reference intact until the segment finishes.
-    super::path_markers::exhaust_path_replay(&mut e.navigation.path_replay);
+    let committed_walk = walk_head.is_some();
     // Stop clears the owner destination immediately, but an
     // already committed Drive/Ship curve keeps only the
     // current-to-head step. Removing every trailing A* entry
@@ -110,7 +139,8 @@ pub fn stop_navigation_at_committed_head(e: &mut GameEntity) {
         if current_cell == head_cell {
             target.path = vec![head_cell];
             target.path_layers = vec![head_layer];
-            target.next_index = 1;
+            // Walk retirement is subcell-head completion, not cell equality.
+            target.next_index = usize::from(!committed_walk);
             target.move_dir_x = SIM_ZERO;
             target.move_dir_y = SIM_ZERO;
             target.move_dir_len = SIM_ZERO;
@@ -127,15 +157,25 @@ pub fn stop_navigation_at_committed_head(e: &mut GameEntity) {
             target.move_dir_len = dir_len;
         }
         target.final_goal = Some(head_cell);
+        if let Some(head) = walk_head {
+            // Walk75BD29 samples current XYZ against the retained subcell
+            // head. A command must not redirect it to the cell center.
+            let current = super::ground_pose::position_world_coord(&e.position);
+            let dx = SimFixed::from_num(head.x.wrapping_sub(current.x));
+            let dy = SimFixed::from_num(head.y.wrapping_sub(current.y));
+            target.move_dir_x = dx;
+            target.move_dir_y = dy;
+            target.move_dir_len = crate::util::fixed_math::fixed_distance(dx, dy);
+        }
     } else {
         e.movement_target = None;
     }
 }
 
-/// Issue a move command: compute an A* path and attach a MovementTarget to the entity.
+/// Issue a move command and attach its MovementTarget execution request.
 ///
-/// Returns `true` if a valid path was found and the entity is now moving.
-/// Returns `false` if the entity doesn't exist, has no Position, or no path exists.
+/// Ordinary Walk destinations defer path search to Process. Other locomotors
+/// retain their existing command-time path adapter.
 ///
 /// `speed` is the movement speed in cells per second (from rules.ini Speed= value).
 pub fn issue_move_command(
@@ -363,7 +403,93 @@ pub(crate) fn issue_move_command_with_layered(
     mover_is_crusher: bool,
     blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
     playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
+    cell_occupation: Option<&mut crate::sim::occupancy::CellOccupationGrid>,
+) -> bool {
+    issue_move_command_with_destination(
+        entities,
+        grid,
+        entity_id,
+        target,
+        speed,
+        queue,
+        terrain_costs,
+        entity_blocks,
+        resolved_terrain,
+        zone_grid,
+        entity_block_map,
+        mover_is_crusher,
+        blocker_neighbor_counts,
+        playfield_bounds,
+        cell_occupation,
+        None,
+    )
+}
+
+/// An object order supplies its captured coordinate independently of the A*
+/// approach endpoint. Foot4D9510 / Walk75ACB0 own this accepted destination.
+pub(crate) fn issue_move_command_with_destination(
+    entities: &mut EntityStore,
+    grid: &PathGrid,
+    entity_id: u64,
+    target: (u16, u16),
+    speed: SimFixed,
+    queue: bool,
+    terrain_costs: Option<&TerrainCostGrid>,
+    entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    zone_grid: Option<&ZoneGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    mover_is_crusher: bool,
+    blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
+    playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
+    cell_occupation: Option<&mut crate::sim::occupancy::CellOccupationGrid>,
+    object_destination: Option<(
+        crate::sim::components::NavTargetRef,
+        crate::sim::components::DriveCoord,
+    )>,
+) -> bool {
+    issue_move_command_with_destination_impl(
+        entities,
+        grid,
+        entity_id,
+        target,
+        speed,
+        queue,
+        terrain_costs,
+        entity_blocks,
+        resolved_terrain,
+        zone_grid,
+        entity_block_map,
+        mover_is_crusher,
+        blocker_neighbor_counts,
+        playfield_bounds,
+        cell_occupation,
+        object_destination,
+        true,
+    )
+}
+
+fn issue_move_command_with_destination_impl(
+    entities: &mut EntityStore,
+    grid: &PathGrid,
+    entity_id: u64,
+    target: (u16, u16),
+    speed: SimFixed,
+    queue: bool,
+    terrain_costs: Option<&TerrainCostGrid>,
+    entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    zone_grid: Option<&ZoneGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    mover_is_crusher: bool,
+    blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
+    playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
     mut cell_occupation: Option<&mut crate::sim::occupancy::CellOccupationGrid>,
+    object_destination: Option<(
+        crate::sim::components::NavTargetRef,
+        crate::sim::components::DriveCoord,
+    )>,
+    publish_destination: bool,
 ) -> bool {
     // Read the entity's current position and locomotor state.
     let Some(entity) = entities.get(entity_id) else {
@@ -396,9 +522,12 @@ pub(crate) fn issue_move_command_with_layered(
     // the vehicle backward, up to half a cell, on every mid-drive re-order.
     // Keep the curve and anchor the new path at its committed head cell.
     let current_cell = (entity.position.rx, entity.position.ry);
-    let in_flight_curve_head = uses_shared_tracks
-        .then(|| committed_track_head(entity))
-        .flatten();
+    let committed_walk = locomotor_kind == Some(LocomotorKind::Walk)
+        && entity
+            .locomotor
+            .as_ref()
+            .is_some_and(|l| l.step_head().is_some());
+    let in_flight_curve_head = committed_movement_head(entity);
     let keep_in_flight_curve = in_flight_curve_head.is_some();
     let (start_rx, start_ry) = in_flight_curve_head.unwrap_or(current_cell);
     let current_layer = match in_flight_curve_head {
@@ -434,6 +563,52 @@ pub(crate) fn issue_move_command_with_layered(
         .and_then(|entity| entity.locomotor.as_mut())
     {
         loco.power_on();
+    }
+    if locomotor_kind == Some(LocomotorKind::Walk)
+        && (!queue
+            || entities
+                .get(entity_id)
+                .is_some_and(|e| e.movement_target.is_none()))
+    {
+        // The ordinary Infantry setter51AA40 -> Foot4D94B0 -> Walk75ACB0
+        // accepts before FindPath. Process75AFC5 reads the live route later;
+        // see tools/spatial_oracle/walk_first_path.json. In particular an
+        // occupied corridor cannot refuse an otherwise accepted destination.
+        //4C747C installs the already encoded destination. The ordinary
+        // click resolver4DE1D0 runs before event production, never here:
+        // topology may have changed while a synchronized order was queued.
+        let effective_target = target;
+        let entity = entities.get_mut(entity_id).expect("resolved mover");
+        if publish_destination {
+            if let Some((reference, coord)) = object_destination {
+                entity.navigation.nav_com = Some(reference);
+                entity.navigation.nav_com_aux = None;
+                entity.navigation.pending_arrival_clear = false;
+                super::navcom::set_walk_destination_coord(entity, coord, resolved_terrain);
+            } else {
+                super::navcom::set_destination_internal_cell(
+                    entity,
+                    effective_target,
+                    resolved_terrain,
+                );
+            }
+        }
+        // One live Foot+5E0 word is cleared; suffix/reference and NavQueue
+        // survive. MovementTarget owns only the execution request until the
+        // object turn searches, or the already-paid head until it completes.
+        let committed_head = committed_path_head(entity);
+        entity.navigation.path_replay.clear_live_head();
+        entity.movement_target = Some(MovementTarget {
+            speed,
+            current_speed: speed,
+            final_goal: Some(effective_target),
+            ..Default::default()
+        });
+        if committed_head.is_some() {
+            retain_path_to_head(entity, committed_head);
+            entity.movement_target.as_mut().unwrap().final_goal = Some(effective_target);
+        }
+        return true;
     }
     let mut merged_entity_blocks = merge_path_blocks(
         entity_blocks,
@@ -659,7 +834,8 @@ pub(crate) fn issue_move_command_with_layered(
     // A kept curve's head cell is a future node the body has not crossed into
     // yet: the queue cursor starts ON it so the coordinate crossing consumes
     // it, exactly as it would have consumed that node under the replaced path.
-    let head_not_yet_reached = keep_in_flight_curve && (start_rx, start_ry) != current_cell;
+    let head_not_yet_reached =
+        keep_in_flight_curve && (committed_walk || (start_rx, start_ry) != current_cell);
     let first_target_index = if head_not_yet_reached { 0 } else { 1 };
 
     // Compute initial direction vector toward the first path step.
@@ -723,13 +899,22 @@ pub(crate) fn issue_move_command_with_layered(
         let uses_drive_locomotor = locomotor_kind == Some(LocomotorKind::Drive);
         let uses_ship_locomotor = locomotor_kind == Some(LocomotorKind::Ship);
         let uses_shared_tracks = uses_drive_locomotor || uses_ship_locomotor;
-        if uses_shared_tracks {
+        if publish_destination && let Some((reference, coord)) = object_destination {
+            entity_mut.navigation.nav_com = Some(reference);
+            entity_mut.navigation.nav_com_aux = None;
+            entity_mut.navigation.pending_arrival_clear = false;
+            super::navcom::set_walk_destination_coord(entity_mut, coord, resolved_terrain);
+        } else if publish_destination
+            && (uses_shared_tracks || locomotor_kind == Some(LocomotorKind::Walk))
+        {
             super::navcom::set_destination_internal_cell(
                 entity_mut,
                 effective_target,
                 resolved_terrain,
             );
-            entity_mut.navigation.nav_queue.clear();
+            if uses_shared_tracks {
+                entity_mut.navigation.nav_queue.clear();
+            }
         }
         if uses_drive_locomotor {
             let drive = entity_mut
@@ -765,6 +950,14 @@ pub(crate) fn issue_move_command_with_layered(
                 &movement.path,
                 1,
             );
+        }
+        if locomotor_kind == Some(LocomotorKind::Walk) {
+            // Infantry51AD11 clears one live Foot path word. The accepted
+            // setter preserves its suffix/reference and NavQueue; Walk's first
+            // no-head Process requests FindPath75AFC5 later. See
+            // tools/spatial_oracle/walk_first_path.json. MovementTarget keeps
+            // the existing prepared physical path, without publishing it here.
+            entity_mut.navigation.path_replay.clear_live_head();
         }
         let mut drive_track_started = false;
         let mut track_occupation_target: Option<DriveOccupationFootprint> = None;
@@ -943,4 +1136,48 @@ pub(crate) fn issue_move_command_with_layered(
     }
 
     true
+}
+
+/// Scatter51D455 installs the Cell destination before51D478 enters Process.
+/// Prepare the existing path adapter after that store without repeating its
+/// observable Cell/ground/destination lookups. Ordinary order callers still
+/// publish their destination through the existing branch above.
+pub(crate) fn prepare_walk_cell_destination(
+    entities: &mut EntityStore,
+    grid: &PathGrid,
+    entity_id: u64,
+    target: (u16, u16),
+    speed: SimFixed,
+    terrain_costs: Option<&TerrainCostGrid>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    zone_grid: Option<&ZoneGrid>,
+    playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
+    cell_occupation: &mut crate::sim::occupancy::CellOccupationGrid,
+) -> bool {
+    let Some(entity) = entities.get_mut(entity_id) else {
+        return false;
+    };
+    if !can_accept_destination(entity) {
+        return false;
+    }
+    super::navcom::set_destination_internal_cell(entity, target, resolved_terrain);
+    issue_move_command_with_destination_impl(
+        entities,
+        grid,
+        entity_id,
+        target,
+        speed,
+        false,
+        terrain_costs,
+        None,
+        resolved_terrain,
+        zone_grid,
+        None,
+        false,
+        None,
+        playfield_bounds,
+        Some(cell_occupation),
+        None,
+        false,
+    )
 }

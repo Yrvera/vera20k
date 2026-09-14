@@ -343,6 +343,8 @@ pub(super) fn resolve_reachable_move_goal(
         .saturating_add(grid.height())
         .min(RADIUS_HARD_CAP);
     let query = NearbyQuery {
+        native_cells: None,
+        raw_occupation: None,
         passability: PassabilityArgs {
             speed_type,
             required_zone_id: Some(required_zone),

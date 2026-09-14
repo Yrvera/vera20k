@@ -935,7 +935,8 @@ fn drive_across_high_bridge_with_order(
     );
     scenario
         .runtime
-        .advance_frame(&[order], SIM_TICK_MS, TickLane::Ordinary);
+        .advance_frame(&[order], SIM_TICK_MS, TickLane::Ordinary)
+        .expect("fixture frame must complete");
 
     let ordered_path = scenario
         .sim()
@@ -1687,7 +1688,8 @@ fn drive_across_low_bridge(map_file: &str, unit_type: &str) {
     );
     scenario
         .runtime
-        .advance_frame(&[order], SIM_TICK_MS, TickLane::Ordinary);
+        .advance_frame(&[order], SIM_TICK_MS, TickLane::Ordinary)
+        .expect("fixture frame must complete");
 
     match scenario
         .sim()
@@ -2248,11 +2250,14 @@ fn probe_attack_move_across_high_span(map_file: &str, unit_type: &str) -> Option
                          budget: u64|
      -> (Option<(usize, (u16, u16))>, Vec<(u16, u16)>, bool, usize) {
         let execute_tick = scenario.sim().session.tick + 1;
-        scenario.runtime.advance_frame(
-            &[CommandEnvelope::new(owner_id, execute_tick, command)],
-            SIM_TICK_MS,
-            TickLane::Ordinary,
-        );
+        scenario
+            .runtime
+            .advance_frame(
+                &[CommandEnvelope::new(owner_id, execute_tick, command)],
+                SIM_TICK_MS,
+                TickLane::Ordinary,
+            )
+            .expect("fixture frame must complete");
         let accepted = scenario
             .sim()
             .entities()
@@ -3090,21 +3095,24 @@ fn tank_ordered_across_the_deadman_collapse_gap_never_drives_into_it() {
         .get(&owner_name)
         .expect("owner interned");
     let execute_tick = scenario.sim().session.tick + 1;
-    scenario.runtime.advance_frame(
-        &[CommandEnvelope::new(
-            owner_id,
-            execute_tick,
-            Command::Move {
-                entity_id,
-                target_rx: gap.far_stub.0,
-                target_ry: gap.far_stub.1,
-                queue: false,
-                group_id: None,
-            },
-        )],
-        SIM_TICK_MS,
-        TickLane::Ordinary,
-    );
+    scenario
+        .runtime
+        .advance_frame(
+            &[CommandEnvelope::new(
+                owner_id,
+                execute_tick,
+                Command::Move {
+                    entity_id,
+                    target_rx: gap.far_stub.0,
+                    target_ry: gap.far_stub.1,
+                    queue: false,
+                    group_id: None,
+                },
+            )],
+            SIM_TICK_MS,
+            TickLane::Ordinary,
+        )
+        .expect("fixture frame must complete");
     let accepted = scenario
         .sim()
         .entities()
@@ -3312,21 +3320,24 @@ fn tank_cannot_cross_a_destroyed_shrapnel_low_bridge() {
         .get(&owner_name)
         .expect("owner interned");
     let execute_tick = scenario.sim().session.tick + 1;
-    scenario.runtime.advance_frame(
-        &[CommandEnvelope::new(
-            owner_id,
-            execute_tick,
-            Command::Move {
-                entity_id,
-                target_rx: span.approach_b.0,
-                target_ry: span.approach_b.1,
-                queue: false,
-                group_id: None,
-            },
-        )],
-        SIM_TICK_MS,
-        TickLane::Ordinary,
-    );
+    scenario
+        .runtime
+        .advance_frame(
+            &[CommandEnvelope::new(
+                owner_id,
+                execute_tick,
+                Command::Move {
+                    entity_id,
+                    target_rx: span.approach_b.0,
+                    target_ry: span.approach_b.1,
+                    queue: false,
+                    group_id: None,
+                },
+            )],
+            SIM_TICK_MS,
+            TickLane::Ordinary,
+        )
+        .expect("fixture frame must complete");
     let accepted = scenario
         .sim()
         .entities()
@@ -4086,21 +4097,24 @@ fn order_under_high_span(map_file: &str, unit_type: &str) -> Option<UnderSpanRun
         .get(&owner_name)
         .expect("owner interned");
     let execute_tick = scenario.sim().session.tick + 1;
-    scenario.runtime.advance_frame(
-        &[CommandEnvelope::new(
-            owner_id,
-            execute_tick,
-            Command::Move {
-                entity_id,
-                target_rx: under_b.0,
-                target_ry: under_b.1,
-                queue: false,
-                group_id: None,
-            },
-        )],
-        SIM_TICK_MS,
-        TickLane::Ordinary,
-    );
+    scenario
+        .runtime
+        .advance_frame(
+            &[CommandEnvelope::new(
+                owner_id,
+                execute_tick,
+                Command::Move {
+                    entity_id,
+                    target_rx: under_b.0,
+                    target_ry: under_b.1,
+                    queue: false,
+                    group_id: None,
+                },
+            )],
+            SIM_TICK_MS,
+            TickLane::Ordinary,
+        )
+        .expect("fixture frame must complete");
     let path = scenario
         .sim()
         .entities()

@@ -300,7 +300,20 @@ fn follow_clicked_goal(
     assert!(facts.ground_walkable || facts.bridge_walkable);
     assert_eq!(facts.bridge_structural, expected_on_bridge);
 
-    let order = ordinary_move(scenario.sim(), owner, entity_id, goal);
+    let admitted = super::commands::ordinary_cell_move_goal(
+        scenario.sim(),
+        &scenario.runtime.resources.rules,
+        owner,
+        entity_id,
+        goal,
+        true,
+    )
+    .expect("retail ordinary Cell input must admit the bridge destination");
+    assert_eq!(
+        admitted, goal,
+        "retail click must keep the intended bridge/ground Cell"
+    );
+    let order = ordinary_move(scenario.sim(), owner, entity_id, admitted);
     scenario.runtime.simulation.queue_command(order);
     let mut arrived = false;
     for frame in 0..2_000 {
@@ -309,11 +322,14 @@ fn follow_clicked_goal(
         // production sim_tick::advance_one_simulation_frame path). Preserve
         // that ingress here so the Move actually reaches command execution.
         let due = scenario.runtime.simulation.take_due_commands();
-        let output = scenario.runtime.advance_frame(
-            &due,
-            crate::headless_scenario::SIM_TICK_MS,
-            crate::sim::world::TickLane::Ordinary,
-        );
+        let output = scenario
+            .runtime
+            .advance_frame(
+                &due,
+                crate::headless_scenario::SIM_TICK_MS,
+                crate::sim::world::TickLane::Ordinary,
+            )
+            .expect("fixture frame must complete");
         assert!(output.tick.frame_committed, "the retail frame must commit");
         let entity = scenario
             .sim()
@@ -334,21 +350,11 @@ fn follow_clicked_goal(
                 Some(goal),
                 "each chained retail command must install its exact destination"
             );
-            // Walk's current command adapter stores its goal in MovementTarget.
-            // The shared Drive/Ship host additionally publishes NavCom.
-            if entity.locomotor.as_ref().is_some_and(|locomotor| {
-                matches!(
-                    locomotor.kind,
-                    crate::rules::locomotor_type::LocomotorKind::Drive
-                        | crate::rules::locomotor_type::LocomotorKind::Ship
-                )
-            }) {
-                assert_eq!(
-                    entity.navigation.nav_com,
-                    Some(crate::sim::components::NavTargetRef::cell(goal.0, goal.1)),
-                    "shared-track commands must also publish their exact NavCom"
-                );
-            }
+            assert_eq!(
+                entity.navigation.nav_com,
+                Some(crate::sim::components::NavTargetRef::cell(goal.0, goal.1)),
+                "each chained retail command must also publish its exact NavCom"
+            );
         }
         if (entity.position.rx, entity.position.ry) == goal && entity.movement_target.is_none() {
             // Body Cell entry can precede paid-head retirement by several
@@ -412,4 +418,138 @@ fn retail_hills_ground_click_keeps_gi_beneath_bridge() {
         (87, 78),
         false,
     );
+}
+
+fn advance_input_fixture(sim: &mut Simulation, rules: &crate::rules::ruleset::RuleSet) {
+    let due = sim.take_due_commands();
+    let grid = sim.path_grid_snapshot();
+    let result = sim.advance_tick(
+        &due,
+        Some(rules),
+        &BTreeMap::new(),
+        grid.as_deref(),
+        None,
+        67,
+    );
+    assert!(
+        result.frame_committed,
+        "ordinary scheduled frame failed: {result:?}"
+    );
+}
+
+#[test]
+fn ordinary_walk_cell_input_reaches_near_bank_and_valid_high_bridge() {
+    for bridge in [false, true] {
+        let (mut sim, rules, actor) = Simulation::walk_cell_input_test_scene(bridge);
+        let owner = sim.interner.get("Local").unwrap();
+        let clicked = if bridge { (9, 6) } else { (11, 5) };
+        let chosen =
+            super::commands::ordinary_cell_move_goal(&sim, &rules, owner, actor, clicked, true)
+                .unwrap();
+        if bridge {
+            assert_eq!(chosen, clicked);
+        } else {
+            assert_ne!(chosen, clicked);
+            assert!(
+                chosen.0 < 8,
+                "disconnected river must choose the actor's bank: {chosen:?}"
+            );
+        }
+        let envelope = ordinary_move(&sim, owner, actor, chosen);
+        sim.queue_command(envelope);
+        advance_input_fixture(&mut sim, &rules);
+        let e = sim.entities().get(actor).unwrap();
+        assert_eq!(
+            e.navigation.nav_com,
+            Some(crate::sim::components::NavTargetRef::Cell {
+                rx: chosen.0,
+                ry: chosen.1
+            })
+        );
+        assert!(
+            e.movement_target.as_ref().unwrap().path.is_empty(),
+            "command accepts before Process search"
+        );
+        for _ in 0..250 {
+            advance_input_fixture(&mut sim, &rules);
+            let e = sim.entities().get(actor).unwrap();
+            if (e.position.rx, e.position.ry) == chosen
+                && e.locomotor.as_ref().unwrap().step_head().is_none()
+            {
+                break;
+            }
+        }
+        let e = sim.entities().get(actor).unwrap();
+        assert_eq!((e.position.rx, e.position.ry), chosen, "bridge={bridge}");
+        assert_eq!(e.on_bridge, bridge);
+        assert!(
+            e.locomotor.as_ref().unwrap().step_head().is_none(),
+            "arrival must retire its paid head"
+        );
+    }
+}
+
+#[test]
+fn encoded_walk_destination_survives_topology_change_before_due_frame() {
+    let (mut sim, rules, actor) = Simulation::walk_cell_input_test_scene(true);
+    let owner = sim.interner.get("Local").unwrap();
+    let clicked = (9, 6);
+    let chosen =
+        super::commands::ordinary_cell_move_goal(&sim, &rules, owner, actor, clicked, true)
+            .unwrap();
+    assert_eq!(chosen, clicked);
+    let mut order = ordinary_move(&sim, owner, actor, chosen);
+    // The scheduler drains commands for the NEXT frame. Leave one full
+    // object turn before this already-encoded destination becomes due.
+    order.execute_tick = sim.session.tick + 2;
+    sim.queue_command(order.clone());
+    sim.close_walk_input_test_bridge(&rules);
+    assert_ne!(
+        super::commands::ordinary_cell_move_goal(&sim, &rules, owner, actor, clicked, true),
+        Some(clicked),
+        "the later input query must discriminate the changed topology"
+    );
+    assert!(sim.take_due_commands().is_empty());
+    advance_input_fixture(&mut sim, &rules);
+    advance_input_fixture(&mut sim, &rules);
+    let e = sim.entities().get(actor).unwrap();
+    assert_eq!(
+        e.navigation.nav_com,
+        Some(crate::sim::components::NavTargetRef::Cell { rx: 9, ry: 6 })
+    );
+    assert_eq!(
+        e.movement_target.as_ref().unwrap().final_goal,
+        Some(clicked)
+    );
+    assert!(e.movement_target.as_ref().unwrap().path.is_empty());
+    // This proves exact event installation. The following failed-Process and
+    // same-slot Move restart remain the separately documented open increment.
+}
+
+#[test]
+fn direct_simulation_walk_move_is_an_already_resolved_destination() {
+    let (mut sim, rules, actor) = Simulation::walk_cell_input_test_scene(false);
+    let owner = sim.interner.get("Local").unwrap();
+    assert_ne!(
+        super::commands::ordinary_cell_move_goal(&sim, &rules, owner, actor, (9, 5), true),
+        Some((9, 5))
+    );
+    sim.queue_command(CommandEnvelope::new(
+        owner,
+        sim.session.tick,
+        Command::Move {
+            entity_id: actor,
+            target_rx: 9,
+            target_ry: 5,
+            queue: false,
+            group_id: None,
+        },
+    ));
+    advance_input_fixture(&mut sim, &rules);
+    let e = sim.entities().get(actor).unwrap();
+    assert_eq!(
+        e.navigation.nav_com,
+        Some(crate::sim::components::NavTargetRef::Cell { rx: 9, ry: 5 })
+    );
+    assert_eq!(e.movement_target.as_ref().unwrap().final_goal, Some((9, 5)));
 }

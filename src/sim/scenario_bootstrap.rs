@@ -220,6 +220,8 @@ fn find_nearby_pre_fill_start_rect(
 ) -> Option<(u16, u16)> {
     let playfield_bounds = crate::map::playfield::PlayfieldBounds::from_map_header(header);
     let query = NearbyQuery {
+        native_cells: None,
+        raw_occupation: None,
         passability: PassabilityArgs {
             speed_type: SpeedType::Track,
             required_zone_id: None,
@@ -270,6 +272,8 @@ pub(crate) fn find_nearby_start_rect(
     let bounds = playfield_bounds?;
     let size_height = map_size_height?;
     let query = NearbyQuery {
+        native_cells: None,
+        raw_occupation: None,
         passability: PassabilityArgs {
             speed_type: SpeedType::Track,
             required_zone_id: None,

@@ -44,6 +44,14 @@ pub(crate) fn bridge_constructor_terrain() -> ResolvedTerrainGrid {
 /// Tile2 is invalid against the two-entry registry; tile0 has the supplied
 /// slope used by the second-pass admission discriminator. No Recalc substitute.
 pub(crate) fn install_bridge_batch_test_catalog(grid: &mut ResolvedTerrainGrid, slope: bool) {
+    install_repair_test_catalog(grid, slope, true);
+}
+
+pub(crate) fn install_ordinary_repair_test_catalog(grid: &mut ResolvedTerrainGrid) {
+    install_repair_test_catalog(grid, false, false);
+}
+
+fn install_repair_test_catalog(grid: &mut ResolvedTerrainGrid, slope: bool, wheel_only: bool) {
     let theater = synthetic_theater_from_ini(
         b"[TileSet0000]\nTilesInSet=2\nFileName=source\nSetName=Plain\n",
     );
@@ -57,7 +65,7 @@ pub(crate) fn install_bridge_batch_test_catalog(grid: &mut ResolvedTerrainGrid, 
     let rules_text: String = crate::rules::terrain_rules::LandType::ALL
         .iter()
         .take(9)
-        .map(|land| format!("[{}]\nWheel=100%\n", land.section_name()))
+        .map(|land| format!("[{}]\n{}", land.section_name(),if wheel_only {"Wheel=100%\n"} else {"Foot=100%\nTrack=100%\nWheel=100%\nFloat=100%\nHover=100%\nAmphibious=100%\nFloatBeach=100%\nBuildable=yes\n"}))
         .collect();
     let rules = TerrainRules::from_ini(&IniFile::from_str(&rules_text));
     grid.bridge_recalc_catalog = Some(Arc::new(
@@ -708,4 +716,25 @@ fn retail_bridge_catalog_after_normal_map_loading() {
     println!(
         "covered {total_wood} authored Wood cells and {total_ordinary} ordinary under-span cells"
     );
+}
+
+#[test]
+fn repair_tile_queries_use_registered_names_and_live_index_validity() {
+    let grid = bridge_constructor_terrain();
+    assert_eq!(grid.current_tile_dimensions(0).unwrap(), (1, 1));
+    assert!(grid.current_tile_dimensions(-1).is_err());
+    assert!(grid.current_tile_dimensions(1).is_err());
+    assert_eq!(
+        grid.resolve_registered_tile_name("SOURCE01").unwrap(),
+        Some(0)
+    );
+    assert_eq!(
+        grid.resolve_registered_tile_name("source01.tem").unwrap(),
+        None
+    );
+    assert_eq!(grid.resolve_registered_tile_name("absent").unwrap(), None);
+    assert!(!grid.tile_allows_morph_placement(0).unwrap());
+    assert!(grid.tile_allows_morph_placement(-1).unwrap());
+    assert!(grid.tile_allows_morph_placement(1).unwrap());
+    assert!(grid.tile_allows_morph_placement(0xffff).unwrap());
 }

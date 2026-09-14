@@ -300,6 +300,8 @@ fn find_free_unit_nearby_cell(
 ) -> Option<(u16, u16)> {
     let free_unit = rules.object(free_unit_type)?;
     let query = NearbyQuery {
+        native_cells: None,
+        raw_occupation: None,
         passability: PassabilityArgs {
             // SUBSTITUTION, not a match. The engine hardcodes one fixed speed-type
             // index (2) at both callsites; VERA passes the free unit's own

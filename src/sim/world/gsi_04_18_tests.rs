@@ -616,7 +616,8 @@ fn shroud_current_sight_live_foot_timer_keeps_viewer_histories_and_snapshot() {
     );
     sim.session.binary_frame = 119;
     sim.set_logic_order_for_test(vec![2]);
-    sim.advance_live_object_pass(None, None, None);
+    sim.advance_live_object_pass(None, None, None)
+        .expect("fixture frame must complete");
     let clocks = &sim.substrate.entities.get(2).unwrap().sight_refresh_timers;
     assert_eq!(clocks.timer(a), CdTimer::started(119, 15));
     assert_eq!(clocks.timer(b), CdTimer::started(119, 15));

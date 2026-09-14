@@ -107,6 +107,8 @@ fn naval_query<'a>(
     footprint_height: i32,
 ) -> NearbyQuery<'a> {
     NearbyQuery {
+        native_cells: None,
+        raw_occupation: None,
         passability: PassabilityArgs {
             speed_type: SpeedType::Float,
             required_zone_id: None,
@@ -171,12 +173,9 @@ fn first_yard_distance_accepts(
     let Some(cell) = terrain.cell(candidate.0, candidate.1) else {
         return false;
     };
-    let Ok(cell_z) = crate::util::lepton::ground_height_leptons(
-        cell.level,
-        cell.slope_type,
-        cell_x,
-        cell_y,
-    ) else {
+    let Ok(cell_z) =
+        crate::util::lepton::ground_height_leptons(cell.level, cell.slope_type, cell_x, cell_y)
+    else {
         return false;
     };
 

@@ -525,25 +525,17 @@ fn is_structural_bridge_deck_height(path_height: u8, cell: &PathCell) -> bool {
 
 /// Whether an edge needs the bridge-traversal legality check at all.
 ///
-/// **VERA-internal, gamemd has no equivalent.** `AStar_main_loop` calls the
-/// `+0x1AC` slot unconditionally at `0x00429F54`, and `UnitClass::Can_Enter_Cell`
-/// @ `0x0073F0A0` calls `+0x1B0` (`CheckBridgeTraversal` @ `0x004D9C60`)
-/// unconditionally in turn. There is no skip predicate in the binary. This one
-/// skips structural→structural edges with no bridgehead — plain deck driving —
-/// and the caller substitutes a local `|diff| ∈ {0, 1}` rule instead.
+/// **VERA adapter, not a native skip predicate.** `AStar_main_loop` calls the
+/// `+0x1AC` slot unconditionally at `0x00429F54`; Unit's receiver in turn calls
+/// CheckBridgeTraversal (0x004D9C60). This includes structural deck-to-deck
+/// edges: 0x004D9E08 can refuse those when the candidate lacks 0x200, even
+/// though both cells carry 0x100 and their raw ground levels match.
 ///
-/// The substitute is **looser**, not stricter: native's diff-0 arm can still
-/// return 7 when the path height disagrees with the candidate's level and the
-/// three-flag escape fails, while the substitute always allows diff 0. It also
-/// reads `cur_cell.slope_type` for a positive diff where native reads the lower
-/// cell's `+0x11C`, and it can never set `force_bridge_list`.
-///
-/// Trigger: every tick a unit drives along a bridge span. Player effect: VERA
-/// admits deck-to-deck steps retail refuses. Frequency: continuous while any
-/// unit is on a bridge. Downstream risk: the runtime crossing gate in
-/// `movement_occupancy` mirrors this predicate deliberately, so removing it
-/// must move both sites together or the runtime starts rejecting edges the
-/// plan legally produced.
+/// The remaining bypass is between structural cells when the parent is not
+/// at its raw level+4 and the candidate lacks 0x200. The caller then uses its
+/// local height-difference rule. That reduced under-bridge domain is not a
+/// claim of the unconditional native receiver contract; changes must also
+/// account for the runtime crossing reader in `movement_occupancy`.
 pub(crate) fn needs_bridge_traversal_for_edge(
     current_height: u8,
     current_cell: &PathCell,
@@ -1272,9 +1264,9 @@ pub fn astar_search(
                 }
 
                 // Walkability check on the determined layer. Ground->Bridge entry
-                // still requires the bridgehead flag. Bridge-deck structural moves
-                // have already passed CheckBridgeTraversal above; bridge_walkable
-                // alone is not enough for Forward2-style non-transition cells.
+                // still requires 0x200. Deck-to-deck moves passed the same
+                // flag's diff-0 gate in CheckBridgeTraversal; bridge_walkable
+                // alone does not admit a Forward2-style transverse stamp slot.
                 let neighbor_passable = if neighbor_use_bridge {
                     let prev_on_bridge = is_at_bridge_level(current.height, cur_cell);
                     let bridge_terrain_passable = is_cell_passable_for_mover_on_layer_with_speed(

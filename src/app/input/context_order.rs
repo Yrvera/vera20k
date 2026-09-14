@@ -709,8 +709,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                 return finish_order(state, queued, speaker_id);
                             }
                             if entity.category == EntityCategory::Structure {
-                                let obj = Some(&resources.rules)
-                                    .and_then(|r| r.object(sim.interner.resolve(entity.type_ref())));
+                                let obj = Some(&resources.rules).and_then(|r| {
+                                    r.object(sim.interner.resolve(entity.type_ref()))
+                                });
                                 let cmd = if obj.map_or(false, |o| o.can_be_occupied)
                                     && entity.passenger_role.cargo().is_some_and(|c| !c.is_empty())
                                 {
@@ -762,15 +763,16 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     // a `ConstructionYard=` nor a `ResourceDestination=`.
                     // One `PlayEVA` per factory; VoxClass drops same-entry
                     // duplicates, so one request per click is equivalent.
-                    rally_announce = struct_owner_id == owner_id && producer_ids.iter().any(|id| {
-                        sim.entities().get(*id).is_some_and(|entity| {
-                            Some(&resources.rules)
+                    rally_announce = struct_owner_id == owner_id
+                        && producer_ids.iter().any(|id| {
+                            sim.entities().get(*id).is_some_and(|entity| {
+                                Some(&resources.rules)
                                 .and_then(|r| r.object(sim.interner.resolve(entity.type_ref())))
                                 .is_some_and(
                                     crate::app::match_runtime::eva_producers::rally_point_announces,
                                 )
-                        })
-                    });
+                            })
+                        });
                     queued.push(CommandEnvelope::new(
                         struct_owner_id,
                         execute_tick,
@@ -1093,6 +1095,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             // destination becomes the clicked object's own cell (retail resolves
             // that cell, then falls back to a nearby passable one — the Move
             // payload below already routes through the same fallback).
+            // Object action1/2 uses its own coordinate/zone receiver (4D77FB,
+            //4D7816/4D78BA), not Cell-click4DE1D0. Keep that prior adapter.
+            let ordinary_cell_receiver = !(force_move && hover.is_some());
             let (target_rx, target_ry) = if force_move {
                 hover
                     .as_ref()
@@ -1219,27 +1224,17 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                             target_ry,
                         }
                     } else {
-                        // Unarmed fall-through to plain Move. Reuse the same
-                        // walkability fallback the regular Move path uses
-                        // (lines below) — if the cell is unwalkable, route to
-                        // nearest walkable cell so an Engineer ctrl-clicking
-                        // water doesn't silently stall.
-                        let goal: (u16, u16) = {
-                            let mut g = (target_rx, target_ry);
-                            if let Some(grid) = sim.path_grid() {
-                                if !crate::app::match_runtime::sim_tick::is_any_layer_walkable(
-                                    grid, g.0, g.1,
-                                ) {
-                                    if let Some(nearest) =
-                                        crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(
-                                            grid, g, 12,
-                                        )
-                                    {
-                                        g = nearest;
-                                    }
-                                }
-                            }
-                            g
+                        // Unarmed Cell-click fall-through resolves the original
+                        // clicked Cell before committing its Move event.
+                        let Some(goal) = crate::app::input::commands::ordinary_cell_move_goal(
+                            sim,
+                            &resources.rules,
+                            owner_id,
+                            stable_id,
+                            (target_rx, target_ry),
+                            !queue_mode && ordinary_cell_receiver,
+                        ) else {
+                            continue;
                         };
                         Command::Move {
                             entity_id: stable_id,
@@ -1252,22 +1247,17 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                 } else {
                     match order_mode {
                         OrderMode::Move | OrderMode::AttackMove => {
-                            let goal: (u16, u16) = {
-                                let mut g = (target_rx, target_ry);
-                                if let Some(grid) = sim.path_grid() {
-                                    if !crate::app::match_runtime::sim_tick::is_any_layer_walkable(
-                                        grid, g.0, g.1,
-                                    ) {
-                                        if let Some(nearest) =
-                                            crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(
-                                                grid, g, 12,
-                                            )
-                                        {
-                                            g = nearest;
-                                        }
-                                    }
-                                }
-                                g
+                            let Some(goal) = crate::app::input::commands::ordinary_cell_move_goal(
+                                sim,
+                                &resources.rules,
+                                owner_id,
+                                stable_id,
+                                (target_rx, target_ry),
+                                order_mode == OrderMode::Move
+                                    && !queue_mode
+                                    && ordinary_cell_receiver,
+                            ) else {
+                                continue;
                             };
                             // The promotion to attack-move is per object: a unit
                             // whose type refuses it keeps the plain Move it

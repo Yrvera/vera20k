@@ -837,7 +837,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 fire_events: frame_fire_events,
                 invulnerability_impacts,
                 lighting_events,
-            } = rt.advance_frame(&due_commands, SIM_TICK_MS, tick_lane);
+            } = rt
+                .advance_frame(&due_commands, SIM_TICK_MS, tick_lane)
+                .expect("simulation frame failed; prior world mutations remain");
             let resources = &rt.resources;
             if let Some(terrain) = resources.terrain_template.as_ref() {
                 state

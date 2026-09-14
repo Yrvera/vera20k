@@ -41,6 +41,49 @@ pub(crate) struct AtCoordQuery {
 }
 
 impl AtCoordQuery {
+    /// Fresh projection after a synchronous callback. Both the active instance
+    /// and its retained head are reread; a path is not a substitute for either.
+    pub(crate) fn from_entity(entity: &crate::sim::game_entity::GameEntity) -> Option<Self> {
+        let locomotor = entity.locomotor.as_ref()?;
+        let (head, track) = match locomotor.kind {
+            LocomotorKind::Drive => entity
+                .drive_locomotion
+                .as_ref()
+                .map(|s| (s.head_to, s.track)),
+            LocomotorKind::Ship => entity
+                .ship_locomotion
+                .as_ref()
+                .map(|s| (s.head_to, s.track)),
+            _ => None,
+        }
+        .unwrap_or_default();
+        let head = if matches!(locomotor.kind, LocomotorKind::Walk | LocomotorKind::Hover) {
+            locomotor.step_head()
+        } else {
+            head
+        };
+        let mut current = super::ground_pose::position_world_coord(&entity.position);
+        if locomotor.kind == LocomotorKind::Hover {
+            // Existing Hover owns its vertical displacement separately from
+            // the retained ground coordinate; combine those current writers.
+            current.z = current.z.wrapping_add(locomotor.altitude.to_num::<i32>());
+        }
+        Self::from_state(
+            locomotor.kind,
+            current,
+            head,
+            AtCoordTrack {
+                turn_index: track.turn_index,
+                cursor: track.cursor,
+                reversed: track.reversed,
+            },
+        )
+    }
+
+    pub(crate) fn head_z(self) -> i32 {
+        self.head.z
+    }
+
     pub(crate) fn from_state(
         kind: LocomotorKind,
         current: DriveCoord,

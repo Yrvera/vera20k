@@ -718,6 +718,7 @@ fn ai_base_reservation_candidate_ok(
     );
 
     if !check_occupancy_rect(CellRectOccupancyContext {
+        native_cells: None,
         rect: candidate,
         reservation_arg: house_index,
         reservations: Some(&sim.substrate.base_reservations),

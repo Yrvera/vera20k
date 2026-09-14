@@ -975,7 +975,7 @@ fn cell_arrival_infantry_keeps_detour_order_and_snapshot_continuation() {
         &grid,
         walker,
         (4, 1),
-        SimFixed::from_num(1024),
+        crate::util::fixed_math::ra2_speed_to_leptons_per_second(rules.object("E1").unwrap().speed),
         false,
         None,
         None,
@@ -990,7 +990,7 @@ fn cell_arrival_infantry_keeps_detour_order_and_snapshot_continuation() {
     let mut crossed_detour_cell = false;
     let mut restored: Option<Simulation> = None;
     let mut trace = Vec::new();
-    for frame in 0..160 {
+    for frame in 0..400 {
         let next_order = sim.substrate.next_occupancy_enter_order.current();
         gsi_04_05_tick_production_movement(&mut sim, Some(&grid), frame);
         if let Some(loaded) = restored.as_mut() {
@@ -1076,9 +1076,15 @@ fn cell_arrival_infantry_keeps_detour_order_and_snapshot_continuation() {
         trace.push((
             frame,
             cell,
+            crate::sim::movement::ground_pose::position_world_xy(&entity.position),
             entity.sub_cell,
             entity.occupancy_enter_order,
             sim.scenario_rng.state(),
+            entity.locomotor.as_ref().and_then(|l| l.step_head()),
+            entity
+                .movement_target
+                .as_ref()
+                .map(|t| (t.path.clone(), t.next_index)),
         ));
         if entity.movement_target.is_none() {
             break;
@@ -1088,7 +1094,7 @@ fn cell_arrival_infantry_keeps_detour_order_and_snapshot_continuation() {
         crossed_detour_cell,
         "production Walk path must take the same detour; trace={trace:?}"
     );
-    assert_eq!(previous_cell, (4, 1));
+    assert_eq!(previous_cell, (4, 1), "trace={trace:#?}");
     assert!(
         sim.substrate
             .entities

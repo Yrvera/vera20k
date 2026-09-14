@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "Original Infantry51AA40 nonnull Cell setter, Foot4D94B0, Walk75ACB0, then original WalkProcess through first FindPath4D3920 entry or already-paid-head motion-byte producer. Separate actual75C240 head rows contrast Mission1/TarCom/CellNavCom with the existing no-target producer. No pathfinder-core/whole Process parity.",
+  "assumptions": [
+    "Supplied original Infantry/Unit/Cell tables, valid ordinary non-Jumpjet owner/type/House, no links/radio/bunker/transport, currentXYZ2624,2624,0, destination Cell11,10. Human Doing27 refusal contrast and nonhuman acceptance execute original gate.",
+    "Existing path backing2,3,4,5 and null ownerNavCom are supplied; actual setter clears one path head and publishes Cell plus Walk destination. Optional paid head is supplied and remains independently owned.",
+    "Actual Walk constructor executes; reference count1 models the already-owned ILoco interface. Original setter obtains/releases a temporary interface reference. OS InterlockedIncrement/Decrement imports emulate their one-integer operations, no gameplay callable substituted.",
+    "First no-head Process is stopped at original FindPath entry after observing arguments and unchanged path suffix/reference; it does not execute the AStar owner, path writes, Mark or movement. Paid-head row stops after actual+36 producer.",
+    "Frame100, initial logical Foot timer start+640=50/duration+648=5 (+644 supplied padding0), Rules+1768=22 and Rules+1760 double0.0 (retry_delay7.75 contrast) are supplied. Actual accepted Foot setter resets this timer before first Process; the later Process writes its retry delay before FindPath. Scope is the first request after an accepted setter, not arbitrary Process with a live retry timer. Flat Cell levels, startup control0E7F and known104 level constant are supplied.",
+    "All three supplied free-head rows preserve the full RandomClass byte-for-byte (zero draws); this is not a general head-choice RNG equivalence claim. Separate head rows use the imported walk_head_occupation fixture: supplied current2496,2624,260 and requested2752,2624,260, level2/slope1, subcell-offset table, no gate/crate/slave. Original75C240/481180/5217C0/521850 and seededScenarioRandom execute; full0x3F4 RandomClass state retained before/after. These are separate kernel rows, not execution through the FindPath core."
+  ],
+  "substitutions": [
+    "Setter rows only: OS InterlockedIncrement/Decrement imports update the pointed count and return it with original stdcall cleanup. No SetDestination, MoveTo, GetCoords, House, Mission or Process callable replaced.",
+    "Separate head rows inherit explicit owner-index/no-building/gate/false-owner virtual seams from walk_head_occupation; Mission+184 returns supplied0 or1, TarCom and CellNavCom pointers are supplied. The actual75C240 caller decides whether to consult them."
+  ],
+  "entry_points": {
+    "infantry_set_destination": "0x0051AA40",
+    "foot_set_destination": "0x004D94B0",
+    "walk_constructor": "0x0075AA90",
+    "walk_move_to": "0x0075ACB0",
+    "walk_process": "0x0075AEC0",
+    "first_find_path": "0x004D3920",
+    "head_producer": "0x0075C240",
+    "head_choice": "0x00481180",
+    "raw_mark": "0x005217C0",
+    "raw_clear": "0x00521850"
+  },
+  "payload_sha256": "1218427065ff414f07d8887ad0299a7aeac28b19c5a666fc84b4814abcfec9f4"
+}

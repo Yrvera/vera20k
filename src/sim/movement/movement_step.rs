@@ -443,6 +443,8 @@ pub(super) fn handle_vehicle_rotation(
 
 /// Result of lepton position advancement.
 pub(super) enum AdvanceResult {
+    /// Walk75BE3C: the retained subcell head completed, before PerCell2.
+    WalkStepCompleted,
     /// Drive track is active — caller should `continue` (skip cell crossings).
     DriveTrackActive,
     /// Drive track crossed a cell boundary — caller must handle the cell
@@ -1862,6 +1864,22 @@ fn advance_shared_track(
 ///
 /// Takes individual entity fields to avoid borrow conflicts with
 /// `entity.movement_target` (which the caller holds as `ref mut target`).
+pub(super) fn completed_walk_head(
+    position: &Position,
+    locomotor: &Option<LocomotorState>,
+) -> Option<crate::sim::components::DriveCoord> {
+    let loco = locomotor
+        .as_ref()
+        .filter(|l| l.kind == LocomotorKind::Walk)?;
+    let head = loco.step_head()?;
+    let [x, y] = super::ground_pose::position_world_xy(position);
+    (fixed_distance(
+        SimFixed::from_num(head.x.wrapping_sub(x)),
+        SimFixed::from_num(head.y.wrapping_sub(y)),
+    ) < SimFixed::from_num(17))
+    .then_some(head)
+}
+
 pub(super) fn advance_lepton_position(
     foot_occupation_enabled: &mut bool,
     path_replay: &mut crate::sim::components::FootPathQueue,
@@ -1888,6 +1906,57 @@ pub(super) fn advance_lepton_position(
         .as_ref()
         .filter(|loco| loco.kind == LocomotorKind::Walk)
         .map(|_| super::ground_pose::position_world_xy(position));
+    if walk_xy_before.is_some()
+        && let Some(head) = locomotor.as_ref().and_then(LocomotorState::step_head)
+    {
+        let [x, y] = super::ground_pose::position_world_xy(position);
+        let dx = SimFixed::from_num(head.x.wrapping_sub(x));
+        let dy = SimFixed::from_num(head.y.wrapping_sub(y));
+        let distance = fixed_distance(dx, dy);
+        // Walk75BD70 tests the retained head BEFORE the next polar step.
+        // Crossing its cell boundary does not consume the queued step.
+        if distance < SimFixed::from_num(17) {
+            position.rx = (head.x / 256) as u16;
+            position.ry = (head.y / 256) as u16;
+            position.sub_x = SimFixed::from_num(head.x % 256);
+            position.sub_y = SimFixed::from_num(head.y % 256);
+            position.exact_z_leptons = Some(head.z);
+            super::path_markers::accept_path_replay(
+                path_replay,
+                (position.rx as i16, position.ry as i16),
+                1,
+            );
+            super::ground_pose::commit_ground_height(
+                position,
+                current_occupation_layer == MovementLayer::Bridge,
+                terrain,
+                path_grid,
+            );
+            configure_motion_after_transition(
+                path_replay,
+                target,
+                locomotor,
+                drive_track_state,
+                drive_locomotion,
+                ship_locomotion,
+                facing,
+                facing_target,
+                category,
+                0,
+                position,
+            );
+            if let Some(loco) = locomotor {
+                // FindSubCellDest(NULL)75BE18 retires the completed head
+                // before the world-capable PerCell2 call75BE3C.
+                loco.set_step_head(None);
+                loco.subcell_dest = Some((position.sub_x, position.sub_y));
+            }
+            return AdvanceResult::WalkStepCompleted;
+        }
+        target.move_dir_x = dx;
+        target.move_dir_y = dy;
+        target.move_dir_len = distance;
+    }
     if drive_track_state.is_some() {
         let kind = shared_track_kind(locomotor).unwrap_or(LocomotorKind::Drive);
         let fresh_budget = if kind == LocomotorKind::Drive {
@@ -2185,6 +2254,10 @@ pub(super) fn advance_lepton_position(
 
 /// Output from the cell boundary crossing loop.
 pub(super) struct CrossingOutput {
+    /// A production Walk crossing must release the entity borrow before
+    /// Mark(REMOVE), SetCoords, SetHeight and Mark(PUT). No PerCell here.
+    pub walk_boundary: Option<crate::sim::components::DriveCoord>,
+    pub walk_head_admitted: bool,
     /// If set, the caller must handle deferred occupancy outside the entity borrow.
     pub deferred_cell_check: Option<DeferredCellCheck>,
     /// Bridge render state to apply after the loop. Predicate-driven; see movement_bridge.rs.
@@ -2240,7 +2313,11 @@ pub(super) fn process_cell_crossings(
     mcfg: MovementConfig,
     sim_tick: u64,
     marker_context: Option<super::path_markers::BridgeMarkerContext<'_>>,
+    suspend_walk_boundary: bool,
+    walk_head_admission: bool,
 ) -> CrossingOutput {
+    let mut walk_head_admitted = false;
+    let mut walk_boundary = None;
     let mut debug_events: Vec<(u32, DebugEventKind)> = Vec::new();
     let mut deferred_cell_check: Option<DeferredCellCheck> = None;
     let mut runtime_bridge_transition = snap.runtime_bridge_transition;
@@ -2255,9 +2332,25 @@ pub(super) fn process_cell_crossings(
         }
         let old_rx = position.rx;
         let old_ry = position.ry;
-        let (nx, ny): (u16, u16) = target.path[target.next_index];
+        let committed_walk = locomotor
+            .as_ref()
+            .is_some_and(|l| l.kind == LocomotorKind::Walk && l.step_head().is_some());
+        let (nx, ny): (u16, u16) = if committed_walk {
+            let [x, y] = super::ground_pose::position_world_xy(position);
+            ((x / 256) as u16, (y / 256) as u16)
+        } else {
+            target.path[target.next_index]
+        };
         let dx_cell: i32 = nx as i32 - position.rx as i32;
         let dy_cell: i32 = ny as i32 - position.ry as i32;
+        if dx_cell == 0
+            && dy_cell == 0
+            && locomotor
+                .as_ref()
+                .is_some_and(|l| l.kind == LocomotorKind::Walk)
+        {
+            break;
+        }
 
         // Check if sub_x/sub_y have crossed cell boundaries on each axis.
         let crossed_x: bool = match dx_cell.signum() {
@@ -2270,102 +2363,115 @@ pub(super) fn process_cell_crossings(
             -1 => position.sub_y <= SIM_ZERO,
             _ => true,
         };
-        if !(crossed_x && crossed_y) {
+        let crossing = if walk_head_admission {
+            true
+        } else if committed_walk {
+            //75C0F3..75C117 compares both actual cell coordinates. A
+            //diagonal step can enter a side cell before its other axis crosses.
+            let [x, y] = super::ground_pose::position_world_xy(position);
+            ((x / 256) as u16, (y / 256) as u16) != (old_rx, old_ry)
+        } else {
+            crossed_x && crossed_y
+        };
+        if !crossing {
             break;
         }
 
         let next_layer = target.layer_at(target.next_index);
-        let runtime_entry = evaluate_runtime_can_enter_cell_with_transition(
-            path_grid,
-            next_layer,
-            &mut runtime_bridge_transition,
-            projected_on_bridge_state,
-            runtime_can_enter_cell_args(
+        //75AECD..75AEF8 jumps past pathfind/admission when a head exists.
+        //Only the no-head branch reaches CanEnter75B690 before75BC1A.
+        if !committed_walk {
+            let runtime_entry = evaluate_runtime_can_enter_cell_with_transition(
                 path_grid,
-                (position.rx, position.ry),
-                (nx, ny),
+                next_layer,
+                &mut runtime_bridge_transition,
                 projected_on_bridge_state,
-                position.z,
-            ),
-        );
-        let layer_context = runtime_entry.layers;
-        let mut layer_grid_ok: Option<bool> = None;
-        let mut layer_terrain_ok: Option<bool> = None;
-
-        if !runtime_entry.bridge_traversal_allowed {
-            position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
-            position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
-            // VERA centre recovery is not a native locomotor step; keep its
-            // committed old-cell pose coherent without sampling the rejected XY.
-            if locomotor.as_ref().is_some_and(|loco| {
-                matches!(
-                    loco.kind,
-                    LocomotorKind::Drive | LocomotorKind::Ship | LocomotorKind::Walk
-                )
-            }) {
-                super::ground_pose::commit_ground_height(
-                    position,
-                    projected_on_bridge_state,
-                    resolved_terrain,
+                runtime_can_enter_cell_args(
                     path_grid,
-                );
-            }
-            *drive_track_state = None;
-            target.movement_delay = 0;
-            let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
-            let evts = handle_blocked_tick(
-                path_replay,
-                target,
-                facing,
-                body_facing,
-                &snap.locomotor,
-                drive_locomotion,
-                ship_locomotion,
-                entity_id,
-                (position.rx, position.ry),
-                active_layer,
-                snap.on_bridge,
-                stats,
-                finished_entities,
-                &mut aborted_for_stuck,
-                ctx,
-                entity_cost_grid,
-                mover_entity_blocks,
-                mover_entity_block_map,
-                snap.too_big_to_fit_under_bridge,
-                mcfg,
-                rng,
-                sim_tick,
-                PATH_STUCK_INIT,
-                mover_is_crusher,
-                category == EntityCategory::Infantry,
-                snap.allow_zone_hierarchy,
-                true,
-                true,
-                marker_context,
-                occupancy,
+                    (position.rx, position.ry),
+                    (nx, ny),
+                    projected_on_bridge_state,
+                    position.z,
+                ),
             );
-            debug_events.extend(evts);
-            break;
-        }
+            let layer_context = runtime_entry.layers;
+            let mut layer_grid_ok: Option<bool> = None;
+            let mut layer_terrain_ok: Option<bool> = None;
 
-        // --- Terrain walkability check (static map data) ---
-        let layer_walkable = match layer_context.terrain_layer {
-            MovementLayer::Ground => {
-                // Water movers (ships) bypass PathGrid — water cells are
-                // marked non-walkable for land units but ships need them.
-                // Use passability matrix directly, same as the pathfinder.
-                let cost_grid = if target.ignore_terrain_cost {
-                    None
-                } else {
-                    entity_cost_grid
-                };
-                // Same predicate the search ran. The original reaches its cell
-                // gate through a single per-class slot, so an infantryman's
-                // sub-cell view of terrain objects has to hold here too —
-                // otherwise A* plans through a tree cell the step-in refuses
-                // and the mover block/repath-loops onto the identical route.
-                let grid_ok: bool = match path_grid {
+            if !runtime_entry.bridge_traversal_allowed {
+                position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
+                position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
+                // VERA centre recovery is not a native locomotor step; keep its
+                // committed old-cell pose coherent without sampling the rejected XY.
+                if locomotor.as_ref().is_some_and(|loco| {
+                    matches!(
+                        loco.kind,
+                        LocomotorKind::Drive | LocomotorKind::Ship | LocomotorKind::Walk
+                    )
+                }) {
+                    super::ground_pose::commit_ground_height(
+                        position,
+                        projected_on_bridge_state,
+                        resolved_terrain,
+                        path_grid,
+                    );
+                }
+                *drive_track_state = None;
+                target.movement_delay = 0;
+                let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
+                let evts = handle_blocked_tick(
+                    path_replay,
+                    target,
+                    facing,
+                    body_facing,
+                    &snap.locomotor,
+                    drive_locomotion,
+                    ship_locomotion,
+                    entity_id,
+                    (position.rx, position.ry),
+                    active_layer,
+                    snap.on_bridge,
+                    stats,
+                    finished_entities,
+                    &mut aborted_for_stuck,
+                    ctx,
+                    entity_cost_grid,
+                    mover_entity_blocks,
+                    mover_entity_block_map,
+                    snap.too_big_to_fit_under_bridge,
+                    mcfg,
+                    rng,
+                    sim_tick,
+                    PATH_STUCK_INIT,
+                    mover_is_crusher,
+                    category == EntityCategory::Infantry,
+                    snap.allow_zone_hierarchy,
+                    true,
+                    true,
+                    marker_context,
+                    occupancy,
+                );
+                debug_events.extend(evts);
+                break;
+            }
+
+            // --- Terrain walkability check (static map data) ---
+            let layer_walkable = match layer_context.terrain_layer {
+                MovementLayer::Ground => {
+                    // Water movers (ships) bypass PathGrid — water cells are
+                    // marked non-walkable for land units but ships need them.
+                    // Use passability matrix directly, same as the pathfinder.
+                    let cost_grid = if target.ignore_terrain_cost {
+                        None
+                    } else {
+                        entity_cost_grid
+                    };
+                    // Same predicate the search ran. The original reaches its cell
+                    // gate through a single per-class slot, so an infantryman's
+                    // sub-cell view of terrain objects has to hold here too —
+                    // otherwise A* plans through a tree cell the step-in refuses
+                    // and the mover block/repath-loops onto the identical route.
+                    let grid_ok: bool = match path_grid {
                     Some(grid) => crate::sim::pathfinding::is_cell_passable_for_category_on_layer(
                         grid,
                         nx,
@@ -2381,208 +2487,224 @@ pub(super) fn process_cell_crossings(
                     ),
                     None => true,
                 };
-                let terrain_ok: bool = true;
-                layer_grid_ok = Some(grid_ok);
-                layer_terrain_ok = Some(terrain_ok);
-                grid_ok && terrain_ok
-            }
-            MovementLayer::Bridge => path_grid.is_some_and(|grid| {
-                crate::sim::pathfinding::is_cell_passable_for_mover_on_layer_with_speed(
-                    grid,
-                    nx,
-                    ny,
-                    MovementLayer::Bridge,
-                    Some(snap.movement_zone),
-                    snap.speed_type,
-                    resolved_terrain,
-                    entity_cost_grid,
-                    target.bypass_grid,
-                    crate::sim::pathfinding::cell_entry::TerrainEntryMode::RuntimeTransition,
-                )
-            }),
-            MovementLayer::Air | MovementLayer::Underground => false,
-        };
-        if !layer_walkable {
-            if snap.movement_zone.is_water_mover() {
-                log::info!(
-                    "NAVAL transition blocked: entity={} cur=({},{}) next=({},{}) layer={:?} grid_ok={:?} terrain_ok={:?} blocked_delay={} path_blocked={} {}",
+                    let terrain_ok: bool = true;
+                    layer_grid_ok = Some(grid_ok);
+                    layer_terrain_ok = Some(terrain_ok);
+                    grid_ok && terrain_ok
+                }
+                MovementLayer::Bridge => path_grid.is_some_and(|grid| {
+                    crate::sim::pathfinding::is_cell_passable_for_mover_on_layer_with_speed(
+                        grid,
+                        nx,
+                        ny,
+                        MovementLayer::Bridge,
+                        Some(snap.movement_zone),
+                        snap.speed_type,
+                        resolved_terrain,
+                        entity_cost_grid,
+                        target.bypass_grid,
+                        crate::sim::pathfinding::cell_entry::TerrainEntryMode::RuntimeTransition,
+                    )
+                }),
+                MovementLayer::Air | MovementLayer::Underground => false,
+            };
+            if !layer_walkable {
+                if snap.movement_zone.is_water_mover() {
+                    log::info!(
+                        "NAVAL transition blocked: entity={} cur=({},{}) next=({},{}) layer={:?} grid_ok={:?} terrain_ok={:?} blocked_delay={} path_blocked={} {}",
+                        entity_id,
+                        position.rx,
+                        position.ry,
+                        nx,
+                        ny,
+                        next_layer,
+                        layer_grid_ok,
+                        layer_terrain_ok,
+                        target.blocked_delay,
+                        target.path_blocked,
+                        naval_terrain_diag(resolved_terrain, (nx, ny)),
+                    );
+                }
+                // Undo lepton advancement — entity stays at cell center.
+                position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
+                position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
+                // VERA centre recovery is not a native locomotor step; keep its
+                // committed old-cell pose coherent without sampling the rejected XY.
+                if locomotor.as_ref().is_some_and(|loco| {
+                    matches!(
+                        loco.kind,
+                        LocomotorKind::Drive | LocomotorKind::Ship | LocomotorKind::Walk
+                    )
+                }) {
+                    super::ground_pose::commit_ground_height(
+                        position,
+                        projected_on_bridge_state,
+                        resolved_terrain,
+                        path_grid,
+                    );
+                }
+                *drive_track_state = None;
+                // Terrain-blocked (building/cliff) — the path is stale.
+                // Force immediate repath by clearing movement_delay.
+                target.movement_delay = 0;
+                let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
+                let evts = handle_blocked_tick(
+                    path_replay,
+                    target,
+                    facing,
+                    body_facing,
+                    &snap.locomotor,
+                    drive_locomotion,
+                    ship_locomotion,
                     entity_id,
-                    position.rx,
-                    position.ry,
-                    nx,
-                    ny,
-                    next_layer,
-                    layer_grid_ok,
-                    layer_terrain_ok,
-                    target.blocked_delay,
-                    target.path_blocked,
-                    naval_terrain_diag(resolved_terrain, (nx, ny)),
+                    (position.rx, position.ry),
+                    active_layer,
+                    snap.on_bridge,
+                    stats,
+                    finished_entities,
+                    &mut aborted_for_stuck,
+                    ctx,
+                    entity_cost_grid,
+                    mover_entity_blocks,
+                    mover_entity_block_map,
+                    snap.too_big_to_fit_under_bridge,
+                    mcfg,
+                    rng,
+                    sim_tick,
+                    PATH_STUCK_INIT,
+                    mover_is_crusher,
+                    category == EntityCategory::Infantry,
+                    snap.allow_zone_hierarchy,
+                    true, // terrain block: skip code-2 grace period
+                    true,
+                    marker_context,
+                    occupancy,
                 );
+                debug_events.extend(evts);
+                break;
             }
-            // Undo lepton advancement — entity stays at cell center.
-            position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
-            position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
-            // VERA centre recovery is not a native locomotor step; keep its
-            // committed old-cell pose coherent without sampling the rejected XY.
-            if locomotor.as_ref().is_some_and(|loco| {
-                matches!(
-                    loco.kind,
-                    LocomotorKind::Drive | LocomotorKind::Ship | LocomotorKind::Walk
-                )
-            }) {
-                super::ground_pose::commit_ground_height(
-                    position,
-                    projected_on_bridge_state,
-                    resolved_terrain,
-                    path_grid,
-                );
+
+            // --- Cliff detection ---
+            // Original engine: if height difference >= 3 levels and not a
+            // bridge ramp, treat as cliff. Catches stale paths after terrain
+            // changes, bump/scatter toward cliff edges, etc.
+            if let Some(pg) = path_grid {
+                if let Some(next_cell) = pg.cell(nx, ny) {
+                    let next_level = next_cell.effective_cell_z_for_layer(next_layer);
+                    let diff = (position.z as i16 - next_level as i16).unsigned_abs();
+                    // `is_elevated_bridge_cell` keys on the walkable permission bit, so a
+                    // structural deck cell whose permission is clear — a damaged span, or
+                    // one carrying a terrain object — reads as ordinary terrain here. A
+                    // mover on the deck now carries `ground + 4` (the native height model,
+                    // `FootClass::Set_Height_On_Bridge` 0x005F5FA0), so against that cell's
+                    // terrain level the difference is exactly the deck delta and the mover
+                    // is stopped mid-span as if it had walked off a cliff. Reading the
+                    // structural flag as well keeps the deck a deck regardless of the
+                    // permission bit.
+                    //
+                    // VERA-internal, gamemd equivalent UNCHECKED: `CLIFF_HEIGHT_THRESHOLD`
+                    // itself has no identified native owner (`sim::movement::mod.rs`), so
+                    // this widens a VERA-only gate rather than porting a native one.
+                    let is_bridge_ramp = next_cell.is_bridge_transition_cell()
+                        || next_cell.is_elevated_bridge_cell()
+                        || next_cell.has_structural_bridge();
+                    if diff >= CLIFF_HEIGHT_THRESHOLD && !is_bridge_ramp {
+                        position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
+                        position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
+                        // VERA centre recovery is not a native locomotor step; keep its
+                        // committed old-cell pose coherent without sampling the rejected XY.
+                        if locomotor.as_ref().is_some_and(|loco| {
+                            matches!(
+                                loco.kind,
+                                LocomotorKind::Drive | LocomotorKind::Ship | LocomotorKind::Walk
+                            )
+                        }) {
+                            super::ground_pose::commit_ground_height(
+                                position,
+                                projected_on_bridge_state,
+                                resolved_terrain,
+                                path_grid,
+                            );
+                        }
+                        *drive_track_state = None;
+                        target.movement_delay = 0;
+                        let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
+                        let evts = handle_blocked_tick(
+                            path_replay,
+                            target,
+                            facing,
+                            body_facing,
+                            &snap.locomotor,
+                            drive_locomotion,
+                            ship_locomotion,
+                            entity_id,
+                            (position.rx, position.ry),
+                            active_layer,
+                            snap.on_bridge,
+                            stats,
+                            finished_entities,
+                            &mut aborted_for_stuck,
+                            ctx,
+                            entity_cost_grid,
+                            mover_entity_blocks,
+                            mover_entity_block_map,
+                            snap.too_big_to_fit_under_bridge,
+                            mcfg,
+                            rng,
+                            sim_tick,
+                            PATH_STUCK_INIT,
+                            mover_is_crusher,
+                            category == EntityCategory::Infantry,
+                            snap.allow_zone_hierarchy,
+                            true, // cliff block: skip code-2 grace period
+                            true,
+                            marker_context,
+                            occupancy,
+                        );
+                        debug_events.extend(evts);
+                        break;
+                    }
+                }
             }
-            *drive_track_state = None;
-            // Terrain-blocked (building/cliff) — the path is stale.
-            // Force immediate repath by clearing movement_delay.
-            target.movement_delay = 0;
-            let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
-            let evts = handle_blocked_tick(
-                path_replay,
-                target,
-                facing,
-                body_facing,
-                &snap.locomotor,
-                drive_locomotion,
-                ship_locomotion,
+
+            // --- Occupancy check (entity-aware: sub-cell, crush, bump) ---
+            // Occupancy check: vehicles defer to crush/bump/attack handler,
+            // infantry defer to sub-cell/attack handler. Both break out of the
+            // loop to release the mutable entity borrow for blocker lookups.
+            let current_object_list_layer = if projected_on_bridge_state {
+                MovementLayer::Bridge
+            } else {
+                MovementLayer::Ground
+            };
+            if let Some(check) = detect_deferred_cell_check(
+                snap.category,
                 entity_id,
+                target.bypass_grid,
+                layer_context,
+                (nx, ny),
                 (position.rx, position.ry),
-                active_layer,
-                snap.on_bridge,
-                stats,
-                finished_entities,
-                &mut aborted_for_stuck,
-                ctx,
-                entity_cost_grid,
-                mover_entity_blocks,
-                mover_entity_block_map,
-                snap.too_big_to_fit_under_bridge,
-                mcfg,
-                rng,
-                sim_tick,
-                PATH_STUCK_INIT,
-                mover_is_crusher,
-                category == EntityCategory::Infantry,
-                snap.allow_zone_hierarchy,
-                true, // terrain block: skip code-2 grace period
-                true,
-                marker_context,
+                current_object_list_layer,
                 occupancy,
-            );
-            debug_events.extend(evts);
+                cell_occupation,
+                live_building_entry_skips,
+            ) {
+                deferred_cell_check = Some(check);
+                break;
+            }
+        }
+        if walk_head_admission {
+            walk_head_admitted = true;
             break;
         }
 
-        // --- Cliff detection ---
-        // Original engine: if height difference >= 3 levels and not a
-        // bridge ramp, treat as cliff. Catches stale paths after terrain
-        // changes, bump/scatter toward cliff edges, etc.
-        if let Some(pg) = path_grid {
-            if let Some(next_cell) = pg.cell(nx, ny) {
-                let next_level = next_cell.effective_cell_z_for_layer(next_layer);
-                let diff = (position.z as i16 - next_level as i16).unsigned_abs();
-                // `is_elevated_bridge_cell` keys on the walkable permission bit, so a
-                // structural deck cell whose permission is clear — a damaged span, or
-                // one carrying a terrain object — reads as ordinary terrain here. A
-                // mover on the deck now carries `ground + 4` (the native height model,
-                // `FootClass::Set_Height_On_Bridge` 0x005F5FA0), so against that cell's
-                // terrain level the difference is exactly the deck delta and the mover
-                // is stopped mid-span as if it had walked off a cliff. Reading the
-                // structural flag as well keeps the deck a deck regardless of the
-                // permission bit.
-                //
-                // VERA-internal, gamemd equivalent UNCHECKED: `CLIFF_HEIGHT_THRESHOLD`
-                // itself has no identified native owner (`sim::movement::mod.rs`), so
-                // this widens a VERA-only gate rather than porting a native one.
-                let is_bridge_ramp = next_cell.is_bridge_transition_cell()
-                    || next_cell.is_elevated_bridge_cell()
-                    || next_cell.has_structural_bridge();
-                if diff >= CLIFF_HEIGHT_THRESHOLD && !is_bridge_ramp {
-                    position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
-                    position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
-                    // VERA centre recovery is not a native locomotor step; keep its
-                    // committed old-cell pose coherent without sampling the rejected XY.
-                    if locomotor.as_ref().is_some_and(|loco| {
-                        matches!(
-                            loco.kind,
-                            LocomotorKind::Drive | LocomotorKind::Ship | LocomotorKind::Walk
-                        )
-                    }) {
-                        super::ground_pose::commit_ground_height(
-                            position,
-                            projected_on_bridge_state,
-                            resolved_terrain,
-                            path_grid,
-                        );
-                    }
-                    *drive_track_state = None;
-                    target.movement_delay = 0;
-                    let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
-                    let evts = handle_blocked_tick(
-                        path_replay,
-                        target,
-                        facing,
-                        body_facing,
-                        &snap.locomotor,
-                        drive_locomotion,
-                        ship_locomotion,
-                        entity_id,
-                        (position.rx, position.ry),
-                        active_layer,
-                        snap.on_bridge,
-                        stats,
-                        finished_entities,
-                        &mut aborted_for_stuck,
-                        ctx,
-                        entity_cost_grid,
-                        mover_entity_blocks,
-                        mover_entity_block_map,
-                        snap.too_big_to_fit_under_bridge,
-                        mcfg,
-                        rng,
-                        sim_tick,
-                        PATH_STUCK_INIT,
-                        mover_is_crusher,
-                        category == EntityCategory::Infantry,
-                        snap.allow_zone_hierarchy,
-                        true, // cliff block: skip code-2 grace period
-                        true,
-                        marker_context,
-                        occupancy,
-                    );
-                    debug_events.extend(evts);
-                    break;
-                }
-            }
-        }
-
-        // --- Occupancy check (entity-aware: sub-cell, crush, bump) ---
-        // Occupancy check: vehicles defer to crush/bump/attack handler,
-        // infantry defer to sub-cell/attack handler. Both break out of the
-        // loop to release the mutable entity borrow for blocker lookups.
-        let current_object_list_layer = if projected_on_bridge_state {
-            MovementLayer::Bridge
-        } else {
-            MovementLayer::Ground
-        };
-        if let Some(check) = detect_deferred_cell_check(
-            snap.category,
-            entity_id,
-            target.bypass_grid,
-            layer_context,
-            (nx, ny),
-            (position.rx, position.ry),
-            current_object_list_layer,
-            occupancy,
-            cell_occupation,
-            live_building_entry_skips,
-        ) {
-            deferred_cell_check = Some(check);
+        if suspend_walk_boundary
+            && locomotor
+                .as_ref()
+                .is_some_and(|l| l.kind == LocomotorKind::Walk)
+        {
+            //75C117: the provisional polar coordinate is selected, but old
+            //XYZ must remain visible to RemoveContent and its Recalc callback.
+            walk_boundary = Some(super::ground_pose::position_world_coord(position));
             break;
         }
 
@@ -2641,27 +2763,63 @@ pub(super) fn process_cell_crossings(
         } else {
             MovementLayer::Ground
         };
-        CellArrival {
-            entity_id,
-            category,
-            from: (old_rx, old_ry),
-            to: (nx, ny),
-            old_list_layer: old_occupancy_layer,
-            new_list_layer: new_occupancy_layer,
-            position,
-            locomotor,
-            drive_locomotion,
-            foot_occupation_enabled,
-            sub_cell,
-            occupancy_enter_order,
-            next_occupancy_enter_order,
-            occupancy,
-            cell_occupation,
-            stats,
-            priority: snap.sub_cell_priority_mission && snap.nav_com_cell == Some((nx, ny)),
+        if committed_walk {
+            //Headless adapter: current-coordinate list projection only.
+            //Production uses the world runner above, including raw/Recalc.
+            *sub_cell = Some(crate::sim::cell_kernel::infantry_preferred_spot(
+                crate::sim::cell_kernel::CellQueryPoint {
+                    x: position.sub_x.to_num::<i32>(),
+                    y: position.sub_y.to_num::<i32>(),
+                },
+            ));
+            *occupancy_enter_order = next_occupancy_enter_order.next();
+            occupancy.move_entity_layered(
+                old_rx,
+                old_ry,
+                nx,
+                ny,
+                entity_id,
+                old_occupancy_layer,
+                new_occupancy_layer,
+                *sub_cell,
+                crate::sim::occupancy::CellListInsertion::from_category(category),
+            );
+            stats.moved_steps = stats.moved_steps.saturating_add(1);
+        } else {
+            CellArrival {
+                entity_id,
+                category,
+                from: (old_rx, old_ry),
+                to: (nx, ny),
+                old_list_layer: old_occupancy_layer,
+                new_list_layer: new_occupancy_layer,
+                position,
+                locomotor,
+                drive_locomotion,
+                foot_occupation_enabled,
+                sub_cell,
+                occupancy_enter_order,
+                next_occupancy_enter_order,
+                occupancy,
+                cell_occupation,
+                stats,
+                priority: snap.sub_cell_priority_mission && snap.nav_com_cell == Some((nx, ny)),
+            }
+            .ordinary(next_layer);
         }
-        .ordinary(next_layer);
         active_layer = next_layer;
+
+        if locomotor
+            .as_ref()
+            .is_some_and(|l| l.kind == LocomotorKind::Walk)
+        {
+            // Walk75C12E relinks a boundary crossing but retains Head_To and
+            // the current path entry until its <17 completion corridor.
+            break;
+        }
+        if let Some(loco) = locomotor.as_mut() {
+            loco.set_step_head(None);
+        }
 
         configure_motion_after_transition(
             path_replay,
@@ -2724,6 +2882,8 @@ pub(super) fn process_cell_crossings(
     }
 
     CrossingOutput {
+        walk_boundary,
+        walk_head_admitted,
         deferred_cell_check,
         pending_bridge_update,
         active_layer,

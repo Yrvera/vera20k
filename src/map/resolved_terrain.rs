@@ -20,8 +20,6 @@ pub mod zone_class {
 }
 
 use crate::assets::tmp_file::{TmpFile, TmpTile};
-#[cfg(test)]
-pub(crate) use tests::{bridge_constructor_terrain, install_bridge_batch_test_catalog};
 use crate::map::authored_overlay::{FinalizedOverlayCell, NO_OVERLAY_IDENTITY};
 use crate::map::bridge_facts::{
     BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL,
@@ -29,8 +27,8 @@ use crate::map::bridge_facts::{
     BridgeStampFamily, BridgeStampSlot, MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
     RETAINED_CELLCLASS_BRIDGE_FLAG_MASK,
 };
-use crate::map::lat;
 use crate::map::cell_index::NativeCellIdentity;
+use crate::map::lat;
 use crate::map::map_file::{MapCell, MapFile};
 use crate::map::overlay::OverlayEntry;
 use crate::map::overlay_types::{
@@ -49,6 +47,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{
     Arc,
     atomic::{AtomicI16, AtomicU32, AtomicU64, Ordering},
+};
+#[cfg(test)]
+pub(crate) use tests::{
+    bridge_constructor_terrain, install_bridge_batch_test_catalog,
+    install_ordinary_repair_test_catalog,
 };
 
 #[path = "resolved_terrain_mutation.rs"]
@@ -355,7 +358,10 @@ impl ResolvedTerrainCell {
             };
         }
         self.bridge_deck_level = if self.bridge_facts.has_structural_bridge()
-            || self.bridge_layer.as_ref().is_some_and(|layer| layer.direction != BridgeDirection::Low)
+            || self
+                .bridge_layer
+                .as_ref()
+                .is_some_and(|layer| layer.direction != BridgeDirection::Low)
         {
             self.level.wrapping_add(4)
         } else {
@@ -1156,6 +1162,94 @@ struct SharedCellDummyState {
     tube_index: AtomicI16,
 }
 
+/// One native map-query identity domain. Bulk terrain is borrowed; input
+/// producers fork only the small fallback CellClass and retain it across every
+/// nested miss. Cloning ResolvedTerrainGrid would share its canonical Dummy.
+#[derive(Debug)]
+pub struct NativeCellQuery<'a> {
+    terrain: &'a ResolvedTerrainGrid,
+    dummy: SharedCellDummy,
+}
+
+impl<'a> NativeCellQuery<'a> {
+    pub(crate) fn isolated(terrain: &'a ResolvedTerrainGrid) -> Self {
+        Self {
+            terrain,
+            dummy: terrain.shared_cell_dummy.fork_query_identity(),
+        }
+    }
+
+    pub(crate) fn terrain(&self) -> &'a ResolvedTerrainGrid {
+        self.terrain
+    }
+    pub(crate) fn dummy(&self) -> SharedCellDummy {
+        self.dummy.clone()
+    }
+
+    pub(crate) fn lookup(&self, coord: (i16, i16)) -> NativeCellIdentity {
+        self.terrain
+            .native_fixed_cell_index(coord.0, coord.1)
+            .map_or_else(
+                || {
+                    self.dummy
+                        .stamp_coord(i32::from(coord.0), i32::from(coord.1));
+                    NativeCellIdentity::Dummy
+                },
+                NativeCellIdentity::Real,
+            )
+    }
+
+    pub(crate) fn lookup_world(&self, x: i32, y: i32) -> NativeCellIdentity {
+        let (x, y) = (x / 256, y / 256);
+        let index = y.wrapping_mul(512).wrapping_add(x);
+        if (0..0x40000).contains(&index)
+            && let Some(real) = self
+                .terrain
+                .native_fixed_cell_index((index % 512) as i16, (index / 512) as i16)
+        {
+            return NativeCellIdentity::Real(real);
+        }
+        self.dummy
+            .stamp_coord(i32::from(x as i16), i32::from(y as i16));
+        NativeCellIdentity::Dummy
+    }
+
+    pub(crate) fn coord(&self, cell: NativeCellIdentity) -> (i16, i16) {
+        match cell {
+            NativeCellIdentity::Real(_) => self.terrain.native_cell_coord(cell),
+            NativeCellIdentity::Dummy => {
+                let (x, y) = self.dummy.snapshot().coord;
+                (x as i16, y as i16)
+            }
+        }
+    }
+
+    pub(crate) fn ground_fields(&self, cell: NativeCellIdentity) -> (u8, u8) {
+        match cell {
+            NativeCellIdentity::Real(_) => self.terrain.native_cell_ground_fields(cell),
+            NativeCellIdentity::Dummy => {
+                let state = self.dummy.snapshot();
+                (state.level as u8, state.slope_type)
+            }
+        }
+    }
+
+    pub(crate) fn flags(&self, cell: NativeCellIdentity) -> u32 {
+        match cell {
+            NativeCellIdentity::Real(_) => self.terrain.native_cell_flags(cell),
+            NativeCellIdentity::Dummy => self.dummy.raw_flags(),
+        }
+    }
+
+    pub(crate) fn projection_view(&self, x: i32, y: i32) -> CellClassProjectionView {
+        let cell = self.lookup((x as i16, y as i16));
+        CellClassProjectionView {
+            signed_level: i32::from(self.ground_fields(cell).0 as i8),
+            raw_flags_0x1180: self.flags(cell) & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+        }
+    }
+}
+
 const SHARED_DUMMY_DEFAULT_OVERLAY: u64 = u32::MAX as u64;
 
 impl Default for SharedCellDummy {
@@ -1177,6 +1271,21 @@ impl SharedCellDummy {
         }
     }
 
+    /// Input queries borrow bulk map state but must not mutate the simulation's
+    /// retained fallback identity. Copy every modeled byte, not just the
+    /// coordinate/height snapshot, and keep one identity for the whole query.
+    pub(crate) fn fork_query_identity(&self) -> Self {
+        Self {
+            state: Arc::new(SharedCellDummyState {
+                cell: AtomicU64::new(self.state.cell.load(Ordering::Relaxed)),
+                raw_flags: AtomicU32::new(self.state.raw_flags.load(Ordering::Relaxed)),
+                native_anchor: AtomicU64::new(self.state.native_anchor.load(Ordering::Relaxed)),
+                overlay: AtomicU64::new(self.state.overlay.load(Ordering::Relaxed)),
+                tube_index: AtomicI16::new(self.state.tube_index.load(Ordering::Relaxed)),
+            }),
+        }
+    }
+
     /// Reconstruct the modeled fields in place at the native Resize boundary.
     ///
     /// `MapClass::Resize @ 0x00565C10` unconditionally calls
@@ -1190,7 +1299,9 @@ impl SharedCellDummy {
     pub(crate) fn reconstruct_for_map_resize(&self) {
         self.state.cell.store(0, Ordering::Relaxed);
         // Constructor47BBF0: AND FF800000 at47BCE1; preserve upper residue.
-        self.state.raw_flags.fetch_and(0xff80_0000, Ordering::Relaxed);
+        self.state
+            .raw_flags
+            .fetch_and(0xff80_0000, Ordering::Relaxed);
         self.state.native_anchor.store(0, Ordering::Relaxed);
         self.state.tube_index.store(-1, Ordering::Relaxed);
         self.state
@@ -1230,7 +1341,9 @@ impl SharedCellDummy {
             prepared.state.overlay.load(Ordering::Relaxed),
             Ordering::Relaxed,
         );
-        self.state.raw_flags.store(prepared.raw_flags(), Ordering::Relaxed);
+        self.state
+            .raw_flags
+            .store(prepared.raw_flags(), Ordering::Relaxed);
         self.write_native_anchor(prepared.native_anchor());
         self.state
             .tube_index
@@ -1329,16 +1442,16 @@ impl SharedCellDummy {
     /// without disturbing coordinate, level, or slope writers.
     #[cfg(test)]
     pub(crate) fn apply_bridge_flag_slot(&self, slot: BridgeStampSlot, set: bool) {
-        let _ = self
-            .state
-            .raw_flags
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                let mut flags = current;
-                crate::map::bridge_facts::apply_modeled_cellclass_bridge_slot(
-                    &mut flags, slot, set,
-                );
-                Some(flags)
-            });
+        let _ =
+            self.state
+                .raw_flags
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    let mut flags = current;
+                    crate::map::bridge_facts::apply_modeled_cellclass_bridge_slot(
+                        &mut flags, slot, set,
+                    );
+                    Some(flags)
+                });
     }
 
     pub(crate) fn bridge_flags_0x1180(&self) -> u32 {
@@ -1355,13 +1468,13 @@ impl SharedCellDummy {
     }
 
     fn update_retained_bridge_flags(&self, update: impl Fn(u32) -> u32) {
-        let _ = self
-            .state
-            .raw_flags
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                let flags = update(current) & RETAINED_CELLCLASS_BRIDGE_FLAG_MASK;
-                Some((current & !RETAINED_CELLCLASS_BRIDGE_FLAG_MASK) | flags)
-            });
+        let _ =
+            self.state
+                .raw_flags
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    let flags = update(current) & RETAINED_CELLCLASS_BRIDGE_FLAG_MASK;
+                    Some((current & !RETAINED_CELLCLASS_BRIDGE_FLAG_MASK) | flags)
+                });
     }
 
     pub(crate) fn apply_retained_bridge_flag_slot(
@@ -1404,21 +1517,28 @@ impl SharedCellDummy {
         if slot.writes_native_anchor() {
             self.write_native_anchor(stamp.set.then_some(anchor));
         }
-        if matches!(slot, BridgeStampSlot::Anchor | BridgeStampSlot::Forward1
-            | BridgeStampSlot::Forward2 | BridgeStampSlot::Opposite) {
+        if matches!(
+            slot,
+            BridgeStampSlot::Anchor
+                | BridgeStampSlot::Forward1
+                | BridgeStampSlot::Forward2
+                | BridgeStampSlot::Opposite
+        ) {
             self.write_overlay_state(facts.state_byte);
         }
     }
 
     #[cfg(test)]
     pub(crate) fn set_bridge_flags_0x1180(&self, flags: u32) {
-        let _ = self
-            .state
-            .raw_flags
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some((current & !MODELED_CELLCLASS_BRIDGE_FLAG_MASK)
-                    | (flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK))
-            });
+        let _ =
+            self.state
+                .raw_flags
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(
+                        (current & !MODELED_CELLCLASS_BRIDGE_FLAG_MASK)
+                            | (flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK),
+                    )
+                });
     }
 
     #[cfg(test)]
@@ -1481,9 +1601,14 @@ fn apply_native_bridge_flag_stamp_to_parts(
         return Vec::new();
     };
     let anchor = native_resolved_cell_index(
-        width, height, native_allocated, cells.len(),
-        i32::from(stamp.anchor.0), i32::from(stamp.anchor.1),
-    ).map_or(NativeCellIdentity::Dummy, NativeCellIdentity::Real);
+        width,
+        height,
+        native_allocated,
+        cells.len(),
+        i32::from(stamp.anchor.0),
+        i32::from(stamp.anchor.1),
+    )
+    .map_or(NativeCellIdentity::Dummy, NativeCellIdentity::Real);
     let mut real_cell_updates = Vec::with_capacity(slots.len());
     for (slot, requested) in slots {
         let Some((x, y)) = requested else {
@@ -1520,9 +1645,7 @@ fn apply_native_bridge_flag_stamp_to_parts(
         } else {
             shared_cell_dummy.stamp_coord(x, y);
             if let Some(family) = map_family {
-                shared_cell_dummy.apply_full_bridge_flag_slot(
-                    slot, stamp, family, anchor,
-                );
+                shared_cell_dummy.apply_full_bridge_flag_slot(slot, stamp, family, anchor);
             } else {
                 shared_cell_dummy.apply_retained_bridge_flag_slot(slot, stamp.set, stamp.direction);
             }
@@ -1786,7 +1909,10 @@ impl ResolvedTerrainGrid {
         let index = self.index(rx, ry)?;
         let cell = self.cells.get(index)?;
         if cell.bridge_facts.raw_flags & super::bridge_pavement::DAMAGED_PAVEMENT != 0
-            && let Some(metadata) = self.damaged_radar_metadata.get(index).and_then(Option::as_ref)
+            && let Some(metadata) = self
+                .damaged_radar_metadata
+                .get(index)
+                .and_then(Option::as_ref)
         {
             // A non-null invalid native RGB pointer has no available color.
             // Preserve that boundary instead of displaying pristine or gray.
@@ -1841,14 +1967,18 @@ impl ResolvedTerrainGrid {
     /// missing resident input; it is not native's sparse-entry false result.
     pub(crate) fn native_tmp_has_damaged_data(&self, tile: i32, sub: u8) -> Option<bool> {
         let tile = u16::try_from(tile).ok()?;
-        self.native_tmp_draw_heights.get(&tile).map(|head| head.damaged_data(sub))
+        self.native_tmp_draw_heights
+            .get(&tile)
+            .map(|head| head.damaged_data(sub))
     }
 
     /// Tactical480350 pins the pristine file when the native file count is
     /// below two. Keep this distinct from the pristine damaged-data predicate.
     pub(crate) fn native_tmp_file_count(&self, tile: i32) -> Option<usize> {
         let tile = u16::try_from(tile).ok()?;
-        self.native_tmp_draw_heights.get(&tile).map(|head| head.total_file_count)
+        self.native_tmp_draw_heights
+            .get(&tile)
+            .map(|head| head.total_file_count)
     }
 
     pub(crate) fn concrete_bridge_set_base(&self) -> i32 {
@@ -1859,7 +1989,9 @@ impl ResolvedTerrainGrid {
         self.wood_bridge_set_start.map_or(-1, i32::from)
     }
 
-    pub(crate) fn high_bridge_rim_tiles(&self) -> Option<super::bridge_rim_tiles::HighBridgeRimTiles> {
+    pub(crate) fn high_bridge_rim_tiles(
+        &self,
+    ) -> Option<super::bridge_rim_tiles::HighBridgeRimTiles> {
         self.high_bridge_rim_tiles
     }
 
@@ -1893,7 +2025,8 @@ impl ResolvedTerrainGrid {
     pub(crate) fn native_cell_identity(&self, coord: (i16, i16)) -> NativeCellIdentity {
         self.native_fixed_cell_index(coord.0, coord.1).map_or_else(
             || {
-                self.shared_cell_dummy.stamp_coord(i32::from(coord.0), i32::from(coord.1));
+                self.shared_cell_dummy
+                    .stamp_coord(i32::from(coord.0), i32::from(coord.1));
                 NativeCellIdentity::Dummy
             },
             NativeCellIdentity::Real,
@@ -1902,7 +2035,9 @@ impl ResolvedTerrainGrid {
 
     pub(crate) fn native_cell_coord(&self, cell: NativeCellIdentity) -> (i16, i16) {
         match cell {
-            NativeCellIdentity::Real(index) => (self.cells[index].rx as i16, self.cells[index].ry as i16),
+            NativeCellIdentity::Real(index) => {
+                (self.cells[index].rx as i16, self.cells[index].ry as i16)
+            }
             NativeCellIdentity::Dummy => {
                 let (x, y) = self.shared_cell_dummy.snapshot().coord;
                 (x as i16, y as i16)
@@ -1917,6 +2052,31 @@ impl ResolvedTerrainGrid {
         }
     }
 
+    /// Read retained CellClass+38 without another Map lookup. The shared
+    /// fallback keeps the constructor's 0xFFFF tile, independently of its
+    /// mutable coordinate, level, slope and overlay fields.
+    pub(crate) fn native_cell_tile_index(&self, cell: NativeCellIdentity) -> i32 {
+        match cell {
+            NativeCellIdentity::Real(index) => self.cells[index].final_tile_index,
+            NativeCellIdentity::Dummy => 0xFFFF,
+        }
+    }
+
+    /// Cell47B3A0 samples the receiver's own signed level and slope; unlike
+    /// Map578080 it neither resolves a new cell nor restamps the shared Dummy.
+    pub(crate) fn native_cell_ground_fields(&self, cell: NativeCellIdentity) -> (u8, u8) {
+        match cell {
+            NativeCellIdentity::Real(index) => {
+                let cell = &self.cells[index];
+                (cell.level, cell.slope_type)
+            }
+            NativeCellIdentity::Dummy => {
+                let state = self.shared_cell_dummy.snapshot();
+                (state.level as u8, state.slope_type)
+            }
+        }
+    }
+
     pub(crate) fn native_cell_state(&self, cell: NativeCellIdentity) -> u8 {
         match cell {
             NativeCellIdentity::Real(index) => self.cells[index].bridge_facts.state_byte,
@@ -1924,7 +2084,10 @@ impl ResolvedTerrainGrid {
         }
     }
 
-    pub(crate) fn native_cell_anchor(&self, cell: NativeCellIdentity) -> Option<NativeCellIdentity> {
+    pub(crate) fn native_cell_anchor(
+        &self,
+        cell: NativeCellIdentity,
+    ) -> Option<NativeCellIdentity> {
         match cell {
             NativeCellIdentity::Real(index) => self.cells[index].bridge_facts.native_anchor,
             NativeCellIdentity::Dummy => self.shared_cell_dummy.native_anchor(),
@@ -1941,14 +2104,20 @@ impl ResolvedTerrainGrid {
                 // Runtime constructor47E040/47E470 writes the orientation in
                 // bit0x800. Keep the derived direction used by span rebuilding
                 // current even when this cell has no authored stamp receipt.
-                if flags & (BRIDGE_FLAG_ANCHOR_SELF | BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_DESTROYED_OR_RAMP) != 0 {
-                    self.cells[index].bridge_facts.direction = Some(if flags & 0x800 != 0 { 0 } else { 6 });
+                if flags
+                    & (BRIDGE_FLAG_ANCHOR_SELF
+                        | BRIDGE_FLAG_STRUCTURAL
+                        | BRIDGE_FLAG_DESTROYED_OR_RAMP)
+                    != 0
+                {
+                    self.cells[index].bridge_facts.direction =
+                        Some(if flags & 0x800 != 0 { 0 } else { 6 });
                 }
                 // 47E040 removes the deck from stamped non-anchor cells too;
                 // those cells need not carry an overlay/bridge_layer. Preserve
                 // unrelated ramp projections when F3/extra only change markers.
-                let structural_removed = previous & BRIDGE_FLAG_STRUCTURAL != 0
-                    && flags & BRIDGE_FLAG_STRUCTURAL == 0;
+                let structural_removed =
+                    previous & BRIDGE_FLAG_STRUCTURAL != 0 && flags & BRIDGE_FLAG_STRUCTURAL == 0;
                 refresh_runtime_bridge_projection(&mut self.cells[index], structural_removed);
                 if structural_removed
                     || (previous ^ flags) & crate::map::bridge_facts::BRIDGE_FLAG_TRANSITION != 0
@@ -1981,17 +2150,35 @@ impl ResolvedTerrainGrid {
         }
     }
 
-    pub(crate) fn write_native_cell_anchor(&mut self, cell: NativeCellIdentity, anchor: Option<NativeCellIdentity>) {
+    pub(crate) fn write_native_cell_anchor(
+        &mut self,
+        cell: NativeCellIdentity,
+        anchor: Option<NativeCellIdentity>,
+    ) {
         match cell {
-            NativeCellIdentity::Real(index) => self.cells[index].bridge_facts.native_anchor = anchor,
+            NativeCellIdentity::Real(index) => {
+                self.cells[index].bridge_facts.native_anchor = anchor
+            }
             NativeCellIdentity::Dummy => self.shared_cell_dummy.write_native_anchor(anchor),
         }
     }
 
     pub(crate) fn clear_native_cell_overlay(&mut self, cell: NativeCellIdentity) {
+        self.write_native_cell_overlay(cell, None);
+    }
+
+    /// Raw Cell+44 publication; derived Recalc fields remain untouched until
+    /// the caller reaches47D2B0. Ordinary repair stores all three identities first.
+    pub(crate) fn write_native_cell_overlay(
+        &mut self,
+        cell: NativeCellIdentity,
+        overlay: Option<u8>,
+    ) {
         match cell {
-            NativeCellIdentity::Real(index) => self.cells[index].bridge_facts.overlay_id = None,
-            NativeCellIdentity::Dummy => self.shared_cell_dummy.write_overlay_identity(-1),
+            NativeCellIdentity::Real(index) => self.cells[index].bridge_facts.overlay_id = overlay,
+            NativeCellIdentity::Dummy => self
+                .shared_cell_dummy
+                .write_overlay_identity(overlay.map_or(-1, i32::from)),
         }
     }
 
@@ -2230,8 +2417,7 @@ impl ResolvedTerrainGrid {
                 if cell.yr_cell_land_type == YR_CELL_LAND_TUNNEL
                     && self.native_tube_indices[index]
                         .admits_automatic_construction(self.tube_facts.len())
-                    && let Some(direction) =
-                        state.automatic_tube_direction(cell.final_tile_index)
+                    && let Some(direction) = state.automatic_tube_direction(cell.final_tile_index)
                 {
                     let request = AutomaticTubeRequest {
                         cell: (cell.rx, cell.ry),
@@ -2597,7 +2783,8 @@ impl ResolvedTerrainGrid {
             Some(index)
         } else {
             self.shared_cell_dummy.stamp_coord(x, y);
-            self.shared_cell_dummy.apply_full_bridge_flag_slot(slot, stamp, family, anchor);
+            self.shared_cell_dummy
+                .apply_full_bridge_flag_slot(slot, stamp, family, anchor);
             None
         }
     }
@@ -4542,16 +4729,18 @@ impl ResolvedTerrainGrid {
                 terrain_rules,
             ),
             bridge_recalc_catalog: match (theater_data, asset_manager, terrain_rules) {
-                (Some(theater), Some(assets), Some(rules)) => Some(Arc::new(
-                    BridgeRecalcCatalog::for_runtime_bridges(
+                (Some(theater), Some(assets), Some(rules)) => {
+                    Some(Arc::new(BridgeRecalcCatalog::for_runtime_bridges(
                         theater,
                         assets,
                         rules,
                         lat_enabled,
                         cliff_back_impassability,
-                        variant_selector.as_ref().and_then(|selector| selector.initialized_table()),
-                    ),
-                )),
+                        variant_selector
+                            .as_ref()
+                            .and_then(|selector| selector.initialized_table()),
+                    )))
+                }
                 _ => None,
             },
         };
@@ -5095,10 +5284,13 @@ fn load_native_tmp_draw_heights(
         };
         match TmpFile::pristine_header_fields_from_bytes(&bytes) {
             Ok(rows) => {
-                heights.insert(id, PristineTmpHeader {
-                    subtiles: rows,
-                    total_file_count: theater.lookup.total_file_count(id) as usize,
-                });
+                heights.insert(
+                    id,
+                    PristineTmpHeader {
+                        subtiles: rows,
+                        total_file_count: theater.lookup.total_file_count(id) as usize,
+                    },
+                );
             }
             Err(error) => log::warn!("TMP draw dimensions unavailable for {name}: {error}"),
         }
@@ -5835,12 +6027,17 @@ mod tests {
 
     impl Gsi0404AssetDirectory {
         fn new() -> Self {
+            static NEXT_DIRECTORY: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let sequence = NEXT_DIRECTORY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock follows Unix epoch")
                 .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("vera20k-gsi-04-04-{}-{nonce}", std::process::id()));
+            let path = std::env::temp_dir().join(format!(
+                "vera20k-gsi-04-04-{}-{nonce}-{sequence}",
+                std::process::id()
+            ));
             std::fs::create_dir(&path).expect("create GSI-04.04 asset directory");
             Self(path)
         }
@@ -6515,7 +6712,9 @@ mod tests {
                 },
             );
             let mut runtime = SimRuntime::from_simulation(sim);
-            let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+            let _ = runtime
+                .advance_frame(&[], 16, TickLane::Ordinary)
+                .expect("fixture frame must complete");
             assert_eq!(
                 runtime.simulation.projectiles.get(100).is_none(),
                 admit,
@@ -7064,7 +7263,9 @@ mod tests {
 
     #[test]
     fn bridge_publication_retains_allocation_identity_across_other_lookups() {
-        let cells = (0..3).flat_map(|y| (0..3).map(move |x| make_test_cell(x, y))).collect();
+        let cells = (0..3)
+            .flat_map(|y| (0..3).map(move |x| make_test_cell(x, y)))
+            .collect();
         let mut terrain = ResolvedTerrainGrid::from_cells(3, 3, cells);
         terrain.test_set_native_allocated_cells(&[(1, 1)]);
         let real = terrain.native_cell_identity((-511, 2));
@@ -7083,23 +7284,55 @@ mod tests {
         assert_eq!(terrain.native_cell_state(dummy), 17);
         assert_eq!(terrain.native_cell_anchor(real), Some(dummy));
         assert_eq!(terrain.native_cell_anchor(dummy), Some(real));
-        assert_eq!(terrain.shared_cell_dummy().snapshot().coord, (8, 9), "retained reads do not repeat lookup");
+        assert_eq!(
+            terrain.shared_cell_dummy().snapshot().coord,
+            (8, 9),
+            "retained reads do not repeat lookup"
+        );
     }
 
     #[test]
     fn bridge_publication_overlapping_mark_preserves_literal_anchor_pointer() {
-        let cells = (0..7).flat_map(|y| (0..7).map(move |x| make_test_cell(x, y))).collect();
+        let cells = (0..7)
+            .flat_map(|y| (0..7).map(move |x| make_test_cell(x, y)))
+            .collect();
         let mut terrain = ResolvedTerrainGrid::from_cells(7, 7, cells);
         let first = terrain.native_cell_identity((3, 3));
         let second = terrain.native_cell_identity((4, 3));
-        terrain.apply_runtime_bridge_mark_stamp(BridgeFlagStamp::new((3, 3), 6, true), BridgeStampFamily::Nesw);
+        terrain.apply_runtime_bridge_mark_stamp(
+            BridgeFlagStamp::new((3, 3), 6, true),
+            BridgeStampFamily::Nesw,
+        );
         assert_eq!(terrain.native_cell_anchor(second), Some(first));
-        terrain.apply_runtime_bridge_mark_stamp(BridgeFlagStamp::new((4, 3), 6, true), BridgeStampFamily::Nesw);
-        assert_eq!(terrain.cell(4, 3).unwrap().bridge_facts.anchor.unwrap().anchor, (4, 3));
-        assert_eq!(terrain.native_cell_anchor(second), Some(first), "native anchor slot preserves +2C despite its derived self relation");
-        terrain.apply_runtime_bridge_mark_stamp(BridgeFlagStamp::new((4, 3), 6, false), BridgeStampFamily::Nesw);
+        terrain.apply_runtime_bridge_mark_stamp(
+            BridgeFlagStamp::new((4, 3), 6, true),
+            BridgeStampFamily::Nesw,
+        );
+        assert_eq!(
+            terrain
+                .cell(4, 3)
+                .unwrap()
+                .bridge_facts
+                .anchor
+                .unwrap()
+                .anchor,
+            (4, 3)
+        );
+        assert_eq!(
+            terrain.native_cell_anchor(second),
+            Some(first),
+            "native anchor slot preserves +2C despite its derived self relation"
+        );
+        terrain.apply_runtime_bridge_mark_stamp(
+            BridgeFlagStamp::new((4, 3), 6, false),
+            BridgeStampFamily::Nesw,
+        );
         assert_eq!(terrain.native_cell_anchor(second), Some(first));
-        assert_eq!(terrain.native_cell_anchor(first), None, "F1 clears its literal pointer");
+        assert_eq!(
+            terrain.native_cell_anchor(first),
+            None,
+            "F1 clears its literal pointer"
+        );
         let retained = DynamicTerrainCellState::capture(terrain.cell(4, 3).unwrap());
         let bytes = bincode::serialize(&retained).unwrap();
         let restored: DynamicTerrainCellState = bincode::deserialize(&bytes).unwrap();
@@ -7111,9 +7344,15 @@ mod tests {
         let dummy = SharedCellDummy::fresh();
         dummy.write_raw_flags(0xff81_ffff);
         dummy.set_bridge_flags_0x1180(0);
-        assert_eq!(dummy.raw_flags(), 0xff81_ffff & !MODELED_CELLCLASS_BRIDGE_FLAG_MASK);
+        assert_eq!(
+            dummy.raw_flags(),
+            0xff81_ffff & !MODELED_CELLCLASS_BRIDGE_FLAG_MASK
+        );
         dummy.test_set_retained_bridge_flags(0);
-        assert_eq!(dummy.raw_flags(), 0xff81_ffff & !RETAINED_CELLCLASS_BRIDGE_FLAG_MASK);
+        assert_eq!(
+            dummy.raw_flags(),
+            0xff81_ffff & !RETAINED_CELLCLASS_BRIDGE_FLAG_MASK
+        );
         dummy.write_native_anchor(Some(NativeCellIdentity::Real(13)));
         dummy.write_overlay_identity_state(24, 15);
         dummy.stamp_coord(9, -4);
@@ -7123,7 +7362,11 @@ mod tests {
         assert_eq!(prepared.native_anchor(), dummy.native_anchor());
         assert_eq!(prepared.overlay_identity_state(), (24, 15));
         dummy.reconstruct_for_map_resize();
-        assert_eq!(dummy.raw_flags(), 0xff80_0000, "original47BCE1 constructor AND");
+        assert_eq!(
+            dummy.raw_flags(),
+            0xff80_0000,
+            "original47BCE1 constructor AND"
+        );
         assert_eq!(dummy.native_anchor(), None);
         assert_eq!(dummy.overlay_identity_state(), (-1, 0));
         assert_eq!(dummy.snapshot().coord, (0, 0));

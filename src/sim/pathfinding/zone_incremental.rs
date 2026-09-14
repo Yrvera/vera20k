@@ -93,6 +93,21 @@ pub(crate) fn recalculate_zone_batch<H: ZoneBatchHost>(
     Ok(())
 }
 
+/// Original5868A0 enumerates X outer/Y inner, stores each signed low word,
+/// then586990 traverses that retained vector in reverse in both passes.
+pub(crate) fn recalculate_zone_rectangle<H: ZoneBatchHost>(
+    host: &mut H,
+    [x, y, width, height]: [i32; 4],
+) -> Result<(), H::Error> {
+    let mut cells = Vec::new();
+    for x in x..x.wrapping_add(width) {
+        for y in y..y.wrapping_add(height) {
+            cells.push((x as i16, y as i16));
+        }
+    }
+    recalculate_zone_batch(host, &cells)
+}
+
 /// Provenance selects between the two distinct native one-cell helpers —
 /// `MapClass::AssignOrphanedCellZone` @ `0x0056D460` and
 /// `MapClass::MergeAdjacentCellZone` @ `0x0056D5A0`. It is never inferred from

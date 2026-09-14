@@ -781,7 +781,7 @@ impl ReplayRunner {
         runtime: &mut crate::sim::runtime::SimRuntime,
         replay: &ReplayLog,
         tick_ms: u32,
-    ) -> Vec<u64> {
+    ) -> Result<Vec<u64>> {
         debug_assert_eq!(
             runtime.simulation.session.seed, replay.header.seed,
             "replay playback sim must be constructed from header.seed"
@@ -803,10 +803,10 @@ impl ReplayRunner {
                 &due_commands,
                 tick_ms,
                 crate::sim::world::TickLane::Ordinary,
-            );
+            )?;
             hashes.push(output.tick.state_hash);
         }
-        hashes
+        Ok(hashes)
     }
 
     /// Fixture-only replay runner (F09): re-run diagnostic-log ticks with
@@ -822,13 +822,7 @@ impl ReplayRunner {
         tick_ms: u32,
     ) -> Vec<u64> {
         Self::run_fixture_with_overlay_registry(
-            sim,
-            replay,
-            rules,
-            height_map,
-            path_grid,
-            None,
-            tick_ms,
+            sim, replay, rules, height_map, path_grid, None, tick_ms,
         )
     }
 
@@ -900,16 +894,18 @@ impl ReplayRunner {
         let mut hashes: Vec<u64> = Vec::with_capacity(replay.ticks.len());
         for entry in &replay.ticks {
             let due_commands = sim.take_due_replay_commands(entry.commands.iter().cloned());
-            let result = sim.advance_master_frame(
-                &due_commands,
-                rules,
-                height_map,
-                path_grid,
-                overlay_registry,
-                tick_ms,
-                TickLane::Ordinary,
-                trigger_inputs,
-            );
+            let result = sim
+                .advance_master_frame(
+                    &due_commands,
+                    rules,
+                    height_map,
+                    path_grid,
+                    overlay_registry,
+                    tick_ms,
+                    TickLane::Ordinary,
+                    trigger_inputs,
+                )
+                .expect("fixture frame must complete");
             // Replay has no app layer to consume presentation-only trigger effects.
             let _ = sim.drain_trigger_effects();
             hashes.push(result.state_hash);
@@ -1444,7 +1440,8 @@ mod tests {
         assert_eq!(decoded.ticks[0].commands[0].payload, Command::ExitMatch);
         assert_eq!(NATIVE_REPLAY_VERSION, 10);
 
-        let hashes = ReplayRunner::run_fixture(&mut sim, &decoded, None, &BTreeMap::new(), None, 33);
+        let hashes =
+            ReplayRunner::run_fixture(&mut sim, &decoded, None, &BTreeMap::new(), None, 33);
         assert_eq!(hashes.len(), 1);
         assert!(sim.quit_requested);
         assert_eq!(sim.take_executed_exit_owner(), Some(owner));
@@ -1487,7 +1484,8 @@ mod tests {
         let decoded: ReplayLog = serde_json::from_str(&json).expect("decode GameSpeed replay");
 
         let (mut replayed, _) = make_sim();
-        let hashes = ReplayRunner::run_fixture(&mut replayed, &decoded, None, &BTreeMap::new(), None, 67);
+        let hashes =
+            ReplayRunner::run_fixture(&mut replayed, &decoded, None, &BTreeMap::new(), None, 67);
         assert_eq!(hashes, vec![tick.state_hash]);
         assert_eq!(replayed.session.game_options.game_speed, 4);
         assert_eq!(replayed.state_hash(), recorded.state_hash());

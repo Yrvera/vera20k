@@ -450,13 +450,25 @@ impl ZoneGrid {
         movement_zone: MovementZone,
         check_bridge: bool,
     ) -> Option<u32> {
-        use crate::sim::cell_rect::{CellRef, get_cellclass_fallback};
+        self.get_path_zone_id_native_in_query(terrain, coord, movement_zone, check_bridge, None)
+    }
+
+    pub(crate) fn get_path_zone_id_native_in_query(
+        &self,
+        terrain: &ResolvedTerrainGrid,
+        coord: (u16, u16),
+        movement_zone: MovementZone,
+        check_bridge: bool,
+        query: Option<&crate::map::resolved_terrain::NativeCellQuery<'_>>,
+    ) -> Option<u32> {
+        use crate::sim::cell_rect::{CellRef, get_cellclass_in_query};
         let mut selected = coord;
         if check_bridge {
-            let cell = get_cellclass_fallback(
+            let cell = get_cellclass_in_query(
                 Some(terrain),
                 i32::from(coord.0 as i16),
                 i32::from(coord.1 as i16),
+                query,
             );
             let structural = match cell {
                 CellRef::Real(cell) => cell.bridge_facts.has_structural_bridge(),
@@ -473,10 +485,11 @@ impl ZoneGrid {
                     //56D2B3 reloads the cell;481810 steps from the returned
                     // CellClass+24, including fixed-stride aliases and dummy.
                     // This live query owns writes; cache construction must not.
-                    let mut current = get_cellclass_fallback(
+                    let mut current = get_cellclass_in_query(
                         Some(terrain),
                         i32::from(coord.0 as i16),
                         i32::from(coord.1 as i16),
+                        query,
                     );
                     let vertical = record.endpoint_a.0 == record.endpoint_b.0;
                     let mut visited = std::collections::BTreeSet::new();
@@ -500,10 +513,11 @@ impl ZoneGrid {
                         } else {
                             (position.0.wrapping_add(1), position.1)
                         };
-                        current = get_cellclass_fallback(
+                        current = get_cellclass_in_query(
                             Some(terrain),
                             i32::from(next.0),
                             i32::from(next.1),
+                            query,
                         );
                     }
                     // Constructor dummy tile65535 is outside both high sets
@@ -894,7 +908,7 @@ impl ZoneGrid {
     }
 }
 
-fn cell_is_in_native_map_diamond(
+pub(crate) fn cell_is_in_native_map_diamond(
     coord: (i32, i32),
     map_size_width: i32,
     map_size_height: i32,
