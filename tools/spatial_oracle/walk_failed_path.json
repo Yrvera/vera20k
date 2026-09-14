@@ -4956,5 +4956,212 @@
         0
       ]
     }
+  },
+  {
+    "initial_movement_timer": {
+      "duration": 5,
+      "start_frame": 50
+    },
+    "input": {
+      "different_zone": true,
+      "mission": 2,
+      "native_find_path": true,
+      "retries": 10,
+      "target": false
+    },
+    "phases": [
+      {
+        "events": [
+          "0x4d3920",
+          "0x4d3810",
+          "0x5b3040",
+          "0x56d100",
+          "0x4d3810",
+          "0x5b3040",
+          "0x56d100",
+          "0x75b580",
+          "0x51aa40",
+          "0x5b3040",
+          "0x51ad11",
+          "0x4d94b0",
+          "0x75ada0",
+          "0x521b40"
+        ],
+        "state": {
+          "destination": [
+            0,
+            0,
+            0
+          ],
+          "frame": 100,
+          "head": [
+            0,
+            0,
+            0
+          ],
+          "motion": 0,
+          "movement_timer": {
+            "duration": 0,
+            "start_frame": 100
+          },
+          "moving": 0,
+          "nav": 0,
+          "nav_queue_count": 0,
+          "nav_queue_entries": [
+            536879104,
+            536928256
+          ],
+          "queue": [
+            -1,
+            3,
+            4,
+            5
+          ],
+          "reference": [
+            9,
+            8
+          ],
+          "retries": 10,
+          "speed": 0.0,
+          "xyz": [
+            2624,
+            2624,
+            0
+          ]
+        }
+      },
+      {
+        "events": [],
+        "state": {
+          "destination": [
+            0,
+            0,
+            0
+          ],
+          "frame": 108,
+          "head": [
+            0,
+            0,
+            0
+          ],
+          "motion": 0,
+          "movement_timer": {
+            "duration": 0,
+            "start_frame": 100
+          },
+          "moving": 0,
+          "nav": 0,
+          "nav_queue_count": 0,
+          "nav_queue_entries": [
+            536879104,
+            536928256
+          ],
+          "queue": [
+            -1,
+            3,
+            4,
+            5
+          ],
+          "reference": [
+            9,
+            8
+          ],
+          "retries": 10,
+          "speed": 0.0,
+          "xyz": [
+            2624,
+            2624,
+            0
+          ]
+        }
+      },
+      {
+        "events": [],
+        "state": {
+          "destination": [
+            0,
+            0,
+            0
+          ],
+          "frame": 109,
+          "head": [
+            0,
+            0,
+            0
+          ],
+          "motion": 0,
+          "movement_timer": {
+            "duration": 0,
+            "start_frame": 100
+          },
+          "moving": 0,
+          "nav": 0,
+          "nav_queue_count": 0,
+          "nav_queue_entries": [
+            536879104,
+            536928256
+          ],
+          "queue": [
+            -1,
+            3,
+            4,
+            5
+          ],
+          "reference": [
+            9,
+            8
+          ],
+          "retries": 10,
+          "speed": 0.0,
+          "xyz": [
+            2624,
+            2624,
+            0
+          ]
+        }
+      }
+    ],
+    "setter": {
+      "destination": [
+        2944,
+        2688,
+        0
+      ],
+      "frame": 100,
+      "head": [
+        0,
+        0,
+        0
+      ],
+      "motion": 0,
+      "movement_timer": {
+        "duration": 0,
+        "start_frame": 100
+      },
+      "moving": 1,
+      "nav": 536928768,
+      "nav_queue_count": 0,
+      "nav_queue_entries": [
+        536879104,
+        536928256
+      ],
+      "queue": [
+        -1,
+        3,
+        4,
+        5
+      ],
+      "reference": [
+        9,
+        8
+      ],
+      "retries": 10,
+      "speed": 0.0,
+      "xyz": [
+        2624,
+        2624,
+        0
+      ]
+    }
   }
 ]

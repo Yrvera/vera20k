@@ -1,7 +1,8 @@
 """Original failed Walk search consequences and bounded Infantry Move restart.
 
 Run python -m tools.spatial_oracle.walk_failed_path --check (or --write).
-FindPath failure is supplied; original caller, setters, timers, map predicates and
+FindPath failure is supplied except for the final actual raw-zone rejection row;
+original caller, setters, timers, map predicates and
 Stop execute. Restart rows continue at original520F40 and stop BEFORE520FAF:
 no intervening InfantryAI or downstream Doing/zone logic is emulated here.
 """
@@ -54,7 +55,7 @@ def query(row):
   if SCRATCH<=address<SCRATCH+0x20000:raise RuntimeError(recent[-20:])
   if address in [read32(0x7E11C8),read32(0x7E11CC)]:
    p=read32(sp+4);value=read32(p)+(1 if address==read32(0x7E11C8) else -1);u.mem_write(p,dwords(value));ret(4,value)
-  elif address==0x4D3920:
+  elif address==0x4D3920 and not row.get('native_find_path'):
    events.append(['find_path_false',read32(0xA8ED84),list(struct.unpack('<III',u.mem_read(sp+4,12)))]);ret(12,0)
   elif address in [0x520F40,0x520F72,0x520F97,0x520FA9,0x75B03B,0x75B06C,0x75B085,0x75B2BC,0x75B580,0x4D3810,0x521DD0,0x4DC030,0x56D100,0x4D3710,0x4D9FF0,0x41BDD0,0x5F65A0,0x6F7970,0x565730,0x6F77B0,0x5B3040,0x51AA40,0x51AD11,0x4D94B0,0x75ADA0,0x75ACB0,0x4D3920,0x521B40,0x4D896E]:events.append(hex(address))
  u.hook_add(UC_HOOK_CODE,observer)
@@ -83,11 +84,12 @@ def generate():
  rows += [dict(mission=2,target=False,retries=0,in_playfield=False),dict(mission=2,target=False,retries=10,close_enough=512,close_gate=True),dict(mission=2,target=False,retries=10,different_zone=True),dict(mission=15,target=False,retries=10)]
  rows += [dict(mission=2,target=False,retries=n,restart=True,frames=[100,101,102]) for n in (10,1,0)]
  rows += [dict(mission=-1,queued_mission=2,target=False,retries=1,restart=True,frames=[100,101,102]),dict(mission=1,target=False,retries=10,restart=True,frames=[100,101,102])]
+ rows += [dict(mission=2,target=False,retries=10,different_zone=True,native_find_path=True)]
  return [query(row) for row in rows]
 
 if __name__=='__main__':
  finish_vectors(generate,Path(__file__).with_suffix('.json'),provenance=provenance(
-  scope='Original Infantry51AA40 accepted Cell setter then full Walk75AEC0 with supplied FindPath failure; failure/cancellation consequences and connected520F40..520FAF effective-Move restart prefix. No AStar failure production, full InfantryAI/Doing, successful movement or Rust parity claim.',
+  scope='Original Infantry51AA40 accepted Cell setter then full Walk75AEC0: 18 supplied FindPath failure rows plus one actual FindPath4D3920 raw-zone rejection row; failure/cancellation consequences and connected520F40..520FAF effective-Move restart prefix. No AStar search failure, full InfantryAI/Doing, successful movement or Rust parity claim.',
   entry_points={'setter':0x51AA40,'foot_setter':0x4D94B0,'walk_constructor':0x75AA90,'process':0x75AEC0,'find_path_seam':0x4D3920,'foot_zone_predicate':0x4D3810,'can_reach_zone':0x56D100,'failure_receiver':0x521DD0,'mission_receiver':0x4DC030,'stop':0x75ADA0,'restart_prefix':0x520F40,'restart_endpoint':0x520FAF},
   assumptions=[
    'Fixture derived from walk_first_path. Original Infantry/Unit/Cell vtable bytes copied; Cell+48 explicitly selects original486840. Supplied ordinary non-Jumpjet Infantry/House/type, human Doing0, alive, no transport/bunker/radio/links, Type+D94false, Type MovementZone4, no TarCom, no paid head. All unused actor/type storage is zero. Foot+684 byte255 matches Foot constructor4D338F and selects ordinary4DBDF0 ILoco destination coordinates; Foot+6B7 supplied true as in accepted setter fixture.',
@@ -97,6 +99,6 @@ if __name__=='__main__':
    'Restart rows run failed Process then original520F40 until520FAF in the SAME fixture, advancing frames100/101/102. Effective Move2 (including currentNONE/queuedMove2) reaches original same-pointer Infantry/Foot setter and speed1.0; mission1 contrast skips the prefix. No gameplay state injected between Process and prefix. Real caller order: Infantry51BC9F calls Foot4DA530 with Process4DA877, then surviving51BF7B calls520F40. Intervening shooting/animation/alive gates and520FAF onward remain outside this bounded continuation. No unconditional retry or full Doing delivery claim.'
   ],
   substitutions=[
-   'FindPath4D3920 returns EAX0 with original stdcall12 cleanup, leaving actor/path/map state unchanged. Every reached caller/zone/receiver/distance/timer/Stop/restart setter remains original. This fixture supplies failure and cannot certify when AStar should fail or its failure side effects.',
+   'In the first 18 rows FindPath4D3920 returns EAX0 with original stdcall12 cleanup, leaving actor/path/map state unchanged. The final native_find_path/different_zone row executes original4D3920: its raw-zone predicate rejects before AStar, then Process rechecks the zone and cancels through the original NULL setter. That row has no gameplay callable substitution; it proves a supplied raw-zone disconnect, not a bridge-collapse producer, AStar failure or its side effects. Every reached caller/zone/receiver/distance/timer/Stop/restart setter remains original.',
    'OS InterlockedIncrement/Decrement IAT imports update one pointed count and return it with original stdcall4 cleanup; no other callable substituted. Restart prefix ends at520FAF before its next instruction; each subsequent Process gets a fresh ABI call frame.'
   ]))
