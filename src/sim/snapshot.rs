@@ -474,7 +474,9 @@ use crate::sim::world::Simulation;
 // v152 stores Foot occupation enable, pending fresh Apply1, and Ship head/handoff
 // projection metadata alongside the existing serialized raw occupation plane.
 // Drive END permission and the distinct Foot forced-swap gate are retained too.
-const SNAPSHOT_VERSION: u32 = 152;
+// v156 persists current-house process input. Versions153-155 belong to
+// the separate unmerged bridge locomotor layouts; do not accept those saves.
+const SNAPSHOT_VERSION: u32 = 156;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -564,6 +566,10 @@ pub enum SnapshotError {
 /// Structural failures found before a deserialized simulation is admitted.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SnapshotRestoreError {
+    #[error("saved current house {owner} is absent from the HouseClass registry")]
+    InvalidCurrentHouse {
+        owner: crate::sim::intern::InternedId,
+    },
     #[error("entity {object_id} has an invalid or incomplete Infantry terminal handoff")]
     InvalidInfantryTerminalState { object_id: u64 },
     #[error("house {owner} has invalid serialized outcome state: {reason}")]
@@ -1572,6 +1578,11 @@ impl Simulation {
     /// weak/derived identities, and reconstructs skipped indexes in dependency
     /// order.
     pub(crate) fn restore_after_snapshot_load(&mut self) -> Result<(), SnapshotRestoreError> {
+        if let Some(owner) = self.session.current_house {
+            if !self.houses.contains_key(&owner) || !self.session.house_order.contains(&owner) {
+                return Err(SnapshotRestoreError::InvalidCurrentHouse { owner });
+            }
+        }
         // VERA-internal terminal admission invariant. UnInit clears the policy
         // before marking the object dead; pending deletion needs no new visit.
         // A borrowed consequence packet cannot survive a save boundary.
@@ -3303,7 +3314,52 @@ mod tests {
         // 146 -> 147: retain Scenario+214 for subsequent native constructors.
         // 150 -> 151: Foot also owns applied speed independently of its locomotor.
         // 151 -> 152: Foot occupation enable and pending fresh Apply1 obligation.
-        assert_eq!(super::SNAPSHOT_VERSION, 152);
+        assert_eq!(super::SNAPSHOT_VERSION, 156);
+    }
+
+    #[test]
+    fn current_house_is_saved_client_input_with_validated_reference() {
+        let mut sim = Simulation::with_seed(0);
+        let mut owners = Vec::new();
+        for name in ["First", "Second"] {
+            let owner = sim.intern(name);
+            sim.houses.insert(
+                owner,
+                crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 1),
+            );
+            sim.session.house_order.push(owner);
+            owners.push(owner);
+        }
+        let shared_hash = sim.state_hash();
+        let rng = sim.rng_state();
+        let mut saved_identities = Vec::new();
+        for owner in owners.iter().copied() {
+            sim.session.current_house = Some(owner);
+            assert_eq!(sim.state_hash(), shared_hash);
+            assert_eq!(sim.rng_state(), rng);
+            let bytes = GameSnapshot::save(&sim, 0, 0, "current-house", 0);
+            let mut restored = GameSnapshot::load(&bytes).expect("current schema").sim;
+            restored
+                .restore_after_snapshot_load()
+                .expect("valid House input");
+            assert_eq!(restored.session.current_house, Some(owner));
+            assert_eq!(restored.state_hash(), shared_hash);
+            saved_identities.push(restored.session.current_house);
+        }
+        assert_ne!(saved_identities[0], saved_identities[1]);
+
+        let missing = sim.intern("Missing");
+        sim.session.current_house = Some(missing);
+        assert_eq!(
+            sim.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidCurrentHouse { owner: missing })
+        );
+        sim.session.current_house = Some(owners[0]);
+        sim.session.house_order.retain(|owner| *owner != owners[0]);
+        assert_eq!(
+            sim.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidCurrentHouse { owner: owners[0] })
+        );
     }
 
     #[test]

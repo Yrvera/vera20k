@@ -282,6 +282,12 @@ pub struct ScenarioSession {
     /// HouseClass array registration order. Native house ids are indices into
     /// this vector; map ordering by name/id is not an equivalent substitute.
     pub house_order: Vec<InternedId>,
+    /// Native A83D4C: this process's current HouseClass identity. Campaign
+    /// Basic.Player and multiplayer participant index0 choose it at creation;
+    /// 67F802/67F9F3 save/load the pointer and 67FA0E swizzles it. It is not
+    /// the presentation viewer and cannot be rebound from selection each frame.
+    /// Evidence: docs/research/PHASE3_CURRENT_HOUSE_IDENTITY_GHIDRA_REPORT.md.
+    pub current_house: Option<InternedId>,
     /// Per-match game settings (the lobby options card). Set once at game
     /// start, read-only during gameplay.
     pub game_options: GameOptions,
@@ -313,6 +319,11 @@ impl ScenarioSession {
         s.map_name.hash(hasher);
         s.theater.hash(hasher);
         s.game_mode_nonzero.hash(hasher);
+        // current_house is persisted process input, deliberately absent from
+        // the shared peer hash: native64DAB0 does not fold A83D4C, and different
+        // participants legitimately select different current houses. Gameplay
+        // mutations made by current-house callbacks retain their own hash owners.
+        // This is not a claim that Rust's stronger hash equals native's CRC.
         // Preserve the legacy default-false hash stream while still making
         // the native ScenarioFlags 0x20 state lockstep-visible.
         if s.no_damage {
@@ -411,6 +422,7 @@ impl ScenarioSession {
             mp_start_waypoints: desc.mp_start_waypoints.clone(),
             start_slot_houses: BTreeMap::new(),
             house_order: Vec::new(),
+            current_house: None,
             game_options: GameOptions::default(),
             tick: 0,
             total_sim_ms: 0,

@@ -2081,6 +2081,22 @@ mod modal_pump_tests {
     }
 
     #[test]
+    fn current_house_collision_score_label_uses_the_separate_handle() {
+        let local_owner = Some("Player".to_string());
+        for handle in ["Neutral", "SPECIAL", "computer1"] {
+            let local_handle = Some(handle.to_string());
+            assert_eq!(
+                score_row_display_name("Player", &local_owner, &local_handle, Some("America")),
+                handle,
+            );
+            assert_eq!(
+                score_row_display_name("Computer1", &local_owner, &local_handle, Some("Russia")),
+                "Russia",
+            );
+        }
+    }
+
+    #[test]
     fn score_row_name_falls_back_when_no_launch_handle_was_recorded() {
         // Outside a skirmish launch there is no handle, so even the local row
         // takes the country name.

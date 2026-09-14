@@ -576,8 +576,8 @@ mod tests {
         }
     }
 
-    fn startup_authority(seed: u32) -> MatchStartup {
-        let launch = SkirmishLaunchSession {
+    fn load_fixture_launch() -> SkirmishLaunchSession {
+        SkirmishLaunchSession {
             mode: SkirmishLaunchMode {
                 id: 1,
                 ui_name_key: "GUI:Battle".into(),
@@ -607,10 +607,13 @@ mod tests {
                 team: LaunchTeam::None,
                 difficulty: AiDifficulty::Easy,
             }],
-            pre_fill_house_roster:
-                crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(1),
+            pre_fill_house_roster: crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(1),
             options: SkirmishLaunchOptions::default(),
-        };
+        }
+    }
+
+    fn startup_authority(seed: u32) -> MatchStartup {
+        let launch = load_fixture_launch();
         let accepted = match crate::match_bootstrap::classify_startup_session(&launch) {
             crate::match_bootstrap::StartupSessionClassification::AcceptedExplicitFixedBattle(
                 accepted,
@@ -620,11 +623,8 @@ mod tests {
         let mut next_correlation = 1;
         let correlation =
             crate::match_bootstrap::allocate_match_correlation(&mut next_correlation).unwrap();
-        let startup = crate::match_bootstrap::prepare_match_startup(
-            correlation,
-            accepted,
-            &mut TestClock(seed),
-        );
+        let startup =
+            crate::match_bootstrap::prepare_match_startup(correlation, accepted, &mut TestClock(seed));
         let initial_simulation = Simulation::with_seed(u64::from(seed));
         let mut authority = MatchStartup::default();
         authority.begin(Some(correlation));
@@ -1139,6 +1139,133 @@ mod tests {
         assert_eq!(state.startup, startup_before);
         assert!(state.startup.admits_exact_step());
         std::fs::remove_dir_all(directory).expect("remove startup fixture directory");
+    }
+
+    #[test]
+    fn current_house_survives_prepared_load_and_first_headless_frame() {
+        let rules = load_fixture_rules();
+        let terrain = load_fixture_terrain();
+        let registry = OverlayTypeRegistry::empty();
+        let mut saved = load_fixture_simulation(true);
+        let roster_ini = IniFile::from_str(
+            "[Houses]\n0=SavedPlayer\n1=OutgoingPlayer\n[SavedPlayer]\n[OutgoingPlayer]\n[Basic]\nPlayer=SavedPlayer\n",
+        );
+        let roster = crate::map::houses::parse_house_roster(&roster_ini, &[], Some(&rules));
+        crate::sim::scenario_bootstrap::initialize_map_roster_houses(&mut saved, &roster, Some(&rules));
+        crate::sim::scenario_bootstrap::initialize_campaign_current_house(
+            &mut saved,
+            &roster,
+            &roster_ini,
+        );
+        let saved_owner = saved.interner.get("SavedPlayer").unwrap();
+        let outgoing_owner = saved.interner.get("OutgoingPlayer").unwrap();
+        let directory = isolated_directory("current-house-full-load");
+        let repository = SaveRepository::at(&directory);
+        let path = repository
+            .write_named("current-house.bin", &snapshot_bytes(&saved, &rules))
+            .expect("write saved House identity");
+        let mut current = load_fixture_simulation(true);
+        crate::sim::scenario_bootstrap::initialize_map_roster_houses(
+            &mut current,
+            &roster,
+            Some(&rules),
+        );
+        crate::sim::scenario_bootstrap::initialize_campaign_current_house(
+            &mut current,
+            &roster,
+            &IniFile::from_str("[Basic]\nPlayer=OutgoingPlayer\n"),
+        );
+        assert_eq!(current.session.current_house, Some(outgoing_owner));
+        assert!(!current.houses[&saved_owner].is_human);
+        let mut runtime = crate::sim::runtime::SimRuntime::from_simulation(current);
+        runtime.resources.rules = rules;
+        runtime.resources.overlay_registry = registry;
+        runtime.resources.terrain_template = Some(terrain);
+        let outgoing_hash = runtime.simulation.state_hash();
+        let outgoing_rng = runtime.simulation.rng_state();
+        let prepared = PreparedLoad::from_repository(
+            LoadPreparationView::from_runtime(&repository, Some(&runtime), Some(LOAD_FIXTURE_MAP_HASH)),
+            &path,
+        )
+        .expect("repository transaction prepares saved House identity");
+        assert_eq!(
+            runtime.simulation.session.current_house,
+            Some(outgoing_owner)
+        );
+        assert_eq!(runtime.simulation.state_hash(), outgoing_hash);
+        assert_eq!(runtime.simulation.rng_state(), outgoing_rng);
+        assert_eq!(prepared.simulation.session.current_house, Some(saved_owner));
+        let _ = prepared.commit_into(&mut runtime);
+        assert_eq!(runtime.simulation.session.current_house, Some(saved_owner));
+        assert!(runtime.simulation.houses[&saved_owner].is_human);
+        assert!(runtime.simulation.houses[&saved_owner].player_control);
+        assert!(!runtime.simulation.houses[&outgoing_owner].is_human);
+        assert!(!runtime.simulation.houses[&outgoing_owner].player_control);
+        let tick = runtime.simulation.session.tick;
+        runtime.advance_frame(&[], 1, crate::sim::world::TickLane::Ordinary);
+        assert_eq!(runtime.simulation.session.tick, tick + 1);
+        assert_eq!(runtime.simulation.session.current_house, Some(saved_owner));
+        std::fs::remove_dir_all(directory).expect("remove House load fixture");
+    }
+
+    #[test]
+    fn current_house_collision_survives_repository_commit_and_headless_frame() {
+        let rules = load_fixture_rules();
+        let directory = isolated_directory("current-house-collision-load");
+        let repository = SaveRepository::at(&directory);
+        for (case_index, handle) in ["Neutral", "sPeCiAl", "COMPUTER1"].into_iter().enumerate() {
+            let mut session = load_fixture_launch();
+            session.player_name = handle.to_string();
+            let launch = crate::sim::scenario_bootstrap::MatchLaunchDescriptor::from_resolved(session)
+                .expect("existing display name remains admitted");
+            let mut saved = load_fixture_simulation(true);
+            crate::sim::scenario_bootstrap::initialize_skirmish_launch_houses(
+                &mut saved,
+                &crate::map::houses::HouseRoster::default(),
+                &rules,
+                &launch,
+            );
+            let selected = saved.interner.get("Player").unwrap();
+            let neutral = saved.interner.get("Neutral").unwrap();
+            let ai = saved.interner.get("Computer1").unwrap();
+            assert_eq!(saved.session.current_house, Some(selected));
+            assert_ne!(selected, neutral);
+            assert_ne!(selected, ai);
+            let bytes = snapshot_bytes(&saved, &rules);
+            let path = repository
+                .write_named(&format!("collision-{case_index}.bin"), &bytes)
+                .unwrap();
+            let mut outgoing = GameSnapshot::load(&bytes).unwrap().sim;
+            outgoing.session.current_house = Some(ai);
+            let mut runtime = crate::sim::runtime::SimRuntime::from_simulation(outgoing);
+            runtime.resources.rules = load_fixture_rules();
+            runtime.resources.overlay_registry = OverlayTypeRegistry::empty();
+            runtime.resources.terrain_template = Some(load_fixture_terrain());
+            let prepared = PreparedLoad::from_repository(
+                LoadPreparationView::from_runtime(
+                    &repository,
+                    Some(&runtime),
+                    Some(LOAD_FIXTURE_MAP_HASH),
+                ),
+                &path,
+            )
+            .expect("collision-free saved House identity prepares");
+            assert_eq!(runtime.simulation.session.current_house, Some(ai));
+            let _ = prepared.commit_into(&mut runtime);
+            assert_eq!(runtime.simulation.session.current_house, Some(selected));
+            assert!(
+                runtime.simulation.houses[&selected].is_human
+                    && runtime.simulation.houses[&selected].player_control
+            );
+            assert!(!runtime.simulation.houses[&neutral].is_human);
+            assert!(!runtime.simulation.houses[&ai].is_human);
+            let tick = runtime.simulation.session.tick;
+            runtime.advance_frame(&[], 1, crate::sim::world::TickLane::Ordinary);
+            assert_eq!(runtime.simulation.session.tick, tick + 1);
+            assert_eq!(runtime.simulation.session.current_house, Some(selected));
+            assert_eq!(launch.session().player_name, handle);
+        }
+        std::fs::remove_dir_all(directory).expect("remove collision load fixture");
     }
 
     #[test]

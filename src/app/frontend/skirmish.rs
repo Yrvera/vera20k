@@ -684,6 +684,51 @@ mod tests {
         assert!(slots[0].is_human);
     }
 
+    #[test]
+    fn current_house_collision_preserves_launch_label_and_distinct_colors() {
+        for (handle, expected_key) in [
+            ("Neutral", "Player"),
+            ("SPECIAL", "Player"),
+            ("computer1", "Player"),
+            ("Computer2", "Computer2"),
+            ("Computer01", "Computer01"),
+            ("Commander", "Commander"),
+        ] {
+            let mut session = test_session();
+            session.player_name = handle.to_string();
+            let original = session.clone();
+            let slots = normalized_launch_slots(&session);
+            assert_eq!(slots[0].owner_name, expected_key);
+            assert_eq!(slots[1].owner_name, "Computer1");
+            assert_ne!(slots[0].owner_name, slots[1].owner_name);
+            let colors =
+                house_color_map_for_launch_session(&session, &roster_with_neutral_and_playable());
+            assert_eq!(colors.get("Neutral"), Some(&HouseColorIndex(8)));
+            assert_eq!(colors.get(expected_key), Some(&HouseColorIndex(5)));
+            assert_eq!(colors.get("Computer1"), Some(&HouseColorIndex(10)));
+            let row =
+                crate::app::loading::progress_row::LoadingProgressRowSnapshot::from_launch_session(
+                    &session,
+                );
+            assert_eq!(row.label, handle);
+            assert_eq!(
+                session, original,
+                "normalization cannot rewrite display or launch inputs"
+            );
+        }
+        let mut without_ai = test_session();
+        without_ai.player_name = "Computer1".to_string();
+        without_ai.opponents.clear();
+        assert_eq!(
+            normalized_launch_slots(&without_ai)[0].owner_name,
+            "Computer1"
+        );
+        let mut two_ai = test_session();
+        two_ai.player_name = "cOmPuTeR2".to_string();
+        two_ai.opponents.push(two_ai.opponents[0].clone());
+        assert_eq!(normalized_launch_slots(&two_ai)[0].owner_name, "Player");
+    }
+
     /// gamemd-derived: active YR `ScenarioClass__Gather_Start_Positions
     /// @ 0x00688380`, seed block `0x00688528..0x0068857C`, draws Y before X
     /// from the full cell-array bounds. Research:
