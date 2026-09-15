@@ -351,8 +351,11 @@ pub struct HouseState {
     pub owned_building_count: u32,
     /// Running count of owned non-building units. Updated on spawn/despawn.
     pub owned_unit_count: u32,
-    /// Initial base location (MCV deploy point or first ConYard).
+    /// Historical House4FD150 primary base cell; updates at native building
+    /// lifecycle boundaries rather than when a consumer requests a destination.
     pub base_center: Option<(u16, u16)>,
+    #[serde(default)]
+    pub(crate) base_projection: crate::sim::world::HouseBaseState,
     /// Alternate base-placement cell written by trigger actions 137/138.
     ///
     /// This is the packed-zero `HouseClass+0x5494` authority. It is distinct
@@ -589,6 +592,7 @@ impl HouseState {
             owned_building_count: 0,
             owned_unit_count: 0,
             base_center: None,
+            base_projection: crate::sim::world::HouseBaseState::default(),
             alternate_base_center: (0, 0),
             build_const_order: Vec::new(),
             base_plan: crate::sim::base_plan::BasePlanState::default(),

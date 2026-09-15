@@ -6,7 +6,7 @@
 /// is implied by this error.
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "simulation frame {tick} (native {binary_frame}) stopped in bridge repair for entity {entity_id}: {cause}; prior world mutations remain and the frame did not commit"
+    "simulation frame {tick} (native {binary_frame}) stopped in a synchronous receiver for entity {entity_id}: {cause}; prior world mutations remain and the frame did not commit"
 )]
 pub struct FrameAdvanceError {
     pub tick: u64,

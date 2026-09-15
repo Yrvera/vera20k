@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "Original House50BF60 reset and ordered single-precision cost-factor fold. No FactoryPlant membership producer, cost consumer or full House AI claim.",
+  "assumptions": [
+    "Supplied vector counts0..512 with repeated pointers to one immutable Building/Type record. This aliases equivalent stock NAINDP type inputs; it does not represent distinct constructed objects. Factors are Infantry1, Units0.75, Aircraft1, Buildings1, Defenses1. Incoming House factors7..11 expose reset; default native FPCW0E7F."
+  ],
+  "substitutions": [],
+  "entry_points": {
+    "fold": "0x0050BF60",
+    "return": "0x0050C04A"
+  },
+  "payload_sha256": "35d4b6dd9ddae41698637525d2912b65315e6e371a66a84e17fcbecd156b094a"
+}

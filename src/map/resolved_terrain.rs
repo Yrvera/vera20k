@@ -3688,6 +3688,17 @@ impl ResolvedTerrainGrid {
         self.tube(index.validated_id(self.tube_facts.len())?)
     }
 
+    /// Cell484F20 reads its retained receiver's signed index; unlike a map
+    /// coordinate helper this performs no additional lookup or Dummy stamp.
+    pub(crate) fn tube_for_native_cell(&self, cell: NativeCellIdentity) -> Option<&TubeFact> {
+        let index = match cell {
+            NativeCellIdentity::Real(index) => self.native_tube_indices[index],
+            NativeCellIdentity::Dummy =>
+                NativeTubeCellIndex::from_raw(self.shared_cell_dummy.raw_tube_index()),
+        };
+        self.tube(index.validated_id(self.tube_facts.len())?)
+    }
+
     pub fn step_coord_by_direction(&self, coord: (u16, u16), direction: u8) -> Option<(u16, u16)> {
         if crate::util::direction::is_tube_step_direction(direction) {
             return Some(

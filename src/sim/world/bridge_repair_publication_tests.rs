@@ -192,7 +192,26 @@ fn slave_master_admission_reaches_head_selection_in_the_same_object_turn() {
         let e = sim.substrate.entities.get(slave).unwrap();
         let head = e.locomotor.as_ref().unwrap().step_head();
         if later_blocker {
-            assert_eq!(head, None, "a later hard blocker is still reached");
+            // Can_Enter_Cell 7 with a Building in the target cell takes the
+            // Find_Path code-7 arm (0x4D3CDD..0x4D3E03): FNPC redirects the
+            // destination to a passable cell near the target, nearest to the
+            // actor, and the search continues there.
+            let head = head.expect("the code-7 redirect still yields a fresh head");
+            let redirected = e.locomotor.as_ref().unwrap().walk_destination().unwrap();
+            let redirected = (redirected.x / 256, redirected.y / 256);
+            assert_ne!(redirected, (16, 15), "the Building cell is not searched");
+            assert!(
+                (redirected.0 - 16).abs() <= 1 && (redirected.1 - 15).abs() <= 1,
+                "FNPC picked {redirected:?} away from the target ring"
+            );
+            assert_eq!((head.x / 256, head.y / 256), redirected);
+            assert_eq!(
+                e.navigation.nav_com,
+                Some(NavTargetRef::Cell {
+                    rx: redirected.0 as u16,
+                    ry: redirected.1 as u16,
+                })
+            );
             assert_eq!(ground_pose::position_world_coord(&e.position), before);
         } else {
             let head = head.expect("Clear CanEnter resumes fresh-head selection in this call");

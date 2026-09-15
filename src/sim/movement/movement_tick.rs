@@ -1475,6 +1475,121 @@ fn handle_deferred_drive_track_chain(
     true
 }
 
+/// Owned one-time mover inputs retained across a synchronous Foot path request.
+/// Resuming does not repeat the Process timer/preparation prefix or count a new
+/// mover visit. These are stack continuation values, not another path owner.
+struct OrdinaryMoverVisit {
+    snap: MoverSnapshot,
+    walk_position_before_step: Option<crate::sim::components::Position>,
+    prone_crawls: Option<bool>,
+}
+
+pub(crate) struct WalkPathRequest {
+    pub(crate) entity_id: u64,
+    pub(crate) destination: crate::sim::components::DriveCoord,
+    visit: OrdinaryMoverVisit,
+}
+
+impl WalkPathRequest {
+    /// The Simulation wrapper calls this only between its real Mark0/Mark1.
+    /// Build occupancy-dependent inputs here, after the actor left the cell.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn search(
+        &self,
+        goal: crate::sim::components::DriveCoord,
+        entities: &EntityStore,
+        ctx: PathfindingContext<'_>,
+        terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
+        alliances: &HouseAllianceMap,
+        interner: &crate::sim::intern::StringInterner,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
+    ) -> Result<(Vec<(u16, u16)>, Vec<MovementLayer>), super::movement_path::MovePathFailure> {
+        let snap = &self.visit.snap;
+        let actor = entities.get(self.entity_id).expect("live suspended mover");
+        let start = (actor.position.rx, actor.position.ry);
+        let layer = actor.movement_layer_or_ground();
+        let goal = ((goal.x / 256) as u16, (goal.y / 256) as u16);
+        let (blocks, block_map) = bump_crush::build_entity_block_set(
+            entities,
+            interner.resolve(snap.owner),
+            alliances,
+            interner,
+            rules,
+        );
+        let layered = snap
+            .locomotor
+            .as_ref()
+            .zip(ctx.path_grid)
+            .is_some_and(|(loco, grid)| {
+                supports_layered_bridge_pathing(loco, grid, snap.on_bridge)
+            });
+        super::movement_path::find_move_path_with_marker_detailed(
+            ctx,
+            layered,
+            start,
+            layer,
+            goal,
+            snap.speed_type.and_then(|speed| terrain_costs.get(&speed)),
+            Some(&blocks),
+            Some(&blocks),
+            Some(&blocks),
+            snap.movement_zone,
+            Some(snap.movement_zone),
+            snap.too_big_to_fit_under_bridge,
+            Some(&block_map),
+            None,
+            0,
+            snap.omni_crusher
+                || matches!(
+                    snap.movement_zone,
+                    MovementZone::Crusher
+                        | MovementZone::AmphibiousCrusher
+                        | MovementZone::CrusherAll
+                ),
+            snap.category == EntityCategory::Infantry,
+            snap.allow_zone_hierarchy,
+        )
+    }
+
+    /// Reuse the accepted destination's execution adapter. Foot timer/latch/
+    /// retry state has its own lifetime and is not recreated with a segment.
+    pub(super) fn install_route(
+        &self,
+        actor: &mut crate::sim::game_entity::GameEntity,
+        path: Vec<(u16, u16)>,
+        layers: Vec<MovementLayer>,
+    ) {
+        let current = (actor.position.rx, actor.position.ry);
+        let target = actor
+            .movement_target
+            .as_mut()
+            .expect("accepted Walk execution request");
+        target.path = path;
+        target.path_layers = layers;
+        target.next_index = usize::from(!target.path.is_empty());
+        target.ignore_terrain_cost = false;
+        target.bypass_grid = false;
+        if let Some(next) = target.path.get(target.next_index) {
+            let (x, y, len) = crate::util::lepton::cell_delta_to_lepton_dir(
+                i32::from(next.0) - i32::from(current.0),
+                i32::from(next.1) - i32::from(current.1),
+            );
+            target.move_dir_x = x;
+            target.move_dir_y = y;
+            target.move_dir_len = len;
+            super::path_markers::install_path_replay(
+                &mut actor.navigation.path_replay,
+                current,
+                &target.path,
+                target.next_index,
+            );
+        }
+        //4D4003 records the current Cell after a successful native core return.
+        //The supplied invalid zero-cost contrast is not a path-count contract.
+        actor.navigation.path_replay.reference_cell = Some((current.0 as i16, current.1 as i16));
+    }
+}
+
 /// Effects accumulated until the pass tail. Keeping these together preserves
 /// crushed-victim exclusions and scatter deduplication across mover visits.
 #[derive(Default)]
@@ -1486,6 +1601,7 @@ struct MovementPassEffects {
     native_track: Option<super::track_process::TrackInvocation>,
     walk_per_cell: Option<(u64, crate::sim::components::DriveCoord)>,
     walk_boundary: Option<(u64, crate::sim::components::DriveCoord)>,
+    walk_path_request: Option<WalkPathRequest>,
 }
 
 /// Run one ordinary mover visit. An early return ends this visit, including
@@ -1515,6 +1631,7 @@ fn advance_ordinary_mover(
     effects: &mut MovementPassEffects,
     suspend_native_track: bool,
     slave_bindings: Option<&BTreeMap<u64, Vec<u64>>>,
+    resume: Option<OrdinaryMoverVisit>,
 ) {
     let path_grid = ctx.path_grid;
     let resolved_terrain = ctx.resolved_terrain;
@@ -1534,36 +1651,95 @@ fn advance_ordinary_mover(
         native_track,
         walk_per_cell,
         walk_boundary,
+        walk_path_request,
     } = effects;
-    if contains_crush_victim(crush_kills, entity_id) {
-        return;
-    }
-    stats.movers_total = stats.movers_total.saturating_add(1);
-
-    // Snapshot mover data before entering the inner loop so we can release the
-    // mutable borrow on `entities` when needed for crush/bump immutable lookups.
-    let Some(snap) = snapshot_mover(entities, entity_id, playfield_bounds) else {
-        return;
-    };
-    // Walk tests CanEnter at 0x75B690 before its paid SetCoords calls
-    // (0x75BDC0/0x75C12E). A refused prospective step keeps exact XY.
-    let walk_position_before_step = snap
-        .locomotor
-        .as_ref()
-        .filter(|loco| loco.kind == crate::rules::locomotor_type::LocomotorKind::Walk)
-        .and_then(|_| {
-            entities
-                .get(entity_id)
-                .map(|entity| entity.position.clone())
-        });
-    let prone_crawls = entities.get(entity_id).and_then(|entity| {
-        if !infantry::is_prone_for_damage(entity) {
-            return None;
+    let resumed_path_request = resume.is_some();
+    let visit = if let Some(visit) = resume {
+        visit
+    } else {
+        if contains_crush_victim(crush_kills, entity_id) {
+            return;
         }
-        let rules = rules?;
-        let obj = rules.object(interner.resolve(entity.type_ref()))?;
-        Some(obj.crawls)
-    });
+        stats.movers_total = stats.movers_total.saturating_add(1);
+
+        // Snapshot mover data before entering the inner loop so we can release the
+        // mutable borrow on `entities` when needed for crush/bump immutable lookups.
+        let Some(snap) = snapshot_mover(entities, entity_id, playfield_bounds) else {
+            return;
+        };
+        // Walk tests CanEnter at 0x75B690 before its paid SetCoords calls
+        // (0x75BDC0/0x75C12E). A refused prospective step keeps exact XY.
+        let walk_position_before_step = snap
+            .locomotor
+            .as_ref()
+            .filter(|loco| loco.kind == crate::rules::locomotor_type::LocomotorKind::Walk)
+            .and_then(|_| {
+                entities
+                    .get(entity_id)
+                    .map(|entity| entity.position.clone())
+            });
+        let prone_crawls = entities.get(entity_id).and_then(|entity| {
+            if !infantry::is_prone_for_damage(entity) {
+                return None;
+            }
+            let rules = rules?;
+            let obj = rules.object(interner.resolve(entity.type_ref()))?;
+            Some(obj.crawls)
+        });
+        OrdinaryMoverVisit {
+            snap,
+            walk_position_before_step,
+            prone_crawls,
+        }
+    };
+    // Without native map cells, zone topology and playfield bounds (replay and
+    // unit fixtures) the synchronous Find_Path owner cannot run its precheck,
+    // Can_Enter_Cell or failure receiver; the former inline search below keeps
+    // those fixtures on their pinned path. Production installs all three.
+    let native_path_inputs =
+        resolved_terrain.is_some() && ctx.zone_grid.is_some() && playfield_bounds.is_some();
+    if !resumed_path_request && suspend_native_track && native_path_inputs {
+        let request = entities.get(entity_id).and_then(|entity| {
+            let loco = entity.locomotor.as_ref()?;
+            (loco.kind == LocomotorKind::Walk
+                && loco.step_head().is_none()
+                && entity
+                    .navigation
+                    .path_replay
+                    .remaining_directions()
+                    .is_empty())
+            .then(|| loco.walk_destination())
+            .flatten()
+        });
+        if let Some(destination) = request {
+            let entity = entities.get(entity_id).expect("same mover request");
+            //75AF3C..55 observes a frame-anchored remainder. No search,
+            //debt, occupancy preparation or second mover visit on this wait.
+            if !entity
+                .navigation
+                .path_runtime
+                .movement_timer
+                .expired(native_frame as i32)
+            {
+                return;
+            }
+            debug_assert!(
+                walk_path_request.is_none(),
+                "scoped Process has one path request"
+            );
+            *walk_path_request = Some(WalkPathRequest {
+                entity_id,
+                destination,
+                visit,
+            });
+            return;
+        }
+    }
+    let OrdinaryMoverVisit {
+        snap,
+        walk_position_before_step,
+        prone_crawls,
+    } = visit;
     let entity_cost_grid: Option<&TerrainCostGrid> =
         snap.speed_type.and_then(|st| terrain_costs.get(&st));
     // Slice 6: refresh this owner's pathfinding snapshot if occupancy changed
@@ -1637,60 +1813,62 @@ fn advance_ordinary_mover(
                     && l.step_head().is_some()
             });
             if !committed_walk {
-                match handle_path_exhaustion(
-                    &mut entity.navigation.path_replay,
-                    &mut entity.navigation.path_runtime,
-                    target,
-                    &entity.locomotor,
-                    &mut entity.drive_locomotion,
-                    &mut entity.ship_locomotion,
-                    entity.drive_track.is_some(),
-                    &entity.position,
-                    entity.category,
-                    &mut entity.facing,
-                    &mut entity.facing_target,
-                    entity_id,
-                    active_layer,
-                    &snap,
-                    ctx,
-                    entity_cost_grid,
-                    mover_entity_blocks,
-                    mover_entity_block_map,
-                    path_delay_ticks,
-                    sim_tick,
-                    native_frame,
-                ) {
-                    PathExhaustionResult::Finished => {
-                        finished_entities.push(entity_id);
-                        return;
-                    }
-                    PathExhaustionResult::Repathed(evts) => {
-                        debug_events.extend(evts);
-                    }
-                    PathExhaustionResult::NotExhausted => {}
-                    PathExhaustionResult::WaitingForPath => return,
-                }
-
-                if entity.locomotor.as_ref().is_some_and(|loco| {
-                    loco.kind == crate::rules::locomotor_type::LocomotorKind::Walk
-                        && loco.walk_destination().is_some()
-                }) && entity
-                    .navigation
-                    .path_replay
-                    .remaining_directions()
-                    .is_empty()
-                {
-                    // The first no-head Walk Process owns the FindPath
-                    // request75AFC5 and success publication4D3E98/4D4003.
-                    // handle_path_exhaustion has just searched using the live
-                    // object-turn blockers; publish that result here.
-                    // The full native search/retry loop remains unported.
-                    super::path_markers::install_path_replay(
+                if !resumed_path_request {
+                    match handle_path_exhaustion(
                         &mut entity.navigation.path_replay,
-                        (entity.position.rx, entity.position.ry),
-                        &target.path,
-                        target.next_index,
-                    );
+                        &mut entity.navigation.path_runtime,
+                        target,
+                        &entity.locomotor,
+                        &mut entity.drive_locomotion,
+                        &mut entity.ship_locomotion,
+                        entity.drive_track.is_some(),
+                        &entity.position,
+                        entity.category,
+                        &mut entity.facing,
+                        &mut entity.facing_target,
+                        entity_id,
+                        active_layer,
+                        &snap,
+                        ctx,
+                        entity_cost_grid,
+                        mover_entity_blocks,
+                        mover_entity_block_map,
+                        path_delay_ticks,
+                        sim_tick,
+                        native_frame,
+                    ) {
+                        PathExhaustionResult::Finished => {
+                            finished_entities.push(entity_id);
+                            return;
+                        }
+                        PathExhaustionResult::Repathed(evts) => {
+                            debug_events.extend(evts);
+                        }
+                        PathExhaustionResult::NotExhausted => {}
+                        PathExhaustionResult::WaitingForPath => return,
+                    }
+
+                    if entity.locomotor.as_ref().is_some_and(|loco| {
+                        loco.kind == crate::rules::locomotor_type::LocomotorKind::Walk
+                            && loco.walk_destination().is_some()
+                    }) && entity
+                        .navigation
+                        .path_replay
+                        .remaining_directions()
+                        .is_empty()
+                    {
+                        // The first no-head Walk Process owns the FindPath
+                        // request75AFC5 and success publication4D3E98/4D4003.
+                        // handle_path_exhaustion has just searched using the live
+                        // object-turn blockers; publish that result here.
+                        // The full native search/retry loop remains unported.
+                        super::path_markers::install_path_replay(
+                            &mut entity.navigation.path_replay,
+                            (entity.position.rx, entity.position.ry),
+                            &target.path,
+                            target.next_index,
+                        );
+                    }
                 }
 
                 if let Some(tube_id) = tube_movement::pending_path_tube_id(
@@ -3386,6 +3564,89 @@ pub(crate) struct PendingMovementPass {
 }
 
 impl PendingMovementPass {
+    pub(crate) fn take_walk_path_request(&mut self) -> Option<WalkPathRequest> {
+        self.effects.walk_path_request.take()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn resume_walk_path_request(
+        &mut self,
+        request: WalkPathRequest,
+        entities: &mut EntityStore,
+        path_grid: Option<&PathGrid>,
+        zone_grid: Option<&ZoneGrid>,
+        terrain: Option<&ResolvedTerrainGrid>,
+        terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
+        alliances: &HouseAllianceMap,
+        occupancy: &mut OccupancyGrid,
+        cell_occupation: &mut CellOccupationGrid,
+        raw_cell_occupation: &mut RawCellOccupationGrid,
+        next_occupancy_enter_order: &mut EnterOrderCounter,
+        rng: &mut SimRng,
+        sim_tick: u64,
+        native_frame: u32,
+        overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        playfield_bounds: Option<PlayfieldBounds>,
+        terrain_speed_config: &TerrainSpeedConfig,
+        close_enough: SimFixed,
+        path_delay_ticks: u16,
+        blockage_path_delay_ticks: u16,
+        interner: &mut crate::sim::intern::StringInterner,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
+        slave_bindings: Option<&BTreeMap<u64, Vec<u64>>>,
+    ) {
+        let blocker_neighbor_counts = path_grid.map(|grid| {
+            bump_crush::build_blocker_neighbor_counts_with_overlays(
+                entities,
+                grid.width(),
+                grid.height(),
+                terrain,
+                overlay_grid,
+                overlay_registry,
+                interner,
+                rules,
+            )
+        });
+        let ctx = PathfindingContext {
+            path_grid,
+            zone_grid,
+            resolved_terrain: terrain,
+            playfield_bounds,
+            blocker_neighbor_counts: blocker_neighbor_counts.as_ref(),
+        };
+        let mcfg = MovementConfig {
+            binary_frame: native_frame,
+            close_enough,
+            path_delay_ticks,
+            blockage_path_delay_ticks,
+        };
+        advance_ordinary_mover(
+            entities,
+            request.entity_id,
+            ctx,
+            mcfg,
+            terrain_costs,
+            alliances,
+            occupancy,
+            cell_occupation,
+            raw_cell_occupation,
+            next_occupancy_enter_order,
+            rng,
+            sim_tick,
+            native_frame,
+            terrain_speed_config,
+            native_movement_frame_fraction(),
+            interner,
+            rules,
+            &mut self.prepared,
+            &mut self.effects,
+            true,
+            slave_bindings,
+            Some(request.visit),
+        );
+    }
+
     pub(crate) fn take_walk_boundary(
         &mut self,
     ) -> Option<(u64, crate::sim::components::DriveCoord)> {
@@ -3547,6 +3808,7 @@ pub(crate) fn begin_movement_with_grids_scoped(
             &mut effects,
             suspend_native_track,
             slave_bindings,
+            None,
         );
     }
     PendingMovementPass {

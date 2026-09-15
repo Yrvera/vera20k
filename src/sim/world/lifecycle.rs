@@ -2919,6 +2919,7 @@ impl Simulation {
         // at this callback boundary also covers direct UnInit/destruction;
         // Conceal's already-limbo return never reaches it.
         self.remove_build_const_from_owner(expired_id);
+        self.remove_house_base_membership(expired_id);
         // `TechnoClass::PointerExpired @ 0x0070785F..0x0070792A` (and the
         // death arm of `ReceiveDamage @ 0x0070206A`): both halves of a drain
         // link drop when either object expires.
@@ -3262,6 +3263,7 @@ impl Simulation {
     }
 
     fn finalize_and_remove_common(&mut self, stable_id: u64) {
+        self.release_house_base_tracking(stable_id);
         self.destroy_building_light(stable_id);
         if self.substrate.anims.contains_key(stable_id) {
             self.conceal_anim(stable_id);

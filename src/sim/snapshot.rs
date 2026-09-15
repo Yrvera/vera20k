@@ -484,7 +484,7 @@ use crate::sim::world::Simulation;
 // bytes, Hover head, Jumpjet cached XYZ/moving/phase, including stashes) and
 // raw Infantry house identities. None of the earlier branch-local layouts can
 // be decoded as this combined schema.
-const SNAPSHOT_VERSION: u32 = 161;
+const SNAPSHOT_VERSION: u32 = 162;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3329,12 +3329,13 @@ mod tests {
         // 146 -> 147: retain Scenario+214 for subsequent native constructors.
         // 150 -> 151: Foot also owns applied speed independently of its locomotor.
         // 151 -> 152: Foot occupation enable and pending fresh Apply1 obligation.
-        assert_eq!(super::SNAPSHOT_VERSION, 161);
+        // 161 -> 162: Infantry+6DC current-cell entry answer of the failed path.
+        assert_eq!(super::SNAPSHOT_VERSION, 162);
     }
 
     #[test]
     fn combined_bridge_membership_history_schema_rejects_separate_layouts() {
-        for version in 153..=160 {
+        for version in 153..=161 {
             let preamble = GameSnapshotPreamble {
                 product_magic: SNAPSHOT_PRODUCT_MAGIC,
                 envelope_version: SNAPSHOT_ENVELOPE_VERSION,
@@ -3343,7 +3344,7 @@ mod tests {
             let bytes = bincode::serialize(&preamble).expect("previous layout header");
             assert!(matches!(
                 GameSnapshot::load(&bytes),
-                Err(SnapshotError::VersionMismatch { expected: 161, found }) if found == version
+                Err(SnapshotError::VersionMismatch { expected: 162, found }) if found == version
             ));
         }
     }

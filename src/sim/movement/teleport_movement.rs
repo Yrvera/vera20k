@@ -475,6 +475,8 @@ mod tests {
             name: None,
             ui_name: None,
             cost: 0,
+            factory_plant: false,
+            cost_bonuses: [crate::util::native_x87::NativeF32Bits::ONE; 5],
             trainable: true,
             explosion_anims: Vec::new(),
             destroy_anims: Vec::new(),

@@ -66,6 +66,14 @@ pub struct InfantryRuntime {
     /// freshly built infantryman is eligible on his first idle turn.
     #[serde(default)]
     pub idle_action_timer: MissionTimer,
+    /// Infantry+6DC. `InfantryClass` failed-path receiver `0x0051DAF0`
+    /// (Infantry vtable +0x500, called from `FootClass::Find_Path` failure
+    /// `0x004D4044` and `Do_Action` `0x0051D6F0` at zero health) writes the
+    /// current-cell `Can_Enter_Cell` answer here: 1 when the answer is nonzero
+    /// (`0x51DBBE`), otherwise the zero answer byte (`0x51DBAC`). Readers:
+    /// Infantry Mission_Move restart `0x00520FF1` and save/load `0x00521D0F`.
+    #[serde(default)]
+    pub cell_entry_blocked: bool,
 }
 
 impl InfantryRuntime {
@@ -74,6 +82,7 @@ impl InfantryRuntime {
             fear_level: 0,
             is_prone: false,
             idle_action_timer: MissionTimer::default(),
+            cell_entry_blocked: false,
         }
     }
 }

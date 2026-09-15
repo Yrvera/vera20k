@@ -125,10 +125,25 @@ pub fn selects_infantry_bridge_layer(has_high_bridge: bool, level: u8, input_z: 
 /// square and sum them in x87, then Sqrt_Approx 0x4CAC40 and the truncating
 /// Math_ftol 0x7C5F00. Low-byte extraction and list admission belong to callers.
 pub(crate) fn native_xy_distance(dx: i32, dy: i32) -> i32 {
+    native_distance([dx, dy])
+}
+
+/// `FootClass::Find_Path` head 0x4D39F3..0x4D3A2B: the actor's `+0x48`
+/// coordinate minus the target cell centre (x, y and z), each `FILD`ed, then
+/// `(dz*dz + dy*dy) + dx*dx`, `Sqrt_Approx` and the truncating `Math_ftol`.
+pub(crate) fn native_xyz_distance(dx: i32, dy: i32, dz: i32) -> i32 {
+    native_distance([dz, dy, dx])
+}
+
+/// Shared x87 shape: squares are accumulated in the given order, each square
+/// added to the running sum before the next component.
+fn native_distance(components: impl IntoIterator<Item = i32>) -> i32 {
     use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
-    let dx = X87Chop53::load_i32(dx);
-    let dy = X87Chop53::load_i32(dy);
-    let squared = X87Chop53::add(X87Chop53::mul(dx, dx), X87Chop53::mul(dy, dy));
+    let mut components = components.into_iter().map(X87Chop53::load_i32);
+    let first = components.next().expect("at least one distance component");
+    let squared = components.fold(X87Chop53::mul(first, first), |sum, component| {
+        X87Chop53::add(sum, X87Chop53::mul(component, component))
+    });
     let Ok(root_bits) = sqrt_approx_f32(squared) else {
         return i32::MAX;
     };

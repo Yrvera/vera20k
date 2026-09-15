@@ -80,10 +80,19 @@ pub(crate) fn object_center_coord(
     entity: &crate::sim::game_entity::GameEntity,
     object_type: &crate::rules::object_type::ObjectType,
 ) -> DriveCoord {
+    object_center_coord_with_foundation(entity, &object_type.foundation)
+}
+
+/// The same447AC0 owner for lifecycle callers retaining the immutable
+/// foundation key on the entity when a RuleSet is not present.
+pub(crate) fn object_center_coord_with_foundation(
+    entity: &crate::sim::game_entity::GameEntity,
+    foundation: &str,
+) -> DriveCoord {
     let mut coord = position_world_coord(&entity.position);
     if entity.category == crate::map::entities::EntityCategory::Structure {
         let (width, height) =
-            crate::rules::foundation::foundation_dimensions(&object_type.foundation);
+            crate::rules::foundation::foundation_dimensions(foundation);
         coord.x = coord
             .x
             .wrapping_add(i32::from(width).wrapping_mul(128).wrapping_sub(128));

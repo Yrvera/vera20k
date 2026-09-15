@@ -99,6 +99,45 @@ impl Simulation {
                 Some(&sim.production.slave_bindings),
             )
         };
+        if let Some(request) = pending_movement.take_walk_path_request() {
+            let resumed = sim
+                .run_walk_path_request(&request, rules, path_grid, overlay_registry)
+                .map_err(|cause| super::FrameAdvanceError {
+                    tick: sim.session.tick,
+                    binary_frame: sim.session.binary_frame,
+                    entity_id: stable_id,
+                    cause,
+                })?;
+            if resumed {
+                let current_grid = sim.path_grid_snapshot();
+                pending_movement.resume_walk_path_request(
+                    request,
+                    &mut sim.substrate.entities,
+                    current_grid.as_deref().or(path_grid),
+                    sim.zone_grid.as_ref(),
+                    sim.resolved_terrain.as_ref(),
+                    &sim.terrain_costs,
+                    &sim.house_alliances,
+                    &mut sim.substrate.occupancy,
+                    &mut sim.substrate.cell_occupation,
+                    &mut sim.substrate.raw_cell_occupation,
+                    &mut sim.substrate.next_occupancy_enter_order,
+                    &mut sim.scenario_rng,
+                    sim.session.tick,
+                    sim.session.binary_frame,
+                    sim.overlay_grid.as_ref(),
+                    overlay_registry,
+                    sim.playfield_bounds,
+                    &sim.terrain_speed_config,
+                    sim.close_enough,
+                    sim.path_delay_ticks,
+                    sim.blockage_path_delay_ticks,
+                    &mut sim.interner,
+                    rules,
+                    Some(&sim.production.slave_bindings),
+                );
+            }
+        }
         outcome.ordinary_track_owned = pending_movement
             .take_native_track()
             .map(|invocation| {

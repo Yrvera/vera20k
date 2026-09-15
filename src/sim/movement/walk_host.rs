@@ -172,7 +172,7 @@ impl Simulation {
 
     // Foot4D3780/Object5F5850 publish the mark byte before Enter/Exit.
     // The raw gate is Foot+6B6; Walk's retained-head producer never toggles it.
-    fn walk_mark_remove(
+    pub(super) fn walk_mark_remove(
         &mut self,
         id: u64,
         rules: Option<&RuleSet>,
@@ -214,7 +214,7 @@ impl Simulation {
         }
     }
 
-    fn walk_mark_put(
+    pub(super) fn walk_mark_put(
         &mut self,
         id: u64,
         rules: Option<&RuleSet>,

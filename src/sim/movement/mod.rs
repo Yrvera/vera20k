@@ -56,6 +56,7 @@ pub(crate) mod at_coord;
 mod cell_arrival;
 mod drive_locomotion;
 pub(crate) mod ground_pose;
+pub(crate) mod infantry_entry;
 pub(crate) mod locomotor_owner;
 pub(crate) mod locomotor_ready;
 mod movement_blocked;
@@ -75,6 +76,7 @@ mod track_host;
 pub(crate) mod track_process;
 pub(crate) mod walk_head;
 mod walk_host;
+mod walk_path;
 
 // --- Movement-related modules (public API) ---
 pub mod air_movement;

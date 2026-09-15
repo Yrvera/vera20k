@@ -259,3 +259,6 @@ impl OrdinaryRepairHost for LiveRepair<'_, '_> {
 #[cfg(test)]
 #[path = "bridge_repair_publication_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "walk_failed_path_tests.rs"]
+mod walk_failed_path_tests;

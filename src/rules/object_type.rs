@@ -202,6 +202,10 @@ pub struct ObjectType {
     pub ui_name: Option<String>,
     /// Credit cost to produce this object.
     pub cost: i32,
+    /// BuildingType+16CD/16D0..16E0, read by House50BF60. The five
+    /// cost bonuses are Infantry, Units, Aircraft, Buildings, Defenses.
+    pub factory_plant: bool,
+    pub cost_bonuses: [crate::util::native_x87::NativeF32Bits; 5],
     /// `Explosion=` — the type's OWN death animations, one chosen at random.
     ///
     /// gamemd-derived: `UnitClass::Death_Explosion @ 0x00738680` picks
@@ -1586,6 +1590,19 @@ impl ObjectType {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             cost: section.get_i32("Cost").unwrap_or(0),
+            factory_plant: section.get_bool("FactoryPlant").unwrap_or(false),
+            cost_bonuses: [
+                "InfantryCostBonus",
+                "UnitsCostBonus",
+                "AircraftCostBonus",
+                "BuildingsCostBonus",
+                "DefensesCostBonus",
+            ]
+            .map(|key| {
+                crate::util::native_x87::NativeF32Bits::from_bits(
+                    section.get_f32(key).unwrap_or(1.0).to_bits(),
+                )
+            }),
             explosion_anims: section
                 .get_list("Explosion")
                 .unwrap_or_default()
