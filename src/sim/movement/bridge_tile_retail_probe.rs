@@ -10,6 +10,12 @@ fn retail_middle_bridge_resident_recalc_admits_both_families() {
     // The headless fixture loader accepts loose map paths; campaign maps may
     // need extraction from the install's MIX archive before this test.
     let map_path = std::env::var("VERA20K_C3Y03MD_MAP").unwrap_or_else(|_| "c3y03md.map".into());
+    if !std::path::Path::new(&map_path).is_absolute()
+        && !std::path::Path::new(&retail).join(&map_path).exists()
+    {
+        eprintln!("SKIPPED: campaign map {map_path} is not extracted beside the retail install");
+        return;
+    }
     let scenario = crate::headless_scenario::load(&retail, &map_path, super::SEED)
         .expect("load actual retail mission");
     let sim = scenario.sim();
@@ -100,6 +106,12 @@ fn retail_high_bridge_middle_tile_inputs() {
     let retail = super::retail_dir().expect("configured active retail install");
     let map_name =
         std::env::var("VERA20K_BRIDGE_TILE_MAP").unwrap_or_else(|_| "xmp34u4.map".into());
+    if !std::path::Path::new(&map_name).is_absolute()
+        && !std::path::Path::new(&retail).join(&map_name).exists()
+    {
+        eprintln!("SKIPPED: campaign map {map_name} is not extracted beside the retail install");
+        return;
+    }
     let scenario = crate::headless_scenario::load(&retail, &map_name, super::SEED)
         .unwrap_or_else(|error| panic!("load {map_name}: {error}"));
     let sim = scenario.sim();

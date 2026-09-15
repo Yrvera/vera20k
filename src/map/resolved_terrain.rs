@@ -3158,7 +3158,16 @@ impl ResolvedTerrainGrid {
         &self.cells
     }
 
-    #[cfg(test)]
+    /// Mutable cell access that moves `mutation_epoch`. The terrain-object
+    /// occupation writer (`set_terrain_object_occupation`) goes through here,
+    /// and that occupation flag is the only terrain field the movement
+    /// blocker-plane cache (`MovementPassCache`) reads, so the epoch is a
+    /// sound key for that cache; other internal writers index `cells`
+    /// directly and do not move it (see the field note), which stays fine
+    /// only while the plane reads no other terrain field. The bump has to
+    /// run in game builds as well as tests: a tree destroyed mid-match must
+    /// invalidate the plane in the shipped binary. An earlier revision bumped
+    /// only a `cfg(test)` body, which the suite could not detect.
     pub(crate) fn cell_mut(&mut self, rx: u16, ry: u16) -> Option<&mut ResolvedTerrainCell> {
         let idx = self.index(rx, ry)?;
         self.mutation_epoch
@@ -3169,12 +3178,6 @@ impl ResolvedTerrainGrid {
     /// Epoch of mutable cell access; see the field note.
     pub fn mutation_epoch(&self) -> u64 {
         self.mutation_epoch.get()
-    }
-
-    #[cfg(not(test))]
-    fn cell_mut(&mut self, rx: u16, ry: u16) -> Option<&mut ResolvedTerrainCell> {
-        let idx = self.index(rx, ry)?;
-        self.cells.get_mut(idx)
     }
 
     pub(crate) fn apply_dynamic_cell_state(
@@ -11128,5 +11131,30 @@ impl ResolvedTerrainCell {
             has_damaged_data: false,
             bridgehead_anchor_class_at_load: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod mutation_epoch_tests {
+    use super::*;
+
+    /// The production terrain-object writer must move the epoch the movement
+    /// blocker-plane cache keys on. `set_terrain_object_occupation` is compiled
+    /// identically in game and test builds, so this covers the shipped path.
+    #[test]
+    fn terrain_object_occupation_writer_moves_the_mutation_epoch() {
+        let mut grid =
+            ResolvedTerrainGrid::from_cells(1, 1, vec![ResolvedTerrainCell::clear_for_test(0, 0)]);
+        let before = grid.mutation_epoch();
+        grid.set_terrain_object_occupation((0, 0), Some(1));
+        assert!(grid.mutation_epoch() > before, "occupation write must bump the epoch");
+        assert!(grid.cell(0, 0).unwrap().terrain_object_blocks);
+        let marked = grid.mutation_epoch();
+        grid.set_terrain_object_occupation((0, 0), None);
+        assert!(grid.mutation_epoch() > marked, "occupation clear must bump the epoch");
+        // A miss leaves the epoch alone.
+        let stable = grid.mutation_epoch();
+        grid.set_terrain_object_occupation((5, 5), Some(1));
+        assert_eq!(grid.mutation_epoch(), stable);
     }
 }

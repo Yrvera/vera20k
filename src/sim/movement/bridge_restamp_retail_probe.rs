@@ -164,6 +164,9 @@ fn retail_inactive_high_record_restamp_inventory() {
         }));
     }
     let output = std::env::var("VERA20K_RESTAMP_OUTPUT")
-        .unwrap_or_else(|_| ".local/restamp-retail-inventory.json".into());
+        .unwrap_or_else(|_| "target/restamp-retail-inventory.json".into());
+    if let Some(parent) = std::path::Path::new(&output).parent() {
+        std::fs::create_dir_all(parent).expect("inventory output directory");
+    }
     std::fs::write(output, serde_json::to_vec_pretty(&results).unwrap()).unwrap();
 }

@@ -1,12 +1,12 @@
 # Module dependency map
 
 <!-- module-map:provenance:begin -->
-Generated snapshot: `b71cd4b638e39bce830669660b96358cfba74573` (2026-09-15), cargo-modules 0.26.0.
+Generated snapshot: `c04f9aaba003eef364d8b33d7700bb4102f199b4` (2026-09-15), cargo-modules 0.26.0.
 
 Scope: `vera20k` library, default features, `x86_64-pc-windows-msvc`, no depth limit.
 Test-only, binary-specific and inactive conditional modules are excluded.
 External crates and the sysroot are excluded from the dependency graph.
-Contains **821 modules plus the crate root**, and **5207 distinct
+Contains **821 modules plus the crate root**, and **5211 distinct
 cross-module dependency edges**. Check this source commit against your checkout.
 <!-- module-map:provenance:end -->
 
@@ -571,7 +571,7 @@ sim::movement::at_coord -> rules::locomotor_type; sim::components; sim::game_ent
 sim::movement::bump_crush -> map::entities; map::resolved_terrain; rules::ruleset; sim::cell_kernel; sim::entity_store; sim::game_entity; sim::intern; sim::movement::locomotor; sim::movement::movement_commands; sim::occupancy; sim::pathfinding::core; sim::rng; util::fixed_math
 sim::movement::cell_arrival -> map::entities; sim::components; sim::movement; sim::movement::bump_crush; sim::movement::locomotor; sim::occupancy; sim::world::substrate
 sim::movement::drive_locomotion -> map::resolved_terrain; rules::locomotor_type; sim::components; sim::entity_store; sim::game_entity; sim::pathfinding::terrain_speed; util::fixed_math
-sim::movement::drive_track -> util::fixed_math
+sim::movement::drive_track -> sim::components; sim::game_entity; util::fixed_math
 sim::movement::drop_pod_movement -> sim::movement::rocket_movement; util::fixed_math
 sim::movement::facing_class -> -
 sim::movement::ground_pose -> map::resolved_terrain; rules::object_type; sim::components; sim::game_entity; sim::pathfinding::core; util::lepton
@@ -593,7 +593,7 @@ sim::movement::movement_bridge -> sim::components; sim::movement::locomotor; sim
 sim::movement::movement_commands -> map::entities; map::resolved_terrain; rules::locomotor_type; rules::ruleset; sim::components; sim::entity_store; sim::game_entity; sim::movement; sim::movement::drive_track; sim::movement::movement_path; sim::movement::teleport_movement; sim::occupancy; sim::pathfinding::core; sim::pathfinding::terrain_cost; sim::pathfinding::zone_map; util::fixed_math
 sim::movement::movement_occupancy -> map::entities; map::houses; map::resolved_terrain; rules::locomotor_type; sim::combat; sim::components; sim::debug_event_log; sim::entity_store; sim::intern; sim::movement; sim::movement::bump_crush; sim::movement::drive_track; sim::movement::locomotor; sim::movement::movement_blocked; sim::movement::movement_bridge; sim::movement::path_markers; sim::occupancy; sim::pathfinding::cell_entry; sim::pathfinding::core; sim::pathfinding::terrain_cost; sim::rng
 sim::movement::movement_path -> map::resolved_terrain; rules::locomotor_type; sim::components; sim::find_nearby_cell; sim::movement; sim::movement::locomotor; sim::pathfinding::core; sim::pathfinding::path_smooth; sim::pathfinding::terrain_cost; sim::pathfinding::zone_map; sim::pathfinding::zone_search; sim::rng; util::fixed_math
-sim::movement::movement_step -> map::entities; map::resolved_terrain; map::tube_facts; rules::locomotor_type; sim::components; sim::debug_event_log; sim::movement; sim::movement::bump_crush; sim::movement::cell_arrival; sim::movement::drive_locomotion; sim::movement::drive_track; sim::movement::locomotor; sim::movement::movement_blocked; sim::movement::movement_bridge; sim::movement::movement_occupancy; sim::movement::track_process; sim::occupancy; sim::pathfinding::core; sim::pathfinding::terrain_cost; sim::rng; sim::world::substrate; util::fixed_math
+sim::movement::movement_step -> map::entities; map::resolved_terrain; map::tube_facts; rules::locomotor_type; sim::components; sim::debug_event_log; sim::game_entity; sim::movement; sim::movement::bump_crush; sim::movement::cell_arrival; sim::movement::drive_locomotion; sim::movement::drive_track; sim::movement::locomotor; sim::movement::movement_blocked; sim::movement::movement_bridge; sim::movement::movement_occupancy; sim::movement::track_process; sim::occupancy; sim::pathfinding::core; sim::pathfinding::terrain_cost; sim::rng; sim::world::substrate; util::fixed_math
 sim::movement::movement_tick -> map::entities; map::houses; map::playfield; map::resolved_terrain; rules::locomotor_type; sim::components; sim::debug_event_log; sim::entity_store; sim::game_entity; sim::infantry; sim::intern; sim::lifecycle_request; sim::movement; sim::movement::bump_crush; sim::movement::drive_locomotion; sim::movement::locomotor; sim::movement::movement_blocked; sim::movement::movement_bridge; sim::movement::movement_commands; sim::movement::movement_occupancy; sim::movement::movement_path; sim::movement::movement_step; sim::movement::path_markers; sim::movement::tube_movement; sim::occupancy; sim::pathfinding::cell_entry; sim::pathfinding::core; sim::pathfinding::terrain_cost; sim::pathfinding::terrain_speed; sim::pathfinding::zone_map; sim::rng; sim::world::substrate; util::fixed_math
 sim::movement::navcom -> map::resolved_terrain; rules::locomotor_type; rules::mission_data; sim::components; sim::entity_store; sim::game_entity; util::fixed_math
 sim::movement::parachute_descent -> sim::debug_event_log; sim::entity_store; util::fixed_math
@@ -634,7 +634,7 @@ sim::particles::wind -> -
 sim::passenger -> rules::object_type; rules::ruleset; sim::components; sim::game_entity; sim::house_state; sim::intern; sim::movement; sim::passenger::departure; sim::pathfinding::core; sim::world; sim::world::lifecycle; util::fixed_math
 sim::passenger::departure -> rules::ruleset; sim::movement::locomotor; sim::passenger; sim::world; sim::world::lifecycle; util::lepton
 sim::pathfinding -> sim::pathfinding::core
-sim::pathfinding::cell_entry -> map::entities; map::houses; map::resolved_terrain; map::resolved_terrain::zone_class; rules::locomotor_type; sim::cell_rect; sim::entity_store; sim::intern; sim::movement::bump_crush; sim::movement::locomotor; sim::occupancy; sim::pathfinding::core; sim::pathfinding::terrain_cost
+sim::pathfinding::cell_entry -> map::entities; map::houses; map::resolved_terrain; map::resolved_terrain::zone_class; rules::locomotor_type; sim::cell_rect; sim::entity_store; sim::game_entity; sim::intern; sim::movement::bump_crush; sim::movement::locomotor; sim::occupancy; sim::pathfinding::core; sim::pathfinding::terrain_cost
 sim::pathfinding::core -> map::map_file; map::resolved_terrain; map::theater; map::tube_facts; rules::locomotor_type; sim::bridge_state; sim::movement::locomotor; sim::pathfinding::cell_entry; sim::pathfinding::terrain_cost; sim::pathfinding::zone_hierarchy; sim::pathfinding::zone_map
 sim::pathfinding::passability -> rules::locomotor_type; rules::terrain_rules
 sim::pathfinding::path_smooth -> sim::movement::locomotor
