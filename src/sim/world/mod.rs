@@ -6793,6 +6793,7 @@ impl Simulation {
             bypass_grid: false,
             mode: TerrainEntryMode::SpawnLike,
             is_infantry: category == EntityCategory::Infantry,
+            mover_is_crusher: false,
         })
         .is_clear();
         let cell_clear = evaluate_live_cell_passability(LiveCellPassabilityQuery {

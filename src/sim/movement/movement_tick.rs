@@ -1100,6 +1100,7 @@ pub(super) fn classify_drive_track_chain_entry(
                 snap.bypass_grid,
                 TerrainEntryMode::RuntimeTransition,
                 snap.category == EntityCategory::Infantry,
+                snap.regular_crusher,
             )
         }),
         MovementLayer::Bridge => path_grid.is_some_and(|grid| {

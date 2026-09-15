@@ -3465,6 +3465,7 @@ fn retail_under_high_span_geometry() {
                             false,
                             crate::sim::pathfinding::cell_entry::TerrainEntryMode::AStarNeighbor,
                             infantry,
+                            false,
                         )
                     };
                     per_mover.push(format!(
@@ -4133,6 +4134,7 @@ fn ground_entry_under_a_high_span_is_admitted_on_every_lane() {
             false,
             TerrainEntryMode::AStarNeighbor,
             false,
+            false,
         )
     };
     let mut sealed = Vec::new();
@@ -4217,6 +4219,7 @@ fn tank_cannot_reach_the_riverbed_beside_bay_of_pigs_high_bridge() {
             track,
             false,
             TerrainEntryMode::AStarNeighbor,
+            false,
             false,
         );
         let rt = sim

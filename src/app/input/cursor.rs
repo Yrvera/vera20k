@@ -396,6 +396,7 @@ fn what_action_on_cell(
                             crate::sim::pathfinding::cell_entry::TerrainEntryMode::RuntimeTransition,
                         is_infantry: entity.category
                             == crate::map::entities::EntityCategory::Infantry,
+                        mover_is_crusher: entity.regular_crusher,
                     },
                 )
                 .is_clear()
@@ -441,8 +442,8 @@ fn capability_cursor_for_hover(
     use crate::map::entities::EntityCategory;
 
     let hovered_entity = sim.entities().get(hover.stable_id);
-    let hovered_obj =
-        rules.and_then(|r| hovered_entity.and_then(|e| r.object(sim.interner.resolve(e.type_ref()))));
+    let hovered_obj = rules
+        .and_then(|r| hovered_entity.and_then(|e| r.object(sim.interner.resolve(e.type_ref()))));
 
     // 1. Deployer self-hover — the cursor is over the selected unit itself.
     //    Show the deploy cursor for units with Deployer=yes (e.g. GGI, Guardian GI)
