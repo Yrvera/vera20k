@@ -69,8 +69,9 @@ harness green), `OPEN` (not started), `IN PROGRESS`.
   retail damaged-span crossing has been run for Drive.
 
 - Attack-move characterizations `*_attack_moved_across_*_is_currently_dropped`
-  in the retail harness now fail because the stall they pin is gone on `main`;
-  they must be rewritten as positive crossings (observed 2026-09-15, 4 tests).
+  were rewritten as positive crossings (`*_attack_moved_across_*_crosses`,
+  2026-09-15) after the probe showed every mover crossing; which change on
+  `main` lifted the stall was not bisected.
 - `bridge_tile_retail_probe` and `bridge_restamp_retail_probe` need extracted
   campaign maps (`c3y03md.map`, `xmp34u4.map`) and a `.local/` directory; they
   fail for environment reasons on a fresh worktree, not behaviour.

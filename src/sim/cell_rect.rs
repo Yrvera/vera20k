@@ -319,7 +319,15 @@ pub(crate) fn evaluate_live_cell_passability(
         ignore_vehicles: query.ignore_vehicles,
         land_passable: query.land_passable,
         is_wall_overlay: terrain_cell.is_some_and(|cell| cell.zone_type == zone_class::WALL),
-        // The parsed overlay model does not expose OverlayTypeClass+0x22D.
+        // `OverlayTypeClass+0x22D` (`Crushable=`) is parsed as
+        // `OverlayTypeFlags::crushable`, and a crushable wall reduces to zone
+        // class `CRUSHABLE`, so it never reaches this wall gate as a wall at
+        // all: every zone is admitted where `CheckCellPassability`
+        // (`0x00483598..5C8`) admits only Destroyer/AmphibiousDestroyer/
+        // InfantryDestroyer/CrusherAll and, on `+0x22D`, Crusher and
+        // AmphibiousCrusher. Threading the flag here needs the wall test to
+        // read the overlay's `Wall=` rather than the reduced zone class; the
+        // constant stays `false` until then (recorded 2026-09-15).
         wall_allows_crusher: false,
     })
 }

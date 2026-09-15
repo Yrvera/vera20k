@@ -130,10 +130,10 @@ Rows are ordered by expected player-visibility × frequency within the tier.
 
 | ID | Loc | Kind | Rel | Src | Disp | Fixture | Open | The one check that settles it |
 |---|---|---|---|---|---|---|---|---|
-| T2-01 | Drive | high intact | onto | atk-mv | **KNOWN-BROKEN** — attack-move is dropped, and not for a bridge reason | BayOPigs.mmx x=111 span | OI-15 | Attack-move a group across the span and assert (a) it crosses, (b) it does **not** select a bridge repair hut as a path obstacle. VERA has four consumers of `bridge_repair_hut` and none is a passability or A* cost test; gamemd returns `MOVE_NO` unconditionally (`0x0051C62F` / `0x0073FC00`). If VERA prices the hut as ordinary destroyable, an attack-moving force cuts its own bridge. Stands for Walk. |
-| T2-02 | Drive | high intact | along | AI | **RESIDUAL** — blocked behind T2-01 | Hills.mmx y=74 span | OI-08 | Scripted team move across the span. `ObjectClass::ShouldBeOnBridge 0x005F6A70` feeds zone reachability from the **destination** height; VERA passes the raw mover layer (`movement_bridge.rs:1105-1108`, `#[ignore]`d, panics "unimplemented"). A team goal on the far side is exactly the ≥4-level destination that triggers it. |
+| T2-01 | Drive | high intact | onto | atk-mv | **VERIFIED-OK** (2026-09-15) — `tank_attack_moved_across_{bay_of_pigs,hills}_high_bridge_crosses`, `infantry_attack_moved_across_hills_high_bridge_crosses`; the drop this row recorded is gone on `main` (probe: 24/19 cells occupied over the run, deck included; plain-Move control crosses too). The hut-pricing half of the settling check is still open. | BayOPigs.mmx x=111 span | OI-15 | Attack-move a group across the span and assert (a) it crosses, (b) it does **not** select a bridge repair hut as a path obstacle. VERA has four consumers of `bridge_repair_hut` and none is a passability or A* cost test; gamemd returns `MOVE_NO` unconditionally (`0x0051C62F` / `0x0073FC00`). If VERA prices the hut as ordinary destroyable, an attack-moving force cuts its own bridge. Stands for Walk. |
+| T2-02 | Drive | high intact | along | AI | **RESIDUAL** — no longer blocked (T2-01 settled), unrun | Hills.mmx y=74 span | OI-08 | Scripted team move across the span. `ObjectClass::ShouldBeOnBridge 0x005F6A70` feeds zone reachability from the **destination** height; VERA passes the raw mover layer (`movement_bridge.rs:1105-1108`, `#[ignore]`d, panics "unimplemented"). A team goal on the far side is exactly the ≥4-level destination that triggers it. |
 | T2-03 | Drive | high intact | along | bump | **VERIFIED-OK** | BayOPigs.mmx x=111, block the span mid-crossing with a second unit | — | Block a deck cell in front of a crossing tank and let `try_repath_after_block` (`movement_path.rs:561`) run. It is untested on a deck anywhere in the tree. Assert the repath stays on the Bridge layer instead of dropping to Ground. |
-| T2-04 | Hover | high intact | onto | atk-mv | **KNOWN-BROKEN** — same drop as T2-01, measured not assumed | BayOPigs.mmx x=111 | OI-06 closed | **The reason this row was separate is gone.** It read "Hover takes the flat branch, where `is_bridge_only_goal` can drop the order outright". `is_bridge_only_goal` is reachable only when `layered_pathing == false`, and since `53695936` Hover is layered, so that predicate no longer sees a Hover mover at all. The row stays UNCHECKED on its *other* half, which is still real: an attack-move's goal selection is a different code path from a plain move, and no attack-move across a span has ever been run by any locomotor. Fold into T2-01 if a Drive attack-move settles the goal-selection question; keep separate only if it does not. |
+| T2-04 | Hover | high intact | onto | atk-mv | **VERIFIED-OK** (2026-09-15) — `hover_tank_attack_moved_across_bay_of_pigs_high_bridge_crosses` | BayOPigs.mmx x=111 | OI-06 closed | **The reason this row was separate is gone.** It read "Hover takes the flat branch, where `is_bridge_only_goal` can drop the order outright". `is_bridge_only_goal` is reachable only when `layered_pathing == false`, and since `53695936` Hover is layered, so that predicate no longer sees a Hover mover at all. Its other half — attack-move goal selection being a different code path from a plain move — is now measured: Drive, Walk and Hover attack-moves have all crossed (2026-09-15), so the row could fold into T2-01; it is kept only as the named Hover run. |
 | T2-05 | Drive | high ramp/bridgehead | onto | move | **RESIDUAL** — ramp traversed in all 7 high crossings, `rejected_reason` unasserted | BayOPigs.mmx `(111,151)` and `(111,135)`; Hills.mmx `(97,74)`/`(76,74)` — the anchor / F1 / Opposite slots that carry `0x200` | OI-11, OI-12, OI-04 | Log `rejected_reason` for a step onto a bridgehead cell. Three separate ports converge here: `cell_entry.rs:442-452` short-circuits the object-list and speed-row half of the entry test on any transition cell; `core.rs:638-644` makes whole-deck `0x200` load-bearing for the diff-0 arm; `is_at_bridge_level` reads `bridge_walkable` where native reads `0x100`. |
 | T2-06 | Walk | high ramp/bridgehead | onto | move | **RESIDUAL** — same as T2-05, infantry arm | Hills.mmx `(97,74)` | OI-12 | Same as T2-05 with an `E1`; infantry additionally carry the sub-cell reservation across the transition cell. |
 | T2-07 | Drive | low intact | along | AI | **KNOWN-BROKEN** | Lostlake.mmx y=117; any map with an authored `[Tubes]` section | OI-07 | `tube_hierarchy_pairs_are_unregistered` (`zone_build.rs:3041-3045`) `panic!`s "unimplemented: tube branch of `RegisterBridgeOrTubeHierarchyPairs 0x00582D70`". The high-bridge half of the same function **is** ported. Settled by implementing the tube branch and asserting a long cross-map order routes through the tube instead of around it. |
@@ -150,24 +150,22 @@ Rows are ordered by expected player-visibility × frequency within the tier.
 Every Tier 2 row is now dispositioned. Eight new retail tests; the whole retail module runs
 `test result: ok. 29 passed; 0 failed`, full suite `7509 passed; 0 failed`.
 
-**The headline is not a bridge bug.** `T2-01`/`T2-04`: an **attack-move across a span is
-dropped on the tick after it is issued** — for Drive, Walk and Hover, on both map geometries.
-The order is admitted and a complete 19-node route across the deck *is* built, so the planner,
-the zone hierarchy and the bridge-deck exemption all behave correctly; the `MovementTarget` is
-then simply gone by the next committed frame and the mover never leaves its cell. So the bridge
-half of these rows is fine and the defect is in attack-move itself. *Trigger:* any attack-move
-whose route crosses a span. *Player effect:* the standard way players advance an army across a
-bridge does nothing. *Frequency:* every attack-move over a bridge — high, since attack-move is
-the ordinary way to move a combat group. Pinned by four `..._attack_moved_..._is_currently_dropped`
-characterization tests that go red when it is fixed. **This should be re-scoped out of the
-bridge program**: it is an order-source defect that a bridge merely revealed.
+**The headline of the first pass is resolved.** `T2-01`/`T2-04` originally recorded an
+attack-move across a span being dropped on the tick after it was issued — for Drive, Walk and
+Hover, on both geometries — while the route built fine, an order-source defect a bridge merely
+revealed. On 2026-09-15 the four `..._is_currently_dropped` characterizations went red on
+`main`: the probe reported the mover crossing the span under the attack-move (Hills/MTNK
+24 cells occupied over 245 surviving ticks, Hills/E1 24, BayOPigs/MTNK and /ROBO 19), with the
+plain-Move control crossing as well. They are rewritten as positive crossings through the shared
+driver with the attack-move order source (`..._attack_moved_..._crosses`). Which change on
+`main` lifted the drop was not bisected; the rows are held by the crossing tests from here on.
 
-**`T2-02` (AI team) — RESIDUAL, blocked behind T2-01.** An AI team's cross-bridge movement is
-issued through the same non-player order machinery; measuring it before attack-move works would
-only re-measure T2-01's drop. *Trigger:* any AI team routed over a span. *Player effect:*
+**`T2-02` (AI team) — RESIDUAL, no longer blocked.** An AI team's cross-bridge movement is
+issued through the same non-player order machinery; with T2-01 settled it can be measured on
+its own. *Trigger:* any AI team routed over a span. *Player effect:*
 AI armies fail to use bridges. *Frequency:* every skirmish against AI on a bridge map — but the
-AI opponent is deferred project-wide, so nobody sees it yet. *Settling check:* re-run after
-T2-01 is fixed.
+AI opponent is deferred project-wide, so nobody sees it yet. *Settling check:* one scripted
+team run across a span.
 
 **`T2-03` (bump / repath) — VERIFIED-OK.** Two tanks, one span: the first is parked mid-deck,
 the second ordered across into it. Asserted that the blocker genuinely reached the deck and
@@ -199,9 +197,9 @@ from MIX. Named as a fixture gap rather than a silent skip.
 **`T2-12`/`T2-13` (retreat, guard) — RESIDUAL.** Neither order source has ever been exercised
 over a span. §2 records that order source is selected *above* the planner entry the locomotors
 share, so a plain Move crossing is evidence about the planner but not about these. *Trigger:*
-a retreating or guarding unit whose route crosses a span. *Player effect:* unknown; T2-01 shows
-an order source can be dropped entirely while the route builds fine, so this family is not
-safely collapsible onto the Move rows. *Frequency:* retreat is common under fire; guard-area
+a retreating or guarding unit whose route crosses a span. *Player effect:* unknown; T2-01's first
+pass showed an order source can be dropped entirely while the route builds fine, so this family
+is not safely collapsible onto the Move rows. *Frequency:* retreat is common under fire; guard-area
 pursuit is common on defensive lines. *Settling check:* one probe each, same shape as the
 attack-move probe.
 
