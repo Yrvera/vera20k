@@ -167,7 +167,13 @@ const BRIDGE_HARNESS_FINAL_HASH_PRE_CELL_MEMBERSHIP_V159: u64 = 0x1C9D_C67C_2209
 // The immediately preceding composition is asserted below against the old
 // current pin; all historical, replay/path and RNG tripwires remain intact.
 // This is a Rust hash-composition ratchet, not a new native golden.
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0xDC4F_664E_8F9F_FD7C;
+const BRIDGE_HARNESS_FINAL_HASH_PRE_FOOT_PATH_RUNTIME_V160: u64 = 0xDC4F_664E_8F9F_FD7C;
+// Schema160 moves the two Foot path timers, blocked latch and dword retry count
+// into NavigationState::path_runtime and hashes that owner instead of the former
+// positional MovementTarget fields. The immediately preceding composition is
+// asserted below against the old current pin; every older probe, replay/path
+// and RNG tripwire remains intact. Rust hash-composition ratchet, not a native golden.
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0xFF20_F31C_0ECB_A093;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
@@ -766,6 +772,12 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
     assert_eq!(
         pre_membership_hash, BRIDGE_HARNESS_FINAL_HASH_PRE_CELL_MEMBERSHIP_V159,
         "immediately preceding main hash changed beyond schema159 composition"
+    );
+    let pre_foot_runtime_hash = rep.state_hash_without_foot_path_runtime_v160();
+    println!("[schema160] pre160={pre_foot_runtime_hash:016X} current={final_hash:016X}");
+    assert_eq!(
+        pre_foot_runtime_hash, BRIDGE_HARNESS_FINAL_HASH_PRE_FOOT_PATH_RUNTIME_V160,
+        "immediately preceding main hash changed beyond schema160 composition"
     );
     assert_eq!(
         final_hash, BRIDGE_HARNESS_FINAL_HASH,

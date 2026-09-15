@@ -121,9 +121,7 @@ fn tick_forced_drive_tracks(
             // Forward progress on a forced curve clears the impatience flag
             // exactly as it does on an ordinary track — gamemd's paid-point
             // block is shared by both.
-            if let Some(target) = entity.movement_target.as_mut() {
-                target.path_blocked = false;
-            }
+            entity.navigation.path_runtime.path_blocked = false;
             if let Some(drive) = entity.drive_locomotion.as_mut() {
                 crate::sim::occupancy::clear_current_drive_occupation_for_paid_point(
                     &mut entity.foot_occupation_enabled,
@@ -171,9 +169,7 @@ fn tick_forced_drive_tracks(
         if advance.finished {
             // Track termination is gamemd's second unconditional reset of the
             // impatience flag, written before the terminal cell commit.
-            if let Some(target) = entity.movement_target.as_mut() {
-                target.path_blocked = false;
-            }
+            entity.navigation.path_runtime.path_blocked = false;
             let head = entity
                 .drive_locomotion
                 .as_ref()
@@ -407,6 +403,7 @@ enum PathExhaustionResult {
 #[allow(clippy::too_many_arguments)]
 fn handle_path_exhaustion(
     path_replay: &mut crate::sim::components::FootPathQueue,
+    path_runtime: &mut crate::sim::components::FootPathRuntime,
     target: &mut MovementTarget,
     locomotor: &Option<super::locomotor::LocomotorState>,
     drive_locomotion: &mut Option<crate::sim::components::DriveLocomotionRuntime>,
@@ -425,6 +422,7 @@ fn handle_path_exhaustion(
     mover_entity_block_map: Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
     path_delay_ticks: u16,
     sim_tick: u64,
+    native_frame: u32,
 ) -> PathExhaustionResult {
     if target.next_index < target.path.len() || active_ordinary_track {
         // Path not yet exhausted — check subcell redirect case and return.
@@ -542,15 +540,24 @@ fn handle_path_exhaustion(
                         move_dir_x: d_x,
                         move_dir_y: d_y,
                         move_dir_len: d_len,
-                        movement_delay: path_delay_ticks,
-                        blocked_delay: 0,
-                        path_blocked: false,
-                        path_stuck_counter: PATH_STUCK_INIT,
                         final_goal: saved_goal,
                         group_id: saved_group,
                         ignore_terrain_cost: false,
                         bypass_grid: false,
                     };
+                    let walk = locomotor.as_ref().is_some_and(|l| {
+                        l.kind == crate::rules::locomotor_type::LocomotorKind::Walk
+                    });
+                    if !walk {
+                        *path_runtime = crate::sim::components::FootPathRuntime::default();
+                        path_runtime.start_movement(native_frame, path_delay_ticks, false);
+                    } else {
+                        // FindPath4D3ECA clears the movement delay. The Walk
+                        // success continuation75B2E2 resets the dword counter;
+                        // it does not reconstruct the other Foot fields.
+                        path_runtime.start_movement(native_frame, 0, true);
+                        path_runtime.retries_left = PATH_STUCK_INIT;
+                    }
                     match locomotor.as_ref().map(|locomotor| locomotor.kind) {
                         Some(crate::rules::locomotor_type::LocomotorKind::Drive) => {
                             if drive_locomotion.is_some() {
@@ -889,6 +896,7 @@ fn process_pending_drive_arrivals(
                 ),
             }
         }
+        entity.navigation.path_runtime = crate::sim::components::FootPathRuntime::default();
         entity.movement_target = Some(movement);
     }
 }
@@ -977,6 +985,7 @@ fn handle_deferred_drive_selection_block(
     handle_blocked_tick(
         &mut entity.navigation.path_replay,
         target,
+        &mut entity.navigation.path_runtime,
         &mut entity.facing,
         body_facing,
         &snap.locomotor,
@@ -1220,6 +1229,7 @@ fn handle_deferred_drive_track_chain(
     crush_kills: &mut Vec<PendingCrushKill>,
     already_scattered: &mut BTreeSet<u64>,
     sim_tick: u64,
+    timing: crate::sim::movement::DestinationTiming,
 ) -> bool {
     let entry_result = classify_drive_track_chain_entry(
         chain,
@@ -1309,6 +1319,7 @@ fn handle_deferred_drive_track_chain(
                     rng,
                     rules,
                     interner,
+                    timing,
                 )
             {
                 already_scattered.insert(blocker_id);
@@ -1580,11 +1591,20 @@ fn advance_ordinary_mover(
         let Some(ref mut target) = entity.movement_target else {
             return;
         };
-        target.movement_delay = target.movement_delay.saturating_sub(1);
-        target.blocked_delay = target.blocked_delay.saturating_sub(1);
+        if !entity
+            .locomotor
+            .as_ref()
+            .is_some_and(|l| l.kind == crate::rules::locomotor_type::LocomotorKind::Walk)
+        {
+            entity
+                .navigation
+                .path_runtime
+                .advance_compatibility_process();
+        }
 
         match handle_path_exhaustion(
             &mut entity.navigation.path_replay,
+            &mut entity.navigation.path_runtime,
             target,
             &entity.locomotor,
             &mut entity.drive_locomotion,
@@ -1603,6 +1623,7 @@ fn advance_ordinary_mover(
             mover_entity_block_map,
             path_delay_ticks,
             sim_tick,
+            native_frame,
         ) {
             PathExhaustionResult::Finished => {
                 finished_entities.push(entity_id);
@@ -1994,6 +2015,7 @@ fn advance_ordinary_mover(
                 &mut entity.foot_occupation_enabled,
                 &mut entity.navigation.path_replay,
                 target,
+                &mut entity.navigation.path_runtime,
                 &mut entity.position,
                 &mut entity.facing,
                 &mut entity.facing_target,
@@ -2389,6 +2411,7 @@ fn advance_ordinary_mover(
                 &mut entity.foot_occupation_enabled,
                 &mut entity.navigation.path_replay,
                 target,
+                &mut entity.navigation.path_runtime,
                 &mut entity.position,
                 &mut entity.facing,
                 &mut entity.facing_target,
@@ -2510,8 +2533,15 @@ fn advance_ordinary_mover(
             && super::ground_pose::position_world_xy(before)
                 != super::ground_pose::position_world_xy(&entity.position)
         {
-            target.path_blocked = false;
-            target.blocked_delay = 0;
+            entity.navigation.path_runtime.path_blocked = false;
+            entity.navigation.path_runtime.start_blocked(
+                native_frame,
+                0,
+                entity
+                    .locomotor
+                    .as_ref()
+                    .is_some_and(|l| l.kind == crate::rules::locomotor_type::LocomotorKind::Walk),
+            );
         }
     } // mutable entity borrow released here
 
@@ -2539,6 +2569,10 @@ fn advance_ordinary_mover(
             crush_kills,
             already_scattered,
             sim_tick,
+            crate::sim::movement::DestinationTiming::new(
+                mcfg.binary_frame,
+                mcfg.blockage_path_delay_ticks,
+            ),
         );
     }
 
@@ -3145,6 +3179,7 @@ pub(crate) fn begin_movement_with_grids_scoped(
         blocker_neighbor_counts: blocker_neighbor_counts.as_ref(),
     };
     let mcfg = MovementConfig {
+        binary_frame: native_frame,
         close_enough,
         path_delay_ticks,
         blockage_path_delay_ticks,
@@ -3547,7 +3582,7 @@ fn update_locomotor_phases(
                 if let (Some(target), Some(loco)) = (&entity.movement_target, &mut entity.locomotor)
                 {
                     let old_phase = loco.phase;
-                    let (new_phase, reason) = if target.path_blocked {
+                    let (new_phase, reason) = if entity.navigation.path_runtime.path_blocked {
                         (GroundMovePhase::Blocked, "cell blocked")
                     } else if target.current_speed <= SIM_ZERO {
                         // Speed is zero but path remains — stopping or waiting to start.
@@ -3820,6 +3855,7 @@ mod drive_track_chain_tests {
             &mut crush_kills,
             &mut already_scattered,
             0,
+            crate::sim::movement::DestinationTiming::new(0, 60),
         );
         (installed, entities, stats)
     }
@@ -4000,6 +4036,7 @@ mod drive_track_chain_tests {
             &mut crush_kills,
             &mut already_scattered,
             0,
+            crate::sim::movement::DestinationTiming::new(0, 60),
         );
 
         assert!(installed);

@@ -1074,6 +1074,7 @@ pub fn scatter_blocker(
     rng: &mut SimRng,
     rules: Option<&crate::rules::ruleset::RuleSet>,
     interner: &crate::sim::intern::StringInterner,
+    timing: crate::sim::movement::DestinationTiming,
 ) -> bool {
     // Read blocker properties (immutable borrow).
     let Some(blocker) = entities.get(blocker_id) else {
@@ -1170,10 +1171,12 @@ pub fn scatter_blocker(
                 None,
                 None,
                 None,
+                timing,
             )
         } else {
-            let accepted =
-                super::movement_commands::issue_direct_move(entities, blocker_id, dest, speed);
+            let accepted = super::movement_commands::issue_direct_move(
+                entities, blocker_id, dest, speed, timing,
+            );
             if accepted {
                 if let Some(entity) = entities.get_mut(blocker_id) {
                     super::navcom::set_destination_internal_cell(entity, dest, resolved_terrain);
@@ -1182,7 +1185,7 @@ pub fn scatter_blocker(
             accepted
         }
     } else {
-        super::movement_commands::issue_direct_move(entities, blocker_id, dest, speed)
+        super::movement_commands::issue_direct_move(entities, blocker_id, dest, speed, timing)
     };
     if accepted && ordinary_track {
         if let Some((accel, decel, slowdown, _)) = config {
@@ -2532,6 +2535,7 @@ mod tests {
             &mut rng,
             None,
             &crate::sim::intern::test_interner(),
+            crate::sim::movement::DestinationTiming::new(0, 60),
         );
         assert!(result, "scatter_blocker should succeed with open cells");
 
@@ -2578,6 +2582,7 @@ mod tests {
             &mut rng,
             None,
             &crate::sim::intern::test_interner(),
+            crate::sim::movement::DestinationTiming::new(0, 60),
         );
         assert!(!result, "scatter_blocker should fail when all blocked");
         assert!(store.get(1).unwrap().movement_target.is_none());
@@ -2642,6 +2647,7 @@ mod tests {
                 &mut rng,
                 Some(&rules),
                 &crate::sim::intern::test_interner(),
+                crate::sim::movement::DestinationTiming::new(0, 60),
             ),
             "a moving vehicle must still be scattered — the vehicle body has no Is_Moving gate"
         );
@@ -2676,6 +2682,7 @@ mod tests {
                 &mut rng,
                 Some(&rules),
                 &crate::sim::intern::test_interner(), // Fraidycat=no — every stock combat infantry type
+                crate::sim::movement::DestinationTiming::new(0, 60),
             ),
             "a moving, targeting, non-Fraidycat infantryman refuses the demoted-force scatter"
         );
@@ -2699,6 +2706,7 @@ mod tests {
                 &mut rng,
                 Some(&rules),
                 &crate::sim::intern::test_interner(), // Fraidycat=yes
+                crate::sim::movement::DestinationTiming::new(0, 60),
             ),
             "the Fraidycat branch skips the early-out entirely"
         );
@@ -2730,6 +2738,7 @@ mod tests {
             &mut rng,
             Some(&rules),
             &crate::sim::intern::test_interner(),
+            crate::sim::movement::DestinationTiming::new(0, 60),
         ));
         assert_eq!(rng.state(), before_rng);
         let target = store.get(1).unwrap().movement_target.as_ref().unwrap();
@@ -2770,6 +2779,7 @@ mod tests {
                 &mut rng,
                 Some(&rules),
                 &crate::sim::intern::test_interner(),
+                crate::sim::movement::DestinationTiming::new(0, 60),
             ),
             "[Sleep] Scatter=no and the force byte was demoted, so the gate refuses"
         );
@@ -2800,6 +2810,7 @@ mod tests {
                 &mut rng,
                 Some(&rules),
                 &crate::sim::intern::test_interner(),
+                crate::sim::movement::DestinationTiming::new(0, 60),
             ),
             "forced=1 survives when the object is not moving"
         );
@@ -2835,6 +2846,7 @@ mod tests {
             &mut rng,
             None,
             &crate::sim::intern::test_interner(),
+            crate::sim::movement::DestinationTiming::new(0, 60),
         );
 
         assert!(
@@ -2878,6 +2890,7 @@ mod tests {
             &mut rng1,
             None,
             &crate::sim::intern::test_interner(),
+            crate::sim::movement::DestinationTiming::new(0, 60),
         );
 
         let mut store2 = EntityStore::new();
@@ -2893,6 +2906,7 @@ mod tests {
             &mut rng2,
             None,
             &crate::sim::intern::test_interner(),
+            crate::sim::movement::DestinationTiming::new(0, 60),
         );
 
         let t1 = store1.get(1).unwrap().movement_target.as_ref().unwrap();

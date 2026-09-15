@@ -152,19 +152,21 @@ fn advance_straight_position(
 }
 
 pub(super) fn apply_cell_transition_remainder(
-    target: &mut MovementTarget,
+    path_runtime: &mut crate::sim::components::FootPathRuntime,
     position: &mut Position,
     dx_cell: i32,
     dy_cell: i32,
     nx: u16,
     ny: u16,
     is_infantry: bool,
+    native_frame: u32,
+    walk: bool,
 ) {
     // Infantry: clear blocking state on each cell arrival (fresh grace period).
     // Vehicles: keep both flags — once blocked, urgency escalates permanently.
     if is_infantry {
-        target.blocked_delay = 0;
-        target.path_blocked = false;
+        path_runtime.start_blocked(native_frame, 0, walk);
+        path_runtime.path_blocked = false;
     }
     if dx_cell > 0 {
         position.sub_x -= crate::util::lepton::LEPTONS_PER_CELL;
@@ -515,6 +517,7 @@ mod tests {
                     &mut true,
                     &mut queue,
                     &mut target,
+                    &mut Default::default(),
                     &mut position,
                     &mut 64,
                     &mut None,
@@ -608,6 +611,7 @@ mod tests {
             let result = advance_shared_track(
                 &mut true,
                 &mut target,
+                &mut Default::default(),
                 &mut position,
                 &mut 0,
                 &mut None,
@@ -739,6 +743,7 @@ mod tests {
             &mut true,
             &mut Default::default(),
             &mut target,
+            &mut Default::default(),
             &mut position,
             &mut facing,
             &mut facing_target,
@@ -789,6 +794,7 @@ mod tests {
             &mut true,
             &mut Default::default(),
             &mut target,
+            &mut Default::default(),
             &mut position,
             &mut facing,
             &mut facing_target,
@@ -852,6 +858,7 @@ mod tests {
             &mut true,
             &mut Default::default(),
             &mut target,
+            &mut Default::default(),
             &mut position,
             &mut facing,
             &mut facing_target,
@@ -923,6 +930,7 @@ mod tests {
             &mut foot_occupation_enabled,
             &mut Default::default(),
             &mut target,
+            &mut Default::default(),
             &mut position,
             &mut facing,
             &mut facing_target,
@@ -985,6 +993,7 @@ mod tests {
             &mut true,
             &mut Default::default(),
             &mut target,
+            &mut Default::default(),
             &mut position,
             &mut facing,
             &mut facing_target,
@@ -1009,6 +1018,7 @@ mod tests {
             &mut true,
             &mut Default::default(),
             &mut target,
+            &mut Default::default(),
             &mut position,
             &mut facing,
             &mut facing_target,
@@ -1066,6 +1076,7 @@ mod tests {
             &mut true,
             &mut Default::default(),
             &mut target,
+            &mut Default::default(),
             &mut position,
             &mut facing,
             &mut facing_target,
@@ -1738,6 +1749,7 @@ fn finish_shared_track(
 fn advance_shared_track(
     foot_occupation_enabled: &mut bool,
     target: &mut MovementTarget,
+    path_runtime: &mut crate::sim::components::FootPathRuntime,
     position: &mut Position,
     facing: &mut u8,
     facing_target: &mut Option<u8>,
@@ -1786,7 +1798,7 @@ fn advance_shared_track(
         // that clears the raw occupation bit and the cell-occupation-enabled
         // byte — repath success alone never clears it. Clearing here is what
         // buys the mover a fresh BlockagePathDelay grace on its next block.
-        target.path_blocked = false;
+        path_runtime.path_blocked = false;
         if let (Some(drive), Some(occupation)) =
             (drive_locomotion.as_mut(), cell_occupation.as_deref_mut())
         {
@@ -1866,6 +1878,7 @@ pub(super) fn advance_lepton_position(
     foot_occupation_enabled: &mut bool,
     path_replay: &mut crate::sim::components::FootPathQueue,
     target: &mut MovementTarget,
+    path_runtime: &mut crate::sim::components::FootPathRuntime,
     position: &mut Position,
     facing: &mut u8,
     facing_target: &mut Option<u8>,
@@ -1898,6 +1911,7 @@ pub(super) fn advance_lepton_position(
         let advance = advance_shared_track(
             foot_occupation_enabled,
             target,
+            path_runtime,
             position,
             facing,
             facing_target,
@@ -1957,6 +1971,7 @@ pub(super) fn advance_lepton_position(
                         return advance_shared_track(
                             foot_occupation_enabled,
                             target,
+                            path_runtime,
                             position,
                             facing,
                             facing_target,
@@ -2035,6 +2050,7 @@ pub(super) fn advance_lepton_position(
                         return advance_shared_track(
                             foot_occupation_enabled,
                             target,
+                            path_runtime,
                             position,
                             facing,
                             facing_target,
@@ -2210,6 +2226,7 @@ pub(super) fn process_cell_crossings(
     foot_occupation_enabled: &mut bool,
     path_replay: &mut crate::sim::components::FootPathQueue,
     target: &mut MovementTarget,
+    path_runtime: &mut crate::sim::components::FootPathRuntime,
     position: &mut Position,
     facing: &mut u8,
     facing_target: &mut Option<u8>,
@@ -2241,6 +2258,9 @@ pub(super) fn process_cell_crossings(
     sim_tick: u64,
     marker_context: Option<super::path_markers::BridgeMarkerContext<'_>>,
 ) -> CrossingOutput {
+    let walk = locomotor
+        .as_ref()
+        .is_some_and(|l| l.kind == LocomotorKind::Walk);
     let mut debug_events: Vec<(u32, DebugEventKind)> = Vec::new();
     let mut deferred_cell_check: Option<DeferredCellCheck> = None;
     let mut runtime_bridge_transition = snap.runtime_bridge_transition;
@@ -2311,11 +2331,12 @@ pub(super) fn process_cell_crossings(
                 );
             }
             *drive_track_state = None;
-            target.movement_delay = 0;
+            path_runtime.start_movement(mcfg.binary_frame, 0, walk);
             let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
             let evts = handle_blocked_tick(
                 path_replay,
                 target,
+                path_runtime,
                 facing,
                 body_facing,
                 &snap.locomotor,
@@ -2414,8 +2435,10 @@ pub(super) fn process_cell_crossings(
                     next_layer,
                     layer_grid_ok,
                     layer_terrain_ok,
-                    target.blocked_delay,
-                    target.path_blocked,
+                    path_runtime
+                        .blocked_timer
+                        .remaining(mcfg.binary_frame as i32),
+                    path_runtime.path_blocked,
                     naval_terrain_diag(resolved_terrain, (nx, ny)),
                 );
             }
@@ -2440,11 +2463,12 @@ pub(super) fn process_cell_crossings(
             *drive_track_state = None;
             // Terrain-blocked (building/cliff) — the path is stale.
             // Force immediate repath by clearing movement_delay.
-            target.movement_delay = 0;
+            path_runtime.start_movement(mcfg.binary_frame, 0, walk);
             let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
             let evts = handle_blocked_tick(
                 path_replay,
                 target,
+                path_runtime,
                 facing,
                 body_facing,
                 &snap.locomotor,
@@ -2521,11 +2545,12 @@ pub(super) fn process_cell_crossings(
                         );
                     }
                     *drive_track_state = None;
-                    target.movement_delay = 0;
+                    path_runtime.start_movement(mcfg.binary_frame, 0, walk);
                     let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
                     let evts = handle_blocked_tick(
                         path_replay,
                         target,
+                        path_runtime,
                         facing,
                         body_facing,
                         &snap.locomotor,
@@ -2592,13 +2617,15 @@ pub(super) fn process_cell_crossings(
         // a visible position jump when transitioning from diagonal
         // to cardinal movement (e.g., sub_x=51 → 128 = ~9px snap).
         apply_cell_transition_remainder(
-            target,
+            path_runtime,
             position,
             dx_cell,
             dy_cell,
             nx,
             ny,
             category == EntityCategory::Infantry,
+            mcfg.binary_frame,
+            walk,
         );
         // GATE A2 verified order: the object-list layer is selected by the
         // occupant's OnBridge byte sampled at each call site. Capture the OLD

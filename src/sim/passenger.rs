@@ -846,6 +846,10 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
                             pax_id,
                             dest,
                             scatter_speed,
+                            movement::DestinationTiming::new(
+                                sim.session.binary_frame,
+                                sim.blockage_path_delay_ticks,
+                            ),
                         );
                         break;
                     }

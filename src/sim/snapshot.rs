@@ -478,7 +478,10 @@ use crate::sim::world::Simulation;
 // the separate unmerged bridge locomotor layouts; do not accept those saves.
 // v159 persists actual Cell membership/order, discovery history and the exact
 // immutable Sight==0 predicate. Versions157-158 belong to the bridge branch.
-const SNAPSHOT_VERSION: u32 = 159;
+// v160 moves the two Foot path timers, blocked latch and dword retry count
+// from MovementTarget into persistent NavigationState.
+// Earlier snapshots do not contain these surviving fields or timer anchors.
+const SNAPSHOT_VERSION: u32 = 160;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3323,12 +3326,12 @@ mod tests {
         // 146 -> 147: retain Scenario+214 for subsequent native constructors.
         // 150 -> 151: Foot also owns applied speed independently of its locomotor.
         // 151 -> 152: Foot occupation enable and pending fresh Apply1 obligation.
-        assert_eq!(super::SNAPSHOT_VERSION, 159);
+        assert_eq!(super::SNAPSHOT_VERSION, 160);
     }
 
     #[test]
     fn membership_history_schema_rejects_previous_and_branch_local_layouts() {
-        for version in 153..=158 {
+        for version in 153..=159 {
             let preamble = GameSnapshotPreamble {
                 product_magic: SNAPSHOT_PRODUCT_MAGIC,
                 envelope_version: SNAPSHOT_ENVELOPE_VERSION,
@@ -3337,7 +3340,7 @@ mod tests {
             let bytes = bincode::serialize(&preamble).expect("previous layout header");
             assert!(matches!(
                 GameSnapshot::load(&bytes),
-                Err(SnapshotError::VersionMismatch { expected: 159, found }) if found == version
+                Err(SnapshotError::VersionMismatch { expected: 160, found }) if found == version
             ));
         }
     }

@@ -204,9 +204,7 @@ impl Simulation {
                 // before terminal coordinates/Mark, then retire the selector.
                 self.set_track_occupation_enabled(id, true);
                 if let Some(entity) = self.substrate.entities.get_mut(id) {
-                    if let Some(target) = entity.movement_target.as_mut() {
-                        target.path_blocked = false;
-                    }
+                    entity.navigation.path_runtime.path_blocked = false;
                 }
                 self.track_place(
                     id,
@@ -312,9 +310,7 @@ impl Simulation {
                 self.track_raw_mark(id, false, fallback_grid);
                 self.set_track_occupation_enabled(id, false);
                 if let Some(entity) = self.substrate.entities.get_mut(id) {
-                    if let Some(target) = entity.movement_target.as_mut() {
-                        target.path_blocked = false;
-                    }
+                    entity.navigation.path_runtime.path_blocked = false;
                 }
             }
             let Some((live, live_head, actual)) = self.track_state(id, family) else {
@@ -977,6 +973,12 @@ impl Simulation {
                     &mut self.scenario_rng,
                     rules,
                     &self.interner,
+                    crate::sim::movement::DestinationTiming::new(
+                        self.session.binary_frame,
+                        rules.map_or(self.blockage_path_delay_ticks, |r| {
+                            r.general.blockage_path_delay_ticks
+                        }),
+                    ),
                 );
                 return false;
             }

@@ -24,7 +24,6 @@
 //! - Part of sim/ — depends on sim/components, sim/locomotor, map/terrain.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::components::MovementTarget;
 use crate::sim::debug_event_log::DebugEventKind;
@@ -162,6 +161,7 @@ pub fn issue_air_move_command(
     let Some(entity) = entities.get_mut(entity_id) else {
         return false;
     };
+    entity.navigation.path_runtime = crate::sim::components::FootPathRuntime::default();
     entity.movement_target = Some(movement);
 
     // Trigger takeoff if on the ground.

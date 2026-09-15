@@ -110,7 +110,7 @@ pub(crate) use drive_locomotion::{DriveProcessOutcome, process_drive_locomotion_
 // Re-export command functions so callers can use `movement::issue_move_command` etc.
 pub(crate) use movement_commands::issue_move_command_with_layered;
 pub use movement_commands::{
-    clear_navigation_for_entity, issue_direct_move, issue_move_command,
+    DestinationTiming, clear_navigation_for_entity, issue_direct_move, issue_move_command,
     set_destination_for_teleporter_entity, stop_navigation_at_committed_head,
 };
 #[cfg(test)]
@@ -243,7 +243,7 @@ pub(crate) fn install_forced_drive_track(
 /// arrives after a different number of ticks than retail's. Frequency: every
 /// traffic jam, many times a minute once a base has armour queuing. Downstream
 /// risk: the two clocks are separate fields and must stay separate.
-const PATH_STUCK_INIT: u8 = 10;
+const PATH_STUCK_INIT: u32 = 10;
 /// Minimum height level difference to trigger Rust's defensive cliff detection.
 ///
 /// **VERA-internal, gamemd equivalent UNCHECKED** — "abs(current_z / HeightStep
@@ -275,6 +275,7 @@ pub(super) struct PathfindingContext<'a> {
 /// Separate from `PathfindingContext` because `find_move_path` doesn't need these.
 #[derive(Clone, Copy)]
 pub(super) struct MovementConfig {
+    pub binary_frame: u32,
     pub close_enough: SimFixed,
     pub path_delay_ticks: u16,
     pub blockage_path_delay_ticks: u16,

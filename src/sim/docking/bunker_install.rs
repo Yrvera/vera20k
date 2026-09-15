@@ -274,6 +274,10 @@ fn shove_footprint_blockers(
             &mut sim.scenario_rng,
             Some(rules),
             &sim.interner,
+            crate::sim::movement::DestinationTiming::new(
+                sim.session.binary_frame,
+                sim.blockage_path_delay_ticks,
+            ),
         );
     }
 }

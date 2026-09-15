@@ -471,6 +471,14 @@ impl Simulation {
         self.state_hash_with_schema(HashSchema::Before(159))
     }
 
+    /// Test-only provenance probe for the schema160 Foot path runtime
+    /// rebaseline: the retained timers/latch/count are projected back into the
+    /// former positional MovementTarget encoding instead of hashed as an owner.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_foot_path_runtime_v160(&self) -> u64 {
+        self.state_hash_with_schema(HashSchema::Before(160))
+    }
+
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
     ///
     /// It retains lifecycle-v28 fields and reconstructs the exact prior
@@ -1538,17 +1546,36 @@ impl Simulation {
                 1u8.hash(hasher);
                 movement.next_index.hash(hasher);
                 movement.speed.hash(hasher);
-                movement.movement_delay.hash(hasher);
-                movement.blocked_delay.hash(hasher);
-                movement.path_blocked.hash(hasher);
-                movement.path_stuck_counter.hash(hasher);
+                if !schema.includes(HashFeature::FootPathRuntime) {
+                    // Historical positional encoding of the former adapter
+                    // fields. This projection is not native timer equality.
+                    let path = &entity.navigation.path_runtime;
+                    (path
+                        .movement_timer
+                        .remaining(self.session.binary_frame as i32) as u16)
+                        .hash(hasher);
+                    (path
+                        .blocked_timer
+                        .remaining(self.session.binary_frame as i32) as u16)
+                        .hash(hasher);
+                    path.path_blocked.hash(hasher);
+                    (path.retries_left as u8).hash(hasher);
+                }
                 movement.path.hash(hasher);
                 movement.path_layers.hash(hasher);
             } else {
                 0u8.hash(hasher);
             }
 
-            entity.navigation.hash(hasher);
+            if schema.includes(HashFeature::FootPathRuntime) {
+                entity.navigation.path_runtime.hash(hasher);
+            }
+            entity.navigation.path_replay.hash(hasher);
+            entity.navigation.nav_com_aux.hash(hasher);
+            entity.navigation.nav_com.hash(hasher);
+            entity.navigation.suspended_nav_com.hash(hasher);
+            entity.navigation.nav_queue.hash(hasher);
+            entity.navigation.pending_arrival_clear.hash(hasher);
 
             if let Some(ref drive_track) = entity.drive_track {
                 1u8.hash(hasher);
@@ -4145,6 +4172,41 @@ mod infantry_hash_tests {
         sim_a.substrate.entities.insert(a);
         sim_b.substrate.entities.insert(b);
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn foot_path_runtime_hash_and_snapshot_survive_without_movement_adapter() {
+        use crate::sim::components::FootPathRuntime;
+        use crate::sim::timer::CdTimer;
+        let mut sim = Simulation::new();
+        let actor = infantry_entity(&mut sim);
+        sim.substrate.entities.insert(actor);
+        let before = sim.state_hash();
+        let previous = sim.state_hash_with_schema(super::HashSchema::Before(160));
+        let retained = FootPathRuntime {
+            movement_timer: CdTimer::from_raw(-1, -7),
+            blocked_timer: CdTimer::from_raw(i32::MAX - 2, 31),
+            path_blocked: true,
+            retries_left: u32::MAX,
+        };
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .navigation
+            .path_runtime = retained;
+        assert_ne!(sim.state_hash(), before);
+        assert_eq!(
+            sim.state_hash_with_schema(super::HashSchema::Before(160)),
+            previous
+        );
+        let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "foot-path", 0);
+        let loaded = crate::sim::snapshot::GameSnapshot::load(&bytes)
+            .unwrap()
+            .sim;
+        let actor = loaded.entities().get(1).unwrap();
+        assert!(actor.movement_target.is_none());
+        assert_eq!(actor.navigation.path_runtime, retained);
     }
 
     #[test]

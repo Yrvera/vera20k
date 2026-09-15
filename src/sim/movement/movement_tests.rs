@@ -71,6 +71,7 @@ fn ordinary_drive_retires_selector_before_entering_an_explicit_tube() {
         None,
         None,
         Some(&mut sim.substrate.cell_occupation),
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     let accepted = sim.substrate.entities.get(1).unwrap();
     assert_eq!(
@@ -331,6 +332,7 @@ fn test_drive_queue_command_reissues_destination_without_navqueue_append() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     assert!(issue_move_command(
         &mut entities,
@@ -343,6 +345,7 @@ fn test_drive_queue_command_reissues_destination_without_navqueue_append() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     let entity = entities.get(1).expect("entity exists");
@@ -390,6 +393,67 @@ fn gsi_04_05_tick_production_movement(
         &mut sound_events,
         &mut lifecycle_requests,
     );
+}
+
+#[test]
+fn foot_path_runtime_survives_accepted_walk_order_and_resets_for_drive() {
+    use crate::sim::components::FootPathRuntime;
+    use crate::sim::timer::CdTimer;
+
+    let grid = PathGrid::test_all_passable(30, 30);
+    let retained = FootPathRuntime {
+        movement_timer: CdTimer::from_raw(-1, -7),
+        blocked_timer: CdTimer::started(100, 60),
+        path_blocked: true,
+        retries_left: u32::MAX,
+    };
+    for (kind, type_name) in [(LocomotorKind::Walk, "E1"), (LocomotorKind::Drive, "MTNK")] {
+        let mut sim = Simulation::with_seed(41);
+        let mut actor = GameEntity::test_default(1, type_name, "Americans", 10, 10);
+        actor.owner = sim.intern("Americans");
+        actor.type_ref = sim.intern(type_name);
+        actor.category = if kind == LocomotorKind::Walk {
+            EntityCategory::Infantry
+        } else {
+            EntityCategory::Unit
+        };
+        actor.locomotor = Some(LocomotorState::for_test_kind(kind));
+        actor.navigation.path_runtime = retained;
+        sim.substrate.entities.insert(actor);
+        assert!(issue_move_command(
+            &mut sim.substrate.entities,
+            &grid,
+            1,
+            (21, 10),
+            SimFixed::from_num(150),
+            false,
+            None,
+            None,
+            None,
+            false,
+            DestinationTiming::new(201, 22),
+        ));
+        let actor = sim.substrate.entities.get(1).unwrap();
+        let runtime = actor.navigation.path_runtime;
+        if kind == LocomotorKind::Walk {
+            // Set_Destination_Internal 0x4D96C2..0x4D9707 re-arms both timers
+            // at the accepting frame and clears the blocked latch. The route
+            // installed at acceptance stands in for the first no-head Process
+            // FindPath, whose success continuation 0x75B2E2 stores 10 in +64C.
+            assert_eq!(runtime.movement_timer, CdTimer::started(201, 0));
+            assert_eq!(runtime.blocked_timer, CdTimer::started(201, 22));
+            assert!(!runtime.path_blocked);
+            assert_eq!(runtime.retries_left, 10);
+        } else {
+            // Non-Walk orders keep the established per-Process compatibility
+            // reset until their native timer producers are ported.
+            assert_eq!(runtime, FootPathRuntime::default());
+        }
+        assert_eq!(
+            actor.movement_target.as_ref().unwrap().final_goal,
+            Some((21, 10))
+        );
+    }
 }
 
 fn drive_ship_slope_process_tick(
@@ -745,6 +809,7 @@ fn gsi_04_05_production_drive_observes_premark_clear_cross_and_finish() {
             None,
             None,
             Some(cell_occupation),
+            crate::sim::movement::DestinationTiming::new(0, 60),
         )
     };
     assert!(issued);
@@ -980,7 +1045,8 @@ fn cell_arrival_infantry_keeps_detour_order_and_snapshot_continuation() {
         None,
         None,
         None,
-        false
+        false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     let initial_cell = (1, 1);
     let mut previous_cell = initial_cell;
@@ -1404,6 +1470,7 @@ fn gsi_06_02_cross_zone_move_order_is_accepted_and_moves_the_unit() {
             None,
             None,
             None,
+            crate::sim::movement::DestinationTiming::new(0, 60),
         ),
         "gamemd accepts a ground move order across a disconnected boundary"
     );
@@ -1480,6 +1547,7 @@ fn techno_playfield_false_mover_uses_flat_astar_instead_of_hierarchy_abort() {
         None,
         Some(bounds),
         None,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     let target = entities.get(1).unwrap().movement_target.as_ref().unwrap();
     assert_eq!(target.final_goal, Some((4, 0)));
@@ -1522,6 +1590,7 @@ fn gsi_04_05_second_mover_cannot_adopt_reserved_head_to_endpoint() {
         None,
         None,
         Some(&mut occupation),
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     assert_eq!(
         entities
@@ -1552,6 +1621,7 @@ fn gsi_04_05_second_mover_cannot_adopt_reserved_head_to_endpoint() {
         None,
         None,
         Some(&mut occupation),
+        crate::sim::movement::DestinationTiming::new(0, 60),
     );
     let second_goal = entities
         .get(2)
@@ -1864,6 +1934,7 @@ fn test_issue_move_command_sets_path() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     );
     assert!(result, "Should find a path on open grid");
 
@@ -1899,6 +1970,7 @@ fn test_issue_move_command_starts_drive_track_for_drive_locomotor() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     let entity = entities.get(1).expect("entity exists");
@@ -1969,6 +2041,7 @@ fn test_issue_move_command_starts_drive_track_for_initial_drive_turn() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     let entity = entities.get(1).expect("entity exists");
@@ -2008,6 +2081,7 @@ fn test_reissue_mid_curve_keeps_track_and_anchors_path_at_head() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     let entity = entities.get(1).expect("entity exists");
     let track_before = entity.drive_track.as_ref().expect("curve installed");
@@ -2039,6 +2113,7 @@ fn test_reissue_mid_curve_keeps_track_and_anchors_path_at_head() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     let entity = entities.get(1).expect("entity exists");
     let track_after = entity.drive_track.as_ref().expect("in-flight curve kept");
@@ -2101,6 +2176,7 @@ fn test_reissue_mid_curve_does_not_snap_position_backward() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     // Advance until the body sits visibly past its cell centre (sub_x 128)
@@ -2141,6 +2217,7 @@ fn test_reissue_mid_curve_does_not_snap_position_backward() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     let entity = entities.get(1).expect("entity exists");
     assert_eq!(
@@ -2182,6 +2259,7 @@ fn test_issue_move_command_no_path() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     );
     assert!(!result, "Should fail with blocked path");
     let entity = entities.get(1).expect("entity exists");
@@ -2210,6 +2288,7 @@ fn test_issue_move_command_queue_appends_waypoint_path() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     assert!(issue_move_command(
         &mut entities,
@@ -2222,6 +2301,7 @@ fn test_issue_move_command_queue_appends_waypoint_path() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     let entity = entities.get(1).expect("entity exists");
@@ -2259,6 +2339,7 @@ fn test_tick_movement_repaths_when_next_cell_becomes_blocked() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     // Simulate a dynamic blocker appearing on the immediate next step.
@@ -2368,8 +2449,16 @@ fn gsi_06_01_code_two_grace_window_still_repaths_at_urgency_one() {
         );
         let blocked = entities
             .get(1)
-            .and_then(|e| e.movement_target.as_ref())
-            .map(|t| (t.path_blocked, t.blocked_delay));
+            .filter(|e| e.movement_target.is_some())
+            .map(|e| {
+                (
+                    e.navigation.path_runtime.path_blocked,
+                    e.navigation
+                        .path_runtime
+                        .blocked_timer
+                        .remaining(native_frame as i32) as u16,
+                )
+            });
         if let Some((true, delay)) = blocked
             && repaths_on_first_blocked_tick.is_none()
         {
@@ -2507,8 +2596,16 @@ fn code_two_post_scatter_wait_rearms_on_every_pass_while_the_block_holds() {
         );
         let blocked = entities
             .get(1)
-            .and_then(|e| e.movement_target.as_ref())
-            .map(|t| (t.path_blocked, t.blocked_delay));
+            .filter(|e| e.movement_target.is_some())
+            .map(|e| {
+                (
+                    e.navigation.path_runtime.path_blocked,
+                    e.navigation
+                        .path_runtime
+                        .blocked_timer
+                        .remaining(native_frame as i32) as u16,
+                )
+            });
         match blocked {
             Some((true, delay)) => waits.push(delay),
             // Once the run has started, any gap means the fixture stopped
@@ -2722,16 +2819,15 @@ fn gsi_06_06_vehicle_clears_path_blocked_on_forward_progress() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     // Pretend a block already happened: the mover is impatient with a full
     // grace window still to run, and the lane ahead is now clear.
     {
-        let target = entities
-            .get_mut(1)
-            .and_then(|e| e.movement_target.as_mut())
-            .expect("movement target");
-        target.path_blocked = true;
-        target.blocked_delay = 60;
+        let entity = entities.get_mut(1).expect("mover");
+        assert!(entity.movement_target.is_some());
+        entity.navigation.path_runtime.path_blocked = true;
+        entity.navigation.path_runtime.start_blocked(0, 60, false);
     }
 
     let mut lifecycle_requests = Vec::new();
@@ -2751,12 +2847,10 @@ fn gsi_06_06_vehicle_clears_path_blocked_on_forward_progress() {
         );
     }
 
-    let target = entities
-        .get(1)
-        .and_then(|e| e.movement_target.as_ref())
-        .expect("mover still moving");
+    let entity = entities.get(1).expect("mover");
+    assert!(entity.movement_target.is_some(), "mover still moving");
     assert!(
-        !target.path_blocked,
+        !entity.navigation.path_runtime.path_blocked,
         "a vehicle that paid a track point must have its impatience flag cleared"
     );
 }
@@ -3057,6 +3151,7 @@ fn test_repath_cooldown_prevents_thrashing_on_unrecoverable_block() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     // Make the route truly unreachable — block the entire column 2 so no
@@ -3122,6 +3217,7 @@ fn test_dynamic_occupancy_repath_routes_around_stationary_blocker() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     // With blockage_path_delay_ticks=60, the mover must wait ~60 ticks after
@@ -3194,6 +3290,7 @@ fn test_stuck_recovery_clears_unreachable_movement_target() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     // path_stuck_counter starts at 10 (PATH_STUCK_INIT). Each failed repath
@@ -3264,6 +3361,7 @@ fn test_movement_tick_stats_report_blocked_attempts() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     let mut occupancy = OccupancyGrid::rebuild(&entities);
@@ -3488,6 +3586,7 @@ fn test_friendly_scatter_issues_move_command() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     let mut occupancy = OccupancyGrid::rebuild(&entities);
@@ -3739,6 +3838,7 @@ fn test_short_path_no_truncation() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     let entity = entities.get(1).expect("entity exists");
@@ -3771,6 +3871,7 @@ fn test_long_path_truncated_to_24_steps() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     let entity = entities.get(1).expect("entity exists");
@@ -3806,6 +3907,7 @@ fn test_segment_exhaustion_triggers_auto_repath() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     // Tick enough times to exhaust the first 24-step segment and auto-repath.
@@ -3856,6 +3958,7 @@ fn test_exact_24_step_path_no_repath_needed() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     let entity = entities.get(1).expect("entity exists");
@@ -3907,6 +4010,7 @@ fn test_auto_repath_fails_entity_stops() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     // After the path is issued, block column 25 completely so repath fails.
@@ -3962,6 +4066,7 @@ fn test_blocked_repath_uses_final_goal_not_segment_end() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     let entity = entities.get(1).expect("entity exists");
@@ -4141,6 +4246,7 @@ fn walk_infantry_corridor(grid: &PathGrid) -> (Vec<(u16, u16)>, Vec<(u16, u16)>)
             None,
             None,
             false,
+            crate::sim::movement::DestinationTiming::new(0, 60),
         ),
         "infantry must get a route down the corridor",
     );
@@ -4499,6 +4605,7 @@ fn test_initial_layered_path_avoids_friendly_building_footprint() {
         Some(&blocks), // entity_blocks
         None,          // entity_block_map
         false,         // mover_is_crusher
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     let entity = entities.get(1).expect("mover exists");
@@ -4554,6 +4661,7 @@ fn test_queued_drive_reissue_layered_path_avoids_friendly_building_footprint() {
         Some(&blocks),
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     assert!(issue_move_command(
         &mut entities,
@@ -4566,6 +4674,7 @@ fn test_queued_drive_reissue_layered_path_avoids_friendly_building_footprint() {
         Some(&blocks),
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     let entity = entities.get(1).expect("mover exists");
@@ -4644,6 +4753,7 @@ fn test_segment_exhaustion_repath_avoids_friendly_building_footprint() {
         None,
         None,
         false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
 
     // Tick until the first segment is exhausted and auto-repath fires. Capture
@@ -6088,7 +6198,8 @@ fn group_gis_do_not_acquire_scatter_speed_or_lose_their_goal() {
                 None,
                 None,
                 None,
-                false
+                false,
+                crate::sim::movement::DestinationTiming::new(0, 60),
             ));
         }
         let mut occupancy = OccupancyGrid::new();
@@ -6188,7 +6299,8 @@ fn blocked_walk_keeps_exact_pre_step_position() {
             None,
             None,
             None,
-            false
+            false,
+            crate::sim::movement::DestinationTiming::new(0, 60),
         ));
     }
     entities.get_mut(1).unwrap().position.sub_x = SimFixed::from_num(253);

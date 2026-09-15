@@ -44,10 +44,10 @@ fn fixture() -> (Simulation, RuleSet) {
         next_index: 1,
         speed: SimFixed::from_num(330),
         current_speed: SimFixed::from_num(330),
-        blocked_delay: 9,
         ..Default::default()
     });
     sim.interner = crate::sim::intern::test_interner();
+    entity.navigation.path_runtime.start_blocked(10, 9, false);
     sim.substrate.entities.insert(entity);
     sim.substrate.occupancy =
         crate::sim::occupancy::OccupancyGrid::rebuild(&sim.substrate.entities);
@@ -61,7 +61,14 @@ fn ordinary_object_turn_pays_multiple_points_and_runs_prefix_and_shp_once() {
     let entity = sim.substrate.entities.get(1).unwrap();
     assert!(outcome.movement.moved_steps >= 2);
     assert!(entity.drive_locomotion.as_ref().unwrap().track.cursor >= 2);
-    assert_eq!(entity.movement_target.as_ref().unwrap().blocked_delay, 8);
+    assert_eq!(
+        entity
+            .navigation
+            .path_runtime
+            .blocked_timer
+            .remaining(sim.session.binary_frame as i32),
+        8
+    );
     assert_eq!(entity.body_frame_counter, 1);
     assert_eq!(
         entity.drive_track.as_ref().unwrap().point_index,
@@ -139,7 +146,14 @@ fn accepted_chain_runs_sensor_callback_and_consumes_more_paid_points_in_same_obj
     assert_eq!(entity.sensor_deposit.unwrap().center, (9, 10));
     assert_ne!((entity.position.rx, entity.position.ry), (9, 10));
     assert!(outcome.movement.moved_steps >= 2);
-    assert_eq!(entity.movement_target.as_ref().unwrap().blocked_delay, 8);
+    assert_eq!(
+        entity
+            .navigation
+            .path_runtime
+            .blocked_timer
+            .remaining(sim.session.binary_frame as i32),
+        8
+    );
 }
 
 #[test]
@@ -165,7 +179,8 @@ fn command_prepared_track_applies_raw_head_once_even_without_a_paid_point_and_af
                 None,
                 None,
                 None,
-                false
+                false,
+                crate::sim::movement::DestinationTiming::new(0, 60),
             ));
             let pending = |entity: &GameEntity| {
                 if kind == LocomotorKind::Drive {
@@ -263,7 +278,8 @@ fn terminal_arrival_resets_owner_speed_before_next_accelerating_move() {
         None,
         None,
         None,
-        false
+        false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     let entity = sim.substrate.entities.get_mut(1).unwrap();
     entity.drive_accelerates = true;
@@ -301,7 +317,8 @@ fn ship_fresh_claim_survives_next_object_visit_and_snapshot_rebuild() {
         None,
         None,
         None,
-        false
+        false,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     sim.advance_live_object_turn(1, Some(&rules), techno_ai::ObjectAiCtx::default());
     let mark = sim

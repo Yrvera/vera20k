@@ -1274,7 +1274,10 @@ impl GameEntity {
             air_spatial_enter_order: stable_id,
             locomotor: None,
             movement_target: None,
-            navigation: NavigationState::default(),
+            navigation: NavigationState {
+                path_runtime: crate::sim::components::FootPathRuntime::at_frame(construction_frame),
+                ..NavigationState::default()
+            },
             foot_speed: crate::sim::components::FootSpeedState::default(),
             foot_occupation_enabled: true,
             foot_locomotor_swap_active: false,
