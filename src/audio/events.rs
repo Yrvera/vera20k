@@ -183,6 +183,13 @@ pub enum GameSoundEvent {
         source: Option<SoundSource>,
     },
 
+    /// One-shot positional overlay `CrushSound=` played by
+    /// `UnitClass::PerCellProcess @ 0x0073B04D` when a crusher flattens a wall.
+    WallCrushed {
+        sound_id: String,
+        source: Option<SoundSource>,
+    },
+
     /// Positional SFX from [AudioVisual] BuildingGarrisonedSound — plays at
     /// the building's screen position when the first occupant enters.
     BuildingGarrisonedSfx {
@@ -379,6 +386,7 @@ impl GameSoundEvent {
             | Self::ChronoTeleport { sound_id, .. }
             | Self::UnitPromoted { sound_id, .. }
             | Self::CloakSound { sound_id, .. }
+            | Self::WallCrushed { sound_id, .. }
             | Self::UiSound { sound_id }
             | Self::CreditTick { sound_id }
             | Self::BaseUnderAttackSfx { sound_id }
@@ -414,6 +422,7 @@ impl GameSoundEvent {
             | Self::ChronoTeleport { source, .. }
             | Self::UnitPromoted { source, .. }
             | Self::CloakSound { source, .. }
+            | Self::WallCrushed { source, .. }
             | Self::BuildingGarrisonedSfx { source, .. }
             | Self::C4Planted { source, .. }
             | Self::RefineryExitSfx { source, .. }

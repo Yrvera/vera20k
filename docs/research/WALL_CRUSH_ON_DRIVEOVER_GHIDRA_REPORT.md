@@ -2,8 +2,20 @@
 
 - **Date:** 2026-07-19
 - **Target:** What gamemd.exe does to a `Wall=yes` overlay when a crushing ground vehicle drives onto the cell.
-- **Status:** VERIFIED-from-binary (core mechanism); one offset (LocomotorType +0x5B4) carried from a cross-referenced doc, flagged below.
+- **Status:** VERIFIED-from-binary (core mechanism). The `+0x5B4` read is direct in the block (`0x0073B02D CMP [EAX+0x5B4],0xC`, re-read 2026-09-15); the enum value `0xC == Drive` remains doc-carried.
 - **Authority order:** binary → Ghidra → docs. Read-only; no Rust edits.
+
+> **Status 2026-09-15.** The Rust movement crush path now covers this report:
+> `Simulation::apply_wall_crush_on_driveover` (`src/sim/world/mod.rs`) removes the
+> overlay by the forced `-1` route, the `Crushable=` clause is modelled (a
+> `Crushable=yes` fence or sandbag falls to any `Crusher=`, whatever the
+> locomotor; a plain `Wall=` still needs Drive), and the sound cue is resolved:
+> `0x0073B045 MOV ECX,[ESI+0x1F0]` is the OverlayType's `CrushSound=` (the
+> `[CAFNCB]`-family sections carry `CrushSound=WallCrushBlack` etc.), queued as
+> `SimSoundEvent::WallCrushed` at the crusher's coordinates. Still open: the
+> post-movement sweep runs once per frame rather than inside the per-cell entry
+> callback; `RockingForwardsPerFrame += 0.02` (`0x0073B05B`) has no renderer;
+> the `HasWeaponAbility(0x11)` arm is unmodelled (no stock type grants it).
 
 ## TL;DR / Verdict
 
@@ -55,7 +67,7 @@ if ( ( TechnoType->Crusher(+0xD28) != 0  ||  TechnoClass__HasWeaponAbility(0x11)
            || ( OverlayType->Wall(+0x2A8) != 0  &&  TechnoType->LocomotorType(+0x5B4) == 0xC ) ) )
 {
     GetCoords(&coords);
-    VocClass__PlayAt(...);              // sound cue at the unit's coords (exact Voc unresolved)
+    VocClass__PlayAt(OverlayType->CrushSound(+0x1F0), coords);   // 0x0073B045..B04D; `CrushSound=` parsed by ObjectTypeClass::ReadINI 0x005F93A0..B5
     CellClass__DestroyOverlay(-1);      // forced, instant wall removal
     self->RockingForwardsPerFrame += 0.02;   // small forward tilt (cosmetic)
     self[1].field_0x195 = 0;
@@ -95,7 +107,7 @@ No INTERNAL-ONLY escape applies — this is a player-visible output (wall vanish
 
 1. **Gate:** the mover has `Crusher=yes` (existing `CrushCapability.regular_crusher`, from TechnoType+0xD28) **OR** the wall-destroy weapon ability, **AND** it is a ground/drive vehicle (LocomotorType Drive), **AND** the destination cell has a wall overlay (reuse `combat::cell_has_wall_overlay`). For a `Crushable=yes` overlay the drive-locomotor clause is not required.
 2. **Effect:** remove the wall overlay from the resolved-terrain / overlay grid **immediately** (equivalent to `DestroyOverlay(-1)` forced removal — do **not** route through the probabilistic weapon damage). Recompute anything the port derives from wall overlays (zone/passability recalc for that cell + neighbors, wall-connectivity render frames, any ore-neighbor bookkeeping) to match `DestroyOverlay`'s cleanup.
-3. **Sound:** emit the wall-crush Voc cue at the unit's cell (mirrors `VocClass__PlayAt`). Exact Voc index unresolved — pick the overlay/rules wall-crush sound; flag for a follow-up sound-parity pass.
+3. **Sound:** emit the overlay type's `CrushSound=` (`OverlayType+0x1F0`, resolved through `VocClass::FindByName` in `ObjectTypeClass::ReadINI 0x005F93A0..B5`) at the unit's coordinates. Done: `SimSoundEvent::WallCrushed`.
 4. **No unit damage.** The vehicle takes none.
 5. **Cosmetic (optional, lower priority):** apply a small forward tilt (`RockingForwardsPerFrame += 0.02`) if the port models vehicle rocking.
 
@@ -103,6 +115,7 @@ No INTERNAL-ONLY escape applies — this is a player-visible output (wall vanish
 
 ## Remaining uncertainty
 
-- **LocomotorType `+0x5B4 == 0xC (Drive)`**: used identically in both the `Can_Enter_Cell` and `PerCellProcess` wall branches; the offset/value are carried from `docs/research/pathfinding/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md` (field table) and not independently re-derived this session. Low risk for the verdict (BFRT and all stock wall-crushers are drive vehicles).
-- **`HasWeaponAbility(0x11)`**: the alternate gate to `Crusher=`; ability index 0x11 not decoded here. Stock BFRT satisfies the `Crusher=` gate regardless, so this does not affect the primary case.
-- **Exact Voc sound** played by the movement path is unresolved.
+- **LocomotorType `+0x5B4 == 0xC (Drive)`**: the offset is read directly in both the `Can_Enter_Cell` and `PerCellProcess` wall branches; the enum value `0xC == Drive` is still carried from `docs/research/pathfinding/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md` and not re-derived. Low risk for the verdict (BFRT and all stock wall-crushers are drive vehicles).
+- **`HasWeaponAbility(0x11)`**: the alternate gate to `Crusher=`; 0x11 is `Ability::Crusher` in VERA's table. No stock type grants it through `VeteranAbilities=`/`EliteAbilities=`, so it is not modelled.
+- **`[unit+0x6B5] = 0`** at `0x0073B067`: the Drive/Ship crush clamp byte (set at `0x004B1A2F`/`0x006A1071`, read by `Process_Drive_Track 0x004B1146` and `RockingUpdate 0x0070BA13`) is cleared on the crush. VERA does not model that byte, so the clear has no Rust counterpart.
+- **Sound**: resolved 2026-09-15 — `OverlayType+0x1F0` is `CrushSound=`.

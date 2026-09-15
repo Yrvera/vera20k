@@ -109,6 +109,10 @@ pub struct OverlayTypeFlags {
     pub chain_reaction: bool,
     /// Wall=yes — rendered with unit palette, gets -12px Y offset.
     pub wall: bool,
+    /// `CrushSound=` -> `OverlayTypeClass+0x1F0`: the Voc `UnitClass::PerCellProcess
+    /// @ 0x0073B045..B04D` plays at the crusher's coordinates when it flattens
+    /// the overlay. `None` when the key is absent (an invalid Voc is silence).
+    pub crush_sound: Option<String>,
     /// `DrawFlat=` -> OverlayTypeClass+0x2B3. The ordinary non-wall
     /// `CellClass::DrawOverlay_Body @ 0x0047F6A0` selects gradient 0 when
     /// true and gradient 2 when false. Native walls force gradient 2.
@@ -192,6 +196,7 @@ impl Default for OverlayTypeFlags {
             tiberium: false,
             chain_reaction: false,
             wall: false,
+            crush_sound: None,
             draw_flat: true,
             armor_is_wood: false,
             is_veins: false,
@@ -313,8 +318,7 @@ impl OverlayTypeRegistry {
         let clear_speed_costs = clear_semantics.map(|semantics| semantics.speed_costs);
         let clear_ground_blocked =
             clear_semantics.is_some_and(|semantics| semantics.ground_blocked);
-        let clear_build_blocked =
-            clear_semantics.is_some_and(|semantics| !semantics.buildable);
+        let clear_build_blocked = clear_semantics.is_some_and(|semantics| !semantics.buildable);
         // `OverlayTypeClass::ReadINI @ 0x005FE770` uses
         // `AnimTypeClass::FindByName`: an unknown CellAnim name leaves +0x29C
         // null rather than becoming an unresolved filename.
@@ -370,6 +374,11 @@ impl OverlayTypeRegistry {
                     tiberium,
                     chain_reaction: type_section.get_bool("ChainReaction").unwrap_or(false),
                     wall: type_section.get_bool("Wall").unwrap_or(false),
+                    crush_sound: type_section
+                        .get("CrushSound")
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string),
                     draw_flat: type_section.get_bool("DrawFlat").unwrap_or(true),
                     armor_is_wood: type_section
                         .get("Armor")
