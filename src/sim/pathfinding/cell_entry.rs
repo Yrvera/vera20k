@@ -1449,6 +1449,35 @@ mod tests {
         ally
     }
 
+    /// The hover consumer of the arm: `HoverLocomotionClass` inherits the base
+    /// `+0xA4` (`0x004B6640`, always false), so a hover ally is skipped exactly
+    /// while its Foot occupation enable is clear (in transit, `0x005147D5`) and
+    /// raises code 2 once the arrival arm (`0x0051451E`) or a refused step has
+    /// set it again.
+    #[test]
+    fn classify_blocker_skips_a_hover_ally_only_while_it_is_in_transit() {
+        use crate::rules::locomotor_type::LocomotorKind;
+        use crate::sim::movement::locomotor::LocomotorState;
+        let mut entities = EntityStore::new();
+        for (id, in_transit) in [(100u64, true), (101, false)] {
+            let mut hover = moving_ally(id, 11 + (id - 100) as u16, 10, 192, in_transit);
+            hover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Hover));
+            entities.insert(hover);
+        }
+        let alliances = HouseAllianceMap::new();
+        let interner = crate::sim::intern::test_interner();
+        assert_eq!(
+            classify_blocker(100, None, "Americans", &entities, &alliances, &interner),
+            CellEntryResult::Clear,
+            "hover in transit: skipped"
+        );
+        assert_eq!(
+            classify_blocker(101, None, "Americans", &entities, &alliances, &interner),
+            CellEntryResult::TemporaryBlock { blocker_id: 101 },
+            "hover with its enable set: code 2"
+        );
+    }
+
     /// `0x0073FA2C..FA7C`: an in-transit ally whose locomotor answers false on
     /// slot `+0xA4` is skipped (no code); a standing moving ally still raises
     /// code 2; an infantryman takes the locomotor question whatever its transit
