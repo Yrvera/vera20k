@@ -359,10 +359,12 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                     sfx.play_sound_spatial(stop_sound_id, gain, registry, assets, audio_indices);
                 }
             }
-            GameSoundEvent::CloakSound { sound_id, source } => {
-                // RulesClass::ReadAudioVisual @ 0x006691E0 stores only the
-                // VocClass::FindByName @ 0x007514D0 result. An invalid name is
-                // silent; it must not enter the generic raw audio-bag fallback.
+            GameSoundEvent::CloakSound { sound_id, source }
+            | GameSoundEvent::WallCrushed { sound_id, source } => {
+                // RulesClass::ReadAudioVisual @ 0x006691E0 (CloakSound) and
+                // ObjectTypeClass::ReadINI @ 0x005F93B5 (CrushSound) store only
+                // the VocClass::FindByName @ 0x007514D0 result. An invalid name
+                // is silent; it must not enter the generic raw audio-bag fallback.
                 if registry.get(sound_id).is_none() {
                     continue;
                 }

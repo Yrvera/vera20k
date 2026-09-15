@@ -366,6 +366,17 @@ pub enum SimSoundEvent {
         sub_y: SimFixed,
         world_z_leptons: i32,
     },
+    /// `UnitClass::PerCellProcess @ 0x0073B036..B04D`: a crusher flattened the
+    /// overlay under it and played the overlay type's `CrushSound=`
+    /// (`OverlayTypeClass+0x1F0`) positionally at its own coordinates.
+    WallCrushed {
+        sound_id: String,
+        rx: u16,
+        ry: u16,
+        sub_x: SimFixed,
+        sub_y: SimFixed,
+        world_z_leptons: i32,
+    },
     /// `TechnoClass::AI_Update @ 0x006FA054..0x006FA145` crossed a rank.
     ///
     /// Native plays `[AudioVisual] UpgradeVeteranSound=`/`UpgradeEliteSound=`
@@ -657,10 +668,25 @@ impl SimSoundEvent {
             ry: position.ry,
             sub_x: position.sub_x,
             sub_y: position.sub_y,
-            world_z_leptons: position.exact_z_leptons.unwrap_or_else(|| {
-                i32::from(position.z).wrapping_mul(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS)
-            }),
+            world_z_leptons: Self::world_z_leptons(position),
         }
+    }
+
+    pub(crate) fn wall_crushed(sound_id: String, position: &Position) -> Self {
+        Self::WallCrushed {
+            sound_id,
+            rx: position.rx,
+            ry: position.ry,
+            sub_x: position.sub_x,
+            sub_y: position.sub_y,
+            world_z_leptons: Self::world_z_leptons(position),
+        }
+    }
+
+    fn world_z_leptons(position: &Position) -> i32 {
+        position.exact_z_leptons.unwrap_or_else(|| {
+            i32::from(position.z).wrapping_mul(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS)
+        })
     }
 }
 
@@ -5151,22 +5177,26 @@ impl Simulation {
     /// probabilistic weapon/warhead wall damage (the crush deals no unit damage
     /// and skips the Strength dice roll).
     ///
-    /// The gate is exactly the `Crusher=` flag (not `OmniCrusher=`, which governs
-    /// unit-vs-unit crushing) plus a Drive locomotor over a wall cell. In stock
-    /// YR only the Battle Fortress routes *through* walls (`MovementZone=
-    /// CrusherAll`), but any Crusher drive vehicle that ends up on a wall cell
-    /// crushes it. A crusher can only occupy an intact wall cell on the tick it
-    /// enters (walls block non-crushers), and the wall is removed that same tick,
-    /// so this self-limits to one destruction per wall with no per-tick re-fire.
+    /// The gate is `UnitClass::PerCellProcess @ 0x0073AFD4..B074`: the
+    /// `Crusher=` flag (not `OmniCrusher=`, which governs unit-vs-unit crushing)
+    /// over a `Crushable=` overlay, or over a `Wall=` overlay with the Drive
+    /// locomotor. Fences and sandbags (`Crushable=yes`) fall to any crusher that
+    /// reaches them; concrete walls only to a Drive crusher, and in stock YR only
+    /// the Battle Fortress routes *through* those (`MovementZone=CrusherAll`).
+    /// A crusher can only occupy an intact wall cell on the tick it enters, and
+    /// the wall is removed that same tick, so this self-limits to one
+    /// destruction per wall with no per-tick re-fire.
     ///
-    /// Runs immediately after Phase-1 ground movement, before vision. Reuses the
-    /// shared `apply_wall_damage_events` path so overlay clear, cardinal
-    /// neighbor connectivity cleanup, and chain reaction match weapon damage.
+    /// Runs immediately after Phase-1 ground movement, before vision, rather
+    /// than inside the per-cell entry callback (recorded ordering difference).
+    /// Reuses the shared `apply_wall_damage_events` path so overlay clear,
+    /// cardinal neighbor connectivity cleanup, and chain reaction match weapon
+    /// damage, and queues the overlay type's `CrushSound=` at the crusher.
     ///
-    /// Parity follow-up: gamemd also plays a Voc cue and adds a small forward
-    /// rocking tilt on the crush; the exact Voc index is unresolved
-    /// (`docs/research/WALL_CRUSH_ON_DRIVEOVER_GHIDRA_REPORT.md` §5), so the sound
-    /// and cosmetic tilt are deferred rather than approximated with a wrong cue.
+    /// Residuals: the `RockingForwardsPerFrame += 0.02` tilt (`0x0073B05B`) has
+    /// no rendering consumer in VERA and is not written; the crush-clamp byte
+    /// `Foot+0x6B5` that `0x0073B067` clears is not modelled at all; the CRUSHER
+    /// weapon ability arm is not modelled (no stock type grants it).
     pub(crate) fn apply_wall_crush_on_driveover(
         &mut self,
         rules: Option<&RuleSet>,
@@ -5184,29 +5214,51 @@ impl Simulation {
         // keeps this deterministic; the per-cell dedup means two crushers on one
         // cell emit a single forced-destruction event.
         let mut events: Vec<WallDamageEvent> = Vec::new();
+        let mut sounds: Vec<SimSoundEvent> = Vec::new();
         let mut seen: BTreeSet<(u16, u16)> = BTreeSet::new();
         for (_id, e) in self.substrate.entities.iter_sorted() {
+            // `0x0073AFEB..B000`: `Crusher=` (`TechnoType+0xD28`) or the CRUSHER
+            // weapon ability (`HasWeaponAbility(0x11)`). No stock type grants
+            // the ability through `VeteranAbilities=`/`EliteAbilities=`, so only
+            // the flag is modelled here.
             if !e.regular_crusher || !e.is_active() {
                 continue;
             }
-            // Wall crush requires the Drive locomotor (gamemd LocomotorType ==
-            // Drive); check the primary kind so a transient piggyback (e.g. the
-            // chrono-miner's temporary Drive) does not change the gate.
-            if e.locomotor.as_ref().map(|l| l.effective_kind()) != Some(LocomotorKind::Drive) {
-                continue;
-            }
             let (rx, ry) = (e.position.rx, e.position.ry);
-            let has_wall = grid
+            let Some(flags) = grid
                 .cell(rx, ry)
                 .overlay_id
                 .and_then(|oid| registry.flags(oid))
-                .is_some_and(|f| f.wall);
-            if has_wall && seen.insert((rx, ry)) {
+            else {
+                continue;
+            };
+            // `0x0073B013..B034`: a `Crushable=` overlay is crushed by any
+            // crusher; a `Wall=` overlay additionally needs the Drive
+            // locomotor (`TechnoType+0x5B4 == 0xC`). Check the primary kind so
+            // a transient piggyback (e.g. the chrono-miner's temporary Drive)
+            // does not change the gate.
+            let drive = e.locomotor.as_ref().map(|l| l.effective_kind()) == Some(LocomotorKind::Drive);
+            if !(flags.crushable || (flags.wall && drive)) {
+                continue;
+            }
+            // `CellClass::DestroyOverlay @ 0x00480CB0` acts only on a `Wall=`
+            // overlay; the sound cue precedes it and does not depend on it.
+            // This sweep runs every frame rather than once per cell entry, so a
+            // non-wall crushable overlay would re-fire its cue each frame; no
+            // stock overlay carries `Crushable=yes` without `Wall=yes` and a
+            // sound, so the cue is gated on the wall removal here (recorded).
+            if flags.wall && seen.insert((rx, ry)) {
+                if let Some(sound_id) = flags.crush_sound.as_ref() {
+                    // `0x0073B045..B04D`: the overlay type's `CrushSound=` at
+                    // the crusher's own coordinates.
+                    sounds.push(SimSoundEvent::wall_crushed(sound_id.clone(), &e.position));
+                }
                 // damage == -1 = forced instant removal, bypassing the
                 // probabilistic Strength gate the weapon path uses.
                 events.push(WallDamageEvent { rx, ry, damage: -1 });
             }
         }
+        self.sound_events.extend(sounds);
 
         if events.is_empty() {
             return;

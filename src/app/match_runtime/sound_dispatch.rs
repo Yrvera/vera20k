@@ -177,6 +177,26 @@ pub(super) fn dispatch_sim_sound_events(
                 sub_y,
                 world_z_leptons,
             } => cloak_sound_for_app(sound_id, rx, ry, sub_x, sub_y, world_z_leptons),
+            SimSoundEvent::WallCrushed {
+                sound_id,
+                rx,
+                ry,
+                sub_x,
+                sub_y,
+                world_z_leptons,
+            } => {
+                let (sx, sy) = crate::util::lepton::lepton_to_screen_exact_z(
+                    rx,
+                    ry,
+                    sub_x,
+                    sub_y,
+                    world_z_leptons,
+                );
+                GameSoundEvent::WallCrushed {
+                    sound_id,
+                    source: Some(SoundSource::new((sx, sy), (rx, ry))),
+                }
+            }
             SimSoundEvent::BuildingComplete { owner } => {
                 // Only play EVA for the local player's production.
                 let owner_str = sim.interner.resolve(owner);

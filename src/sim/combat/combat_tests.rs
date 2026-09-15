@@ -6034,6 +6034,99 @@ fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
     );
 }
 
+/// `UnitClass::PerCellProcess @ 0x0073B013..B034`: a `Crushable=yes` overlay
+/// (fences, sandbags) falls to any crusher whatever its locomotor, a plain
+/// `Wall=yes` overlay only to a Drive crusher; the overlay type's
+/// `CrushSound=` is queued at the crusher (`0x0073B045..B04D`).
+#[test]
+fn crushable_fence_falls_to_any_crusher_and_plays_its_crush_sound() {
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n0=ROBO\n1=BFRT\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n0=GAWALL\n1=CAFNCB\n\
+         [OverlayTypes]\n0=GASAND\n1=CYCL\n2=GAWALL\n3=CAFNCB\n\
+         [GAWALL]\nStrength=400\nArmor=concrete\nWall=yes\nDamageLevels=4\n\
+         [CAFNCB]\nStrength=100\nArmor=wood\nWall=yes\nCrushable=yes\nCrushSound=WallCrushBlack\n\
+         [ROBO]\nCrusher=yes\nLocomotor={4A582742-9839-11D1-B709-00A024DDAFD1}\n\
+         [BFRT]\nCrusher=yes\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n",
+    );
+    let rules = RuleSet::from_ini(&ini).expect("rules parse");
+    let registry = OverlayTypeRegistry::from_ini(&ini, None);
+    assert_eq!(
+        registry.flags(3).and_then(|f| f.crush_sound.as_deref()),
+        Some("WallCrushBlack")
+    );
+
+    let build = |veh_type: &str, overlay_id: u8| -> Simulation {
+        let mut sim = Simulation::new();
+        let mut grid = OverlayGrid::new(10, 10);
+        grid.place_overlay(5, 5, overlay_id, 0);
+        sim.overlay_grid = Some(grid);
+        let owner_id = sim.interner.intern("Test");
+        let obj = rules.object(veh_type).expect("veh object");
+        let veh_type_id = sim.interner.intern(veh_type);
+        let mut veh = GameEntity::test_default(2, veh_type, "Test", 5, 5);
+        veh.owner = owner_id;
+        veh.type_ref = veh_type_id;
+        veh.regular_crusher = obj.crusher;
+        veh.locomotor =
+            Some(crate::sim::movement::locomotor::LocomotorState::from_object_type(obj, 0, 0));
+        sim.substrate.entities.insert(veh);
+        sim.substrate.entities.rebuild_owner_index();
+        sim
+    };
+    let wall_present = |sim: &Simulation| -> bool {
+        sim.overlay_grid
+            .as_ref()
+            .unwrap()
+            .cell(5, 5)
+            .overlay_id
+            .is_some()
+    };
+    let crush_sounds = |sim: &Simulation| -> Vec<String> {
+        sim.sound_events
+            .iter()
+            .filter_map(|event| match event {
+                crate::sim::world::SimSoundEvent::WallCrushed {
+                    sound_id, rx, ry, ..
+                } => {
+                    assert_eq!((*rx, *ry), (5, 5));
+                    Some(sound_id.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    // Hover crusher over a crushable fence: crushed, cue queued.
+    let mut sim = build("ROBO", 3);
+    sim.apply_wall_crush_on_driveover(Some(&rules), Some(&registry));
+    sim.flush_pending_delete();
+    assert!(
+        !wall_present(&sim),
+        "a crushable fence falls to a hover crusher"
+    );
+    assert_eq!(crush_sounds(&sim), vec!["WallCrushBlack".to_string()]);
+
+    // Hover crusher over a concrete wall: the wall arm needs Drive.
+    let mut sim = build("ROBO", 2);
+    sim.apply_wall_crush_on_driveover(Some(&rules), Some(&registry));
+    sim.flush_pending_delete();
+    assert!(wall_present(&sim), "a plain wall needs a Drive crusher");
+    assert!(crush_sounds(&sim).is_empty());
+
+    // Drive crusher over a concrete wall without a CrushSound: crushed, silent.
+    let mut sim = build("BFRT", 2);
+    sim.apply_wall_crush_on_driveover(Some(&rules), Some(&registry));
+    sim.flush_pending_delete();
+    assert!(!wall_present(&sim));
+    assert!(
+        crush_sounds(&sim).is_empty(),
+        "no CrushSound= means silence"
+    );
+}
+
 /// Build a Simulation with a row of GAWALL at `(rx_range, ry)`. Each cell gets
 /// both an OverlayCell entry and a matching wall GameEntity.
 fn build_minimal_sim_with_gawall_row(
