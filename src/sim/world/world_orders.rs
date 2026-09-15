@@ -883,8 +883,17 @@ impl Simulation {
             .as_ref()
             .map(|info| info.speed)
             .unwrap_or(ra2_speed_to_leptons_per_second(4));
-        if movement::issue_direct_move(&mut self.substrate.entities, attacker_id, entry_cell, speed)
-        {
+        let timing = movement::DestinationTiming::new(
+            self.session.binary_frame,
+            self.blockage_path_delay_ticks,
+        );
+        if movement::issue_direct_move(
+            &mut self.substrate.entities,
+            attacker_id,
+            entry_cell,
+            speed,
+            timing,
+        ) {
             if let Some(target) = self
                 .substrate
                 .entities

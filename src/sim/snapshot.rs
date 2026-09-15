@@ -474,16 +474,16 @@ use crate::sim::world::Simulation;
 // v152 stores Foot occupation enable, pending fresh Apply1, and Ship head/handoff
 // projection metadata alongside the existing serialized raw occupation plane.
 // Drive END permission and the distinct Foot forced-swap gate are retained too.
-// v153-155 introduced bridge Walk/Hover head and destination XYZ, Walk moving,
-// Jumpjet cached XYZ/moving/phase (including stashes), and raw Infantry house IDs.
-// v156 introduced current-house input; v157 combined it with the bridge layout.
-// v158 was an unpublished bridge membership/history layout. Main v159 persists
-// actual Cell membership/order, discovery history and the exact Sight==0 predicate.
-// v160 combines published bridge v157 with all main v159 authorities. None of
-// the earlier branch-local or main layouts can be decoded as this combined schema.
-// v161 moves the two Foot path timers, blocked latch and dword retry count
+// v156 persists current-house process input. Versions153-155 belong to
+// the separate unmerged bridge locomotor layouts; do not accept those saves.
+// v159 persists actual Cell membership/order, discovery history and the exact
+// immutable Sight==0 predicate. Versions157-158 belong to the bridge branch.
+// v160 moves the two Foot path timers, blocked latch and dword retry count
 // from MovementTarget into persistent NavigationState.
-// Earlier snapshots do not contain these surviving fields or timer anchors.
+// v161 adds the bridge locomotor instance state (Walk head/destination/moving
+// bytes, Hover head, Jumpjet cached XYZ/moving/phase, including stashes) and
+// raw Infantry house identities. None of the earlier branch-local layouts can
+// be decoded as this combined schema.
 const SNAPSHOT_VERSION: u32 = 161;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";

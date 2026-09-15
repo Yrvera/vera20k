@@ -312,7 +312,9 @@ fn issue_pad_move(sim: &mut Simulation, rules: &RuleSet, id: u64, target: (u16, 
         .resolve_move_info(id, Some(rules))
         .map(|info| info.speed)
         .unwrap_or_else(|| ra2_speed_to_leptons_per_second(4));
-    if movement::issue_direct_move(&mut sim.substrate.entities, id, target, speed) {
+    let timing =
+        movement::DestinationTiming::new(sim.session.binary_frame, sim.blockage_path_delay_ticks);
+    if movement::issue_direct_move(&mut sim.substrate.entities, id, target, speed, timing) {
         if let Some(target) = sim
             .substrate
             .entities

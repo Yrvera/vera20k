@@ -394,7 +394,13 @@ const SLICE6_BASELINE_HASH_PRE_CELL_MEMBERSHIP_V159: u64 = 0x7637_05BF_7622_B9E4
 // The immediately preceding composition is asserted below against the old
 // current pin; all historical, replay/path and RNG tripwires remain intact.
 // This is a Rust hash-composition ratchet, not a new native golden.
-const SLICE6_BASELINE_HASH: u64 = 0x03D4_E834_53AE_D084;
+const SLICE6_BASELINE_HASH_PRE_FOOT_PATH_RUNTIME_V160: u64 = 0x03D4_E834_53AE_D084;
+// Schema160 moves the two Foot path timers, blocked latch and dword retry count
+// into NavigationState::path_runtime and hashes that owner instead of the former
+// positional MovementTarget fields. The immediately preceding composition is
+// asserted below against the old current pin; every older probe, replay/path
+// and RNG tripwire remains intact. Rust hash-composition ratchet, not a native golden.
+const SLICE6_BASELINE_HASH: u64 = 0xFEBF_741A_3312_02CA;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -523,6 +529,12 @@ fn replay_hash_stable_through_slice6() {
     assert_eq!(
         pre_membership_hash, SLICE6_BASELINE_HASH_PRE_CELL_MEMBERSHIP_V159,
         "immediately preceding main hash changed beyond schema159 composition"
+    );
+    let pre_foot_runtime_hash = sim.state_hash_without_foot_path_runtime_v160();
+    println!("[schema160] pre160={pre_foot_runtime_hash:016X} current={hash:016X}");
+    assert_eq!(
+        pre_foot_runtime_hash, SLICE6_BASELINE_HASH_PRE_FOOT_PATH_RUNTIME_V160,
+        "immediately preceding main hash changed beyond schema160 composition"
     );
     assert_eq!(
         hash, SLICE6_BASELINE_HASH,

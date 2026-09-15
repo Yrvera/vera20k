@@ -633,7 +633,13 @@ const GLOBAL_HARNESS_FINAL_HASH_PRE_CELL_MEMBERSHIP_V159: u64 = 0x2E70_C299_3112
 // The immediately preceding composition is asserted below against the old
 // current pin; all historical, replay/path and RNG tripwires remain intact.
 // This is a Rust hash-composition ratchet, not a new native golden.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xB2C9_657E_01DE_8AB1;
+const GLOBAL_HARNESS_FINAL_HASH_PRE_FOOT_PATH_RUNTIME_V160: u64 = 0xB2C9_657E_01DE_8AB1;
+// Schema160 moves the two Foot path timers, blocked latch and dword retry count
+// into NavigationState::path_runtime and hashes that owner instead of the former
+// positional MovementTarget fields. The immediately preceding composition is
+// asserted below against the old current pin; every older probe, replay/path
+// and RNG tripwire remains intact. Rust hash-composition ratchet, not a native golden.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xE35B_015C_A0C0_3DE7;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -1005,6 +1011,12 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     assert_eq!(
         pre_membership_hash, GLOBAL_HARNESS_FINAL_HASH_PRE_CELL_MEMBERSHIP_V159,
         "immediately preceding main hash changed beyond schema159 composition"
+    );
+    let pre_foot_runtime_hash = rep.state_hash_without_foot_path_runtime_v160();
+    println!("[schema160] pre160={pre_foot_runtime_hash:016X} current={final_hash:016X}");
+    assert_eq!(
+        pre_foot_runtime_hash, GLOBAL_HARNESS_FINAL_HASH_PRE_FOOT_PATH_RUNTIME_V160,
+        "immediately preceding main hash changed beyond schema160 composition"
     );
     assert_eq!(
         final_hash, GLOBAL_HARNESS_FINAL_HASH,

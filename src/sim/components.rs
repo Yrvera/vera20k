@@ -307,10 +307,11 @@ pub struct NavigationState {
     pub pending_arrival_clear: bool,
 }
 
-/// Persistent Foot path state. Constructor4D331A..3361 anchors both timers
-/// at the current frame, sets +64C to10 and +6B7 tofalse (4D3451).
-/// Walk failure4D4016 and null destination4D96F0 update this owner even when
-/// no MovementTarget exists. Native comparisons: walk_failed_path.
+/// Persistent Foot path state. The FootClass constructor 0x004D31E0 anchors
+/// both timers at the current frame (0x4D3320, 0x4D335B), stores +64C = 10
+/// (0x4D332C) and +6B7 = 0 (0x4D3451). Set_Destination_Internal 0x004D94B0
+/// rewrites the timers and latch at 0x4D96C2..0x4D9707 for every accepted
+/// setter, including a null destination, so this owner outlives MovementTarget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct FootPathRuntime {
     /// Foot+640/+648, including the native frame anchor.
@@ -319,7 +320,7 @@ pub struct FootPathRuntime {
     pub blocked_timer: crate::sim::timer::CdTimer,
     /// Foot+6B7.
     pub path_blocked: bool,
-    /// Foot+64C is a dword; values256/FFFFFFFF are retained by native.
+    /// Foot+64C, a dword decremented only while nonzero.
     pub retries_left: u32,
 }
 

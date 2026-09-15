@@ -1152,6 +1152,7 @@ mod tests {
         let mut facing = 0;
         let mut rng = crate::sim::rng::SimRng::new(0);
 
+        let mut path_runtime = crate::sim::components::FootPathRuntime::default();
         assert!(try_repath_after_block(
             &mut target,
             &mut path_runtime,

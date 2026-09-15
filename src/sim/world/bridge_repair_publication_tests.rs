@@ -139,7 +139,11 @@ fn slave_master_admission_reaches_head_selection_in_the_same_object_turn() {
             &mut sim.substrate.entities,
             slave,
             (16, 15),
-            SimFixed::from_num(150)
+            SimFixed::from_num(150),
+            crate::sim::movement::DestinationTiming::new(
+                sim.session.binary_frame,
+                sim.blockage_path_delay_ticks,
+            ),
         ));
         sim.mission_assign_exact(
             slave,
@@ -848,7 +852,11 @@ fn ready_engineer(
         &mut sim.substrate.entities,
         id,
         (16, 15),
-        crate::util::fixed_math::SimFixed::from_num(61)
+        crate::util::fixed_math::SimFixed::from_num(61),
+        crate::sim::movement::DestinationTiming::new(
+            sim.session.binary_frame,
+            sim.blockage_path_delay_ticks,
+        ),
     ));
     sim.mission_assign_exact(
         id,

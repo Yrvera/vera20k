@@ -472,6 +472,22 @@ impl Simulation {
         self.state_hash_with_schema(HashSchema::Before(159))
     }
 
+    /// Test-only provenance probe for the schema160 Foot path runtime
+    /// rebaseline: the retained timers/latch/count are projected back into the
+    /// former positional MovementTarget encoding instead of hashed as an owner.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_foot_path_runtime_v160(&self) -> u64 {
+        self.state_hash_with_schema(HashSchema::Before(160))
+    }
+
+    /// Test-only provenance probe for the schema161 bridge locomotor/raw
+    /// Dummy rebaseline: projects out only the schema161 payload and Dummy
+    /// composition. It cannot reverse the raw Infantry owner identity change.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_bridge_locomotor_v161(&self) -> u64 {
+        self.state_hash_with_schema(HashSchema::Before(161))
+    }
+
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
     ///
     /// It retains lifecycle-v28 fields and reconstructs the exact prior
@@ -4195,7 +4211,7 @@ mod infantry_hash_tests {
         let actor = infantry_entity(&mut sim);
         sim.substrate.entities.insert(actor);
         let before = sim.state_hash();
-        let previous = sim.state_hash_with_schema(super::HashSchema::Before(161));
+        let previous = sim.state_hash_with_schema(super::HashSchema::Before(160));
         let retained = FootPathRuntime {
             movement_timer: CdTimer::from_raw(-1, -7),
             blocked_timer: CdTimer::from_raw(i32::MAX - 2, 31),
@@ -4210,7 +4226,7 @@ mod infantry_hash_tests {
             .path_runtime = retained;
         assert_ne!(sim.state_hash(), before);
         assert_eq!(
-            sim.state_hash_with_schema(super::HashSchema::Before(161)),
+            sim.state_hash_with_schema(super::HashSchema::Before(160)),
             previous
         );
         let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "foot-path", 0);
@@ -4725,7 +4741,7 @@ mod passenger_cargo_hash_tests {
 }
 
 #[cfg(test)]
-mod bridge160_hash_projection_tests {
+mod bridge161_hash_projection_tests {
     use super::*;
     use crate::map::entities::EntityCategory;
     use crate::rules::locomotor_type::LocomotorKind;
@@ -4794,7 +4810,7 @@ mod bridge160_hash_projection_tests {
     }
 
     #[test]
-    fn bridge160_hashes_each_active_and_stashed_payload_field() {
+    fn bridge161_hashes_each_active_and_stashed_payload_field() {
         // This checks Rust hash composition over supplied retained state, not
         // a native checksum or a claim that these fixtures execute movement.
         for (kind, fields) in [
@@ -4826,7 +4842,7 @@ mod bridge160_hash_projection_tests {
                         after.state_hash(),
                         "{kind:?} stashed={stashed} field={field}"
                     );
-                    for version in [159, 160] {
+                    for version in [159, 160, 161] {
                         assert_eq!(
                             before.state_hash_with_schema(HashSchema::Before(version)),
                             after.state_hash_with_schema(HashSchema::Before(version)),
@@ -4836,17 +4852,18 @@ mod bridge160_hash_projection_tests {
                 }
             }
         }
+        assert!(HashSchema::Before(161).includes(HashFeature::FootPathRuntime));
         assert!(HashSchema::Before(160).includes(HashFeature::CellMembership));
         assert!(!HashSchema::Before(159).includes(HashFeature::CellMembership));
     }
 
     #[test]
-    fn bridge160_projects_dummy_only_and_keeps_real_owner_identity() {
+    fn bridge161_projects_dummy_only_and_keeps_real_owner_identity() {
         let mut sim = Simulation::new();
         let owner = sim.intern("Americans");
         let other = sim.intern("Russians");
         let before = sim.state_hash();
-        let projected = sim.state_hash_with_schema(HashSchema::Before(160));
+        let projected = sim.state_hash_with_schema(HashSchema::Before(161));
         sim.substrate.raw_cell_occupation.write_infantry(
             RawCellKey::Dummy,
             MovementLayer::Ground,
@@ -4857,19 +4874,19 @@ mod bridge160_hash_projection_tests {
         assert_ne!(before, sim.state_hash());
         assert_eq!(
             projected,
-            sim.state_hash_with_schema(HashSchema::Before(160))
+            sim.state_hash_with_schema(HashSchema::Before(161))
         );
         sim.substrate
             .raw_cell_occupation
             .mark_ground_infantry(5, 5, 4, owner);
-        let real_owner = sim.state_hash_with_schema(HashSchema::Before(160));
+        let real_owner = sim.state_hash_with_schema(HashSchema::Before(161));
         assert_ne!(projected, real_owner);
         sim.substrate
             .raw_cell_occupation
             .mark_ground_infantry(5, 5, 4, other);
         assert_ne!(
             real_owner,
-            sim.state_hash_with_schema(HashSchema::Before(160)),
+            sim.state_hash_with_schema(HashSchema::Before(161)),
             "historical projection does not omit real owner state or invent the former entity ID"
         );
     }

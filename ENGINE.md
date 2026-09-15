@@ -23,7 +23,7 @@ Be brief, plain and result-first.
 ## Exactness and evidence
 
 Confirm gamemd-derived changes against original instructions, active callers, and
-retail data. Research docs and Ghidra annotations are often wrong; treat them as
+retail data. Ghidra annotations are often wrong; treat them as
 leads, not proof. Confirm active-YR reachability; unreachable claims need a breakpoint or
 flag-to-leaf trace. Never invent offsets, identities or behavior.
 
@@ -61,13 +61,11 @@ active-object order are distinct.
 
 `sim/` never depends on `render/`, `ui/`, `sidebar/`, `audio/` or `net/`.
 App code orchestrates without owning duplicate gameplay. Current module contracts
-and `advance_tick` phases describe the architecture. Name coordinate frames/units;
-consult the [coordinate reference](docs/research/coordinate-reference-frames.md).
+and `advance_tick` phases describe the architecture. Name coordinate frames/units.
 
-Optional: `cargo modules` and the [saved module map](docs/module-map.md) can help inspect
-module structure, visibility and dependencies during refactoring. Refresh the map
-when module layout, visibility or build configuration changes; verify conclusions
-against source.
+Use relevant rows in the [dependency map](docs/module-map.md); verify against source.
+Refresh with `python tools/module_map.py` after dependency, layout, visibility or
+build configuration changes.
 
 One owner follows a complete mechanism through evidence, implementation, production
 integration and review. Consider the surrounding architecture and affected consumers,
@@ -124,14 +122,12 @@ color/palette math, projection/sampling, GPU execution and performance. Cite
 consequential findings near the implementation or review. Validate affected production
 output and performance with appropriate captures, GPU readbacks or profiling;
 documentation and CPU-only tests alone do not establish rendered gamemd parity.
+For Rust style beyond this contract, consult the
+[condensed Rust guidelines](.agents/skills/_shared/rust-guidelines.md) when shaping
+APIs, hot loops, error handling or tests; this contract wins on conflict.
 
-Use source and `research-index`; ranked results are not exhaustive. Verify index
-worktree provenance. Tracked research/plans belong in the task checkout; requested
-research documents need no accompanying code. Avoid unsolicited reports or permanent
-completion ledgers.
-
-Resolve `<main-checkout>` with `git worktree list`; its `ini/`, config, index cache
-and `LOCAL.md` are machine-local. Read retail data before selecting constants.
+Resolve `<main-checkout>` with `git worktree list`; its `ini/`, config and `LOCAL.md`
+are machine-local. Read retail data before selecting constants.
 YR loads standalone `RULESMD.INI`/`ARTMD.INI`/`AIMD.INI`, then applicable language,
 mode and map overrides—no underlying RA2 INI merge. Use `asset`/`asset-browser`;
 a successful parse or plausible render is not correctness proof.

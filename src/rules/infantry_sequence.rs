@@ -23,11 +23,192 @@ use crate::rules::animation_sequence::{
 };
 use crate::rules::ini_parser::IniFile;
 
-/// Native action-record delay byte for all 42 infantry actions.
-const ACTION_FRAME_DELAYS: [u8; 42] = [
-    0, 0, 6, 3, 1, 1, 1, 1, 1, 3, 3, 1, 1, 1, 1, 1, 3, 1, 3, 3, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1,
-    3, 1, 3, 1, 3, 4, 6, 3, 1, 1,
+/// Bytes 0 and 3 of gamemd's 42 four-byte infantry action records at
+/// 0x007EAF7C (re-read from the binary 2026-09-15; all 42 rows match).
+/// Mission readiness, Scatter and DoAction have distinct caller bypasses;
+/// they share these records without borrowing each other's admission policy.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InfantryActionRecord {
+    pub(crate) interruptible: bool,
+    pub(crate) frame_delay: u8,
+}
+
+const INFANTRY_ACTIONS: [InfantryActionRecord; 42] = [
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 0,
+    }, // 0
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 0,
+    }, // 1
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 6,
+    }, // 2
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 3,
+    }, // 3
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 4
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 1,
+    }, // 5
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 6
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 1,
+    }, // 7
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 8
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 3,
+    }, // 9
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 3,
+    }, // 10
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 1,
+    }, // 11
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 1,
+    }, // 12
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 1,
+    }, // 13
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 1,
+    }, // 14
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 1,
+    }, // 15
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 3,
+    }, // 16
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 17
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 3,
+    }, // 18
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 3,
+    }, // 19
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 1,
+    }, // 20
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 1,
+    }, // 21
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 22
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 2,
+    }, // 23
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 24
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 25
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 26
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 1,
+    }, // 27
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 28
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 29
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 30
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 1,
+    }, // 31
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 3,
+    }, // 32
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 33
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 3,
+    }, // 34
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 1,
+    }, // 35
+    InfantryActionRecord {
+        interruptible: false,
+        frame_delay: 3,
+    }, // 36
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 4,
+    }, // 37
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 6,
+    }, // 38
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 3,
+    }, // 39
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 40
+    InfantryActionRecord {
+        interruptible: true,
+        frame_delay: 1,
+    }, // 41
 ];
+
+pub(crate) fn action_record(action: i32) -> Option<&'static InfantryActionRecord> {
+    usize::try_from(action)
+        .ok()
+        .and_then(|index| INFANTRY_ACTIONS.get(index))
+}
 
 const NORMALIZED_ACTIONS: [u8; 6] = [0x09, 0x0A, 0x12, 0x13, 0x17, 0x20];
 
@@ -218,7 +399,7 @@ pub fn sequence_kind_from_ini_key(key: &str) -> Option<SequenceKind> {
 ///
 /// The ids are the index order of the engine's own sequence-name array, not the
 /// alphabetical or INI order. They are only meaningful as indices into
-/// `ACTION_FRAME_DELAYS` / `NORMALIZED_ACTIONS`, so an id that is off by even one
+/// `INFANTRY_ACTIONS` / `NORMALIZED_ACTIONS`, so an id that is off by even one
 /// hands the sequence another action's playback speed. That is exactly what the
 /// water, flight, deploy-adjacent and secondary-weapon rows did before this
 /// table was walked out of the binary: `SecondaryFire` in particular ran three
@@ -269,7 +450,7 @@ pub(crate) fn action_id(kind: SequenceKind) -> u8 {
 fn action_timing(kind: SequenceKind) -> (u16, bool) {
     let id = action_id(kind);
     (
-        u16::from(ACTION_FRAME_DELAYS[id as usize]),
+        u16::from(INFANTRY_ACTIONS[id as usize].frame_delay),
         NORMALIZED_ACTIONS.contains(&id),
     )
 }
@@ -381,43 +562,12 @@ pub fn build_sequence_set(def: &InfantrySequenceDef) -> SequenceSet {
 #[path = "infantry_sequence_tests.rs"]
 mod tests;
 
-/// Infantry Scatter51D1AA..51D1C3 reads byte0 of the original42 Doing
-/// records at7EAF7C. The two sentinel/action bypasses precede that lookup.
+/// Infantry Scatter 0x51D1AA..0x51D1C3 reads byte 0 of the 42 Doing records
+/// at 0x007EAF7C. The -1 and 0x1F bypasses precede that lookup.
 /// This is only the immutable permission leaf; each caller owns Doing's producer.
 pub(crate) fn scatter_allowed_by_doing(doing: i32) -> Option<bool> {
     if doing == -1 || doing == 31 {
         return Some(true);
     }
-    if !(0..42).contains(&doing) {
-        return None;
-    }
-    Some(matches!(
-        doing,
-        0 | 1
-            | 2
-            | 3
-            | 4
-            | 6
-            | 8
-            | 9
-            | 10
-            | 16
-            | 17
-            | 18
-            | 19
-            | 22
-            | 23
-            | 24
-            | 25
-            | 26
-            | 28
-            | 29
-            | 30
-            | 33
-            | 37
-            | 38
-            | 39
-            | 40
-            | 41
-    ))
+    action_record(doing).map(|record| record.interruptible)
 }

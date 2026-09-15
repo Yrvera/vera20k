@@ -572,7 +572,7 @@ fn handle_path_exhaustion(
                         // success continuation75B2E2 resets the dword counter;
                         // it does not reconstruct the other Foot fields.
                         path_runtime.start_movement(native_frame, 0, true);
-                        path_runtime.retries_left = 10;
+                        path_runtime.retries_left = PATH_STUCK_INIT;
                     }
                     match locomotor.as_ref().map(|locomotor| locomotor.kind) {
                         Some(crate::rules::locomotor_type::LocomotorKind::Drive) => {

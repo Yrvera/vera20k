@@ -121,8 +121,9 @@ pub fn selects_infantry_bridge_layer(has_high_bridge: bool, level: u8, input_z: 
     has_high_bridge && input_z >= deck_z
 }
 
-/// Original47C480/489: squared XY through SqrtApprox4CAC40 then truncating
-/// Math_ftol7C5F00. Low-byte extraction and list admission belong to callers.
+/// Original 0x47C46B..0x47C48C (inside 0x0047C3D0): FILD both signed deltas,
+/// square and sum them in x87, then Sqrt_Approx 0x4CAC40 and the truncating
+/// Math_ftol 0x7C5F00. Low-byte extraction and list admission belong to callers.
 pub(crate) fn native_xy_distance(dx: i32, dy: i32) -> i32 {
     use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
     let dx = X87Chop53::load_i32(dx);
@@ -264,7 +265,7 @@ mod tests {
                 [
                     ("first", true, CellQueryPoint { x: 65, y: 63 }),
                     (
-                        "smaller square, same native integer",
+                        "equal native integer distance keeps list order",
                         true,
                         CellQueryPoint { x: 64, y: 64 }
                     ),

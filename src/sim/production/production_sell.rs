@@ -420,7 +420,17 @@ fn sellbuilding_direct_scatter_handoff(
     }
 
     if let Some(dest) = dest {
-        let _ = movement::issue_direct_move(&mut sim.substrate.entities, passenger_id, dest, speed);
+        let timing = movement::DestinationTiming::new(
+            sim.session.binary_frame,
+            sim.blockage_path_delay_ticks,
+        );
+        let _ = movement::issue_direct_move(
+            &mut sim.substrate.entities,
+            passenger_id,
+            dest,
+            speed,
+            timing,
+        );
     }
 }
 

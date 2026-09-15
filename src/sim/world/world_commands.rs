@@ -745,9 +745,7 @@ impl Simulation {
                                 Some(&mut self.substrate.cell_occupation),
                                 crate::sim::movement::DestinationTiming::new(
                                     self.session.binary_frame,
-                                    rules.map_or(self.blockage_path_delay_ticks, |r| {
-                                        r.general.blockage_path_delay_ticks
-                                    }),
+                                    self.blockage_path_delay_ticks,
                                 ),
                             );
                         }
@@ -804,9 +802,7 @@ impl Simulation {
                         Some(&mut self.substrate.cell_occupation),
                         crate::sim::movement::DestinationTiming::new(
                             self.session.binary_frame,
-                            rules.map_or(self.blockage_path_delay_ticks, |r| {
-                                r.general.blockage_path_delay_ticks
-                            }),
+                            self.blockage_path_delay_ticks,
                         ),
                     )
                 };
@@ -1146,9 +1142,7 @@ impl Simulation {
                         Some(&mut self.substrate.cell_occupation),
                         crate::sim::movement::DestinationTiming::new(
                             self.session.binary_frame,
-                            rules.map_or(self.blockage_path_delay_ticks, |r| {
-                                r.general.blockage_path_delay_ticks
-                            }),
+                            self.blockage_path_delay_ticks,
                         ),
                     )
                 };
@@ -1615,7 +1609,7 @@ impl Simulation {
                         Some(&mut self.substrate.cell_occupation),
                         crate::sim::movement::DestinationTiming::new(
                             self.session.binary_frame,
-                            rules.general.blockage_path_delay_ticks,
+                            self.blockage_path_delay_ticks,
                         ),
                     );
                 }
@@ -1748,7 +1742,7 @@ impl Simulation {
                         Some(&mut self.substrate.cell_occupation),
                         crate::sim::movement::DestinationTiming::new(
                             self.session.binary_frame,
-                            rules.general.blockage_path_delay_ticks,
+                            self.blockage_path_delay_ticks,
                         ),
                     );
                 }
@@ -2003,7 +1997,7 @@ impl Simulation {
                         Some(&mut self.substrate.cell_occupation),
                         crate::sim::movement::DestinationTiming::new(
                             self.session.binary_frame,
-                            rules.general.blockage_path_delay_ticks,
+                            self.blockage_path_delay_ticks,
                         ),
                     );
                 }
@@ -2164,7 +2158,7 @@ impl Simulation {
                         )),
                         crate::sim::movement::DestinationTiming::new(
                             self.session.binary_frame,
-                            rules.general.blockage_path_delay_ticks,
+                            self.blockage_path_delay_ticks,
                         ),
                     );
                 }
@@ -2431,7 +2425,7 @@ impl Simulation {
                             Some(&mut self.substrate.cell_occupation),
                             crate::sim::movement::DestinationTiming::new(
                                 self.session.binary_frame,
-                                rules.general.blockage_path_delay_ticks,
+                                self.blockage_path_delay_ticks,
                             ),
                         );
                     }

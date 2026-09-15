@@ -1174,8 +1174,9 @@ pub fn scatter_blocker(
                 timing,
             )
         } else {
-            let accepted =
-                super::movement_commands::issue_direct_move(entities, blocker_id, dest, speed);
+            let accepted = super::movement_commands::issue_direct_move(
+                entities, blocker_id, dest, speed, timing,
+            );
             if accepted {
                 if let Some(entity) = entities.get_mut(blocker_id) {
                     super::navcom::set_destination_internal_cell(entity, dest, resolved_terrain);
@@ -1184,7 +1185,7 @@ pub fn scatter_blocker(
             accepted
         }
     } else {
-        super::movement_commands::issue_direct_move(entities, blocker_id, dest, speed)
+        super::movement_commands::issue_direct_move(entities, blocker_id, dest, speed, timing)
     };
     if accepted && ordinary_track {
         if let Some((accel, decel, slowdown, _)) = config {

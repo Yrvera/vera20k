@@ -743,8 +743,9 @@ pub struct ObjectType {
     pub crashable: bool,
     /// Whether this unit can use chrono teleport movement (Teleporter=).
     pub teleporter: bool,
-    /// TechnoType+C8D: ctor711387 defaults true; Aircraft41C9A3 false.
-    /// ReadINI712256..71226A reads MoveToShroud (key8444C4).
+    /// TechnoType+0xC8D: the constructor stores true at 0x711387 and the
+    /// AircraftType constructor stores false at 0x41C9A3. ReadINI
+    /// 0x712256..0x71226A reads `MoveToShroud` (key string at 0x8444C4).
     pub move_to_shroud: bool,
     /// Whether this unit can fire while hovering / in air (HoverAttack=).
     pub hover_attack: bool,
@@ -1149,10 +1150,12 @@ pub struct ObjectType {
     /// `InvisibleInGame=yes` on BuildingType. Logical-only buildings (e.g., bridge
     /// anchors) that should not receive C4 or other interaction cursors.
     pub invisible_in_game: bool,
-    /// BuildingType+1703,464AC0's immediate placement admission; ctor45E212
-    /// clears it, ReadINI460F08 reads PlaceAnywhere. Retail AMMOCRAT sets it.
+    /// BuildingType+0x1703, the immediate placement admission read by
+    /// 0x464AC0; the constructor clears it at 0x45E212 and ReadINI
+    /// 0x460F08..0x460F1C reads `PlaceAnywhere`. Retail AMMOCRAT and UFO set it.
     pub place_anywhere: bool,
-    /// Authored ToTile key, resolved by native465CC0 into BuildingType+E58.
+    /// Authored `ToTile` key; 0x465CC0 resolves it through 0x544CE0 into
+    /// BuildingType+0xE58 only when the named tile is registered.
     /// The theater-aware receiver must validate the named tile before treating
     /// this as a nonnull type pointer (retail GAGREEN uses Green01).
     pub to_tile: Option<String>,
@@ -1832,8 +1835,9 @@ impl ObjectType {
             locomotor: crate::rules::locomotor_type::resolve_installed_kind(
                 section.get("Locomotor").as_deref(),
             ),
-            // BuildingType's parent constructor receives SpeedType0
-            // (45DD9D/710AF0/7110E0); other existing category defaults stay owned here.
+            // BuildingTypeClass's constructor passes SpeedType 0 to its parent
+            // (0x45DD9D -> 0x710AF0, stored at 0x7110E0); other existing
+            // category defaults stay owned here.
             speed_type: section.get("SpeedType").map(SpeedType::from_ini).unwrap_or(
                 if category == ObjectCategory::Building {
                     SpeedType::Foot

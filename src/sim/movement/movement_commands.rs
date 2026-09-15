@@ -196,9 +196,11 @@ impl DestinationTiming {
         )
     }
 
+    /// Set_Destination_Internal 0x004D94B0 tail 0x4D96C2..0x4D9707: +6B7 = 0,
+    /// +668 = (frame, Rules+1768), +640 = (frame, 0) for every accepted
+    /// setter. The setter never writes +64C; the no-head Process FindPath
+    /// success continuation 0x75B2E2 owns that reset.
     fn accept_walk(self, entity: &mut crate::sim::game_entity::GameEntity) {
-        // Foot4D96F0..9707 resets these two timers after every accepted setter;
-        // the constructor/success-owned +64C counter is not reset by an order.
         let path = &mut entity.navigation.path_runtime;
         path.start_movement(self.binary_frame, 0, true);
         path.start_blocked(self.binary_frame, self.blockage_path_delay_ticks, true);
@@ -382,6 +384,7 @@ pub fn issue_direct_move(
     entity_id: u64,
     target: (u16, u16),
     speed: SimFixed,
+    timing: crate::sim::movement::DestinationTiming,
 ) -> bool {
     let Some(entity) = entities.get(entity_id) else {
         return false;
@@ -424,8 +427,12 @@ pub fn issue_direct_move(
         if entity_mut
             .locomotor
             .as_ref()
-            .is_none_or(|l| l.active_kind() != LocomotorKind::Walk)
+            .is_some_and(|l| l.active_kind() == LocomotorKind::Walk)
         {
+            // Scatter 0x744063 and the other direct callers reach the same
+            // Set_Destination_Internal tail as an ordinary order.
+            timing.accept_walk(entity_mut);
+        } else {
             entity_mut.navigation.path_runtime = crate::sim::components::FootPathRuntime::default();
         }
         entity_mut.movement_target = Some(movement);
