@@ -96,9 +96,10 @@ causes were separated with test-only probes on both trees (main and candidate):
    on the Soviet tank: Walk now defers FindPath to the next Process
    (`0x0075AFC5`), the route goal is the target's own Cell rather than an
    approach cell, and head sub-cell selection draws Scenario RNG
-   (`0x004ACA10`). Per-tick dumps of all three entities diverge only at E1 from
-   tick 9 (`.local/harness-repin-20260915/slice6-dump.diff`); MTNK positions,
-   health and the Drive movement are identical. Its owner-excluded probe is
+   (`0x004ACA10`). Per-tick dumps of all three entities (position, facing,
+   movement target, NavCom, locomotor kind, RNG state, health) diverge only at
+   E1 from tick 9 (`.local/harness-repin-20260915/slice6-dump.diff`); the
+   dumped MTNK fields and the Drive movement are identical. Its owner-excluded probe is
    `1906B69879B595DE` on the candidate versus `CA5C843EAE4A6A3A` on main.
 
 These remain Rust-versus-prior-Rust pins. The Walk behaviors above carry their

@@ -219,7 +219,10 @@ impl Simulation {
         }
         // Stock infantry locomotors are Walk and Jumpjet. Both reach the same
         // FNPC/SetDestination(+0x480) arm below; only the immediate locomotor
-        // Process (51D478 -> ILocomotion+0x40) differs per kind.
+        // Process (51D478 -> ILocomotion+0x40) differs per kind. The stock
+        // Teleport infantryman (CLEG) cannot be a hut occupant: its warp
+        // destination must be an FNPC-passable cell and the hut cell holds a
+        // Building, so its Teleport MoveTo continuation is not delivered here.
         let kind = e
             .locomotor
             .as_ref()
