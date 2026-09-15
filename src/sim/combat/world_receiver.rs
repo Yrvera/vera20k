@@ -704,6 +704,10 @@ pub(crate) fn commit_entities(
                     target_id,
                     scatter.destination,
                     scatter.speed,
+                    crate::sim::movement::DestinationTiming::new(
+                        world.session.binary_frame,
+                        world.blockage_path_delay_ticks,
+                    ),
                 );
             }
 

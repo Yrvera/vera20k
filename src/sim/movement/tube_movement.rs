@@ -401,6 +401,7 @@ fn finalize_tube_object(
                 rules,
                 interner,
                 rng,
+                crate::sim::movement::DestinationTiming::from_rules(native_frame, rules),
             );
             stop_blocked_mover(entities, entity_id);
             return true;
@@ -441,6 +442,7 @@ fn finalize_tube_object(
                 rules,
                 interner,
                 rng,
+                crate::sim::movement::DestinationTiming::from_rules(native_frame, rules),
             );
             stop_blocked_mover(entities, entity_id);
             return true;
@@ -558,6 +560,7 @@ fn scatter_exit_blockers(
     rules: Option<&RuleSet>,
     interner: &StringInterner,
     rng: &mut SimRng,
+    timing: crate::sim::movement::DestinationTiming,
 ) {
     let blockers: Vec<u64> = occupancy
         .get(cell.0, cell.1)
@@ -592,6 +595,7 @@ fn scatter_exit_blockers(
             rng,
             rules,
             interner,
+            timing,
         );
     }
 }

@@ -1118,11 +1118,16 @@ fn phase_mission_enter(
         // Building 0x0E sends 0x12 with anchor+(3,1). The accepted cell is
         // inside the refinery footprint for stock GAREFN/NAREFN, so use the
         // direct move path already used for refinery pad entry.
+        let timing = movement::DestinationTiming::new(
+            sim.session.binary_frame,
+            sim.blockage_path_delay_ticks,
+        );
         if movement::issue_direct_move(
             &mut sim.substrate.entities,
             snap.entity_id,
             accepted_cell,
             snap.speed,
+            timing,
         ) {
             if let Some(target) = sim
                 .substrate
@@ -1614,6 +1619,10 @@ fn issue_move_if_idle(
             Some(&blocker_neighbor_counts),
             sim.playfield_bounds,
             Some(&mut sim.substrate.cell_occupation),
+            crate::sim::movement::DestinationTiming::new(
+                sim.session.binary_frame,
+                sim.blockage_path_delay_ticks,
+            ),
         );
     }
 }

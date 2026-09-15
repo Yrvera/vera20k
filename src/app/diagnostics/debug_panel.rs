@@ -143,10 +143,14 @@ pub(crate) fn draw_hotkey_help(ctx: &egui::Context) {
 /// Only call this when `state.diag.debug_show_pathgrid` is true.
 pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
     // Convert cursor screen position to world coordinates, then to iso cell.
-    let (cursor_rx, cursor_ry) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
+    let (cursor_rx, cursor_ry) = crate::app::match_runtime::sim_tick::screen_point_to_world_cell(
+        state,
+        state.match_state.input.cursor_x,
+        state.match_state.input.cursor_y,
+    );
     let path_grid = state
-        .match_state.sim_runtime
+        .match_state
+        .sim_runtime
         .as_ref()
         .map(|rt| &rt.simulation)
         .and_then(crate::sim::world::Simulation::path_grid);
@@ -167,7 +171,8 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
             }
 
             // --- Active SpeedType for terrain cost overlay ---
-            let active_st = crate::app::diagnostics::debug_overlays::resolve_debug_speed_type(state);
+            let active_st =
+                crate::app::diagnostics::debug_overlays::resolve_debug_speed_type(state);
             ui.colored_label(
                 egui::Color32::from_rgb(0, 90, 160),
                 format!("Overlay: {} ([ ] to cycle)", active_st.name()),
@@ -218,7 +223,12 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
 
             // Show terrain cost for common SpeedTypes at cursor cell.
             // The active overlay SpeedType is highlighted.
-            if let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
+            if let Some(sim) = state
+                .match_state
+                .sim_runtime
+                .as_ref()
+                .map(|rt| &rt.simulation)
+            {
                 use crate::rules::locomotor_type::SpeedType;
                 let speed_types = [
                     (SpeedType::Foot, "Foot"),
@@ -253,7 +263,12 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
             ui.separator();
 
             // --- Entities at cursor cell ---
-            if let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
+            if let Some(sim) = state
+                .match_state
+                .sim_runtime
+                .as_ref()
+                .map(|rt| &rt.simulation)
+            {
                 let mut found: Vec<String> = Vec::new();
                 for entity in sim.entities().values() {
                     if entity.position.rx == cursor_rx && entity.position.ry == cursor_ry {
@@ -320,7 +335,12 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
             ui.separator();
 
             // --- Selected unit path info ---
-            if let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
+            if let Some(sim) = state
+                .match_state
+                .sim_runtime
+                .as_ref()
+                .map(|rt| &rt.simulation)
+            {
                 let selected: Vec<u64> = sim
                     .entities()
                     .values()
@@ -345,7 +365,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                                     "Path: {}/{} steps, blocked={}",
                                     mt.next_index,
                                     mt.path.len(),
-                                    mt.path_blocked,
+                                    entity.navigation.path_runtime.path_blocked,
                                 ));
                                 if let Some(goal) = mt.final_goal {
                                     ui.label(format!("Goal: ({},{})", goal.0, goal.1));
@@ -384,7 +404,12 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
             }
 
             // --- Miner debug info for selected harvesters ---
-            if let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
+            if let Some(sim) = state
+                .match_state
+                .sim_runtime
+                .as_ref()
+                .map(|rt| &rt.simulation)
+            {
                 for entity in sim.entities().values().filter(|e| e.selected) {
                     let Some(ref miner) = entity.miner else {
                         continue;
@@ -471,7 +496,14 @@ pub(crate) fn draw_event_history_panel(ctx: &egui::Context, state: &AppState) {
     if !state.diag.debug_unit_inspector {
         return;
     }
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
+        return;
+    };
 
     egui::Window::new("Event History")
         .default_pos([294.0, 4.0])

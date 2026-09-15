@@ -231,25 +231,6 @@ pub struct MovementTarget {
     /// Lepton distance from current cell center to next cell center.
     /// 256 for cardinal moves, ~362 for diagonal. Used to normalize advancement.
     pub move_dir_len: SimFixed,
-    /// Movement delay timer — ticks remaining before next Find_Path is allowed.
-    /// Set after every pathfinding call. Duration from PathDelay= in [General].
-    /// Original engine: CDTimerClass at FootClass+0x640, guards Process_Movement Phase 2.
-    pub movement_delay: u16,
-    /// Blocked delay timer — ticks remaining in the blocked wait period.
-    /// Set when blocked by a moving friendly (Can_Enter_Cell code 2).
-    /// Duration from BlockagePathDelay= in [General].
-    /// When this timer expires, urgency escalates to 2 (aggressive scatter).
-    /// Original engine: CDTimerClass at FootClass+0x668.
-    pub blocked_delay: u16,
-    /// Whether the unit is currently path-blocked by a friendly mover.
-    /// Set on first code-2 block, cleared when the block resolves.
-    /// Prevents re-starting the blocked_delay timer while still blocked.
-    /// Original engine: FootClass+0x6B7 path_blocked_flag.
-    pub path_blocked: bool,
-    /// Retry counter — decremented on each failed Find_Path. When it reaches 0
-    /// the unit gives up and stops. Reset to PATH_STUCK_INIT on new move orders.
-    /// `Foot+0x64C`, init 10 - read at `0x004B2DC8`, decremented at `0x004B2DD2`, and at zero the move ends (init=10).
-    pub path_stuck_counter: u8,
     /// Ultimate destination — preserved across 24-step segment replanning.
     /// When a path segment is exhausted before reaching this goal, the movement
     /// system auto-replans from the current position. `None` for short paths
@@ -304,6 +285,9 @@ impl NavTargetRef {
 /// `MovementTarget`, which is only the active execution path.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct NavigationState {
+    /// Foot timers, retry count and blockage latch survive path retirement.
+    #[serde(default)]
+    pub path_runtime: FootPathRuntime,
     /// Foot-owned direction replay and reference cell (+5E0/+558), shared by
     /// every locomotor instance. Retirement must not discard the owner queue.
     /// Native chain tails reload the owner at Drive4B1DF7 / Ship6A143A.
@@ -321,6 +305,75 @@ pub struct NavigationState {
     /// no-active-track arrival clear has not run yet.
     #[serde(default)]
     pub pending_arrival_clear: bool,
+}
+
+/// Persistent Foot path state. The FootClass constructor 0x004D31E0 anchors
+/// both timers at the current frame (0x4D3320, 0x4D335B), stores +64C = 10
+/// (0x4D332C) and +6B7 = 0 (0x4D3451). Set_Destination_Internal 0x004D94B0
+/// rewrites the timers and latch at 0x4D96C2..0x4D9707 for every accepted
+/// setter, including a null destination, so this owner outlives MovementTarget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct FootPathRuntime {
+    /// Foot+640/+648, including the native frame anchor.
+    pub movement_timer: crate::sim::timer::CdTimer,
+    /// Foot+668/+670.
+    pub blocked_timer: crate::sim::timer::CdTimer,
+    /// Foot+6B7.
+    pub path_blocked: bool,
+    /// Foot+64C, a dword decremented only while nonzero.
+    pub retries_left: u32,
+}
+
+impl Default for FootPathRuntime {
+    fn default() -> Self {
+        Self::at_frame(0)
+    }
+}
+
+impl FootPathRuntime {
+    pub const fn at_frame(frame: u32) -> Self {
+        Self {
+            movement_timer: crate::sim::timer::CdTimer::started(frame as i32, 0),
+            blocked_timer: crate::sim::timer::CdTimer::started(frame as i32, 0),
+            path_blocked: false,
+            retries_left: 10,
+        }
+    }
+
+    /// Preserve established non-Walk countdown semantics while its native
+    /// timer producers are separate work: one decrement per Process call.
+    /// Walk uses frame anchors and must never double-age when Scatter calls
+    /// Process again within the same frame.
+    pub(crate) fn advance_compatibility_process(&mut self) {
+        use crate::sim::timer::{CdTimer, PAUSED_START_FRAME};
+        self.movement_timer = CdTimer::from_raw(
+            PAUSED_START_FRAME,
+            self.movement_timer.duration().saturating_sub(1).max(0),
+        );
+        self.blocked_timer = CdTimer::from_raw(
+            PAUSED_START_FRAME,
+            self.blocked_timer.duration().saturating_sub(1).max(0),
+        );
+    }
+
+    pub(crate) fn start_movement(&mut self, frame: u32, duration: u16, walk: bool) {
+        self.movement_timer = Self::timer(frame, duration, walk);
+    }
+
+    pub(crate) fn start_blocked(&mut self, frame: u32, duration: u16, walk: bool) {
+        self.blocked_timer = Self::timer(frame, duration, walk);
+    }
+
+    fn timer(frame: u32, duration: u16, walk: bool) -> crate::sim::timer::CdTimer {
+        crate::sim::timer::CdTimer::from_raw(
+            if walk {
+                frame as i32
+            } else {
+                crate::sim::timer::PAUSED_START_FRAME
+            },
+            i32::from(duration),
+        )
+    }
 }
 
 /// Integer world coordinate triplet used by DriveLocomotion state.
@@ -557,10 +610,6 @@ impl Default for MovementTarget {
             move_dir_x: SIM_ZERO,
             move_dir_y: SIM_ZERO,
             move_dir_len: SIM_ZERO,
-            movement_delay: 0,
-            blocked_delay: 0,
-            path_blocked: false,
-            path_stuck_counter: 10,
             final_goal: None,
             group_id: None,
             ignore_terrain_cost: false,

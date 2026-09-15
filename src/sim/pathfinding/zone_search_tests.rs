@@ -393,6 +393,7 @@ fn playfield_hierarchy_initial_order_outside_endpoint_uses_flat_astar() {
         None,
         Some(hierarchy_endpoint_bounds()),
         None,
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     let target = entities.get(1).unwrap().movement_target.as_ref().unwrap();
     assert_eq!(target.path.first().copied(), Some((6, 6)));
@@ -805,6 +806,7 @@ fn gsi_04_12_layered_production_precheck_projects_only_hierarchy_coordinates() {
         Some(&blocker_counts),
         None,
         Some(&mut cell_occupation),
+        crate::sim::movement::DestinationTiming::new(0, 60),
     ));
     let movement = entities
         .get(1)
@@ -848,6 +850,7 @@ fn gsi_04_12_layered_production_precheck_projects_only_hierarchy_coordinates() {
             Some(&blocker_counts),
             None,
             None,
+            crate::sim::movement::DestinationTiming::new(0, 60),
         ),
         "destination projection must be selected by the destination structural bit"
     );

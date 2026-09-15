@@ -744,6 +744,10 @@ impl Simulation {
                                 Some(&blocker_neighbor_counts),
                                 self.playfield_bounds,
                                 Some(&mut self.substrate.cell_occupation),
+                                crate::sim::movement::DestinationTiming::new(
+                                    self.session.binary_frame,
+                                    self.blockage_path_delay_ticks,
+                                ),
                             );
                         }
                     }
@@ -797,6 +801,10 @@ impl Simulation {
                         Some(&blocker_neighbor_counts),
                         self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
+                        crate::sim::movement::DestinationTiming::new(
+                            self.session.binary_frame,
+                            self.blockage_path_delay_ticks,
+                        ),
                     )
                 };
                 // Stamp acceleration/deceleration parameters onto the newly created
@@ -1118,6 +1126,10 @@ impl Simulation {
                         Some(&blocker_neighbor_counts),
                         self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
+                        crate::sim::movement::DestinationTiming::new(
+                            self.session.binary_frame,
+                            self.blockage_path_delay_ticks,
+                        ),
                     )
                 };
                 if issued {
@@ -1581,6 +1593,10 @@ impl Simulation {
                         Some(&blocker_neighbor_counts),
                         self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
+                        crate::sim::movement::DestinationTiming::new(
+                            self.session.binary_frame,
+                            self.blockage_path_delay_ticks,
+                        ),
                     );
                 }
                 true
@@ -1710,6 +1726,10 @@ impl Simulation {
                         Some(&blocker_neighbor_counts),
                         self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
+                        crate::sim::movement::DestinationTiming::new(
+                            self.session.binary_frame,
+                            self.blockage_path_delay_ticks,
+                        ),
                     );
                 }
                 true
@@ -1961,6 +1981,10 @@ impl Simulation {
                         Some(&blocker_neighbor_counts),
                         self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
+                        crate::sim::movement::DestinationTiming::new(
+                            self.session.binary_frame,
+                            self.blockage_path_delay_ticks,
+                        ),
                     );
                 }
                 true
@@ -2087,6 +2111,10 @@ impl Simulation {
                         Some(&blocker_neighbor_counts),
                         self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
+                        crate::sim::movement::DestinationTiming::new(
+                            self.session.binary_frame,
+                            rules.general.blockage_path_delay_ticks,
+                        ),
                     );
                 }
                 true
@@ -2350,6 +2378,10 @@ impl Simulation {
                             Some(&blocker_neighbor_counts),
                             self.playfield_bounds,
                             Some(&mut self.substrate.cell_occupation),
+                            crate::sim::movement::DestinationTiming::new(
+                                self.session.binary_frame,
+                                self.blockage_path_delay_ticks,
+                            ),
                         );
                     }
                 }
