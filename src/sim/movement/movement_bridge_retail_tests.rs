@@ -2169,339 +2169,47 @@ fn infantry_crosses_hills_high_bridge_at_deck_height() {
 // combination no Move ever produces.
 // ---------------------------------------------------------------------------
 
-/// What one attack-move produced, alongside the two controls that say whether
-/// the bridge had anything to do with it.
-#[derive(Debug)]
-struct AttackMoveProbe {
-    /// The attack-move onto the span was admitted and produced a path.
-    span_order_accepted: bool,
-    /// Nodes in that path, and where it ended.
-    span_path: Option<(usize, (u16, u16))>,
-    /// Distinct cells the mover occupied while under the attack-move order.
-    span_cells: Vec<(u16, u16)>,
-    /// It stood on a stamped deck cell at some point.
-    reached_deck: bool,
-    /// Ticks the mover still had a `movement_target` after the order frame.
-    span_ticks_with_target: usize,
-    /// CONTROL A — an attack-move to an ordinary ground cell behind the span,
-    /// no bridge cell anywhere on the route. This is the discriminator: if it
-    /// also stalls, the finding is about attack-move, not about bridges.
-    control_attack_move_cells: Vec<(u16, u16)>,
-    /// CONTROL B — a plain `Command::Move` across the same span with the same
-    /// mover on the same loaded map, proving the route is crossable now.
-    control_move_cells: Vec<(u16, u16)>,
-    control_move_reached_deck: bool,
-}
-
-/// Issue one attack-move across a high span, then the two controls, recording
-/// what each did. No assertions here — the caller judges.
-fn probe_attack_move_across_high_span(map_file: &str, unit_type: &str) -> Option<AttackMoveProbe> {
-    let retail = retail_dir()?;
-    let _ = env_logger::builder()
-        .is_test(false)
-        .filter_level(log::LevelFilter::Warn)
-        .try_init();
-
-    let mut scenario = match headless_scenario::load(&retail, map_file, SEED) {
-        Ok(scenario) => scenario,
-        Err(error) => panic!("load {map_file}: {error}"),
-    };
-    let span = {
-        let grid = scenario.sim().path_grid().expect("navigation published");
-        find_high_bridge_span(grid).unwrap_or_else(|| panic!("{map_file} exposes no span"))
-    };
-    let owner_name = prepare_commanding_house(&mut scenario);
-    let start = span.approach_a;
-    let entity_id = {
-        let SimRuntime {
-            simulation,
-            resources,
-        } = &mut scenario.runtime;
-        simulation
-            .spawn_object(
-                unit_type,
-                &owner_name,
-                start.0,
-                start.1,
-                0,
-                &resources.rules,
-                &resources.height_map,
-            )
-            .unwrap_or_else(|| panic!("could not place a {unit_type} on {start:?}"))
-    };
-    {
-        let SimRuntime {
-            simulation,
-            resources,
-        } = &mut scenario.runtime;
-        simulation.resolve_type_handles(&resources.rules);
-    }
-    let owner_id = scenario
-        .sim()
-        .interner
-        .get(&owner_name)
-        .expect("owner interned");
-
-    // Shared driver: issue one envelope, then tick, recording distinct cells and
-    // how long the order survived.
-    let mut run_order = |scenario: &mut crate::headless_scenario::HeadlessScenario,
-                         command: Command,
-                         goal: (u16, u16),
-                         budget: u64|
-     -> (Option<(usize, (u16, u16))>, Vec<(u16, u16)>, bool, usize) {
-        let execute_tick = scenario.sim().session.tick + 1;
-        scenario
-            .runtime
-            .advance_frame(
-                &[CommandEnvelope::new(owner_id, execute_tick, command)],
-                SIM_TICK_MS,
-                TickLane::Ordinary,
-            )
-            .expect("fixture frame must complete");
-        let accepted = scenario
-            .sim()
-            .entities()
-            .get(entity_id)
-            .and_then(|entity| entity.movement_target.as_ref())
-            .map(|target| {
-                (
-                    target.path.len(),
-                    target.path.last().copied().unwrap_or(goal),
-                )
-            });
-        let mut cells: Vec<(u16, u16)> = Vec::new();
-        let mut reached_deck = false;
-        let mut ticks_with_target = 0usize;
-        let mut idle = 0u32;
-        for tick_index in 0..budget {
-            scenario.tick();
-            let sim = scenario.sim();
-            // The first few frames after the order are where the target is lost;
-            // print the committed mission alongside so the cause is named rather
-            // than inferred.
-            if tick_index < 4 {
-                if let Some(entity) = sim.entities().get(entity_id) {
-                    println!(
-                        "  t+{tick_index}: mission={:?} queued={:?} movement_target={} \
-                         order_intent={:?} attack_target={}",
-                        entity.mission.current().known(),
-                        entity.mission.queued().known(),
-                        entity.movement_target.is_some(),
-                        entity.order_intent,
-                        entity.attack_target.is_some(),
-                    );
-                }
-            }
-            let Some(entity) = sim.entities().get(entity_id) else {
-                break;
-            };
-            let cell = (entity.position.rx, entity.position.ry);
-            if cells.last() != Some(&cell) {
-                cells.push(cell);
-            }
-            if sim
-                .path_grid()
-                .and_then(|grid| grid.cell(cell.0, cell.1))
-                .is_some_and(|c| c.bridge_structural)
-            {
-                reached_deck = true;
-            }
-            if entity.movement_target.is_some() {
-                ticks_with_target += 1;
-                idle = 0;
-            } else {
-                idle += 1;
-                if idle >= 30 {
-                    break;
-                }
-            }
-            if cell == goal {
-                break;
-            }
-        }
-        (accepted, cells, reached_deck, ticks_with_target)
-    };
-
-    // The order under test.
-    let (span_path, span_cells, reached_deck, span_ticks_with_target) = run_order(
-        &mut scenario,
-        Command::AttackMove {
-            entity_id,
-            target_rx: span.approach_b.0,
-            target_ry: span.approach_b.1,
-            queue: false,
-        },
-        span.approach_b,
-        MAX_TICKS,
-    );
-
-    // CONTROL A: the same order verb, three cells back along ordinary ground.
-    let control_goal =
-        offset(start, (-span.step.0 * 3, -span.step.1 * 3)).expect("three cells behind in bounds");
-    let (_, control_attack_move_cells, _, _) = run_order(
-        &mut scenario,
-        Command::AttackMove {
-            entity_id,
-            target_rx: control_goal.0,
-            target_ry: control_goal.1,
-            queue: false,
-        },
-        control_goal,
-        400,
-    );
-
-    // CONTROL B: a plain Move across the span, from wherever the mover now is.
-    let (_, control_move_cells, control_move_reached_deck, _) = run_order(
-        &mut scenario,
-        Command::Move {
-            entity_id,
-            target_rx: span.approach_b.0,
-            target_ry: span.approach_b.1,
-            queue: false,
-            group_id: None,
-        },
-        span.approach_b,
-        MAX_TICKS,
-    );
-
-    Some(AttackMoveProbe {
-        span_order_accepted: span_path.is_some(),
-        span_path,
-        span_cells,
-        reached_deck,
-        span_ticks_with_target,
-        control_attack_move_cells,
-        control_move_cells,
-        control_move_reached_deck,
-    })
-}
-
-/// Report a probe and hold it to whichever outcome it produced.
-///
-/// **Characterization, NOT desired behaviour.** It pins today's answer so the
-/// day attack-move starts crossing, this test goes red and is rewritten into a
-/// positive crossing under `drive_across_high_bridge_with_order`.
-fn judge_attack_move_probe(probe: &AttackMoveProbe, map_file: &str, unit_type: &str) {
-    println!(
-        "\n{map_file}/{unit_type} ATTACK-MOVE PROBE\n  \
-         span order accepted: {} path {:?}\n  \
-         cells occupied under the attack-move: {:?}\n  \
-         reached a stamped deck cell: {}\n  \
-         ticks the order survived after the issuing frame: {}\n  \
-         CONTROL A (attack-move, ordinary ground, no bridge): {:?}\n  \
-         CONTROL B (plain Move across the same span): {} cell(s), reached deck {}",
-        probe.span_order_accepted,
-        probe.span_path,
-        probe.span_cells,
-        probe.reached_deck,
-        probe.span_ticks_with_target,
-        probe.control_attack_move_cells,
-        probe.control_move_cells.len(),
-        probe.control_move_reached_deck,
-    );
-
-    // The planner is not the defect: the order is admitted and a full route to
-    // the far approach is built.
-    assert!(
-        probe.span_order_accepted,
-        "the attack-move was refused outright — that is a different (planner) defect from the \
-         one this test characterizes, and the row needs re-diagnosing"
-    );
-    let (_, last_node) = probe.span_path.expect("accepted order carries a path");
-    assert_eq!(
-        probe.span_cells.len(),
-        1,
-        "the mover moved under the attack-move order: {:?}. The stall this test pins is gone; \
-         rewrite it as a positive crossing.",
-        probe.span_cells
-    );
-    assert!(
-        !probe.reached_deck,
-        "the attack-move reached the deck; rewrite this as a positive crossing"
-    );
-
-    // CONTROL B is what makes the finding specific: the same mover, same map,
-    // same tick, under a plain Move, crosses.
-    assert!(
-        probe.control_move_reached_deck,
-        "the plain-Move control did not reach the deck either, so this run says nothing \
-         specific about the order source: {:?}",
-        probe.control_move_cells
-    );
-
-    // CONTROL A decides the scope of the defect, and is reported either way
-    // rather than asserted into one shape.
-    if probe.control_attack_move_cells.len() > 1 {
-        println!(
-            "SCOPE: BRIDGE-SPECIFIC. The same attack-move verb moved the unit {} cell(s) over \
-             ordinary ground, and stalled only when the route entered the span. Route to \
-             {last_node:?} was built and then abandoned.",
-            probe.control_attack_move_cells.len() - 1
-        );
-    } else {
-        println!(
-            "SCOPE: NOT BRIDGE-SPECIFIC. The attack-move verb also stalled on ordinary ground \
-             ({:?}), so `Command::AttackMove` does not move this mover anywhere. The bridge \
-             rows T2-01/T2-04 cannot be settled until that is fixed.",
-            probe.control_attack_move_cells,
-        );
-    }
-}
-
 /// Matrix rows T2-01 (Drive) and T2-04 (Hover) — attack-move onto an intact high
-/// span. **Characterization: attack-move is currently dropped on the tick after
-/// it is issued.**
+/// span, as positive crossings.
 ///
-/// The order is admitted and a complete 19-node route across the span is built,
-/// so the planner, the zone hierarchy and the bridge-deck exemption all behave.
-/// The `MovementTarget` is then gone by the next committed frame and the mover
-/// never leaves its cell.
+/// **Settled 2026-09-15.** The four `..._is_currently_dropped` characterizations
+/// that pinned the attack-move stall went red on `main`: the probe they wrapped
+/// (`AttackMoveProbe`, retired with them) reported the mover crossing every deck
+/// cell under the attack-move on both geometries and for all three locomotors
+/// (Hills/MTNK 24 cells and 245 surviving ticks, Hills/E1 24 cells, BayOPigs/MTNK
+/// and /ROBO 19 cells), with the plain-Move control crossing too. The rows are
+/// therefore held to the same crossing contract as the Move rows, through the
+/// shared driver with the attack-move order source. Rust movement regression,
+/// not a native golden: no attack-move oracle exists.
 #[test]
 #[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
-fn tank_attack_moved_across_bay_of_pigs_high_bridge_is_currently_dropped() {
-    let Some(probe) = probe_attack_move_across_high_span("BayOPigs.mmx", "MTNK") else {
-        eprintln!("SKIPPED: no retail root");
-        return;
-    };
-    judge_attack_move_probe(&probe, "BayOPigs.mmx", "MTNK");
+fn tank_attack_moved_across_bay_of_pigs_high_bridge_crosses() {
+    drive_across_high_bridge_with_order("BayOPigs.mmx", "MTNK", true, OrderSource::AttackMove);
 }
 
 /// The second geometry — BayOPigs runs its span north-south down a column,
 /// Hills east-west along a row — so the result is not one map's arrangement.
 #[test]
 #[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
-fn tank_attack_moved_across_hills_high_bridge_is_currently_dropped() {
-    let Some(probe) = probe_attack_move_across_high_span("Hills.mmx", "MTNK") else {
-        eprintln!("SKIPPED: no retail root");
-        return;
-    };
-    judge_attack_move_probe(&probe, "Hills.mmx", "MTNK");
+fn tank_attack_moved_across_hills_high_bridge_crosses() {
+    drive_across_high_bridge_with_order("Hills.mmx", "MTNK", true, OrderSource::AttackMove);
 }
 
-/// Matrix row T2-04 — the Hover arm of the same characterization. The row's
-/// original reason for existing is gone (`is_bridge_only_goal` is reachable only
-/// when `layered_pathing == false`, and since `3687cc94` Hover is layered), so
-/// what is left is the order source, which is what this measures.
+/// Matrix row T2-04 — the Hover arm. Hover shares the planner entry with Drive
+/// since `53695936`; the row is kept because attack-move goal selection was the
+/// half nothing had measured.
 #[test]
 #[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
-fn hover_tank_attack_moved_across_bay_of_pigs_high_bridge_is_currently_dropped() {
-    let Some(probe) = probe_attack_move_across_high_span("BayOPigs.mmx", "ROBO") else {
-        eprintln!("SKIPPED: no retail root");
-        return;
-    };
-    judge_attack_move_probe(&probe, "BayOPigs.mmx", "ROBO");
+fn hover_tank_attack_moved_across_bay_of_pigs_high_bridge_crosses() {
+    drive_across_high_bridge_with_order("BayOPigs.mmx", "ROBO", true, OrderSource::AttackMove);
 }
 
 /// The Walk arm, so T2-01's "Stands for Walk" clause is measured rather than
 /// assumed.
 #[test]
 #[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
-fn infantry_attack_moved_across_hills_high_bridge_is_currently_dropped() {
-    let Some(probe) = probe_attack_move_across_high_span("Hills.mmx", "E1") else {
-        eprintln!("SKIPPED: no retail root");
-        return;
-    };
-    judge_attack_move_probe(&probe, "Hills.mmx", "E1");
+fn infantry_attack_moved_across_hills_high_bridge_crosses() {
+    drive_across_high_bridge_with_order("Hills.mmx", "E1", true, OrderSource::AttackMove);
 }
 
 // ---------------------------------------------------------------------------

@@ -74,22 +74,34 @@
 //!   than an object and has no Restore path (see `movement_occupancy`); a
 //!   producer must land together with that arm. **Do not add a second wall gate
 //!   on top of the existing one.**
-//! - **A crusher can never cross a crushable wall.** `cell_rect`'s
-//!   `wall_allows_crusher` is a hardcoded `false` because the parsed overlay
-//!   model does not carry `OverlayTypeClass+0x22D` = `Crushable=` (written by
-//!   `ObjectTypeClass::ReadINI` @ `0x005F9426`, read by
-//!   `TechnoClass::Is_Crushable_By` @ `0x005F6D49` and by
-//!   `CellClass::RecalcZoneType` @ `0x00483CB5`). Stock `[GASAND]` is
-//!   `Wall=yes` + `Crushable=yes` + `CrushSound=WallCrushSandbag`. Trigger: a
-//!   `MovementZone=Crusher` type meeting a sandbag wall. Stock `rulesmd.ini` has
-//!   exactly six — `[CMON]`, `[CMIN]`, `[HORV]`, `[HARV]`, `[SMON]`, `[SMIN]`,
-//!   all ore miners — and no uncommented `AmphibiousCrusher`. `[BFRT]` is
-//!   `CrusherAll`, already in the unconditional escape set and unaffected. So
-//!   this is a miners-versus-sandbags rule, not a battle-tank one. Player
-//!   effect: retail drives the miner through with a crush sound; VERA stops it.
-//!   Frequency: whenever a miner's ore route crosses a sandbag line — map
-//!   dressing on several stock maps. Downstream risk: none beyond plumbing the
-//!   flag.
+//! - **Crushable walls are open to everyone, not only to crushers.**
+//!   `OverlayTypeClass+0x22D` = `Crushable=` is parsed (`OverlayTypeFlags::
+//!   crushable`, `ObjectTypeClass::ReadINI` @ `0x005F9426`) and
+//!   `overlay_reduced_zone_type` reduces a crushable overlay to zone class
+//!   `CRUSHABLE` (1) rather than `WALL` (2), as `CellClass::RecalcZoneType` @
+//!   `0x00483CB5` does. But VERA's path grid sets `overlay_blocks` only for
+//!   `WALL`/`IMPASSABLE`, the class arm below tests `zone_type == WALL`, and
+//!   the movement-zone passability row is consulted only by the zone
+//!   flood-fill, so a sandbag or fence cell (`[GASAND]`, `[CAFNCB]`,
+//!   `Wall=yes` + `Crushable=yes`) is admitted to every mover whose speed row
+//!   allows the land beneath it. Native: the `Normal`/`Infantry` rows block
+//!   class 1 for connectivity, and the wall arm of `+0x1AC` (`0x0073F42E..
+//!   F4F5`) admits a crushable wall to a `Crusher=` type (`+0xD28`; 29 stock
+//!   types, the battle tanks among them) or to a type with ability `0x11`
+//!   freely when the wall is not allied and at code 4 when it is; a
+//!   `MovementZone=CrusherAll` type (`[BFRT]`) takes the same route for any
+//!   `Wall=`; every other mover takes the weapon/warhead route (4/5) or 7.
+//!   `UnitClass::PerCellProcess` then flattens the crushable wall on arrival
+//!   (landed as I4, `apply_wall_crush_on_driveover`, gated on
+//!   `regular_crusher`). Trigger: infantry or a non-`Crusher=` vehicle
+//!   ordered across a sandbag or fence line, or any mover crossing its own
+//!   side's crushable wall. Player effect: VERA lets infantry and non-crusher
+//!   vehicles pass through the wall without flattening it, and prices an
+//!   allied crushable wall as open ground; retail stops those movers at it or
+//!   routes them through at wall cost and has them shoot it. Frequency:
+//!   pre-placed fences and sandbags are map dressing on several stock maps.
+//!   Downstream risk: fixing it is the wall-arm port (codes 4/5 with the
+//!   weapon/warhead rule), the previous entry.
 //! - **The head-on deadlock exit** (Unit only; the decisive instructions are the
 //!   octant compare and `0x0073FA10 CMP EAX,0x1FF / JG`).
 //!   Before conceding code 2 to a moving ally, native compares both objects'
