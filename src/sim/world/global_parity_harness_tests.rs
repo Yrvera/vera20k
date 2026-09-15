@@ -409,8 +409,8 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // The final six differing leaves are headX, Drive/curve cursors and residuals,
 // and subcellX. Native same-pass timing remains open; this is a Rust regression
 // ratchet, not whole-movement parity. See the bridge walker report's raw-head section.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x63D4_2755_D099_2B13;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x97A1_12B2_70C5_8817;
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x7501_533B_163D_06EC;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xAC7D_1867_E493_C2EE;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -590,15 +590,15 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x97A1_12B2_70C5_8817;
 // composed measurement, unchanged by this branch.
 // Re-baselined 2026-09-05 for GSI-09.03 harvest bite size (behavior-bearing,
 // see `FINAL_STREAM_STATES`); the historical probes move with the final hash.
-const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x0108_3DB5_07F1_33E7;
-const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xAB84_4991_F986_9579;
-const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x4C1C_FE51_6CF0_6E18;
+const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x7BCD_CAB2_3774_3468;
+const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x0A47_288E_DF5A_1E28;
+const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x2CAA_F65E_2F68_01A4;
 // Re-baselined 2026-09-02 for v117's disguise-detect folds (FogState's
 // `CellClass+0xAC[house]` counter plane and the cached `DetectDisguiseRange=`
 // deposit radius). The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved. The three RNG stream pins are unchanged.
-const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x37E2_0C17_7467_7CF7;
+const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x77F8_D1C5_1106_FE73;
 // Baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): the
 // `BuildingClass+0x6D0` ProduceCash timer and the `TechnoClass+0x1CC/+0x1D0`
 // drain link on every entity. The dedicated pre-v135 probe reproduces the
@@ -606,13 +606,13 @@ const GLOBAL_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x37E2_0C17_7467_7CF7;
 // DrainWeapon and no capture, so only current-schema composition moved (every
 // object folds its dead constructor timer and two `None`s). RNG stream pins
 // unchanged.
-const GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x4BAA_8C74_6F98_2E83;
+const GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x752E_A4CB_F018_3992;
 // Re-baselined 2026-09-05 for GSI-09.03 harvest bite size (one density level
 // per Harvest_Ore_Tick gate, 0x0073D450); see `FINAL_STREAM_STATES`.
 // Re-baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01),
 // composition-only: `GLOBAL_HARNESS_PRE_CREDIT_INCOME_V135_HASH` holds the
 // prior value and every historical probe and stream pin is unchanged.
-const GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x5183_C354_B078_DAAD;
+const GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0xD279_8C6F_6721_BAD2;
 // v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
 // reproduces the ramp branch's current baseline exactly; older probes and RNG pins
 // are unchanged. This is Rust hash-composition provenance, not native parity.
@@ -628,18 +628,25 @@ const GLOBAL_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x5183_C354_B078_DAA
 // residual and synchronous arrival timing; historical projections also include
 // migrated Foot owners. See docs/research/TRACK_PROCESS_REPLAY_REGRESSION_NOTES.md
 // for baseline/candidate observations and native scope. These are Rust pins.
-const GLOBAL_HARNESS_FINAL_HASH_PRE_CELL_MEMBERSHIP_V159: u64 = 0x2E70_C299_3112_87CA;
+const GLOBAL_HARNESS_FINAL_HASH_PRE_CELL_MEMBERSHIP_V159: u64 = 0x0CA9_0B9A_0F92_172D;
 // Schema159 adds actual ordered Cell membership and exact Sight0 metadata.
 // The immediately preceding composition is asserted below against the old
 // current pin; all historical, replay/path and RNG tripwires remain intact.
 // This is a Rust hash-composition ratchet, not a new native golden.
-const GLOBAL_HARNESS_FINAL_HASH_PRE_FOOT_PATH_RUNTIME_V160: u64 = 0xB2C9_657E_01DE_8AB1;
+const GLOBAL_HARNESS_FINAL_HASH_PRE_FOOT_PATH_RUNTIME_V160: u64 = 0xADC6_8CA2_217A_6DDA;
 // Schema160 moves the two Foot path timers, blocked latch and dword retry count
 // into NavigationState::path_runtime and hashes that owner instead of the former
 // positional MovementTarget fields. The immediately preceding composition is
 // asserted below against the old current pin; every older probe, replay/path
 // and RNG tripwire remains intact. Rust hash-composition ratchet, not a native golden.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xE35B_015C_A0C0_3DE7;
+// Re-pinned 2026-09-15 for the live bridge repair integration: raw infantry
+// occupation owners are the mark-time House index (InfantryClass::
+// MarkCellOccupancy 0x005217C0 -> Infantry virtual +0x38 -> House+0x30), no
+// longer the Rust entity id, which re-encodes the raw occupation fold under
+// every schema and moves every projection at once. Composition-only proof:
+// the owner-excluded probe asserted below equals main 595e3a88's value for
+// this fixture (receipt .local/harness-repin-20260915/owner-probe.txt).
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xA26C_6393_4D59_667C;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -959,8 +966,13 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     );
 
     assert_eq!(
+        rep.state_hash_without_raw_infantry_owners_v161_probe(),
+        0xEFB3_B35E_D792_E94B,
+        "raw infantry owner-excluded projection changed beyond the House-index re-encoding"
+    );
+    assert_eq!(
         rep.state_hash_without_sustained_gap_sight_v142(),
-        0xA295_8485_F2B8_E05C,
+        0x4E6E_0CFE_23A8_03A7,
         "committed pre-v142 global projection changed"
     );
     let pre_lifecycle_hash = rep.state_hash_before_lifecycle_v28_and_mission_v29();

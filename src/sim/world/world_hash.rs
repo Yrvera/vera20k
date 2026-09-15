@@ -472,6 +472,15 @@ impl Simulation {
         self.state_hash_with_schema(HashSchema::Before(159))
     }
 
+    /// Provenance probe for the raw infantry owner identity change (entity id
+    /// -> mark-time House index, InfantryClass::MarkCellOccupancy 0x005217C0):
+    /// the schema-160 composition with the raw owner fields excluded. Equal
+    /// values across the change prove every other fold is unchanged.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_raw_infantry_owners_v161_probe(&self) -> u64 {
+        self.state_hash_with_schema(HashSchema::BeforeWithoutRawInfantryOwners(161))
+    }
+
     /// Test-only provenance probe for the schema160 Foot path runtime
     /// rebaseline: the retained timers/latch/count are projected back into the
     /// former positional MovementTarget encoding instead of hashed as an owner.
@@ -641,6 +650,7 @@ impl Simulation {
         self.substrate.fold_raw_cell_occupation(
             &mut hasher,
             schema.includes(HashFeature::BridgeLocomotorAndDummy),
+            schema.includes_raw_infantry_owners(),
         );
         self.substrate.fold_hidden_occupation(&mut hasher);
         self.substrate.fold_base_reservations(&mut hasher);

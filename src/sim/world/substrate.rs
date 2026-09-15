@@ -236,6 +236,7 @@ impl ObjectSubstrate {
         &self,
         hasher: &mut impl std::hash::Hasher,
         include_process_dummy: bool,
+        include_infantry_owners: bool,
     ) {
         if include_process_dummy && let Some(dummy) = self.raw_cell_occupation.dummy_for_hash() {
             b"raw-dummy-occupation-v1".hash(hasher);
@@ -256,8 +257,10 @@ impl ObjectSubstrate {
             ground.hash(hasher);
             1u8.hash(hasher); // deck-plane tag
             deck.hash(hasher);
-            ground_owner.hash(hasher);
-            deck_owner.hash(hasher);
+            if include_infantry_owners {
+                ground_owner.hash(hasher);
+                deck_owner.hash(hasher);
+            }
         }
     }
 
