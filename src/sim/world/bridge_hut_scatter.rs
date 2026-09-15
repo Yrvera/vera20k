@@ -217,17 +217,20 @@ impl Simulation {
         {
             return Ok(false);
         }
-        if !e
+        // Stock infantry locomotors are Walk and Jumpjet. Both reach the same
+        // FNPC/SetDestination(+0x480) arm below; only the immediate locomotor
+        // Process (51D478 -> ILocomotion+0x40) differs per kind.
+        let kind = e
             .locomotor
             .as_ref()
-            .is_some_and(|loco| loco.active_kind() == LocomotorKind::Walk)
-        {
-            return Err(self.hut_callback_error(
-                id,
-                "admitted hut Scatter requires its non-Walk destination/Process continuation"
-                    .into(),
-            ));
-        }
+            .map(|loco| loco.active_kind())
+            .filter(|kind| matches!(kind, LocomotorKind::Walk | LocomotorKind::Jumpjet))
+            .ok_or_else(|| {
+                self.hut_callback_error(
+                    id,
+                    "admitted hut Scatter requires a Walk or Jumpjet locomotor".into(),
+                )
+            })?;
         let speed_type = object.speed_type;
         let on_bridge = e.on_bridge;
         // Null-threat angle only determines the later eight-neighbour fallback.
@@ -284,12 +287,26 @@ impl Simulation {
                 "hut Scatter requires the eight-neighbour fallback after FNPC failure".into(),
             )
         })?;
-        let grid = grid
-            .as_deref()
-            .ok_or_else(|| self.hut_callback_error(id, "hut Process requires navigation".into()))?;
         let move_info = self
             .resolve_move_info(id, Some(rules))
             .expect("selected listener");
+        if kind == LocomotorKind::Jumpjet {
+            // SetDestination(cell,1) reaches Jumpjet MoveTo 54B1C0 through the
+            // existing air destination owner (FNPC + placement + cached XYZ).
+            // Residual: native then runs one Jumpjet Process 54AEC0 (51D478)
+            // immediately; the compatibility air adapter advances this actor
+            // at its ordinary object turn instead, one frame later.
+            if !self.issue_air_cell_destination(id, destination, move_info.speed, Some(rules)) {
+                return Err(self.hut_callback_error(
+                    id,
+                    "hut Jumpjet destination requires its failed-placement continuation".into(),
+                ));
+            }
+            return Ok(false);
+        }
+        let grid = grid
+            .as_deref()
+            .ok_or_else(|| self.hut_callback_error(id, "hut Process requires navigation".into()))?;
         movement::prepare_walk_cell_destination(
             &mut self.substrate.entities,
             grid,

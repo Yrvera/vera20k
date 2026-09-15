@@ -1097,6 +1097,63 @@ fn later_repair_scatters_stationary_hut_occupant_and_processes_it_synchronously(
 }
 
 #[test]
+fn hut_repair_scatters_a_jumpjet_occupant_through_its_air_destination_owner() {
+    use crate::sim::components::{DriveCoord, NavTargetRef};
+    let (mut sim, rules, registry, hut) = ready_repair_fixture(Some(231));
+    // A rocketeer whose Foot coordinate resolves to the hut cell is a hut
+    // occupant for Building 0x4576F0 (Map 0x565730, first Building 0x47C520),
+    // exactly like a Walk infantryman standing there.
+    let rocketeer = sim
+        .spawn_object("JUMPJET", "Americans", 16, 15, 0, &rules, &BTreeMap::new())
+        .unwrap();
+    assert!(
+        sim.substrate
+            .entities
+            .get(rocketeer)
+            .unwrap()
+            .locomotor
+            .as_ref()
+            .unwrap()
+            .jumpjet_runtime()
+            .is_some()
+    );
+    let engineer = ready_engineer(&mut sim, &rules, &registry, hut);
+    let rng = sim.scenario_rng.state();
+    sim.run_completed_walk_step(
+        engineer,
+        DriveCoord::cell(16, 15, 0),
+        Some(&rules),
+        None,
+        Some(&registry),
+    )
+    .expect("a Jumpjet hut occupant scatters without stopping the frame");
+    assert!(
+        sim.substrate
+            .entities
+            .get(engineer)
+            .is_none_or(|e| !e.lifecycle.object_alive)
+    );
+    let e = sim.substrate.entities.get(rocketeer).unwrap();
+    // SetDestination(cell,1) reached Jumpjet MoveTo 0x54B1C0: the request is
+    // installed as NavCom plus the cached instance destination/moving byte.
+    assert!(matches!(
+        e.navigation.nav_com,
+        Some(NavTargetRef::Cell { .. })
+    ));
+    let state = e.locomotor.as_ref().unwrap().jumpjet_runtime().unwrap();
+    assert!(state.moving);
+    assert_ne!(
+        state.destination,
+        crate::sim::movement::jumpjet_movement::JumpjetRuntime::NULL
+    );
+    assert_ne!(
+        sim.scenario_rng.state(),
+        rng,
+        "Scatter's direction draw and the placement sub-cell draw precede the destination"
+    );
+}
+
+#[test]
 fn repair_pointer_expiry_uses_descending_infantry_registry_and_preserves_paid_heads() {
     use crate::sim::components::NavTargetRef;
     let (mut sim, rules, registry, hut) = ready_repair_fixture(None);
