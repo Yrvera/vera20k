@@ -1167,7 +1167,14 @@ pub(crate) fn restore_current_drive_occupation_after_refusal(
     *foot_occupation_enabled = true;
 }
 
-/// AddContent after an actual cell crossing re-marks the committed cell.
+/// Re-marks the committed cell after a crossing on the legacy Drive step.
+///
+/// Reachability: Drive and Ship production turns hand their crossings to
+/// `track_host.rs`, whose `track_place` gates the raw mark on the Foot
+/// occupation enable exactly as `CellClass::AddContent 0x0047E8A0` does
+/// (`+0xC0` → `FootClass::IsCellOccupationEnabled 0x0041C070`). This helper
+/// runs only from the non-suspending `tick_movement_with_grids` entry, so its
+/// unconditional re-enable is a test-path shape, not the native crossing.
 pub(crate) fn mark_current_drive_occupation_after_crossing(
     foot_occupation_enabled: &mut bool,
     _drive: &mut DriveLocomotionRuntime,

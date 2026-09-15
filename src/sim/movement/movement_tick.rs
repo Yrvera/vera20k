@@ -1203,11 +1203,13 @@ pub(super) fn classify_drive_track_chain_entry(
 /// gamemd skips it at 0x0073FA6B, so it never reaches this gate; only an
 /// occupant that raised code 2 does, and gamemd refuses that one too.
 ///
-/// Residual: VERA re-sets `foot_occupation_enabled` on every cell crossing
-/// (`cell_arrival.rs`) where gamemd keeps `+0x6B6` clear from the first paid
-/// point to the terminal point, and Ship/Hover never clear it, so a follower
-/// evaluated right after a leader's crossing still meets code 2 where retail
-/// skips. Player effect: columns close up slightly slower than retail.
+/// Lifecycle owners: Drive and Ship production turns run `track_host.rs`,
+/// which clears the enable at the first paid point and restores it at the
+/// terminal point and gates the raw mark on it as `AddContent` does; the
+/// crossing in `cell_arrival.rs` that re-sets it is reachable only from the
+/// non-suspending test entry. Hover clears it on its first translating frame
+/// and restores it at arrival (`advance_ordinary_mover`,
+/// `finalize_finished_entities`).
 fn drive_track_chain_entry_allows_track_install(entry_result: &CellEntryResult) -> bool {
     matches!(
         entry_result,
@@ -2389,6 +2391,38 @@ fn advance_ordinary_mover(
             } else {
                 MovementLayer::Ground
             };
+            // `HoverLocomotionClass::Move 0x00514746..7DF`: a frame that will
+            // translate (speed > 0) while the Foot occupation enable is still
+            // set and a head exists releases the owner's current-cell claim
+            // (`+0xF4` = `UnitClass 0x00744210`, the raw 0x20 bit) and zeroes
+            // `+0x6B6`/`+0x6B7`. `CellClass::AddContent 0x0047E8A0` then
+            // leaves every crossing unmarked until the arrival arm at
+            // 0x0051451E restores the enable, so followers meet a moving hover
+            // through the in-transit arm of `Can_Enter_Cell` (`0x0073FA2C`),
+            // not as a blocker. VERA releases the owner plane
+            // (`CellOccupationGrid`), which is what its admission reads; the
+            // raw 0x20 plane is not moved by hover crossings at all (a
+            // pre-existing residual of the ordinary mover step, whose readers
+            // are the raw-occupation rect checks and the 5x5 marker scan).
+            // Native gates on `ftol(speed) > 0` and moves the body by that
+            // integer; VERA's hover integrator also translates on sub-lepton
+            // speeds (a recorded divergence of the integrator, not of this
+            // gate), so the gate here is "will translate" to keep the enable
+            // false whenever the body is off its rest position. `+0x6B7` is
+            // unmodelled.
+            if uses_hover_locomotor
+                && effective_speed > SIM_ZERO
+                && entity.foot_occupation_enabled
+                && target.next_index < target.path.len()
+            {
+                cell_occupation.clear_vehicle_on_layer(
+                    entity.position.rx,
+                    entity.position.ry,
+                    entity_id,
+                    current_occupation_layer,
+                );
+                entity.foot_occupation_enabled = false;
+            }
             let prior_path_index = target.next_index;
             let native_preparation = suspend_native_track
                 .then(|| {
@@ -3085,6 +3119,13 @@ fn advance_ordinary_mover(
         let rejected_xy = entities
             .get(entity_id)
             .map(|entity| super::ground_pose::position_world_xy(&entity.position));
+        // The refused mover may overhang its boundary (sub-cell >= 256), so the
+        // cell it still occupies is its committed cell, not its world XY. The
+        // equality check below is defensive: it skips the restore only if the
+        // deferred response relocated the mover to another cell.
+        let rejected_cell = entities
+            .get(entity_id)
+            .map(|entity| (entity.position.rx, entity.position.ry));
         // The generic crossing loop already advanced subcell coordinates.
         // Restore Walk before the blocked response/repath observes the mover.
         if let Some(position) = walk_position_before_step.as_ref()
@@ -3121,6 +3162,43 @@ fn advance_ordinary_mover(
             None,
         );
         debug_events.extend(occ_evts);
+        // `HoverLocomotionClass::Move`: the arrival arm sets `+0x6B6 = 1` at
+        // every reached head (0x0051451E) and re-clears it in the same call
+        // only when the next step is accepted (0x00514746). Every next-step
+        // call (`FUN_00514F70`, prologue 0x00514F70..0x00514FB2) first
+        // releases the reached cell's raw claim through `+0xF4` and
+        // invalidates Head_To; a refused step then returns with the enable
+        // still set (code 7 at 0x00514711, `+0x684` bit 7 clear), so the
+        // waiting hover is an occupant to its allies through the enable
+        // alone. VERA restores the enable and its owner-plane claim together
+        // (the claim is VERA's representation; consumers read the enable),
+        // holds the refused hover at the cell boundary rather than the
+        // centre, and restores after the deferred response where native sets
+        // the enable before the next-step admission and any scatter it
+        // triggers (no reader of the flag or plane sits in that window today:
+        // `scatter_blocker` picks from `OccupancyGrid` cell lists). The next
+        // translating frame clears it again.
+        if let Some(entity) = entities.get_mut(entity_id)
+            && entity.category == EntityCategory::Unit
+            && !entity.foot_occupation_enabled
+            && entity.lifecycle.cell_marked
+            && !entity.passenger_role.is_inside_transport()
+            && rejected_cell == Some((entity.position.rx, entity.position.ry))
+            && entity
+                .locomotor
+                .as_ref()
+                .is_some_and(|l| l.kind == crate::rules::locomotor_type::LocomotorKind::Hover)
+        {
+            entity.foot_occupation_enabled = true;
+            if let Some(layer) = entity.occupancy_list_layer() {
+                cell_occupation.mark_vehicle_on_layer(
+                    entity.position.rx,
+                    entity.position.ry,
+                    entity_id,
+                    layer,
+                );
+            }
+        }
         // VERA-internal recovery: deferred refusals may snap the mover to
         // its old cell centre. This is not the rejected prospective step,
         // but it is a committed coordinate and must not retain stale Z.
@@ -3258,6 +3336,28 @@ struct PreparedMovementPass {
     block_set_built_at_gen: BTreeMap<crate::sim::intern::InternedId, u64>,
 }
 
+/// `HoverLocomotionClass::Move 0x00514310` restores the Foot occupation enable
+/// (`+0x6B6`) only in its arrival arm (0x0051451E), and every hover reaches that
+/// arm because Head_To survives a stop and the body glides to that cell centre
+/// first. VERA's hover step drops `movement_target` at once on a stop, so a
+/// hover left in transit re-enables on its next own turn instead, just before
+/// the pass reconciles its footprint. VERA-internal timing; the value restored
+/// is the native idle one (constructor 0x004D344A).
+fn restore_stopped_hover_occupation_enable(entity: &mut crate::sim::game_entity::GameEntity) {
+    if entity.movement_target.is_none()
+        && !entity.foot_occupation_enabled
+        && entity.category == EntityCategory::Unit
+        && entity.lifecycle.cell_marked
+        && !entity.passenger_role.is_inside_transport()
+        && entity
+            .locomotor
+            .as_ref()
+            .is_some_and(|loco| loco.kind == LocomotorKind::Hover)
+    {
+        entity.foot_occupation_enabled = true;
+    }
+}
+
 /// Perform the entry work once, before ordinary movers advance. In particular,
 /// resuming a point after a world callback must not call this again: it samples
 /// slope, reaims destinations and runs Tube/forced movement and pending arrivals.
@@ -3282,7 +3382,8 @@ fn prepare_movement_pass(
     let path_grid = ctx.path_grid;
     let resolved_terrain = ctx.resolved_terrain;
     for &entity_id in entity_order {
-        if let Some(entity) = entities.get(entity_id) {
+        if let Some(entity) = entities.get_mut(entity_id) {
+            restore_stopped_hover_occupation_enable(entity);
             cell_occupation.reconcile_entity(entity);
         }
     }
@@ -4201,6 +4302,26 @@ fn finalize_finished_entities(
                     current_layer,
                 );
             }
+            // `HoverLocomotionClass::Move` arrival arm 0x0051451E..2F: the Foot
+            // occupation enable is restored before the terminal coordinate snap
+            // and Mark(PUT), so the arrival cell carries the raw bit again.
+            if entity.category == EntityCategory::Unit
+                && !entity.foot_occupation_enabled
+                && entity.lifecycle.cell_marked
+                && !entity.passenger_role.is_inside_transport()
+                && entity
+                    .locomotor
+                    .as_ref()
+                    .is_some_and(|l| l.kind == LocomotorKind::Hover)
+            {
+                entity.foot_occupation_enabled = true;
+                cell_occupation.mark_vehicle_on_layer(
+                    current_cell.0,
+                    current_cell.1,
+                    entity_id,
+                    current_layer,
+                );
+            }
             // Native arrival SetCoords -> SetHeight precedes navigation cleanup.
             // Capture the active Drive owner before cleanup can restore Teleport.
             // Drive/Ship terminal movement already committed their exact head.
@@ -4776,12 +4897,20 @@ mod pass_cache_tests {
         let mut cache = MovementPassCache::default();
 
         let before = cache
-            .blocker_plane(&entities, &grid, &occupancy, None, None, None, &interner, None)
+            .blocker_plane(
+                &entities, &grid, &occupancy, None, None, None, &interner, None,
+            )
             .clone();
-        assert_eq!(before.count_at(1, 1), 1, "the marked unit is a neighbour source");
+        assert_eq!(
+            before.count_at(1, 1),
+            1,
+            "the marked unit is a neighbour source"
+        );
         // Same key: reused (and cross-checked in debug builds).
         let again = cache
-            .blocker_plane(&entities, &grid, &occupancy, None, None, None, &interner, None)
+            .blocker_plane(
+                &entities, &grid, &occupancy, None, None, None, &interner, None,
+            )
             .clone();
         assert_eq!(again, before);
 
@@ -4789,9 +4918,15 @@ mod pass_cache_tests {
         entities.note_dying_transition();
         entities.get_mut(7).unwrap().dying = true;
         let after = cache
-            .blocker_plane(&entities, &grid, &occupancy, None, None, None, &interner, None)
+            .blocker_plane(
+                &entities, &grid, &occupancy, None, None, None, &interner, None,
+            )
             .clone();
-        assert_eq!(after.count_at(1, 1), 0, "a dying object is not a neighbour source");
+        assert_eq!(
+            after.count_at(1, 1),
+            0,
+            "a dying object is not a neighbour source"
+        );
         assert_ne!(after, before);
     }
 }

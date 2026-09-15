@@ -5488,9 +5488,26 @@ fn tick_hover_world(
     native_frame: u32,
     lifecycle_requests: &mut Vec<LifecycleRequest>,
 ) {
+    tick_hover_world_on(
+        entities,
+        native_frame,
+        &mut OccupancyGrid::new(),
+        &mut crate::sim::occupancy::CellOccupationGrid::new(),
+        lifecycle_requests,
+    );
+}
+
+/// `tick_hover_world` over caller-owned object lists and owner plane, so the
+/// plane side effects of a run can be observed across frames.
+fn tick_hover_world_on(
+    entities: &mut EntityStore,
+    native_frame: u32,
+    occupancy: &mut OccupancyGrid,
+    cell_occupation: &mut crate::sim::occupancy::CellOccupationGrid,
+    lifecycle_requests: &mut Vec<LifecycleRequest>,
+) {
     let mut rng = SimRng::new(0);
     let mut interner = test_interner();
-    let mut occupancy = OccupancyGrid::new();
     let mut sounds = Vec::new();
     let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
     let terrain_costs: std::collections::BTreeMap<
@@ -5503,8 +5520,8 @@ fn tick_hover_world(
         None,
         &terrain_costs,
         &Default::default(),
-        &mut occupancy,
-        &mut crate::sim::occupancy::CellOccupationGrid::new(),
+        occupancy,
+        cell_occupation,
         &mut crate::sim::occupancy::RawCellOccupationGrid::new(),
         &mut next_occupancy_enter_order,
         &mut rng,
@@ -5522,6 +5539,191 @@ fn tick_hover_world(
         &mut sounds,
         lifecycle_requests,
     );
+}
+
+/// `HoverLocomotionClass::Move 0x00514310` zeroes the Foot occupation enable
+/// (`+0x6B6`) on its first translating frame (0x005147D5, gated on speed > 0,
+/// the enable still set and a live head) and restores it in the arrival arm
+/// (0x0051451E). Native established from the body; this pins VERA's flag over
+/// one straight hover run: enabled while the throttle ramps from rest, cleared
+/// from the first frame that moves the body, restored exactly at arrival.
+#[test]
+fn hover_mover_is_in_transit_from_first_translating_frame_until_arrival() {
+    let mut entities = EntityStore::new();
+    let mut mover = make_hover_mover(vec![(1, 1), (2, 1)], 128);
+    mover.lifecycle.cell_marked = true;
+    entities.insert(mover);
+    let world_xy = |p: &crate::sim::components::Position| (p.rx, p.ry, p.sub_x, p.sub_y);
+    let start = world_xy(&entities.get(1).unwrap().position);
+    let mut lifecycle_requests = Vec::new();
+    let mut translated = false;
+    // The bare world's hover integrator covers one cell in roughly 470 frames.
+    for frame in 1..1500u32 {
+        tick_hover_world(&mut entities, frame, &mut lifecycle_requests);
+        let e = entities.get(1).unwrap();
+        translated |= world_xy(&e.position) != start;
+        if e.movement_target.is_some() {
+            assert_eq!(
+                e.foot_occupation_enabled, !translated,
+                "frame {frame}: +0x6B6 follows the first translating frame"
+            );
+        } else {
+            assert!(translated, "hover arrived without moving");
+            assert!(e.foot_occupation_enabled, "arrival restores +0x6B6");
+            return;
+        }
+    }
+    let e = entities.get(1).unwrap();
+    panic!(
+        "hover never arrived: pos=({},{},{:?},{:?}) idx={:?} flag={}",
+        e.position.rx,
+        e.position.ry,
+        e.position.sub_x,
+        e.position.sub_y,
+        e.movement_target.as_ref().map(|t| t.next_index),
+        e.foot_occupation_enabled
+    );
+}
+
+/// The consumer side of the enable: the owner plane (`CellOccupationGrid`,
+/// which `detect_deferred_cell_check` and the Drive selection lane read) drops
+/// the hover's claim for the whole transit and carries it again at arrival.
+#[test]
+fn hover_owner_plane_claim_is_absent_in_transit_and_present_at_arrival() {
+    let mut entities = EntityStore::new();
+    let mut mover = make_hover_mover(vec![(1, 1), (2, 1)], 128);
+    mover.lifecycle.cell_marked = true;
+    entities.insert(mover);
+    let mut occupancy = OccupancyGrid::new();
+    occupancy.add(
+        1,
+        1,
+        1,
+        MovementLayer::Ground,
+        None,
+        crate::sim::occupancy::CellListInsertion::from_category(EntityCategory::Unit),
+    );
+    let mut plane = crate::sim::occupancy::CellOccupationGrid::new();
+    plane.reconcile_entity(entities.get(1).unwrap());
+    let bit = crate::sim::occupancy::VEHICLE_OCCUPATION_BIT;
+    assert_eq!(plane.vehicle_bits(1, 1, MovementLayer::Ground), bit);
+    let mut lifecycle_requests = Vec::new();
+    let mut frames_in_transit = 0u32;
+    for frame in 1..1500u32 {
+        tick_hover_world_on(
+            &mut entities,
+            frame,
+            &mut occupancy,
+            &mut plane,
+            &mut lifecycle_requests,
+        );
+        let e = entities.get(1).unwrap();
+        let here = (e.position.rx, e.position.ry);
+        if e.movement_target.is_some() {
+            if !e.foot_occupation_enabled {
+                frames_in_transit += 1;
+                assert_eq!(
+                    plane.vehicle_bits(here.0, here.1, MovementLayer::Ground),
+                    0,
+                    "frame {frame}: no claim on {here:?} while in transit"
+                );
+            }
+        } else {
+            assert!(frames_in_transit > 0);
+            assert_eq!(here, (2, 1));
+            assert_eq!(plane.vehicle_bits(2, 1, MovementLayer::Ground), bit);
+            assert_eq!(plane.vehicle_bits(1, 1, MovementLayer::Ground), 0);
+            return;
+        }
+    }
+    panic!("hover never arrived");
+}
+
+/// A hover whose next step is refused (parked ally ahead, code 2 wait) ends the
+/// frame with the enable set and its cell claimed, as the native arrival arm
+/// leaves it (0x0051451E, refused return 0x00514711).
+#[test]
+fn hover_refused_next_step_re_enables_occupation_while_it_waits() {
+    let mut entities = EntityStore::new();
+    let mut mover = make_hover_mover(vec![(1, 1), (2, 1)], 128);
+    mover.lifecycle.cell_marked = true;
+    entities.insert(mover);
+    let mut parked = GameEntity::test_default(2, "MTNK", "Americans", 2, 1);
+    parked.category = EntityCategory::Unit;
+    parked.lifecycle.cell_marked = true;
+    parked.locomotor = Some(
+        crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+            crate::rules::locomotor_type::LocomotorKind::Drive,
+        ),
+    );
+    entities.insert(parked);
+    let mut occupancy = OccupancyGrid::new();
+    for (id, x) in [(1u64, 1u16), (2, 2)] {
+        occupancy.add(
+            x,
+            1,
+            id,
+            MovementLayer::Ground,
+            None,
+            crate::sim::occupancy::CellListInsertion::from_category(EntityCategory::Unit),
+        );
+    }
+    let mut plane = crate::sim::occupancy::CellOccupationGrid::new();
+    for id in [1, 2] {
+        plane.reconcile_entity(entities.get(id).unwrap());
+    }
+    let mut lifecycle_requests = Vec::new();
+    let mut saw_transit = false;
+    let mut prev_sub_x = entities.get(1).unwrap().position.sub_x;
+    for frame in 1..1500u32 {
+        tick_hover_world_on(
+            &mut entities,
+            frame,
+            &mut occupancy,
+            &mut plane,
+            &mut lifecycle_requests,
+        );
+        let e = entities.get(1).unwrap();
+        assert_eq!(
+            (e.position.rx, e.position.ry),
+            (1, 1),
+            "frame {frame}: held"
+        );
+        saw_transit |= !e.foot_occupation_enabled;
+        let held = e.position.sub_x <= prev_sub_x;
+        prev_sub_x = e.position.sub_x;
+        if saw_transit && held && e.movement_target.is_some() {
+            // The refused step held the body: the wait leaves the hover an
+            // occupant of the cell it is still in.
+            assert!(
+                e.foot_occupation_enabled,
+                "frame {frame}: refused step re-enables"
+            );
+            assert_eq!(
+                plane.vehicle_bits(1, 1, MovementLayer::Ground),
+                crate::sim::occupancy::VEHICLE_OCCUPATION_BIT
+            );
+            return;
+        }
+    }
+    panic!("hover never reached the refused boundary");
+}
+
+/// VERA-internal: a hover whose `movement_target` was dropped while in transit
+/// (stop order) re-enables its occupation on its next own turn. Native reaches
+/// the same state through the arrival arm, which every hover passes because
+/// Head_To survives the stop.
+#[test]
+fn stopped_hover_left_in_transit_re_enables_occupation_on_its_next_turn() {
+    let mut entities = EntityStore::new();
+    let mut mover = make_hover_mover(vec![(1, 1), (2, 1)], 128);
+    mover.lifecycle.cell_marked = true;
+    mover.movement_target = None;
+    mover.foot_occupation_enabled = false;
+    entities.insert(mover);
+    let mut lifecycle_requests = Vec::new();
+    tick_hover_world(&mut entities, 1, &mut lifecycle_requests);
+    assert!(entities.get(1).unwrap().foot_occupation_enabled);
 }
 
 #[test]
