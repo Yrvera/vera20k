@@ -75,3 +75,33 @@ track-attribution-{e111,v8,v9,v9b}-*.jsonl traces, and matching test logs under
 These local diagnostics establish attribution; the committed tests remain the
 reproducible regression checks. Unimplemented world receivers remain outside
 this bounded evidence and are not certified by a stable replay hash.
+
+## 2026-09-15 live bridge repair integration: harness re-pin attribution
+
+Merging the live bridge repair branch onto main `595e3a88` moved every hash
+projection of the Slice6, bridge-crossing and global harnesses at once. Two
+causes were separated with test-only probes on both trees (main and candidate):
+
+1. Raw infantry occupation owners are the mark-time House index
+   (`InfantryClass::MarkCellOccupancy` `0x005217C0` stores Infantry virtual
+   `+0x38` -> `House+0x30` into `Cell+0x54/+0x58`), no longer the Rust entity
+   id. The raw occupation fold hashes that owner under every schema, so no
+   historical projection can reproduce the former encoding. A probe that hashes
+   the same composition with the owner fields excluded
+   (`HashSchema::BeforeWithoutRawInfantryOwners(161)`) is equal on main and on
+   the candidate for the bridge (`A0760B34D47612F6`) and global
+   (`EFB3B35ED792E94B`) fixtures. Those two re-pins are therefore
+   composition-only; the probe is asserted beside each fixture's pins.
+2. Slice6 additionally changes behavior at tick 9, when E1 receives `Attack`
+   on the Soviet tank: Walk now defers FindPath to the next Process
+   (`0x0075AFC5`), the route goal is the target's own Cell rather than an
+   approach cell, and head sub-cell selection draws Scenario RNG
+   (`0x004ACA10`). Per-tick dumps of all three entities (position, facing,
+   movement target, NavCom, locomotor kind, RNG state, health) diverge only at
+   E1 from tick 9 (`.local/harness-repin-20260915/slice6-dump.diff`); the
+   dumped MTNK fields and the Drive movement are identical. Its owner-excluded probe is
+   `1906B69879B595DE` on the candidate versus `CA5C843EAE4A6A3A` on main.
+
+These remain Rust-versus-prior-Rust pins. The Walk behaviors above carry their
+own native corpora (`walk_first_path`, `walk_head_occupation`,
+`walk_move_admission`); the pins do not certify whole-scenario native goldens.

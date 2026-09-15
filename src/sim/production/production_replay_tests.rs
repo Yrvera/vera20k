@@ -601,7 +601,7 @@ fn runtime_backed_replay_hashes_match_each_tick() {
             resources
         },
     };
-    let timeline_runtime = ReplayRunner::run_runtime(&mut runtime, &log, TICK_MS);
+    let timeline_runtime = ReplayRunner::run_runtime(&mut runtime, &log, TICK_MS).unwrap();
     assert_eq!(
         timeline_live, timeline_runtime,
         "runtime-backed replay must reproduce the live hash timeline bit-for-bit"

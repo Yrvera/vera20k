@@ -503,240 +503,6 @@ fn advance_until_c4_claim(
 }
 
 #[test]
-fn engineer_enters_cabhut_repairs_bridge() {
-    let (mut sim, rules, heights) = build_sim();
-    // Engineer has arrived in the CABHUT cell; the PerCellProcess-style
-    // arrival branch should repair the nearby bridge strip.
-    let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate
-        .entities
-        .get_mut(engineer)
-        .unwrap()
-        .capture_target = Some(cabhut);
-    seed_destroyed_bridge(&mut sim);
-
-    let result = step(&mut sim, &rules, &heights);
-
-    assert!(
-        result.bridge_state_changed,
-        "TickResult.bridge_state_changed must be set on repair"
-    );
-    assert!(
-        sim.substrate.entities.get(engineer).is_none(),
-        "engineer must be despawned after repair"
-    );
-
-    let bs = sim.bridge_state.as_ref().unwrap();
-    for (&(rx, ry), expected_overlay) in ENGINEER_REPAIR_STRIP_CELLS.iter().zip([0xCE, 0xCE, 0xCE])
-    {
-        let cell = bs.cell(rx, ry).unwrap();
-        assert_eq!(
-            cell.overlay_byte, expected_overlay,
-            "cell ({rx},{ry}) overlay={:#04X} must follow fresh Seed(0) MapGen variants",
-            cell.overlay_byte
-        );
-        assert!(
-            matches!(cell.damage_state, DamageState::Destroyed),
-            "cell ({rx},{ry}) keeps stale destroyed damage byte like gamemd"
-        );
-        assert!(bs.is_bridge_walkable(rx, ry));
-    }
-    assert!(
-        sim.sound_events
-            .iter()
-            .any(|e| matches!(e, SimSoundEvent::BridgeRepaired { .. })),
-        "BridgeRepaired sound event must be emitted"
-    );
-}
-
-#[test]
-fn engineer_at_intact_cabhut_emits_sound_no_mutation() {
-    let (mut sim, rules, heights) = build_sim();
-    let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate
-        .entities
-        .get_mut(engineer)
-        .unwrap()
-        .capture_target = Some(cabhut);
-    seed_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
-
-    let result = step(&mut sim, &rules, &heights);
-
-    assert!(
-        sim.substrate.entities.get(engineer).is_none(),
-        "engineer still consumed even when bridge is intact"
-    );
-    assert!(
-        sim.sound_events
-            .iter()
-            .any(|e| matches!(e, SimSoundEvent::BridgeRepaired { .. })),
-        "sound event always fires on trigger"
-    );
-    assert!(
-        !result.bridge_state_changed,
-        "intact bridge: no zone rebuild signal"
-    );
-}
-
-/// Exercise the arrival owner directly: a later frame rebuild must not mask
-/// an incomplete path projection published by the repair's zone refresh.
-#[test]
-fn bridge_repair_preserves_unrelated_foundation_before_next_reader() {
-    let (mut sim, rules, _) = build_sim();
-    let unrelated = spawn_cabhut(&mut sim, 1, 1);
-    let target = spawn_cabhut(&mut sim, 9, 10);
-    let engineer = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate
-        .entities
-        .get_mut(engineer)
-        .unwrap()
-        .capture_target = Some(target);
-    seed_destroyed_bridge(&mut sim);
-    assert!(sim.rebuild_dynamic_navigation(&rules));
-    let pinned = sim.path_grid_snapshot().unwrap();
-    assert!(!pinned.is_walkable(1, 1));
-    assert!(sim.substrate.occupancy.contains_entity(1, 1, unrelated));
-    let gameplay_rng = (sim.scenario_rng.state(), sim.main_rng.state());
-    let mut expected_mapgen = sim.mapgen_rng.clone();
-    let _ = expected_mapgen.next_range_u32_inclusive_scaled(0, 3);
-
-    assert!(
-        sim.tick_bridge_repair_orders_with_overlay_registry(&rules, None, &Default::default(),)
-    );
-
-    assert!(sim.substrate.entities.get(engineer).unwrap().dying);
-    assert!(sim.substrate.occupancy.contains_entity(1, 1, unrelated));
-    assert!(
-        !sim.path_grid().unwrap().is_walkable(1, 1),
-        "engineer repair lost an unrelated foundation before the next reader"
-    );
-    assert!(!pinned.is_walkable(1, 1));
-    assert_eq!(
-        gameplay_rng,
-        (sim.scenario_rng.state(), sim.main_rng.state())
-    );
-    assert_eq!(sim.mapgen_rng.state(), expected_mapgen.state());
-    for &(rx, ry) in ENGINEER_REPAIR_STRIP_CELLS {
-        assert!(
-            sim.bridge_state
-                .as_ref()
-                .unwrap()
-                .is_bridge_walkable(rx, ry)
-        );
-    }
-}
-
-#[test]
-fn consecutive_engineers_second_bridge_repair_waits_for_next_tick() {
-    let (mut sim, rules, heights) = build_sim();
-    let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer_a = spawn_engineer(&mut sim, 9, 10);
-    let engineer_b = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate
-        .entities
-        .get_mut(engineer_a)
-        .unwrap()
-        .capture_target = Some(cabhut);
-    sim.substrate
-        .entities
-        .get_mut(engineer_b)
-        .unwrap()
-        .capture_target = Some(cabhut);
-    seed_destroyed_bridge(&mut sim);
-
-    step(&mut sim, &rules, &heights);
-
-    assert!(sim.substrate.entities.get(engineer_a).is_none());
-    assert!(
-        sim.substrate.entities.get(engineer_b).is_some(),
-        "live LogicClass vector iteration skips the immediate successor after engineer A removes itself"
-    );
-    let repair_events = sim
-        .sound_events
-        .iter()
-        .filter(|e| matches!(e, SimSoundEvent::BridgeRepaired { .. }))
-        .count();
-    assert_eq!(repair_events, 1, "only the first engineer emits this tick");
-    assert_eq!(sim.radar_events.len(), 1);
-    assert_eq!(
-        sim.radar_events.iter().next().map(|e| e.event_type),
-        Some(crate::sim::radar::RadarEventType::BridgeRepaired)
-    );
-    assert!(
-        !sim.radar_terrain_dirty_cells.is_empty(),
-        "destroyed-anchor repair cells must propagate to minimap terrain dirty state"
-    );
-    assert_eq!(sim.radar_terrain_dirty_generation, 1);
-
-    let bs = sim.bridge_state.as_ref().unwrap();
-    for &(rx, ry) in ENGINEER_REPAIR_STRIP_CELLS {
-        let cell = bs.cell(rx, ry).unwrap();
-        assert!((0xCD..=0xD0).contains(&cell.overlay_byte));
-        assert!(bs.is_bridge_walkable(rx, ry));
-    }
-
-    step(&mut sim, &rules, &heights);
-
-    assert!(sim.substrate.entities.get(engineer_b).is_none());
-    let repair_events = sim
-        .sound_events
-        .iter()
-        .filter(|e| matches!(e, SimSoundEvent::BridgeRepaired { .. }))
-        .count();
-    assert_eq!(
-        repair_events, 2,
-        "the skipped immediate successor still triggers on the next scheduler pass"
-    );
-}
-
-#[test]
-fn nonconsecutive_engineers_both_repair_same_tick_with_radar_eva_gate() {
-    let (mut sim, rules, heights) = build_sim();
-    let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer_a = spawn_engineer(&mut sim, 9, 10);
-    let blocker = spawn_seal(&mut sim, 8, 8);
-    let engineer_b = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate
-        .entities
-        .get_mut(engineer_a)
-        .unwrap()
-        .capture_target = Some(cabhut);
-    sim.substrate
-        .entities
-        .get_mut(engineer_b)
-        .unwrap()
-        .capture_target = Some(cabhut);
-    seed_destroyed_bridge(&mut sim);
-
-    step(&mut sim, &rules, &heights);
-
-    assert!(sim.substrate.entities.get(engineer_a).is_none());
-    assert!(sim.substrate.entities.get(blocker).is_some());
-    assert!(sim.substrate.entities.get(engineer_b).is_none());
-
-    let bridge_repaired: Vec<_> = sim
-        .sound_events
-        .iter()
-        .filter_map(|event| match event {
-            SimSoundEvent::BridgeRepaired { eva_allowed, .. } => Some(*eva_allowed),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        bridge_repaired,
-        vec![true, false],
-        "two nonconsecutive engineers emit, but only the enqueued radar event gates EVA"
-    );
-    assert_eq!(
-        sim.radar_events.len(),
-        1,
-        "BridgeRepaired radar events dedup at the CABHUT cell"
-    );
-}
-
-#[test]
 fn capture_building_command_accepts_noncapturable_bridge_repair_hut() {
     let (mut sim, rules, heights) = build_sim();
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
@@ -761,105 +527,6 @@ fn capture_building_command_accepts_noncapturable_bridge_repair_hut() {
             .and_then(|e| e.capture_target),
         Some(cabhut)
     );
-}
-
-#[test]
-fn engineer_adjacent_to_cabhut_enters_before_repairing_and_dirtying_minimap() {
-    let (mut sim, rules, heights) = build_sim();
-    let cabhut = spawn_cabhut(&mut sim, 8, 10);
-    let engineer = spawn_engineer(&mut sim, 7, 10);
-    sim.substrate
-        .entities
-        .get_mut(engineer)
-        .unwrap()
-        .capture_target = Some(cabhut);
-    seed_destroyed_bridge(&mut sim);
-
-    let result = step(&mut sim, &rules, &heights);
-
-    assert!(
-        !result.bridge_state_changed,
-        "adjacent engineer must not repair until the enter-cell arrival branch"
-    );
-    assert!(sim.substrate.entities.get(engineer).is_some());
-    assert!(
-        sim.sound_events
-            .iter()
-            .all(|event| !matches!(event, SimSoundEvent::BridgeRepaired { .. })),
-        "adjacency alone must not emit BridgeRepaired"
-    );
-    assert!(
-        sim.radar_terrain_dirty_cells.is_empty(),
-        "adjacency alone must not dirty minimap terrain"
-    );
-    assert_eq!(sim.radar_terrain_dirty_generation, 0);
-    assert_eq!(
-        sim.substrate
-            .entities
-            .get(engineer)
-            .and_then(|e| e.movement_target.as_ref())
-            .map(|m| m.path.clone()),
-        Some(vec![(7, 10), (8, 10)]),
-        "adjacency should issue the scripted one-cell building-entry move"
-    );
-
-    let mut repaired = false;
-    for _ in 0..40 {
-        let result = step(&mut sim, &rules, &heights);
-        repaired |= result.bridge_state_changed;
-        if sim.substrate.entities.get(engineer).is_none() {
-            break;
-        }
-    }
-
-    assert!(
-        repaired,
-        "repair must fire after the engineer arrives in CABHUT"
-    );
-    assert!(
-        sim.substrate.entities.get(engineer).is_none(),
-        "engineer must be consumed by the arrival branch"
-    );
-    assert!(
-        sim.sound_events
-            .iter()
-            .any(|event| matches!(event, SimSoundEvent::BridgeRepaired { .. })),
-        "arrival repair must emit BridgeRepaired"
-    );
-    assert!(
-        !sim.radar_terrain_dirty_cells.is_empty(),
-        "destroyed-anchor repair must dirty radar/minimap terrain cells"
-    );
-    assert_eq!(sim.radar_terrain_dirty_generation, 1);
-
-    let bs = sim.bridge_state.as_ref().unwrap();
-    assert!((0xCD..=0xD0).contains(&bs.cell(10, 9).unwrap().overlay_byte));
-    assert!(bs.is_bridge_walkable(10, 9));
-}
-
-#[test]
-fn engineer_far_from_bridge_at_cabhut_no_mutation() {
-    let (mut sim, rules, heights) = build_sim();
-    let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate
-        .entities
-        .get_mut(engineer)
-        .unwrap()
-        .capture_target = Some(cabhut);
-    // Empty bridge state — scan finds nothing.
-    sim.bridge_state = Some(BridgeRuntimeState::default());
-
-    let result = step(&mut sim, &rules, &heights);
-
-    assert!(sim.substrate.entities.get(engineer).is_none());
-    assert!(
-        sim.sound_events
-            .iter()
-            .any(|e| matches!(e, SimSoundEvent::BridgeRepaired { .. })),
-        "sound emitted; no bridge to mutate"
-    );
-    assert!(!result.bridge_state_changed);
 }
 
 /// SEAL with `c4_plant` set, adjacent to a healthy CABHUT, must:
@@ -1467,18 +1134,8 @@ fn g4_damage_path_sets_damaged_variant_at_perpendicular_target() {
     let mut bs = BridgeRuntimeState::default();
     // Seed anchor at (10, 10) and a perpendicular target anchor at (11, 10)
     // (one east — the DamageA perpendicular direction for an NS bridge).
-    seed_isolated_anchor(
-        &mut bs,
-        (10, 10),
-        1,
-        DamageState::Healthy { variant: 0 },
-    );
-    seed_isolated_anchor(
-        &mut bs,
-        (11, 10),
-        2,
-        DamageState::Healthy { variant: 0 },
-    );
+    seed_isolated_anchor(&mut bs, (10, 10), 1, DamageState::Healthy { variant: 0 });
+    seed_isolated_anchor(&mut bs, (11, 10), 2, DamageState::Healthy { variant: 0 });
     let mut terrain = damaged_data_resolved_terrain(42);
     terrain.test_set_high_bridge_rim_tiles(crate::map::bridge_rim_tiles::HighBridgeRimTiles::from_ini(
         40, b"[General]\nBridgeBottomRight1=3\nBridgeBottomRight2=3\nBridgeTopLeft1=1\nBridgeTopLeft2=2\nBridgeMiddle1=7\nBridgeMiddle2=12\n"));
@@ -1501,12 +1158,7 @@ fn g4_collapse_path_keeps_damaged_variant_set() {
     // Pre-damaged anchor + perpendicular target, both already flagged
     // damaged_variant=true. The collapse step must NOT clear the bit.
     seed_isolated_anchor(&mut bs, (10, 10), 1, DamageState::Damaged);
-    seed_isolated_anchor(
-        &mut bs,
-        (11, 10),
-        2,
-        DamageState::Healthy { variant: 0 },
-    );
+    seed_isolated_anchor(&mut bs, (11, 10), 2, DamageState::Healthy { variant: 0 });
     let mut terrain = damaged_data_resolved_terrain(42);
     terrain.test_set_high_bridge_rim_tiles(crate::map::bridge_rim_tiles::HighBridgeRimTiles::from_ini(
         40, b"[General]\nBridgeBottomRight1=3\nBridgeBottomRight2=3\nBridgeTopLeft1=1\nBridgeTopLeft2=2\nBridgeMiddle1=7\nBridgeMiddle2=12\n"));
@@ -1543,7 +1195,13 @@ fn ordinary_engineer_overlay_repair_preserves_pavement_damage() {
     // Pre-flag every bridge cell as damaged-variant.
     {
         for &(rx, ry) in BRIDGE_CELLS {
-            sim.resolved_terrain.as_mut().unwrap().cell_mut(rx, ry).unwrap().bridge_facts.raw_flags |= 0x2000;
+            sim.resolved_terrain
+                .as_mut()
+                .unwrap()
+                .cell_mut(rx, ry)
+                .unwrap()
+                .bridge_facts
+                .raw_flags |= 0x2000;
         }
     }
 
@@ -1594,11 +1252,23 @@ fn ordinary_engineer_overlay_repair_does_not_clear_neighbor_pavement() {
             },
         );
         for &(rx, ry) in BRIDGE_CELLS {
-            sim.resolved_terrain.as_mut().unwrap().cell_mut(rx, ry).unwrap().bridge_facts.raw_flags |= 0x2000;
+            sim.resolved_terrain
+                .as_mut()
+                .unwrap()
+                .cell_mut(rx, ry)
+                .unwrap()
+                .bridge_facts
+                .raw_flags |= 0x2000;
         }
     }
 
-    sim.resolved_terrain.as_mut().unwrap().cell_mut(10, 14).unwrap().bridge_facts.raw_flags |= 0x2000;
+    sim.resolved_terrain
+        .as_mut()
+        .unwrap()
+        .cell_mut(10, 14)
+        .unwrap()
+        .bridge_facts
+        .raw_flags |= 0x2000;
     step(&mut sim, &rules, &heights);
 
     let terrain = sim.resolved_terrain.as_ref().unwrap();

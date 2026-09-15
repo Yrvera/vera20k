@@ -36,14 +36,14 @@ pub mod game_entity;
 pub mod intern;
 pub(crate) mod lifecycle_request;
 pub(crate) mod light_sources;
-pub(crate) mod radiation_light;
 pub mod multiplayer_checksum;
 pub(crate) mod native_identity;
+pub(crate) mod radiation_light;
 pub mod rng;
-pub(crate) mod score;
 pub(crate) mod scenario_bootstrap;
 pub(crate) mod scenario_post_map;
 pub mod scenario_session; // app->sim launch descriptor (per-match seed pipeline)
+pub(crate) mod score;
 pub mod sensor_lifecycle;
 pub mod timer; // signed frame-anchored countdown primitive
 pub mod type_handle_table; // InternedId -> TypeHandle, one-hop entity->type resolution
@@ -89,9 +89,9 @@ pub mod bridge_state;
 
 // --- Infantry deploy-fire state machine ---
 pub mod deploy;
-pub(crate) mod mcv_deploy;
 pub mod gate_runtime;
 pub mod infantry;
+pub(crate) mod mcv_deploy;
 
 // --- Persistent cell occupancy ---
 pub mod cell_kernel;
@@ -114,20 +114,21 @@ pub mod radiation;
 // --- Passengers, transport, slaves ---
 pub mod parity_digest;
 pub mod passenger;
-pub mod transport_unload;
+pub(crate) mod slave_deposit;
 pub mod slave_miner;
 pub mod spawn_manager;
 mod spawn_manager_tests;
+pub mod transport_unload;
 
 // --- Economy, map resources ---
 pub mod ore_growth;
 pub(crate) mod ore_twinkle;
 pub mod radar;
-pub(crate) mod tiberium_germinate;
 pub mod rocking;
 pub mod terrain_object;
 pub mod terrain_spawn;
 pub mod tiberium;
+pub(crate) mod tiberium_germinate;
 
 // --- Per-match settings, per-player state ---
 pub mod game_options;
@@ -141,12 +142,12 @@ pub mod trigger_runtime;
 // --- AI, replay, selection, debug ---
 pub mod ai;
 pub(crate) mod ai_buildable;
-pub(crate) mod naval_base_placement;
 pub mod debug_event_log;
-pub mod runtime;
+pub(crate) mod naval_base_placement;
 pub mod replay;
 #[cfg(test)]
 mod replay_determinism_tests;
+pub mod runtime;
 pub mod selection;
 // GPU-independent HVA frame-count catalog shared with the renderer's atlas seeding (F09).
 pub mod voxel_frame_catalog;

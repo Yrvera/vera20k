@@ -132,22 +132,22 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 // Clearing ONLY that field reproduces every parent (588f4079) hash probe; final
 // entity/RNG comparison has no other differences. Route/deck and per-tick
 // replay checks remain active. RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md records scope.
-const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x42E6_236A_CDC3_7866;
-const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xF349_725E_613C_4C60;
-const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x1C72_98A6_DCAB_824A;
+const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0xCAE2_8471_3B63_14DB;
+const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x7BEE_3E9D_B148_B70A;
+const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x3931_1CCA_29F3_5EE9;
 // Re-baselined 2026-09-02 for v117's disguise-detect folds (FogState's
 // `CellClass+0xAC[house]` counter plane and the cached `DetectDisguiseRange=`
 // deposit radius). The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved.
-const BRIDGE_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0x6F8E_49DE_DBC9_5236;
+const BRIDGE_HARNESS_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xCDA7_50B4_C529_175D;
 // Baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): every
 // entity folds its dead ProduceCash timer and two `None` drain-link halves.
 // The dedicated pre-v135 probe reproduces the prior committed final exactly
 // and every older probe plus the three RNG streams are unchanged, so this is
 // composition-only (no derrick, DrainWeapon or capture in this fixture).
-const BRIDGE_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x0F7D_D039_D6E5_484D;
-const BRIDGE_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x3F2E_03F0_293D_0369;
+const BRIDGE_HARNESS_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xC1FF_A576_23F4_E576;
+const BRIDGE_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x3C96_2071_1743_915F;
 // v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
 // reproduces the ramp branch's current baseline exactly; older probes and RNG pins
 // are unchanged. This is Rust hash-composition provenance, not native parity.
@@ -162,18 +162,25 @@ const BRIDGE_HARNESS_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0x3F2E_03F0_293D_036
 // residual and synchronous arrival timing; historical projections also include
 // migrated Foot owners. See docs/research/TRACK_PROCESS_REPLAY_REGRESSION_NOTES.md
 // for baseline/candidate observations and native scope. These are Rust pins.
-const BRIDGE_HARNESS_FINAL_HASH_PRE_CELL_MEMBERSHIP_V159: u64 = 0x1C9D_C67C_2209_DACC;
+const BRIDGE_HARNESS_FINAL_HASH_PRE_CELL_MEMBERSHIP_V159: u64 = 0xBACE_D587_09DA_4C4B;
 // Schema159 adds actual ordered Cell membership and exact Sight0 metadata.
 // The immediately preceding composition is asserted below against the old
 // current pin; all historical, replay/path and RNG tripwires remain intact.
 // This is a Rust hash-composition ratchet, not a new native golden.
-const BRIDGE_HARNESS_FINAL_HASH_PRE_FOOT_PATH_RUNTIME_V160: u64 = 0xDC4F_664E_8F9F_FD7C;
+const BRIDGE_HARNESS_FINAL_HASH_PRE_FOOT_PATH_RUNTIME_V160: u64 = 0x8145_80FE_2764_0AFA;
 // Schema160 moves the two Foot path timers, blocked latch and dword retry count
 // into NavigationState::path_runtime and hashes that owner instead of the former
 // positional MovementTarget fields. The immediately preceding composition is
 // asserted below against the old current pin; every older probe, replay/path
 // and RNG tripwire remains intact. Rust hash-composition ratchet, not a native golden.
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0xFF20_F31C_0ECB_A093;
+// Re-pinned 2026-09-15 for the live bridge repair integration: raw infantry
+// occupation owners are the mark-time House index (InfantryClass::
+// MarkCellOccupancy 0x005217C0 -> Infantry virtual +0x38 -> House+0x30), no
+// longer the Rust entity id, which re-encodes the raw occupation fold under
+// every schema and moves every projection at once. Composition-only proof:
+// the owner-excluded probe asserted below equals main 595e3a88's value for
+// this fixture (receipt .local/harness-repin-20260915/owner-probe.txt).
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0xF199_544D_CF92_A3DA;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
@@ -726,8 +733,13 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
     }
 
     assert_eq!(
+        rep.state_hash_without_raw_infantry_owners_v161_probe(),
+        0xA076_0B34_D476_12F6,
+        "raw infantry owner-excluded projection changed beyond the House-index re-encoding"
+    );
+    assert_eq!(
         rep.state_hash_without_sustained_gap_sight_v142(),
-        0x79F5_7948_8D9D_B192,
+        0x5FEF_1F84_890C_4984,
         "pre-v142 composition must reproduce this fixture's prior current baseline"
     );
     let final_hash = *replayed.last().expect("at least one tick replayed");

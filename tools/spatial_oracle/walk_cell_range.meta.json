@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "Original6F7970->6F77B0->6F7220 normal non-arcing Infantry Cell-target range and lookup ordering; explicit supplied object/weapon/map fields.",
+  "assumptions": [
+    "Supplied original Infantry table7EB058 and Cell table7E4EEC; actor non-garrison, no bunker/open-top/veteran range bonuses. Projectile has all flags false, including non-arcing and no wall/cliff collision; original line callable executes.",
+    "Supplied independently established104 level/208 high-flight and416 bridge constants, x87 control0E7F. WaterSet base is a supplied theater input; tile and Dummy level/slope/flags are supplied current state.",
+    "No constructors or complete PerCell/weapon selection/flight behavior claimed."
+  ],
+  "substitutions": [
+    "GetWeapon+3F8 records requested slot and supplies one original-shaped weapon slot. No other callable substitution."
+  ],
+  "entry_points": {
+    "coordinate_cell_wrapper": "0x006F7970",
+    "range_source": "0x006F77B0",
+    "range": "0x006F7220",
+    "cell_coords": "0x00486840",
+    "cell_tile_gate": "0x004867E0",
+    "cell_ground": "0x0047B3A0",
+    "map_ground": "0x00578080",
+    "map_cell": "0x00565730",
+    "line": "0x004CC310"
+  },
+  "payload_sha256": "60a1ccaa5b0d68e659e4cbadb06927ba08aa675a75738c9d5f98f704cfbf682c"
+}

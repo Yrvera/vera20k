@@ -258,23 +258,25 @@ fn trigger_action_40_normalizes_and_refreshes_authority_same_frame() {
             .outside_playfield
     );
 
-    let tick = sim.advance_master_frame(
-        &[],
-        None,
-        &BTreeMap::new(),
-        None,
-        None,
-        67,
-        TickLane::Ordinary,
-        Some(TriggerInputs {
-            graph: &graph,
-            triggers: &triggers,
-            events: &events,
-            actions: &actions,
-            waypoints: &HashMap::new(),
-            rules: None,
-        }),
-    );
+    let tick = sim
+        .advance_master_frame(
+            &[],
+            None,
+            &BTreeMap::new(),
+            None,
+            None,
+            67,
+            TickLane::Ordinary,
+            Some(TriggerInputs {
+                graph: &graph,
+                triggers: &triggers,
+                events: &events,
+                actions: &actions,
+                waypoints: &HashMap::new(),
+                rules: None,
+            }),
+        )
+        .expect("fixture frame must complete");
 
     assert_eq!(
         sim.playfield_bounds,
@@ -627,23 +629,25 @@ fn master_frame_polls_triggers_before_logic_houses_commit_and_delete() {
     let mut sim = Simulation::new();
     sim.trigger_runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
-    let tick = sim.advance_master_frame(
-        &[],
-        None,
-        &BTreeMap::new(),
-        None,
-        None,
-        67,
-        TickLane::Ordinary,
-        Some(TriggerInputs {
-            graph: &graph,
-            triggers: &triggers,
-            events: &events,
-            actions: &actions,
-            waypoints: &HashMap::new(),
-            rules: None,
-        }),
-    );
+    let tick = sim
+        .advance_master_frame(
+            &[],
+            None,
+            &BTreeMap::new(),
+            None,
+            None,
+            67,
+            TickLane::Ordinary,
+            Some(TriggerInputs {
+                graph: &graph,
+                triggers: &triggers,
+                events: &events,
+                actions: &actions,
+                waypoints: &HashMap::new(),
+                rules: None,
+            }),
+        )
+        .expect("fixture frame must complete");
 
     assert!(tick.frame_committed);
     assert_eq!(
@@ -722,16 +726,18 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
 
     let mut original = Simulation::new();
     original.trigger_runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
-    original.advance_master_frame(
-        &[],
-        None,
-        &height_map,
-        None,
-        None,
-        67,
-        TickLane::Ordinary,
-        Some(trigger_inputs),
-    );
+    original
+        .advance_master_frame(
+            &[],
+            None,
+            &height_map,
+            None,
+            None,
+            67,
+            TickLane::Ordinary,
+            Some(trigger_inputs),
+        )
+        .expect("fixture frame must complete");
     assert!(original.trigger_runtime.globals_set.contains(&13));
 
     let projectile_id = original.allocate_stable_id();
@@ -780,16 +786,18 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
     assert_eq!(restored.projectiles.len(), 1);
     assert!(restored.substrate.pending_delete.contains(&deleted_id));
 
-    let original_tick = original.advance_master_frame(
-        &[],
-        None,
-        &height_map,
-        None,
-        None,
-        67,
-        TickLane::Ordinary,
-        Some(trigger_inputs),
-    );
+    let original_tick = original
+        .advance_master_frame(
+            &[],
+            None,
+            &height_map,
+            None,
+            None,
+            67,
+            TickLane::Ordinary,
+            Some(trigger_inputs),
+        )
+        .expect("fixture frame must complete");
     let mut replay_log = ReplayLog::new(ReplayHeader {
         version: 1,
         tick_hz: 15,
@@ -798,16 +806,18 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
         rules_hash: 0,
     });
     replay_log.record_tick(original_tick.tick, Vec::new(), original_tick.state_hash);
-    let restored_tick = restored.advance_master_frame(
-        &[],
-        None,
-        &height_map,
-        None,
-        None,
-        67,
-        TickLane::Ordinary,
-        Some(trigger_inputs),
-    );
+    let restored_tick = restored
+        .advance_master_frame(
+            &[],
+            None,
+            &height_map,
+            None,
+            None,
+            67,
+            TickLane::Ordinary,
+            Some(trigger_inputs),
+        )
+        .expect("fixture frame must complete");
 
     assert!(original_tick.frame_committed);
     assert!(restored_tick.frame_committed);

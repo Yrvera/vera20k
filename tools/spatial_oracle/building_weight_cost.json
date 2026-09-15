@@ -1,0 +1,134 @@
+[
+  {
+    "cost84": 1500,
+    "input": {
+      "building": 1,
+      "cost": 1500,
+      "country_building": 1,
+      "country_unit": 1,
+      "free": 0,
+      "unit": 1
+    }
+  },
+  {
+    "cost84": 1500,
+    "input": {
+      "building": 1,
+      "cost": 1500,
+      "country_building": 1,
+      "country_unit": 1,
+      "free": 0,
+      "unit": 0.75
+    }
+  },
+  {
+    "cost84": 1125,
+    "input": {
+      "building": 0.75,
+      "cost": 1500,
+      "country_building": 1,
+      "country_unit": 1,
+      "free": 0,
+      "unit": 1
+    }
+  },
+  {
+    "cost84": 1125,
+    "input": {
+      "building": 0.75,
+      "cost": 1500,
+      "country_building": 1,
+      "country_unit": 1,
+      "free": 0,
+      "unit": 0.75
+    }
+  },
+  {
+    "cost84": 2000,
+    "input": {
+      "building": 1,
+      "cost": 2000,
+      "country_building": 1,
+      "country_unit": 1,
+      "free": 1400,
+      "unit": 1
+    }
+  },
+  {
+    "cost84": 1650,
+    "input": {
+      "building": 1,
+      "cost": 2000,
+      "country_building": 1,
+      "country_unit": 1,
+      "free": 1400,
+      "unit": 0.75
+    }
+  },
+  {
+    "cost84": 1850,
+    "input": {
+      "building": 0.75,
+      "cost": 2000,
+      "country_building": 1,
+      "country_unit": 1,
+      "free": 1400,
+      "unit": 1
+    }
+  },
+  {
+    "cost84": 1500,
+    "input": {
+      "building": 0.75,
+      "cost": 2000,
+      "country_building": 1,
+      "country_unit": 1,
+      "free": 1400,
+      "unit": 0.75
+    }
+  },
+  {
+    "cost84": 1400,
+    "input": {
+      "building": 1,
+      "cost": 1000,
+      "country_building": 1,
+      "country_unit": 1,
+      "free": 1400,
+      "unit": 1
+    }
+  },
+  {
+    "cost84": 1050,
+    "input": {
+      "building": 1,
+      "cost": 1000,
+      "country_building": 1,
+      "country_unit": 1,
+      "free": 1400,
+      "unit": 0.75
+    }
+  },
+  {
+    "cost84": 1400,
+    "input": {
+      "building": 0.75,
+      "cost": 1000,
+      "country_building": 1,
+      "country_unit": 1,
+      "free": 1400,
+      "unit": 1
+    }
+  },
+  {
+    "cost84": 1050,
+    "input": {
+      "building": 0.75,
+      "cost": 1000,
+      "country_building": 1,
+      "country_unit": 1,
+      "free": 1400,
+      "unit": 0.75
+    }
+  }
+]

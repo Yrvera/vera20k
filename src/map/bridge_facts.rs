@@ -71,7 +71,9 @@ impl BridgeFlags {
     pub fn structural(self) -> bool {
         self.has(BRIDGE_FLAG_STRUCTURAL)
     }
-    /// `0x200` — bridgehead/transition cell (the on/off-ramp boundary).
+    /// `0x200` — native bridge-entry flag, also required along traversable
+    /// deck lanes by 0x004D9E08. The stamp sets Anchor/Forward1/Opposite and
+    /// clears Forward2; this is not merely an along-span endpoint marker.
     #[inline]
     pub fn bridgehead(self) -> bool {
         self.has(BRIDGE_FLAG_TRANSITION)
@@ -346,6 +348,8 @@ fn stamp_intact(cell: &mut BridgeCellFacts, slot: BridgeStampSlot, relation: Bri
             attach(cell, relation);
         }
         BridgeStampSlot::Forward2 => {
+            // This transverse stamp slot is structural but lacks the 0x200
+            // entry flag; do not infer that flag from structural presence.
             cell.raw_flags &= !(BRIDGE_FLAG_TRANSITION | BRIDGE_FLAG_DESTROYED_OR_RAMP);
             cell.raw_flags |= BRIDGE_FLAG_EXTRA_SIDE;
             set_direction_zero_flag(cell, direction_zero);

@@ -463,12 +463,22 @@ impl Simulation {
         self.state_hash_with_schema(HashSchema::Current)
     }
 
-    /// Reproduce the immediately preceding main hash composition: exclude
-    /// only schema159's authoritative Cell lists and exact Sight0 metadata.
-    /// Client-relative discovery history is excluded in both compositions.
+    /// Project out schema159's Cell lists/Sight0 and later gated layouts.
+    /// This does not reverse semantic changes: raw Infantry house IDs cannot
+    /// reconstruct the former entity-ID owner encoding. Prior pins remain
+    /// independent checks; no reverse owner mapping is invented here.
     #[cfg(test)]
     pub(crate) fn state_hash_without_cell_membership_v159(&self) -> u64 {
         self.state_hash_with_schema(HashSchema::Before(159))
+    }
+
+    /// Provenance probe for the raw infantry owner identity change (entity id
+    /// -> mark-time House index, InfantryClass::MarkCellOccupancy 0x005217C0):
+    /// the schema-160 composition with the raw owner fields excluded. Equal
+    /// values across the change prove every other fold is unchanged.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_raw_infantry_owners_v161_probe(&self) -> u64 {
+        self.state_hash_with_schema(HashSchema::BeforeWithoutRawInfantryOwners(161))
     }
 
     /// Test-only provenance probe for the schema160 Foot path runtime
@@ -477,6 +487,14 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn state_hash_without_foot_path_runtime_v160(&self) -> u64 {
         self.state_hash_with_schema(HashSchema::Before(160))
+    }
+
+    /// Test-only provenance probe for the schema161 bridge locomotor/raw
+    /// Dummy rebaseline: projects out only the schema161 payload and Dummy
+    /// composition. It cannot reverse the raw Infantry owner identity change.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_bridge_locomotor_v161(&self) -> u64 {
+        self.state_hash_with_schema(HashSchema::Before(161))
     }
 
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
@@ -629,7 +647,11 @@ impl Simulation {
             }
         }
 
-        self.substrate.fold_raw_cell_occupation(&mut hasher);
+        self.substrate.fold_raw_cell_occupation(
+            &mut hasher,
+            schema.includes(HashFeature::BridgeLocomotorAndDummy),
+            schema.includes_raw_infantry_owners(),
+        );
         self.substrate.fold_hidden_occupation(&mut hasher);
         self.substrate.fold_base_reservations(&mut hasher);
         if schema.includes(HashFeature::CellMembership) {
@@ -1620,11 +1642,11 @@ impl Simulation {
                 loco.hover_throttle.to_bits().hash(hasher);
                 loco.hover_bob_offset.to_bits().hash(hasher);
                 loco.altitude.to_bits().hash(hasher);
-                hash_locomotor_payload(&loco.runtime_payload, hasher);
+                hash_locomotor_payload(&loco.runtime_payload, hasher, schema);
                 match loco.piggyback.as_deref() {
                     Some(runtime) => {
                         1u8.hash(hasher);
-                        hash_locomotor_runtime(runtime, hasher);
+                        hash_locomotor_runtime(runtime, hasher, schema);
                     }
                     None => 0u8.hash(hasher),
                 }
@@ -2060,6 +2082,7 @@ impl Simulation {
 fn hash_locomotor_runtime(
     runtime: &crate::sim::movement::locomotion::piggyback::LocomotorRuntime,
     hasher: &mut impl Hasher,
+    schema: HashSchema,
 ) {
     (runtime.kind as u8).hash(hasher);
     (runtime.layer as u8).hash(hasher);
@@ -2104,12 +2127,13 @@ fn hash_locomotor_runtime(
     common.hover_throttle.to_bits().hash(hasher);
     common.hover_speed_request.to_bits().hash(hasher);
     common.hover_bob_offset.to_bits().hash(hasher);
-    hash_locomotor_payload(&runtime.payload, hasher);
+    hash_locomotor_payload(&runtime.payload, hasher, schema);
 }
 
 fn hash_locomotor_payload(
     payload: &crate::sim::movement::locomotion::piggyback::LocomotorRuntimePayload,
     hasher: &mut impl Hasher,
+    schema: HashSchema,
 ) {
     use crate::sim::movement::locomotion::piggyback::LocomotorRuntimePayload;
     match payload {
@@ -2117,7 +2141,12 @@ fn hash_locomotor_payload(
             0u8.hash(hasher);
             hash_slope_transition_state(state, hasher);
         }
-        LocomotorRuntimePayload::Walk => 1u8.hash(hasher),
+        LocomotorRuntimePayload::Walk(state) => {
+            1u8.hash(hasher);
+            if schema.includes(HashFeature::BridgeLocomotorAndDummy) {
+                state.hash(hasher);
+            }
+        }
         LocomotorRuntimePayload::Teleport(state) => {
             2u8.hash(hasher);
             hash_teleport_state(state.as_ref(), hasher);
@@ -2134,14 +2163,24 @@ fn hash_locomotor_payload(
             5u8.hash(hasher);
             hash_drop_pod_state(state.as_ref(), hasher);
         }
-        LocomotorRuntimePayload::Hover => 6u8.hash(hasher),
+        LocomotorRuntimePayload::Hover(head) => {
+            6u8.hash(hasher);
+            if schema.includes(HashFeature::BridgeLocomotorAndDummy) {
+                head.hash(hasher);
+            }
+        }
         LocomotorRuntimePayload::Mech => 7u8.hash(hasher),
         LocomotorRuntimePayload::Ship(state) => {
             8u8.hash(hasher);
             hash_slope_transition_state(state, hasher);
         }
         LocomotorRuntimePayload::Fly => 9u8.hash(hasher),
-        LocomotorRuntimePayload::Jumpjet => 10u8.hash(hasher),
+        LocomotorRuntimePayload::Jumpjet(state) => {
+            10u8.hash(hasher);
+            if schema.includes(HashFeature::BridgeLocomotorAndDummy) {
+                state.hash(hasher);
+            }
+        }
         LocomotorRuntimePayload::Parachute => 11u8.hash(hasher),
     }
 }
@@ -4708,5 +4747,157 @@ mod passenger_cargo_hash_tests {
         let b = sim_with_sizes(3, 1);
 
         assert_ne!(a.state_hash(), b.state_hash());
+    }
+}
+
+#[cfg(test)]
+mod bridge161_hash_projection_tests {
+    use super::*;
+    use crate::map::entities::EntityCategory;
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::components::{DriveCoord, Health};
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::locomotion::piggyback::{LocomotorRuntimePayload, StashedLocomotor};
+    use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+    use crate::sim::occupancy::RawCellKey;
+
+    fn supplied_payload_world(kind: LocomotorKind, stashed: bool) -> Simulation {
+        let mut sim = Simulation::new();
+        let owner = sim.intern("Americans");
+        let type_ref = sim.intern("HASHFOOT");
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
+            1,
+            5,
+            5,
+            0,
+            0,
+            owner,
+            Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Infantry,
+            0,
+            5,
+            true,
+        );
+        let stored = LocomotorState::for_test_kind(kind);
+        entity.locomotor = Some(if stashed {
+            let mut host = LocomotorState::for_test_kind(LocomotorKind::Teleport);
+            host.piggyback = Some(StashedLocomotor::capture(&stored));
+            host
+        } else {
+            stored
+        });
+        sim.substrate.entities.insert(entity);
+        sim
+    }
+
+    fn mutate(payload: &mut LocomotorRuntimePayload, field: usize) {
+        let coord = DriveCoord {
+            x: 1664,
+            y: 1408,
+            z: 414,
+        };
+        match payload {
+            LocomotorRuntimePayload::Walk(state) => match field {
+                0 => state.head = Some(coord),
+                1 => state.destination = Some(coord),
+                2 => state.moving = true,
+                3 => state.animation_moving = true,
+                _ => unreachable!(),
+            },
+            LocomotorRuntimePayload::Hover(head) => *head = Some(coord),
+            LocomotorRuntimePayload::Jumpjet(state) => match field {
+                0 => state.destination = coord,
+                1 => state.moving = true,
+                2 => state.phase = 2,
+                _ => unreachable!(),
+            },
+            _ => unreachable!("supplied bridge payload only"),
+        }
+    }
+
+    #[test]
+    fn bridge161_hashes_each_active_and_stashed_payload_field() {
+        // This checks Rust hash composition over supplied retained state, not
+        // a native checksum or a claim that these fixtures execute movement.
+        for (kind, fields) in [
+            (LocomotorKind::Walk, 4),
+            (LocomotorKind::Hover, 1),
+            (LocomotorKind::Jumpjet, 3),
+        ] {
+            for stashed in [false, true] {
+                for field in 0..fields {
+                    let before = supplied_payload_world(kind, stashed);
+                    let mut after = supplied_payload_world(kind, stashed);
+                    let loco = after
+                        .substrate
+                        .entities
+                        .get_mut(1)
+                        .unwrap()
+                        .locomotor
+                        .as_mut()
+                        .unwrap();
+                    if stashed {
+                        let mut stored = loco.piggyback.take().unwrap().into_runtime();
+                        mutate(&mut stored.payload, field);
+                        loco.piggyback = Some(StashedLocomotor::from_runtime(stored));
+                    } else {
+                        mutate(&mut loco.runtime_payload, field);
+                    }
+                    assert_ne!(
+                        before.state_hash(),
+                        after.state_hash(),
+                        "{kind:?} stashed={stashed} field={field}"
+                    );
+                    for version in [159, 160, 161] {
+                        assert_eq!(
+                            before.state_hash_with_schema(HashSchema::Before(version)),
+                            after.state_hash_with_schema(HashSchema::Before(version)),
+                            "only the declared bridge payload is projected out at {version}",
+                        );
+                    }
+                }
+            }
+        }
+        assert!(HashSchema::Before(161).includes(HashFeature::FootPathRuntime));
+        assert!(HashSchema::Before(160).includes(HashFeature::CellMembership));
+        assert!(!HashSchema::Before(159).includes(HashFeature::CellMembership));
+    }
+
+    #[test]
+    fn bridge161_projects_dummy_only_and_keeps_real_owner_identity() {
+        let mut sim = Simulation::new();
+        let owner = sim.intern("Americans");
+        let other = sim.intern("Russians");
+        let before = sim.state_hash();
+        let projected = sim.state_hash_with_schema(HashSchema::Before(161));
+        sim.substrate.raw_cell_occupation.write_infantry(
+            RawCellKey::Dummy,
+            MovementLayer::Ground,
+            4,
+            owner,
+            true,
+        );
+        assert_ne!(before, sim.state_hash());
+        assert_eq!(
+            projected,
+            sim.state_hash_with_schema(HashSchema::Before(161))
+        );
+        sim.substrate
+            .raw_cell_occupation
+            .mark_ground_infantry(5, 5, 4, owner);
+        let real_owner = sim.state_hash_with_schema(HashSchema::Before(161));
+        assert_ne!(projected, real_owner);
+        sim.substrate
+            .raw_cell_occupation
+            .mark_ground_infantry(5, 5, 4, other);
+        assert_ne!(
+            real_owner,
+            sim.state_hash_with_schema(HashSchema::Before(161)),
+            "historical projection does not omit real owner state or invent the former entity ID"
+        );
     }
 }

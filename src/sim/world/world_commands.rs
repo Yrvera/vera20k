@@ -28,7 +28,6 @@ use crate::sim::components::OrderIntent;
 use crate::sim::docking::building_dock::{self, DockState};
 use crate::sim::mission::{DockTeardown, MissionType};
 use crate::sim::movement;
-use crate::sim::movement::air_movement;
 use crate::sim::movement::bump_crush;
 use crate::sim::movement::jumpjet_movement;
 use crate::sim::movement::locomotor::MovementLayer;
@@ -752,11 +751,11 @@ impl Simulation {
                         }
                     }
                     // Air units fly in straight lines — no A* pathfinding needed.
-                    let ok = air_movement::issue_air_move_command(
-                        &mut self.substrate.entities,
+                    let ok = self.issue_air_cell_destination(
                         *entity_id,
                         (*target_rx, *target_ry),
                         info.speed,
+                        rules,
                     );
                     // Set Move mission so the aircraft flies to destination
                     // before the Idle handler can redirect it to RTB.
@@ -860,6 +859,9 @@ impl Simulation {
                     e.dock_state = None;
                     e.c4_plant = None;
                 }
+                if !self.stop_jumpjet_infantry_destination(*entity_id, rules, overlay_registry) {
+                    return false;
+                }
                 // Cancel any special locomotor states in progress.
                 // **VERA-internal: retail Stop leaves the installed locomotor
                 // alone.** This existing unwind policy uses the same END gate
@@ -940,13 +942,17 @@ impl Simulation {
                     e.order_intent = None;
                     Self::clear_aircraft_dock_phase(e);
                 }
-                combat::issue_attack_command(
+                let issued = combat::issue_attack_command(
                     &mut self.substrate.entities,
                     *attacker_id,
                     *target_id,
                     rules,
                     &self.interner,
-                )
+                );
+                if issued {
+                    self.finish_ordered_walk_attack(*attacker_id, rules);
+                }
+                issued
             }
             Command::ForceAttack {
                 attacker_id,
@@ -975,13 +981,17 @@ impl Simulation {
                 if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
                     e.order_intent = None;
                 }
-                combat::issue_attack_command(
+                let issued = combat::issue_attack_command(
                     &mut self.substrate.entities,
                     *attacker_id,
                     *target_id,
                     rules,
                     &self.interner,
-                )
+                );
+                if issued {
+                    self.finish_ordered_walk_attack(*attacker_id, rules);
+                }
+                issued
             }
             Command::ForceAttackCell {
                 attacker_id,
@@ -1007,14 +1017,18 @@ impl Simulation {
                     e.order_intent = None;
                     Self::clear_aircraft_dock_phase(e);
                 }
-                combat::issue_attack_cell_command(
+                let issued = combat::issue_attack_cell_command(
                     &mut self.substrate.entities,
                     *attacker_id,
                     *target_rx,
                     *target_ry,
                     rules,
                     &self.interner,
-                )
+                );
+                if issued {
+                    self.finish_ordered_walk_attack(*attacker_id, rules);
+                }
+                issued
             }
             Command::AttackMove {
                 entity_id,
@@ -1079,11 +1093,11 @@ impl Simulation {
                     )
                 } else if info.loco_layer == MovementLayer::Air {
                     // Air units fly in straight lines.
-                    let ok = air_movement::issue_air_move_command(
-                        &mut self.substrate.entities,
+                    let ok = self.issue_air_cell_destination(
                         *entity_id,
                         (*target_rx, *target_ry),
                         info.speed,
+                        rules,
                     );
                     if ok {
                         if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
@@ -2029,9 +2043,22 @@ impl Simulation {
                         if !obj.capturable && !obj.bridge_repair_hut {
                             return None;
                         }
-                        Some((b.position.rx, b.position.ry, b.owner()))
+                        Some((
+                            b.position.rx,
+                            b.position.ry,
+                            b.owner(),
+                            // Building447E90 delegates ordinary targets to+48.
+                            // Special Helipad/UnitRepair/Bunker +A8 docking
+                            // coordinates remain the existing bounded adapter;
+                            // stock CABHUT has none of those flags.
+                            if obj.helipad || obj.unit_repair || obj.bunker {
+                                crate::sim::movement::ground_pose::position_world_coord(&b.position)
+                            } else {
+                                crate::sim::movement::ground_pose::object_center_coord(b, obj)
+                            },
+                        ))
                     });
-                let Some((trx, try_, target_owner)) = target_info else {
+                let Some((trx, try_, target_owner, target_coord)) = target_info else {
                     return false;
                 };
                 // Must be an enemy building.
@@ -2062,6 +2089,18 @@ impl Simulation {
                     e.order_intent = None;
                     e.dock_state = None;
                     e.capture_target = Some(*target_building_id);
+                    // Event4C747C -> Infantry51AA40 -> Foot4D9510 writes
+                    // the actual object destination before locomotor approach.
+                    e.navigation.nav_com = Some(crate::sim::components::NavTargetRef::Building {
+                        id: *target_building_id,
+                    });
+                    e.navigation.nav_com_aux = None;
+                    e.navigation.pending_arrival_clear = false;
+                    movement::set_walk_destination_coord(
+                        e,
+                        target_coord,
+                        self.resolved_terrain.as_ref(),
+                    );
                 }
                 // Issue movement toward the building's cell.
                 let info = self.resolve_move_info(*engineer_id, Some(rules));
@@ -2095,7 +2134,7 @@ impl Simulation {
                             &self.interner,
                             Some(rules),
                         );
-                    movement::issue_move_command_with_layered(
+                    movement::issue_move_command_with_destination(
                         &mut self.substrate.entities,
                         grid,
                         *engineer_id,
@@ -2111,9 +2150,15 @@ impl Simulation {
                         Some(&blocker_neighbor_counts),
                         self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
+                        Some((
+                            crate::sim::components::NavTargetRef::Building {
+                                id: *target_building_id,
+                            },
+                            target_coord,
+                        )),
                         crate::sim::movement::DestinationTiming::new(
                             self.session.binary_frame,
-                            rules.general.blockage_path_delay_ticks,
+                            self.blockage_path_delay_ticks,
                         ),
                     );
                 }

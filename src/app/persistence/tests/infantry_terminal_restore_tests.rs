@@ -164,15 +164,17 @@ fn infantry_terminal_fatal_frame_exit_preserves_delivered_cleanup_through_load()
     ));
     saved.clear_lifecycle_test_events_for_test();
     let registry = OverlayTypeRegistry::empty();
-    let output = saved.advance_app_frame(
-        &[CommandEnvelope::new(owner, 1, Command::ExitMatch)],
-        Some(&rules),
-        &BTreeMap::new(),
-        Some(&registry),
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let output = saved
+        .advance_app_frame(
+            &[CommandEnvelope::new(owner, 1, Command::ExitMatch)],
+            Some(&rules),
+            &BTreeMap::new(),
+            Some(&registry),
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
     assert!(!output.tick.frame_committed);
     let object = saved.substrate.entities.get(victim).unwrap();
     assert!(object.dying && object.lifecycle.in_limbo && !object.lifecycle.object_alive);
@@ -225,15 +227,17 @@ fn infantry_terminal_fatal_frame_exit_preserves_delivered_cleanup_through_load()
     );
     assert_eq!(death_ids(&restored), effects);
     assert_eq!(restored.state_hash(), saved.state_hash());
-    let next = restored.advance_app_frame(
-        &[],
-        Some(&rules),
-        &BTreeMap::new(),
-        Some(&registry),
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let next = restored
+        .advance_app_frame(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            Some(&registry),
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
     // Exit requests are transient: production load resumes the match and the
     // first committed frame drains the already-delivered victim normally.
     assert!(next.tick.frame_committed);

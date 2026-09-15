@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "original BuildingType virtual+84 callback45EDD0, Techno711F00 and actualcost+AC45ED50. Declared type costs/free unit and House cost multipliers; stock SeparateAircraft=true. No producer for live multipliers/country fields, full House recalc, or Rust parity claim.",
+  "assumptions": [
+    "Original BuildingTypeVT7E4570 and UnitTypeVT7F6218; native Cost+610 and FreeUnit+EA0 populated directly. Supplied HouseType cost fields114..124 and House5390..53A0 floats. Unused object storagezero; BuildingBuildCat0.",
+    "PadAircraft first pointer and Dock first pointer valid but do not equal Building; supplied SeparateAircrafttrue excludes legacy bundled-aircraft adjustment. No null/malformed configuration claim."
+  ],
+  "substitutions": [],
+  "entry_points": {
+    "building_cost84": "0x0045EDD0",
+    "techno_cost84": "0x00711F00",
+    "country_factor": "0x0050BDF0",
+    "house_factor": "0x0050BEB0",
+    "building_actual_cost": "0x0045ED50",
+    "raw_cost": "0x00711EB0"
+  },
+  "payload_sha256": "f830b3771a4e702a60fca66813b3715f585824baf179ff5a3e0ae64ab2cd5138"
+}

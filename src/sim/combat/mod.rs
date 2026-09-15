@@ -17,8 +17,8 @@
 //! - Part of sim/ — depends on sim/components and rules/ (RuleSet).
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-pub(crate) mod cell_spread;
 pub(crate) mod base_defense_response;
+pub(crate) mod cell_spread;
 pub(crate) mod combat_aoe;
 pub(crate) mod combat_fire_gate;
 pub(crate) mod combat_targeting;
@@ -28,21 +28,21 @@ pub(crate) mod fire_decision;
 pub(crate) mod greatest_threat;
 pub(crate) mod in_range;
 mod inviso_scatter;
-mod receiver_health;
 #[cfg(test)]
 pub(crate) mod receiver_fixture;
+mod receiver_health;
 #[cfg(test)]
 pub(crate) use receiver_fixture::{
     BaseDefenseResponseTraceEntry, FixtureTrace, commit_area_damage_receivers,
-    commit_damage_events, emit_projectile_detonations, handle_entity_deaths,
-    resolve_attacker_fire, tick_combat, tick_combat_with_fog,
-    tick_combat_with_fog_and_main_rng, tick_combat_with_fog_and_main_rng_with_terrain_area,
+    commit_damage_events, emit_projectile_detonations, handle_entity_deaths, resolve_attacker_fire,
+    tick_combat, tick_combat_with_fog, tick_combat_with_fog_and_main_rng,
+    tick_combat_with_fog_and_main_rng_with_terrain_area,
 };
-pub(crate) mod world_receiver;
 pub(crate) mod line_of_fire;
 pub mod smudge_dispatch;
 pub(crate) mod threat_range;
 pub(crate) mod veterancy;
+pub(crate) mod world_receiver;
 
 #[cfg(test)]
 #[path = "combat_tests.rs"]
@@ -104,16 +104,16 @@ use crate::sim::mission::authority::{
 };
 use crate::sim::mission::concrete_effects::represented_assign_target;
 use crate::sim::mission::{MissionId, MissionType};
+use crate::sim::overlay_grid::OverlayGrid;
 #[cfg(test)]
 use crate::sim::overlay_grid::WallMutation;
-use crate::sim::overlay_grid::OverlayGrid;
 #[cfg(test)]
 use crate::sim::power_system::PowerState;
 use crate::sim::projectile::{
     ProjectileCollisionPolicy, ProjectileCoord, ProjectileDetonation, ProjectileGuidance,
     ProjectilePayload, ProjectileSpawn, ProjectileTarget, ProjectileTrajectory, ProjectileVelocity,
-    ProjectileVisualState, SpecialDetonationAction, SpecialDetonationFlags, SpecialDetonationTarget,
-    TargetExpiryPolicy, projectile_next_cluster_coord,
+    ProjectileVisualState, SpecialDetonationAction, SpecialDetonationFlags,
+    SpecialDetonationTarget, TargetExpiryPolicy, projectile_next_cluster_coord,
     projectile_random_shrapnel_cell, projectile_shrapnel_count,
     projectile_special_detonation_action,
 };
@@ -343,39 +343,38 @@ fn classify_projectile_delivery(
             elasticity_bits: projectile.elasticity.to_bits(),
         },
         ballistic,
-        vertical: projectile.vertical.then_some(projectile.detonation_altitude),
+        vertical: projectile
+            .vertical
+            .then_some(projectile.detonation_altitude),
         acceleration: projectile.acceleration,
         // `0x006FE67D`/`0x006FE68B`: the outer gate is `Inaccurate && Arcing`.
         // Inside, `FlakScatter && !Inviso` takes the range-scaled arm at
         // `0x006FE6AD` and everything else the plain arm at `0x006FE7FE`.
         launch_scatter_is_flak: (projectile.inaccurate && projectile.arcing)
             .then_some(projectile.flak_scatter && !projectile.inviso),
-        guidance: (projectile.rot > 0).then_some(
-            ProjectileGuidance {
-                rot: projectile.rot,
-                missile_rot_var: rules.general.missile_rot_var,
-                course_lock_duration: projectile
-                    .course_lock_duration
-                    .clamp(0, i32::from(u16::MAX))
-                    as u16,
-                // The RE contract proves this is BulletClass-identity-derived but
-                // not its formula. Keep the raw phase as an explicit live seam.
-                sidewinder_phase: 0,
-                airburst: projectile.airburst,
-                inaccurate: projectile.inaccurate,
-                very_high: projectile.very_high,
-                level: projectile.level,
-                // Replaced at construction with the launch facing.
-                heading_bam: 0,
-                frames_elapsed: 0,
-                max_speed: weapon.speed.clamp(0, i32::from(u16::MAX)) as u16,
-                acceleration: projectile.acceleration,
-                // Replaced at construction with the launch-time target coord.
-                fuse_reference: ProjectileCoord::new(0, 0, 0),
-                closing_frames: 0,
-                closing_accumulator_bits: 0,
-            },
-        ),
+        guidance: (projectile.rot > 0).then_some(ProjectileGuidance {
+            rot: projectile.rot,
+            missile_rot_var: rules.general.missile_rot_var,
+            course_lock_duration: projectile
+                .course_lock_duration
+                .clamp(0, i32::from(u16::MAX)) as u16,
+            // The RE contract proves this is BulletClass-identity-derived but
+            // not its formula. Keep the raw phase as an explicit live seam.
+            sidewinder_phase: 0,
+            airburst: projectile.airburst,
+            inaccurate: projectile.inaccurate,
+            very_high: projectile.very_high,
+            level: projectile.level,
+            // Replaced at construction with the launch facing.
+            heading_bam: 0,
+            frames_elapsed: 0,
+            max_speed: weapon.speed.clamp(0, i32::from(u16::MAX)) as u16,
+            acceleration: projectile.acceleration,
+            // Replaced at construction with the launch-time target coord.
+            fuse_reference: ProjectileCoord::new(0, 0, 0),
+            closing_frames: 0,
+            closing_accumulator_bits: 0,
+        }),
     }
 }
 
@@ -951,13 +950,9 @@ pub(crate) fn can_fire_at_target(
     ) else {
         return false;
     };
-    let Some(source) = in_range::fire_source_coords(
-        attacker,
-        target,
-        selected.weapon,
-        entities,
-        terrain,
-    ) else {
+    let Some(source) =
+        in_range::fire_source_coords(attacker, target, selected.weapon, entities, terrain)
+    else {
         return false;
     };
     in_range::compute_in_range(
@@ -1175,8 +1170,16 @@ pub fn issue_attack_command(
         attacker.facing = crate::sim::movement::facing_from_delta(dx, dy);
     }
 
-    // Remove existing movement (stop moving to attack).
-    attacker.movement_target = None;
+    // Walk's physical head survives a null destination. The synchronized
+    // command owner applies that setter after TarCom assignment; the shared
+    // target helper must not destroy the adapter needed to finish the head.
+    if !attacker
+        .locomotor
+        .as_ref()
+        .is_some_and(|loco| loco.kind == crate::rules::locomotor_type::LocomotorKind::Walk)
+    {
+        attacker.movement_target = None;
+    }
 
     // Attach the attack target using stable ID (fire immediately).
     attacker.attack_target = Some(AttackTarget::new(target_id));
@@ -1296,7 +1299,13 @@ pub fn issue_attack_cell_command(
         attacker.facing = crate::sim::movement::facing_from_delta(dx, dy);
     }
 
-    attacker.movement_target = None;
+    if !attacker
+        .locomotor
+        .as_ref()
+        .is_some_and(|loco| loco.kind == crate::rules::locomotor_type::LocomotorKind::Walk)
+    {
+        attacker.movement_target = None;
+    }
     attacker.attack_target = Some(AttackTarget::for_cell(target_rx, target_ry));
     attacker.passively_acquired_target = false;
     true
@@ -1311,8 +1320,6 @@ pub(crate) fn cell_distance(ax: u16, ay: u16, bx: u16, by: u16) -> f32 {
 }
 
 use self::combat_targeting::{AttackerSnapshot, GarrisonSnapshot, acquire_best_target};
-
-
 
 /// Destroyed crewed building — survivor ejection is deferred to the caller
 /// (which has access to `Simulation` for spawning infantry).
@@ -1985,8 +1992,6 @@ pub(crate) enum BaseDefenseResponseCallSite {
     ProtectedTechno,
 }
 
-
-
 #[cfg(test)]
 fn tiberium_reduction_amount(
     base_damage: i32,
@@ -1999,14 +2004,6 @@ fn tiberium_reduction_amount(
     let amount = base_damage / 10;
     (amount > 0).then_some(amount)
 }
-
-
-
-
-
-
-
-
 
 impl DeathEffects {
     pub(crate) fn append(&mut self, mut other: Self) {
@@ -2230,8 +2227,6 @@ enum ConcreteDeathSmudgePlan {
         foundation: String,
     },
 }
-
-
 
 /// Build the native ReceiveDamage value ABI for one ordered area or direct
 /// receiver record and run the shared receiver exactly once. The returned
@@ -2636,14 +2631,6 @@ fn area_near_center_ic_isolation_armed(
     })
 }
 
-
-
-
-
-
-
-
-
 /// Transient per-tick bag of the Phase-2 fire-emission outputs. Bundles the
 /// emit vectors so the per-attacker fire body (`resolve_attacker_fire`) can push
 /// through one `&mut` handle. Never stored on `Simulation`, never serialized,
@@ -2777,11 +2764,9 @@ fn emit_projectile_shrapnel(
                 i32::from(entity.position.z) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
             )
         }),
-        ProjectileTarget::Cell { rx, ry } => Some(crate::sim::projectile::cell_target_coord(
-            terrain,
-            rx,
-            ry,
-        )),
+        ProjectileTarget::Cell { rx, ry } => {
+            Some(crate::sim::projectile::cell_target_coord(terrain, rx, ry))
+        }
         ProjectileTarget::None => Some(ProjectileCoord::new(0, 0, 0)),
         ProjectileTarget::DummyCell => Some(
             terrain
@@ -2912,7 +2897,8 @@ fn emit_projectile_shrapnel(
                     ProjectileCoord::new(
                         i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
                         i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
-                        i32::from(entity.position.z) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
+                        i32::from(entity.position.z)
+                            * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
                     )
                 }
                 ProjectileTarget::Cell { rx, ry } => {
@@ -2971,16 +2957,6 @@ fn emit_projectile_shrapnel(
     }
 }
 
-
-
-
-
-
-
-
-
-
-
 /// Outputs produced by one Bullet Logic slot after its detonation receivers
 /// have committed, but before the world retires the Bullet object itself.
 pub(crate) struct LogicProjectileCommit {
@@ -2988,12 +2964,6 @@ pub(crate) struct LogicProjectileCommit {
     pub(crate) effects: DeathEffects,
     pub(crate) under_attack_events: Vec<UnderAttackEvent>,
 }
-
-
-
-
-
-
 
 /// Build the per-attacker fire snapshot from current entity state. PURE READ —
 /// the caller has already decremented cooldown/burst-delay for this tick and
@@ -3258,8 +3228,6 @@ pub(crate) fn capture_kill_credit(
         victim.veterancy,
     );
 }
-
-
 
 /// Squared distance in leptons between two positions (sub-cell precise).
 ///
@@ -3805,7 +3773,9 @@ mod impact_height_tests {
         );
 
         let effect = result
-            .consequences.effects().explosion_effects
+            .consequences
+            .effects()
+            .explosion_effects
             .first()
             .expect("force-fire should emit the warhead's impact animation");
         assert_eq!((effect.rx, effect.ry), (5, 6));

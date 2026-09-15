@@ -219,8 +219,8 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // and Stop's abandoned direction cursor (0 -> 19). Retasking no longer replaces
 // the in-flight head with the latest destination. This is a behavior ratchet,
 // not a native whole-movement golden; see the bridge walker report's raw-head section.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x07B6_BCD8_C452_F7B5;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x3D4A_CFCA_A931_0BD2;
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x60FA_3998_AF7C_B1D7;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x7D16_06A7_1D5B_D210;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -363,18 +363,18 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x3D4A_CFCA_A931_0BD2;
 // deposit radius. The dedicated pre-v117 probe reproduces main's committed
 // current baseline exactly; this fixture stamps no disguise circle, so only
 // current-schema composition moved.
-const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0xC6FC_9C61_8A09_2DBA;
-const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x92AF_F401_0154_CD1B;
-const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xF627_7ED4_3A1F_0552;
-const SLICE6_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xECA1_BD3E_0D29_0BAD;
+const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0x3B3D_D5F6_E92F_C6AD;
+const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x751E_0B76_E5D3_1037;
+const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xC029_4908_06B6_8666;
+const SLICE6_PRE_DISGUISE_DETECT_V117_HASH: u64 = 0xE1B8_A1E6_930B_3EDA;
 // Re-baselined 2026-09-06 for the v135 credit-income folds (GSI-09.01): the
 // `BuildingClass+0x6D0` ProduceCash timer and the `TechnoClass+0x1CC/+0x1D0`
 // drain link pair join the per-entity fold. The dedicated pre-v135 probe
 // reproduces the prior current baseline exactly and every older probe holds;
 // this script has no derrick, DrainWeapon or capture, so only composition
 // moved (each object folds its dead constructor timer and two `None`s).
-const SLICE6_PRE_CREDIT_INCOME_V135_HASH: u64 = 0xC5E0_D10F_E68D_A7CB;
-const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0xA2D7_54E3_B51E_5E3E;
+const SLICE6_PRE_CREDIT_INCOME_V135_HASH: u64 = 0x780B_B9D9_432A_D2DD;
+const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0xA7D2_F760_23D6_E5DE;
 // v136 adds the Infantry terminal-policy fold. The pre-v136 assertion below
 // reproduces the ramp branch's current baseline exactly; older probes and RNG pins
 // are unchanged. This is Rust hash-composition provenance, not native parity.
@@ -389,18 +389,29 @@ const SLICE6_PRE_INFANTRY_TERMINAL_V136_HASH: u64 = 0xA2D7_54E3_B51E_5E3E;
 // residual and synchronous arrival timing; historical projections also include
 // migrated Foot owners. See docs/research/TRACK_PROCESS_REPLAY_REGRESSION_NOTES.md
 // for baseline/candidate observations and native scope. These are Rust pins.
-const SLICE6_BASELINE_HASH_PRE_CELL_MEMBERSHIP_V159: u64 = 0x7637_05BF_7622_B9E4;
+const SLICE6_BASELINE_HASH_PRE_CELL_MEMBERSHIP_V159: u64 = 0x4461_4A89_0BC9_D32D;
 // Schema159 adds actual ordered Cell membership and exact Sight0 metadata.
 // The immediately preceding composition is asserted below against the old
 // current pin; all historical, replay/path and RNG tripwires remain intact.
 // This is a Rust hash-composition ratchet, not a new native golden.
-const SLICE6_BASELINE_HASH_PRE_FOOT_PATH_RUNTIME_V160: u64 = 0x03D4_E834_53AE_D084;
+const SLICE6_BASELINE_HASH_PRE_FOOT_PATH_RUNTIME_V160: u64 = 0x1D31_3ED8_9A2D_044A;
 // Schema160 moves the two Foot path timers, blocked latch and dword retry count
 // into NavigationState::path_runtime and hashes that owner instead of the former
 // positional MovementTarget fields. The immediately preceding composition is
 // asserted below against the old current pin; every older probe, replay/path
 // and RNG tripwire remains intact. Rust hash-composition ratchet, not a native golden.
-const SLICE6_BASELINE_HASH: u64 = 0xFEBF_741A_3312_02CA;
+// Re-pinned 2026-09-15 for the live bridge repair integration. Two changes move
+// every projection of this fixture at once: (1) raw infantry occupation owners
+// are the mark-time House index (InfantryClass::MarkCellOccupancy 0x005217C0 ->
+// Infantry virtual +0x38 -> House+0x30), no longer the Rust entity id, which
+// re-encodes the raw occupation fold under every schema; (2) the E1 Attack
+// pursuit at tick 9 now follows Walk natively: FindPath runs in the next
+// Process (0x75AFC5) one frame after acceptance, the route goal is the target's
+// own Cell, and the head sub-cell selection draws Scenario RNG (0x004ACA10).
+// Attribution: per-tick dumps of main 595e3a88 versus this tree diverge only at
+// E1 from tick 9 (receipt .local/harness-repin-20260915/slice6-dump.diff);
+// the owner-excluded probe below therefore differs from main here. Rust pins.
+const SLICE6_BASELINE_HASH: u64 = 0x1B35_F16E_945D_5812;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -476,8 +487,13 @@ fn replay_hash_stable_through_slice6() {
     }
 
     assert_eq!(
+        sim.state_hash_without_raw_infantry_owners_v161_probe(),
+        0x1906_B698_79B5_95DE,
+        "raw infantry owner-excluded projection changed beyond the House-index re-encoding"
+    );
+    assert_eq!(
         sim.state_hash_without_sustained_gap_sight_v142(),
-        0x2F38_0309_E6D7_C17C,
+        0x3378_724A_9514_52B4,
         "committed pre-v142 Slice6 projection changed"
     );
     let pre_lifecycle_hash = sim.state_hash_before_lifecycle_v28_and_mission_v29();

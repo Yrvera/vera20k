@@ -557,7 +557,8 @@ pub(super) fn handle_deferred_occupancy(
     interner: &crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
     marker_context: Option<crate::sim::movement::path_markers::BridgeMarkerContext<'_>>,
-) -> Vec<(u32, DebugEventKind)> {
+    slave_bindings: Option<&std::collections::BTreeMap<u64, Vec<u64>>>,
+) -> (Vec<(u32, DebugEventKind)>, bool) {
     let mut debug_events: Vec<(u32, DebugEventKind)> = Vec::new();
     let (nx, ny, layer_context) = match check {
         DeferredCellCheck::Infantry((nx, ny), layers)
@@ -586,7 +587,21 @@ pub(super) fn handle_deferred_occupancy(
             interner,
         );
     }
-    let entry_result = cell_entry::classify_occupied_cell_with_layers_and_ignored_and_occupation(
+    let slave_query = rules
+        .zip(resolved_terrain)
+        .zip(slave_bindings)
+        .filter(|_| is_infantry)
+        .map(
+            |((rules, terrain), bindings)| crate::sim::slave_deposit::SlaveDepositQuery {
+                entities,
+                bindings,
+                occupancy,
+                terrain,
+                rules,
+                interner,
+            },
+        );
+    let entry_result = cell_entry::classify_occupied_cell_with_occupation_and_slave_query(
         (nx, ny),
         layer_context,
         entity_id,
@@ -600,6 +615,7 @@ pub(super) fn handle_deferred_occupancy(
         entities,
         alliances,
         interner,
+        slave_query.as_ref(),
     );
     if snap.movement_zone.is_water_mover() {
         log::info!(
@@ -655,6 +671,7 @@ pub(super) fn handle_deferred_occupancy(
     // moving it to the arrival body and modelling the tether byte first, so the
     // clause is out until both exist rather than half-gated.
 
+    let accepted = matches!(&entry_result, CellEntryResult::Clear);
     match entry_result {
         CellEntryResult::Clear => {
             // Locomotor override (JumpJet) can clear a lower native code before
@@ -1285,7 +1302,7 @@ pub(super) fn handle_deferred_occupancy(
         }
     }
 
-    debug_events
+    (debug_events, accepted)
 }
 
 #[cfg(test)]

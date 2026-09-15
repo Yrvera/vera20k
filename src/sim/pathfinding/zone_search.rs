@@ -102,6 +102,22 @@ use crate::rules::locomotor_type::MovementZone;
 use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield_height_aware};
 use crate::sim::movement::locomotor::MovementLayer;
 
+/// Provenance of a returned path failure. The Foot wrapper must not turn
+/// unavailable caches or compatibility-only rejection into a native core NULL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PathSearchFailure {
+    ///42CB22 rejected unequal native raw labels before cell A*.
+    NativeEntryRejected,
+    ///A required hierarchy cell had no represented native topology.
+    MissingHierarchyCell,
+    ///The reduced compatibility graph rejected without native raw evidence.
+    CompatibilityZoneRejected,
+    ///The existing cell search ran and returned no route.
+    CellSearchExhausted,
+    ///The compatibility corridor retry policy exhausted its alternatives.
+    CompatibilityCorridorExhausted,
+}
+
 /// Maximum corridor Dijkstra attempts with zone-edge exclusions.
 /// The recovered path entry contract uses a default total attempt cap of 5.
 const MAX_CORRIDOR_RETRIES: u8 = 5;
@@ -286,6 +302,47 @@ pub(crate) fn find_path_zoned_marker(
     allow_zone_hierarchy: bool,
     playfield_bounds: Option<PlayfieldBounds>,
 ) -> Option<Vec<(u16, u16)>> {
+    find_path_zoned_marker_detailed(
+        grid,
+        start,
+        goal,
+        costs,
+        entity_blocks,
+        zone_grid,
+        mz,
+        movement_zone,
+        resolved_terrain,
+        entity_block_map,
+        marker_overlay,
+        blocker_neighbor_counts,
+        urgency,
+        mover_is_crusher,
+        is_infantry,
+        allow_zone_hierarchy,
+        playfield_bounds,
+    )
+    .ok()
+}
+
+pub(crate) fn find_path_zoned_marker_detailed(
+    grid: &PathGrid,
+    start: (u16, u16),
+    goal: (u16, u16),
+    costs: Option<&TerrainCostGrid>,
+    entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    zone_grid: Option<&ZoneGrid>,
+    mz: MovementZone,
+    movement_zone: Option<MovementZone>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
+    urgency: u8,
+    mover_is_crusher: bool,
+    is_infantry: bool,
+    allow_zone_hierarchy: bool,
+    playfield_bounds: Option<PlayfieldBounds>,
+) -> Result<Vec<(u16, u16)>, PathSearchFailure> {
     let entry = prepare_native_path_entry(
         zone_grid,
         resolved_terrain,
@@ -296,7 +353,7 @@ pub(crate) fn find_path_zoned_marker(
         allow_zone_hierarchy,
         playfield_bounds,
     );
-    find_path_zoned_marker_inner(
+    find_path_zoned_marker_inner_detailed(
         grid,
         start,
         goal,
@@ -323,6 +380,7 @@ pub(crate) fn find_path_zoned_marker(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn find_path_zoned_marker_inner(
     grid: &PathGrid,
     start: (u16, u16),
@@ -343,6 +401,49 @@ fn find_path_zoned_marker_inner(
     is_infantry: bool,
     blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
 ) -> Option<Vec<(u16, u16)>> {
+    find_path_zoned_marker_inner_detailed(
+        grid,
+        start,
+        goal,
+        hierarchy_start,
+        hierarchy_goal,
+        native_zone_equal,
+        costs,
+        entity_blocks,
+        zone_grid,
+        mz,
+        movement_zone,
+        resolved_terrain,
+        entity_block_map,
+        marker_overlay,
+        urgency,
+        mover_is_crusher,
+        is_infantry,
+        blocker_neighbor_counts,
+    )
+    .ok()
+}
+
+fn find_path_zoned_marker_inner_detailed(
+    grid: &PathGrid,
+    start: (u16, u16),
+    goal: (u16, u16),
+    hierarchy_start: (u16, u16),
+    hierarchy_goal: (u16, u16),
+    native_zone_equal: Option<bool>,
+    costs: Option<&TerrainCostGrid>,
+    entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    zone_grid: Option<&ZoneGrid>,
+    mz: MovementZone,
+    movement_zone: Option<MovementZone>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    urgency: u8,
+    mover_is_crusher: bool,
+    is_infantry: bool,
+    blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
+) -> Result<Vec<(u16, u16)>, PathSearchFailure> {
     if !can_use_reduced_zone_precheck(movement_zone) {
         return find_path_with_costs_marker(
             grid,
@@ -357,7 +458,8 @@ fn find_path_zoned_marker_inner(
             urgency,
             mover_is_crusher,
             is_infantry,
-        );
+        )
+        .ok_or(PathSearchFailure::CellSearchExhausted);
     }
 
     let Some(zg) = zone_grid else {
@@ -374,7 +476,8 @@ fn find_path_zoned_marker_inner(
             urgency,
             mover_is_crusher,
             is_infantry,
-        );
+        )
+        .ok_or(PathSearchFailure::CellSearchExhausted);
     };
 
     let Some(zone_map) = zg.map_for(mz) else {
@@ -391,7 +494,8 @@ fn find_path_zoned_marker_inner(
             urgency,
             mover_is_crusher,
             is_infantry,
-        );
+        )
+        .ok_or(PathSearchFailure::CellSearchExhausted);
     };
     let start_zone = zone_map.zone_at(start.0, start.1, MovementLayer::Ground);
     let goal_bridge = resolved_terrain
@@ -415,10 +519,18 @@ fn find_path_zoned_marker_inner(
     {
         //42CB22..42CB3F rejects unequal native base labels before precheck.
         if !zones_match {
-            return None;
+            return Err(if native_zone_equal.is_some() {
+                PathSearchFailure::NativeEntryRejected
+            } else {
+                PathSearchFailure::CompatibilityZoneRejected
+            });
         }
-        let hierarchy_start_zone = zg.hierarchy_zone_at_native(0, hierarchy_start)?;
-        let hierarchy_goal_zone = zg.hierarchy_zone_at_native(0, hierarchy_goal)?;
+        let hierarchy_start_zone = zg
+            .hierarchy_zone_at_native(0, hierarchy_start)
+            .ok_or(PathSearchFailure::MissingHierarchyCell)?;
+        let hierarchy_goal_zone = zg
+            .hierarchy_zone_at_native(0, hierarchy_goal)
+            .ok_or(PathSearchFailure::MissingHierarchyCell)?;
         match zone_precheck_flat(
             hierarchy,
             hierarchy_start_zone,
@@ -445,7 +557,8 @@ fn find_path_zoned_marker_inner(
                     mover_is_crusher,
                     is_infantry,
                 )
-                .map(|result| result.path);
+                .map(|result| result.path)
+                .ok_or(PathSearchFailure::CellSearchExhausted);
             }
             ZonePrecheckOutcome::Failed if zones_match => {
                 return find_path_with_costs_marker(
@@ -461,9 +574,12 @@ fn find_path_zoned_marker_inner(
                     urgency,
                     mover_is_crusher,
                     is_infantry,
-                );
+                )
+                .ok_or(PathSearchFailure::CellSearchExhausted);
             }
-            ZonePrecheckOutcome::Failed => return None,
+            ZonePrecheckOutcome::Failed => {
+                return Err(PathSearchFailure::CompatibilityZoneRejected);
+            }
         }
     }
 
@@ -490,7 +606,8 @@ fn find_path_zoned_marker_inner(
             urgency,
             mover_is_crusher,
             is_infantry,
-        );
+        )
+        .ok_or(PathSearchFailure::CellSearchExhausted);
     }
 
     // Cross-zone precheck failure aborts without cell A*.
@@ -516,7 +633,8 @@ fn find_path_zoned_marker_inner(
                 urgency,
                 mover_is_crusher,
                 is_infantry,
-            );
+            )
+            .ok_or(PathSearchFailure::CellSearchExhausted);
         }
         log::trace!(
             "zone_search: unreachable {:?} ({:?}→{:?}), skipping A*",
@@ -524,7 +642,7 @@ fn find_path_zoned_marker_inner(
             start,
             goal,
         );
-        return None;
+        return Err(PathSearchFailure::CompatibilityZoneRejected);
     }
 
     let Some(adjacency) = zg.adjacency_for(mz) else {
@@ -541,7 +659,8 @@ fn find_path_zoned_marker_inner(
             urgency,
             mover_is_crusher,
             is_infantry,
-        );
+        )
+        .ok_or(PathSearchFailure::CellSearchExhausted);
     };
 
     let start_zone = zone_map.zone_at(start.0, start.1, MovementLayer::Ground);
@@ -562,7 +681,8 @@ fn find_path_zoned_marker_inner(
             urgency,
             mover_is_crusher,
             is_infantry,
-        );
+        )
+        .ok_or(PathSearchFailure::CellSearchExhausted);
     }
 
     // Try corridor-restricted A* with retry on failure.
@@ -589,7 +709,7 @@ fn find_path_zoned_marker_inner(
                 mover_is_crusher,
                 is_infantry,
             ) {
-                return Some(path);
+                return Ok(path);
             }
             // Corridor A* failed — exclude all corridor zones and retry.
             log::trace!(
@@ -605,7 +725,7 @@ fn find_path_zoned_marker_inner(
         }
     }
 
-    None
+    Err(PathSearchFailure::CompatibilityCorridorExhausted)
 }
 
 /// Zone-aware path search for layered (bridge-capable) paths.
@@ -675,6 +795,51 @@ pub(crate) fn find_layered_path_zoned_marker(
     allow_zone_hierarchy: bool,
     playfield_bounds: Option<PlayfieldBounds>,
 ) -> Option<Vec<LayeredPathStep>> {
+    find_layered_path_zoned_marker_detailed(
+        grid,
+        ground_blocks,
+        bridge_blocks,
+        start,
+        start_layer,
+        goal,
+        zone_grid,
+        mz,
+        terrain_costs,
+        movement_zone,
+        resolved_terrain,
+        entity_block_map,
+        marker_overlay,
+        blocker_neighbor_counts,
+        urgency,
+        mover_is_crusher,
+        is_infantry,
+        allow_zone_hierarchy,
+        playfield_bounds,
+    )
+    .ok()
+}
+
+pub(crate) fn find_layered_path_zoned_marker_detailed(
+    grid: &PathGrid,
+    ground_blocks: Option<&BTreeSet<(u16, u16)>>,
+    bridge_blocks: Option<&BTreeSet<(u16, u16)>>,
+    start: (u16, u16),
+    start_layer: MovementLayer,
+    goal: (u16, u16),
+    zone_grid: Option<&ZoneGrid>,
+    mz: MovementZone,
+    terrain_costs: Option<&TerrainCostGrid>,
+    movement_zone: Option<MovementZone>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
+    urgency: u8,
+    mover_is_crusher: bool,
+    is_infantry: bool,
+    allow_zone_hierarchy: bool,
+    playfield_bounds: Option<PlayfieldBounds>,
+) -> Result<Vec<LayeredPathStep>, PathSearchFailure> {
     // `AStar @ 0x0042CAD6` admits hierarchy only while the mover's stored
     // TechnoClass+0x3D5 byte is true. False is not a hard failure: it bypasses
     // zone/hierarchy admission and runs the ordinary flat/layered cell A*.
@@ -720,7 +885,8 @@ pub(crate) fn find_layered_path_zoned_marker(
             urgency,
             mover_is_crusher,
             is_infantry,
-        );
+        )
+        .ok_or(PathSearchFailure::CellSearchExhausted);
     }
 
     if let Some(zg) = zone_grid {
@@ -738,12 +904,18 @@ pub(crate) fn find_layered_path_zoned_marker(
             && let Some(level0_zones) = hierarchy.level(0)
         {
             if !zones_match {
-                return None;
+                return Err(if entry.raw_equal.is_some() {
+                    PathSearchFailure::NativeEntryRejected
+                } else {
+                    PathSearchFailure::CompatibilityZoneRejected
+                });
             }
             match zone_precheck_flat(
                 hierarchy,
-                zg.hierarchy_zone_at_native(0, hierarchy_start)?,
-                zg.hierarchy_zone_at_native(0, hierarchy_goal)?,
+                zg.hierarchy_zone_at_native(0, hierarchy_start)
+                    .ok_or(PathSearchFailure::MissingHierarchyCell)?,
+                zg.hierarchy_zone_at_native(0, hierarchy_goal)
+                    .ok_or(PathSearchFailure::MissingHierarchyCell)?,
                 movement_zone.unwrap_or(mz),
                 &ZonePrecheckExclusions::default(),
             ) {
@@ -767,7 +939,8 @@ pub(crate) fn find_layered_path_zoned_marker(
                         urgency,
                         mover_is_crusher,
                         is_infantry,
-                    );
+                    )
+                    .ok_or(PathSearchFailure::CellSearchExhausted);
                 }
                 ZonePrecheckOutcome::Failed if zones_match => {
                     return find_layered_path_marker(
@@ -784,9 +957,12 @@ pub(crate) fn find_layered_path_zoned_marker(
                         urgency,
                         mover_is_crusher,
                         is_infantry,
-                    );
+                    )
+                    .ok_or(PathSearchFailure::CellSearchExhausted);
                 }
-                ZonePrecheckOutcome::Failed => return None,
+                ZonePrecheckOutcome::Failed => {
+                    return Err(PathSearchFailure::CompatibilityZoneRejected);
+                }
             }
         }
 
@@ -806,7 +982,8 @@ pub(crate) fn find_layered_path_zoned_marker(
                     urgency,
                     mover_is_crusher,
                     is_infantry,
-                );
+                )
+                .ok_or(PathSearchFailure::CellSearchExhausted);
             }
             if can_reach_through_explicit_tube(zg, mz, start, start_layer, goal, resolved_terrain) {
                 return find_layered_path_marker(
@@ -823,7 +1000,8 @@ pub(crate) fn find_layered_path_zoned_marker(
                     urgency,
                     mover_is_crusher,
                     is_infantry,
-                );
+                )
+                .ok_or(PathSearchFailure::CellSearchExhausted);
             }
             log::trace!(
                 "zone_search: layered unreachable {:?} ({:?} layer={:?} -> {:?}), skipping A*",
@@ -832,7 +1010,7 @@ pub(crate) fn find_layered_path_zoned_marker(
                 start_layer,
                 goal,
             );
-            return None;
+            return Err(PathSearchFailure::CompatibilityZoneRejected);
         }
     }
 
@@ -851,6 +1029,7 @@ pub(crate) fn find_layered_path_zoned_marker(
         mover_is_crusher,
         is_infantry,
     )
+    .ok_or(PathSearchFailure::CellSearchExhausted)
 }
 
 // ---------------------------------------------------------------------------

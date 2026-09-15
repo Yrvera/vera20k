@@ -96,26 +96,30 @@ fn game_speed_transition_applies_at_ingress_before_triggers_and_hash() {
     let (mut control, _) = game_speed_command_sim();
     let command = CommandEnvelope::new(owner, 1, Command::SetGameSpeed { speed: 4 });
 
-    let result = sim.advance_master_frame(
-        &[command],
-        None,
-        &empty_heights(),
-        None,
-        None,
-        67,
-        TickLane::Ordinary,
-        None,
-    );
-    let control_result = control.advance_master_frame(
-        &[],
-        None,
-        &empty_heights(),
-        None,
-        None,
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let result = sim
+        .advance_master_frame(
+            &[command],
+            None,
+            &empty_heights(),
+            None,
+            None,
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
+    let control_result = control
+        .advance_master_frame(
+            &[],
+            None,
+            &empty_heights(),
+            None,
+            None,
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
 
     assert!(result.frame_committed);
     assert_eq!(result.executed_commands, 1);
@@ -208,16 +212,18 @@ fn network_modal_does_not_execute_game_speed_ingress() {
     let (mut sim, owner) = game_speed_command_sim();
     let command = CommandEnvelope::new(owner, 1, Command::SetGameSpeed { speed: 4 });
 
-    let result = sim.advance_master_frame(
-        &[command],
-        None,
-        &empty_heights(),
-        None,
-        None,
-        67,
-        TickLane::NetworkModal,
-        None,
-    );
+    let result = sim
+        .advance_master_frame(
+            &[command],
+            None,
+            &empty_heights(),
+            None,
+            None,
+            67,
+            TickLane::NetworkModal,
+            None,
+        )
+        .expect("fixture frame must complete");
 
     assert_eq!(result.executed_commands, 0);
     assert_eq!(sim.session.game_options.game_speed, 1);
@@ -345,16 +351,18 @@ fn particle_frame_boundary_fixture(frame_count: u16) -> (Simulation, RuleSet) {
 fn master_frame_hash_observes_living_animation_completion_facing() {
     let (mut sim, rules) = animation_boundary_fixture();
 
-    let result = sim.advance_master_frame(
-        &[],
-        Some(&rules),
-        &empty_heights(),
-        None,
-        None,
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let result = sim
+        .advance_master_frame(
+            &[],
+            Some(&rules),
+            &empty_heights(),
+            None,
+            None,
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
 
     let entity = sim.substrate.entities.get(1).expect("living infantry");
     assert_eq!(entity.facing, 128);
@@ -370,15 +378,17 @@ fn app_and_headless_frames_hash_identically_for_animation_progress() {
     let (mut app_sim, rules) = animation_boundary_fixture();
     let (mut headless_sim, _) = animation_boundary_fixture();
 
-    let app = app_sim.advance_app_frame(
-        &[],
-        Some(&rules),
-        &empty_heights(),
-        None,
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let app = app_sim
+        .advance_app_frame(
+            &[],
+            Some(&rules),
+            &empty_heights(),
+            None,
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
     let headless = headless_sim.advance_tick(&[], Some(&rules), &empty_heights(), None, None, 67);
 
     assert!(app.tick.frame_committed && headless.frame_committed);
@@ -430,15 +440,17 @@ fn app_and_headless_frames_hash_identically_for_particle_frame_timing() {
     let (mut headless_sim, _) = particle_frame_boundary_fixture(5);
 
     for frame in 1..=4 {
-        let app = app_sim.advance_app_frame(
-            &[],
-            Some(&rules),
-            &empty_heights(),
-            None,
-            67,
-            TickLane::Ordinary,
-            None,
-        );
+        let app = app_sim
+            .advance_app_frame(
+                &[],
+                Some(&rules),
+                &empty_heights(),
+                None,
+                67,
+                TickLane::Ordinary,
+                None,
+            )
+            .expect("fixture frame must complete");
         let headless =
             headless_sim.advance_tick(&[], Some(&rules), &empty_heights(), None, None, 67);
 
@@ -655,16 +667,18 @@ fn terminal_master_frame_does_not_advance_living_animation() {
     let owner = insert_house_with_counts(&mut sim, "Americans", 1, 1);
     let exit = CommandEnvelope::new(owner, 1, Command::ExitMatch);
 
-    let result = sim.advance_master_frame(
-        &[exit],
-        Some(&rules),
-        &empty_heights(),
-        None,
-        None,
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let result = sim
+        .advance_master_frame(
+            &[exit],
+            Some(&rules),
+            &empty_heights(),
+            None,
+            None,
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
 
     assert!(!result.frame_committed);
     assert_eq!(sim.session.tick, 0);
@@ -692,30 +706,34 @@ fn app_frame_output_transfers_pre_tick_sound_exactly_once_without_hash_change() 
         },
     });
 
-    let first = sim.advance_app_frame(
-        &[],
-        None,
-        &empty_heights(),
-        None,
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let first = sim
+        .advance_app_frame(
+            &[],
+            None,
+            &empty_heights(),
+            None,
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
     assert!(matches!(
         first.sound_events.as_slice(),
         [SimSoundEvent::AnimationStarted { anim_id: 9, .. }]
     ));
     assert_eq!(first.tick.state_hash, sim.state_hash());
 
-    let second = sim.advance_app_frame(
-        &[],
-        None,
-        &empty_heights(),
-        None,
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let second = sim
+        .advance_app_frame(
+            &[],
+            None,
+            &empty_heights(),
+            None,
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
     assert!(second.sound_events.is_empty());
     assert_eq!(second.tick.state_hash, sim.state_hash());
 }
@@ -733,15 +751,17 @@ fn app_frame_output_finalizes_overlay_navigation_and_delivers_updates_once() {
         .expect("overlay grid")
         .place_owned_wall(2, 2, 2, 0x23, owner);
 
-    let deferred = sim.advance_app_frame(
-        &[],
-        Some(&rules),
-        &empty_heights(),
-        None,
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let deferred = sim
+        .advance_app_frame(
+            &[],
+            Some(&rules),
+            &empty_heights(),
+            None,
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
     assert!(deferred.overlay_updates.is_empty());
     assert!(
         sim.path_grid()
@@ -750,15 +770,17 @@ fn app_frame_output_finalizes_overlay_navigation_and_delivers_updates_once() {
         "a partial-input frame must retain dirty overlay work for later finalization"
     );
 
-    let first = sim.advance_app_frame(
-        &[],
-        Some(&rules),
-        &empty_heights(),
-        Some(&overlays),
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let first = sim
+        .advance_app_frame(
+            &[],
+            Some(&rules),
+            &empty_heights(),
+            Some(&overlays),
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
     assert_eq!(first.overlay_updates.len(), 1);
     let update = &first.overlay_updates[0];
     assert_eq!((update.rx, update.ry), (2, 2));
@@ -770,15 +792,17 @@ fn app_frame_output_finalizes_overlay_navigation_and_delivers_updates_once() {
     );
     assert_eq!(first.tick.state_hash, sim.state_hash());
 
-    let second = sim.advance_app_frame(
-        &[],
-        Some(&rules),
-        &empty_heights(),
-        Some(&overlays),
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let second = sim
+        .advance_app_frame(
+            &[],
+            Some(&rules),
+            &empty_heights(),
+            Some(&overlays),
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
     assert!(second.overlay_updates.is_empty());
     assert_eq!(second.tick.state_hash, sim.state_hash());
 }
@@ -807,15 +831,17 @@ fn terminal_app_frame_finalizes_overlay_updates_before_hash() {
     let owner = insert_house_with_counts(&mut sim, "Americans", 1, 1);
     let exit = CommandEnvelope::new(owner, 1, Command::ExitMatch);
 
-    let output = sim.advance_app_frame(
-        &[exit],
-        Some(&rules),
-        &empty_heights(),
-        Some(&overlays),
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let output = sim
+        .advance_app_frame(
+            &[exit],
+            Some(&rules),
+            &empty_heights(),
+            Some(&overlays),
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
     assert!(!output.tick.frame_committed);
     assert_eq!(output.overlay_updates.len(), 1);
     assert_eq!(
@@ -842,15 +868,17 @@ fn terminal_app_frame_finalizes_overlay_updates_before_hash() {
     );
     assert_eq!(output.tick.state_hash, sim.state_hash());
 
-    let next = sim.advance_app_frame(
-        &[],
-        Some(&rules),
-        &empty_heights(),
-        Some(&overlays),
-        67,
-        TickLane::Ordinary,
-        None,
-    );
+    let next = sim
+        .advance_app_frame(
+            &[],
+            Some(&rules),
+            &empty_heights(),
+            Some(&overlays),
+            67,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
     assert!(!next.tick.frame_committed);
     assert!(next.overlay_updates.is_empty());
 }
@@ -3239,7 +3267,9 @@ fn sonic_fire_registers_immediately_but_later_techno_fires_before_wave_tail_ai()
     let mut runtime = crate::sim::runtime::SimRuntime::from_simulation(sim);
     runtime.resources.rules = rules;
     runtime.resources.height_map = heights;
-    let output = runtime.advance_frame(&[], 67, TickLane::Ordinary);
+    let output = runtime
+        .advance_frame(&[], 67, TickLane::Ordinary)
+        .expect("fixture frame must complete");
     assert!(output.tick.frame_committed);
     let sim = &runtime.simulation;
 
@@ -3379,7 +3409,9 @@ fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
     let mut runtime = crate::sim::runtime::SimRuntime::from_simulation(sim);
     runtime.resources.rules = rules;
     runtime.resources.height_map = heights;
-    let output = runtime.advance_frame(&[], 67, TickLane::Ordinary);
+    let output = runtime
+        .advance_frame(&[], 67, TickLane::Ordinary)
+        .expect("fixture frame must complete");
     assert!(output.tick.frame_committed);
     let sim = &runtime.simulation;
 
@@ -9824,15 +9856,17 @@ fn current_rust_frame_call_order_is_preserved() {
     // Not yet due (dispatch admits execute_tick <= tick + 1): the drain
     // leaves the queue intact, and an empty-command frame carries it forward.
     assert!(sim.take_due_commands().is_empty());
-    let _ = sim.advance_app_frame(
-        &[],
-        Some(&rules),
-        &std::collections::BTreeMap::new(),
-        None,
-        16,
-        TickLane::Ordinary,
-        None,
-    );
+    let _ = sim
+        .advance_app_frame(
+            &[],
+            Some(&rules),
+            &std::collections::BTreeMap::new(),
+            None,
+            16,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
 
     // Step to the due tick with the exact app-shaped call: drained commands
     // in, bound resources, Ordinary lane. The command must execute within
@@ -9840,15 +9874,17 @@ fn current_rust_frame_call_order_is_preserved() {
     let tick_before = sim.session.tick;
     let due = sim.take_due_commands();
     assert_eq!(due.len(), 1, "the queued command is due exactly once");
-    let output = sim.advance_app_frame(
-        &due,
-        Some(&rules),
-        &std::collections::BTreeMap::new(),
-        None,
-        16,
-        TickLane::Ordinary,
-        None,
-    );
+    let output = sim
+        .advance_app_frame(
+            &due,
+            Some(&rules),
+            &std::collections::BTreeMap::new(),
+            None,
+            16,
+            TickLane::Ordinary,
+            None,
+        )
+        .expect("fixture frame must complete");
     assert!(output.tick.frame_committed);
     assert_eq!(sim.session.tick, tick_before + 1);
     assert!(
@@ -9888,11 +9924,15 @@ fn runtime_frame_call_order_matches_the_app_seam() {
     runtime.simulation.queue_command(select);
 
     assert!(runtime.simulation.take_due_commands().is_empty());
-    let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+    let _ = runtime
+        .advance_frame(&[], 16, TickLane::Ordinary)
+        .expect("fixture frame must complete");
 
     let due = runtime.simulation.take_due_commands();
     assert_eq!(due.len(), 1);
-    let output = runtime.advance_frame(&due, 16, TickLane::Ordinary);
+    let output = runtime
+        .advance_frame(&due, 16, TickLane::Ordinary)
+        .expect("fixture frame must complete");
     assert!(output.tick.frame_committed);
     assert!(
         runtime

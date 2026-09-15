@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "native_sha256": "1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c",
+  "unicorn_binding": "2.1.4",
+  "unicorn_core": [
+    2,
+    1,
+    33621247
+  ],
+  "scope": "Original zone3 Infantry movement-action remap, pre-admission water-state and sound-request ordering; no sound playback, retail load, full Doing lifecycle or Rust parity.",
+  "assumptions": [
+    "Supplied original Infantry and Cell vtables, currentXYZ2688,2688,0, real Cell10,10, flat level/slope0. Original coordinate and Map5657A0 calls execute; map construction/terrain producers are not executed.",
+    "Own type MovementZone+5B4=3 except zone0 contrast; actor+2DC=0,+74=false, alive+90=true,+6C=100; no carried/highflight/falling/zero-health callback branches. All42 sequence counts supplied6 except declared absent slot.",
+    "Direct requests0/2/3/6 cross LandType0/2/6, OnBridge false/true, old+6E8=0/1 and currentDoing-1/17/31. Additional contrasts test absent requested/mapped sequence, fear200, force and old+6E8=-1/2.",
+    "Frame100, old logical timer17/91/92 and image frame7; ignored middle timer word+104 is excluded. Random-start false. No later timer/sequence advancement.",
+    "Type+EA4/+EA8 sound indices supplied101/102. Original global8464AC is explicitly false, so original7509E0 returns at its disable gate. Observed entry arguments prove caller request ordering only, not audible output or stock sound index identity.",
+    "Native zone identity: ReadINI71605E..716081 writes type+5B4 from474E40; its names table81BA88 has index3 pointer81BB38=AmphibiousDestroyer. Stock reachability lead: active rulesmd.ini SHA3d341ef8a13a4b5ab24af2eef48ac94931ac2bb87d950fe3330a07e2d25672ef GHOST(SEAL)/TANY use Walk and AmphibiousDestroyer; fixture does not execute INI load or prove every mode/map override."
+  ],
+  "substitutions": [],
+  "entry_points": {
+    "do_action": "0x0051D6F0",
+    "packed_cell_query": "0x005657A0",
+    "sound_request": "0x007509E0",
+    "walk_constructor": "0x0075AA90"
+  },
+  "payload_sha256": "fcc9d43bf79b8fd21e698b621944bd2d681d925be9a99ef2a80203e08d7681d1"
+}

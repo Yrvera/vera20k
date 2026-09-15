@@ -882,11 +882,10 @@ mod tests {
             for frame in 1..=300 {
                 // Use the app's cadence and bound production transaction, not
                 // the tooling tick helper's different millisecond cadence.
-                let output = loaded.runtime.advance_frame(
-                    &[],
-                    crate::app::types::SIM_TICK_MS,
-                    TickLane::Ordinary,
-                );
+                let output = loaded
+                    .runtime
+                    .advance_frame(&[], crate::app::types::SIM_TICK_MS, TickLane::Ordinary)
+                    .expect("fixture frame must complete");
                 victory_edges += output.sound_events.iter().filter(|event| matches!(event,
                     SimSoundEvent::MatchOutcome { owner: event_owner, kind: HouseOutcomeKind::Victory }
                         if *event_owner == owner
@@ -941,11 +940,10 @@ mod tests {
                     1,
                     crate::sim::command::Command::ExitMatch,
                 );
-                let output = loaded.runtime.advance_frame(
-                    &[exit],
-                    crate::app::types::SIM_TICK_MS,
-                    TickLane::Ordinary,
-                );
+                let output = loaded
+                    .runtime
+                    .advance_frame(&[exit], crate::app::types::SIM_TICK_MS, TickLane::Ordinary)
+                    .expect("fixture frame must complete");
                 assert_eq!(output.tick.executed_commands, 1);
                 assert!(!output.tick.frame_committed);
                 assert!(

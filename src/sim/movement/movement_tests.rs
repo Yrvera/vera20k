@@ -396,30 +396,81 @@ fn gsi_04_05_tick_production_movement(
 }
 
 #[test]
-fn foot_path_runtime_survives_accepted_walk_order_and_resets_for_drive() {
+fn walk_path_timer_waits_without_double_aging_or_losing_owner_state() {
     use crate::sim::components::FootPathRuntime;
     use crate::sim::timer::CdTimer;
 
     let grid = PathGrid::test_all_passable(30, 30);
-    let retained = FootPathRuntime {
-        movement_timer: CdTimer::from_raw(-1, -7),
-        blocked_timer: CdTimer::started(100, 60),
-        path_blocked: true,
-        retries_left: u32::MAX,
-    };
-    for (kind, type_name) in [(LocomotorKind::Walk, "E1"), (LocomotorKind::Drive, "MTNK")] {
+    for (timer, frame) in [
+        (CdTimer::started(100, 9), 108),
+        (CdTimer::from_raw(-1, -7), 100),
+        (CdTimer::started(i32::MAX - 2, 9), i32::MIN as u32 + 2),
+    ] {
         let mut sim = Simulation::with_seed(41);
-        let mut actor = GameEntity::test_default(1, type_name, "Americans", 10, 10);
+        let mut actor = GameEntity::test_default(1, "E1", "Americans", 10, 10);
         actor.owner = sim.intern("Americans");
-        actor.type_ref = sim.intern(type_name);
-        actor.category = if kind == LocomotorKind::Walk {
-            EntityCategory::Infantry
-        } else {
-            EntityCategory::Unit
-        };
-        actor.locomotor = Some(LocomotorState::for_test_kind(kind));
-        actor.navigation.path_runtime = retained;
+        actor.type_ref = sim.intern("E1");
+        actor.category = EntityCategory::Infantry;
+        actor.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
         sim.substrate.entities.insert(actor);
+        assert!(matches!(
+            sim.reveal(1),
+            crate::sim::world::RevealOutcome::Revealed { .. }
+        ));
+        assert!(issue_move_command(
+            &mut sim.substrate.entities,
+            &grid,
+            1,
+            (20, 10),
+            SimFixed::from_num(150),
+            false,
+            None,
+            None,
+            None,
+            false,
+            DestinationTiming::new(100, 60),
+        ));
+        let retained = FootPathRuntime {
+            movement_timer: timer,
+            blocked_timer: CdTimer::started(100, 60),
+            path_blocked: true,
+            retries_left: u32::MAX,
+        };
+        let actor = sim.substrate.entities.get_mut(1).unwrap();
+        actor.navigation.path_runtime = retained;
+        let position = actor.position.clone();
+        let rng = sim.scenario_rng.logical_state();
+        // A hut Scatter Process and an ordinary Process can share a frame.
+        // Native75AF3C..55 tests a nonzero signed remainder, not a decrement.
+        for _ in 0..2 {
+            gsi_04_05_tick_production_movement(&mut sim, Some(&grid), frame);
+            let actor = sim.substrate.entities.get(1).unwrap();
+            assert_eq!(actor.navigation.path_runtime, retained);
+            assert_eq!(
+                serde_json::to_value(&actor.position).unwrap(),
+                serde_json::to_value(&position).unwrap()
+            );
+            assert!(actor.movement_target.as_ref().unwrap().path.is_empty());
+            assert!(actor.locomotor.as_ref().unwrap().step_head().is_none());
+            assert_eq!(sim.scenario_rng.logical_state(), rng);
+        }
+
+        // Native null setter writes persistent timers even without an adapter;
+        // the next accepted order must not recreate or truncate the dword count.
+        sim.substrate.entities.get_mut(1).unwrap().movement_target = None;
+        sim.session.binary_frame = 200;
+        assert!(sim.set_walk_null_destination(1, None));
+        let actor = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(
+            actor.navigation.path_runtime.movement_timer,
+            CdTimer::started(200, 0)
+        );
+        assert_eq!(
+            actor.navigation.path_runtime.blocked_timer,
+            CdTimer::started(200, 60)
+        );
+        assert!(!actor.navigation.path_runtime.path_blocked);
+        assert_eq!(actor.navigation.path_runtime.retries_left, u32::MAX);
         assert!(issue_move_command(
             &mut sim.substrate.entities,
             &grid,
@@ -434,21 +485,15 @@ fn foot_path_runtime_survives_accepted_walk_order_and_resets_for_drive() {
             DestinationTiming::new(201, 22),
         ));
         let actor = sim.substrate.entities.get(1).unwrap();
-        let runtime = actor.navigation.path_runtime;
-        if kind == LocomotorKind::Walk {
-            // Set_Destination_Internal 0x4D96C2..0x4D9707 re-arms both timers
-            // at the accepting frame and clears the blocked latch. The route
-            // installed at acceptance stands in for the first no-head Process
-            // FindPath, whose success continuation 0x75B2E2 stores 10 in +64C.
-            assert_eq!(runtime.movement_timer, CdTimer::started(201, 0));
-            assert_eq!(runtime.blocked_timer, CdTimer::started(201, 22));
-            assert!(!runtime.path_blocked);
-            assert_eq!(runtime.retries_left, 10);
-        } else {
-            // Non-Walk orders keep the established per-Process compatibility
-            // reset until their native timer producers are ported.
-            assert_eq!(runtime, FootPathRuntime::default());
-        }
+        assert_eq!(
+            actor.navigation.path_runtime.movement_timer,
+            CdTimer::started(201, 0)
+        );
+        assert_eq!(
+            actor.navigation.path_runtime.blocked_timer,
+            CdTimer::started(201, 22)
+        );
+        assert_eq!(actor.navigation.path_runtime.retries_left, u32::MAX);
         assert_eq!(
             actor.movement_target.as_ref().unwrap().final_goal,
             Some((21, 10))
@@ -1040,7 +1085,7 @@ fn cell_arrival_infantry_keeps_detour_order_and_snapshot_continuation() {
         &grid,
         walker,
         (4, 1),
-        SimFixed::from_num(1024),
+        crate::util::fixed_math::ra2_speed_to_leptons_per_second(rules.object("E1").unwrap().speed),
         false,
         None,
         None,
@@ -1056,7 +1101,7 @@ fn cell_arrival_infantry_keeps_detour_order_and_snapshot_continuation() {
     let mut crossed_detour_cell = false;
     let mut restored: Option<Simulation> = None;
     let mut trace = Vec::new();
-    for frame in 0..160 {
+    for frame in 0..400 {
         let next_order = sim.substrate.next_occupancy_enter_order.current();
         gsi_04_05_tick_production_movement(&mut sim, Some(&grid), frame);
         if let Some(loaded) = restored.as_mut() {
@@ -1142,9 +1187,15 @@ fn cell_arrival_infantry_keeps_detour_order_and_snapshot_continuation() {
         trace.push((
             frame,
             cell,
+            crate::sim::movement::ground_pose::position_world_xy(&entity.position),
             entity.sub_cell,
             entity.occupancy_enter_order,
             sim.scenario_rng.state(),
+            entity.locomotor.as_ref().and_then(|l| l.step_head()),
+            entity
+                .movement_target
+                .as_ref()
+                .map(|t| (t.path.clone(), t.next_index)),
         ));
         if entity.movement_target.is_none() {
             break;
@@ -1154,7 +1205,7 @@ fn cell_arrival_infantry_keeps_detour_order_and_snapshot_continuation() {
         crossed_detour_cell,
         "production Walk path must take the same detour; trace={trace:?}"
     );
-    assert_eq!(previous_cell, (4, 1));
+    assert_eq!(previous_cell, (4, 1), "trace={trace:#?}");
     assert!(
         sim.substrate
             .entities

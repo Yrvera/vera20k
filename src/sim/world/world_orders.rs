@@ -15,7 +15,6 @@ use crate::sim::components::OrderIntent;
 use crate::sim::intern::InternedId;
 use crate::sim::mission::MissionType;
 use crate::sim::movement;
-use crate::sim::movement::air_movement;
 use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::PathGrid;
@@ -43,6 +42,40 @@ pub(crate) struct C4TickOutcome {
 }
 
 impl Simulation {
+    fn bridge_repair_notification_allowed(&self, owner: InternedId) -> bool {
+        // House50B6F0: nonzero session mode compares exactly to LocalPlayer;
+        // mode zero uses the two native human/control flags.
+        if self.session.game_mode_nonzero {
+            //50B716 loads A83D4C, the persisted native current-house input.
+            //Presentation viewer binding cannot change this receiver's result.
+            self.session.current_house == Some(owner)
+        } else {
+            self.houses
+                .get(&owner)
+                .is_some_and(|h| h.is_controlled_by_human(false))
+        }
+    }
+
+    fn announce_bridge_repair(
+        &mut self,
+        owner: InternedId,
+        cell: (u16, u16),
+        building_cell: (u16, u16),
+    ) {
+        let eva_allowed = self.bridge_repair_notification_allowed(owner)
+            && self.radar_events.push(
+                crate::sim::radar::RadarEventType::BridgeRepaired,
+                cell.0,
+                cell.1,
+            );
+        self.sound_events.push(SimSoundEvent::BridgeRepaired {
+            rx: building_cell.0,
+            ry: building_cell.1,
+            owner,
+            eva_allowed,
+        });
+    }
+
     /// Pre-combat: entities with an OrderIntent but no current AttackTarget
     /// try to acquire a nearby enemy to engage.
     ///
@@ -205,12 +238,8 @@ impl Simulation {
             let speed: SimFixed = (base_speed * loco_multiplier).max(SimFixed::lit("25"));
 
             if is_air {
-                let _ = air_movement::issue_air_move_command(
-                    &mut self.substrate.entities,
-                    stable_id,
-                    (goal_rx, goal_ry),
-                    speed,
-                );
+                let _ =
+                    self.issue_air_cell_destination(stable_id, (goal_rx, goal_ry), speed, rules);
             } else {
                 let blocker_neighbor_counts =
                     bump_crush::build_blocker_neighbor_counts_with_overlays(
@@ -406,190 +435,121 @@ impl Simulation {
         });
     }
 
-    /// Tick bridge-repair orders: any engineer with `capture_target` pointing
-    /// at a `BridgeRepairHut=yes` building first enters the building footprint.
-    /// Once the engineer's current cell resolves to that building, the
-    /// PerCellProcess-style arrival branch triggers bridge repair on the cells
-    /// in a 5x5 scan around the engineer's arrival cell.
-    ///
-    /// Flow:
-    ///   1. Create a non-drawing `BridgeRepaired` radar event at the hut.
-    ///   2. Emit `SimSoundEvent::BridgeRepaired` at the building's cell.
-    ///   3. Run overlay-family bridge repair over the 5x5 scan around the arrival cell.
-    ///   4. Despawn the engineer (consumed by repair).
-    ///
-    /// Returns `true` if any repair mutated bridge state (caller ORs into
-    /// `TickResult.bridge_state_changed` so the app rebuilds PathGrid).
+    /// Legacy order-intent preparation: an adjacent idle engineer still needs
+    /// an ordinary move into the hut. Actual repair belongs exclusively to
+    /// Infantry PerCell2 inside the live object turn (519B58..519D12).
     pub(crate) fn tick_bridge_repair_orders_with_overlay_registry(
         &mut self,
         rules: &RuleSet,
-        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        _overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         turn_suppressed: &BTreeSet<u64>,
     ) -> bool {
-        use crate::sim::bridge_state::cells_in_5x5_scan;
-
-        let mut any_repair = false;
-        let keys = self.substrate.entities.keys_sorted();
-        let mut key_idx = 0;
-
-        while key_idx < keys.len() {
-            let engineer_id = keys[key_idx];
-            if turn_suppressed.contains(&engineer_id) {
-                key_idx += 1;
+        for id in self.substrate.entities.keys_sorted() {
+            if turn_suppressed.contains(&id) {
                 continue;
             }
-            let Some((building_id, engineer_owner)) =
-                self.substrate.entities.get(engineer_id).and_then(|e| {
-                    if e.dying {
-                        return None;
-                    }
-                    Some((e.capture_target?, e.owner()))
-                })
-            else {
-                key_idx += 1;
+            let Some((target, cell)) = self.substrate.entities.get(id).and_then(|e| {
+                (!e.dying).then_some((e.capture_target?, (e.position.rx, e.position.ry)))
+            }) else {
                 continue;
             };
-
-            // Resolve target type; only proceed for BridgeRepairHut=yes.
-            let target_bridge_hut = self
+            if !self
                 .substrate
                 .entities
-                .get(building_id)
-                .and_then(|b| {
-                    self.object_type(b.type_ref(), rules)
-                        .map(|t| t.bridge_repair_hut)
-                })
-                .unwrap_or(false);
-            if !target_bridge_hut {
-                key_idx += 1;
-                continue;
-            }
-
-            // Target alive + still a Structure.
-            let target_alive = self
-                .substrate
-                .entities
-                .get(building_id)
-                .is_some_and(|b| b.category == EntityCategory::Structure && !b.dying);
-            if !target_alive {
-                if let Some(e) = self.substrate.entities.get_mut(engineer_id) {
-                    e.capture_target = None;
-                }
-                key_idx += 1;
-                continue;
-            }
-
-            // Adjacency only issues the scripted enter move; repair itself
-            // waits until the engineer has arrived inside the building cell.
-            let Some((erx, ery)) = self
-                .substrate
-                .entities
-                .get(engineer_id)
-                .map(|e| (e.position.rx, e.position.ry))
-            else {
-                key_idx += 1;
-                continue;
-            };
-            let engineer_cell = (erx, ery);
-            let Some(target_footprint) = self.building_entry_target_footprint(building_id, rules)
-            else {
-                key_idx += 1;
-                continue;
-            };
-            if !target_footprint.contains(&engineer_cell) {
-                if self.adjacent_to_target_footprint(engineer_cell, &target_footprint)
-                    && !self.infantry_has_active_movement(engineer_id)
-                {
-                    self.issue_building_enter_target_cell(
-                        engineer_id,
-                        engineer_cell,
-                        &target_footprint,
-                        rules,
-                    );
-                }
-                key_idx += 1;
-                continue;
-            }
-
-            let Some((brx, bry)) = self
-                .substrate
-                .entities
-                .get(building_id)
-                .map(|b| (b.position.rx, b.position.ry))
-            else {
-                key_idx += 1;
-                continue;
-            };
-
-            // ---- Trigger fires this tick ----
-
-            // Step A0: create the non-drawing BridgeRepaired radar event before
-            // bridge mutation. Its dedup result gates EVA in the app layer.
-            let eva_allowed =
-                self.radar_events
-                    .push(crate::sim::radar::RadarEventType::BridgeRepaired, brx, bry);
-
-            // Step A: emit BridgeRepaired sound event at the BUILDING's cell.
-            self.sound_events
-                .push(crate::sim::world::SimSoundEvent::BridgeRepaired {
-                    rx: brx,
-                    ry: bry,
-                    owner: engineer_owner,
-                    eva_allowed,
-                });
-
-            // Step B: 5x5 scan from the engineer's arrival cell + repair dispatch.
-            let scan: Vec<(u16, u16)> = cells_in_5x5_scan(engineer_cell).collect();
-            let outcome = if let (Some(bs), Some(terrain)) =
-                (self.bridge_state.as_mut(), self.resolved_terrain.as_ref())
+                .get(target)
+                .and_then(|b| self.object_type(b.type_ref(), rules))
+                .is_some_and(|t| t.bridge_repair_hut)
             {
-                // bridge repair walker-variant pick — gamemd draws g_MapGenRng, not the
-                // scenario stream. Direct field (NOT bridge_rng(); `bs`/`terrain` hold live
-                // disjoint borrows). VERA fixed-map construction currently keeps
-                // Seed(0); native fresh-process state is verified, while cross-match
-                // retention is UNCHECKED. Accepted generated maps continue their
-                // post-RMG cursor. The scenario/main cursors are left untouched.
-                bs.repair_bridge_from_engineer_scan(&scan, &mut self.mapgen_rng, terrain)
-            } else {
-                crate::sim::bridge_state::RepairOutcome::default()
-            };
-
-            if outcome.zones_dirty || outcome.repaired_cells > 0 {
-                any_repair = true;
+                continue;
             }
-
-            crate::sim::world::bridge_orchestrator::project_pending_low_bridge_overlay_writes(
-                self,
-                overlay_registry,
-            );
-
-            // Step B2: zone-graph refresh. The repair restores cells
-            // (Destroyed -> Healthy) but the endpoint records are
-            // deactivate-only at construction; without this the bidirectional
-            // `refresh_endpoint_active_flags` never runs on the repair path,
-            // so the long-range A* zone edge (gated on `record.active`) stays
-            // missing even though per-cell walkability is restored. Mirrors
-            // the collapse cascade's `refresh_bridge_zones_if_dirty` call.
-            crate::sim::world::bridge_orchestrator::refresh_bridge_zones_if_dirty(
-                self,
-                rules,
-                outcome.zones_dirty,
-            );
-
-            // Step C: publish destroyed-anchor radar restores. Ordinary
-            // overlay repair does not clear pavement; the native ramp/span
-            // restoration entry owns its separate56E990 clear call sites.
-            self.mark_radar_terrain_dirty_cells(outcome.radar_cells.iter().copied());
-
-            // Step D: engineer consumed.
-            self.uninit_with_rules(engineer_id, rules);
-            // gamemd iterates a live object vector. Removing the current
-            // engineer compacts the next object into this slot; the scheduler
-            // then advances, so that immediate successor waits until later.
-            key_idx += 2;
+            let Some(footprint) = self.building_entry_target_footprint(target, rules) else {
+                continue;
+            };
+            if !footprint.contains(&cell)
+                && self.adjacent_to_target_footprint(cell, &footprint)
+                && !self.infantry_has_active_movement(id)
+            {
+                self.issue_building_enter_target_cell(id, cell, &footprint, rules);
+            }
         }
+        false
+    }
 
-        any_repair
+    /// Ordinary Infantry PerCell2 engineer receiver. The active object cursor
+    /// owns removal/next-object cadence; there is no second sorted repair pass.
+    pub(crate) fn infantry_per_cell_bridge_repair(
+        &mut self,
+        engineer_id: u64,
+        rules: &RuleSet,
+        registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> Result<bool, super::FrameAdvanceError> {
+        use crate::rules::mission_data::MissionType;
+        use crate::sim::components::NavTargetRef;
+        let Some(engineer) = self.substrate.entities.get(engineer_id) else {
+            return Ok(false);
+        };
+        if engineer.category != EntityCategory::Infantry
+            || !matches!(
+                engineer.mission.current().known(),
+                Some(MissionType::Capture | MissionType::AreaGuard | MissionType::Patrol)
+            )
+            || !self
+                .object_type(engineer.type_ref(), rules)
+                .is_some_and(|t| t.engineer)
+        {
+            return Ok(false);
+        }
+        let cell = (engineer.position.rx, engineer.position.ry);
+        let owner = engineer.owner();
+        let Some(building_id) = self.substrate.occupancy.first_building_on_layer(
+            cell.0,
+            cell.1,
+            crate::sim::movement::locomotor::MovementLayer::Ground,
+        ) else {
+            return Ok(false);
+        };
+        let targets = matches!(engineer.navigation.nav_com,
+            Some(NavTargetRef::Entity{id}|NavTargetRef::Object{id}|NavTargetRef::Building{id}) if id==building_id)
+            || engineer.attack_target.as_ref().is_some_and(|attack| {
+                matches!(attack.target, crate::sim::combat::TargetKind::Entity(id) if id == building_id)
+            });
+        if !targets {
+            return Ok(false);
+        }
+        let Some(building) = self.substrate.entities.get(building_id) else {
+            return Ok(false);
+        };
+        if !self
+            .object_type(building.type_ref(), rules)
+            .is_some_and(|t| t.bridge_repair_hut)
+        {
+            return Ok(false);
+        }
+        let building_cell = (building.position.rx, building.position.ry);
+        //519BB6 supplies the ENGINEER cell;519C02 supplies building XYZ.
+        //519B90/50B6F0 gates insertion itself, including radar dedup state.
+        self.announce_bridge_repair(owner, cell, building_cell);
+        let mut changed = crate::sim::world::bridge_orchestrator::repair_from_engineer(
+            self,
+            rules,
+            registry,
+            engineer_id,
+        )
+        .map_err(|cause| {
+            super::FrameAdvanceError::bridge_repair(
+                self.session.tick,
+                self.session.binary_frame,
+                engineer_id,
+                cause,
+            )
+        })?;
+        //519D17..519D36 descends Infantry's registry with +28(hut,false).
+        //Clearing NavCom does not stop a retained Walk head/destination.
+        self.expire_infantry_bridge_hut_targets(building_id);
+        changed |= self.scatter_bridge_hut(building_id, rules, registry)?;
+        // Attached Tag6E53A0 remains a separate synchronous receiver boundary.
+        self.uninit_with_rules(engineer_id, rules);
+        Ok(changed)
     }
 
     /// Tick C4 plant orders.
@@ -1193,6 +1153,20 @@ impl Simulation {
                 continue;
             }
 
+            // Ground Infantry's native approach helper4D5690 returns at
+            // 4D5A07..18 while NavCom is present. An accepted Walk path/head
+            // continues through Process; FootPerCell(mode2)4D882F..896E makes
+            // the range-stop decision after completion. Dropping the path
+            // adapter here strands its independently retained head/raw claim.
+            if entity
+                .locomotor
+                .as_ref()
+                .is_some_and(|loco| loco.kind == crate::rules::locomotor_type::LocomotorKind::Walk)
+                && entity.navigation.nav_com.is_some()
+            {
+                continue;
+            }
+
             // Resolve target coords using the same helper combat tick uses.
             // None means entity-target despawned; combat tick's target-dead
             // branch handles cleanup.
@@ -1343,7 +1317,14 @@ impl Simulation {
                 }
                 PursuitAction::ClearMovement { entity_id } => {
                     if let Some(e) = self.substrate.entities.get_mut(entity_id) {
-                        e.movement_target = None;
+                        // A prior null destination (for example Stop) still
+                        // leaves a paid Walk head active until its completion.
+                        if !e.locomotor.as_ref().is_some_and(|loco| {
+                            loco.kind == crate::rules::locomotor_type::LocomotorKind::Walk
+                                && loco.step_head().is_some()
+                        }) {
+                            e.movement_target = None;
+                        }
                     }
                 }
                 PursuitAction::DropTargetAndMovement { entity_id } => {
@@ -1374,4 +1355,89 @@ fn c4_base_foundation_cells(origin_rx: u16, origin_ry: u16, foundation: &str) ->
     }
 
     cells
+}
+
+#[cfg(test)]
+mod repair_notification_tests {
+    use super::*;
+
+    #[test]
+    fn native_current_house_gates_repair_on_headless_restore() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let other = sim.interner.intern("Russians");
+        for id in [owner, other] {
+            sim.houses.insert(
+                id,
+                crate::sim::house_state::HouseState::new(id, 0, None, true, 0, 1),
+            );
+            sim.session.house_order.push(id);
+        }
+        sim.session.current_house = Some(owner);
+        sim.session.game_mode_nonzero = true;
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "notification", 0);
+        let restore = || {
+            crate::sim::snapshot::GameSnapshot::load(&bytes)
+                .unwrap()
+                .sim
+        };
+        let mut restored = restore();
+        assert_eq!(restored.session.current_house, Some(owner));
+        restored.announce_bridge_repair(owner, (7, 8), (8, 8));
+        assert_eq!(
+            restored.radar_events.len(),
+            1,
+            "headless restore needs no app viewer bind"
+        );
+        assert!(matches!(
+            restored.sound_events.last(),
+            Some(SimSoundEvent::BridgeRepaired {
+                eva_allowed: true,
+                ..
+            })
+        ));
+
+        let mut other_current = restore();
+        other_current.session.current_house = Some(other);
+        other_current.announce_bridge_repair(owner, (7, 8), (8, 8));
+        assert_eq!(other_current.radar_events.len(), 0);
+        assert!(
+            matches!(
+                other_current.sound_events.last(),
+                Some(SimSoundEvent::BridgeRepaired {
+                    eva_allowed: false,
+                    ..
+                })
+            ),
+            "the spatial repair sound remains even when the native radar/EVA gate refuses"
+        );
+        assert_eq!(restored.state_hash(), other_current.state_hash());
+        assert_eq!(restored.rng_state(), other_current.rng_state());
+    }
+
+    #[test]
+    fn offline_ai_does_not_take_the_human_repair_radar_dedup_slot() {
+        let mut sim = Simulation::new();
+        let ai = sim.interner.intern("Russians");
+        let player = sim.interner.intern("Americans");
+        for owner in [ai, player] {
+            sim.houses.insert(
+                owner,
+                crate::sim::house_state::HouseState::new(owner, 0, None, false, 0, 0),
+            );
+        }
+        sim.houses.get_mut(&player).unwrap().player_control = true;
+        sim.announce_bridge_repair(ai, (7, 8), (8, 8));
+        assert_eq!(sim.radar_events.len(), 0);
+        sim.announce_bridge_repair(player, (7, 8), (8, 8));
+        assert_eq!(sim.radar_events.len(), 1);
+        assert!(matches!(
+            sim.sound_events.last(),
+            Some(SimSoundEvent::BridgeRepaired {
+                eva_allowed: true,
+                ..
+            })
+        ));
+    }
 }

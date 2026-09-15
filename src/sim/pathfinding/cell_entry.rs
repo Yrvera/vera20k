@@ -715,7 +715,16 @@ pub fn decide_live_vehicle_building_entry(
     }
 
     if input.candidate_building_id != Some(input.checked_building_id) {
-        return BuildingOccupantEntryDecision::KeepBlocker;
+        //458A00 returns false on identity mismatch. The radio caller73F5A2
+        //skips then; UnitRepair/Bunker73F761 has a separate equality gate.
+        return match input.branch {
+            VehicleBuildingEntryBranch::RadioContact { .. } => {
+                BuildingOccupantEntryDecision::SkipBlocker
+            }
+            VehicleBuildingEntryBranch::UnitRepairOrBunker => {
+                BuildingOccupantEntryDecision::KeepBlocker
+            }
+        };
     }
     if input.number_impassable_rows == -1 {
         return BuildingOccupantEntryDecision::KeepBlocker;
@@ -914,6 +923,44 @@ pub fn classify_occupied_cell_with_layers_and_ignored(
     alliances: &HouseAllianceMap,
     interner: &crate::sim::intern::StringInterner,
 ) -> CellEntryResult {
+    classify_occupied_cell_with_slave_query(
+        target,
+        layers,
+        mover_id,
+        crush_capability,
+        mover_owner,
+        mover_locomotor,
+        mover_bypass_grid,
+        ignored_blockers,
+        occupancy,
+        entities,
+        alliances,
+        interner,
+        None,
+        &mut false,
+    )
+}
+
+// The ordinary movement adapter keeps its existing soft-code classification.
+// Native51C2BC's shared slave arm runs only when this ordered list reaches
+// the master; its true result clears a local vehicle latch and continues.
+#[allow(clippy::too_many_arguments)]
+fn classify_occupied_cell_with_slave_query(
+    target: (u16, u16),
+    layers: CanEnterLayerContext,
+    mover_id: u64,
+    crush_capability: bump_crush::CrushCapability,
+    mover_owner: &str,
+    mover_locomotor: LocomotorKind,
+    mover_bypass_grid: bool,
+    ignored_blockers: Option<&BTreeSet<u64>>,
+    occupancy: &OccupancyGrid,
+    entities: &EntityStore,
+    alliances: &HouseAllianceMap,
+    interner: &crate::sim::intern::StringInterner,
+    slave_query: Option<&crate::sim::slave_deposit::SlaveDepositQuery<'_>>,
+    slave_cleared_vehicle: &mut bool,
+) -> CellEntryResult {
     let _ = mover_bypass_grid;
     // --- Crush candidates ---
     // Crushability is a latch, not an early exit: gamemd sets it while walking
@@ -940,6 +987,22 @@ pub fn classify_occupied_cell_with_layers_and_ignored(
         for occupant in occ.iter_layer(layers.object_list_layer) {
             if occupant.entity_id == mover_id {
                 continue;
+            }
+            if let Some(query) = slave_query
+                && query.master(mover_id) == Some(occupant.entity_id)
+            {
+                // The selected Cell identity is already the admission input.
+                // Resolve its slot without adding a second map lookup here.
+                let selected = query
+                    .terrain
+                    .native_fixed_cell_index(target.0 as i16, target.1 as i16)
+                    .map(crate::map::cell_index::NativeCellIdentity::Real)
+                    .unwrap_or(crate::map::cell_index::NativeCellIdentity::Dummy);
+                if query.admits(mover_id, occupant.entity_id, selected) {
+                    *slave_cleared_vehicle = true;
+                    saw_candidate = true;
+                    continue;
+                }
             }
             if ignored_blockers.is_some_and(|ids| ids.contains(&occupant.entity_id)) {
                 continue;
@@ -1036,7 +1099,43 @@ pub(crate) fn classify_occupied_cell_with_layers_and_ignored_and_occupation(
     alliances: &HouseAllianceMap,
     interner: &crate::sim::intern::StringInterner,
 ) -> CellEntryResult {
-    let result = classify_occupied_cell_with_layers_and_ignored(
+    classify_occupied_cell_with_occupation_and_slave_query(
+        target,
+        layers,
+        mover_id,
+        crush_capability,
+        mover_owner,
+        mover_locomotor,
+        mover_bypass_grid,
+        ignored_blockers,
+        occupancy,
+        cell_occupation,
+        entities,
+        alliances,
+        interner,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn classify_occupied_cell_with_occupation_and_slave_query(
+    target: (u16, u16),
+    layers: CanEnterLayerContext,
+    mover_id: u64,
+    crush_capability: bump_crush::CrushCapability,
+    mover_owner: &str,
+    mover_locomotor: LocomotorKind,
+    mover_bypass_grid: bool,
+    ignored_blockers: Option<&BTreeSet<u64>>,
+    occupancy: &OccupancyGrid,
+    cell_occupation: &CellOccupationGrid,
+    entities: &EntityStore,
+    alliances: &HouseAllianceMap,
+    interner: &crate::sim::intern::StringInterner,
+    slave_query: Option<&crate::sim::slave_deposit::SlaveDepositQuery<'_>>,
+) -> CellEntryResult {
+    let mut slave_cleared_vehicle = false;
+    let result = classify_occupied_cell_with_slave_query(
         target,
         layers,
         mover_id,
@@ -1049,8 +1148,11 @@ pub(crate) fn classify_occupied_cell_with_layers_and_ignored_and_occupation(
         entities,
         alliances,
         interner,
+        slave_query,
+        &mut slave_cleared_vehicle,
     );
-    if matches!(result, CellEntryResult::Clear | CellEntryResult::Impassable)
+    if !slave_cleared_vehicle
+        && matches!(result, CellEntryResult::Clear | CellEntryResult::Impassable)
         && cell_occupation.occupied_by_other(
             target.0,
             target.1,
@@ -1641,6 +1743,16 @@ mod tests {
             BuildingOccupantEntryDecision::KeepBlocker
         );
 
+        assert_eq!(
+            decide_live_vehicle_building_entry(LiveVehicleBuildingEntry {
+                branch: VehicleBuildingEntryBranch::RadioContact {
+                    mover_has_contact: true
+                },
+                ..other_building
+            }),
+            BuildingOccupantEntryDecision::SkipBlocker,
+            "73F5A2 consumes false458A00 as skip even for a different first Building"
+        );
         let no_rows = LiveVehicleBuildingEntry {
             candidate_building_id: Some(100),
             number_impassable_rows: -1,

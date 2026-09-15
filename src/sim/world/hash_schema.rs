@@ -8,6 +8,10 @@ pub(super) enum HashSchema {
     Current,
     #[cfg(test)]
     Before(u16),
+    /// Test-only provenance probe: the `Before` composition with the raw
+    /// infantry owner identities excluded from the raw occupation fold.
+    #[cfg(test)]
+    BeforeWithoutRawInfantryOwners(u16),
 }
 
 /// First hash schema containing each gated layout. A feature can select an
@@ -46,6 +50,7 @@ pub(super) enum HashFeature {
     BridgePublication = 145,
     CellMembership = 159,
     FootPathRuntime = 160,
+    BridgeLocomotorAndDummy = 161,
 }
 
 impl HashSchema {
@@ -53,7 +58,19 @@ impl HashSchema {
         match self {
             Self::Current => true,
             #[cfg(test)]
-            Self::Before(version) => (_feature as u16) < version,
+            Self::Before(version) | Self::BeforeWithoutRawInfantryOwners(version) => {
+                (_feature as u16) < version
+            }
+        }
+    }
+
+    pub(super) const fn includes_raw_infantry_owners(self) -> bool {
+        match self {
+            Self::Current => true,
+            #[cfg(test)]
+            Self::Before(_) => true,
+            #[cfg(test)]
+            Self::BeforeWithoutRawInfantryOwners(_) => false,
         }
     }
 }

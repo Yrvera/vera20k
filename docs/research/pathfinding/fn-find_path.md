@@ -1,6 +1,44 @@
 # FootClass__Find_Path — Decode Doc
 **Proposed Ghidra label:** FootClass__Find_Path
 
+## Correction from original Infantry callers and executable comparison
+
+The historical decode below contains incorrect virtual-slot identities. The
+following corrections supersede its affected pseudocode, tables and control-flow
+summary; the rest of that decode has not been re-certified by this correction.
+These identities are for the active-retail Infantry vtable at `0x007EB058`:
+
+| Slot | Original receiver | Correct interpretation |
+|------|-------------------|------------------------|
+| `+0x124` | `0x004D3780` | Mark, called with 0 before search and 1 afterward; not an occupancy lock |
+| `+0x1AC` | `0x0051BF90` | Five-argument CanEnterCell classification; not a locomotor-type getter |
+| `+0x1E8` | `0x005B35E0` | Queue mission; not Scatter |
+| `+0x2CC` | `0x004D3810` | Destination zone predicate, reaching `0x0056D100`; not a test for an attached locomotor |
+| `+0x3C8` | `0x0051B1F0` | Infantry target setter; not locomotor Stop |
+| `+0x500` | `0x0051DAF0` | Infantry failed-path receiver, including DoAction/current-cell CanEnter state and `0x004D55C0` → Walk Stop (`0x0075ADA0`) |
+
+At `0x004D397F`, a false zone predicate returns before the AStar core. The
+ordinary Infantry wrapper also calls `+0x500` after a null `0x004CBBA0` result,
+**before returning to Walk Process**. This can clear the Walk destination while
+Foot NavCom is still retained. Consequently, a test that supplies Find_Path=false
+without executing this receiver cannot establish the live retry behavior.
+
+The saved [failed-path harness](../../../tools/spatial_oracle/walk_failed_path.py),
+[native results](../../../tools/spatial_oracle/walk_failed_path.json) and
+[coverage metadata](../../../tools/spatial_oracle/walk_failed_path.meta.json)
+record the pinned executable and 21 comparisons. The last two run the original
+wrapper/receiver/outer Process with only a null AStar-result seam. In the captured
+flat, same-zone ordinary-human cases, the near destination retains NavCom at
+wrapper return but outer Process then cancels it; the farther destination is
+cancelled by the wrapper, which queues Guard (5), leaving current Move (2).
+These are bounded cases, not proof of all bridge, Team, nonhuman, marked-object,
+action-transition or AStar-core branches. The first 18 supplied-failure cases
+remain caller-only evidence. The nineteenth executes actual raw-zone rejection.
+
+The executable comparisons and original receiver identities were independently
+reviewed for commits `107d6b33` and `89027c70`. This correction makes no claim
+that the corresponding Rust failure lifecycle is delivered.
+
 ## Summary
 
 `FootClass__Find_Path` at `0x004D3920` is the top-level path-request entry point

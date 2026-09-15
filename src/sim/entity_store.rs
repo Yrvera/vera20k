@@ -38,6 +38,10 @@ pub(crate) struct OwnerChangeAuthority(());
 pub struct EntityStore {
     /// Primary storage: stable_id -> GameEntity.
     entities: BTreeMap<u64, GameEntity>,
+    /// Derived InfantryClass registry, in monotonic construction-ID order.
+    /// Uninit retains an entry; remove compacts it. Class/category is immutable
+    /// while stored, like indexed identity (replace through remove/insert).
+    infantry_registry: Vec<u64>,
     /// Per-owner index: owner InternedId -> ascending-stable_id Vec of ids.
     /// Maintained incrementally by `insert`/`remove`/`change_owner`. Emptied
     /// owners are dropped from the map so a wiped-out house's `ids_for_owner`
@@ -64,6 +68,7 @@ impl EntityStore {
     pub fn new() -> Self {
         Self {
             entities: BTreeMap::new(),
+            infantry_registry: Vec::new(),
             by_owner: BTreeMap::new(),
             by_owner_type: BTreeMap::new(),
         }
@@ -76,9 +81,17 @@ impl EntityStore {
         let id = entity.stable_id();
         let owner = entity.owner();
         let type_ref = entity.type_ref();
+        let infantry = entity.category == crate::map::entities::EntityCategory::Infantry;
         if let Some(old) = self.entities.insert(id, entity) {
             self.index_remove(old.owner(), id);
             self.type_count_remove(old.owner(), old.type_ref());
+        }
+        self.remove_infantry_index(id);
+        if infantry {
+            let index = self
+                .infantry_registry
+                .partition_point(|&existing| existing < id);
+            self.infantry_registry.insert(index, id);
         }
         self.index_add(owner, id);
         self.type_count_add(owner, type_ref);
@@ -92,6 +105,7 @@ impl EntityStore {
         if let Some(ref e) = removed {
             self.index_remove(e.owner(), stable_id);
             self.type_count_remove(e.owner(), e.type_ref());
+            self.remove_infantry_index(stable_id);
         }
         removed
     }
@@ -176,6 +190,19 @@ impl EntityStore {
     /// ```
     pub fn keys_sorted(&self) -> Vec<u64> {
         self.entities.keys().copied().collect()
+    }
+
+    /// Native InfantryClass array index. Read afresh after a callback: removing
+    /// a row shifts successors left, while a newly constructed row is visible.
+    /// This is distinct from the live Logic vector and includes dead/limbo rows.
+    pub(crate) fn infantry_registry_at(&self, index: usize) -> Option<u64> {
+        self.infantry_registry.get(index).copied()
+    }
+
+    fn remove_infantry_index(&mut self, id: u64) {
+        if let Ok(index) = self.infantry_registry.binary_search(&id) {
+            self.infantry_registry.remove(index);
+        }
     }
 
     /// Iterate all entities in deterministic stable_id order (immutable).
@@ -273,7 +300,11 @@ impl EntityStore {
     pub(crate) fn rebuild_owner_index(&mut self) {
         self.by_owner.clear();
         self.by_owner_type.clear();
+        self.infantry_registry.clear();
         for (&id, entity) in &self.entities {
+            if entity.category == crate::map::entities::EntityCategory::Infantry {
+                self.infantry_registry.push(id);
+            }
             self.by_owner.entry(entity.owner()).or_default().push(id);
             *self
                 .by_owner_type
@@ -296,6 +327,7 @@ impl<'de> serde::Deserialize<'de> for EntityStore {
         let entities = BTreeMap::<u64, GameEntity>::deserialize(deserializer)?;
         let mut store = Self {
             entities,
+            infantry_registry: Vec::new(),
             by_owner: BTreeMap::new(),
             by_owner_type: BTreeMap::new(),
         };
@@ -317,6 +349,34 @@ mod tests {
 
     fn make_entity(id: u64) -> GameEntity {
         GameEntity::test_default(id, "HTNK", "Americans", 10, 10)
+    }
+
+    #[test]
+    fn infantry_registry_retains_uninit_compacts_and_rebuilds_after_restore() {
+        use crate::map::entities::EntityCategory;
+        let mut store = EntityStore::new();
+        for id in [1, 2, 3] {
+            let mut e = make_entity(id);
+            e.category = EntityCategory::Infantry;
+            store.insert(e);
+        }
+        store.get_mut(1).unwrap().lifecycle.object_alive = false;
+        store.get_mut(1).unwrap().lifecycle.in_limbo = true;
+        assert_eq!(store.infantry_registry_at(0), Some(1));
+        store.remove(1);
+        // A caller that just visited index0 next reads index1, skipping2.
+        assert_eq!(store.infantry_registry_at(1), Some(3));
+        let mut appended = make_entity(4);
+        appended.category = EntityCategory::Infantry;
+        store.insert(appended);
+        assert_eq!(store.infantry_registry_at(2), Some(4));
+        // Replacement through the store updates category membership too.
+        store.insert(make_entity(3));
+        assert_eq!(store.infantry_registry, [2, 4]);
+        let restored: EntityStore =
+            serde_json::from_str(&serde_json::to_string(&store).unwrap()).unwrap();
+        assert_eq!(restored.infantry_registry, [2, 4]);
+        assert_eq!(restored.infantry_registry_at(2), None);
     }
 
     #[test]

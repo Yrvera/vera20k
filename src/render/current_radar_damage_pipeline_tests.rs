@@ -293,7 +293,7 @@ fn production_rules() -> RuleSet {
          [VehicleTypes]\n0=MTNK\n\n\
          [AircraftTypes]\n\n\
          [BuildingTypes]\n0=CABHUT\n1=TARGB\n\n\
-         [ENGI]\nStrength=75\nArmor=none\nSpeed=4\nPrimary=none\nEngineer=yes\n\n\
+         [ENGI]\nStrength=75\nArmor=none\nSpeed=4\nPrimary=none\nEngineer=yes\nLocomotor={4A582744-9839-11d1-B709-00A024DDAFD1}\n\n\
          [MTNK]\nStrength=10000\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
          [CABHUT]\nStrength=200\nArmor=concrete\nFoundation=1x1\nBridgeRepairHut=yes\n\n\
          [TARGB]\nStrength=10000\nArmor=heavy\nFoundation=1x1\n\n\
@@ -389,7 +389,9 @@ fn gsi_04_01_production_tick_keeps_pavement_damage_through_ordinary_overlay_repa
     runtime.resources.rules = rules;
     let mut fire_count = 0;
     for _ in 0..32 {
-        let output = runtime.advance_frame(&[], 67, TickLane::Ordinary);
+        let output = runtime
+            .advance_frame(&[], 67, TickLane::Ordinary)
+            .expect("fixture frame must complete");
         fire_count += output.fire_events.len();
         if runtime.simulation.radar_terrain_dirty_generation != 0 {
             break;
@@ -452,16 +454,40 @@ fn gsi_04_01_production_tick_keeps_pavement_damage_through_ordinary_overlay_repa
         200,
         0,
     );
+    // Repair runs when the engineer's completed Walk step enters the hut cell
+    // (Infantry PerCell 0x519B58); an engineer already standing inside the
+    // footprint has no entry step. Start adjacent and walk in. The hut must be
+    // the cell's first ground Building (0x47C520), so register its occupancy.
+    runtime.simulation.add_entity_occupancy(cabhut);
     let engineer = spawn(
         &mut runtime.simulation,
         "Americans",
         "ENGI",
         EntityCategory::Infantry,
-        FLOOD[0],
+        (FLOOD[0].0 + 1, FLOOD[0].1),
         4,
         75,
         0,
     );
+    // The bare test spawn installs no locomotor; production spawns install the
+    // type's Walk locomotor, which owns the entry step.
+    runtime
+        .simulation
+        .substrate
+        .entities
+        .get_mut(engineer)
+        .expect("engineer")
+        .locomotor = Some(
+        crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+            crate::rules::locomotor_type::LocomotorKind::Walk,
+        ),
+    );
+    assert!(
+        runtime
+            .simulation
+            .rebuild_dynamic_navigation(&runtime.resources.rules)
+    );
+    let grid = runtime.simulation.path_grid_snapshot();
     assert!(runtime.simulation.apply_command(
         "Americans",
         &Command::CaptureBuilding {
@@ -469,10 +495,24 @@ fn gsi_04_01_production_tick_keeps_pavement_damage_through_ordinary_overlay_repa
             target_building_id: cabhut,
         },
         Some(&runtime.resources.rules),
-        None,
+        grid.as_deref(),
         &BTreeMap::new(),
     ));
-    let _ = runtime.advance_frame(&[], 67, TickLane::Ordinary);
+    drop(grid);
+    for _ in 0..100 {
+        let _ = runtime
+            .advance_frame(&[], 67, TickLane::Ordinary)
+            .expect("fixture frame must complete");
+        if runtime
+            .simulation
+            .substrate
+            .entities
+            .get(engineer)
+            .is_none()
+        {
+            break;
+        }
+    }
 
     assert!(
         runtime
@@ -480,7 +520,8 @@ fn gsi_04_01_production_tick_keeps_pavement_damage_through_ordinary_overlay_repa
             .substrate
             .entities
             .get(engineer)
-            .is_none()
+            .is_none(),
+        "the engineer enters the hut and is consumed by the repair"
     );
     // Original ordinary strip repair has no56E990 clear/radar callback.
     // Its overlay change must not publish pristine pavement or a fake batch.
