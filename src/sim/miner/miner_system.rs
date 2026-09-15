@@ -2043,6 +2043,11 @@ fn try_issue_chrono_far_return_teleport(
         return false;
     };
 
+    let mover_is_crusher = sim
+        .substrate
+        .entities
+        .get(snap.entity_id)
+        .is_some_and(|e| movement::bump_crush::CrushCapability::of(e).can_crush_units());
     let issued = movement::set_destination_for_teleporter_entity(
         &mut sim.substrate.entities,
         path_grid,
@@ -2055,7 +2060,7 @@ fn try_issue_chrono_far_return_teleport(
         None,
         sim.zone_grid.as_ref(),
         None,
-        false,
+        mover_is_crusher,
         &rules.general,
         true,
         true,
@@ -2945,6 +2950,11 @@ pub(crate) fn issue_move_if_idle(
                 &sim.interner,
                 rules,
             );
+        let mover_is_crusher = sim
+            .substrate
+            .entities
+            .get(entity_id)
+            .is_some_and(|e| movement::bump_crush::CrushCapability::of(e).can_crush_units());
         let _ = movement::issue_move_command_with_layered(
             &mut sim.substrate.entities,
             grid,
@@ -2957,7 +2967,7 @@ pub(crate) fn issue_move_if_idle(
             sim.resolved_terrain.as_ref(),
             sim.zone_grid.as_ref(),
             None,
-            false,
+            mover_is_crusher,
             Some(&blocker_neighbor_counts),
             sim.playfield_bounds,
             Some(&mut sim.substrate.cell_occupation),

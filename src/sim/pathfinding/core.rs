@@ -3146,6 +3146,10 @@ pub fn find_layered_path(
     mover_is_crusher: bool,
     is_infantry: bool,
 ) -> Option<Vec<LayeredPathStep>> {
+    // Test-facing wrapper for pure layered pathfinding: no mover zone, so the
+    // Foot class arm of the cell predicate is not consulted. Production enters
+    // through `zone_search::find_layered_path_zoned_marker_detailed`, which
+    // passes the mover's zone to `find_layered_path_marker`.
     find_layered_path_marker(
         grid,
         ground_blocks,
@@ -3154,6 +3158,7 @@ pub fn find_layered_path(
         start_layer,
         goal,
         terrain_costs,
+        None,
         resolved_terrain,
         entity_block_map,
         None,
@@ -3172,6 +3177,7 @@ pub fn find_layered_path_marker(
     start_layer: MovementLayer,
     goal: (u16, u16),
     terrain_costs: Option<&TerrainCostGrid>,
+    movement_zone: Option<MovementZone>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     entity_block_map: Option<&LayeredEntityBlockMap>,
     marker_overlay: Option<&SearchMarkerOverlay>,
@@ -3189,6 +3195,12 @@ pub fn find_layered_path_marker(
         goal,
         &AStarOptions {
             terrain_costs,
+            // The mover's zone selects its SpeedType row and the Foot class arm
+            // of the cell predicate (walls, crushable walls, under-span ground
+            // admission). Every other search wrapper already carried it; this
+            // one ran the layered fallbacks with `None`, which made
+            // `evaluate_shared_cell_leaf` return on land passability alone.
+            movement_zone,
             resolved_terrain,
             entity_blocks: ground_blocks,
             bridge_blocks,

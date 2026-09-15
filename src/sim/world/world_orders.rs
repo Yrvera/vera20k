@@ -252,6 +252,9 @@ impl Simulation {
                         &self.interner,
                         rules,
                     );
+                let mover_is_crusher = self.substrate.entities.get(stable_id).is_some_and(|e| {
+                    crate::sim::movement::bump_crush::CrushCapability::of(e).can_crush_units()
+                });
                 let _ = movement::issue_move_command_with_layered(
                     &mut self.substrate.entities,
                     grid,
@@ -264,7 +267,7 @@ impl Simulation {
                     self.resolved_terrain.as_ref(),
                     self.zone_grid.as_ref(),
                     None,
-                    false, // mover_is_crusher
+                    mover_is_crusher, // mover_is_crusher
                     Some(&blocker_neighbor_counts),
                     self.playfield_bounds,
                     Some(&mut self.substrate.cell_occupation),

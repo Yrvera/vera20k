@@ -332,6 +332,14 @@ pub(super) struct MoverSnapshot {
     pub allow_zone_hierarchy: bool,
 }
 
+impl MoverSnapshot {
+    /// The mover's crush authority, as [`bump_crush::CrushCapability::of`]
+    /// reads it from the live object.
+    pub(super) const fn crush_capability(&self) -> bump_crush::CrushCapability {
+        bump_crush::CrushCapability::new(self.regular_crusher, self.omni_crusher)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PendingCrushKill {
     pub victim_id: u64,

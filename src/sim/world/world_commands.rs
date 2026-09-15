@@ -603,7 +603,7 @@ impl Simulation {
             omni_crusher: e.omni_crusher,
             #[cfg(test)]
             drive_accelerates: e.drive_accelerates,
-            mover_is_crusher: e.regular_crusher || e.omni_crusher,
+            mover_is_crusher: bump_crush::CrushCapability::of(e).can_crush_units(),
         })
     }
 

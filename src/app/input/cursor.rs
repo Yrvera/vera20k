@@ -396,7 +396,10 @@ fn what_action_on_cell(
                             crate::sim::pathfinding::cell_entry::TerrainEntryMode::RuntimeTransition,
                         is_infantry: entity.category
                             == crate::map::entities::EntityCategory::Infantry,
-                        mover_is_crusher: entity.regular_crusher,
+                        mover_is_crusher: crate::sim::movement::bump_crush::CrushCapability::of(
+                            entity,
+                        )
+                        .can_crush_units(),
                     },
                 )
                 .is_clear()
