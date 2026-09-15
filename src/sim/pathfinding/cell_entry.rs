@@ -418,23 +418,38 @@ fn evaluate_ground_cell_entry(ctx: CanEnterCellContext<'_>) -> CanEnterCellResul
             .and_then(|terrain| terrain.cell(x, y))
             .is_none_or(|cell| speed_type_allows_cell(cell, speed_type))
     });
-    let terrain_cost_passable = terrain_cost_result(ctx.terrain_costs, x, y).is_clear();
+    // A mover on the ground plane of a stamped cell reads the land row of the
+    // terrain itself, not the deck's override: `UnitClass::Can_Enter_Cell`
+    // @ `0x0073F0A0` clears its deck flag for a path height within one of the
+    // cell's signed level (`0x0073F0B7..F0E8`), walks the ground list `+0xE4`
+    // (`0x0073F51A`) and then tests the row at `0x0073FAB5` only on that
+    // branch (`0x0073FA92`); Infantry does the same at `0x0051C750`. The planner's cost
+    // grid carries the deck answer on those cells, so consult its ground row.
+    let terrain_cost_passable = match ctx.terrain_costs {
+        Some(costs) if target_has_structural_bridge(ctx) => costs.ground_cost_at(x, y) != 0,
+        Some(costs) => costs.cost_at(x, y) != 0,
+        None => true,
+    };
 
     evaluate_shared_cell_leaf(ctx, grid_ok && speed_passable && terrain_cost_passable)
+}
+
+/// Whether the target carries the native `CellClass+0x140 & 0x100` stamp.
+fn target_has_structural_bridge(ctx: CanEnterCellContext<'_>) -> bool {
+    ctx.path_grid
+        .and_then(|grid| grid.cell(ctx.target.0, ctx.target.1))
+        .is_some_and(|cell| cell.has_structural_bridge())
+        || ctx
+            .resolved_terrain
+            .and_then(|terrain| terrain.cell(ctx.target.0, ctx.target.1))
+            .is_some_and(|cell| cell.bridge_facts.has_structural_bridge())
 }
 
 fn evaluate_shared_cell_leaf(
     ctx: CanEnterCellContext<'_>,
     land_passable: bool,
 ) -> CanEnterCellResult {
-    let structural_bridge = ctx
-        .path_grid
-        .and_then(|grid| grid.cell(ctx.target.0, ctx.target.1))
-        .is_some_and(|cell| cell.has_structural_bridge())
-        || ctx
-            .resolved_terrain
-            .and_then(|terrain| terrain.cell(ctx.target.0, ctx.target.1))
-            .is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
+    let structural_bridge = target_has_structural_bridge(ctx);
     let bridge_transition = ctx
         .path_grid
         .and_then(|grid| grid.cell(ctx.target.0, ctx.target.1))
@@ -467,16 +482,19 @@ fn evaluate_shared_cell_leaf(
         };
     };
     let movement_zone = ctx.movement_zone.unwrap_or(MovementZone::Normal);
-    if ctx.is_infantry
-        && ctx.terrain_layer == MovementLayer::Ground
-        && speed_type != SpeedType::Winged
-    {
-        // Infantry +0x1AC @ 0x0051BF90 does not call Cell::CheckCellPassability
-        // @ 0x004834A0. Its +0x1B0 traversal @ 0x004D9C60 already owns numeric
-        // height legality; ground near the candidate's level selects +0xE4 and
-        // +0x124 even when the cell carries a span. A* @ 0x00429F54 and Walk
-        // @ 0x0075B690 both reach this class contract. Keep the existing coarse
-        // wall result here (the native 4/5 wall accumulator is a separate
+    if ctx.terrain_layer == MovementLayer::Ground && speed_type != SpeedType::Winged {
+        // Neither Foot +0x1AC implementation calls Cell::CheckCellPassability
+        // @ 0x004834A0 — its callers are CellRect::CheckPassability, threat
+        // scans, placement, paradrop, overlay Mark and Jumpjet touchdown, none of
+        // them a Foot entry test. Infantry +0x1AC @ 0x0051BF90 and Unit +0x1AC
+        // @ 0x0073F0A0 (UnitClass vtable 0x007F5C70 + 0x1AC = 0x007F5E1C) both
+        // defer numeric height legality to the shared +0x1B0 traversal @
+        // 0x004D9C60, whose equal-level arm admits base-height ground beneath a
+        // span; ground near the candidate's level then selects the ground list
+        // (+0xE4/+0x124) even when the cell carries the 0x100 stamp. A* @
+        // 0x00429F54, Walk @ 0x0075B690 and the Drive crossing admission reach
+        // this class contract through the virtual slot. Keep the existing
+        // coarse wall result here (the native 4/5 wall accumulator is a separate
         // recorded gap), without importing the unrelated Cell leaf's level
         // rejection. See RAMP_UNIT_HEIGHT_GHIDRA_REPORT.md, under-span admission.
         let terrain_cell = ctx
@@ -531,18 +549,6 @@ fn evaluate_shared_cell_leaf(
         CanEnterCellResult::Clear
     } else {
         CanEnterCellResult::HardBlocked
-    }
-}
-
-fn terrain_cost_result(
-    terrain_costs: Option<&TerrainCostGrid>,
-    x: u16,
-    y: u16,
-) -> CanEnterCellResult {
-    if terrain_costs.is_some_and(|costs| costs.cost_at(x, y) == 0) {
-        CanEnterCellResult::HardBlocked
-    } else {
-        CanEnterCellResult::Clear
     }
 }
 

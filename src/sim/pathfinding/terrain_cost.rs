@@ -43,7 +43,14 @@ const COST_BLOCKED: u8 = 0;
 /// the percentage itself is the movement chain's business.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerrainCostGrid {
+    /// Row as the planner reads it: an elevated deck overrides the terrain
+    /// beneath it, so this is the *deck* answer on a stamped cell.
     costs: Vec<u8>,
+    /// Row of the cell's own land type with no deck override — what
+    /// `UnitClass::Can_Enter_Cell` @ `0x0073FAB5` and
+    /// `InfantryClass::Can_Enter_Cell` @ `0x0051C750` read for a mover on the
+    /// ground plane beneath a span. Identical to `costs` off-deck.
+    ground_costs: Vec<u8>,
     width: u16,
     height: u16,
 }
@@ -65,10 +72,13 @@ pub(crate) fn build_canonical_terrain_cost_grids(
         .collect()
 }
 
-fn resolved_cell_cost(
+/// One cell's `(planner_row, ground_row)`: the first carries the elevated-deck
+/// override, the second is the land row of the terrain itself. They differ only
+/// on an elevated deck cell.
+fn resolved_cell_costs(
     cell: &crate::map::resolved_terrain::ResolvedTerrainCell,
     speed_type: SpeedType,
-) -> u8 {
+) -> (u8, u8) {
     let ramp_passable = cell.canonical_ramp.is_some();
     // Retail terrain-object occupation is a sub-cell mask on the ground
     // occupation plane, and only the infantry entry gate reads it: the
@@ -86,11 +96,7 @@ fn resolved_cell_cost(
     };
     let hard_blocked =
         (cell.is_cliff_like && !ramp_passable) || cell.overlay_blocks || terrain_object_blocked;
-    // Bridge deck overrides underlying terrain (water/cliff) for ground units.
-    // Units walk on the bridge surface, not the terrain below.
-    let cost = if cell.is_elevated_bridge_cell() && !cell.overlay_blocks {
-        COST_NORMAL
-    } else if hard_blocked {
+    let ground = if hard_blocked {
         COST_BLOCKED
     } else if ramp_passable {
         COST_NORMAL
@@ -114,7 +120,14 @@ fn resolved_cell_cost(
             cell.is_road,
         )
     };
-    cost
+    // Bridge deck overrides underlying terrain (water/cliff) for ground units.
+    // Units walk on the bridge surface, not the terrain below.
+    let planner = if cell.is_elevated_bridge_cell() && !cell.overlay_blocks {
+        COST_NORMAL
+    } else {
+        ground
+    };
+    (planner, ground)
 }
 
 impl TerrainCostGrid {
@@ -127,18 +140,21 @@ impl TerrainCostGrid {
     pub fn from_resolved_terrain(terrain: &ResolvedTerrainGrid, speed_type: SpeedType) -> Self {
         let size: usize = terrain.width() as usize * terrain.height() as usize;
         let mut costs: Vec<u8> = vec![COST_BLOCKED; size];
+        let mut ground_costs: Vec<u8> = vec![COST_BLOCKED; size];
 
         for cell in terrain.iter() {
             let idx: usize = cell.ry as usize * terrain.width() as usize + cell.rx as usize;
             if idx >= costs.len() {
                 continue;
             }
-            let cost = resolved_cell_cost(cell, speed_type);
-            costs[idx] = cost;
+            let (planner, ground) = resolved_cell_costs(cell, speed_type);
+            costs[idx] = planner;
+            ground_costs[idx] = ground;
         }
 
         Self {
             costs,
+            ground_costs,
             width: terrain.width(),
             height: terrain.height(),
         }
@@ -154,7 +170,9 @@ impl TerrainCostGrid {
             return false;
         }
         let index = usize::from(cell.ry) * usize::from(self.width) + usize::from(cell.rx);
-        self.costs[index] = resolved_cell_cost(cell, speed_type);
+        let (planner, ground) = resolved_cell_costs(cell, speed_type);
+        self.costs[index] = planner;
+        self.ground_costs[index] = ground;
         true
     }
 
@@ -164,6 +182,16 @@ impl TerrainCostGrid {
             return COST_BLOCKED;
         }
         self.costs[y as usize * self.width as usize + x as usize]
+    }
+
+    /// The cell's own land row, ignoring any elevated deck above it — the
+    /// answer for a mover on the ground plane beneath a span. Equal to
+    /// [`Self::cost_at`] everywhere else.
+    pub fn ground_cost_at(&self, x: u16, y: u16) -> u8 {
+        if x >= self.width || y >= self.height {
+            return COST_BLOCKED;
+        }
+        self.ground_costs[y as usize * self.width as usize + x as usize]
     }
 
     /// Map width in cells.
@@ -407,6 +435,46 @@ mod tests {
             COST_NORMAL,
             "elevated deck overrides TMP Land"
         );
+        assert_eq!(
+            track.ground_cost_at(1, 0),
+            55,
+            "the ground plane beneath the deck keeps the TMP Land row"
+        );
+        assert_eq!(track.ground_cost_at(0, 0), track.cost_at(0, 0));
+    }
+
+    /// The row a ground-plane mover reads beneath a span is the terrain's own:
+    /// water under an elevated deck closes to Track while the deck stays open.
+    #[test]
+    fn elevated_deck_over_water_keeps_a_closed_ground_row() {
+        use crate::sim::pathfinding::passability::LandType;
+
+        let terrain = ResolvedTerrainGrid::from_cells(
+            1,
+            1,
+            vec![ResolvedTerrainCell {
+                level: 1,
+                is_water: true,
+                has_bridge_deck: true,
+                bridge_walkable: true,
+                bridge_deck_level: 5,
+                land_type: LandType::Water.as_index(),
+                ground_walk_blocked: true,
+                speed_costs: SpeedCostProfile {
+                    track: Some(0),
+                    hover: Some(100),
+                    ..SpeedCostProfile::default()
+                },
+                ..make_resolved_cell(0, 0)
+            }],
+        );
+        let track = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Track);
+        let hover = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Hover);
+        assert_eq!(track.cost_at(0, 0), COST_NORMAL);
+        assert_eq!(track.ground_cost_at(0, 0), COST_BLOCKED);
+        assert_eq!(hover.cost_at(0, 0), COST_NORMAL);
+        assert_eq!(hover.ground_cost_at(0, 0), COST_NORMAL);
+        assert_eq!(track.ground_cost_at(1, 0), COST_BLOCKED, "out of range");
     }
 
     #[test]

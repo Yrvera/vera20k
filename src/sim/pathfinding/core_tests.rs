@@ -1742,6 +1742,111 @@ fn infantry_under_span_admission_reads_ground_speed_with_deck_cost_grid() {
     }
 }
 
+/// `UnitClass::Can_Enter_Cell` @ `0x0073F0A0` admits the ground plane beneath a
+/// span exactly as Infantry does: the deck flag clears for a path height within
+/// one of the cell level (`0x0073F0B7..F0E8`), the ground list is walked and the
+/// terrain's own land row is read at `0x0073FAB5`. It never reaches the
+/// `CheckCellPassability 0x004834A0` level rejection. Track over land is
+/// admitted, Track over water is refused, and an amphibious hover mover swims.
+#[test]
+fn unit_under_span_admission_reads_ground_row_beneath_deck() {
+    use crate::sim::pathfinding::cell_entry::{
+        CanEnterCellContext, TerrainEntryMode, evaluate_can_enter_cell,
+    };
+
+    let cases: [(MovementZone, SpeedType, SpeedCostProfile, bool); 4] = [
+        (
+            MovementZone::Normal,
+            SpeedType::Track,
+            SpeedCostProfile {
+                track: Some(100),
+                ..SpeedCostProfile::default()
+            },
+            true,
+        ),
+        (
+            MovementZone::Normal,
+            SpeedType::Track,
+            SpeedCostProfile {
+                track: Some(0),
+                ..SpeedCostProfile::default()
+            },
+            false,
+        ),
+        (
+            MovementZone::AmphibiousDestroyer,
+            SpeedType::Hover,
+            SpeedCostProfile {
+                track: Some(0),
+                hover: Some(100),
+                amphibious: Some(100),
+                ..SpeedCostProfile::default()
+            },
+            true,
+        ),
+        (
+            MovementZone::Crusher,
+            SpeedType::Track,
+            SpeedCostProfile {
+                track: Some(0),
+                hover: Some(100),
+                ..SpeedCostProfile::default()
+            },
+            false,
+        ),
+    ];
+    for (zone, planner_speed, speed_costs, expected) in cases {
+        for transition in [false, true] {
+            let mut cell = infantry_under_span_cell(0, 100, transition);
+            cell.speed_costs = speed_costs;
+            let terrain = ResolvedTerrainGrid::from_cells(1, 1, vec![cell]);
+            let grid = PathGrid::from_cells(vec![bridge_test_cell(2, true, transition, 0)], 1, 1);
+            let costs = TerrainCostGrid::from_resolved_terrain(&terrain, planner_speed);
+            assert_eq!(costs.cost_at(0, 0), 100, "coarse grid describes the deck");
+            for mode in [
+                TerrainEntryMode::AStarNeighbor,
+                TerrainEntryMode::RuntimeTransition,
+            ] {
+                assert_eq!(
+                    evaluate_can_enter_cell(CanEnterCellContext {
+                        target: (0, 0),
+                        terrain_layer: MovementLayer::Ground,
+                        movement_zone: Some(zone),
+                        speed_type: None,
+                        path_grid: Some(&grid),
+                        resolved_terrain: Some(&terrain),
+                        terrain_costs: Some(&costs),
+                        bypass_grid: false,
+                        mode,
+                        is_infantry: false,
+                    })
+                    .is_clear(),
+                    expected,
+                    "zone={zone:?}, transition={transition}, mode={mode:?}"
+                );
+            }
+            // The deck itself stays open to the same mover regardless of the
+            // row beneath it.
+            assert!(
+                evaluate_can_enter_cell(CanEnterCellContext {
+                    target: (0, 0),
+                    terrain_layer: MovementLayer::Bridge,
+                    movement_zone: Some(zone),
+                    speed_type: None,
+                    path_grid: Some(&grid),
+                    resolved_terrain: Some(&terrain),
+                    terrain_costs: Some(&costs),
+                    bypass_grid: false,
+                    mode: TerrainEntryMode::AStarNeighbor,
+                    is_infantry: false,
+                })
+                .is_clear(),
+                "deck entry for zone={zone:?}, transition={transition}"
+            );
+        }
+    }
+}
+
 #[test]
 fn infantry_under_span_admission_preserves_wall_and_grid_blocks() {
     use crate::sim::pathfinding::cell_entry::{
