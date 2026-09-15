@@ -14,6 +14,9 @@ use crate::sim::find_nearby_cell::{
 use crate::sim::pathfinding::zone_map::ZoneId;
 use crate::util::native_x87::{NativeF32Bits, X87Chop53};
 
+// Consumer pending: House 0x4FD150 base centre / nonhuman failed-path
+// relocation 0x500200 (AI-deferred); the projection is kept current so that
+// owner starts from live inputs.
 type CostFactors = [NativeF32Bits; 5];
 const UNIT_FACTORS: CostFactors = [NativeF32Bits::ONE; 5];
 
@@ -81,6 +84,7 @@ impl RegisteredBuilding {
         }
     }
 
+    #[allow(dead_code)]
     fn cost(&self, factors: CostFactors) -> i32 {
         // BuildingType45EDD0 calls shared711F00 for adjusted +AC, then adds
         // FreeUnit's +84 cost. Current retail country Cost*Mult values are1;
@@ -96,6 +100,7 @@ impl RegisteredBuilding {
 }
 
 impl HouseBaseState {
+    #[allow(dead_code)]
     fn weighted_center(
         &self,
         entities: &crate::sim::entity_store::EntityStore,
@@ -105,7 +110,7 @@ impl HouseBaseState {
             let Some(entity) = entities.get(id) else {
                 continue;
             };
-            if entity.lifecycle.in_limbo || entity.health.current <= 0 {
+            if entity.lifecycle.in_limbo || entity.health.current == 0 {
                 continue;
             }
             let Some(entry) = self.registration(id) else {
@@ -174,6 +179,7 @@ impl HouseBaseState {
         self.refresh_factors();
     }
 
+    #[allow(dead_code)]
     fn append_membership(&mut self, id: u64) {
         //441545/44154E precede441594. These vectors have independent lives.
         if self
@@ -251,6 +257,7 @@ fn multiply_factor(lhs: NativeF32Bits, rhs: NativeF32Bits) -> NativeF32Bits {
     NativeF32Bits::from_bits(sign | result)
 }
 
+#[allow(dead_code)]
 fn scaled_cost(cost: i32, factor: NativeF32Bits) -> i32 {
     // Any subnormal factor times an i32 cost truncates to zero.
     if factor.bits() & 0x7f800000 == 0 {
@@ -266,6 +273,7 @@ fn scaled_cost(cost: i32, factor: NativeF32Bits) -> i32 {
 /// Map586E50: correct the diagonal first, sample its Cell once, then walk
 /// along the other diagonal until578460(mode1) admits the packed coordinate.
 /// The loop's predicate owns subsequent Cell/Dummy lookups independently.
+#[allow(dead_code)]
 fn clamp_house_cell(
     input: (i16, i16),
     cells: &NativeCellQuery<'_>,
@@ -327,6 +335,7 @@ fn clamp_house_cell(
 impl Simulation {
     /// Shared56DC20 argument shape used by4FD2C0 and5002E5. Their speed
     /// and required zone differ; neither requests occupancy or height filtering.
+    #[allow(dead_code)]
     fn house_nearby_cell(
         &self,
         seed: (i32, i32),

@@ -27,10 +27,6 @@ impl InfantryEntryClass {
     pub(crate) fn is_nonzero(self) -> bool {
         self != Self::Clear
     }
-
-    pub(crate) fn is_seven(self) -> bool {
-        self == Self::Impassable7
-    }
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -531,9 +531,10 @@ impl Simulation {
     /// `Can_Enter_Cell` answer selects a redirect. Code 6 beyond CloseEnough
     /// (Rules+1718; a Team's own value via 0x6F03B0) asks FNPC for a cell near
     /// the target, accepts it only when it lies closer to the target than the
-    /// actor (0x4D3C39) and `EstimateZoneCost` 0x42D170 admits it (<= Chebyshev
-    /// + 6), then `SetDestination(cell, 1)` retargets the search. Code 7 with a
-    /// Building in the target cell (0x47C520) redirects unconditionally.
+    /// actor (0x4D3C39) and `EstimateZoneCost` 0x42D170 admits it (at most
+    /// Chebyshev plus 6), then `SetDestination(cell, 1)` retargets the search.
+    /// Code 7 with a Building in the target cell (0x47C520) redirects
+    /// unconditionally.
     fn walk_path_admitted_goal(
         &mut self,
         id: u64,

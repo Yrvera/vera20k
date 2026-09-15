@@ -1054,14 +1054,12 @@ fn foot_entry(
         if c.yr_cell_land_type == 10 {
             //73F12E..73F1D9: passing the Tube shape gate bypasses only
             //required-land equality; later list/speed/raw predicates still run.
-            let required_subtile = match live
-                .terrain()
-                .current_tile_dimensions(i32::from(c.final_tile_index))?
-            {
-                (5 | 4, 3) => Some(2),
-                (3, 4 | 5) => Some(6),
-                _ => None,
-            };
+            let required_subtile =
+                match live.terrain().current_tile_dimensions(c.final_tile_index)? {
+                    (5 | 4, 3) => Some(2),
+                    (3, 4 | 5) => Some(6),
+                    _ => None,
+                };
             if required_subtile.is_some_and(|sub| c.final_sub_tile != sub) {
                 return Ok(7);
             }
