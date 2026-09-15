@@ -1692,10 +1692,13 @@ fn advance_ordinary_mover(
             prone_crawls,
         }
     };
-    // Without native map cells (replay fixtures) the synchronous Find_Path
-    // owner cannot run its precheck, Can_Enter_Cell or failure receiver; the
-    // former inline search below keeps those fixtures on their pinned path.
-    if !resumed_path_request && suspend_native_track && resolved_terrain.is_some() {
+    // Without native map cells, zone topology and playfield bounds (replay and
+    // unit fixtures) the synchronous Find_Path owner cannot run its precheck,
+    // Can_Enter_Cell or failure receiver; the former inline search below keeps
+    // those fixtures on their pinned path. Production installs all three.
+    let native_path_inputs =
+        resolved_terrain.is_some() && ctx.zone_grid.is_some() && playfield_bounds.is_some();
+    if !resumed_path_request && suspend_native_track && native_path_inputs {
         let request = entities.get(entity_id).and_then(|entity| {
             let loco = entity.locomotor.as_ref()?;
             (loco.kind == LocomotorKind::Walk
