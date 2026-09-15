@@ -580,6 +580,7 @@ pub(crate) fn commit_entities(
         }
         if let Some(duration_frames) = postmortem_candidate {
             let current_frame = current_tick as u32 as i32;
+            world.substrate.entities.note_dying_transition();
             let target = world
                 .substrate
                 .entities
@@ -1341,6 +1342,7 @@ fn finish_concrete_death(
         effects.despawned_ids.push(dead_id);
     } else if has_animation {
         // Non-Infantry SHP lifetime remains on its existing path.
+        world.substrate.entities.note_dying_transition();
         if let Some(entity) = world.substrate.entities.get_mut(dead_id) {
             entity.dying = true;
             if let (Some(sequence), Some(anim)) = (

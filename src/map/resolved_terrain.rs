@@ -1769,6 +1769,12 @@ pub struct ResolvedTerrainGrid {
     /// scenario construction. Synthetic constructors own a fresh detached
     /// handle; derived clones share it.
     shared_cell_dummy: SharedCellDummy,
+    /// Bumped on every `cell_mut` access. Many internal writers index `cells`
+    /// directly and do not bump it; the one production writer of
+    /// `terrain_object_occupation` (the movement blocker plane's only terrain
+    /// input) goes through `cell_mut`. A bump without a change only costs a
+    /// rebuild.
+    mutation_epoch: std::cell::Cell<u64>,
     /// Production-only membership for native Size-diamond CellClass slots.
     /// `None` keeps synthetic/from_cells grids rectangular for focused tests.
     native_allocated: Option<Vec<bool>>,
@@ -1874,6 +1880,7 @@ impl ResolvedTerrainGrid {
             cells,
             native_tmp_draw_heights: HashMap::new(),
             shared_cell_dummy: SharedCellDummy::fresh(),
+            mutation_epoch: std::cell::Cell::new(0),
             native_allocated: None,
             radar_color_valid,
             damaged_radar_metadata,
@@ -3154,7 +3161,14 @@ impl ResolvedTerrainGrid {
     #[cfg(test)]
     pub(crate) fn cell_mut(&mut self, rx: u16, ry: u16) -> Option<&mut ResolvedTerrainCell> {
         let idx = self.index(rx, ry)?;
+        self.mutation_epoch
+            .set(self.mutation_epoch.get().wrapping_add(1));
         self.cells.get_mut(idx)
+    }
+
+    /// Epoch of mutable cell access; see the field note.
+    pub fn mutation_epoch(&self) -> u64 {
+        self.mutation_epoch.get()
     }
 
     #[cfg(not(test))]
@@ -3693,8 +3707,9 @@ impl ResolvedTerrainGrid {
     pub(crate) fn tube_for_native_cell(&self, cell: NativeCellIdentity) -> Option<&TubeFact> {
         let index = match cell {
             NativeCellIdentity::Real(index) => self.native_tube_indices[index],
-            NativeCellIdentity::Dummy =>
-                NativeTubeCellIndex::from_raw(self.shared_cell_dummy.raw_tube_index()),
+            NativeCellIdentity::Dummy => {
+                NativeTubeCellIndex::from_raw(self.shared_cell_dummy.raw_tube_index())
+            }
         };
         self.tube(index.validated_id(self.tube_facts.len())?)
     }
@@ -3934,6 +3949,7 @@ impl ResolvedTerrainGrid {
                 cells: Vec::new(),
                 native_tmp_draw_heights: HashMap::new(),
                 shared_cell_dummy,
+                mutation_epoch: std::cell::Cell::new(0),
                 native_allocated: materialized_size_diamond.then(Vec::new),
                 radar_color_valid: Vec::new(),
                 damaged_radar_metadata: Vec::new(),
@@ -4719,6 +4735,7 @@ impl ResolvedTerrainGrid {
             cells,
             native_tmp_draw_heights: load_native_tmp_draw_heights(theater_data, asset_manager),
             shared_cell_dummy,
+            mutation_epoch: std::cell::Cell::new(0),
             native_allocated,
             radar_color_valid,
             damaged_radar_metadata,

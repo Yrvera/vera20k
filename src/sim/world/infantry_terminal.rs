@@ -129,6 +129,7 @@ impl Simulation {
             ReceiverDeathRecipe::Cleanup
         };
         if !matches!(recipe, ReceiverDeathRecipe::Sequence) {
+            self.substrate.entities.note_dying_transition();
             let entity = self.substrate.entities.get_mut(id).unwrap();
             entity.dying = true;
             entity.infantry_terminal = Some(InfantryTerminal::AwaitingConsequences);
@@ -161,6 +162,7 @@ impl Simulation {
     /// No ReceiveDamage effects are introduced on these compatibility paths.
     /// Returns false for other categories, whose existing lifetime stays local.
     pub(crate) fn begin_raw_infantry_death(&mut self, id: u64, inf_death: Option<u8>) -> bool {
+        self.substrate.entities.note_dying_transition();
         let Some(entity) = self.substrate.entities.get_mut(id) else {
             return false;
         };
@@ -195,6 +197,7 @@ impl Simulation {
         id: u64,
         sequence: InfantryDeathSequence,
     ) {
+        self.substrate.entities.note_dying_transition();
         let Some(entity) = self.substrate.entities.get_mut(id) else {
             return;
         };
