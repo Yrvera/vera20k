@@ -74,34 +74,35 @@
 //!   than an object and has no Restore path (see `movement_occupancy`); a
 //!   producer must land together with that arm. **Do not add a second wall gate
 //!   on top of the existing one.**
-//! - **Crushable walls are open to everyone, not only to crushers.**
-//!   `OverlayTypeClass+0x22D` = `Crushable=` is parsed (`OverlayTypeFlags::
-//!   crushable`, `ObjectTypeClass::ReadINI` @ `0x005F9426`) and
-//!   `overlay_reduced_zone_type` reduces a crushable overlay to zone class
-//!   `CRUSHABLE` (1) rather than `WALL` (2), as `CellClass::RecalcZoneType` @
-//!   `0x00483CB5` does. But VERA's path grid sets `overlay_blocks` only for
-//!   `WALL`/`IMPASSABLE`, the class arm below tests `zone_type == WALL`, and
-//!   the movement-zone passability row is consulted only by the zone
-//!   flood-fill, so a sandbag or fence cell (`[GASAND]`, `[CAFNCB]`,
-//!   `Wall=yes` + `Crushable=yes`) is admitted to every mover whose speed row
-//!   allows the land beneath it. Native: the `Normal`/`Infantry` rows block
-//!   class 1 for connectivity, and the wall arm of `+0x1AC` (`0x0073F42E..
-//!   F4F5`) admits a crushable wall to a `Crusher=` type (`+0xD28`; 29 stock
-//!   types, the battle tanks among them) or to a type with ability `0x11`
-//!   freely when the wall is not allied and at code 4 when it is; a
-//!   `MovementZone=CrusherAll` type (`[BFRT]`) takes the same route for any
-//!   `Wall=`; every other mover takes the weapon/warhead route (4/5) or 7.
-//!   `UnitClass::PerCellProcess` then flattens the crushable wall on arrival
-//!   (landed as I4, `apply_wall_crush_on_driveover`, gated on
-//!   `regular_crusher`). Trigger: infantry or a non-`Crusher=` vehicle
-//!   ordered across a sandbag or fence line, or any mover crossing its own
-//!   side's crushable wall. Player effect: VERA lets infantry and non-crusher
-//!   vehicles pass through the wall without flattening it, and prices an
-//!   allied crushable wall as open ground; retail stops those movers at it or
-//!   routes them through at wall cost and has them shoot it. Frequency:
-//!   pre-placed fences and sandbags are map dressing on several stock maps.
-//!   Downstream risk: fixing it is the wall-arm port (codes 4/5 with the
-//!   weapon/warhead rule), the previous entry.
+//! - **Crushable walls admit crushers and CrusherAll; every other mover is
+//!   hard-blocked where native answers 4/5 or 7.** `OverlayTypeClass+0x22D` =
+//!   `Crushable=` is parsed (`OverlayTypeFlags::crushable`) and
+//!   `overlay_reduced_zone_type` reduces such an overlay to zone class
+//!   `CRUSHABLE` (1), as `CellClass::RecalcZoneType` @ `0x00483CB5` does. The
+//!   class arm below keys on that class: a `Crusher=` type (`+0xD28`; 29 stock
+//!   types, the battle tanks among them) or a `MovementZone=CrusherAll` type
+//!   (`[BFRT]`) enters, matching the crusher route of `UnitClass::
+//!   Can_Enter_Cell` (`0x0073F42E..F46C`), and `UnitClass::PerCellProcess`
+//!   then flattens the wall on arrival (I4, `apply_wall_crush_on_driveover`).
+//!   Infantry (`0x0051BF90` has no crusher route) and non-crusher vehicles are
+//!   refused, where native's weapon/warhead route answers 4 (allied) or 5
+//!   (enemy) for a primary warhead with `Wall=yes` (or `Wood=yes` on a wooden
+//!   overlay, Unit only) and 7 otherwise; an allied crushable wall answers 4
+//!   even to a crusher; ability 0x11 also takes the crusher route. Those three
+//!   are the wall-arm port (the previous entry). The four stock `Crushable=
+//!   yes` overlays (`[GASAND]`, `[CAFNCB]`, `[CAFNCP]`, `[CAFNCW]`) are all
+//!   `Wall=yes`; a modded crushable non-wall overlay would take this arm where
+//!   native applies none. Trigger: a unit with a wall-capable warhead ordered
+//!   across a sandbag or fence line, or a crusher crossing its own side's.
+//!   Player effect: VERA routes such a unit around the line or refuses where
+//!   retail routes through at wall cost and has it shoot; a crusher on an
+//!   allied line pays nothing where retail pays 60x. Stock scope of that
+//!   gap: the land non-crushers whose primary warhead carries `Wall=yes` are
+//!   the IFV (`[FV]`, `HoverMissile` → `HE`) and the Brute (`[BRUTE]`,
+//!   `Punch` → `Battering`); every infantry rifle (`M60` → `SA`) and the
+//!   other non-crusher vehicles answer 7 natively, which this arm matches.
+//!   Frequency: pre-placed fences and sandbags are map dressing on several
+//!   stock maps.
 //! - **The head-on deadlock exit** (Unit only; the decisive instructions are the
 //!   octant compare and `0x0073FA10 CMP EAX,0x1FF / JG`).
 //!   Before conceding code 2 to a moving ally, native compares both objects'
@@ -370,6 +371,10 @@ pub struct CanEnterCellContext<'a> {
     /// objects occupy sub-cells, and only the infantry entry gate reads that
     /// mask; vehicles stay blocked by the whole cell.
     pub is_infantry: bool,
+    /// The mover's `Crusher=` type flag (`UnitTypeClass+0xD28`), the key of
+    /// the crusher route of the Unit wall arm (`0x0073F438`). Infantry never
+    /// takes that route; pass `false` where the mover is unknown.
+    pub mover_is_crusher: bool,
 }
 
 /// Evaluate the shared terrain/layer slice of Can_Enter_Cell.
@@ -532,6 +537,28 @@ fn evaluate_shared_cell_leaf(
                     | MovementZone::InfantryDestroyer
                     | MovementZone::CrusherAll
             );
+        // A `Crushable=` overlay reduces to zone class 1 in `RecalcZoneType`
+        // (`overlay_reduced_zone_type`), never to `WALL`, so the wall test
+        // above cannot see a sandbag or fence. The four stock `Crushable=yes`
+        // overlays (`[GASAND]`, `[CAFNCB]`, `[CAFNCP]`, `[CAFNCW]`) are all
+        // `Wall=yes`, so class 1 stands for "crushable wall" here; a modded
+        // crushable non-wall overlay would take this arm where native applies
+        // none. Native `UnitClass::Can_Enter_Cell` wall arm `0x0073F42E..F46E`:
+        // `Crushable=` (+0x22D) with the type's `Crusher=` (+0xD28) or ability
+        // 0x11 enters (code unchanged when the wall is not allied, 4 when it
+        // is); `0x0073F455..F46C`: `MovementZone=CrusherAll` (+0x5B4 == 0xC)
+        // enters any `Wall=`; everything else, and every infantryman
+        // (`0x0051BF90` has no crusher route), takes the weapon/warhead route
+        // that answers 4/5 or 7. The 4/5 codes have no producer yet, so that
+        // route is the hard block below; the allied-wall 4 and ability 0x11
+        // are likewise unmodelled.
+        let crushable_wall =
+            terrain_cell.is_some_and(|cell| cell.zone_type == zone_class::CRUSHABLE);
+        let crushable_wall_admitted =
+            !ctx.is_infantry && (ctx.mover_is_crusher || movement_zone == MovementZone::CrusherAll);
+        if crushable_wall && !crushable_wall_admitted {
+            return CanEnterCellResult::HardBlocked;
+        }
         return if !wall_cleared && (wall || !land_passable) {
             CanEnterCellResult::HardBlocked
         } else {
@@ -811,6 +838,8 @@ pub fn check_terrain_with_layers(
         bypass_grid: false,
         mode: TerrainEntryMode::RuntimeTransition,
         is_infantry: mover_category == EntityCategory::Infantry,
+        // No resolved terrain is supplied here, so the wall arm never runs.
+        mover_is_crusher: false,
     })
     .is_clear();
     if !terrain_walkable {
@@ -1445,6 +1474,187 @@ mod tests {
         assert!(head_on_exit(48, mover, 208, east_256));
         assert!(head_on_exit(79, mover, 177, east_256));
         assert!(!head_on_exit(80, mover, 192, east_256));
+    }
+
+    fn crushable_wall_grid() -> ResolvedTerrainGrid {
+        let mut cells = Vec::with_capacity(9);
+        for ry in 0..3u16 {
+            for rx in 0..3u16 {
+                let mut cell = ResolvedTerrainCell::clear_for_test(rx, ry);
+                if (rx, ry) == (1, 1) {
+                    // `[GASAND]`: Wall=yes + Crushable=yes -> RecalcZoneType class 1.
+                    cell.overlay_zone_type = Some(zone_class::CRUSHABLE);
+                    cell.zone_type = zone_class::CRUSHABLE;
+                }
+                cells.push(cell);
+            }
+        }
+        ResolvedTerrainGrid::from_cells(3, 3, cells)
+    }
+
+    fn crushable_wall_entry(
+        terrain: &ResolvedTerrainGrid,
+        grid: &PathGrid,
+        movement_zone: MovementZone,
+        is_infantry: bool,
+        mover_is_crusher: bool,
+    ) -> CanEnterCellResult {
+        evaluate_can_enter_cell(CanEnterCellContext {
+            target: (1, 1),
+            terrain_layer: MovementLayer::Ground,
+            movement_zone: Some(movement_zone),
+            speed_type: None,
+            path_grid: Some(grid),
+            resolved_terrain: Some(terrain),
+            terrain_costs: None,
+            bypass_grid: false,
+            mode: TerrainEntryMode::RuntimeTransition,
+            is_infantry,
+            mover_is_crusher,
+        })
+    }
+
+    /// `UnitClass::Can_Enter_Cell 0x0073F42E..F46C`: a `Crushable=` wall admits a
+    /// `Crusher=` type or `MovementZone=CrusherAll`; `InfantryClass 0x0051BF90`
+    /// has no crusher route. Every other mover is refused here where native's
+    /// weapon route answers 4/5/7 (recorded gap). Native established from the
+    /// bodies; this is a Rust regression check over the zone-class-1 fixture.
+    #[test]
+    fn crushable_wall_admits_only_crushers_and_crusher_all() {
+        let terrain = crushable_wall_grid();
+        let grid = PathGrid::from_resolved_terrain(&terrain);
+        assert!(
+            grid.is_walkable(1, 1),
+            "class 1 does not block the path grid"
+        );
+        let cases = [
+            (
+                MovementZone::Normal,
+                false,
+                false,
+                CanEnterCellResult::HardBlocked,
+            ),
+            (MovementZone::Normal, false, true, CanEnterCellResult::Clear),
+            (
+                MovementZone::Crusher,
+                false,
+                true,
+                CanEnterCellResult::Clear,
+            ),
+            (
+                MovementZone::CrusherAll,
+                false,
+                false,
+                CanEnterCellResult::Clear,
+            ),
+            (
+                MovementZone::Infantry,
+                true,
+                false,
+                CanEnterCellResult::HardBlocked,
+            ),
+            // An infantryman never takes the crusher route, whatever its type says.
+            (
+                MovementZone::Infantry,
+                true,
+                true,
+                CanEnterCellResult::HardBlocked,
+            ),
+            // Nor does an infantryman take the CrusherAll route.
+            (
+                MovementZone::CrusherAll,
+                true,
+                false,
+                CanEnterCellResult::HardBlocked,
+            ),
+            (
+                MovementZone::Destroyer,
+                false,
+                false,
+                CanEnterCellResult::HardBlocked,
+            ),
+        ];
+        for (zone, infantry, crusher, expected) in cases {
+            assert_eq!(
+                crushable_wall_entry(&terrain, &grid, zone, infantry, crusher),
+                expected,
+                "zone {zone:?} infantry {infantry} crusher {crusher}"
+            );
+        }
+        // The clear neighbour is untouched by the arm.
+        let clear = evaluate_can_enter_cell(CanEnterCellContext {
+            target: (0, 0),
+            terrain_layer: MovementLayer::Ground,
+            movement_zone: Some(MovementZone::Normal),
+            speed_type: None,
+            path_grid: Some(&grid),
+            resolved_terrain: Some(&terrain),
+            terrain_costs: None,
+            bypass_grid: false,
+            mode: TerrainEntryMode::RuntimeTransition,
+            is_infantry: false,
+            mover_is_crusher: false,
+        });
+        assert_eq!(clear, CanEnterCellResult::Clear);
+    }
+
+    /// The search consumer of the arm: over a sandbag line with one gap, a
+    /// non-crusher's route takes the gap and a crusher's route goes straight
+    /// through the wall cell (I4's drive-over crush then flattens it).
+    #[test]
+    fn astar_routes_non_crushers_around_a_sandbag_line_and_crushers_through_it() {
+        // Seven by five: sandbags down column 3 with the only gap at (3, 0),
+        // so the crusher's straight run along row 4 (6 steps) is strictly
+        // cheaper than the non-crusher's detour through the gap (8 steps) and
+        // the outcome rests on the arm, not on the direction tiebreak.
+        let (w, h) = (7u16, 5u16);
+        let mut cells = Vec::with_capacity((w * h) as usize);
+        for ry in 0..h {
+            for rx in 0..w {
+                let mut cell = ResolvedTerrainCell::clear_for_test(rx, ry);
+                if rx == 3 && ry != 0 {
+                    cell.overlay_zone_type = Some(zone_class::CRUSHABLE);
+                    cell.zone_type = zone_class::CRUSHABLE;
+                }
+                cells.push(cell);
+            }
+        }
+        let terrain = ResolvedTerrainGrid::from_cells(w, h, cells);
+        let grid = PathGrid::from_resolved_terrain(&terrain);
+        let route = |mover_is_crusher: bool| {
+            crate::sim::pathfinding::find_path_with_costs(
+                &grid,
+                (0, 4),
+                (6, 4),
+                None,
+                None,
+                Some(MovementZone::Normal),
+                Some(&terrain),
+                None,
+                0,
+                mover_is_crusher,
+                false,
+            )
+            .expect("a route exists on both sides of the arm")
+        };
+        let detour = route(false);
+        assert!(
+            detour.contains(&(3, 0)),
+            "non-crusher takes the gap: {detour:?}"
+        );
+        assert!(
+            !detour.iter().any(|&(x, y)| x == 3 && y != 0),
+            "non-crusher never enters a sandbag cell: {detour:?}"
+        );
+        let straight = route(true);
+        assert!(
+            straight.iter().any(|&(x, y)| x == 3 && y != 0),
+            "crusher drives through the line: {straight:?}"
+        );
+        assert!(
+            straight.len() < detour.len(),
+            "the arm, not the tiebreak, decides: {straight:?} vs {detour:?}"
+        );
     }
 
     fn moving_ally(id: u64, rx: u16, ry: u16, facing: u8, in_transit: bool) -> GameEntity {

@@ -1731,6 +1731,7 @@ fn infantry_under_span_admission_reads_ground_speed_with_deck_cost_grid() {
                             bypass_grid: false,
                             mode,
                             is_infantry: true,
+                            mover_is_crusher: false,
                         })
                         .is_clear(),
                         foot_cost != 0,
@@ -1819,6 +1820,7 @@ fn unit_under_span_admission_reads_ground_row_beneath_deck() {
                         bypass_grid: false,
                         mode,
                         is_infantry: false,
+                        mover_is_crusher: false,
                     })
                     .is_clear(),
                     expected,
@@ -1839,6 +1841,7 @@ fn unit_under_span_admission_reads_ground_row_beneath_deck() {
                     bypass_grid: false,
                     mode: TerrainEntryMode::AStarNeighbor,
                     is_infantry: false,
+                    mover_is_crusher: false,
                 })
                 .is_clear(),
                 "deck entry for zone={zone:?}, transition={transition}"
@@ -1880,6 +1883,7 @@ fn infantry_under_span_admission_preserves_wall_and_grid_blocks() {
                     bypass_grid: false,
                     mode,
                     is_infantry: true,
+                    mover_is_crusher: false,
                 })
                 .is_clear(),
                 "wall={wall}, mode={mode:?}"
@@ -1912,6 +1916,7 @@ fn infantry_under_span_admission_preserves_missing_target_rejection() {
                     bypass_grid: true,
                     mode,
                     is_infantry: true,
+                    mover_is_crusher: false,
                 })
                 .is_clear(),
                 "bypassing grid blockers must not admit an absent target"

@@ -651,67 +651,7 @@ mod tests {
     }
 
     fn resolved_clear_grid() -> ResolvedTerrainGrid {
-        let mut speed_costs = SpeedCostProfile::default();
-        speed_costs.wheel = Some(100);
-        ResolvedTerrainGrid::from_cells(
-            1,
-            1,
-            vec![ResolvedTerrainCell {
-                rx: 0,
-                ry: 0,
-                source_tile_index: 0,
-                source_sub_tile: 0,
-                final_tile_index: 0,
-                final_sub_tile: 0,
-                is_wood_bridge_repair_tile: false,
-                level: 0,
-                filled_clear: false,
-                tileset_index: None,
-                land_type: LandType::Clear.as_index(),
-                yr_cell_land_type: LandType::Clear.as_index(),
-                slope_type: 0,
-                template_height: 0,
-                render_offset_x: 0,
-                render_offset_y: 0,
-                terrain_class: TerrainClass::Clear,
-                speed_costs,
-                is_water: false,
-                is_cliff_like: false,
-                is_rough: false,
-                is_road: false,
-                accepts_smudge: false,
-                allows_tiberium: false,
-                height_in_pixels: 0,
-                variant: 0,
-                has_ramp: false,
-                canonical_ramp: None,
-                ground_walk_blocked: false,
-                terrain_object_blocks: false,
-                terrain_object_occupation: None,
-                overlay_blocks: false,
-                overlay_zone_type: None,
-                outside_playfield: false,
-                zone_type: zone_class::GROUND,
-                base_ground_walk_blocked: false,
-                base_build_blocked: false,
-                base_land_type: LandType::Clear.as_index(),
-                base_yr_cell_land_type: LandType::Clear.as_index(),
-                base_terrain_class: TerrainClass::Clear,
-                base_speed_costs: speed_costs,
-                build_blocked: false,
-                has_bridge_deck: false,
-                bridge_walkable: false,
-                bridge_transition: false,
-                bridge_deck_level: 0,
-                bridge_layer: None,
-                bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
-                tube_index: None,
-                radar_left: [0; 3],
-                radar_right: [0; 3],
-                has_damaged_data: false,
-                bridgehead_anchor_class_at_load: None,
-            }],
-        )
+        ResolvedTerrainGrid::from_cells(1, 1, vec![ResolvedTerrainCell::clear_for_test(0, 0)])
     }
 
     fn resolved_clear_grid_3x3() -> ResolvedTerrainGrid {
@@ -774,6 +714,7 @@ mod tests {
                     bypass_grid: false,
                     mode: TerrainEntryMode::RuntimeTransition,
                     is_infantry: false,
+                    mover_is_crusher: false,
                 }),
                 CanEnterCellResult::HardBlocked,
                 "Terrain's ObjectClass identity blocks entry even when custom rules spell Crushable=yes"

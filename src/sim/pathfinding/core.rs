@@ -994,6 +994,7 @@ pub fn astar_search(
         false,
         TerrainEntryMode::AStarNeighbor,
         options.is_infantry,
+        options.mover_is_crusher,
     );
     let goal_bridge_ok = is_cell_passable_for_mover_on_layer_with_speed(
         grid,
@@ -1332,6 +1333,7 @@ pub fn astar_search(
                         false,
                         TerrainEntryMode::AStarNeighbor,
                         options.is_infantry,
+                        options.mover_is_crusher,
                     )
                 };
                 trace_step.walkable = Some(neighbor_passable);
@@ -1746,6 +1748,7 @@ pub fn is_cell_passable_for_category_on_layer(
     bypass_grid: bool,
     mode: TerrainEntryMode,
     is_infantry: bool,
+    mover_is_crusher: bool,
 ) -> bool {
     evaluate_can_enter_cell(CanEnterCellContext {
         target: (x, y),
@@ -1758,6 +1761,7 @@ pub fn is_cell_passable_for_category_on_layer(
         bypass_grid,
         mode,
         is_infantry,
+        mover_is_crusher,
     })
     .is_clear()
 }
@@ -1786,6 +1790,9 @@ pub fn is_cell_passable_for_mover_on_layer_with_speed(
         bypass_grid,
         mode,
         is_infantry: false,
+        // Callers of this wrapper (bridge plane, scheduling, placement) carry
+        // no mover type; the crusher route of the wall arm is not theirs.
+        mover_is_crusher: false,
     })
     .is_clear()
 }
