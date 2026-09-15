@@ -755,6 +755,15 @@ pub struct ObjectType {
     pub hover_attack: bool,
     /// Whether this unit stays airborne by default / doesn't land (BalloonHover=).
     pub balloon_hover: bool,
+    /// `IsSimpleDeployer=` (`UnitTypeClass+0xE13`, key string `0x00845DFC`).
+    /// The Jumpjet cruise reads it on a Unit owner at arrival
+    /// (`State3_Translate 0x0054C1FE`).
+    pub is_simple_deployer: bool,
+    /// `DeployToLand=` (`TechnoTypeClass+0x6AD`, `TechnoTypeClass::ReadINI`
+    /// `0x00714809..0x00714816`, key string `0x00843A90`). Stock sets it on the
+    /// Siege Chopper (`[SCHP]`, `[SCHD]`). A Jumpjet Unit with it keeps full
+    /// cruise height and holds on arrival instead of descending.
+    pub deploy_to_land: bool,
     /// AirportBound=yes — aircraft must dock at helipad; crashes if none available.
     pub airport_bound: bool,
     /// Fighter=yes — fighter aircraft classification (affects targeting).
@@ -1891,6 +1900,8 @@ impl ObjectType {
                 .unwrap_or(category != ObjectCategory::Aircraft),
             hover_attack: section.get_bool("HoverAttack").unwrap_or(false),
             balloon_hover: section.get_bool("BalloonHover").unwrap_or(false),
+            is_simple_deployer: section.get_bool("IsSimpleDeployer").unwrap_or(false),
+            deploy_to_land: section.get_bool("DeployToLand").unwrap_or(false),
             airport_bound: section.get_bool("AirportBound").unwrap_or(false),
             fighter: section.get_bool("Fighter").unwrap_or(false),
             fly_by: section.get_bool("FlyBy").unwrap_or(false),
@@ -4183,14 +4194,8 @@ mod tests {
             zep.jumpjet_params.speed,
             crate::util::fixed_math::sim_from_f32(5.0)
         );
-        assert_eq!(
-            zep.jumpjet_params.climb,
-            crate::util::fixed_math::sim_from_f32(6.0)
-        );
-        assert_eq!(
-            zep.jumpjet_params.crash,
-            crate::util::fixed_math::sim_from_f32(12.0)
-        );
+        assert_eq!(zep.jumpjet_params.climb, 6.0);
+        assert_eq!(zep.jumpjet_params.crash, 12.0);
         assert!(zep.jumpjet_params.no_wobbles, "[ZEP] JumpjetNoWobbles=yes");
         // `[ZEP]` authors no deviation, so the constructor's 40 stands.
         assert_eq!(zep.jumpjet_params.deviation, 40);
@@ -4204,14 +4209,8 @@ mod tests {
             disk.jumpjet_params.speed,
             crate::util::fixed_math::sim_from_f32(16.0)
         );
-        assert_eq!(
-            disk.jumpjet_params.climb,
-            crate::util::fixed_math::sim_from_f32(8.0)
-        );
-        assert_eq!(
-            disk.jumpjet_params.crash,
-            crate::util::fixed_math::sim_from_f32(15.0)
-        );
+        assert_eq!(disk.jumpjet_params.climb, 8.0);
+        assert_eq!(disk.jumpjet_params.crash, 15.0);
         assert_eq!(disk.jumpjet_params.deviation, 15);
     }
 
@@ -4290,8 +4289,7 @@ mod tests {
                 "[{name}] must keep the constructor turn rate"
             );
             assert_eq!(
-                obj.jumpjet_params.accel,
-                crate::util::fixed_math::sim_from_f32(2.0),
+                obj.jumpjet_params.accel, 2.0,
                 "[{name}] must keep the constructor acceleration"
             );
         }

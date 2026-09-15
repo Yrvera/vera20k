@@ -1546,7 +1546,7 @@ fn gsi_04_12_object_raw_occupation_production_fly_tick_unmarks_takeoff_and_marks
         locomotor.target_altitude = SimFixed::from_num(600);
         locomotor.climb_rate = SimFixed::from_num(1500);
     }
-    sim.tick_air_movement_with_cell_lists_one(1);
+    sim.tick_air_movement_with_cell_lists_one(1, None);
 
     let aircraft = sim.substrate.entities.get(1).unwrap();
     assert!(aircraft.locomotor.as_ref().unwrap().altitude > SimFixed::from_num(0));
@@ -1571,7 +1571,7 @@ fn gsi_04_12_object_raw_occupation_production_fly_tick_unmarks_takeoff_and_marks
         locomotor.target_altitude = SimFixed::from_num(0);
         locomotor.climb_rate = SimFixed::from_num(1500);
     }
-    sim.tick_air_movement_with_cell_lists_one(1);
+    sim.tick_air_movement_with_cell_lists_one(1, None);
 
     let aircraft = sim.substrate.entities.get(1).unwrap();
     assert_eq!(
@@ -1609,7 +1609,7 @@ fn gsi_05_05_fly_takeoff_commits_absolute_z_after_remove_process() {
         locomotor.target_altitude = SimFixed::from_num(600);
         locomotor.climb_rate = SimFixed::from_num(1500);
     }
-    sim.tick_air_movement_with_cell_lists_one(1);
+    sim.tick_air_movement_with_cell_lists_one(1, None);
 
     let aircraft = sim.substrate.entities.get(1).unwrap();
     let altitude = aircraft
@@ -1648,7 +1648,7 @@ fn gsi_05_05_fly_landing_on_bridge_uses_absolute_z_for_deck_put() {
         locomotor.target_altitude = SimFixed::from_num(0);
         locomotor.climb_rate = SimFixed::from_num(1500);
     }
-    sim.tick_air_movement_with_cell_lists_one(1);
+    sim.tick_air_movement_with_cell_lists_one(1, None);
 
     let aircraft = sim.substrate.entities.get(1).unwrap();
     assert_eq!(
@@ -1721,7 +1721,7 @@ fn gsi_05_05_mapless_fly_uses_dummy_ground_then_bridge_height() {
     }
     let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 2, 128, 128));
 
-    sim.tick_air_movement_with_cell_lists_one(1);
+    sim.tick_air_movement_with_cell_lists_one(1, None);
 
     let aircraft = sim.substrate.entities.get(1).unwrap();
     assert_eq!(
@@ -1753,7 +1753,7 @@ fn gsi_04_07_damage_air_spatial_entry_crossing_and_exit_keep_vector_order() {
     let shared_bucket = second.air_spatial_bucket;
     let second_order = second.air_spatial_enter_order;
 
-    sim.tick_air_movement_with_cell_lists_one(20);
+    sim.tick_air_movement_with_cell_lists_one(20, None);
     assert_eq!(
         sim.substrate
             .entities
@@ -1765,7 +1765,7 @@ fn gsi_04_07_damage_air_spatial_entry_crossing_and_exit_keep_vector_order() {
     );
 
     sim.substrate.entities.get_mut(20).unwrap().position.rx = 12;
-    sim.tick_air_movement_with_cell_lists_one(20);
+    sim.tick_air_movement_with_cell_lists_one(20, None);
     let crossed = sim.substrate.entities.get(20).unwrap();
     assert_ne!(crossed.air_spatial_bucket, shared_bucket);
     assert!(crossed.air_spatial_enter_order > second_order);

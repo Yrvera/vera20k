@@ -2101,6 +2101,7 @@ fn failed_jumpjet_stop_stock_fatal_receiver_precedes_cache_retirement() {
             },
             moving: true,
             phase: 1,
+            ..Default::default()
         };
         assert!(sim.stop_jumpjet_infantry_destination(id, Some(&rules), Some(&registry)));
         let e = sim.substrate.entities.get(id).unwrap();

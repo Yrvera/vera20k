@@ -467,6 +467,20 @@ pub fn tick_air_movement(
                     loco.air_phase = AirMovePhase::Descending;
                 }
                 jumpjet_movement::tick_jumpjet_altitude(loco, dt);
+                // State 4's landing (0x0054C8CB..C8DC): NullCoord destination,
+                // moving byte clear, state 0. Only a hold or descent the native
+                // cruise handed over carries state 2 or 4 here.
+                if loco.air_phase == AirMovePhase::Landed
+                    && let Some(state) = loco.jumpjet_runtime_mut()
+                    && matches!(
+                        state.phase,
+                        super::jumpjet_flight::STATE_HOLD | super::jumpjet_flight::STATE_DESCEND
+                    )
+                {
+                    state.phase = super::jumpjet_flight::STATE_GROUND;
+                    state.destination = jumpjet_movement::JumpjetRuntime::NULL;
+                    state.moving = false;
+                }
                 // Decelerate to zero while idle.
                 jumpjet_movement::tick_jumpjet_acceleration(loco, dt, false);
             } else {

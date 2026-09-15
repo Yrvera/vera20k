@@ -28,6 +28,10 @@ pub struct JumpjetRuntime {
     pub destination: crate::sim::components::DriveCoord,
     pub moving: bool,
     pub phase: i32,
+    /// The type block `Link_To_Object @ 0x0054AD30` copies (`+0x1C..+0x3C`).
+    pub params: super::jumpjet_flight::JumpjetFlightParams,
+    /// Facing, speeds, target height and bob (`+0x54..+0x8C`).
+    pub flight: super::jumpjet_flight::JumpjetFlight,
 }
 
 impl Default for JumpjetRuntime {
@@ -36,6 +40,8 @@ impl Default for JumpjetRuntime {
             destination: Self::NULL,
             moving: false,
             phase: 0,
+            params: Default::default(),
+            flight: Default::default(),
         }
     }
 }
@@ -54,6 +60,13 @@ impl JumpjetRuntime {
         } else {
             self.destination
         }
+    }
+
+    /// `Link_To_Object @ 0x0054AD30`: copy the type block and rebuild the
+    /// locomotor facing at the type's turn rate, snapped to `0x4000`.
+    pub(crate) fn link(&mut self, type_params: &crate::rules::jumpjet_params::JumpjetParams) {
+        self.params = super::jumpjet_flight::JumpjetFlightParams::link(type_params);
+        self.flight = super::jumpjet_flight::JumpjetFlight::linked(&self.params);
     }
 
     /// 54B22F stores the request before the possibly failing placement call.

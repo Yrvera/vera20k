@@ -86,10 +86,10 @@ pub struct JumpjetParams {
     /// [`JumpjetParams::from_ini_section`].
     pub speed: SimFixed,
     /// Climb/ascent rate per tick (`JumpjetClimb=`, `+0xD78`).
-    pub climb: SimFixed,
+    pub climb: f32,
     /// Extra descent speed added during crash (`JumpjetCrash=`, `+0xD7C`).
     /// Total crash speed = climb + crash.
-    pub crash: SimFixed,
+    pub crash: f32,
     /// Target hover altitude in leptons (`JumpjetHeight=`, `+0xD80`).
     ///
     /// RESIDUAL — DRIFT, not implemented in VERA. gamemd never hovers at this
@@ -117,7 +117,7 @@ pub struct JumpjetParams {
     pub height: i32,
     /// Acceleration rate (`JumpjetAccel=`, `+0xD84`). Deceleration = accel *
     /// 1.5.
-    pub accel: SimFixed,
+    pub accel: f32,
     /// Wobble amplitude while hovering (`JumpjetWobbles=`, `+0xD88`).
     /// KEPT as f32 — only used for render-side visual wobble, not sim state.
     pub wobbles: f32,
@@ -137,10 +137,10 @@ impl Default for JumpjetParams {
         Self {
             turn_rate: CTOR_TURN_RATE,
             speed: sim_from_f32(CTOR_SPEED),
-            climb: sim_from_f32(CTOR_CLIMB),
-            crash: sim_from_f32(CTOR_CRASH),
+            climb: CTOR_CLIMB,
+            crash: CTOR_CRASH,
             height: CTOR_HEIGHT,
-            accel: sim_from_f32(CTOR_ACCEL),
+            accel: CTOR_ACCEL,
             wobbles: CTOR_WOBBLES,
             deviation: CTOR_DEVIATION,
             no_wobbles: false,
@@ -182,23 +182,14 @@ impl JumpjetParams {
                 .map(sim_from_f32)
                 .unwrap_or(ctor.speed),
             // `0x007150F8 PUSH 0x8436B0` -> `0x0071510A FSTP [EBP+0xD78]`.
-            climb: section
-                .get_f32("JumpjetClimb")
-                .map(sim_from_f32)
-                .unwrap_or(ctor.climb),
+            climb: section.get_f32("JumpjetClimb").unwrap_or(ctor.climb),
             // `0x0071511E PUSH 0x8436A0` -> `0x00715130 FSTP [EBP+0xD7C]`.
-            crash: section
-                .get_f32("JumpjetCrash")
-                .map(sim_from_f32)
-                .unwrap_or(ctor.crash),
+            crash: section.get_f32("JumpjetCrash").unwrap_or(ctor.crash),
             // `0x0071513F PUSH 0x843690` -> `0x00715151 MOV [EBP+0xD80],EAX`.
             height: section.get_i32("JumpjetHeight").unwrap_or(ctor.height),
             // `0x00715165 PUSH 0x843680` -> `0x00715177 FSTP [EBP+0xD84]`.
             // Stock spells this `JumpJetAccel=`; same story as the turn rate.
-            accel: section
-                .get_f32("JumpjetAccel")
-                .map(sim_from_f32)
-                .unwrap_or(ctor.accel),
+            accel: section.get_f32("JumpjetAccel").unwrap_or(ctor.accel),
             // `0x0071518B PUSH 0x843670` -> `0x0071519D FSTP [EBP+0xD88]`.
             wobbles: section.get_f32("JumpjetWobbles").unwrap_or(ctor.wobbles),
             // `0x007151CB PUSH 0x843648` -> `0x007151DF MOV [EBP+0xD90],EAX`.
@@ -226,10 +217,10 @@ mod tests {
 
         assert_eq!(params.turn_rate, 4);
         assert_eq!(params.speed, sim_from_f32(14.0));
-        assert_eq!(params.climb, sim_from_f32(5.0));
-        assert_eq!(params.crash, sim_from_f32(5.0));
+        assert_eq!(params.climb, 5.0);
+        assert_eq!(params.crash, 5.0);
         assert_eq!(params.height, 500);
-        assert_eq!(params.accel, sim_from_f32(2.0));
+        assert_eq!(params.accel, 2.0);
         assert!((params.wobbles - 0.15).abs() < 0.01);
         assert_eq!(params.deviation, 40);
         assert!(!params.no_wobbles);
@@ -248,10 +239,10 @@ mod tests {
 
         assert_eq!(params.turn_rate, 8);
         assert_eq!(params.speed, sim_from_f32(20.0));
-        assert_eq!(params.climb, sim_from_f32(3.0));
-        assert_eq!(params.crash, sim_from_f32(10.0));
+        assert_eq!(params.climb, 3.0);
+        assert_eq!(params.crash, 10.0);
         assert_eq!(params.height, 750);
-        assert_eq!(params.accel, sim_from_f32(4.0));
+        assert_eq!(params.accel, 4.0);
         assert!((params.wobbles).abs() < 0.01);
         assert_eq!(params.deviation, 0);
         assert!(params.no_wobbles);
@@ -273,8 +264,7 @@ mod tests {
             "`JumpJetTurnRate=` is invisible to gamemd; the constructor's 4 stands"
         );
         assert_eq!(
-            params.accel,
-            sim_from_f32(2.0),
+            params.accel, 2.0,
             "`JumpJetAccel=` is invisible to gamemd; the constructor's 2.0 stands"
         );
         // The correctly-cased sibling on the same fixture still lands, which is

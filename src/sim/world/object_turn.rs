@@ -346,7 +346,7 @@ impl Simulation {
             return Ok(outcome);
         }
 
-        sim.tick_air_movement_with_cell_lists_one(stable_id);
+        sim.tick_air_movement_with_cell_lists_one(stable_id, rules);
         let teleport_relocating = sim
             .substrate
             .entities
