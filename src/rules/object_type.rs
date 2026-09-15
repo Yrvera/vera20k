@@ -743,6 +743,10 @@ pub struct ObjectType {
     pub crashable: bool,
     /// Whether this unit can use chrono teleport movement (Teleporter=).
     pub teleporter: bool,
+    /// TechnoType+0xC8D: the constructor stores true at 0x711387 and the
+    /// AircraftType constructor stores false at 0x41C9A3. ReadINI
+    /// 0x712256..0x71226A reads `MoveToShroud` (key string at 0x8444C4).
+    pub move_to_shroud: bool,
     /// Whether this unit can fire while hovering / in air (HoverAttack=).
     pub hover_attack: bool,
     /// Whether this unit stays airborne by default / doesn't land (BalloonHover=).
@@ -1026,6 +1030,11 @@ pub struct ObjectType {
     /// Parsed from `UnitAbsorb=yes` in rules.ini.
     pub unit_absorb: bool,
 
+    /// Whether this building grinds entering units (`BuildingTypeClass+0x16AD`).
+    /// gamemd 0x45E0D8 defaults false; 0x460968..0x460982 reads `Grinding=`.
+    /// The Unit cell-entry receiver tests this separately from UnitAbsorb.
+    pub grinding: bool,
+
     /// Whether this techno type can enter a Tank Bunker.
     /// Parsed from `Bunkerable=` in rules.ini. UnitTypeClass entries default
     /// true; other object categories default false.
@@ -1141,6 +1150,15 @@ pub struct ObjectType {
     /// `InvisibleInGame=yes` on BuildingType. Logical-only buildings (e.g., bridge
     /// anchors) that should not receive C4 or other interaction cursors.
     pub invisible_in_game: bool,
+    /// BuildingType+0x1703, the immediate placement admission read by
+    /// 0x464AC0; the constructor clears it at 0x45E212 and ReadINI
+    /// 0x460F08..0x460F1C reads `PlaceAnywhere`. Retail AMMOCRAT and UFO set it.
+    pub place_anywhere: bool,
+    /// Authored `ToTile` key; 0x465CC0 resolves it through 0x544CE0 into
+    /// BuildingType+0xE58 only when the named tile is registered.
+    /// The theater-aware receiver must validate the named tile before treating
+    /// this as a nonnull type pointer (retail GAGREEN uses Green01).
+    pub to_tile: Option<String>,
 
     /// Whether this building repairs docked ground units (UnitRepair=yes in rules.ini).
     /// Used by Service Depots (GADEPT, NADEPT, YADEPT).
@@ -1817,10 +1835,16 @@ impl ObjectType {
             locomotor: crate::rules::locomotor_type::resolve_installed_kind(
                 section.get("Locomotor").as_deref(),
             ),
-            speed_type: section
-                .get("SpeedType")
-                .map(SpeedType::from_ini)
-                .unwrap_or_default(),
+            // BuildingTypeClass's constructor passes SpeedType 0 to its parent
+            // (0x45DD9D -> 0x710AF0, stored at 0x7110E0); other existing
+            // category defaults stay owned here.
+            speed_type: section.get("SpeedType").map(SpeedType::from_ini).unwrap_or(
+                if category == ObjectCategory::Building {
+                    SpeedType::Foot
+                } else {
+                    SpeedType::default()
+                },
+            ),
             movement_zone: section
                 .get("MovementZone")
                 .map(MovementZone::from_ini)
@@ -1845,6 +1869,9 @@ impl ObjectType {
                 .unwrap_or(false),
             crashable: section.get_bool("Crashable").unwrap_or(false),
             teleporter: section.get_bool("Teleporter").unwrap_or(false),
+            move_to_shroud: section
+                .get_bool("MoveToShroud")
+                .unwrap_or(category != ObjectCategory::Aircraft),
             hover_attack: section.get_bool("HoverAttack").unwrap_or(false),
             balloon_hover: section.get_bool("BalloonHover").unwrap_or(false),
             airport_bound: section.get_bool("AirportBound").unwrap_or(false),
@@ -1979,6 +2006,7 @@ impl ObjectType {
                 .unwrap_or_default(),
             infantry_absorb: section.get_bool("InfantryAbsorb").unwrap_or(false),
             unit_absorb: section.get_bool("UnitAbsorb").unwrap_or(false),
+            grinding: section.get_bool("Grinding").unwrap_or(false),
             bunkerable: section
                 .get_bool("Bunkerable")
                 .unwrap_or(category == ObjectCategory::Vehicle),
@@ -2011,6 +2039,8 @@ impl ObjectType {
             eligible_for_delay_kill: section.get_bool("EligibleForDelayKill").unwrap_or(false),
             invisible: section.get_bool("Invisible").unwrap_or(false),
             invisible_in_game: section.get_bool("InvisibleInGame").unwrap_or(false),
+            place_anywhere: section.get_bool("PlaceAnywhere").unwrap_or(false),
+            to_tile: section.get("ToTile").map(str::to_owned),
             unit_repair: section.get_bool("UnitRepair").unwrap_or(false),
             bunker: section.get_bool("Bunker").unwrap_or(false),
             unit_reload: section.get_bool("UnitReload").unwrap_or(false),
@@ -2331,6 +2361,27 @@ fn parse_exit_coord(value: Option<&str>) -> Option<(i32, i32, i32)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn building_native_speed_default_and_repair_type_inputs() {
+        let ini = crate::rules::ini_parser::IniFile::from_str(
+            "[TEST]\nPlaceAnywhere=yes\nToTile=Green01\n[EXPLICIT]\nSpeedType=Float\n",
+        );
+        let building = super::ObjectType::from_ini_section(
+            "TEST",
+            ini.section("TEST").unwrap(),
+            super::ObjectCategory::Building,
+        );
+        assert_eq!(building.speed_type, super::SpeedType::Foot);
+        assert!(building.place_anywhere);
+        assert_eq!(building.to_tile.as_deref(), Some("Green01"));
+        let explicit = super::ObjectType::from_ini_section(
+            "EXPLICIT",
+            ini.section("EXPLICIT").unwrap(),
+            super::ObjectCategory::Building,
+        );
+        assert_eq!(explicit.speed_type, super::SpeedType::Float);
+    }
+
     use super::*;
     use crate::rules::ini_parser::IniFile;
 
@@ -3241,6 +3292,15 @@ mod tests {
         let obj = ObjectType::from_ini_section("YABRCK", section, ObjectCategory::Building);
         assert!(obj.infantry_absorb);
         assert!(!obj.unit_absorb);
+        assert!(!obj.grinding);
+        let grinder_ini = IniFile::from_str("[YAGRND]\nGrinding=yes\nUnitAbsorb=no\n");
+        let grinder = ObjectType::from_ini_section(
+            "YAGRND",
+            grinder_ini.section("YAGRND").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(grinder.grinding);
+        assert!(!grinder.unit_absorb);
     }
 
     #[test]

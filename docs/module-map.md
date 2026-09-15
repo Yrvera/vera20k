@@ -1,12 +1,12 @@
 # Module dependency map
 
 <!-- module-map:provenance:begin -->
-Generated snapshot: `c38cb2a748c79ac32dbdc362ca7ca4a3280afcbc` (2026-09-15), cargo-modules 0.26.0.
+Generated snapshot: `532902b0349a5574f5d0c48e28e72e28e0d42afe` (2026-09-15), cargo-modules 0.26.0.
 
 Scope: `vera20k` library, default features, `x86_64-pc-windows-msvc`, no depth limit.
 Test-only, binary-specific and inactive conditional modules are excluded.
 External crates and the sysroot are excluded from the dependency graph.
-Contains **808 modules plus the crate root**, and **4929 distinct
+Contains **808 modules plus the crate root**, and **4928 distinct
 cross-module dependency edges**. Check this source commit against your checkout.
 <!-- module-map:provenance:end -->
 
@@ -740,7 +740,7 @@ sim::world::substrate -> sim::anim_class; sim::cell_rect; sim::entity_store; sim
 sim::world::techno_ai -> map::entities; rules::mission_data; rules::overlay_types; rules::particle_system_type; rules::ruleset; sim::miner; sim::pathfinding::core; sim::world; sim::world::techno_ai::mission_handlers
 sim::world::techno_ai::bounce_terrain -> map::entities; rules::ruleset; sim::bounce; sim::cell_rect; sim::movement::locomotor; sim::world
 sim::world::techno_ai::mission_handlers -> map::entities; rules::mission_data; rules::ruleset; rules::terrain_rules; sim::combat::threat_range; sim::components; sim::game_entity; sim::mission::authority; sim::mission::state; sim::world; sim::world::techno_ai; util::native_x87
-sim::world::techno_ai_cloak -> map::entities; rules::ruleset; sim::combat; sim::components; sim::intern; sim::mission::concrete_effects; sim::movement::locomotor; sim::world; util::native_x87
+sim::world::techno_ai_cloak -> map::entities; rules::ruleset; sim::combat; sim::components; sim::intern; sim::mission::concrete_effects; sim::movement::locomotor; sim::world
 sim::world::track_cell_recalc -> rules::overlay_types; rules::ruleset; sim::world; sim::world::navigation
 sim::world::unit_post -> rules::ruleset; sim::combat; sim::entity_store; sim::intern
 sim::world::world_commands -> map::cell_index; map::houses; rules::locomotor_type; rules::mission_data; rules::object_type; rules::ruleset; sim::combat; sim::combat::combat_aoe; sim::command; sim::components; sim::docking::building_dock; sim::mission::retask; sim::movement; sim::movement::air_movement; sim::movement::bump_crush; sim::movement::jumpjet_movement; sim::movement::locomotor; sim::movement::teleport_movement; sim::overlay_grid; sim::passenger; sim::pathfinding::core; sim::pathfinding::terrain_cost; sim::pathfinding::zone_incremental; sim::production; sim::world; util::fixed_math

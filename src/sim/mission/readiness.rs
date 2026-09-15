@@ -20,12 +20,6 @@ const MISSION_HUNT: MissionId = MissionId::from_raw(15);
 const MISSION_RESCUE: MissionId = MissionId::from_raw(21);
 const MISSION_AIRCRAFT_ACTION_EXCEPTION: MissionId = MissionId::from_raw(0x1e);
 
-const INFANTRY_READY_BY_DOING: [bool; 42] = [
-    true, true, true, true, true, false, true, false, true, true, true, false, false, false, false,
-    false, true, true, true, true, false, false, true, true, true, true, true, false, true, true,
-    true, false, false, true, false, false, false, true, true, true, true, true,
-];
-
 /// An exact input that the current Rust owner could not supply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum ReadyUnavailable {
@@ -260,10 +254,8 @@ fn infantry_doing_allows(doing: i32) -> ReadyResult {
     if doing == -1 {
         return Ok(true);
     }
-    let index = usize::try_from(doing).map_err(|_| ReadyUnavailable::InvalidDoing(doing))?;
-    INFANTRY_READY_BY_DOING
-        .get(index)
-        .copied()
+    crate::rules::infantry_sequence::action_record(doing)
+        .map(|record| record.interruptible)
         .ok_or(ReadyUnavailable::InvalidDoing(doing))
 }
 
