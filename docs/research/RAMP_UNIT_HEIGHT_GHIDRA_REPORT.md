@@ -275,6 +275,41 @@ still pass. These are production Rust regressions, not native path/pixel
 goldens. The integrated full suite passed 8,544 tests with zero failures and
 89 ignored; existing replay baselines required no changes.
 
+### Unit under-span admission
+
+Binary read on 2026-09-15 established that the Unit contract is the same shape
+as Infantry's, so the correction above now covers every ground-layer mover:
+
+- UnitClass vtable `7F5C70` (audit log, RTTI-confirmed); `+1AC` at `7F5E1C`
+  resolves `73F0A0`, the only reference to that function.
+- `73F0B7..F0E8`: `TEST 0x100` on `Cell+140`, then `|height - Cell+11B| <= 1`
+  clears the stack deck flag `[ESP+13]`; a stamped cell more than one level
+  from the carried height sets it. `73F2EB` calls `+1B0` (`4D9C60`) with the
+  height and flag in-out pointers; its equal-level arm admits base-height ground
+  beneath a span, as for Infantry.
+- `73F4F9..F51A`: flag clear selects the ground list `+E4`; set selects `+E8`.
+- `73FA92..FAC7`: only the ground branch reads the land row
+  `g_abLandTypeSpeedBuildabilityRows[Cell+EC][Type+67C]` at `73FAB5` and returns
+  7 on zero. The deck branch skips it.
+- `4834A0` (`CheckCellPassability`) is never called from `73F0A0`; its callers
+  are `CellRect::CheckPassability 56E859`, `FUN_00459ca0`, `FUN_004aab30`,
+  `WarpAttachClass::Detach`, `FUN_00483410`, `FootClass::Greatest_Threat_Scan`,
+  `AircraftClass::ActionOnCell`, `BuildingClass::SpawnSurvivors`,
+  `TechnoTypeClass::CanPlaceAt`, `InfantryClass::Set_Destination`,
+  `ObjectClass::Paradrop`, `OverlayClass::Mark` and
+  `JumpjetLocomotionClass::State5_Touchdown`.
+
+Rust: `cell_entry.rs` applies the class arm to every ground-layer, non-Winged
+mover, and `TerrainCostGrid::ground_cost_at` carries the terrain's own row so a
+Track mover is still refused water beneath a deck. Retail Hills `MTNK`
+`(87,71)->(87,78)` and BayOPigs `ROBO` `(108,143)->(115,143)` ordinary Moves now
+cross all four lanes beneath the deck with zero deck frames and the under-span
+height invariant held; the Infantry crossing is unchanged. Synthetic ratchets:
+`unit_under_span_admission_reads_ground_row_beneath_deck`,
+`elevated_deck_over_water_keeps_a_closed_ground_row`. The `4/5` wall accumulator
+and the ILocomotion `+1C` check (`4D9C10`, gated by the caller's fifth argument)
+remain separate recorded gaps.
+
 ## Reproduction and coverage
 
 Set `RA2_DIR` or `VERA20K_GAMEMD_EXE` to the known retail installation and run:

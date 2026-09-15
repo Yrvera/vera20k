@@ -4202,11 +4202,10 @@ fn judge_under_span_run(run: &UnderSpanRun, unit_type: &str, map_file: &str) {
 
 /// Matrix row T1-13 — Drive **under** an intact high span, `Hills.mmx`.
 ///
-/// **Characterization, not desired behaviour.** It pins that an ordinary
-/// undisabled `Command::Move` from one side of the span's footprint to the
-/// other is **refused outright**: no path is produced and the mover never gets
-/// an order. It will go red the day under-span routing lands, and must then be
-/// rewritten into a positive under-span run.
+/// Until 2026-09-15 this row pinned that an ordinary undisabled `Command::Move`
+/// from one side of the span's footprint to the other was **refused outright**.
+/// The diagnosis below is kept because it names the mechanism that was acting;
+/// the settlement paragraph at the end names the native contract that retired it.
 ///
 /// Measured on `Hills.mmx`, order `(87,71)` → `(87,78)`, valley floor at terrain
 /// level 2 with the deck at 6:
@@ -4250,22 +4249,43 @@ fn judge_under_span_run(run: &UnderSpanRun, unit_type: &str, map_file: &str) {
 ///   `bridge_deck_level`, so a Move naming a stamped cell always aims at the
 ///   deck. `deck_and_ground_under_one_high_bridge_cell_are_separate_occupancy_planes`
 ///   shows that arm working as designed.
+///
+/// **Settled 2026-09-15 as a positive crossing.** `UnitClass::Can_Enter_Cell`
+/// @ `0x0073F0A0` never calls `CheckCellPassability` @ `0x004834A0` (its callers
+/// are CellRect, threat scans, placement, paradrop, overlay Mark and Jumpjet
+/// touchdown); it clears its deck flag for a path height within one of the cell
+/// level (`0x0073F0B7..F0E8`), defers height legality to `CheckBridgeTraversal`
+/// @ `0x004D9C60` whose equal-level arm admits, walks the ground list `+0xE4`
+/// (`0x0073F51A`) and reads the terrain's own land row at `0x0073FAB5`. The
+/// Rust class arm in `cell_entry.rs` now covers every ground-layer mover, and
+/// the cost grid's ground row replaces the deck override beneath a span.
 #[test]
 #[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
-fn tank_ordered_under_hills_high_bridge_is_currently_refused() {
+fn tank_ordered_under_hills_high_bridge_crosses_all_four_ground_lanes() {
     let Some(run) = order_under_high_span("Hills.mmx", "MTNK") else {
         return;
     };
     judge_under_span_run(&run, "MTNK", "Hills.mmx");
+    assert_eq!(run.start_cell, (87, 71));
+    assert_eq!(run.cut.under_b, Some((87, 78)));
+    assert_eq!(run.cut.band, vec![(87, 73), (87, 74), (87, 75), (87, 76)]);
     assert!(
-        !run.order_accepted,
-        "the ordinary Move under the span was accepted — T1-13 can now be settled from a real \
-         order and this characterization must be rewritten"
+        run.order_accepted,
+        "ordinary Move beneath the span must be accepted"
     );
+    assert_eq!(run.rows.last().map(|row| row.cell), run.cut.under_b);
     assert!(
-        run.under_frames().is_empty(),
-        "frames were recorded under the span despite the order being refused"
+        run.deck_frames().is_empty(),
+        "the route must stay beneath the deck"
     );
+    let under_cells: std::collections::BTreeSet<_> =
+        run.under_frames().iter().map(|row| row.cell).collect();
+    for cell in &run.cut.band {
+        assert!(
+            under_cells.contains(cell),
+            "under-span route skipped lane {cell:?}"
+        );
+    }
 }
 
 /// Matrix row T1-14 — Walk under an intact high span, `Hills.mmx`.
@@ -4327,44 +4347,57 @@ fn infantry_ordered_under_hills_high_bridge_crosses_all_four_ground_lanes() {
 ///   the cell.
 /// * The band is again four cells wide, `x = 110..113`, and the ordinary Move
 ///   across it is refused for the same reason as Hills.
+///
+/// **Settled 2026-09-15 as a positive crossing** on the same evidence as the
+/// Hills tank run: the Unit entry contract admits the riverbed beneath the span
+/// for a mover whose own land row is open there.
 #[test]
 #[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
-fn hover_tank_ordered_under_bay_of_pigs_high_bridge_is_currently_refused() {
+fn hover_tank_ordered_under_bay_of_pigs_high_bridge_crosses_all_four_ground_lanes() {
     let Some(run) = order_under_high_span("BayOPigs.mmx", "ROBO") else {
         return;
     };
     judge_under_span_run(&run, "ROBO", "BayOPigs.mmx");
-    assert!(
-        !run.order_accepted,
-        "the ordinary Move under the span was accepted — T1-15 can now be settled from a real \
-         order"
+    assert_eq!(run.start_cell, (108, 143));
+    assert_eq!(run.cut.under_b, Some((115, 143)));
+    assert_eq!(
+        run.cut.band,
+        vec![(110, 143), (111, 143), (112, 143), (113, 143)]
     );
-    assert!(run.under_frames().is_empty());
+    assert!(
+        run.order_accepted,
+        "ordinary Move beneath the span must be accepted"
+    );
+    assert_eq!(run.rows.last().map(|row| row.cell), run.cut.under_b);
+    assert!(
+        run.deck_frames().is_empty(),
+        "the route must stay beneath the deck"
+    );
+    let under_cells: std::collections::BTreeSet<_> =
+        run.under_frames().iter().map(|row| row.cell).collect();
+    for cell in &run.cut.band {
+        assert!(
+            under_cells.contains(cell),
+            "under-span route skipped lane {cell:?}"
+        );
+    }
 }
 
-/// Isolates half of why the under-span order is refused, so the diagnosis in
-/// T1-13's doc comment names a mechanism rather than a suspicion.
+/// Ground-plane admission beneath a span is decided by the mover's own land row,
+/// not by the lane's `bridge_transition` flag.
 ///
-/// The same cell, the same layer, the same grid: supplying a `MovementZone`
-/// (hence a speed type) flips ground-plane admission on the one band lane whose
-/// `bridge_transition` flag is clear. With no speed type,
-/// `evaluate_shared_cell_leaf` (`sim/pathfinding/cell_entry.rs`) returns Clear
-/// on `land_passable` alone; with one, it falls through to
-/// `evaluate_is_clear_to_move` (`sim/cell_rect.rs`), whose
-/// `has_bridge && !is_bridge → LevelMismatch` arm refuses the ground plane of
-/// any cell carrying the `0x100` stamp.
-///
-/// The three `bridge_transition` lanes of the same band never reach that arm,
-/// because the transition short-circuit above it returns first. So VERA's answer
-/// to "may a mover stand on the ground under a span" is currently decided by a
-/// flag that has nothing to do with the question, and differs across the four
-/// lanes of one bridge.
-///
-/// **Characterization.** Whether gamemd refuses a ground-plane entry on a
-/// stamped cell at all is UNCHECKED — no Ghidra read was made for this slice.
+/// Until 2026-09-15 supplying a `MovementZone` (hence a speed type) sealed the
+/// one band lane whose `bridge_transition` flag is clear: `evaluate_shared_cell_leaf`
+/// (`sim/pathfinding/cell_entry.rs`) fell through to `evaluate_is_clear_to_move`
+/// (`sim/cell_rect.rs`), whose `has_bridge && !is_bridge → LevelMismatch` arm
+/// refused the ground plane of any `0x100` cell, while the three transition
+/// lanes escaped through the short-circuit above it. That leaf ports
+/// `CellClass::CheckCellPassability` @ `0x004834A0`, which neither Foot
+/// `+0x1AC` implementation calls (`0x0051BF90`, `0x0073F0A0`); the class arm
+/// now covers every ground-layer mover and all four lanes agree.
 #[test]
 #[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
-fn ground_entry_under_a_high_span_depends_on_whether_a_speed_type_is_supplied() {
+fn ground_entry_under_a_high_span_is_admitted_on_every_lane() {
     let Some(retail) = retail_dir() else {
         eprintln!("SKIPPED: no retail root (set RA2_DIR or provide config.toml)");
         return;
@@ -4417,19 +4450,18 @@ fn ground_entry_under_a_high_span_depends_on_whether_a_speed_type_is_supplied() 
         }
     }
     println!("open lanes {open:?}; sealed lanes {sealed:?}");
+    // Settled 2026-09-15: the Unit entry contract (`0x0073F0A0`) never reaches
+    // the `0x004834A0` level rejection, so every lane of the band — transition
+    // or not — admits ground entry with a speed type supplied.
     assert!(
-        !sealed.is_empty(),
-        "every band lane admits ground entry with a speed type supplied; the seal this test pins \
-         is gone and T1-13's diagnosis must be re-derived"
+        sealed.is_empty(),
+        "a band lane refused ground entry with a speed type supplied: {sealed:?}; the retired \
+         Cell-leaf level rejection is acting again"
     );
     assert!(
-        sealed.iter().all(|(_, transition)| !*transition),
-        "a bridge_transition lane was sealed: {sealed:?}. The characterized rule is that the \
-         transition short-circuit is the only reason any lane is open"
-    );
-    assert!(
-        open.iter().all(|(_, transition)| *transition),
-        "a non-transition lane admitted ground entry: {open:?}"
+        open.iter().any(|(_, transition)| !*transition),
+        "the band carries no non-transition lane, so this test no longer isolates anything: \
+         {open:?}"
     );
 }
 
