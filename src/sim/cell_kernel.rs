@@ -121,13 +121,30 @@ pub fn selects_infantry_bridge_layer(has_high_bridge: bool, level: u8, input_z: 
     has_high_bridge && input_z >= deck_z
 }
 
+/// Original 0x47C46B..0x47C48C (inside 0x0047C3D0): FILD both signed deltas,
+/// square and sum them in x87, then Sqrt_Approx 0x4CAC40 and the truncating
+/// Math_ftol 0x7C5F00. Low-byte extraction and list admission belong to callers.
+pub(crate) fn native_xy_distance(dx: i32, dy: i32) -> i32 {
+    use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
+    let dx = X87Chop53::load_i32(dx);
+    let dy = X87Chop53::load_i32(dy);
+    let squared = X87Chop53::add(X87Chop53::mul(dx, dx), X87Chop53::mul(dy, dy));
+    let Ok(root_bits) = sqrt_approx_f32(squared) else {
+        return i32::MAX;
+    };
+    let Ok(root) = X87Chop53::load_f32(root_bits) else {
+        return i32::MAX;
+    };
+    X87Chop53::ftol_i64(root).map_or(i32::MAX, |distance| distance as i32)
+}
+
 /// `FindTechnoNearestTo` scoring after the caller has applied linked-list order,
 /// active bit, and excluded-object gates. Equal distances retain the first entry.
 pub fn nearest_eligible_in_order<T>(
     input: CellQueryPoint,
     candidates: impl IntoIterator<Item = (T, bool, CellQueryPoint)>,
 ) -> Option<T> {
-    let mut winner: Option<(i64, T)> = None;
+    let mut winner: Option<(i32, T)> = None;
     for (candidate, active, coordinate) in candidates {
         if !active {
             continue;
@@ -136,9 +153,9 @@ pub fn nearest_eligible_in_order<T>(
         let candidate_y = coordinate.y & 0xff;
         let input_x = input.x.wrapping_mul(7);
         let input_y = input.y.wrapping_mul(7);
-        let dx = i64::from(candidate_x.wrapping_sub(input_x));
-        let dy = i64::from(candidate_y.wrapping_sub(input_y));
-        let distance = isqrt_i64(dx * dx + dy * dy);
+        let dx = candidate_x.wrapping_sub(input_x);
+        let dy = candidate_y.wrapping_sub(input_y);
+        let distance = native_xy_distance(dx, dy);
         if winner.as_ref().is_none_or(|(best, _)| distance < *best) {
             winner = Some((distance, candidate));
         }
@@ -242,6 +259,20 @@ mod tests {
 
     #[test]
     fn yr_nearest_keeps_first_equal_distance() {
+        assert_eq!(
+            nearest_eligible_in_order(
+                CellQueryPoint { x: 0, y: 0 },
+                [
+                    ("first", true, CellQueryPoint { x: 65, y: 63 }),
+                    (
+                        "equal native integer distance keeps list order",
+                        true,
+                        CellQueryPoint { x: 64, y: 64 }
+                    ),
+                ]
+            ),
+            Some("first")
+        );
         let picked = nearest_eligible_in_order(
             CellQueryPoint { x: 10, y: 10 },
             [
