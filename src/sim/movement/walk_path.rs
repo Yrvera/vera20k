@@ -291,7 +291,8 @@ impl Simulation {
     /// failure at 0x4D4044 (and from `Do_Action` 0x51D6F0 at zero health,
     /// which no live actor here has). Order: `Do_Action` request by Doing and
     /// the prone byte (+6DB), current-cell `Can_Enter_Cell` (+1AC) with the
-    /// facing octant and `CellClass::Get_Effective_Height` 0x5F5F00, the +6DC
+    /// facing octant and the Techno height helper 0x5F5F00 (this+8C OnBridge
+    /// plus the current cell's +11B level through vtable +0x1BC), the +6DC
     /// answer byte, then Foot 0x4D55C0 -> locomotor +0x48 (Walk Stop 0x75ADA0).
     pub(crate) fn run_infantry_failed_path_receiver(
         &mut self,
@@ -340,7 +341,8 @@ impl Simulation {
             .ok_or("failed-path receiver requires map cells")?;
         let cells = NativeCellQuery::canonical(terrain);
         let cell = cells.lookup(coord_cell(coord));
-        //0x5F5F00: the current cell's signed level byte plus four when OnBridge.
+        //0x5F5F00 (ECX = this Infantry, 0x51DB78): the current cell's signed
+        //level byte (+11B via vtable +1BC) plus four when OnBridge (+8C).
         let height = i32::from(cells.ground_fields(cell).0 as i8) + if on_bridge { 4 } else { 0 };
         let answer = self.infantry_can_enter(
             id,
@@ -467,6 +469,10 @@ impl Simulation {
             .get(id)
             .ok_or("retired failed Find_Path actor")?;
         let current = coord_cell(ground_pose::position_world_coord(&actor.position));
+        //[ESP+0x1fac] at the tail's depth is the target parameter slot, the same
+        //slot the code-6/7 redirects rewrote as [ESP+0x1fb0] one push deeper
+        //(0x4D3CD1, 0x4D3E03) and Run_AStar read as its destination: a redirected
+        //search that still fails measures against the redirected cell.
         let target = ((goal.x / 256) as i16, (goal.y / 256) as i16);
         if chebyshev(current, target) <= 1 {
             if actor.on_bridge {
@@ -518,12 +524,16 @@ impl Simulation {
             now,
             &EntityReadyInputProvider,
         );
-        if !human && self.session.game_mode_nonzero {
-            return Err(
-                "nonhuman Walk failed-path relocation (FootClass::Find_Passable_Cell_Near_Unit 0x500200 -> House 0x501AC0 variants) awaits the House base projection consumer"
-                    .into(),
-            );
-        }
+        //0x4D4174..0x4D41C2: with GameMode != 0 a nonhuman actor is relocated to
+        //`Find_Passable_Cell_Near_Unit` 0x500200 (House 0x501AC0 variants over
+        //the House+5498 radius, base-or-starting cell, RNG and the sin/cos
+        //tables) through SetDestination(cell, 1). Residual, deliberately
+        //non-stopping: the actor stays in place under AreaGuard. Trigger: an AI
+        //or neutral House infantryman whose core search fails in skirmish.
+        //Effect: no relocation walk. Frequency: rare without AI production.
+        //Downstream: the House base projection (house_base.rs) is the pending
+        //input of that owner.
+        let _ = human;
         Ok(())
     }
 
@@ -754,12 +764,13 @@ impl Simulation {
         let cells = NativeCellQuery::canonical(terrain);
         let near_bridge = cells.flags(cells.lookup(near)) & 0x100 != 0;
         let target_bridge = cells.flags(cells.lookup(target)) & 0x100 != 0;
-        if near_bridge || target_bridge {
-            return Err(
-                "Find_Path code-6 redirect over a structural cell needs the EstimateZoneCost bridge terms (0x42D2C0..0x42D438)"
-                    .into(),
-            );
-        }
+        //Residual, non-stopping: with a structural near or target cell the
+        //original adds the bridge-adjacent zone-cell terms (0x42D2C0..0x42D438,
+        //PathfinderClass +B8.. records) to the cost, which can refuse a redirect
+        //this same-label test admits. Trigger: a code-6 target (a parked Unit
+        //without NavCom) on or beside a bridge beyond CloseEnough. Effect: the
+        //redirect is taken where the original keeps the obstructed target.
+        let _ = (near_bridge, target_bridge);
         let zones = self
             .zone_grid
             .as_ref()
