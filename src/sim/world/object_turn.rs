@@ -97,6 +97,7 @@ impl Simulation {
                 true,
                 true,
                 Some(&sim.production.slave_bindings),
+                &mut sim.movement_pass_cache,
             )
         };
         if let Some(request) = pending_movement.take_walk_path_request() {

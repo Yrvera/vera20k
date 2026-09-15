@@ -962,6 +962,10 @@ pub struct Simulation {
     /// Built once at map load — units look up their SpeedType to pick the right grid.
     #[serde(skip)]
     pub terrain_costs: BTreeMap<SpeedType, TerrainCostGrid>,
+    /// Derived movement inputs reused across object turns (blocker plane).
+    /// Rebuilt from state on demand; never serialized or hashed.
+    #[serde(skip)]
+    pub(crate) movement_pass_cache: crate::sim::movement::movement_tick::MovementPassCache,
     /// Zone-based connectivity map for instant unreachability detection.
     /// Built from terrain data; rebuilt when buildings or bridges change.
     #[serde(skip)]
@@ -2631,6 +2635,8 @@ impl Simulation {
             resolved_terrain.capture_real_cell_bridge_flags_0x1180();
         self.dynamic_terrain_cells.clear();
         self.resolved_terrain = Some(resolved_terrain);
+        // A fresh grid restarts its mutation epoch; drop any plane keyed on the old one.
+        self.movement_pass_cache = Default::default();
     }
 
     /// Apply one live runtime setter and update only the allocated real-cell
@@ -2826,6 +2832,7 @@ impl Simulation {
     fn construct(session: ScenarioSession) -> Self {
         let seed = session.seed;
         let mut out = Self {
+            movement_pass_cache: Default::default(),
             interner: crate::sim::intern::StringInterner::new(),
             type_handles: crate::sim::type_handle_table::TypeHandleTable::default(),
             rule_handles: None,

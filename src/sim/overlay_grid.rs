@@ -104,6 +104,12 @@ pub struct OverlayGrid {
     /// before the authoritative hash. Not part of game state; never serialized.
     #[serde(skip, default)]
     dirty_cells: Vec<(u16, u16)>,
+    /// Bumped by every mutator that can change an overlay identity or the
+    /// retained wall-neighbour plane (the movement blocker plane keys on it).
+    /// Not every internal write bumps it; the public and wall-transaction entry
+    /// points do. Not game state; never serialized.
+    #[serde(skip)]
+    mutation_epoch: u64,
     /// Cells whose overlay identity was erased this tick *without* a native
     /// attribute recalc. Presentation must drop their render entry, but
     /// `CrateSlot__RemoveCrateOverlayFromCell @ 0x004A1AA0` ends at its two
@@ -200,6 +206,7 @@ impl OverlayGrid {
             cells: vec![OverlayCell::default(); count],
             retained_wall_neighbor_counts: None,
             dirty_cells: Vec::new(),
+            mutation_epoch: 0,
             synchronous_passability_changed: false,
             removed_render_cells: Vec::new(),
             synchronous_navigation_cells: Vec::new(),
@@ -223,6 +230,7 @@ impl OverlayGrid {
     /// map-authority restore, which every production grid now satisfies.
     #[cfg(test)]
     pub(crate) fn retain_zero_wall_plane_for_tests(&mut self) {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         self.retained_wall_neighbor_counts = Some(vec![0u8; self.cells.len()]);
     }
 
@@ -251,6 +259,7 @@ impl OverlayGrid {
             cells,
             retained_wall_neighbor_counts: Some(retained_wall_neighbor_counts),
             dirty_cells: Vec::new(),
+            mutation_epoch: 0,
             synchronous_passability_changed: false,
             removed_render_cells: Vec::new(),
             synchronous_navigation_cells: Vec::new(),
@@ -427,7 +436,13 @@ impl OverlayGrid {
     }
 
     /// Mutable access to cell. Panics if out-of-bounds.
+    /// Epoch of mutating entry points; see the field note.
+    pub fn mutation_epoch(&self) -> u64 {
+        self.mutation_epoch
+    }
+
     pub fn cell_mut(&mut self, rx: u16, ry: u16) -> &mut OverlayCell {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         let idx =
             index_of(self.width, self.height, rx, ry).expect("OverlayGrid::cell_mut out of bounds");
         &mut self.cells[idx]
@@ -486,6 +501,7 @@ impl OverlayGrid {
         source: NativeRuntimeOverlayCell,
         add: bool,
     ) {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         // Native wall lifecycle evidence: OverlayClass::Mark increments at
         // 0x005FC762..0x005FC775; DestroyOverlay decrements at
         // 0x00481070..0x00481082; cleanup auto-removal's conditional decrement
@@ -563,6 +579,7 @@ impl OverlayGrid {
         rx: u16,
         ry: u16,
     ) {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         self.adjust_retained_wall_neighbor_source(resolved_terrain, rx, ry, false);
     }
 
@@ -576,6 +593,7 @@ impl OverlayGrid {
 
     /// Remove overlay from cell entirely. Returns previous overlay_id if any.
     pub fn clear_overlay(&mut self, rx: u16, ry: u16) -> Option<u8> {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         let idx = index_of(self.width, self.height, rx, ry)?;
         let prev = self.cells[idx].overlay_id;
         self.cells[idx] = OverlayCell::default();
@@ -585,6 +603,7 @@ impl OverlayGrid {
 
     /// Place overlay at cell.
     pub fn place_overlay(&mut self, rx: u16, ry: u16, overlay_id: u8, data: u8) {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         if let Some(idx) = index_of(self.width, self.height, rx, ry) {
             self.cells[idx] = OverlayCell {
                 overlay_id: Some(overlay_id),
@@ -700,6 +719,7 @@ impl OverlayGrid {
     /// the state, wall owner and retained attributes; only presentation drops
     /// the removed identity. This must not enqueue a frame-tail Recalc.
     pub(crate) fn clear_literal_bridge_identity(&mut self, rx: u16, ry: u16) -> bool {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         let Some(idx) = index_of(self.width, self.height, rx, ry) else {
             return false;
         };
@@ -777,6 +797,7 @@ impl OverlayGrid {
         data: u8,
         owner: InternedId,
     ) {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         self.stamp_wall_identity(rx, ry, overlay_id, data);
         self.set_wall_owner(rx, ry, owner);
     }
@@ -785,6 +806,7 @@ impl OverlayGrid {
     /// does not make its pending House visible until cleanup and the explicit
     /// anchor Merge/graph step have completed.
     pub(crate) fn stamp_wall_identity(&mut self, rx: u16, ry: u16, overlay_id: u8, data: u8) {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         if let Some(idx) = index_of(self.width, self.height, rx, ry) {
             self.cells[idx] = OverlayCell {
                 overlay_id: Some(overlay_id),
@@ -796,6 +818,7 @@ impl OverlayGrid {
     }
 
     pub(crate) fn set_wall_owner(&mut self, rx: u16, ry: u16, owner: InternedId) {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         if let Some(idx) = index_of(self.width, self.height, rx, ry) {
             self.cells[idx].wall_owner = Some(owner);
         }
@@ -803,6 +826,7 @@ impl OverlayGrid {
 
     /// Clear type/data while retaining the wall owner.
     fn clear_overlay_preserving_owner(&mut self, rx: u16, ry: u16) -> Option<u8> {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         let idx = index_of(self.width, self.height, rx, ry)?;
         let prev = self.cells[idx].overlay_id;
         self.cells[idx].overlay_id = None;
@@ -814,6 +838,7 @@ impl OverlayGrid {
     /// Update overlay_data in place (density change, damage increment).
     /// No-op if out-of-bounds or cell has no overlay.
     pub fn set_overlay_data(&mut self, rx: u16, ry: u16, data: u8) {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         if let Some(idx) = index_of(self.width, self.height, rx, ry) {
             if self.cells[idx].overlay_id.is_some() {
                 self.cells[idx].overlay_data = data;
@@ -897,6 +922,7 @@ impl OverlayGrid {
         cell: (u16, u16),
         publication: NavigationPublication,
     ) -> OverlayRecalcOutcome {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         let old_zone = terrain.cell(cell.0, cell.1).map(|cell| cell.zone_type);
         let navigation_changed =
             recalc_overlay_passability(self, terrain, registry, cell.0, cell.1);
@@ -965,7 +991,11 @@ pub(crate) fn recalc_overlay_passability(
         cleared_resource_for_slope = true;
     }
     let flags = overlay_id.and_then(|id| registry.flags(id));
-    let land_flags = if cleared_resource_for_slope { source_flags } else { flags };
+    let land_flags = if cleared_resource_for_slope {
+        source_flags
+    } else {
+        flags
+    };
     // Do not short circuit the projection when literal storage was cleared.
     let projection_changed = resolved_terrain.apply_overlay_attributes(rx, ry, flags, land_flags);
     cleared_resource_for_slope || projection_changed
@@ -2197,7 +2227,11 @@ mod tests {
         let owner = grid.cells[0].wall_owner;
         assert!(grid.clear_literal_bridge_identity(0, 0));
         assert_eq!(grid.cell(0, 0).overlay_id, None);
-        assert_eq!(grid.cell(0, 0).overlay_data, 15, "identity and state are independent stores");
+        assert_eq!(
+            grid.cell(0, 0).overlay_data,
+            15,
+            "identity and state are independent stores"
+        );
         assert_eq!(grid.cell(0, 0).wall_owner, owner);
         assert!(grid.pending_dirty_cells().is_empty());
         assert_eq!(grid.take_removed_render_cells(), vec![(0, 0)]);
@@ -2918,7 +2952,6 @@ mod tests {
             Some(retained_cleanup_plane.as_slice()),
             "cleanup removal retains its source when Recalc leaves zone type unchanged"
         );
-
     }
 
     #[test]

@@ -48,6 +48,11 @@ pub struct EntityStore {
     /// returns `&[]`, identical to a fresh rebuild. Deterministic iteration via
     /// BTreeMap key order + sorted Vecs.
     by_owner: BTreeMap<crate::sim::intern::InternedId, Vec<u64>>,
+    /// Bumped by every production writer of `GameEntity::dying` through
+    /// [`Self::note_dying_transition`]. A dying object stays cell-marked until
+    /// its terminal UnInit, so derived products that gate on `dying` (the
+    /// movement blocker plane) cannot key on occupancy alone.
+    dying_epoch: u64,
     /// Per-(owner, type) instance count over the stored entities — the O(1)
     /// answer `HouseClass::CountOwnedInstances @ 0x0049FAE0` gives from its
     /// per-house per-type counter array. Maintained incrementally next to
@@ -71,7 +76,18 @@ impl EntityStore {
             infantry_registry: Vec::new(),
             by_owner: BTreeMap::new(),
             by_owner_type: BTreeMap::new(),
+            dying_epoch: 0,
         }
+    }
+
+    /// Record that some object's `dying` flag is about to change; see the field.
+    pub fn note_dying_transition(&mut self) {
+        self.dying_epoch = self.dying_epoch.wrapping_add(1);
+    }
+
+    /// Epoch of `dying` transitions; see the field.
+    pub fn dying_epoch(&self) -> u64 {
+        self.dying_epoch
     }
 
     /// Insert an entity. Returns its stable_id. Maintains the `by_owner` index.
@@ -330,6 +346,7 @@ impl<'de> serde::Deserialize<'de> for EntityStore {
             infantry_registry: Vec::new(),
             by_owner: BTreeMap::new(),
             by_owner_type: BTreeMap::new(),
+            dying_epoch: 0,
         };
         store.rebuild_owner_index();
         Ok(store)

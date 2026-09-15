@@ -1767,6 +1767,7 @@ fn advance_ordinary_mover(
         interner,
         rules,
     );
+
     let (mover_entity_blocks, mover_entity_block_map): (
         Option<&BTreeSet<(u16, u16)>>,
         Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
@@ -1776,7 +1777,9 @@ fn advance_ordinary_mover(
         .unwrap_or((None, None));
     let live_building_entry_skips =
         build_live_building_entry_skip_map(entities, entity_id, interner, rules);
+
     let marker_peers = snapshot_bridge_marker_peers(entities, rules, interner);
+
     let marker_context;
     let mut aborted_for_stuck: bool = false;
     let mut active_layer: MovementLayer;
@@ -3153,6 +3156,88 @@ fn advance_ordinary_mover(
     }
 }
 
+/// Derived movement inputs that survive across object turns.
+///
+/// The blocker-neighbour plane is a function of the cell-marked, non-dying,
+/// non-passenger objects (their cells, list layers, categories and foundation
+/// sizes), the terrain-object occupation of every cell and the retained wall
+/// plane. Cell membership and layer change through `OccupancyGrid` (its
+/// generation); `dying` flips without an occupancy change, so its writers bump
+/// `EntityStore::dying_epoch`; terrain-object occupation has one writer, which
+/// goes through `ResolvedTerrainGrid::cell_mut` (its epoch); the wall plane is
+/// written only by `OverlayGrid` mutators (its epoch). A plane built under the
+/// same key is therefore the plane an unconditional build would produce. Debug
+/// builds rebuild and compare on every reuse, which is the check that keeps
+/// this list honest.
+#[derive(Default)]
+pub(crate) struct MovementPassCache {
+    blocker: Option<BlockerPlaneEntry>,
+}
+
+struct BlockerPlaneEntry {
+    key: BlockerPlaneKey,
+    plane: crate::sim::pathfinding::BlockerNeighborCounts,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct BlockerPlaneKey {
+    occupancy_generation: u64,
+    dying_epoch: u64,
+    terrain_epoch: Option<u64>,
+    overlay_epoch: Option<u64>,
+    width: u16,
+    height: u16,
+}
+
+impl MovementPassCache {
+    #[allow(clippy::too_many_arguments)]
+    fn blocker_plane(
+        &mut self,
+        entities: &EntityStore,
+        grid: &PathGrid,
+        occupancy: &OccupancyGrid,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        interner: &crate::sim::intern::StringInterner,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
+    ) -> &crate::sim::pathfinding::BlockerNeighborCounts {
+        let key = BlockerPlaneKey {
+            occupancy_generation: occupancy.generation(),
+            dying_epoch: entities.dying_epoch(),
+            terrain_epoch: resolved_terrain.map(ResolvedTerrainGrid::mutation_epoch),
+            overlay_epoch: overlay_grid.map(|grid| grid.mutation_epoch()),
+            width: grid.width(),
+            height: grid.height(),
+        };
+        let build = || {
+            bump_crush::build_blocker_neighbor_counts_with_overlays(
+                entities,
+                grid.width(),
+                grid.height(),
+                resolved_terrain,
+                overlay_grid,
+                overlay_registry,
+                interner,
+                rules,
+            )
+        };
+        match self.blocker.as_ref() {
+            Some(entry) if entry.key == key => {
+                debug_assert!(
+                    entry.plane == build(),
+                    "cached blocker plane diverged from a fresh build under the same key"
+                );
+            }
+            _ => {
+                let plane = build();
+                self.blocker = Some(BlockerPlaneEntry { key, plane });
+            }
+        }
+        &self.blocker.as_ref().expect("plane was just ensured").plane
+    }
+}
+
 /// Owned results of the one-time pass preparation. No entity, terrain or map
 /// borrows escape into this state. Pending arrivals can change which objects
 /// are movers, and entry-active Tube objects remain excluded after completion.
@@ -3552,6 +3637,7 @@ fn tick_movement_with_grids_scoped(
         single_object,
         false,
         None,
+        &mut MovementPassCache::default(),
     );
     finish_movement_pass(
         pending,
@@ -3755,6 +3841,7 @@ pub(crate) fn begin_movement_with_grids_scoped(
     _single_object: bool,
     suspend_native_track: bool,
     slave_bindings: Option<&BTreeMap<u64, Vec<u64>>>,
+    caches: &mut MovementPassCache,
 ) -> PendingMovementPass {
     let mut stats = MovementTickStats::default();
     if live_order.is_some_and(|order| order.is_empty()) {
@@ -3774,26 +3861,27 @@ pub(crate) fn begin_movement_with_grids_scoped(
             &fallback_order
         }
     };
-    let blocker_neighbor_counts = path_grid
-        .filter(|_| pass_may_build_paths(entities, entity_order))
-        .map(|grid| {
-            bump_crush::build_blocker_neighbor_counts_with_overlays(
-                entities,
-                grid.width(),
-                grid.height(),
-                resolved_terrain,
-                overlay_grid,
-                overlay_registry,
-                interner,
-                rules,
-            )
-        });
+    let blocker_neighbor_counts: Option<&crate::sim::pathfinding::BlockerNeighborCounts> =
+        path_grid
+            .filter(|_| pass_may_build_paths(entities, entity_order))
+            .map(|grid| {
+                caches.blocker_plane(
+                    entities,
+                    grid,
+                    occupancy,
+                    resolved_terrain,
+                    overlay_grid,
+                    overlay_registry,
+                    interner,
+                    rules,
+                )
+            });
     let ctx = PathfindingContext {
         path_grid,
         zone_grid,
         resolved_terrain,
         playfield_bounds,
-        blocker_neighbor_counts: blocker_neighbor_counts.as_ref(),
+        blocker_neighbor_counts,
     };
     let mcfg = MovementConfig {
         binary_frame: native_frame,
@@ -4655,5 +4743,55 @@ mod drive_track_chain_tests {
         assert_eq!(crush_kills[0].victim_id, 2);
         assert!(!entities.get(2).unwrap().lifecycle.cell_marked);
         assert!(!occupancy.contains_entity(11, 10, 2));
+    }
+}
+
+#[cfg(test)]
+mod pass_cache_tests {
+    use super::*;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::intern::test_interner;
+    use crate::sim::occupancy::CellListInsertion;
+
+    /// The death window the cache key must see: a marked object that starts
+    /// dying stays on the occupancy grid, so only `EntityStore::dying_epoch`
+    /// distinguishes the plane with and without its neighbour sources.
+    #[test]
+    fn blocker_plane_cache_rebuilds_when_a_marked_object_starts_dying() {
+        let grid = PathGrid::new(5, 5);
+        let mut entities = EntityStore::new();
+        let mut occupancy = OccupancyGrid::new();
+        let mut unit = GameEntity::test_default(7, "MTNK", "Americans", 2, 2);
+        unit.lifecycle.cell_marked = true;
+        entities.insert(unit);
+        occupancy.add(
+            2,
+            2,
+            7,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let interner = test_interner();
+        let mut cache = MovementPassCache::default();
+
+        let before = cache
+            .blocker_plane(&entities, &grid, &occupancy, None, None, None, &interner, None)
+            .clone();
+        assert_eq!(before.count_at(1, 1), 1, "the marked unit is a neighbour source");
+        // Same key: reused (and cross-checked in debug builds).
+        let again = cache
+            .blocker_plane(&entities, &grid, &occupancy, None, None, None, &interner, None)
+            .clone();
+        assert_eq!(again, before);
+
+        // Death sequence: the object stays on the grid; the epoch moves.
+        entities.note_dying_transition();
+        entities.get_mut(7).unwrap().dying = true;
+        let after = cache
+            .blocker_plane(&entities, &grid, &occupancy, None, None, None, &interner, None)
+            .clone();
+        assert_eq!(after.count_at(1, 1), 0, "a dying object is not a neighbour source");
+        assert_ne!(after, before);
     }
 }
