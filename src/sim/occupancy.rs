@@ -1136,9 +1136,12 @@ pub(crate) fn clear_current_drive_occupation_for_paid_point(
 /// nothing. It never releases, so it never has to re-mark. This function does
 /// release-then-re-mark, which is load-bearing only because VERA's paid-point
 /// path clears the bit up front (`clear_current_drive_occupation_for_paid_point`
-/// above) where retail's does not clear it in the first place. Removing the
-/// early clear would remove the need for this; that is the right shape and it is
-/// not attempted here.
+/// above). That early clear IS native — `Process_Drive_Track` calls the
+/// owner's `+0xF4` on its current coordinate and zeroes `+0x6B6` at
+/// `0x004B1611..161A` when the first point of a transit is paid — so the gap
+/// this closes is VERA's own: retail's refusal never reaches a paid point
+/// without a curve, whereas VERA's refusal can follow a curve that already
+/// paid. Corrected 2026-09-15; an earlier revision said retail never cleared.
 ///
 /// Without this, a mover whose previous curve had already paid a point holds NO
 /// bit at all once its head-to mark is dropped: its own cell reads as free to

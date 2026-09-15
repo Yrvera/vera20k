@@ -2542,10 +2542,11 @@ fn gsi_06_01_code_two_grace_window_still_repaths_at_urgency_one() {
 ///
 /// Reaching the expiry path at all is what the fixture is for. On an open grid
 /// the mover repaths around the blocker within a couple of ticks and the wait
-/// never runs out. Here the map is a TWO-cell corridor holding a head-on
-/// friendly pair: there is no route around, and each unit's only walkable
-/// neighbour is the other one, so every scatter attempt fails to find a
-/// destination and neither unit can vacate. Both stay classified as a moving
+/// never runs out. Here the map is a TWO-cell corridor holding a converging
+/// friendly pair (the ally faces south, so the pair is not the head-on exit's
+/// opposed-octant case): there is no route around, and each unit's only
+/// walkable neighbour is the other one, so every scatter attempt fails to find
+/// a destination and neither unit can vacate. Both stay classified as a moving
 /// ally (code 2) indefinitely.
 ///
 /// The observed span also pins the wait to the hardcoded 10 frames rather than
@@ -2573,6 +2574,13 @@ fn code_two_post_scatter_wait_rearms_on_every_pass_while_the_block_holds() {
     }
     grid.set_blocked(1, 1, false);
     grid.set_blocked(2, 1, false);
+    // A third cell south of the ally, held by a parked friendly, gives the
+    // ally somewhere to be heading that is not the mover: two vehicles driving
+    // straight at each other are the head-on exit of `UnitClass::Can_Enter_Cell`
+    // (`0x0073F8D4..FA26`, opposed octants inside `0x1FF` leptons on the
+    // mover's bearing), which answers 7 and never reaches the code-2 arm this
+    // fixture measures.
+    grid.set_blocked(2, 2, false);
 
     let mut entities = EntityStore::new();
     let mut occupancy = OccupancyGrid::new();
@@ -2601,28 +2609,40 @@ fn code_two_post_scatter_wait_rearms_on_every_pass_while_the_block_holds() {
         CellListInsertion::PrependNonBuilding,
     );
 
-    // Friendly at the east end, stepping west into the mover's cell. It keeps a
-    // live movement target for the whole run — its repath through the mover's
-    // cell (a code-2 soft block, not a hard one) succeeds every time, so it
-    // never exhausts its stuck counter and never reverts to a stationary ally.
+    // Friendly at the east end, stepping south into a cell a parked ally holds.
+    // It keeps a live movement target for the whole run — its repath through
+    // the parked ally's cell (a code-6 soft block, not a hard one) succeeds
+    // every time, so it never exhausts its stuck counter and never reverts to
+    // a stationary ally. Facing south, it is not the mover's head-on case.
     let mut blocker = GameEntity::test_default(2, "HTNK", "Americans", 2, 1);
     blocker.movement_target = Some(MovementTarget {
-        path: vec![(2, 1), (1, 1)],
+        path: vec![(2, 1), (2, 2)],
         path_layers: vec![MovementLayer::Ground; 2],
         next_index: 1,
         speed: SimFixed::from_num(1024),
-        move_dir_x: SimFixed::from_num(-256),
-        move_dir_y: SIM_ZERO,
+        move_dir_x: SIM_ZERO,
+        move_dir_y: SimFixed::from_num(256),
         move_dir_len: SimFixed::from_num(256),
-        final_goal: Some((1, 1)),
+        final_goal: Some((2, 2)),
         ..Default::default()
     });
-    blocker.facing = 192;
+    blocker.facing = 128;
     entities.insert(blocker);
     occupancy.add(
         2,
         1,
         2,
+        MovementLayer::Ground,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
+    // Parked friendly holding the ally's destination.
+    let parked = GameEntity::test_default(3, "HTNK", "Americans", 2, 2);
+    entities.insert(parked);
+    occupancy.add(
+        2,
+        2,
+        3,
         MovementLayer::Ground,
         None,
         CellListInsertion::PrependNonBuilding,

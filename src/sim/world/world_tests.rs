@@ -9237,7 +9237,24 @@ fn repro_two_moving_vehicles_pass_through_each_other() {
     // "two hulls on one spot" floor used by
     // `group_move_never_draws_two_hulls_on_one_spot` — which is what the
     // player's 38-lepton report was a violation of.
-    const VISIBLE_OVERLAP_LEPTONS: i64 = 128;
+    //
+    // FLOOR RE-DERIVED 2026-09-15 with the native ally-occupant arm in place.
+    // `Process_Drive_Track` clears the mover's own raw occupation bit and
+    // `Foot+0x6B6` on the first processed point while `+0x6B6` is still set
+    // (`0x004B15D3 CALL [owner+0xC0]`, `0x004B1611 CALL [owner+0xF4]`,
+    // `0x004B161A`; chained curves do not re-arm it), `UnitClass::Can_Enter_Cell` then skips
+    // that in-transit ally on the object list unless its locomotor answers
+    // `Can_Use_Track` (`0x0073FA30..FA7C`), and the head-on exit fires only for
+    // an ally facing the mover inside `0x1FF` leptons and inside the mover's
+    // octant (`0x0073F8D4..FA26`). So once the east tank has committed a
+    // dodge curve out of its cell, nothing native keeps the west tank out of
+    // that cell while the dodging hull is still leaving it. Measured closest
+    // approach on this fixture with that contract: 116 leptons at tick 77,
+    // in different cells. The earlier 128 floor was VERA's own half-cell
+    // heuristic; the player's report was 38 leptons in ONE cell, which the
+    // shared-cell transit bound below still refuses. This floor is a ratchet
+    // on the measured value, not a native bound.
+    const VISIBLE_OVERLAP_LEPTONS: i64 = 112;
     let bound = derived_min_transit_separation_leptons();
     let (gap, gap_tick) = closest_approach.expect("both movers sampled");
     println!(

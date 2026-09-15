@@ -1188,27 +1188,26 @@ pub(super) fn classify_drive_track_chain_entry(
 ///
 /// Admitting the chain on those codes let a follower install a curve into, and
 /// then drive onto, a cell another vehicle was standing in, so refusing is the
-/// right direction. But VERA refuses on BOTH branches, and gamemd does not.
+/// right direction.
 ///
-/// **CONFIRMED DRIFT — VERA is stricter than gamemd for an occupant in
-/// transit.** An earlier revision of this comment argued that a vehicle always
-/// reaches the raise because `FootClass`'s constructor initialises `+0x6B6` to 1
-/// (`MOV byte ptr [ESI+0x6B6],0x1` at 0x004D344A). The constructor store is
-/// real, but it is the IDLE value, not an invariant: an exhaustive writer search
-/// finds each locomotor clearing and re-setting the same byte around its own
-/// motion — `DriveLocomotionClass__Process_Drive_Track @ 0x004B0F20` writes 0 at
-/// 0x004B161A and 1 at 0x004B1FEF, `ShipLocomotionClass__Process_Drive_Track`
-/// 0x006A0CDA / 0x006A1632, `HoverLocomotionClass__Move` 0x005147D5 /
-/// 0x0051451E. A moving vehicle therefore carries 0 and takes the very same
-/// locomotor `+0xA4` question at 0x0073FA46; when that answers false, gamemd
-/// skips the occupant and admits the follower.
+/// The occupant walk that produces those codes carries the native ally arm
+/// since 2026-09-15: `+0x6B6` is `foot_occupation_enabled` (each locomotor
+/// clears and re-sets it around its own motion — `Process_Drive_Track @
+/// 0x004B0F20` writes 0 at 0x004B161A and 1 at 0x004B1FEF, Ship 0x006A0CDA /
+/// 0x006A1632, Hover 0x005147D5 / 0x0051451E; the constructor's 1 at
+/// 0x004D344A is the idle value), and the locomotor `+0xA4` question at
+/// 0x0073FA46 is `drive_track::occupant_slot_a4_answers_true` (Drive/Ship
+/// `Can_Use_Track`, oracle `tools.spatial_oracle.locomotor_can_use_track`;
+/// every other class false). An in-transit occupant that answers false is
+/// skipped by `classify_blocker` and `build_entity_block_sets` exactly as
+/// gamemd skips it at 0x0073FA6B, so it never reaches this gate; only an
+/// occupant that raised code 2 does, and gamemd refuses that one too.
 ///
-/// So on the arrival phase of a group move, where the cell ahead is held by a
-/// peer that is itself still moving, gamemd can chain through and VERA cannot.
-/// Player effect: columns space out slightly more than retail and take marginally
-/// longer to close up. Frequency: every multi-unit move. VERA models neither
-/// `+0x6B6` nor the locomotor `+0xA4` slot, so closing this needs both; gamemd
-/// equivalent of the `+0xA4` predicate itself is UNCHECKED.
+/// Residual: VERA re-sets `foot_occupation_enabled` on every cell crossing
+/// (`cell_arrival.rs`) where gamemd keeps `+0x6B6` clear from the first paid
+/// point to the terminal point, and Ship/Hover never clear it, so a follower
+/// evaluated right after a leader's crossing still meets code 2 where retail
+/// skips. Player effect: columns close up slightly slower than retail.
 fn drive_track_chain_entry_allows_track_install(entry_result: &CellEntryResult) -> bool {
     matches!(
         entry_result,
@@ -2074,6 +2073,7 @@ fn advance_ordinary_mover(
             let Some(entity) = entities.get_mut(entity_id) else {
                 return;
             };
+            let head_on_mover = movement_step::MoverHeadOnContext::from_entity(entity);
             let Some(target) = entity.movement_target.as_mut() else {
                 return;
             };
@@ -2405,6 +2405,7 @@ fn advance_ordinary_mover(
                         cell_occupation,
                         movement_step::DriveCellAdmission {
                             units: mover_entity_block_map,
+                            mover: head_on_mover,
                         },
                         current_occupation_layer,
                         frame_budget,
@@ -2457,6 +2458,7 @@ fn advance_ordinary_mover(
                     // reflects every mover that already committed this tick.
                     movement_step::DriveCellAdmission {
                         units: mover_entity_block_map,
+                        mover: head_on_mover,
                     },
                     current_occupation_layer,
                     path_grid,

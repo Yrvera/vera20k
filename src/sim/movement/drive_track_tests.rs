@@ -2,6 +2,120 @@
 
 use super::*;
 
+fn exit_octant(turn: &TurnTrack) -> u8 {
+    (((u32::from(turn.target_facing) << 8) >> 12).wrapping_add(1) >> 1 & 7) as u8
+}
+
+/// `Can_Use_Track 0x004B4B00` ratchet over the shipped tables: true only on a
+/// turning curve whose cursor sits on its chain point, with a path head that
+/// leaves the curve's exit octant into another curve.
+#[test]
+fn occupant_can_use_track_answers_only_at_the_chain_point_of_a_turning_curve() {
+    use crate::sim::components::TrackProgress;
+
+    let mut checked_true = 0;
+    for (turn_index, turn) in TURN_TRACKS.iter().enumerate().take(64) {
+        let raw = &RAW_TRACKS[usize::from(turn.normal_track)];
+        let exit = exit_octant(turn);
+        for head in 0u8..8 {
+            let chained = &TURN_TRACKS[usize::from(head) + usize::from(exit) * 8];
+            let chained_entry_nonzero = chained.normal_track != 0
+                && RAW_TRACKS[usize::from(chained.normal_track)].entry_index != 0;
+            // Native compares `RawTrack+0x04` against the cursor and refuses
+            // only a zero cursor, so a straight run's -1 chain index answers
+            // true at cursor -1 — the never-tracked state — exactly as
+            // `0x004B4B80..4B8A` does.
+            let expected = raw.chain_index != 0 && head != exit && chained_entry_nonzero;
+            let at_chain = TrackProgress {
+                turn_index: turn_index as i32,
+                cursor: i32::from(raw.chain_index),
+                reversed: false,
+                residual: 0,
+            };
+            assert_eq!(
+                occupant_can_use_track(&at_chain, Some(head)),
+                expected,
+                "turn {turn_index} head {head} at chain point"
+            );
+            if expected {
+                checked_true += 1;
+                for off in [-1, 1] {
+                    let elsewhere = TrackProgress {
+                        cursor: i32::from(raw.chain_index) + off,
+                        ..at_chain
+                    };
+                    assert!(
+                        !occupant_can_use_track(&elsewhere, Some(head)),
+                        "turn {turn_index} head {head} cursor off by {off}"
+                    );
+                }
+                assert!(!occupant_can_use_track(&at_chain, Some(8)), "tube head");
+                assert!(!occupant_can_use_track(&at_chain, None), "empty queue");
+                assert!(
+                    !occupant_can_use_track(
+                        &TrackProgress {
+                            turn_index: -1,
+                            ..at_chain
+                        },
+                        Some(head)
+                    ),
+                    "no retained track"
+                );
+            }
+        }
+    }
+    assert!(
+        checked_true > 0,
+        "the shipped tables must expose at least one true case"
+    );
+    // A straight run carries chain index -1 and is never answered true at a
+    // real cursor; the cursor 0 exit closes the fresh-acceptance state too.
+    let straight = TrackProgress {
+        turn_index: 0,
+        cursor: 0,
+        reversed: false,
+        residual: 0,
+    };
+    assert!(!occupant_can_use_track(&straight, Some(2)));
+}
+
+/// Native comparison: every recorded `Can_Use_Track` answer from
+/// `tools/spatial_oracle/locomotor_can_use_track.json` (Drive `0x004B4B00`,
+/// Ship `0x006A4130`, executed from the retail image) against the Rust port.
+/// The Ship family runs over the Drive tables VERA shares between the two
+/// locomotors; a Ship-only divergence would surface here as a failed case.
+#[test]
+fn occupant_can_use_track_matches_native_oracle() {
+    use crate::sim::components::TrackProgress;
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tools/spatial_oracle/locomotor_can_use_track.json"
+    ))
+    .unwrap();
+    let mut checked = 0;
+    for family in ["drive", "ship"] {
+        for case in corpus[family].as_array().unwrap() {
+            let track = TrackProgress {
+                turn_index: case["turn"].as_i64().unwrap() as i32,
+                cursor: case["cursor"].as_i64().unwrap() as i32,
+                reversed: case["reversed"].as_bool().unwrap(),
+                residual: 0,
+            };
+            let head = match case["head"].as_i64().unwrap() {
+                -1 => None,
+                head => Some(head as u8),
+            };
+            let expected = case["answer"].as_i64().unwrap() != 0;
+            assert_eq!(
+                occupant_can_use_track(&track, head),
+                expected,
+                "{family} case {case}"
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 6400 + 5920);
+}
+
 #[test]
 fn bunker_install_force_tracks_present_with_diagonal_targets() {
     // Tank-bunker install approach curves (0x43 NE / 0x44 SE / 0x45 SW / 0x46 NW),
