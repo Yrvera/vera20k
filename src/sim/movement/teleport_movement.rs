@@ -657,6 +657,8 @@ mod tests {
             teleporter: true,
             hover_attack: false,
             balloon_hover: false,
+            is_simple_deployer: false,
+            deploy_to_land: false,
             airport_bound: false,
             fighter: false,
             fly_by: false,

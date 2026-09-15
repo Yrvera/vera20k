@@ -24,6 +24,7 @@ mod hash_schema;
 mod house_base;
 pub(crate) use house_base::HouseBaseState;
 mod infantry_terminal;
+mod jumpjet_cruise;
 #[cfg(test)]
 pub(crate) use infantry_terminal::InfantryDeathSequence;
 pub(crate) use infantry_terminal::{InfantryDeathPostlude, InfantryTerminal};

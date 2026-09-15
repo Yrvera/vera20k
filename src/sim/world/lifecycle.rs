@@ -1717,7 +1717,11 @@ impl Simulation {
         let Some(locomotor) = entity.locomotor.as_ref() else {
             return;
         };
-        if locomotor.layer != MovementLayer::Air || locomotor.kind != LocomotorKind::Fly {
+        // Jumpjets keep an exact Z too: the native cruise writes one, and the
+        // adapter phases around it must not leave it stale.
+        if locomotor.layer != MovementLayer::Air
+            || !matches!(locomotor.kind, LocomotorKind::Fly | LocomotorKind::Jumpjet)
+        {
             return;
         }
 
@@ -1759,6 +1763,7 @@ impl Simulation {
     pub(crate) fn tick_air_movement_with_cell_lists_one(
         &mut self,
         stable_id: u64,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
     ) -> crate::sim::movement::air_movement::AirMovementTickStats {
         use crate::rules::locomotor_type::LocomotorKind;
         use crate::sim::movement::locomotor::MovementLayer;
@@ -1780,11 +1785,16 @@ impl Simulation {
             self.unmark_entity_remove_impl(stable_id, false, UninitContext::default());
         }
 
-        let stats = crate::sim::movement::air_movement::tick_air_movement(
-            &mut self.substrate.entities,
-            &[stable_id],
-            self.session.tick,
-        );
+        // A cruising Jumpjet runs the native Update/State3 body instead of the
+        // air adapter (`world::jumpjet_cruise`).
+        let stats = match self.tick_jumpjet_cruise_one(stable_id, rules) {
+            Some(stats) => stats,
+            None => crate::sim::movement::air_movement::tick_air_movement(
+                &mut self.substrate.entities,
+                &[stable_id],
+                self.session.tick,
+            ),
+        };
 
         self.sync_fly_object_height(stable_id);
 

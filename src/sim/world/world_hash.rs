@@ -4839,6 +4839,9 @@ mod bridge161_hash_projection_tests {
                 0 => state.destination = coord,
                 1 => state.moving = true,
                 2 => state.phase = 2,
+                3 => state.flight.target_height = 7,
+                4 => state.flight.current_speed_bits = 1.0f64.to_bits(),
+                5 => state.params.speed = 99,
                 _ => unreachable!(),
             },
             _ => unreachable!("supplied bridge payload only"),
@@ -4852,7 +4855,7 @@ mod bridge161_hash_projection_tests {
         for (kind, fields) in [
             (LocomotorKind::Walk, 4),
             (LocomotorKind::Hover, 1),
-            (LocomotorKind::Jumpjet, 3),
+            (LocomotorKind::Jumpjet, 6),
         ] {
             for stashed in [false, true] {
                 for field in 0..fields {

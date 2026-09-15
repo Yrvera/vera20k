@@ -30,7 +30,7 @@ use crate::sim::movement::locomotion::piggyback::{
     self, EndGateContext, LocomotorRuntimePayload, StashedLocomotor,
 };
 use crate::sim::movement::slope_transition::SlopeTransitionState;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
 
 /// Which spatial layer the unit currently occupies.
 ///
@@ -307,10 +307,12 @@ impl LocomotorState {
         // the block became unconditional.
         let jj: Option<&JumpjetParams> =
             (kind == LocomotorKind::Jumpjet).then_some(&obj.jumpjet_params);
-        let jj_accel: SimFixed = jj.map_or(SIM_ZERO, |p| p.accel);
+        let jj_accel: SimFixed = jj.map_or(SIM_ZERO, |p| sim_from_f32(p.accel));
         let jj_deviation: i32 = jj.map_or(0, |p| p.deviation);
         let jj_crash_speed: SimFixed =
-            jj.map_or(SIM_ZERO, |p| (p.climb + p.crash) * SimFixed::from_num(15));
+            jj.map_or(SIM_ZERO, |p| {
+                (sim_from_f32(p.climb) + sim_from_f32(p.crash)) * SimFixed::from_num(15)
+            });
         let jj_turn_rate: i32 = jj.map_or(4, |p| p.turn_rate);
 
         Self {
@@ -318,7 +320,15 @@ impl LocomotorState {
             slot: LocomotorSlot::from_kind(kind),
             powered: true,
             piggyback: None,
-            runtime_payload: LocomotorRuntimePayload::for_kind(kind, binary_frame),
+            runtime_payload: {
+                // `Link_To_Object @ 0x0054AD30` copies the type's jumpjet block and
+                // builds the locomotor facing at its `JumpjetTurnRate=`.
+                let mut payload = LocomotorRuntimePayload::for_kind(kind, binary_frame);
+                if let LocomotorRuntimePayload::Jumpjet(runtime) = &mut payload {
+                    runtime.link(&obj.jumpjet_params);
+                }
+                payload
+            },
             layer,
             phase: GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,
@@ -370,7 +380,7 @@ impl LocomotorState {
                 // Jumpjet climb rate scaled to leptons/second (original is per-tick at 15Hz).
                 (
                     height,
-                    jumpjet_params.climb * SimFixed::from_num(15),
+                    sim_from_f32(jumpjet_params.climb) * SimFixed::from_num(15),
                     jumpjet_params.speed,
                 )
             }
