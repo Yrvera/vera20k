@@ -3451,6 +3451,96 @@ pub fn turn_track_at(index: usize) -> Option<&'static TurnTrack> {
     TURN_TRACKS.get(index)
 }
 
+/// ILocomotion slot `+0xA4` for Drive and Ship — `Can_Use_Track`.
+///
+/// Native: `DriveLocomotionClass 0x004B4B00` and `ShipLocomotionClass
+/// 0x006A4130` are the same routine over their own tables (Drive turn table
+/// `0x007E7B28` / raw `0x007E7A28`, Ship `0x007F2A40` / `0x007F2960`); every
+/// other locomotor inherits the base slot at `0x004B6640`, which is
+/// `XOR AL,AL / RET 4`. Read from the disassembly on 2026-09-15; `this` is the
+/// ILocomotion interface, so `[this+0x54]` is the retained turn selector,
+/// `[this+0x58]` the cursor and `[this+0x5C]` the short-track byte.
+///
+/// The answer is true only when the owner's path queue head `d`
+/// (`Foot+0x5E0`) is a real octant, `d` differs from the exit octant of the
+/// current turn track (`((target_facing << 8) >> 12 + 1 >> 1) & 7`), the
+/// cursor sits exactly on the current raw track's chain point (`RawTrack+0x04`,
+/// nonzero), and the turn track `d + exit * 8` names a raw track whose entry
+/// index (`RawTrack+0x08`) is nonzero. `UnitClass::Can_Enter_Cell 0x0073FA46`
+/// asks it about an allied occupant that is in transit (`Foot+0x6B6 == 0`) or
+/// an infantryman: false skips the occupant, true raises the running code to 2.
+pub(crate) fn occupant_can_use_track(
+    track: &crate::sim::components::TrackProgress,
+    path_head: Option<u8>,
+) -> bool {
+    // `CMP EAX,-1 / JL` and `CMP EAX,8 / JG`, then the explicit 8 and -1 exits.
+    let Some(head) = path_head else {
+        return false;
+    };
+    if head >= 8 {
+        return false;
+    }
+    let Some(turn) = usize::try_from(track.turn_index)
+        .ok()
+        .and_then(turn_track_at)
+    else {
+        return false;
+    };
+    let raw = if track.reversed {
+        turn.short_track
+    } else {
+        turn.normal_track
+    };
+    let exit_octant = ((u32::from(turn.target_facing) << 8) >> 12).wrapping_add(1) >> 1 & 7;
+    if exit_octant == u32::from(head) {
+        return false;
+    }
+    let Some(raw_meta) = RAW_TRACKS.get(usize::from(raw)) else {
+        return false;
+    };
+    if i32::from(raw_meta.chain_index) != track.cursor || track.cursor == 0 {
+        return false;
+    }
+    let chained_index = usize::from(head) + exit_octant as usize * FACING_DIRECTIONS;
+    let Some(chained) = turn_track_at(chained_index) else {
+        return false;
+    };
+    if chained.normal_track == 0 {
+        return false;
+    }
+    RAW_TRACKS
+        .get(usize::from(chained.normal_track))
+        .is_some_and(|meta| meta.entry_index != 0)
+}
+
+/// What an allied occupant's locomotor answers on slot `+0xA4` when asked by
+/// `UnitClass::Can_Enter_Cell` (`0x0073FA46`).
+///
+/// Drive and Ship answer [`occupant_can_use_track`] over their retained track
+/// progress and the owner's path queue head; Walk, Hover and every other class
+/// inherit the base slot `0x004B6640`, which always answers false.
+pub(crate) fn occupant_slot_a4_answers_true(
+    occupant: &crate::sim::game_entity::GameEntity,
+) -> bool {
+    use crate::rules::locomotor_type::LocomotorKind;
+    let kind = occupant.locomotor.as_ref().map(|locomotor| locomotor.kind);
+    let track = match kind {
+        Some(LocomotorKind::Drive) => occupant.drive_locomotion.as_ref().map(|drive| &drive.track),
+        Some(LocomotorKind::Ship) => occupant.ship_locomotion.as_ref().map(|ship| &ship.track),
+        _ => None,
+    };
+    let Some(track) = track else {
+        return false;
+    };
+    let path_head = occupant
+        .navigation
+        .path_replay
+        .remaining_directions()
+        .first()
+        .copied();
+    occupant_can_use_track(track, path_head)
+}
+
 /// Select the appropriate RawTrack index from a TurnTrack.
 ///
 /// Uses the short track variant for fast vehicles.

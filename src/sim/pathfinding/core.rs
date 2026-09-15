@@ -168,11 +168,44 @@ pub struct LayeredEntityBlockMap {
     /// must be lockstep-reproducible.
     ground: BTreeMap<(u16, u16), EntityBlockEntry>,
     bridge: BTreeMap<(u16, u16), EntityBlockEntry>,
+    /// Every moving allied occupant, whether or not it raised a code. The
+    /// Drive selection lane asks these for the per-mover head-on exit of
+    /// `UnitClass::Can_Enter_Cell` (`0x0073F8D4..FA26`), which no per-owner
+    /// code can carry because it depends on the mover's own facing and
+    /// position.
+    moving_allies: BTreeMap<(MovementLayer, (u16, u16)), MovingAllyOccupant>,
+}
+
+/// A moving allied occupant as the head-on exit sees it: its facing byte and
+/// its lepton coordinates at the time the owner snapshot was built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MovingAllyOccupant {
+    pub facing: u8,
+    pub world: [i32; 3],
 }
 
 impl LayeredEntityBlockMap {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn insert_moving_ally(
+        &mut self,
+        layer: MovementLayer,
+        cell: (u16, u16),
+        occupant: MovingAllyOccupant,
+    ) {
+        if matches!(layer, MovementLayer::Ground | MovementLayer::Bridge) {
+            self.moving_allies.insert((layer, cell), occupant);
+        }
+    }
+
+    pub fn moving_ally(
+        &self,
+        layer: MovementLayer,
+        cell: &(u16, u16),
+    ) -> Option<MovingAllyOccupant> {
+        self.moving_allies.get(&(layer, *cell)).copied()
     }
 
     pub fn insert(

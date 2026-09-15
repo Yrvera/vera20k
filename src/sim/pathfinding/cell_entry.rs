@@ -199,6 +199,7 @@ use crate::sim::cell_rect::{
     IsClearToMoveResult, LiveCellPassabilityQuery, evaluate_live_cell_passability,
 };
 use crate::sim::entity_store::EntityStore;
+use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellOccupationGrid, OccupancyGrid};
@@ -1019,6 +1020,7 @@ fn classify_occupied_cell_with_slave_query(
             }
             let candidate = classify_blocker(
                 occupant.entity_id,
+                entities.get(mover_id),
                 mover_owner,
                 entities,
                 alliances,
@@ -1203,9 +1205,90 @@ fn find_primary_blocker(
     None
 }
 
+/// The head-on exit of `UnitClass::Can_Enter_Cell`, `0x0073F8D4..FA26`.
+///
+/// Taken for an allied occupant that is moving. Octants are the native
+/// `((facing16 >> 12) + 1 >> 1) & 7`; the byte facing is the high byte of that
+/// word, so `((facing8 >> 4) + 1 >> 1) & 7` is the same value. The occupant's
+/// facing is reversed by adding `0x7FFF` in the 16-bit word (`0x0073F914`)
+/// before its octant is taken. When the mover's octant equals that reversed
+/// octant — the two are facing each other — the 3-D lepton distance
+/// `Sqrt_Approx(dx² + dz² + dy²)` (`0x0073F9DA..FA03`) goes through `ftol`
+/// and anything above `0x1FF` (`0x0073FA10 CMP EAX,0x1FF / JG`) escapes;
+/// otherwise the direction word from mover to occupant
+/// (`Math::atan2(mover.y − occ.y, occ.x − mover.x)` centred and scaled at
+/// `0x0073F97B..F98A`) must land in the mover's own octant for the exit to
+/// fire (`0x0073FA24 CMP ECX,EBP / JZ 0x0073FCD0`, return 7).
+fn head_on_with_moving_ally(mover: &GameEntity, occupant: &GameEntity) -> bool {
+    head_on_exit(
+        mover.facing,
+        entity_world_leptons(mover),
+        occupant.facing,
+        entity_world_leptons(occupant),
+    )
+}
+
+/// An object's native coordinate triple in leptons: cell origin plus sub-cell
+/// offset, and the exact Z when the mover retains one, else the level height.
+pub(crate) fn entity_world_leptons(entity: &GameEntity) -> [i32; 3] {
+    use crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS;
+    let [x, y] = crate::sim::movement::ground_pose::position_world_xy(&entity.position);
+    let z = entity
+        .position
+        .exact_z_leptons
+        .unwrap_or_else(|| i32::from(entity.position.z as i8) * GROUND_LEVEL_HEIGHT_LEPTONS);
+    [x, y, z]
+}
+
+/// The head-on exit over raw inputs; see [`head_on_with_moving_ally`] for the
+/// native trace. Shared with the Drive selection lane, which evaluates it
+/// against its owner snapshot of moving allies.
+pub(crate) fn head_on_exit(
+    mover_facing: u8,
+    mover_world: [i32; 3],
+    occupant_facing: u8,
+    occupant_world: [i32; 3],
+) -> bool {
+    use crate::util::direction_tables::facing16_from_delta;
+    use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
+
+    let octant16 = |word: u32| ((word >> 12).wrapping_add(1) >> 1) & 7;
+    let mover_octant = octant16(u32::from(mover_facing) << 8);
+    let occupant_reversed = (u32::from(occupant_facing) << 8).wrapping_add(0x7FFF) & 0xFFFF;
+    if mover_octant != octant16(occupant_reversed) {
+        return false;
+    }
+
+    let [mx, my, mz] = mover_world;
+    let [ox, oy, oz] = occupant_world;
+    let (dx, dy, dz) = (
+        mx.wrapping_sub(ox),
+        my.wrapping_sub(oy),
+        mz.wrapping_sub(oz),
+    );
+    let square = |value: i32| {
+        let loaded = X87Chop53::load_i32(value);
+        X87Chop53::mul(loaded, loaded)
+    };
+    let sum = X87Chop53::add(X87Chop53::add(square(dx), square(dz)), square(dy));
+    let distance = sqrt_approx_f32(sum)
+        .ok()
+        .and_then(|bits| X87Chop53::load_f32(bits).ok())
+        .and_then(|value| X87Chop53::ftol_i64(value).ok());
+    let Some(distance) = distance else {
+        return false;
+    };
+    if distance > 0x1FF {
+        return false;
+    }
+    let direction = facing16_from_delta(ox.wrapping_sub(mx), oy.wrapping_sub(my));
+    octant16(u32::from(direction)) == mover_octant
+}
+
 /// Classify a single blocker as enemy, friendly-moving, or friendly-stationary.
 fn classify_blocker(
     blocker_id: u64,
+    mover: Option<&GameEntity>,
     mover_owner: &str,
     entities: &EntityStore,
     alliances: &HouseAllianceMap,
@@ -1238,7 +1321,37 @@ fn classify_blocker(
         return CellEntryResult::Impassable;
     }
     // Friendly: moving -> temporary block, stationary -> code 6.
+    //
+    // The moving arm of `UnitClass::Can_Enter_Cell` (`0x0073FA2C..FA7C`) does
+    // not raise unconditionally. It reads the occupant's `Foot+0x6B6` at
+    // `0x0073FA30`; when that is zero (the occupant is in transit — Drive
+    // clears it at `0x004B161A` and re-sets it at `0x004B1FEF`, Ship at
+    // `0x006A0CDA`/`0x006A1632`, Hover at `0x005147D5`/`0x0051451E`) or the
+    // occupant is an InfantryClass (`vtable+0x2C == 0xF`, `0x0073FA41`), it asks
+    // the occupant's locomotor slot `+0xA4` (`0x0073FA63`); a false answer
+    // skips the occupant entirely (`0x0073FA6B JZ 0x0073FA7C`, which reloads
+    // the running code unchanged) and only a true one reaches the running-max raise to 2 at
+    // `0x0073FA6D..FA74`. Drive/Ship answer `Can_Use_Track`; every other
+    // class answers false. The cell then blocks through the occupation mask
+    // arm, not the object list. "Moving" itself stays VERA's
+    // `movement_target` test; native's NavCom/rotating/`Is_Moving` triple
+    // (`0x0073F865..F8C0`) is a recorded gap, unchanged here. The head-on exit
+    // that precedes this arm is `head_on_with_moving_ally` above.
     if blocker.movement_target.is_some() {
+        // The head-on exit precedes the locomotor question and exists only in
+        // the Unit implementation (`0x0073F8D4`); Infantry `+0x1AC` has none.
+        if mover.is_some_and(|mover| {
+            mover.category == EntityCategory::Unit && head_on_with_moving_ally(mover, blocker)
+        }) {
+            return CellEntryResult::Impassable;
+        }
+        let in_transit = !blocker.foot_occupation_enabled;
+        let infantry = blocker.category == EntityCategory::Infantry;
+        if (in_transit || infantry)
+            && !crate::sim::movement::drive_track::occupant_slot_a4_answers_true(blocker)
+        {
+            return CellEntryResult::Clear;
+        }
         CellEntryResult::TemporaryBlock { blocker_id }
     } else {
         CellEntryResult::FriendlyStationary { blocker_id }
@@ -1279,6 +1392,147 @@ fn apply_overrides(result: CellEntryResult, locomotor: LocomotorKind) -> CellEnt
 mod tests {
     use super::*;
     use crate::sim::occupancy::CellListInsertion;
+
+    /// `0x0073F8D4..FA26` over raw inputs: facing each other inside `0x1FF`
+    /// leptons with the occupant in the mover's octant fires; every one of the
+    /// three gates alone releases it.
+    #[test]
+    fn head_on_exit_requires_opposed_facings_range_and_bearing() {
+        // Mover faces east (64 → octant 2), occupant faces west (192 → reversed
+        // octant 2), occupant 256 leptons due east, same height.
+        let mover = [10 * 256 + 128, 10 * 256 + 128, 0];
+        let east_256 = [11 * 256 + 128, 10 * 256 + 128, 0];
+        assert!(head_on_exit(64, mover, 192, east_256));
+        // Distance gate: 511 fires, 512 does not (`CMP EAX,0x1FF / JG`).
+        assert!(head_on_exit(64, mover, 192, [mover[0] + 511, mover[1], 0]));
+        assert!(!head_on_exit(64, mover, 192, [mover[0] + 512, mover[1], 0]));
+        // Height enters the 3-D distance.
+        assert!(!head_on_exit(
+            64,
+            mover,
+            192,
+            [mover[0] + 500, mover[1], 120]
+        ));
+        // Occupant facing the same way (a column) is not head-on.
+        assert!(!head_on_exit(64, mover, 64, east_256));
+        // Occupant behind the mover, still facing it: bearing is west, not east.
+        assert!(!head_on_exit(
+            64,
+            mover,
+            192,
+            [9 * 256 + 128, 10 * 256 + 128, 0]
+        ));
+        // Occupant off to the side (south-east) leaves the mover's octant.
+        assert!(!head_on_exit(
+            64,
+            mover,
+            192,
+            [11 * 256 + 128, 11 * 256 + 128, 0]
+        ));
+        // Octant rounding: facing 48..79 all read as octant 2.
+        assert!(head_on_exit(48, mover, 208, east_256));
+        assert!(head_on_exit(79, mover, 177, east_256));
+        assert!(!head_on_exit(80, mover, 192, east_256));
+    }
+
+    fn moving_ally(id: u64, rx: u16, ry: u16, facing: u8, in_transit: bool) -> GameEntity {
+        let mut ally = GameEntity::test_default(id, "MTNK", "Americans", rx, ry);
+        ally.category = EntityCategory::Unit;
+        ally.facing = facing;
+        ally.foot_occupation_enabled = !in_transit;
+        ally.movement_target = Some(crate::sim::components::MovementTarget {
+            path: vec![(rx, ry), (rx.wrapping_sub(1), ry)],
+            path_layers: vec![MovementLayer::Ground, MovementLayer::Ground],
+            next_index: 1,
+            ..Default::default()
+        });
+        ally
+    }
+
+    /// `0x0073FA2C..FA7C`: an in-transit ally whose locomotor answers false on
+    /// slot `+0xA4` is skipped (no code); a standing moving ally still raises
+    /// code 2; an infantryman takes the locomotor question whatever its transit
+    /// state and Walk always answers false.
+    #[test]
+    fn classify_blocker_skips_in_transit_allies_that_cannot_use_a_track() {
+        let mut entities = EntityStore::new();
+        entities.insert(moving_ally(100, 11, 10, 192, true));
+        entities.insert(moving_ally(101, 12, 10, 192, false));
+        let mut infantry = moving_ally(102, 13, 10, 192, false);
+        infantry.category = EntityCategory::Infantry;
+        entities.insert(infantry);
+        let alliances = HouseAllianceMap::new();
+        let interner = crate::sim::intern::test_interner();
+
+        assert_eq!(
+            classify_blocker(100, None, "Americans", &entities, &alliances, &interner),
+            CellEntryResult::Clear,
+            "in transit, no retained track: skipped"
+        );
+        assert_eq!(
+            classify_blocker(101, None, "Americans", &entities, &alliances, &interner),
+            CellEntryResult::TemporaryBlock { blocker_id: 101 },
+            "standing moving ally still raises 2"
+        );
+        assert_eq!(
+            classify_blocker(102, None, "Americans", &entities, &alliances, &interner),
+            CellEntryResult::Clear,
+            "moving infantry: Walk slot answers false"
+        );
+    }
+
+    /// The head-on exit runs before the locomotor question and only for a
+    /// Unit mover: the same in-transit ally that is skipped above blocks a tank
+    /// facing it head-on inside two cells, and does not block an infantryman.
+    #[test]
+    fn classify_blocker_head_on_exit_precedes_the_transit_skip_for_unit_movers() {
+        let mut entities = EntityStore::new();
+        entities.insert(moving_ally(100, 11, 10, 192, true));
+        let mut tank = GameEntity::test_default(1, "MTNK", "Americans", 10, 10);
+        tank.category = EntityCategory::Unit;
+        tank.facing = 64;
+        let mut soldier = GameEntity::test_default(2, "E1", "Americans", 10, 10);
+        soldier.category = EntityCategory::Infantry;
+        soldier.facing = 64;
+        let alliances = HouseAllianceMap::new();
+        let interner = crate::sim::intern::test_interner();
+
+        assert_eq!(
+            classify_blocker(
+                100,
+                Some(&tank),
+                "Americans",
+                &entities,
+                &alliances,
+                &interner
+            ),
+            CellEntryResult::Impassable
+        );
+        assert_eq!(
+            classify_blocker(
+                100,
+                Some(&soldier),
+                "Americans",
+                &entities,
+                &alliances,
+                &interner
+            ),
+            CellEntryResult::Clear
+        );
+        tank.facing = 192;
+        assert_eq!(
+            classify_blocker(
+                100,
+                Some(&tank),
+                "Americans",
+                &entities,
+                &alliances,
+                &interner
+            ),
+            CellEntryResult::Clear,
+            "a tank facing away is not head-on"
+        );
+    }
 
     fn empty_occ() -> OccupancyGrid {
         OccupancyGrid::new()
@@ -1459,7 +1713,7 @@ mod tests {
         let alliances = HouseAllianceMap::new();
         let interner = crate::sim::intern::test_interner();
 
-        let result = classify_blocker(100, "Americans", &entities, &alliances, &interner);
+        let result = classify_blocker(100, None, "Americans", &entities, &alliances, &interner);
         assert_eq!(
             result,
             CellEntryResult::ScatterRequired {
@@ -1473,7 +1727,7 @@ mod tests {
             phase: BuildingGatePhase::Opening,
             ..Default::default()
         });
-        let result = classify_blocker(100, "Americans", &entities, &alliances, &interner);
+        let result = classify_blocker(100, None, "Americans", &entities, &alliances, &interner);
         assert_eq!(
             result,
             CellEntryResult::ScatterRequired {
@@ -1495,7 +1749,7 @@ mod tests {
         let alliances = HouseAllianceMap::new();
         let interner = crate::sim::intern::test_interner();
 
-        let result = classify_blocker(200, "Americans", &entities, &alliances, &interner);
+        let result = classify_blocker(200, None, "Americans", &entities, &alliances, &interner);
         assert_eq!(result, CellEntryResult::Impassable);
         assert_eq!(result.yr_code(), 7);
     }
@@ -1512,7 +1766,7 @@ mod tests {
         let alliances = HouseAllianceMap::new();
         let interner = crate::sim::intern::test_interner();
 
-        let result = classify_blocker(201, "Americans", &entities, &alliances, &interner);
+        let result = classify_blocker(201, None, "Americans", &entities, &alliances, &interner);
         assert_eq!(
             result,
             CellEntryResult::FriendlyStationary { blocker_id: 201 }
@@ -1637,7 +1891,7 @@ mod tests {
         let alliances = HouseAllianceMap::new();
         let interner = crate::sim::intern::test_interner();
 
-        let result = classify_blocker(100, "Americans", &entities, &alliances, &interner);
+        let result = classify_blocker(100, None, "Americans", &entities, &alliances, &interner);
         assert_eq!(result, CellEntryResult::OccupiedEnemy { blocker_id: 100 });
         assert_eq!(result.yr_code(), 5);
     }

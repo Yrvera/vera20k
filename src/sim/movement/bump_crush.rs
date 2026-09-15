@@ -165,9 +165,35 @@ pub fn build_entity_block_sets(
             continue;
         }
         // Friendly moving units: code-2 chain walk entry.
+        //
+        // `UnitClass::Can_Enter_Cell 0x0073FA2C..FA7C`: an occupant in transit
+        // (`Foot+0x6B6 == 0`) or an infantryman is first asked on its locomotor
+        // slot `+0xA4` (Drive/Ship `Can_Use_Track`, every other class false);
+        // a false answer skips it — no entry, the occupation mask arm decides —
+        // and only a true one raises the running code to 2. See
+        // `cell_entry::classify_blocker` for the same arm on the live walk.
         if let Some(ref mt) = entity.movement_target {
             if let Some(&next_cell) = mt.path.get(mt.next_index) {
                 if next_cell != pos {
+                    // Recorded for every moving ally, code or not: the head-on
+                    // exit runs before the locomotor question and is answered
+                    // per mover by the Drive selection lane.
+                    entity_block_map.insert_moving_ally(
+                        layer,
+                        pos,
+                        crate::sim::pathfinding::MovingAllyOccupant {
+                            facing: entity.facing,
+                            world: crate::sim::pathfinding::cell_entry::entity_world_leptons(
+                                entity,
+                            ),
+                        },
+                    );
+                    let in_transit = !entity.foot_occupation_enabled;
+                    if (in_transit || blocker_is_infantry)
+                        && !super::drive_track::occupant_slot_a4_answers_true(entity)
+                    {
+                        continue;
+                    }
                     entity_block_map.insert(
                         layer,
                         pos,

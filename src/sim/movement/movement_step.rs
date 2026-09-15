@@ -1306,12 +1306,38 @@ pub(super) enum DriveRefusalArm {
 #[derive(Clone, Copy, Default)]
 pub(super) struct DriveCellAdmission<'a> {
     pub units: Option<&'a LayeredEntityBlockMap>,
+    /// The mover as the head-on exit sees it; `None` for a non-Unit mover,
+    /// whose `+0x1AC` has no head-on arm.
+    pub mover: Option<MoverHeadOnContext>,
+}
+
+/// The mover's own inputs to the head-on exit of `UnitClass::Can_Enter_Cell`
+/// (`0x0073F8D4..FA26`), captured before the mover takes its mutable borrow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct MoverHeadOnContext {
+    pub facing: u8,
+    pub world: [i32; 3],
+}
+
+impl MoverHeadOnContext {
+    pub(super) fn from_entity(entity: &crate::sim::game_entity::GameEntity) -> Option<Self> {
+        (entity.category == crate::map::entities::EntityCategory::Unit).then(|| Self {
+            facing: entity.facing,
+            world: crate::sim::pathfinding::cell_entry::entity_world_leptons(entity),
+        })
+    }
 }
 
 impl DriveCellAdmission<'_> {
     /// The code the object-list walk would raise for `cell`, or `None` when it
     /// finds nothing that refuses. The dispatch needs the code, not a boolean:
     /// code 6 has its own arm in the movement body and codes 2/5 do not.
+    ///
+    /// The head-on exit comes first, as in the native walk: a moving ally that
+    /// faces the mover, within `0x1FF` leptons and inside the mover's facing
+    /// octant, answers 7 whatever its class. It is answered from the owner
+    /// snapshot's moving-ally record, which carries every moving ally
+    /// including those the `+0x6B6`/`+0xA4` rule skipped from the code map.
     fn refusal_code(
         &self,
         cell: (u16, u16),
@@ -1323,12 +1349,21 @@ impl DriveCellAdmission<'_> {
             // (`if (param_1 == piVar15)` at 0x0073FC10).
             return None;
         }
-        self.units.and_then(|units| {
-            units
-                .get(layer, &cell)
-                .filter(|entry| !entry.blocker_is_infantry)
-                .map(|entry| entry.cost_code)
-        })
+        let units = self.units?;
+        if let (Some(mover), Some(ally)) = (self.mover, units.moving_ally(layer, &cell))
+            && crate::sim::pathfinding::cell_entry::head_on_exit(
+                mover.facing,
+                mover.world,
+                ally.facing,
+                ally.world,
+            )
+        {
+            return Some(7);
+        }
+        units
+            .get(layer, &cell)
+            .filter(|entry| !entry.blocker_is_infantry)
+            .map(|entry| entry.cost_code)
     }
 }
 
