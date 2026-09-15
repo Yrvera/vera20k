@@ -64,10 +64,17 @@ pub(crate) fn drive_locomotor_is_moving(entity: &GameEntity) -> bool {
     head.x != owner_x || head.y != owner_y
 }
 
-pub(super) fn drive_entity_nav_targets(entities: &EntityStore) -> Vec<(u64, NavTargetRef)> {
-    entities
-        .keys_sorted()
-        .into_iter()
+/// Unit -> Infantry NavCom refreshes among `candidates`, visited in ascending
+/// stable-id order. Callers pass the objects of the current pass rather than
+/// the whole store; the answer for any object does not depend on the others.
+pub(super) fn drive_entity_nav_targets(
+    entities: &EntityStore,
+    candidates: &[u64],
+) -> Vec<(u64, NavTargetRef)> {
+    let mut ids: Vec<u64> = candidates.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.into_iter()
         .filter_map(|id| {
             let entity = entities.get(id)?;
             let target = entity.navigation.nav_com?;

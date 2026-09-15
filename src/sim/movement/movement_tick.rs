@@ -478,6 +478,10 @@ fn handle_path_exhaustion(
             .map(|l| l.movement_zone)
             .unwrap_or(MovementZone::Normal);
         if ctx.path_grid.is_some() {
+            debug_assert!(
+                ctx.blocker_neighbor_counts.is_some(),
+                "path build on a pass that skipped the blocker plane; see pass_may_build_paths"
+            );
             if let Some((new_path, new_layers)) = find_move_path(
                 ctx,
                 layered_pathing_for_seg,
@@ -746,6 +750,10 @@ fn process_pending_drive_arrivals(
         occupied_blocks
             .extend(cell_occupation.occupied_cells_ignoring(MovementLayer::Ground, entity_id));
         let occupied_blocks_ref = (!occupied_blocks.is_empty()).then_some(&occupied_blocks);
+        debug_assert!(
+            ctx.blocker_neighbor_counts.is_some(),
+            "path build on a pass that skipped the blocker plane; see pass_may_build_paths"
+        );
         let Some((path, path_layers)) = find_move_path(
             ctx,
             layered_pathing,
@@ -1523,6 +1531,10 @@ impl WalkPathRequest {
             .is_some_and(|(loco, grid)| {
                 supports_layered_bridge_pathing(loco, grid, snap.on_bridge)
             });
+        debug_assert!(
+            ctx.blocker_neighbor_counts.is_some() == ctx.path_grid.is_some(),
+            "path build on a pass that skipped the blocker plane; see pass_may_build_paths"
+        );
         super::movement_path::find_move_path_with_marker_detailed(
             ctx,
             layered,
@@ -3224,9 +3236,8 @@ fn prepare_movement_pass(
     }
 
     let drive_reaims: Vec<(u64, crate::sim::components::DriveCoord)> =
-        drive_locomotion::drive_entity_nav_targets(entities)
+        drive_locomotion::drive_entity_nav_targets(entities, entity_order)
             .into_iter()
-            .filter(|(mover_id, _)| entity_order.contains(mover_id))
             .filter(|(mover_id, _)| !tube_active_at_start.contains(mover_id))
             .filter_map(|(mover_id, target)| {
                 super::navcom::resolve_entity_nav_target_drive_coord(target, entities)
@@ -3688,6 +3699,30 @@ impl PendingMovementPass {
     }
 }
 
+/// Whether any object of this pass can reach a path build.
+///
+/// The blocker-neighbour plane is a whole-map scan plus every marked object,
+/// and its only consumers are path builds: ordinary movers repathing, pending
+/// Drive arrivals, and objects that Tube or forced-track processing may hand
+/// back to ordinary movement this pass. An object turn with none of those never
+/// reads it, so the pass does not pay for it there. When built, the value is
+/// the same as an unconditional build; only idle turns skip the work. The
+/// `debug_assert!`s beside each in-pass `find_move_path` call keep this
+/// contract checked: a new in-pass writer of `movement_target` or
+/// `pending_arrival_clear` on an object this predicate does not name would
+/// otherwise flip the hierarchy branch silently.
+fn pass_may_build_paths(entities: &EntityStore, entity_order: &[u64]) -> bool {
+    entity_order.iter().any(|&entity_id| {
+        entities.get(entity_id).is_some_and(|entity| {
+            entity.movement_target.is_some()
+                || entity.navigation.pending_arrival_clear
+                || entity.navigation.nav_com.is_some()
+                || entity.low_bridge_tube_state.is_some()
+                || entity.forced_drive_track.is_some()
+        })
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn begin_movement_with_grids_scoped(
     entities: &mut EntityStore,
@@ -3729,18 +3764,28 @@ pub(crate) fn begin_movement_with_grids_scoped(
             entity_order: Vec::new(),
         };
     }
-    let blocker_neighbor_counts = path_grid.map(|grid| {
-        bump_crush::build_blocker_neighbor_counts_with_overlays(
-            entities,
-            grid.width(),
-            grid.height(),
-            resolved_terrain,
-            overlay_grid,
-            overlay_registry,
-            interner,
-            rules,
-        )
-    });
+    let fallback_order;
+    let entity_order: &[u64] = match live_order {
+        Some(order) => order,
+        None => {
+            fallback_order = entities.keys_sorted();
+            &fallback_order
+        }
+    };
+    let blocker_neighbor_counts = path_grid
+        .filter(|_| pass_may_build_paths(entities, entity_order))
+        .map(|grid| {
+            bump_crush::build_blocker_neighbor_counts_with_overlays(
+                entities,
+                grid.width(),
+                grid.height(),
+                resolved_terrain,
+                overlay_grid,
+                overlay_registry,
+                interner,
+                rules,
+            )
+        });
     let ctx = PathfindingContext {
         path_grid,
         zone_grid,
@@ -3755,14 +3800,6 @@ pub(crate) fn begin_movement_with_grids_scoped(
         blockage_path_delay_ticks,
     };
     let dt = native_movement_frame_fraction();
-    let fallback_order;
-    let entity_order: &[u64] = match live_order {
-        Some(order) => order,
-        None => {
-            fallback_order = entities.keys_sorted();
-            &fallback_order
-        }
-    };
     let mut prepared = prepare_movement_pass(
         entities,
         entity_order,
