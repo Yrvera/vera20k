@@ -122,6 +122,9 @@ color/palette math, projection/sampling, GPU execution and performance. Cite
 consequential findings near the implementation or review. Validate affected production
 output and performance with appropriate captures, GPU readbacks or profiling;
 documentation and CPU-only tests alone do not establish rendered gamemd parity.
+For Rust style beyond this contract, consult the
+[condensed Rust guidelines](.agents/skills/_shared/rust-guidelines.md) when shaping
+APIs, hot loops, error handling or tests; this contract wins on conflict.
 
 Resolve `<main-checkout>` with `git worktree list`; its `ini/`, config and `LOCAL.md`
 are machine-local. Read retail data before selecting constants.
