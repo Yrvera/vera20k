@@ -500,15 +500,8 @@ fn handle_path_exhaustion(
                 snap.too_big_to_fit_under_bridge,
                 mover_entity_block_map,
                 0, // urgency=0: proactive segment repath, no block escalation
-                snap.omni_crusher
-                    || matches!(
-                        snap.locomotor.as_ref().map(|l| l.movement_zone),
-                        Some(
-                            MovementZone::Crusher
-                                | MovementZone::AmphibiousCrusher
-                                | MovementZone::CrusherAll
-                        )
-                    ),
+                // One crush authority for every search; see `CrushCapability::of`.
+                snap.crush_capability().can_crush_units(),
                 snap.category == EntityCategory::Infantry,
                 snap.allow_zone_hierarchy,
             ) {
@@ -769,13 +762,8 @@ fn process_pending_drive_arrivals(
             entity.too_big_to_fit_under_bridge,
             entity_block_map,
             0,
-            entity.omni_crusher
-                || matches!(
-                    loco.movement_zone,
-                    MovementZone::Crusher
-                        | MovementZone::AmphibiousCrusher
-                        | MovementZone::CrusherAll
-                ),
+            // One crush authority for every search; see `CrushCapability::of`.
+            bump_crush::CrushCapability::of(entity).can_crush_units(),
             entity.category == EntityCategory::Infantry,
             ctx.playfield_bounds.is_none() || entity.in_playfield,
         ) else {
@@ -1040,7 +1028,7 @@ fn handle_deferred_drive_selection_block(
         rng,
         sim_tick,
         PATH_STUCK_INIT,
-        bump_crush::CrushCapability::new(snap.regular_crusher, snap.omni_crusher).can_crush_units(),
+        snap.crush_capability().can_crush_units(),
         snap.category == EntityCategory::Infantry,
         snap.allow_zone_hierarchy,
         // Code 2 keeps its grace span; the escalation timer is what selects the
@@ -1147,7 +1135,7 @@ pub(super) fn classify_drive_track_chain_entry(
         chain.target_cell,
         chain.layers,
         entity_id,
-        bump_crush::CrushCapability::new(snap.regular_crusher, snap.omni_crusher),
+        snap.crush_capability(),
         interner.resolve(snap.owner),
         mover_loco_kind,
         snap.bypass_grid,
@@ -1308,7 +1296,7 @@ fn handle_deferred_drive_track_chain(
                 alliances,
                 interner,
                 crusher_lepton,
-                bump_crush::CrushCapability::new(snap.regular_crusher, snap.omni_crusher),
+                snap.crush_capability(),
                 bump_crush::ScatterEligibility::from_rules(rules),
                 sim_tick as u32,
             ) {
@@ -1553,13 +1541,8 @@ impl WalkPathRequest {
             Some(&block_map),
             None,
             0,
-            snap.omni_crusher
-                || matches!(
-                    snap.movement_zone,
-                    MovementZone::Crusher
-                        | MovementZone::AmphibiousCrusher
-                        | MovementZone::CrusherAll
-                ),
+            // One crush authority for every search; see `CrushCapability::of`.
+            snap.crush_capability().can_crush_units(),
             snap.category == EntityCategory::Infantry,
             snap.allow_zone_hierarchy,
         )

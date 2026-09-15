@@ -53,3 +53,39 @@ Override) in `docs/plans/2026-09-15-movement-retail-acceptance.md`.
   - none (0x004B3B94): cell.OverlayTypeIndex != -1 && OverlayTypes[idx].Wall (+0x2A8) -> owner vtable +0x1F4 (1, cell) = override Attack on the wall cell.
 - So a Drive mover refused with code 4/5 attacks the wall cell (or the enemy body) through the same Override slot Walk/Hover use; VERA's
   Override arm (movement_occupancy.rs) exists for Walk/Hover objects only and has no cell-target Restore path.
+
+## The wall-attack cycle, end to end (read 2026-09-15, second pass)
+
+- **Override slot identity.** UnitClass vtable `0x007F5C70 + 0x1F4 = 0x007F5E64` holds `0x004D8F40`,
+  `FootClass::Override_Mission(mission, target, destination)`: `SuspendedNavCom (+0x5A8) <- NavCom (+0x5A4)`,
+  then `TechnoClass::Override_Mission 0x007013A0` (`SuspendedTarCom +0x2B8 <- TarCom +0x2B4`,
+  `MissionClass::Override_Mission`, `Assign_Target` via `+0x3C8`), then `Assign_Destination(+0x480)(destination, 1)`.
+- **All three ground locomotors take the same arm.** Drive `0x004B3B03..3BEF` and Hover `0x00515C3F..5C9C`:
+  `CellClass::Find_Blocking_Object 0x0047C5A0` on the refused cell; a found object that is not allied
+  (`HouseClass::Is_Ally_ByObject 0x004F9A90`) gets `Override_Mission(1, object, 0)`; with no object, a cell whose
+  `OverlayTypeIndex (+0x44) != -1` and `OverlayType.Wall (+0x2A8)` gets `Override_Mission(1, cell, 0)`: Attack, the
+  wall **cell** as TarCom, null destination. Walk's pair is the one `movement_occupancy.rs` already cites.
+- **Unowned walls are enemies.** `HouseClass::Is_Ally_ByIndex 0x004F9A10` returns true for its own index, false for
+  `-1`, else tests the ally bitfield at `+0x5788`. A wall with no owner therefore takes code 5 on the weapon route and
+  free entry on the crusher route. VERA reconstructs map-wall owners from nearby buildings
+  (`MapWallOwnerCandidate` in `src/sim/overlay_grid.rs`); `wall_owner: None` maps to `-1`.
+- **How the attack on the wall cell ends is already modelled in VERA.** Wall destruction runs the transaction host's
+  `pointer_expired(WallPointerTarget::Real)` (`SimulationWallRuntimeHost` in `src/sim/world/mod.rs`,
+  `AoEWallDamageHost` in `src/sim/combat/combat_aoe.rs`), which calls `expire_cell_target_references`: every listener
+  whose `attack_target` is that cell has its target cleared and, if a mission was suspended, Restore runs
+  (`restore_entity_after_target_expiry`). That is the native CellClass pointer-expiry order (clear, then Restore). So a
+  wall-attack Override needs no new termination logic, only the producer and the Override with a cell target.
+
+## What I9b has to add
+
+1. **Producer:** the class arm's wall test answers 4 (allied wall) / 5 (enemy wall) / 7 for the weapon route and
+   `max(code, 4)` for a crusher on an allied crushable wall, from mover facts: primary weapon present, primary warhead
+   `Wall=` (Unit also `Wood=` against an `Armor=wood` overlay), `Crusher=`, CrusherAll, infantry, owner alliance.
+   `CanEnterCellResult` has only `Clear`/`HardBlocked`, so it needs a cost-class carrying variant.
+2. **A\*:** consume that class through `apply_search_cost_class_multiplier` (60x / 20x, table already present).
+   Production entry `zone_search::find_layered_path_zoned_marker_detailed` takes 19 positional arguments and fans out
+   through six wrappers; the mover facts belong in one request struct rather than three more positional flags.
+3. **Crossing:** a refused wall step runs the Override with `TargetKind::Cell` for Drive, Hover and Walk
+   (`authority.rs::override_entity_to_attack` is entity-only today), stops the mover, and relies on the existing
+   expiry path to Restore.
+4. **Consumers to re-check:** `.is_clear()` callers (scheduling, spawn, cursor) must keep treating 4/5 as not clear.

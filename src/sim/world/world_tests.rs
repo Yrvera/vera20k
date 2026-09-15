@@ -10319,3 +10319,38 @@ fn defeat_of_a_non_passive_house_emits_player_defeated() {
             .all(|event| !matches!(event, SimSoundEvent::PlayerDefeated { .. }))
     );
 }
+
+/// I9c regression, a first search. Resuming an attack-move with no target and
+/// no path issues a fresh move (`tick_order_intents_post_combat`). That search
+/// passed "not a crusher", so after I9a a `Crusher=yes` tank resuming its
+/// attack-move was refused a sandbag cell the crossing and every repath admit.
+#[test]
+fn attack_move_resume_lets_a_crusher_tank_through_a_sandbag_cell() {
+    use crate::map::resolved_terrain::zone_class;
+    let run = |regular_crusher: bool| {
+        let mut terrain = gsi_04_10_clear_terrain(20, 1);
+        terrain.cells[5].overlay_zone_type = Some(zone_class::CRUSHABLE);
+        terrain.cells[5].zone_type = zone_class::CRUSHABLE;
+        let path = PathGrid::from_resolved_terrain(&terrain);
+        let mut sim = Simulation::new();
+        sim.resolved_terrain = Some(terrain);
+        let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 0, 0);
+        entity.category = EntityCategory::Unit;
+        entity.regular_crusher = regular_crusher;
+        entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        entity.order_intent = Some(crate::sim::components::OrderIntent::AttackMove {
+            goal_rx: 10,
+            goal_ry: 0,
+        });
+        sim.substrate.entities.insert(entity);
+        sim.tick_order_intents_post_combat(Some(&path), None);
+        sim.substrate
+            .entities
+            .get(1)
+            .and_then(|e| e.movement_target.as_ref())
+            .map(|t| t.path.clone())
+    };
+    let crusher = run(true).expect("crusher resumes its attack-move");
+    assert!(crusher.contains(&(5, 0)), "crusher route crosses the sandbag: {crusher:?}");
+    assert!(run(false).is_none(), "non-crusher is refused at the sandbag");
+}

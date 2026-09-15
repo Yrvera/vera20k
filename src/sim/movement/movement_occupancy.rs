@@ -570,8 +570,7 @@ pub(super) fn handle_deferred_occupancy(
         .locomotor
         .as_ref()
         .map_or(LocomotorKind::Drive, |l| l.kind);
-    let crush_capability =
-        bump_crush::CrushCapability::new(snap.regular_crusher, snap.omni_crusher);
+    let crush_capability = snap.crush_capability();
     let mover_is_crusher = crush_capability.can_crush_units();
     let is_infantry = snap.category == EntityCategory::Infantry;
     if let Some(rules) = rules {

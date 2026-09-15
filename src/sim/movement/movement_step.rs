@@ -2473,7 +2473,7 @@ pub(super) fn process_cell_crossings(
                 }
                 *drive_track_state = None;
                 path_runtime.start_movement(mcfg.binary_frame, 0, walk);
-                let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
+                let mover_is_crusher = snap.crush_capability().can_crush_units();
                 let evts = handle_blocked_tick(
                     path_replay,
                     target,
@@ -2606,7 +2606,7 @@ pub(super) fn process_cell_crossings(
                 // Terrain-blocked (building/cliff) — the path is stale.
                 // Force immediate repath by clearing movement_delay.
                 path_runtime.start_movement(mcfg.binary_frame, 0, walk);
-                let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
+                let mover_is_crusher = snap.crush_capability().can_crush_units();
                 let evts = handle_blocked_tick(
                     path_replay,
                     target,
@@ -2688,7 +2688,7 @@ pub(super) fn process_cell_crossings(
                         }
                         *drive_track_state = None;
                         path_runtime.start_movement(mcfg.binary_frame, 0, walk);
-                        let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
+                        let mover_is_crusher = snap.crush_capability().can_crush_units();
                         let evts = handle_blocked_tick(
                             path_replay,
                             target,

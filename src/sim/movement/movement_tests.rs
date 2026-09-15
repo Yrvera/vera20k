@@ -6627,3 +6627,165 @@ fn blocked_walk_keeps_exact_pre_step_position() {
         Some((20, 10))
     );
 }
+
+/// I9c regression. The proactive segment repath must pass the same crush
+/// authority as the initial order (`CrushCapability::of`): native reads the
+/// type's `Crusher=` (`UnitTypeClass+0xD28`, wall arm `0x0073F438..F446`), not
+/// its MovementZone. A `Crusher=yes` mover ordered past a sandbag cell beyond
+/// its first 24-step segment must continue through it; a non-crusher's repath
+/// is refused there, which shows the arm is live. The fixture has no locomotor
+/// (the legacy tick only moves a Drive mover with a prepared path replay), so
+/// the old zone-based derivation read no zone here; the Normal-zone Drive case
+/// is covered by the process-entry and attack-move-resume tests below.
+#[test]
+fn segment_repath_lets_a_crusher_tank_through_a_sandbag_line() {
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
+    let mut cells = Vec::with_capacity(50);
+    for rx in 0..50u16 {
+        let mut cell = ResolvedTerrainCell::clear_for_test(rx, 0);
+        if rx == 27 {
+            cell.overlay_zone_type = Some(zone_class::CRUSHABLE);
+            cell.zone_type = zone_class::CRUSHABLE;
+        }
+        cells.push(cell);
+    }
+    let terrain = ResolvedTerrainGrid::from_cells(50, 1, cells);
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+
+    let run = |regular_crusher: bool| {
+        let mut entities = EntityStore::new();
+        let mut e = GameEntity::test_default(1, "MTNK", "Americans", 0, 0);
+        e.regular_crusher = regular_crusher;
+        entities.insert(e);
+        assert!(issue_move_command(
+            &mut entities,
+            &grid,
+            1,
+            (30, 0),
+            SimFixed::from_num(15360),
+            false,
+            None,
+            None,
+            None,
+            regular_crusher,
+            crate::sim::movement::DestinationTiming::new(0, 60),
+        ));
+        let mut lifecycle_requests = Vec::new();
+        let mut sounds = Vec::new();
+        let mut occupancy = OccupancyGrid::new();
+        let mut cell_occupation = crate::sim::occupancy::CellOccupationGrid::new();
+        let mut raw = crate::sim::occupancy::RawCellOccupationGrid::new();
+        let mut enter_order = crate::sim::world::EnterOrderCounter::new();
+        let mut interner = test_interner();
+        let mut rng = SimRng::new(0);
+        for frame in 0..40u32 {
+            tick_movement_with_grids(
+                &mut entities,
+                None,
+                Some(&grid),
+                &Default::default(),
+                &Default::default(),
+                &mut occupancy,
+                &mut cell_occupation,
+                &mut raw,
+                &mut enter_order,
+                &mut rng,
+                u64::from(frame),
+                frame,
+                None,
+                Some(&terrain),
+                None,
+                &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+                SIM_ZERO,
+                9,
+                60,
+                &mut interner,
+                None,
+                &mut sounds,
+                &mut lifecycle_requests,
+            );
+        }
+        let e = entities.get(1).expect("entity exists");
+        (e.position.rx, e.position.ry)
+    };
+    assert_eq!(
+        run(true),
+        (30, 0),
+        "crusher continues through the sandbag cell"
+    );
+    assert!(
+        run(false).0 < 27,
+        "non-crusher repath is refused at the sandbag cell"
+    );
+}
+
+/// I9c regression, process-entry repath. A Drive `Crusher=yes` tank whose owner
+/// destination survives with no active path rebuilds its route on its next
+/// turn; that search must admit the sandbag cell a non-crusher is refused.
+#[test]
+fn process_entry_repath_lets_a_crusher_tank_through_a_sandbag_cell() {
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
+    let mut cells = Vec::with_capacity(20);
+    for rx in 0..20u16 {
+        let mut cell = ResolvedTerrainCell::clear_for_test(rx, 0);
+        if rx == 5 {
+            cell.overlay_zone_type = Some(zone_class::CRUSHABLE);
+            cell.zone_type = zone_class::CRUSHABLE;
+        }
+        cells.push(cell);
+    }
+    let terrain = ResolvedTerrainGrid::from_cells(20, 1, cells);
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    let run = |regular_crusher: bool| {
+        let mut entities = EntityStore::new();
+        let mut e = GameEntity::test_default(1, "MTNK", "Americans", 0, 0);
+        e.regular_crusher = regular_crusher;
+        e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        e.navigation.nav_com = Some(NavTargetRef::cell(10, 0));
+        e.navigation.pending_arrival_clear = true;
+        entities.insert(e);
+        let mut lifecycle_requests = Vec::new();
+        tick_movement_with_grids(
+            &mut entities,
+            None,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut OccupancyGrid::new(),
+            &mut crate::sim::occupancy::CellOccupationGrid::new(),
+            &mut crate::sim::occupancy::RawCellOccupationGrid::new(),
+            &mut crate::sim::world::EnterOrderCounter::new(),
+            &mut SimRng::new(0),
+            0,
+            0,
+            None,
+            Some(&terrain),
+            None,
+            &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            SIM_ZERO,
+            9,
+            60,
+            &mut test_interner(),
+            None,
+            &mut Vec::new(),
+            &mut lifecycle_requests,
+        );
+        let e = entities.get(1).expect("entity exists");
+        (
+            e.movement_target.as_ref().map(|t| t.path.clone()),
+            e.navigation.pending_arrival_clear,
+        )
+    };
+    let (path, _) = run(true);
+    let path = path.expect("crusher rebuilds its route");
+    assert!(
+        path.contains(&(5, 0)),
+        "crusher route crosses the sandbag: {path:?}"
+    );
+    let (path, rearmed) = run(false);
+    assert!(
+        path.is_none(),
+        "non-crusher is refused at the sandbag: {path:?}"
+    );
+    assert!(rearmed, "the failed rebuild re-arms the retry");
+}

@@ -546,6 +546,17 @@ impl CrushCapability {
     pub const fn can_crush_units(self) -> bool {
         self.regular_crusher || self.omni_crusher
     }
+
+    /// The one crush authority for an object: its type's `Crusher=`
+    /// (`UnitTypeClass+0xD28`) and `OmniCrusher=`. Every path search and every
+    /// crossing reads it through here. Native has no per-caller flag: each
+    /// `Can_Enter_Cell` evaluation reads the type (`0x0073F438..F446` for the
+    /// wall arm's crusher route, `0x0073FB2A..FB6C` for the occupant crush
+    /// latch). `MovementZone=CrusherAll` is a separate wall-arm route
+    /// (`0x0073F465`) that `cell_entry` keys on the zone, not on this flag.
+    pub const fn of(entity: &GameEntity) -> Self {
+        Self::new(entity.regular_crusher, entity.omni_crusher)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1136,9 +1147,11 @@ pub fn scatter_blocker(
                 object.accel_factor,
                 object.decel_factor,
                 SimFixed::from_num(object.slowdown_distance),
-                object.crusher,
             )
         });
+    // The one crush authority (I9c): native reads the type in every
+    // Can_Enter_Cell (0x0073F438..F446, 0x0073FB2A..FB6C), not a caller flag.
+    let mover_is_crusher = CrushCapability::of(blocker).can_crush_units();
 
     // Find a valid adjacent cell. Random start direction matches Branch A.
     let start_dir = rng.next_range_u32(8) as usize;
@@ -1193,7 +1206,7 @@ pub fn scatter_blocker(
                 resolved_terrain,
                 None,
                 None,
-                config.is_some_and(|config| config.3),
+                mover_is_crusher,
                 None,
                 None,
                 None,
@@ -1214,7 +1227,7 @@ pub fn scatter_blocker(
         super::movement_commands::issue_direct_move(entities, blocker_id, dest, speed, timing)
     };
     if accepted && ordinary_track {
-        if let Some((accel, decel, slowdown, _)) = config {
+        if let Some((accel, decel, slowdown)) = config {
             if let Some(target) = entities
                 .get_mut(blocker_id)
                 .and_then(|entity| entity.movement_target.as_mut())
