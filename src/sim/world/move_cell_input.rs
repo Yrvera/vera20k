@@ -105,7 +105,7 @@ impl Simulation {
 
     /// Foot4DBDF0 (+4C), including its TubeClass exit override. This query
     /// precedes the hut/alive/navigation gates, even for pending Uninit rows.
-    pub(super) fn infantry_navigation_coordinate(&self, id: u64) -> Result<DriveCoord, String> {
+    pub(crate) fn infantry_navigation_coordinate(&self, id: u64) -> Result<DriveCoord, String> {
         let e = self
             .substrate
             .entities

@@ -21,6 +21,8 @@ pub(crate) mod building_anim;
 pub mod edge_cell;
 mod gap_generator;
 mod hash_schema;
+mod house_base;
+pub(crate) use house_base::HouseBaseState;
 mod infantry_terminal;
 #[cfg(test)]
 pub(crate) use infantry_terminal::InfantryDeathSequence;

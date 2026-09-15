@@ -1835,6 +1835,12 @@ impl Simulation {
                 // timer schedules. Gating it would hide the field without
                 // buying those probes back.
                 infantry.idle_action_timer.hash(hasher);
+                // Infantry+6DC is written only by the failed-path receiver
+                // 0x51DAF0; the tagged extension keeps every established
+                // stream unchanged until a receiver actually stores 1.
+                if infantry.cell_entry_blocked {
+                    0x36DC_u32.hash(hasher);
+                }
             } else {
                 0u8.hash(hasher);
             }
@@ -4211,6 +4217,26 @@ mod infantry_hash_tests {
         sim_a.substrate.entities.insert(a);
         sim_b.substrate.entities.insert(b);
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn infantry_cell_entry_blocked_changes_hash_only_when_set() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let mut a = infantry_entity(&mut sim_a);
+        let b = infantry_entity(&mut sim_b);
+        a.infantry = Some(InfantryRuntime {
+            cell_entry_blocked: true,
+            ..InfantryRuntime::new()
+        });
+        sim_a.substrate.entities.insert(a);
+        sim_b.substrate.entities.insert(b);
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+        // A clear byte folds nothing: prior streams keep their pins.
+        let mut sim_c = Simulation::new();
+        let c = infantry_entity(&mut sim_c);
+        sim_c.substrate.entities.insert(c);
+        assert_eq!(sim_b.state_hash(), sim_c.state_hash());
     }
 
     #[test]

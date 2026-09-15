@@ -871,6 +871,7 @@ impl Simulation {
 
         let stable_id = self.create_limbo(ge);
         self.commit_constructor_owned_techno_children(stable_id, rules);
+        self.register_house_base_building(stable_id, rules);
         self.commit_spawn_harvest_mission(stable_id);
         Ok(Some(stable_id))
     }
@@ -1105,6 +1106,7 @@ impl Simulation {
         if !self.substrate.entities.contains(stable_id) {
             return false;
         }
+        self.release_house_base_tracking(stable_id);
         let spawn_children = self
             .substrate
             .entities
@@ -1209,6 +1211,7 @@ impl Simulation {
         let stable_id = self.store_spawned_limbo(ge);
         if let Some(rules) = rules {
             self.commit_constructor_owned_techno_children(stable_id, rules);
+            self.register_house_base_building(stable_id, rules);
         }
         let placement = rules.map_or(PlacementEvidence::EvaluateMark, |rules| {
             self.constructor_unlimbo_placement(
